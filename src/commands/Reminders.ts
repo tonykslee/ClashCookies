@@ -80,19 +80,10 @@ function buildReminderListTargetLines(targets: ReminderListRow["targets"]): stri
   const names = targets.map((target) => getReminderTargetDisplayName(target)).filter(Boolean);
   if (names.length <= 0) return ["  targets: none"];
   const inline = `targets: ${names.join(", ")}`;
-  if (names.length <= 4 && inline.length <= 120) {
+  if (inline.length <= 2000) {
     return [inline];
   }
-
-  const maxShown = names.length > 10 ? 10 : names.length;
-  const lines = ["targets:"];
-  for (const name of names.slice(0, maxShown)) {
-    lines.push(`  - ${name}`);
-  }
-  if (names.length > maxShown) {
-    lines.push(`  - ...and ${names.length - maxShown} more`);
-  }
-  return lines;
+  return ["targets:", ...names.map((name) => `  - ${name}`)];
 }
 
 /** Purpose: build selected clan lines for preview embeds with safe row limits. */
@@ -578,7 +569,7 @@ async function openReminderPanel(input: {
 
 /** Purpose: build concise admin list pages for guild reminder overview command output. */
 function buildReminderListPages(rows: ReminderListRow[]): string[] {
-  const lines = rows.map((row) =>
+  const entries = rows.map((row) =>
     [
       `- \`${row.id.slice(0, 8)}\` **${row.type}**`,
       `  channel: <#${row.channelId}>`,
@@ -587,17 +578,21 @@ function buildReminderListPages(rows: ReminderListRow[]): string[] {
       `  enabled: ${row.isEnabled ? "yes" : "no"}`,
     ].join("\n"),
   );
-  if (lines.length <= 0) return [];
+  if (entries.length <= 0) return [];
 
   const pages: string[] = [];
   let current = "";
-  for (const line of lines) {
-    const next = current ? `${current}\n\n${line}` : line;
-    if (next.length > 3900) {
-      pages.push(current);
-      current = line;
+  for (const entry of entries) {
+    if (!current) {
+      current = entry;
     } else {
-      current = next;
+      const next = `${current}\n\n${entry}`;
+      if (next.length > 3900) {
+        pages.push(current);
+        current = entry;
+      } else {
+        current = next;
+      }
     }
   }
   if (current) pages.push(current);

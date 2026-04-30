@@ -537,9 +537,10 @@ describe("/reminders command", () => {
     expect(String(embed.description)).toContain("<#channel-55>");
     expect(String(embed.description)).toContain("targets: Rising Dawn, Zero Gravity");
     expect(String(embed.description)).not.toContain("targets: 3");
+    expect(String(embed.description)).not.toContain("...and");
   });
 
-  it("wraps long reminder target output with overflow text instead of a count", async () => {
+  it("renders all target names without a hard cap or overflow truncation", async () => {
     reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([
       {
         id: "reminder-1234",
@@ -564,9 +565,87 @@ describe("/reminders command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const embed = payload.embeds[0].toJSON();
-    expect(String(embed.description)).toContain("targets:");
-    expect(String(embed.description)).toContain("...and 2 more");
+    for (let index = 1; index <= 12; index += 1) {
+      expect(String(embed.description)).toContain(`Clan ${index}`);
+    }
+    expect(String(embed.description)).not.toContain("...and");
     expect(String(embed.description)).not.toContain("targets: 12");
+  });
+
+  it("moves a whole reminder configuration to the next page instead of splitting it", async () => {
+    const hugeTargets = Array.from({ length: 60 }, (_, index) => ({
+      clanTag: `#BIG${index.toString().padStart(4, "0")}`,
+      clanType: index % 2 === 0 ? ReminderTargetClanType.FWA : ReminderTargetClanType.CWL,
+      name: `Very Long Clan Name Number ${index + 1} For Atomic Pagination Check`,
+      label: `Very Long Clan Name Number ${index + 1} For Atomic Pagination Check (#BIG${index
+        .toString()
+        .padStart(4, "0")})`,
+    }));
+    reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([
+      {
+        id: "reminder-huge",
+        type: ReminderType.WAR_CWL,
+        channelId: "channel-55",
+        isEnabled: true,
+        offsetsSeconds: [1800],
+        targetCount: hugeTargets.length,
+        targets: hugeTargets,
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        id: "reminder-next",
+        type: ReminderType.RAIDS,
+        channelId: "channel-77",
+        isEnabled: false,
+        offsetsSeconds: [3600],
+        targetCount: 25,
+        targets: Array.from({ length: 25 }, (_, index) => ({
+          clanTag: `#SMALL${index.toString().padStart(2, "0")}`,
+          clanType: index % 2 === 0 ? ReminderTargetClanType.FWA : ReminderTargetClanType.CWL,
+          name: `Compact Clan ${index + 1} For Page Two`,
+          label: `Compact Clan ${index + 1} For Page Two (#SMALL${index
+            .toString()
+            .padStart(2, "0")})`,
+        })),
+        createdAt: new Date("2026-03-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = createInteraction({ subcommand: "list" });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.description)).toContain("Very Long Clan Name Number 1");
+    expect(String(embed.description)).not.toContain("reminder-next");
+
+    const collectHandler = getCollectHandler(interaction);
+    expect(collectHandler).toBeTypeOf("function");
+    const nextButton = {
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      user: { id: "user-1" },
+      customId: "reminders-list:itx-1:next",
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    } as any;
+    await collectHandler(nextButton);
+
+    expect(nextButton.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(Object)],
+      }),
+    );
+    const nextPayload = nextButton.update.mock.calls[0][0] as any;
+    const nextEmbed = nextPayload.embeds[0].toJSON();
+    expect(String(nextEmbed.description)).toContain("<#channel-77>");
+    expect(String(nextEmbed.description)).toContain("Compact Clan 1 For Page Two");
+    expect(String(nextEmbed.description)).not.toContain("Very Long Clan Name Number 1");
   });
 
   it("normalizes edit clan tag input with/without # during reminder lookup", async () => {

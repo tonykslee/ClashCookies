@@ -458,6 +458,15 @@ describe("ReminderService reminder listing and autocomplete", () => {
     const service = new ReminderService();
     const rows = await service.listReminderSummariesForGuild("guild-1");
 
+    expect(prismaMock.reminder.findMany.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          targetClans: expect.objectContaining({
+            select: { clanTag: true, clanType: true },
+          }),
+        }),
+      }),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]?.targets).toEqual([
       expect.objectContaining({
@@ -513,6 +522,13 @@ describe("ReminderService reminder listing and autocomplete", () => {
     const service = new ReminderService();
     const rows = await service.listReminderAutocompleteRowsForGuild("guild-1", "gravity");
 
+    expect(prismaMock.reminder.findMany.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          targetClans: expect.any(Object),
+        }),
+      }),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual(
       expect.objectContaining({

@@ -681,6 +681,10 @@ export class ReminderService {
           select: { offsetSeconds: true },
           orderBy: { offsetSeconds: "asc" },
         },
+        targetClans: {
+          select: { clanTag: true, clanType: true },
+          orderBy: [{ clanType: "asc" }, { clanTag: "asc" }],
+        },
         _count: {
           select: { targetClans: true },
         },
@@ -710,6 +714,10 @@ export class ReminderService {
         times: {
           select: { offsetSeconds: true },
           orderBy: { offsetSeconds: "asc" },
+        },
+        targetClans: {
+          select: { clanTag: true, clanType: true },
+          orderBy: [{ clanType: "asc" }, { clanTag: "asc" }],
         },
         _count: {
           select: { targetClans: true },
