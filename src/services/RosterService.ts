@@ -4105,6 +4105,52 @@ export class RosterService {
     return rosterRows.map((row) => mapRosterSummaryRecord(row as RosterRecordLike & { _count: { groups: number; signups: number } }));
   }
 
+  async listCwlRostersForClan(input: {
+    guildId: string;
+    clanTag: string;
+    query?: string | null;
+    limit?: number | null;
+  }): Promise<RosterSummaryRecord[]> {
+    const guildId = String(input.guildId ?? "").trim();
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!guildId || !clanTag) {
+      return [];
+    }
+
+    const query = normalizeRosterText(input.query ?? null)?.toLowerCase() ?? "";
+    const rosterRows = await prisma.roster.findMany({
+      where: {
+        guildId,
+        rosterType: "CWL",
+        clanTag,
+        lifecycleState: {
+          in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.CLOSED],
+        },
+        ...(query
+          ? {
+              title: {
+                contains: query,
+                mode: "insensitive",
+              },
+            }
+          : {}),
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: Math.max(1, Math.min(25, Math.trunc(Number(input.limit ?? 25) || 25))),
+      select: {
+        ...ROSTER_RECORD_SELECT,
+        _count: {
+          select: {
+            groups: true,
+            signups: true,
+          },
+        },
+      },
+    });
+
+    return rosterRows.map((row) => mapRosterSummaryRecord(row as RosterRecordLike & { _count: { groups: number; signups: number } }));
+  }
+
   async updateRoster(input: {
     rosterId: string;
     title?: string | null;

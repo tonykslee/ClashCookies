@@ -1984,6 +1984,50 @@ async function autocompleteCwlRotationShowDay(interaction: AutocompleteInteracti
   );
 }
 
+async function autocompleteCwlRotationCreateRoster(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== "roster") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const clanTag = normalizeClanTag(interaction.options.getString("clan", false) ?? "");
+  if (!clanTag) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const rosters = await rosterService.listCwlRostersForClan({
+    guildId: interaction.guildId,
+    clanTag,
+    query: String(focused.value ?? ""),
+    limit: 25,
+  });
+  await interaction.respond(
+    rosters
+      .map((roster) => {
+        const label = String(roster.title ?? "").trim().replace(/\s+/g, " ") || roster.id;
+        return {
+          name: label.slice(0, 100),
+          value: roster.id,
+        };
+      })
+      .filter((choice) => {
+        const query = String(focused.value ?? "")
+          .trim()
+          .toLowerCase();
+        if (!query) return true;
+        return choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query);
+      })
+      .slice(0, 25),
+  );
+}
+
 async function handleMembersSubcommand(interaction: ChatInputCommandInteraction) {
   const season = resolveCurrentCwlSeasonKey();
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
@@ -2052,19 +2096,31 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
 
 async function handleRotationCreateSubcommand(interaction: ChatInputCommandInteraction) {
   const clanTag = interaction.options.getString("clan", true);
+  const rosterId = interaction.options.getString("roster", false);
   const exclude = interaction.options.getString("exclude", false);
   const overwrite = interaction.options.getBoolean("overwrite", false) ?? false;
-  const result = await cwlRotationService.createPlan({
-    clanTag,
-    excludeTagsRaw: exclude,
-    overwrite,
-  });
+  if (rosterId && (!interaction.inGuild() || !interaction.guildId)) {
+    await interaction.editReply("Roster-backed CWL rotations can only be created in a server.");
+    return;
+  }
+  const result = rosterId
+    ? await cwlRotationService.createPlanFromRoster({
+        clanTag,
+        rosterId,
+        guildId: interaction.guildId ?? null,
+        overwrite,
+      })
+    : await cwlRotationService.createPlan({
+        clanTag,
+        excludeTagsRaw: exclude,
+        overwrite,
+      });
 
   if (result.outcome === "not_tracked") {
     await interaction.editReply(`No tracked CWL clan found for ${result.clanTag || clanTag}.`);
     return;
   }
-  if (result.outcome === "not_preparation") {
+  if (!rosterId && result.outcome === "not_preparation") {
     await interaction.editReply(
       `CWL rotations can only be created during persisted CWL preparation day for ${result.clanTag}.`,
     );
@@ -2072,32 +2128,67 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
   }
   if (result.outcome === "blocked_existing") {
     await interaction.editReply(
-      `An active CWL rotation plan already exists for ${result.clanTag} in ${result.season} (version ${result.existingVersion}). Re-run with overwrite:true to replace it.`,
+      `A CWL rotation plan already exists for ${result.clanTag} this season. Use overwrite:true to replace version ${result.existingVersion}.`,
     );
     return;
   }
-  if (result.outcome === "invalid_excludes") {
+  if (!rosterId && result.outcome === "invalid_excludes") {
     await interaction.editReply(
       `These exclude tags are not in the observed ${result.season} CWL roster for ${result.clanTag}: ${result.invalidTags.join(", ")}`,
     );
     return;
   }
-  if (result.outcome === "not_enough_players") {
+  if (!rosterId && result.outcome === "not_enough_players") {
     await interaction.editReply(
       `Not enough CWL roster members remain after exclusions for ${result.clanTag}. Need ${result.lineupSize}, have ${result.availablePlayers}.`,
     );
     return;
   }
 
+  if (rosterId) {
+    if (result.outcome === "roster_not_found") {
+      await interaction.editReply("That roster no longer exists.");
+      return;
+    }
+    if (result.outcome === "roster_not_cwl") {
+      await interaction.editReply("That roster is not a CWL roster.");
+      return;
+    }
+    if (result.outcome === "roster_archived") {
+      await interaction.editReply("That roster is archived.");
+      return;
+    }
+    if (result.outcome === "roster_not_open_or_closed") {
+      await interaction.editReply(
+        `That CWL roster must be open or closed before it can be used for rotation creation.`,
+      );
+      return;
+    }
+    if (result.outcome === "roster_clan_mismatch") {
+      await interaction.editReply(
+        `That roster belongs to ${result.rosterClanTag || "another clan"}, not ${clanTag}.`,
+      );
+      return;
+    }
+    if (result.outcome === "no_confirmed_players") {
+      await interaction.editReply("That roster has no confirmed signed-up accounts.");
+      return;
+    }
+  }
+
+  const createdResult = result.outcome === "created" ? result : null;
+  const rosterCreatedResult =
+    rosterId && createdResult && "sourceLabel" in createdResult ? createdResult : null;
   const lines = [
     `Created CWL rotation plan for ${result.clanTag}.`,
-    `Season: ${result.season}`,
-    `Version: ${result.version}`,
-    `Lineup size: ${result.lineupSize}`,
+    ...(rosterCreatedResult ? [`Source: ${rosterCreatedResult.sourceLabel}`] : []),
+    `Season: ${createdResult?.season ?? result.season}`,
+    `Version: ${createdResult?.version ?? 0}`,
+    `Lineup size: ${createdResult?.lineupSize ?? 0}`,
   ];
-  if (result.warnings.length > 0) {
+  if (createdResult && createdResult.warnings.length > 0) {
     lines.push("");
-    lines.push(...result.warnings);
+    lines.push(...createdResult.warnings);
   }
   await interaction.editReply({
     embeds: [
@@ -3229,6 +3320,13 @@ export const Cwl: Command = {
               autocomplete: true,
             },
             {
+              name: "roster",
+              description: "Optional CWL roster id to seed rotation players from",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+            {
               name: "exclude",
               description: "Comma-separated player tags to exclude from planning",
               type: ApplicationCommandOptionType.String,
@@ -3327,6 +3425,10 @@ export const Cwl: Command = {
     }
     if (focused.name === "clan") {
       await autocompleteCwlTrackedClan(interaction);
+      return;
+    }
+    if (focused.name === "roster") {
+      await autocompleteCwlRotationCreateRoster(interaction);
       return;
     }
     await interaction.respond([]);

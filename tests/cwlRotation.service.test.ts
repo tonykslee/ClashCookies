@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { rosterService } from "../src/services/RosterService";
 
 const txMock = vi.hoisted(() => ({
   cwlRotationPlan: {
@@ -252,6 +253,424 @@ describe("CwlRotationService", () => {
       clanTag: "#2QG2C08UP",
       invalidTags: ["#Q2V8P9L2"],
     });
+  });
+
+  it("creates roster-backed plans from confirmed CWL signups using weight priority and missing TH warnings", async () => {
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: null,
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 2,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: null,
+      groups: [
+        {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          weight: 120_000,
+          weightSource: "Manual",
+          weightMeasuredAt: new Date("2026-04-20T01:00:00.000Z"),
+          townHall: 16,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+          createdAt: new Date("2026-04-20T00:05:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+          weight: 90_000,
+          weightSource: "FWA",
+          weightMeasuredAt: new Date("2026-04-20T01:05:00.000Z"),
+          townHall: null,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#CUV9082",
+          playerName: "Charlie",
+          discordUserId: "333333333333333333",
+          signedUpAt: new Date("2026-04-20T00:10:00.000Z"),
+          createdAt: new Date("2026-04-20T00:10:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:10:00.000Z"),
+          weight: null,
+          weightSource: "Unknown",
+          weightMeasuredAt: null,
+          townHall: 15,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+      ],
+      totalSignupCount: 3,
+    } as any);
+    const currentRoundSpy = vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue(null);
+
+    const result = await cwlRotationService.createPlanFromRoster({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      guildId: "guild-1",
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha roster",
+      lineupSize: 2,
+      sourceLabel: "CWL roster - CWL Alpha roster",
+    });
+    expect(result.outcome === "created" ? result.warnings.join(" | ") : "").toContain(
+      "Missing Town Hall data for confirmed roster players",
+    );
+    expect(currentRoundSpy).not.toHaveBeenCalled();
+    expect(cwlStateService.getCurrentPreparationSnapshotForClan).not.toHaveBeenCalled();
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          clanTag: "#2QG2C08UP",
+          season: "2026-04",
+          version: 1,
+          rosterSize: 2,
+          generatedFromRoundDay: null,
+          warningSummary: expect.stringContaining("Missing Town Hall data for confirmed roster players"),
+          metadata: expect.objectContaining({
+            source: "CWL roster - CWL Alpha roster",
+            rosterId: "roster-1",
+            rosterTitle: "CWL Alpha roster",
+            rosterClanTag: "#2QG2C08UP",
+            confirmedRosterSize: 3,
+            lineupSize: 2,
+          }),
+        }),
+      }),
+    );
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(7);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(7);
+    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data.map((row: any) => row.playerTag)).toEqual([
+      "#PYLQ0289",
+      "#QGRJ2222",
+    ]);
+    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data.map((row: any) => row.playerName)).toEqual([
+      "Alpha",
+      "Bravo",
+    ]);
+  });
+
+  it("dedupes duplicate confirmed roster tags before creating a roster-backed plan", async () => {
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
+      roster: {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: null,
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 2,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: null,
+      groups: [
+        {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          weight: 100_000,
+          weightSource: "Manual",
+          weightMeasuredAt: new Date("2026-04-20T01:00:00.000Z"),
+          townHall: 16,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-2",
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha Prime",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+          createdAt: new Date("2026-04-20T00:05:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+          weight: 150_000,
+          weightSource: "FWA",
+          weightMeasuredAt: new Date("2026-04-20T01:05:00.000Z"),
+          townHall: 17,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+        {
+          id: "signup-3",
+          rosterId: "roster-2",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "333333333333333333",
+          signedUpAt: new Date("2026-04-20T00:10:00.000Z"),
+          createdAt: new Date("2026-04-20T00:10:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:10:00.000Z"),
+          weight: null,
+          weightSource: "Unknown",
+          weightMeasuredAt: null,
+          townHall: 15,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        },
+      ],
+      totalSignupCount: 3,
+    } as any);
+
+    const result = await cwlRotationService.createPlanFromRoster({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-2",
+      guildId: "guild-1",
+      season: "2026-04",
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data.map((row: any) => row.playerTag)).toEqual([
+      "#PYLQ0289",
+      "#QGRJ2222",
+    ]);
+    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data.map((row: any) => row.playerName)).toEqual([
+      "Alpha Prime",
+      "Bravo",
+    ]);
+  });
+
+  it("rejects roster-backed create when the confirmed group has no usable signups", async () => {
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
+      roster: {
+        id: "roster-3",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: null,
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 2,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: null,
+      groups: [
+        {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      ],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-3",
+          groupId: "group-substitute",
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          weight: 100_000,
+          weightSource: "Manual",
+          weightMeasuredAt: new Date("2026-04-20T01:00:00.000Z"),
+          townHall: 16,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-substitute",
+            key: "substitute",
+            name: "Substitute",
+            description: null,
+            sortOrder: 1,
+          },
+        },
+      ],
+      totalSignupCount: 1,
+    } as any);
+
+    const result = await cwlRotationService.createPlanFromRoster({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-3",
+      guildId: "guild-1",
+      season: "2026-04",
+    });
+
+    expect(result).toEqual({
+      outcome: "no_confirmed_players",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-3",
+      rosterTitle: "CWL Alpha roster",
+    });
+    expect(txMock.cwlRotationPlan.create).not.toHaveBeenCalled();
   });
 
   it("validates mismatches when the actual lineup differs from the planned lineup", async () => {

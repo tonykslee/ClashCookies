@@ -33,6 +33,12 @@ describe("/cwl command shape", () => {
     expect(showDay?.minValue).toBe(1);
     expect(showDay?.maxValue).toBe(7);
     expect(showDay?.autocomplete).toBe(true);
+    expect(show?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
+    expect(importOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
+    expect(exportOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
+    const roster = create?.options?.find((option: any) => option.name === "roster");
+    expect(roster?.type).toBe(ApplicationCommandOptionType.String);
+    expect(roster?.autocomplete).toBe(true);
     expect(create?.options?.find((option: any) => option.name === "overwrite")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );
