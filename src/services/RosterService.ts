@@ -301,6 +301,29 @@ export type RosterSummaryRecord = RosterRecord & {
   signupCount: number;
 };
 
+export type RosterUserSignupListSignupRecord = {
+  playerTag: string;
+  playerName: string | null;
+  signedUpAt: Date;
+};
+
+export type RosterUserSignupListGroupRecord = RosterGroupRecord & {
+  signups: RosterUserSignupListSignupRecord[];
+};
+
+export type RosterUserSignupListSectionRecord = {
+  roster: RosterRecord;
+  clanName: string | null;
+  groups: RosterUserSignupListGroupRecord[];
+};
+
+export type RosterUserSignupListResult = {
+  discordUserId: string;
+  linkedAccountCount: number;
+  signupCount: number;
+  sections: RosterUserSignupListSectionRecord[];
+};
+
 const ROSTER_RECORD_SELECT = {
   id: true,
   guildId: true,
@@ -1409,6 +1432,265 @@ function mapRosterSummaryRecord(
     ...roster,
     groupCount: row._count.groups,
     signupCount: row._count.signups,
+  };
+}
+
+function compareRosterUserSignupSections(
+  left: RosterUserSignupListSectionRecord,
+  right: RosterUserSignupListSectionRecord,
+): number {
+  const leftStart = left.roster.startsAt ? left.roster.startsAt.getTime() : Number.MAX_SAFE_INTEGER;
+  const rightStart = right.roster.startsAt ? right.roster.startsAt.getTime() : Number.MAX_SAFE_INTEGER;
+  if (leftStart !== rightStart) {
+    return leftStart - rightStart;
+  }
+
+  const titleCompare = left.roster.title.localeCompare(right.roster.title, undefined, { sensitivity: "base" });
+  if (titleCompare !== 0) {
+    return titleCompare;
+  }
+
+  const leftClanLabel = normalizeRosterText(left.clanName ?? null) ?? normalizeClanTag(left.roster.clanTag ?? "") ?? "";
+  const rightClanLabel = normalizeRosterText(right.clanName ?? null) ?? normalizeClanTag(right.roster.clanTag ?? "") ?? "";
+  const clanCompare = leftClanLabel.localeCompare(rightClanLabel, undefined, { sensitivity: "base" });
+  if (clanCompare !== 0) {
+    return clanCompare;
+  }
+
+  return left.roster.id.localeCompare(right.roster.id);
+}
+
+async function resolveRosterClanNameMap(clanTags: string[]): Promise<Map<string, string>> {
+  const normalizedTags = [...new Set(clanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean))];
+  if (normalizedTags.length <= 0) {
+    return new Map();
+  }
+
+  const season = resolveCurrentCwlSeasonKey();
+  const [trackedRows, raidRows, cwlRows] = await Promise.all([
+    prisma.trackedClan.findMany({
+      where: { tag: { in: normalizedTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+    prisma.raidTrackedClan.findMany({
+      where: {
+        clanTag: {
+          in: normalizedTags.map((tag) => tag.replace(/^#/, "")),
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+      select: { clanTag: true, name: true },
+    }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season, tag: { in: normalizedTags } },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    }),
+  ]);
+
+  const clanNameByTag = new Map<string, string>();
+  for (const row of trackedRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterText(row.name ?? null);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of raidRows) {
+    const tag = normalizeClanTag(row.clanTag);
+    const name = normalizeRosterText(row.name ?? null);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+  for (const row of cwlRows) {
+    const tag = normalizeClanTag(row.tag);
+    const name = normalizeRosterText(row.name ?? null);
+    if (tag && name && !clanNameByTag.has(tag)) {
+      clanNameByTag.set(tag, name);
+    }
+  }
+
+  return clanNameByTag;
+}
+
+export async function listRosterSignupsForDiscordUser(input: {
+  guildId: string;
+  discordUserId: string;
+}): Promise<RosterUserSignupListResult> {
+  const guildId = String(input.guildId ?? "").trim();
+  const discordUserId = normalizeDiscordUserId(input.discordUserId);
+  if (!guildId || !discordUserId) {
+    return {
+      discordUserId: discordUserId ?? "",
+      linkedAccountCount: 0,
+      signupCount: 0,
+      sections: [],
+    };
+  }
+
+  const linkedAccounts = await listPlayerLinksForDiscordUser({ discordUserId });
+  const linkedTags = [...new Set(linkedAccounts.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean))];
+  if (linkedTags.length <= 0) {
+    return {
+      discordUserId,
+      linkedAccountCount: 0,
+      signupCount: 0,
+      sections: [],
+    };
+  }
+
+  const currentRosterSignups = await prisma.rosterSignup.findMany({
+    where: {
+      playerTag: { in: linkedTags },
+      roster: {
+        guildId,
+        lifecycleState: {
+          in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.ACTIVE, ROSTER_LIFECYCLE_STATE.CLOSED],
+        },
+      },
+    },
+    orderBy: [{ signedUpAt: "asc" }, { playerTag: "asc" }],
+    select: {
+      id: true,
+      rosterId: true,
+      groupId: true,
+      playerTag: true,
+      playerName: true,
+      signedUpAt: true,
+      roster: {
+        select: ROSTER_RECORD_SELECT,
+      },
+      group: {
+        select: {
+          id: true,
+          key: true,
+          name: true,
+          description: true,
+          sortOrder: true,
+        },
+      },
+    },
+  });
+
+  if (currentRosterSignups.length <= 0) {
+    return {
+      discordUserId,
+      linkedAccountCount: linkedAccounts.length,
+      signupCount: 0,
+      sections: [],
+    };
+  }
+
+  const clanNameByTag = await resolveRosterClanNameMap(
+    currentRosterSignups.map((row) => normalizeClanTag((row as { roster: { clanTag: string | null } }).roster.clanTag ?? "")).filter(Boolean),
+  );
+
+  const sectionByRosterId = new Map<string, RosterUserSignupListSectionRecord>();
+  for (const row of currentRosterSignups as Array<{
+    rosterId: string;
+    playerTag: string;
+    playerName: string | null;
+    signedUpAt: Date;
+    roster: RosterRecordLike;
+    group: {
+      id: string;
+      key: string;
+      name: string;
+      description: string | null;
+      sortOrder: number;
+    } | null;
+  }>) {
+    const roster = mapRosterRecord(row.roster);
+    let section = sectionByRosterId.get(roster.id);
+    if (!section) {
+      const clanTag = normalizeClanTag(roster.clanTag ?? "") || null;
+      section = {
+        roster,
+        clanName: clanTag ? clanNameByTag.get(clanTag) ?? null : null,
+        groups: [],
+      };
+      sectionByRosterId.set(roster.id, section);
+    }
+
+    const groupKey = row.group?.id ?? "__ungrouped__";
+    let group = section.groups.find((entry) => entry.id === groupKey) ?? null;
+    if (!group) {
+      if (row.group) {
+        group = {
+          id: row.group.id,
+          key: row.group.key,
+          name: row.group.name,
+          description: row.group.description,
+          sortOrder: row.group.sortOrder,
+          signups: [],
+        };
+      } else {
+        group = {
+          id: "__ungrouped__",
+          key: "__ungrouped__",
+          name: "Ungrouped",
+          description: null,
+          sortOrder: Number.MAX_SAFE_INTEGER,
+          signups: [],
+        };
+      }
+      section.groups.push(group);
+    }
+
+    group.signups.push({
+      playerTag: normalizePlayerTag(row.playerTag),
+      playerName: normalizeRosterText(row.playerName ?? null),
+      signedUpAt: row.signedUpAt,
+    });
+  }
+
+  const sections = [...sectionByRosterId.values()]
+    .sort(compareRosterUserSignupSections)
+    .map((section) => {
+      const groups = [...section.groups]
+        .sort((left, right) => {
+          if (left.sortOrder !== right.sortOrder) {
+            return left.sortOrder - right.sortOrder;
+          }
+          const leftName = normalizeRosterText(left.name ?? null) ?? left.key;
+          const rightName = normalizeRosterText(right.name ?? null) ?? right.key;
+          const byName = leftName.localeCompare(rightName, undefined, { sensitivity: "base" });
+          if (byName !== 0) {
+            return byName;
+          }
+          return left.key.localeCompare(right.key);
+        })
+        .map((group) => ({
+          ...group,
+          signups: [...group.signups].sort((left, right) => {
+            const leftTime = left.signedUpAt.getTime();
+            const rightTime = right.signedUpAt.getTime();
+            if (leftTime !== rightTime) {
+              return leftTime - rightTime;
+            }
+            const leftName = normalizeRosterText(left.playerName ?? null) ?? left.playerTag;
+            const rightName = normalizeRosterText(right.playerName ?? null) ?? right.playerTag;
+            const byName = leftName.localeCompare(rightName, undefined, { sensitivity: "base" });
+            if (byName !== 0) {
+              return byName;
+            }
+            return left.playerTag.localeCompare(right.playerTag);
+          }),
+        }));
+
+      return {
+        ...section,
+        groups,
+      };
+    });
+
+  return {
+    discordUserId,
+    linkedAccountCount: linkedAccounts.length,
+    signupCount: currentRosterSignups.length,
+    sections,
   };
 }
 
@@ -4268,6 +4550,13 @@ export class RosterService {
     });
 
     return rosterRows.map((row) => mapRosterSummaryRecord(row as RosterRecordLike & { _count: { groups: number; signups: number } }));
+  }
+
+  async listRosterSignupsForDiscordUser(input: {
+    guildId: string;
+    discordUserId: string;
+  }): Promise<RosterUserSignupListResult> {
+    return listRosterSignupsForDiscordUser(input);
   }
 
   async listCwlRostersForClan(input: {
