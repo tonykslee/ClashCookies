@@ -489,6 +489,7 @@ describe("/cwl command", () => {
     expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
+      discordClient: interaction.client,
       cocService: null,
     });
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
@@ -590,6 +591,7 @@ describe("/cwl command", () => {
     expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
       sessionId: "session-2",
       discordUserId: "111111111111111111",
+      discordClient: confirmInteraction.client,
       cocService: null,
     });
     expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);

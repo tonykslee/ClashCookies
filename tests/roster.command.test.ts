@@ -73,6 +73,9 @@ function makeInteraction(input: {
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
   maxTownhall?: number | null;
+  requiredRole?: string | null;
+  noRoleSignupLimit?: number | null;
+  clearRequiredRole?: boolean | null;
   rosterRole?: string | null;
   allowMultiSignup?: boolean | null;
   sortBy?: string | null;
@@ -125,12 +128,22 @@ function makeInteraction(input: {
         if (name === "max_accounts_per_user") return input.maxAccountsPerUser ?? null;
         if (name === "min_townhall") return input.minTownhall ?? null;
         if (name === "max_townhall") return input.maxTownhall ?? null;
+        if (name === "no-role-signup-limit") return input.noRoleSignupLimit ?? null;
+        return null;
+      }),
+      getRole: vi.fn((name: string) => {
+        if (name === "required-role" && input.requiredRole) {
+          return {
+            id: input.requiredRole,
+          };
+        }
         return null;
       }),
       getBoolean: vi.fn((name: string) => {
         if (name === "allow_multi_signup") return input.allowMultiSignup ?? null;
         if (name === "import_members") return input.importMembers ?? null;
         if (name === "delete_role") return input.deleteRole ?? null;
+        if (name === "clear-required-role") return input.clearRequiredRole ?? null;
         return null;
       }),
     },
@@ -355,6 +368,71 @@ describe("/roster command", () => {
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Use /roster post roster:roster-2 to publish it.",
+    );
+  });
+
+  it("defaults signup role limits to zero when creating a role-gated roster", async () => {
+    (rosterService.createRoster as any).mockResolvedValue({ id: "roster-3" });
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      title: "Role-gated roster",
+      timezone: "America/Los_Angeles",
+      requiredRole: "123456789012345678",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.createRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredSignupRoleId: "123456789012345678",
+        noRoleSignupLimit: 0,
+      }),
+    );
+  });
+
+  it("can clear the signup role requirement while preserving the no-role allowance", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.updateRoster as any).mockResolvedValue({
+      id: "roster-1",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      clearRequiredRole: true,
+      noRoleSignupLimit: 2,
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.updateRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
+        requiredSignupRoleId: null,
+        noRoleSignupLimit: 2,
+      }),
     );
   });
 

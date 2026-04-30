@@ -688,6 +688,8 @@ model Roster {
   maxAccountsPerUser    Int?
   minTownhall          Int?
   maxTownhall          Int?
+  requiredSignupRoleId String?
+  noRoleSignupLimit    Int                  @default(0)
   rosterRoleId         String?
   allowMultiSignup     Boolean              @default(true)
   sortBy               String?
