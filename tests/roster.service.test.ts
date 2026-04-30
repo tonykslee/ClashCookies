@@ -744,6 +744,58 @@ describe("RosterService", () => {
     })).toEqual(expect.arrayContaining(["none"]));
   });
 
+  it("lets manager add bypass the required signup role and no-role allowance gate", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce(
+      makeRosterRecord({
+        requiredSignupRoleId: "123456789012345678",
+        noRoleSignupLimit: 0,
+      }),
+    );
+    prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
+      id: "group-confirmed",
+      key: "confirmed",
+      name: "Confirmed",
+      description: "Primary roster members",
+      sortOrder: 0,
+    } as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#PQL0289",
+        discordUserId: "111111111111111111",
+        playerName: "Alpha",
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 1 });
+
+    const result = await rosterService.addRosterSignupsForManager({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      playerTags: ["#PQL0289"],
+      updatedByDiscordUserId: "999999999999999999",
+      bypassEligibility: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      missingLinkedTags: [],
+    });
+    expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.arrayContaining([
+          expect.objectContaining({
+            rosterId: "roster-1",
+            groupId: "group-confirmed",
+            playerTag: "#PQL0289",
+          }),
+        ]),
+        skipDuplicates: true,
+      }),
+    );
+  });
+
   it("prefers player current, catalog, snapshot, and link names when writing roster signups", async () => {
     const alphaTag = makeValidRosterPlayerTag(1);
     const bravoTag = makeValidRosterPlayerTag(2);
