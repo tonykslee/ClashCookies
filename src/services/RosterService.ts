@@ -3090,7 +3090,14 @@ async function buildRosterSignupPayloadFromView(
     lines.pop();
   }
   lines.push("");
-  lines.push(`Total ${view.totalSignupCount}/${maxMembersLabel} | Min. TH ${minTownHallLabel}`);
+  const summaryParts = [`Total ${view.totalSignupCount}/${maxMembersLabel}`];
+  if (view.roster.minTownhall !== null && view.roster.minTownhall !== undefined) {
+    summaryParts.push(`Min. TH ${minTownHallLabel}`);
+  }
+  if (view.roster.maxTownhall !== null && view.roster.maxTownhall !== undefined) {
+    summaryParts.push(`Max. TH ${String(view.roster.maxTownhall)}`);
+  }
+  lines.push(summaryParts.join(" | "));
 
   const renderedDescription = await renderRosterBoardShortcodes(lines.join("\n"), options?.emojiClient ?? null);
   const embed = new EmbedBuilder()
