@@ -1904,7 +1904,7 @@ function createRosterManageSession(input: Omit<RosterManageSession, "sessionId" 
   return session;
 }
 
-function getRosterManageSession(sessionId: string): RosterManageSession | null {
+export function getRosterManageSession(sessionId: string): RosterManageSession | null {
   pruneExpiredRosterManageSessions();
   return rosterManageSessions.get(sessionId) ?? null;
 }
@@ -2582,7 +2582,7 @@ function buildRosterManageActionButtons(session: RosterManageSession): ActionRow
 function buildRosterManageOpenWeightButtons(session: RosterManageSession): ActionRowBuilder<ButtonBuilder> | null {
   if (session.action !== "set_weight") return null;
   const button = new ButtonBuilder()
-    .setCustomId(`roster-manage-weight:open:${String(session.rosterId ?? "").trim()}:${normalizePlayerTag(session.selectedPlayerTags[0] ?? "")}`)
+    .setCustomId(buildRosterManageActionButtonCustomId("open_weight", session.sessionId))
     .setLabel("Open weight modal")
     .setStyle(ButtonStyle.Primary)
     .setDisabled(session.selectedPlayerTags.length !== 1);

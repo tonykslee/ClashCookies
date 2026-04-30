@@ -50,6 +50,7 @@ import {
   parseRosterManageGroupSelectMenuCustomId,
   parseRosterManagePageButtonCustomId,
   parseRosterManageRosterSelectMenuCustomId,
+  getRosterManageSession,
   buildRosterSignupRoleRequirementLines,
   rosterService,
   type RosterRecord,
@@ -1831,6 +1832,51 @@ export async function handleRosterManageActionButtonInteraction(
   const parsed = parseRosterManageActionButtonCustomId(interaction.customId);
   if (!parsed) return;
 
+  if (parsed.action === "open_weight") {
+    const session = getRosterManageSession(parsed.sessionId);
+    if (!session) {
+      await interaction.reply({
+        content: "That roster manage session has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (session.ownerDiscordUserId !== interaction.user.id) {
+      await interaction.reply({
+        content: "Only the original requester can use this roster manage session.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (session.action !== "set_weight" || session.selectedPlayerTags.length !== 1) {
+      await interaction.reply({
+        content: "Select exactly one linked player to open the weight modal.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const rosterView = await rosterService.getRosterView(session.rosterId);
+    const targetSignup = rosterView?.signups.find(
+      (signup) => normalizePlayerTag(signup.playerTag) === session.selectedPlayerTags[0],
+    );
+    if (!rosterView || !targetSignup) {
+      await interaction.reply({
+        content: "That player is no longer on this roster.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.showModal(
+      buildRosterManageWeightModal({
+        roster: rosterView.roster,
+        signup: targetSignup,
+      }),
+    );
+    return;
+  }
+
   if (parsed.action === "cancel") {
     const result = await rosterService.cancelRosterManageSession({
       sessionId: parsed.sessionId,
@@ -1922,10 +1968,8 @@ export async function handleRosterManageActionButtonInteraction(
 
   const summary = result.summary;
   await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.rosterId, cocService ?? null).catch(() => undefined);
-  await syncRosterRolesForRoster(interaction.client, result.rosterId).catch(() => undefined);
   if (result.targetRosterId) {
     await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.targetRosterId, cocService ?? null).catch(() => undefined);
-    await syncRosterRolesForRoster(interaction.client, result.targetRosterId).catch(() => undefined);
   }
   await interaction.editReply({
     content: summary,
@@ -2170,6 +2214,31 @@ function formatRosterManageWeightK(weight: number): string {
   return `${Math.trunc(weight / 1000)}k`;
 }
 
+async function openRosterManageWeightModal(
+  interaction: ButtonInteraction,
+  rosterId: string,
+  playerTag: string,
+): Promise<void> {
+  const rosterView = await rosterService.getRosterView(rosterId);
+  const targetSignup = rosterView?.signups.find(
+    (signup) => normalizePlayerTag(signup.playerTag) === normalizePlayerTag(playerTag),
+  );
+  if (!rosterView || !targetSignup) {
+    await interaction.reply({
+      content: "That player is no longer on this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.showModal(
+    buildRosterManageWeightModal({
+      roster: rosterView.roster,
+      signup: targetSignup,
+    }),
+  );
+}
+
 export async function handleRosterManageWeightOpenButtonInteraction(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -2187,25 +2256,7 @@ export async function handleRosterManageWeightOpenButtonInteraction(
   if (!parsed || parsed.action !== "open") {
     return;
   }
-
-  const rosterView = await rosterService.getRosterView(parsed.rosterId);
-  const targetSignup = rosterView?.signups.find(
-    (signup) => normalizePlayerTag(signup.playerTag) === parsed.playerTag,
-  );
-  if (!rosterView || !targetSignup) {
-    await interaction.reply({
-      content: "That player is no longer on this roster.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  await interaction.showModal(
-    buildRosterManageWeightModal({
-      roster: rosterView.roster,
-      signup: targetSignup,
-    }),
-  );
+  await openRosterManageWeightModal(interaction, parsed.rosterId, parsed.playerTag);
 }
 
 export async function handleRosterManageWeightModalSubmit(
