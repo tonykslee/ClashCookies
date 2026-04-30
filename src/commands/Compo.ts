@@ -2252,7 +2252,7 @@ export const Compo: Command = {
                 const actualState = await new CompoActualStateService().readState(
                   interaction.guildId ?? null,
                   {
-                    view: "raw",
+                    view: "auto",
                   },
                 );
                 logCompoStage(interaction, "db_fetch", {
@@ -2289,12 +2289,12 @@ export const Compo: Command = {
           components: buildCompoRefreshComponents({
             refreshPayload:
               mode === "actual"
-                ? {
-                    kind: "state",
-                    userId: interaction.user.id,
-                    mode: "actual",
-                    actualView: "raw",
-                  }
+                  ? {
+                      kind: "state",
+                      userId: interaction.user.id,
+                      mode: "actual",
+                      actualView: "auto",
+                    }
                 : {
                     kind: "state",
                     userId: interaction.user.id,
