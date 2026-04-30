@@ -31,6 +31,7 @@ import {
   handleRosterPostSettingsButtonInteraction,
   handleRosterPostSettingsActionButtonInteraction,
   handleRosterPostSettingsMenuInteraction,
+  paginateRosterSignupUserBlocks,
 } from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
 import { rosterExportService } from "../src/services/RosterExportService";
@@ -242,6 +243,18 @@ function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
       ),
     ],
   };
+}
+
+function makeValidRosterPlayerTag(index: number): string {
+  const alphabet = ["0", "2", "8", "9"];
+  const normalizedIndex = Math.max(0, Math.trunc(index));
+  let remaining = normalizedIndex;
+  const digits = [0, 0, 0, 0];
+  for (let position = digits.length - 1; position >= 0; position -= 1) {
+    digits[position] = remaining % alphabet.length;
+    remaining = Math.trunc(remaining / alphabet.length);
+  }
+  return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
 }
 
 function makeRosterEmojiClient() {
@@ -682,8 +695,132 @@ describe("/roster command", () => {
     expect(String(embed?.fields?.[1]?.value ?? "")).toContain("Clan: none");
   });
 
-  it("passes the selected Discord user picker id through roster list filters", async () => {
-    (rosterService.listGuildRosters as any).mockResolvedValue([]);
+  it("renders linked roster signups for the selected Discord user", async () => {
+    vi.spyOn(rosterService, "listRosterSignupsForDiscordUser").mockResolvedValue({
+      discordUserId: "222222222222222222",
+      linkedAccountCount: 3,
+      signupCount: 3,
+      sections: [
+        {
+          roster: {
+            id: "roster-1",
+            guildId: "guild-1",
+            rosterType: "CWL",
+            rosterCategory: "signup",
+            title: "Masters 2 [C] | TH17",
+            clanTag: "#2P0J0YL8",
+            startsAt: new Date("2026-04-20T00:00:00.000Z"),
+            endsAt: null,
+            timezone: "America/Los_Angeles",
+            displayTimezone: "America/Los_Angeles",
+            maxMembers: 40,
+            maxAccountsPerUser: 2,
+            minTownhall: 17,
+            maxTownhall: 17,
+            requiredSignupRoleId: null,
+            noRoleSignupLimit: 0,
+            rosterRoleId: null,
+            allowMultiSignup: true,
+            sortBy: null,
+            displayColumns: null,
+            importMembers: false,
+            postButtonMode: "standard",
+            lifecycleState: "OPEN",
+            postedChannelId: null,
+            postedMessageId: null,
+            postedMessageUrl: null,
+            postedAt: null,
+            createdByDiscordUserId: null,
+            updatedByDiscordUserId: null,
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          },
+          clanName: "Serenity",
+          groups: [
+            {
+              id: "confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: null,
+              sortOrder: 0,
+              signups: [
+                {
+                  playerTag: "#GGYLPVCUQ",
+                  playerName: "Charmander",
+                  signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
+                },
+              ],
+            },
+            {
+              id: "substitute",
+              key: "substitute",
+              name: "Substitute",
+              description: null,
+              sortOrder: 1,
+              signups: [
+                {
+                  playerTag: "#YJCLLYU8C",
+                  playerName: "Bulbasaur",
+                  signedUpAt: new Date("2026-04-20T11:00:00.000Z"),
+                },
+              ],
+            },
+          ],
+        },
+        {
+          roster: {
+            id: "roster-2",
+            guildId: "guild-1",
+            rosterType: "FWA",
+            rosterCategory: "signup",
+            title: "FWA Beta Signup",
+            clanTag: null,
+            startsAt: new Date("2026-04-22T00:00:00.000Z"),
+            endsAt: null,
+            timezone: "America/Los_Angeles",
+            displayTimezone: "America/Los_Angeles",
+            maxMembers: 30,
+            maxAccountsPerUser: 1,
+            minTownhall: null,
+            maxTownhall: null,
+            requiredSignupRoleId: null,
+            noRoleSignupLimit: 0,
+            rosterRoleId: null,
+            allowMultiSignup: true,
+            sortBy: null,
+            displayColumns: null,
+            importMembers: false,
+            postButtonMode: "standard",
+            lifecycleState: "CLOSED",
+            postedChannelId: null,
+            postedMessageId: null,
+            postedMessageUrl: null,
+            postedAt: null,
+            createdByDiscordUserId: null,
+            updatedByDiscordUserId: null,
+            createdAt: new Date("2026-04-22T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-22T00:00:00.000Z"),
+          },
+          clanName: "Beta Force",
+          groups: [
+            {
+              id: "__ungrouped__",
+              key: "__ungrouped__",
+              name: "Ungrouped",
+              description: null,
+              sortOrder: Number.MAX_SAFE_INTEGER,
+              signups: [
+                {
+                  playerTag: makeValidRosterPlayerTag(1),
+                  playerName: "Pikachu",
+                  signedUpAt: new Date("2026-04-22T10:00:00.000Z"),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
 
     const interaction = makeInteraction({
       subcommand: "list",
@@ -692,15 +829,66 @@ describe("/roster command", () => {
 
     await Roster.run({} as any, interaction as any);
 
-    expect(rosterService.listGuildRosters).toHaveBeenCalledWith(
+    expect(rosterService.listRosterSignupsForDiscordUser).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: "guild-1",
-        name: null,
-        user: "222222222222222222",
-        player: null,
-        clan: null,
+        discordUserId: "222222222222222222",
       }),
     );
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(Array.isArray(payload?.embeds)).toBe(true);
+    expect(payload.embeds).toHaveLength(1);
+    const firstEmbed = payload.embeds[0]?.toJSON?.() ?? payload.embeds[0];
+    expect(String(firstEmbed?.title ?? "")).toBe("Roster Signups for <@222222222222222222>");
+    expect(String(firstEmbed?.description ?? "")).toContain(
+      "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
+    );
+    expect(String(firstEmbed?.description ?? "")).toContain("Confirmed");
+    expect(String(firstEmbed?.description ?? "")).toContain("  - Charmander `#GGYLPVCUQ`");
+    expect(String(firstEmbed?.description ?? "")).toContain("Substitute");
+    expect(String(firstEmbed?.description ?? "")).toContain("  - Bulbasaur `#YJCLLYU8C`");
+    expect(String(firstEmbed?.description ?? "")).toContain("FWA Beta Signup (Beta Force)");
+    expect(String(firstEmbed?.description ?? "")).toContain("Ungrouped");
+    expect(String(firstEmbed?.description ?? "")).toContain(`  - Pikachu \`${makeValidRosterPlayerTag(1)}\``);
+  });
+
+  it("shows an empty state when the selected user has no linked roster signups", async () => {
+    vi.spyOn(rosterService, "listRosterSignupsForDiscordUser").mockResolvedValue({
+      discordUserId: "222222222222222222",
+      linkedAccountCount: 2,
+      signupCount: 0,
+      sections: [],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "list",
+      userId: "222222222222222222",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "No linked accounts for <@222222222222222222> are signed up for current rosters.",
+    );
+  });
+
+  it("keeps roster sections atomic across list pagination when a section is large", async () => {
+    const largeRosterBlock = [
+      "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
+      "Confirmed",
+      ...Array.from({ length: 157 }, (_, index) => `  - Player ${index + 1} \`${makeValidRosterPlayerTag(index)}\``),
+    ].join("\n");
+    const secondRosterBlock = [
+      "FWA Beta Signup (Beta Force)",
+      "Ungrouped",
+      `  - Pikachu \`${makeValidRosterPlayerTag(1)}\``,
+    ].join("\n");
+
+    const pages = paginateRosterSignupUserBlocks([largeRosterBlock, secondRosterBlock]);
+    expect(pages).toHaveLength(2);
+    expect(pages[0]).toContain("Masters 2 [C] | TH17");
+    expect(pages[0]).not.toContain("FWA Beta Signup");
+    expect(pages[1]).toContain("FWA Beta Signup");
   });
 
   it("routes roster manage actions to the existing add, move, remove, change roster, and lifecycle helpers", async () => {

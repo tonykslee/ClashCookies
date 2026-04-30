@@ -467,6 +467,114 @@ function formatRosterListClanLine(clanName: string | null, clanTag: string | nul
   return "none";
 }
 
+function buildRosterSignupUserClanLine(clanName: string | null, clanTag: string | null): string {
+  const normalizedClanName = String(clanName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedClanTag = normalizeClanTag(clanTag ?? "");
+  if (normalizedClanName && normalizedClanTag) {
+    const encodedTag = normalizedClanTag.replace(/^#/, "");
+    return `[${normalizedClanName}](<https://cc.fwafarm.com/cc_n/clan.php?tag=${encodedTag}>)`;
+  }
+  if (normalizedClanName) {
+    return normalizedClanName;
+  }
+  if (normalizedClanTag) {
+    return normalizedClanTag;
+  }
+  return "Unknown Clan";
+}
+
+function buildRosterSignupUserSectionTitle(rosterTitle: string, clanName: string | null, clanTag: string | null): string {
+  const title = normalizeRosterMutationLabel(rosterTitle, "Roster");
+  const clanLine = buildRosterSignupUserClanLine(clanName, clanTag);
+  if (clanLine && clanLine !== "Unknown Clan") {
+    return `${title} (${clanLine})`;
+  }
+  return title;
+}
+
+function buildRosterSignupUserGroupHeading(group: {
+  key: string;
+  name: string | null;
+}): string {
+  const groupName = normalizeRosterMutationLabel(group.name, "");
+  if (groupName) {
+    return groupName;
+  }
+  if (group.key === "__ungrouped__") {
+    return "Ungrouped";
+  }
+  return normalizeRosterMutationLabel(group.key, "Ungrouped");
+}
+
+function buildRosterSignupUserAccountLine(account: {
+  playerTag: string;
+  playerName: string | null;
+}): string {
+  const playerName = normalizeRosterMutationLabel(account.playerName, "");
+  return playerName ? `  - ${playerName} \`${account.playerTag}\`` : `  - \`${account.playerTag}\``;
+}
+
+export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
+  const pages: string[] = [];
+  const maxChars = 3900;
+  let current: string[] = [];
+  let currentLength = 0;
+
+  for (const block of blocks) {
+    const normalizedBlock = String(block ?? "").trim();
+    if (!normalizedBlock) {
+      continue;
+    }
+
+    const prospectiveLength = currentLength + (current.length > 0 ? 2 : 0) + normalizedBlock.length;
+    if (current.length > 0 && prospectiveLength > maxChars) {
+      pages.push(current.join("\n\n"));
+      current = [];
+      currentLength = 0;
+    }
+
+    current.push(normalizedBlock);
+    currentLength += normalizedBlock.length + (current.length > 1 ? 2 : 0);
+  }
+
+  if (current.length > 0) {
+    pages.push(current.join("\n\n"));
+  }
+
+  return pages.length > 0 ? pages : ["No linked roster signups were found."];
+}
+
+async function buildRosterSignupUserEmbeds(input: {
+  discordUserId: string;
+  sections: Awaited<ReturnType<typeof rosterService.listRosterSignupsForDiscordUser>>["sections"];
+}): Promise<EmbedBuilder[]> {
+  const blocks = input.sections.map((section) => {
+    const clanTag = normalizeClanTag(section.roster.clanTag ?? "") || null;
+    const clanName = section.clanName ?? null;
+    const lines: string[] = [buildRosterSignupUserSectionTitle(section.roster.title, clanName, clanTag)];
+
+    for (const group of section.groups) {
+      lines.push(buildRosterSignupUserGroupHeading(group));
+      for (const signup of group.signups) {
+        lines.push(buildRosterSignupUserAccountLine(signup));
+      }
+    }
+
+    return lines.join("\n");
+  });
+  const pages = paginateRosterSignupUserBlocks(blocks);
+  return pages.map(
+    (description, index) =>
+      new EmbedBuilder()
+        .setColor(0xfee75c)
+        .setTitle(`Roster Signups for <@${input.discordUserId}>`)
+        .setDescription(description)
+        .setFooter({ text: `Page ${index + 1}/${pages.length}` }),
+  );
+}
+
 async function buildRosterListEmbed(rosters: RosterSummaryRecord[]): Promise<EmbedBuilder> {
   const clanNameByTag = await buildRosterAutocompleteClanNameMap(rosters);
   const embed = new EmbedBuilder()
@@ -2265,10 +2373,34 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
     return;
   }
 
+  const selectedUser = interaction.options.getUser("user", false);
+  if (selectedUser) {
+    const result = await rosterService.listRosterSignupsForDiscordUser({
+      guildId: interaction.guildId,
+      discordUserId: selectedUser.id,
+    });
+    const embeds = await buildRosterSignupUserEmbeds({
+      discordUserId: selectedUser.id,
+      sections: result.sections,
+    });
+    if (result.signupCount <= 0) {
+      await interaction.editReply(
+        result.linkedAccountCount > 0
+          ? `No linked accounts for <@${selectedUser.id}> are signed up for current rosters.`
+          : `No linked accounts found for <@${selectedUser.id}>.`,
+      );
+      return;
+    }
+    await interaction.editReply({
+      embeds,
+    });
+    return;
+  }
+
   const rosters = await rosterService.listGuildRosters({
     guildId: interaction.guildId,
     name: interaction.options.getString("name", false),
-    user: interaction.options.getUser("user", false)?.id ?? null,
+    user: null,
     player: interaction.options.getString("player", false),
     clan: interaction.options.getString("clan", false),
   });
