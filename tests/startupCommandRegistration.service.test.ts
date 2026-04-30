@@ -306,10 +306,10 @@ describe("StartupCommandRegistrationService registration summary", () => {
     expect(summary.commandCount).toBe(2);
     expect(summary.rosterIncluded).toBe(true);
     expect(summary.rosterCreateOptionNames).toEqual(
-      expect.arrayContaining(["name", "title"]),
+      expect.arrayContaining(["name", "title", "required-role", "no-role-signup-limit"]),
     );
     expect(summary.rosterEditOptionNames).toEqual(
-      expect.arrayContaining(["name"]),
+      expect.arrayContaining(["name", "required-role", "no-role-signup-limit", "clear-required-role"]),
     );
     expect(summary.rosterEditOptionNames).not.toContain("title");
   });

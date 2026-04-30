@@ -110,6 +110,8 @@ export type RosterRecord = {
   maxAccountsPerUser: number | null;
   minTownhall: number | null;
   maxTownhall: number | null;
+  requiredSignupRoleId: string | null;
+  noRoleSignupLimit: number;
   rosterRoleId: string | null;
   allowMultiSignup: boolean;
   sortBy: string | null;
@@ -314,6 +316,8 @@ const ROSTER_RECORD_SELECT = {
   maxAccountsPerUser: true,
   minTownhall: true,
   maxTownhall: true,
+  requiredSignupRoleId: true,
+  noRoleSignupLimit: true,
   rosterRoleId: true,
   allowMultiSignup: true,
   sortBy: true,
@@ -346,6 +350,8 @@ export type CreateRosterInput = {
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
   maxTownhall?: number | null;
+  requiredSignupRoleId?: string | null;
+  noRoleSignupLimit?: number | null;
   rosterRoleId?: string | null;
   allowMultiSignup?: boolean | null;
   sortBy?: string | null;
@@ -486,6 +492,24 @@ export type SignupLinkedAccountsResult =
       createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
+    }
+  | {
+      outcome: "signup_role_required";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+      requiredSignupRoleId: string;
+      noRoleSignupLimit: number;
+      currentNoRoleSignupCount: number;
+      remainingNoRoleSignupSlots: number;
     }
   | {
       outcome: "roster_archived";
@@ -1046,6 +1070,93 @@ function normalizeRosterRoleId(input: string | null | undefined): string | null 
   return /^\d{15,22}$/.test(raw) ? raw : null;
 }
 
+function normalizeRosterNonNegativeInt(input: number | null | undefined): number | null {
+  if (input === null || input === undefined) return null;
+  const parsed = Math.trunc(Number(input));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+export function buildRosterSignupRoleRequirementLines(input: {
+  requiredSignupRoleId: string | null;
+  noRoleSignupLimit: number | null | undefined;
+}): string[] {
+  const requiredRoleId = normalizeRosterRoleId(input.requiredSignupRoleId);
+  if (!requiredRoleId) {
+    return ["Required role: none"];
+  }
+  const limit = Math.max(0, Math.trunc(Number(input.noRoleSignupLimit ?? 0)) || 0);
+  return [
+    `Required role: <@&${requiredRoleId}>`,
+    `No-role allowance: ${limit}`,
+  ];
+}
+
+async function resolveDiscordMemberRoleIds(input: {
+  discordClient?: Client | null;
+  guildId: string;
+  userId: string;
+}): Promise<string[]> {
+  const client = input.discordClient ?? null;
+  if (!client) return [];
+  const guild = await client.guilds.fetch(input.guildId).catch(() => null);
+  if (!guild) return [];
+  const member = await guild.members.fetch(input.userId).catch(() => null);
+  if (!member) return [];
+  return [...member.roles.cache.keys()];
+}
+
+async function countRosterSignupRowsWithoutRequiredRole(input: {
+  rosterId: string;
+  guildId: string;
+  requiredSignupRoleId: string;
+  discordClient?: Client | null;
+}): Promise<number> {
+  const rosterSignups = await prisma.rosterSignup.findMany({
+    where: {
+      rosterId: input.rosterId,
+    },
+    select: {
+      discordUserId: true,
+    },
+  });
+  if (rosterSignups.length <= 0) {
+    return 0;
+  }
+
+  const countsByUserId = new Map<string, number>();
+  for (const signup of rosterSignups) {
+    const discordUserId = normalizeDiscordUserId(signup.discordUserId);
+    if (!discordUserId) continue;
+    countsByUserId.set(discordUserId, (countsByUserId.get(discordUserId) ?? 0) + 1);
+  }
+  if (countsByUserId.size <= 0) {
+    return 0;
+  }
+
+  const memberRoleCache = new Map<string, boolean>();
+  let noRoleCount = 0;
+  for (const [discordUserId, signupCount] of countsByUserId.entries()) {
+    let memberHasRequiredRole = memberRoleCache.get(discordUserId);
+    if (memberHasRequiredRole === undefined) {
+      const roleIds = await resolveDiscordMemberRoleIds({
+        discordClient: input.discordClient ?? null,
+        guildId: input.guildId,
+        userId: discordUserId,
+      });
+      memberHasRequiredRole = roleIds.includes(input.requiredSignupRoleId);
+      memberRoleCache.set(discordUserId, memberHasRequiredRole);
+    }
+    if (!memberHasRequiredRole) {
+      noRoleCount += signupCount;
+    }
+  }
+
+  return noRoleCount;
+}
+
 const ROSTER_CREATE_EDIT_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/;
 
 function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
@@ -1235,6 +1346,8 @@ type RosterRecordLike = {
   maxAccountsPerUser: number | null;
   minTownhall: number | null;
   maxTownhall: number | null;
+  requiredSignupRoleId: string | null;
+  noRoleSignupLimit: number;
   rosterRoleId: string | null;
   allowMultiSignup: boolean;
   sortBy: string | null;
@@ -1268,6 +1381,8 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     maxAccountsPerUser: row.maxAccountsPerUser,
     minTownhall: row.minTownhall,
     maxTownhall: row.maxTownhall,
+    requiredSignupRoleId: row.requiredSignupRoleId,
+    noRoleSignupLimit: Number.isFinite(Number(row.noRoleSignupLimit)) ? Math.max(0, Math.trunc(Number(row.noRoleSignupLimit))) : 0,
     rosterRoleId: row.rosterRoleId,
     allowMultiSignup: row.allowMultiSignup,
     sortBy: row.sortBy,
@@ -1988,6 +2103,7 @@ async function loadRosterSelectionOptions(input: {
   discordUserId: string;
   mode: "signup";
   groupKey?: string | null;
+  discordClient?: Client | null;
   cocService?: CoCService | null;
 }): Promise<RosterSelectionSignupLoadResult>;
 async function loadRosterSelectionOptions(input: {
@@ -1995,6 +2111,7 @@ async function loadRosterSelectionOptions(input: {
   discordUserId: string;
   mode: "remove";
   groupKey?: string | null;
+  discordClient?: Client | null;
   cocService?: CoCService | null;
 }): Promise<RosterSelectionRemoveLoadResult>;
 async function loadRosterSelectionOptions(input: {
@@ -2002,6 +2119,7 @@ async function loadRosterSelectionOptions(input: {
   discordUserId: string;
   mode: RosterSelectionMode;
   groupKey?: string | null;
+  discordClient?: Client | null;
   cocService?: CoCService | null;
 }): Promise<RosterSelectionSignupLoadResult | RosterSelectionRemoveLoadResult> {
   const roster = await prisma.roster.findUnique({
@@ -2041,6 +2159,34 @@ async function loadRosterSelectionOptions(input: {
     const linkedAccounts = await listPlayerLinksForDiscordUser({ discordUserId: input.discordUserId });
     if (linkedAccounts.length <= 0) {
       return { outcome: "no_linked_accounts", rosterId: roster.id };
+    }
+    if (roster.requiredSignupRoleId) {
+      const memberRoleIds = await resolveDiscordMemberRoleIds({
+        discordClient: input.discordClient ?? null,
+        guildId: roster.guildId,
+        userId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+      });
+      const memberHasRequiredRole = memberRoleIds.includes(roster.requiredSignupRoleId);
+      if (!memberHasRequiredRole) {
+        const currentNoRoleSignupCount = await countRosterSignupRowsWithoutRequiredRole({
+          rosterId: roster.id,
+          guildId: roster.guildId,
+          requiredSignupRoleId: roster.requiredSignupRoleId,
+          discordClient: input.discordClient ?? null,
+        });
+        const noRoleSignupLimit = normalizeRosterNonNegativeInt(roster.noRoleSignupLimit) ?? 0;
+        if (currentNoRoleSignupCount >= noRoleSignupLimit) {
+          return {
+            outcome: "ready",
+            roster: mappedRoster,
+            group: selectedGroup,
+            groups,
+            selectedGroupKey: selectedGroup?.key ?? null,
+            options: [],
+            emptyStateMessage: `This roster requires <@&${roster.requiredSignupRoleId}>. The no-role signup allowance has already been used.`,
+          };
+        }
+      }
     }
     const linkedTags = linkedAccounts.map((account) => account.playerTag);
     const existing = await prisma.rosterSignup.findMany({
@@ -3071,9 +3217,15 @@ async function buildRosterSignupPayloadFromView(
   }`.trim();
   const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
   const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "-" : String(view.roster.minTownhall);
+  const signupRoleLines = buildRosterSignupRoleRequirementLines({
+    requiredSignupRoleId: view.roster.requiredSignupRoleId,
+    noRoleSignupLimit: view.roster.noRoleSignupLimit,
+  });
   const lines: string[] = [
     rosterLabel,
     "",
+    ...signupRoleLines,
+    ...(signupRoleLines.length > 0 ? [""] : []),
     buildRosterBoardHeaderLine(columns, widths),
   ];
 
@@ -3262,6 +3414,8 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       maxAccountsPerUser: true,
       minTownhall: true,
       maxTownhall: true,
+      requiredSignupRoleId: true,
+      noRoleSignupLimit: true,
       rosterRoleId: true,
       allowMultiSignup: true,
       sortBy: true,
@@ -3686,6 +3840,8 @@ export class RosterService {
     const maxAccountsPerUser = normalizeRosterInt(input.maxAccountsPerUser);
     const minTownhall = normalizeRosterInt(input.minTownhall);
     const maxTownhall = normalizeRosterInt(input.maxTownhall);
+    const requiredSignupRoleId = normalizeRosterRoleId(input.requiredSignupRoleId);
+    const noRoleSignupLimit = normalizeRosterNonNegativeInt(input.noRoleSignupLimit) ?? 0;
     const rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
     const allowMultiSignup = input.allowMultiSignup !== false;
     const sortBy = normalizeRosterSortBy(input.sortBy);
@@ -3724,6 +3880,8 @@ export class RosterService {
           maxAccountsPerUser,
           minTownhall,
           maxTownhall,
+          requiredSignupRoleId,
+          noRoleSignupLimit,
           rosterRoleId,
           allowMultiSignup,
           sortBy,
@@ -4173,13 +4331,15 @@ export class RosterService {
     maxAccountsPerUser?: number | null;
     minTownhall?: number | null;
     maxTownhall?: number | null;
-  rosterRoleId?: string | null;
-  allowMultiSignup?: boolean | null;
-  sortBy?: string | null;
-  displayColumns?: string[] | null;
-  importMembers?: boolean | null;
-  lifecycleState?: RosterLifecycleState | null;
-  updatedByDiscordUserId?: string | null;
+    requiredSignupRoleId?: string | null;
+    noRoleSignupLimit?: number | null;
+    rosterRoleId?: string | null;
+    allowMultiSignup?: boolean | null;
+    sortBy?: string | null;
+    displayColumns?: string[] | null;
+    importMembers?: boolean | null;
+    lifecycleState?: RosterLifecycleState | null;
+    updatedByDiscordUserId?: string | null;
   }): Promise<RosterRecord | null> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
@@ -4235,6 +4395,12 @@ export class RosterService {
     }
     if (input.maxTownhall !== undefined) {
       data.maxTownhall = normalizeRosterInt(input.maxTownhall);
+    }
+    if (input.requiredSignupRoleId !== undefined) {
+      data.requiredSignupRoleId = normalizeRosterRoleId(input.requiredSignupRoleId);
+    }
+    if (input.noRoleSignupLimit !== undefined) {
+      data.noRoleSignupLimit = normalizeRosterNonNegativeInt(input.noRoleSignupLimit) ?? 0;
     }
     if (input.rosterRoleId !== undefined) {
       data.rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
@@ -5679,6 +5845,7 @@ export class RosterService {
     rosterId: string;
     discordUserId: string;
     groupKey?: string | null;
+    discordClient?: Client | null;
     cocService?: CoCService | null;
   }): Promise<RosterSelectionOpenResult> {
     const loaded = await loadRosterSelectionOptions({
@@ -5686,6 +5853,7 @@ export class RosterService {
       discordUserId: input.discordUserId,
       mode: "signup",
       groupKey: input.groupKey,
+      discordClient: input.discordClient ?? null,
       cocService: input.cocService ?? null,
     });
     if (loaded.outcome !== "ready") {
@@ -5975,6 +6143,7 @@ export class RosterService {
   async confirmRosterSelectionPanel(input: {
     sessionId: string;
     discordUserId: string;
+    discordClient?: Client | null;
     cocService?: CoCService | null;
   }): Promise<RosterSelectionCommitResult> {
     const session = getRosterSelectionSession(input.sessionId);
@@ -5993,6 +6162,7 @@ export class RosterService {
           groupKey: session.groupKey ?? "",
           discordUserId: session.ownerDiscordUserId,
           playerTags: session.selectedTags,
+          discordClient: input.discordClient ?? null,
           cocService: input.cocService ?? null,
         });
         deleteRosterSelectionSession(session.sessionId);
@@ -6071,12 +6241,14 @@ export class RosterService {
     groupKey: string;
     discordUserId: string;
     playerTags?: string[] | null;
+    discordClient?: Client | null;
     cocService?: CoCService | null;
   }): Promise<SignupLinkedAccountsResult> {
     const roster = await prisma.roster.findUnique({
       where: { id: input.rosterId },
       select: {
         id: true,
+        guildId: true,
         lifecycleState: true,
         rosterType: true,
         rosterCategory: true,
@@ -6085,6 +6257,8 @@ export class RosterService {
         maxAccountsPerUser: true,
         minTownhall: true,
         maxTownhall: true,
+        requiredSignupRoleId: true,
+        noRoleSignupLimit: true,
         allowMultiSignup: true,
       },
     });
@@ -6181,6 +6355,55 @@ export class RosterService {
     const createdCandidates = selectedTags.filter((tag) => !existingTags.has(tag));
     const duplicateTags = selectedTags.filter((tag) => existingTags.has(tag));
     const linkedNameSources = createdCandidates.length > 0 ? await loadRosterSignupNameSourceMaps(createdCandidates) : null;
+
+    if (createdCandidates.length > 0 && roster.requiredSignupRoleId) {
+      const memberRoleIds = await resolveDiscordMemberRoleIds({
+        discordClient: input.discordClient ?? null,
+        guildId: roster.guildId,
+        userId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+      });
+      const memberHasRequiredRole = memberRoleIds.includes(roster.requiredSignupRoleId);
+      if (!memberHasRequiredRole) {
+        const currentNoRoleSignupCount = await countRosterSignupRowsWithoutRequiredRole({
+          rosterId: roster.id,
+          guildId: roster.guildId,
+          requiredSignupRoleId: roster.requiredSignupRoleId,
+          discordClient: input.discordClient ?? null,
+        });
+        const noRoleSignupLimit = normalizeRosterNonNegativeInt(roster.noRoleSignupLimit) ?? 0;
+        if (currentNoRoleSignupCount + createdCandidates.length > noRoleSignupLimit) {
+          const blockedAccounts = createdCandidates.map((playerTag) => ({
+            playerTag,
+            playerName: resolveBestRosterPlayerName({
+              playerTag,
+              playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+              fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+              snapshotPlayerName: linkedNameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+              playerLinkPlayerName: linkedNameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+            }),
+          }));
+          return {
+            outcome: "signup_role_required",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: createdCandidates,
+            blockedAccounts,
+            requiredSignupRoleId: roster.requiredSignupRoleId,
+            noRoleSignupLimit,
+            currentNoRoleSignupCount,
+            remainingNoRoleSignupSlots: Math.max(0, noRoleSignupLimit - currentNoRoleSignupCount),
+          };
+        }
+      }
+    }
+
     const resolvedCurrentCandidates =
       createdCandidates.length > 0
         ? await playerCurrentService.resolveCurrentPlayersForTags({

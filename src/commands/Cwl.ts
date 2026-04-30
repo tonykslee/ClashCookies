@@ -143,6 +143,9 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
         )}.`
       : "Some selected accounts do not meet the town hall requirements.";
   }
+  if (result.outcome === "signup_role_required") {
+    return `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`;
+  }
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";
   }
@@ -3033,6 +3036,7 @@ export async function handleRosterSignupButtonInteraction(
   const result = await rosterService.createRosterSignupSelectionPanel({
     rosterId: parsed.rosterId,
     discordUserId: interaction.user.id,
+    discordClient: interaction.client,
     cocService: cocService ?? null,
   });
 
@@ -3207,6 +3211,7 @@ export async function handleRosterSelectionActionButtonInteraction(
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
+    discordClient: interaction.client,
     cocService: cocService ?? null,
   });
   if (result.outcome === "session_not_found") {

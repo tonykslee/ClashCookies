@@ -45,6 +45,7 @@ import {
   parseRosterPostUsersGroupSelectMenuCustomId,
   parseRosterPostUsersPlayerSelectMenuCustomId,
   parseRosterPostUsersUserSelectMenuCustomId,
+  buildRosterSignupRoleRequirementLines,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -563,6 +564,12 @@ function parseRosterIntegerOption(value: number | null | undefined): number | nu
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function parseRosterNonNegativeIntegerOption(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function resolveRosterNameOption(interaction: ChatInputCommandInteraction): {
   name: string | null;
   title: string | null;
@@ -819,6 +826,10 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
     `Signups: ${view.totalSignupCount}`,
     `Min. TH: ${roster.minTownhall ?? "-"}`,
     `Max. TH: ${roster.maxTownhall ?? "-"}`,
+    ...buildRosterSignupRoleRequirementLines({
+      requiredSignupRoleId: roster.requiredSignupRoleId,
+      noRoleSignupLimit: roster.noRoleSignupLimit,
+    }),
     `Roster role: ${roster.rosterRoleId ? `<@&${roster.rosterRoleId}>` : "-"}`,
     `Post buttons: ${roster.postButtonMode}`,
     `Columns: ${describeRosterDisplayColumns(roster.displayColumns)}`,
@@ -2193,6 +2204,13 @@ async function handleRosterCreateSubcommand(
   const maxAccountsPerUser = parseRosterIntegerOption(interaction.options.getInteger("max_accounts_per_user", false));
   const minTownhall = parseRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
   const maxTownhall = parseRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const requiredSignupRoleId = interaction.options.getRole("required-role", false)?.id ?? null;
+  const noRoleSignupLimitRaw = interaction.options.getInteger("no-role-signup-limit", false);
+  const noRoleSignupLimit = parseRosterNonNegativeIntegerOption(noRoleSignupLimitRaw);
+  if (noRoleSignupLimitRaw !== null && noRoleSignupLimit === null) {
+    await interaction.editReply("Use a non-negative integer for no-role-signup-limit.");
+    return;
+  }
   const rosterRoleRaw = interaction.options.getString("roster_role", false);
   const rosterRoleId = normalizeRosterRoleIdInput(rosterRoleRaw);
   if (rosterRoleRaw && !rosterRoleId) {
@@ -2221,6 +2239,8 @@ async function handleRosterCreateSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    requiredSignupRoleId,
+    noRoleSignupLimit: noRoleSignupLimit ?? 0,
     rosterRoleId,
     allowMultiSignup,
     sortBy,
@@ -2675,6 +2695,15 @@ async function handleRosterEditSubcommand(
   const displayTimezoneSeed = interaction.options.getString("display-timezone", false);
   const startsAtSeed = interaction.options.getString("start_time", false);
   const endsAtSeed = interaction.options.getString("end_time", false);
+  const requiredSignupRoleOption = interaction.options.getRole("required-role", false);
+  const requiredSignupRoleId = requiredSignupRoleOption?.id ?? null;
+  const clearRequiredSignupRole = interaction.options.getBoolean("clear-required-role", false) ?? false;
+  const noRoleSignupLimitRaw = interaction.options.getInteger("no-role-signup-limit", false);
+  const noRoleSignupLimit = parseRosterNonNegativeIntegerOption(noRoleSignupLimitRaw);
+  if (noRoleSignupLimitRaw !== null && noRoleSignupLimit === null) {
+    await interaction.editReply("Use a non-negative integer for no-role-signup-limit.");
+    return;
+  }
   const rosterRoleRaw = interaction.options.getString("roster_role", false);
   const rosterRoleSeed = normalizeRosterRoleIdInput(rosterRoleRaw);
   if (rosterRoleRaw && !rosterRoleSeed) {
@@ -2705,6 +2734,9 @@ async function handleRosterEditSubcommand(
     !displayTimezoneSeed &&
     !startsAtSeed &&
     !endsAtSeed &&
+    !requiredSignupRoleId &&
+    !clearRequiredSignupRole &&
+    noRoleSignupLimit === null &&
     !rosterRoleSeed &&
     !deleteRole &&
     maxMembers === null &&
@@ -2773,6 +2805,14 @@ async function handleRosterEditSubcommand(
     await interaction.editReply("Choose either roster_role or delete_role, not both.");
     return;
   }
+  if (clearRequiredSignupRole && requiredSignupRoleId) {
+    await interaction.editReply("Choose either required-role or clear-required-role, not both.");
+    return;
+  }
+  if (clearRequiredSignupRole && noRoleSignupLimitRaw !== null && noRoleSignupLimit === null) {
+    await interaction.editReply("Use a non-negative integer for no-role-signup-limit.");
+    return;
+  }
 
   let resolvedRosterType = categorySeed ?? roster.rosterType;
   if (categorySeed || clanSeed) {
@@ -2827,6 +2867,13 @@ async function handleRosterEditSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    requiredSignupRoleId: clearRequiredSignupRole ? null : requiredSignupRoleId ?? undefined,
+    noRoleSignupLimit:
+      noRoleSignupLimit !== null
+        ? noRoleSignupLimit
+        : requiredSignupRoleId
+          ? 0
+          : undefined,
     rosterRoleId: deleteRole ? null : rosterRoleSeed ?? undefined,
     allowMultiSignup,
     sortBy,
@@ -3317,6 +3364,18 @@ export const Roster: Command = {
           required: false,
         },
         {
+          name: "required-role",
+          description: "Discord role required for signup",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "no-role-signup-limit",
+          description: "Maximum signups without the required role",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
           name: "roster_role",
           description: "Role to apply to roster signups",
           type: ApplicationCommandOptionType.String,
@@ -3573,6 +3632,24 @@ export const Roster: Command = {
           name: "max_townhall",
           description: "Maximum town hall",
           type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
+          name: "required-role",
+          description: "Discord role required for signup",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "no-role-signup-limit",
+          description: "Maximum signups without the required role",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
+          name: "clear-required-role",
+          description: "Clear the required signup role",
+          type: ApplicationCommandOptionType.Boolean,
           required: false,
         },
         {
