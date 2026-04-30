@@ -3235,12 +3235,11 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
     action === "change_roster" && targetRosterView
       ? new Set(targetRosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean))
       : new Set<string>();
+  const addUserId = selectedUserId ?? interaction.user.id;
 
   const choices =
     action === "add"
-      ? (
-          await listPlayerLinksForDiscordUser({ discordUserId: interaction.user.id })
-        )
+      ? (await listPlayerLinksForDiscordUser({ discordUserId: addUserId }))
           .filter((link) => !existingTags.has(normalizePlayerTag(link.playerTag)))
           .map((link) => {
             const value = normalizePlayerTag(link.playerTag);
