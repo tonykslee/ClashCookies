@@ -118,6 +118,11 @@ import {
   handleRosterPostSettingsGroupSelectInteraction,
   handleRosterPostSettingsPlayerSelectInteraction,
   handleRosterPostSettingsUserSelectInteraction,
+  handleRosterManageAccountSelectInteraction,
+  handleRosterManageActionButtonInteraction,
+  handleRosterManageGroupSelectInteraction,
+  handleRosterManagePageButtonInteraction,
+  handleRosterManageRosterSelectInteraction,
   handleRosterSignupButtonInteraction,
   handleRosterRemoveButtonInteraction,
   handleRosterSelectionMenuInteraction,
@@ -149,6 +154,11 @@ import {
   isRosterPostUsersActionButtonCustomId,
   isRosterPostUsersGroupSelectMenuCustomId,
   isRosterPostUsersPlayerSelectMenuCustomId,
+  isRosterManageAccountSelectMenuCustomId,
+  isRosterManageActionButtonCustomId,
+  isRosterManageGroupSelectMenuCustomId,
+  isRosterManagePageButtonCustomId,
+  isRosterManageRosterSelectMenuCustomId,
 } from "../services/RosterService";
 import {
   handleTodoPageButtonInteraction,
@@ -412,6 +422,51 @@ const handleSelectMenuInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster selection.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterManageAccountSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterManageAccountSelectInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster manage account menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster manage accounts.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterManageGroupSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterManageGroupSelectInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster manage group menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster manage groups.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterManageRosterSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRosterManageRosterSelectInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster manage roster menu failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster manage target roster.",
         });
       }
     }
@@ -744,6 +799,36 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh the roster post.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterManagePageButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterManagePageButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Roster manage page button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster manage session.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterManageActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleRosterManageActionButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster manage action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update roster manage session.",
         });
       }
     }

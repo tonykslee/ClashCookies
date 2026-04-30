@@ -22,6 +22,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
@@ -45,7 +46,14 @@ import {
   parseRosterPostUsersGroupSelectMenuCustomId,
   parseRosterPostUsersPlayerSelectMenuCustomId,
   parseRosterPostUsersUserSelectMenuCustomId,
+  parseRosterManageAccountSelectMenuCustomId,
+  parseRosterManageActionButtonCustomId,
+  parseRosterManageGroupSelectMenuCustomId,
+  parseRosterManagePageButtonCustomId,
+  parseRosterManageRosterSelectMenuCustomId,
+  getRosterManageSession,
   buildRosterSignupRoleRequirementLines,
+  formatRosterTownhallIconsValue,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -511,9 +519,11 @@ function buildRosterSignupUserGroupHeading(group: {
 function buildRosterSignupUserAccountLine(account: {
   playerTag: string;
   playerName: string | null;
+  townHall: number | null;
 }): string {
   const playerName = normalizeRosterMutationLabel(account.playerName, "");
-  return playerName ? `  - ${playerName} \`${account.playerTag}\`` : `  - \`${account.playerTag}\``;
+  const townHall = formatRosterTownhallIconsValue(account.townHall) ?? "TH?";
+  return playerName ? `${townHall} ${playerName} \`${account.playerTag}\`` : `${townHall} \`${account.playerTag}\``;
 }
 
 export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
@@ -548,28 +558,38 @@ export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
 
 async function buildRosterSignupUserEmbeds(input: {
   discordUserId: string;
+  client: Client;
   sections: Awaited<ReturnType<typeof rosterService.listRosterSignupsForDiscordUser>>["sections"];
 }): Promise<EmbedBuilder[]> {
-  const blocks = input.sections.map((section) => {
-    const clanTag = normalizeClanTag(section.roster.clanTag ?? "") || null;
-    const clanName = section.clanName ?? null;
-    const lines: string[] = [buildRosterSignupUserSectionTitle(section.roster.title, clanName, clanTag)];
+  const blocks = [
+    `User: <@${input.discordUserId}>`,
+    ...input.sections.map((section) => {
+      const clanTag = normalizeClanTag(section.roster.clanTag ?? "") || null;
+      const clanName = section.clanName ?? null;
+      const lines: string[] = [buildRosterSignupUserSectionTitle(section.roster.title, clanName, clanTag)];
 
-    for (const group of section.groups) {
-      lines.push(buildRosterSignupUserGroupHeading(group));
-      for (const signup of group.signups) {
-        lines.push(buildRosterSignupUserAccountLine(signup));
+      for (const group of section.groups) {
+        lines.push(buildRosterSignupUserGroupHeading(group));
+        for (const signup of group.signups) {
+          lines.push(buildRosterSignupUserAccountLine(signup));
+        }
       }
-    }
 
-    return lines.join("\n");
-  });
+      return lines.join("\n");
+    }),
+  ];
   const pages = paginateRosterSignupUserBlocks(blocks);
-  return pages.map(
+  const renderedPages = await Promise.all(
+    pages.map(async (description) => {
+      const rendered = await emojiResolverService.replaceShortcodes(input.client, description).catch(() => description);
+      return rendered.replace(/:th(\d+):/gi, (_match, level: string) => `TH${level}`);
+    }),
+  );
+  return renderedPages.map(
     (description, index) =>
       new EmbedBuilder()
         .setColor(0xfee75c)
-        .setTitle(`Roster Signups for <@${input.discordUserId}>`)
+        .setTitle("Roster Signups")
         .setDescription(description)
         .setFooter({ text: `Page ${index + 1}/${pages.length}` }),
   );
@@ -1690,6 +1710,288 @@ export async function handleRosterPostSettingsGroupSelectInteraction(
   });
 }
 
+export async function handleRosterManageAccountSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterManageAccountSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterManageSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedPlayerTags: interaction.values,
+    playerPageWindowDelta: 0,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster manage session has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster manage session.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterManageGroupSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterManageGroupSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterManageSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedGroupKey: interaction.values[0] ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster manage session has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster manage session.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterManageRosterSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterManageRosterSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterManageSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedTargetRosterId: interaction.values[0] ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster manage session has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster manage session.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterManagePageButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseRosterManagePageButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  const result = await rosterService.updateRosterManageSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    playerPageWindowDelta: parsed.action === "previous" ? -1 : 1,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: "That roster manage session has expired. Please start again.",
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: "Only the original requester can use this roster manage session.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterManageActionButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService?: CoCService | null,
+): Promise<void> {
+  const parsed = parseRosterManageActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.action === "open_weight") {
+    const session = getRosterManageSession(parsed.sessionId);
+    if (!session) {
+      await interaction.reply({
+        content: "That roster manage session has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (session.ownerDiscordUserId !== interaction.user.id) {
+      await interaction.reply({
+        content: "Only the original requester can use this roster manage session.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (session.action !== "set_weight" || session.selectedPlayerTags.length !== 1) {
+      await interaction.reply({
+        content: "Select exactly one linked player to open the weight modal.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const rosterView = await rosterService.getRosterView(session.rosterId);
+    const targetSignup = rosterView?.signups.find(
+      (signup) => normalizePlayerTag(signup.playerTag) === session.selectedPlayerTags[0],
+    );
+    if (!rosterView || !targetSignup) {
+      await interaction.reply({
+        content: "That player is no longer on this roster.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.showModal(
+      buildRosterManageWeightModal({
+        roster: rosterView.roster,
+        signup: targetSignup,
+      }),
+    );
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    const result = await rosterService.cancelRosterManageSession({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: "That roster manage session has expired. Please start again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: "Only the original requester can use this roster manage session.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      content: "Roster manage cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (parsed.action !== "confirm") {
+    await interaction.deferUpdate().catch(() => undefined);
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterManageSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    cocService: cocService ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: "That roster manage session has expired. Please start again.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: "Only the original requester can use this roster manage session.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.followUp({
+      content: "Select at least one linked player.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_group") {
+    await interaction.followUp({
+      content: "Select a roster group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_target_roster") {
+    await interaction.followUp({
+      content: "Select a destination roster first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_target_group") {
+    await interaction.followUp({
+      content: "Select a destination roster group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_user") {
+    await interaction.followUp({
+      content: "Select a user to manage accounts for this action.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  const summary = result.summary;
+  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.rosterId, cocService ?? null).catch(() => undefined);
+  if (result.targetRosterId) {
+    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.targetRosterId, cocService ?? null).catch(() => undefined);
+  }
+  await interaction.editReply({
+    content: summary,
+    embeds: [],
+    components: [],
+  }).catch(() => undefined);
+}
+
 export async function handleRosterPostSettingsActionButtonInteraction(
   interaction: ButtonInteraction,
   cocService?: CoCService | null,
@@ -1926,6 +2228,31 @@ function formatRosterManageWeightK(weight: number): string {
   return `${Math.trunc(weight / 1000)}k`;
 }
 
+async function openRosterManageWeightModal(
+  interaction: ButtonInteraction,
+  rosterId: string,
+  playerTag: string,
+): Promise<void> {
+  const rosterView = await rosterService.getRosterView(rosterId);
+  const targetSignup = rosterView?.signups.find(
+    (signup) => normalizePlayerTag(signup.playerTag) === normalizePlayerTag(playerTag),
+  );
+  if (!rosterView || !targetSignup) {
+    await interaction.reply({
+      content: "That player is no longer on this roster.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.showModal(
+    buildRosterManageWeightModal({
+      roster: rosterView.roster,
+      signup: targetSignup,
+    }),
+  );
+}
+
 export async function handleRosterManageWeightOpenButtonInteraction(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -1943,25 +2270,7 @@ export async function handleRosterManageWeightOpenButtonInteraction(
   if (!parsed || parsed.action !== "open") {
     return;
   }
-
-  const rosterView = await rosterService.getRosterView(parsed.rosterId);
-  const targetSignup = rosterView?.signups.find(
-    (signup) => normalizePlayerTag(signup.playerTag) === parsed.playerTag,
-  );
-  if (!rosterView || !targetSignup) {
-    await interaction.reply({
-      content: "That player is no longer on this roster.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  await interaction.showModal(
-    buildRosterManageWeightModal({
-      roster: rosterView.roster,
-      signup: targetSignup,
-    }),
-  );
+  await openRosterManageWeightModal(interaction, parsed.rosterId, parsed.playerTag);
 }
 
 export async function handleRosterManageWeightModalSubmit(
@@ -2381,6 +2690,7 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
     });
     const embeds = await buildRosterSignupUserEmbeds({
       discordUserId: selectedUser.id,
+      client: interaction.client,
       sections: result.sections,
     });
     if (result.signupCount <= 0) {
@@ -2620,12 +2930,50 @@ async function handleRosterManageSubcommand(
   }
 
   const action = interaction.options.getString("action", true) as RosterMutationAction;
+  const selectedUser = interaction.options.getUser("user", false);
   const playersInput = interaction.options.getString("players", false) ?? "";
   const targetRosterId = interaction.options.getString("target_roster", false)?.trim() ?? "";
   const targetGroupKey = interaction.options.getString("target_group", false)?.trim() ?? null;
   const playerTags = parseRosterPlayerTags(playersInput);
+  const interactiveActions: RosterMutationAction[] = ["add", "move", "remove", "change_roster", "set_weight"];
+  const selectedUserId = selectedUser?.id ?? null;
 
   if (action === "set_weight") {
+    if (selectedUserId && playerTags.length <= 0) {
+      const panel = await rosterService.createRosterManageActionPanel({
+        rosterId: roster.id,
+        discordUserId: interaction.user.id,
+        selectedDiscordUserId: selectedUserId,
+        selectedDiscordUserLabel: selectedUser
+          ? formatRosterDiscordUserSelectionLabel(
+              { users: interaction.client.users?.cache, members: interaction.guild?.members?.cache },
+              selectedUserId,
+            )
+          : null,
+        action,
+      });
+      if (panel.outcome !== "ready") {
+        const message =
+          panel.outcome === "roster_not_found"
+            ? "That roster is no longer available."
+            : panel.outcome === "roster_archived"
+              ? "That roster is archived and can no longer be modified."
+              : panel.outcome === "no_linked_accounts"
+                ? "Select a user with linked accounts to continue."
+                : "No eligible roster signups were found for that user.";
+        await interaction.editReply(message);
+        return;
+      }
+      await interaction.editReply({
+        embeds: [panel.panel.embed],
+        components: panel.panel.components,
+      });
+      return;
+    }
+    if (interactiveActions.includes(action) && !selectedUserId && playerTags.length <= 0) {
+      await interaction.editReply("Select a user to manage accounts for this action.");
+      return;
+    }
     if (playerTags.length !== 1) {
       await interaction.editReply("Provide exactly one player tag for set weight.");
       return;
@@ -2670,6 +3018,43 @@ async function handleRosterManageSubcommand(
     await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
     await interaction.editReply(buildRosterLifecycleSummary(roster, lifecycleState));
+    return;
+  }
+
+  if (selectedUserId && playerTags.length <= 0) {
+    const panel = await rosterService.createRosterManageActionPanel({
+      rosterId: roster.id,
+      discordUserId: interaction.user.id,
+      selectedDiscordUserId: selectedUserId,
+      selectedDiscordUserLabel: selectedUser
+        ? formatRosterDiscordUserSelectionLabel(
+            { users: interaction.client.users?.cache, members: interaction.guild?.members?.cache },
+            selectedUserId,
+          )
+        : null,
+      action,
+    });
+    if (panel.outcome !== "ready") {
+      const message =
+        panel.outcome === "roster_not_found"
+          ? "That roster is no longer available."
+          : panel.outcome === "roster_archived"
+            ? "That roster is archived and can no longer be modified."
+            : panel.outcome === "no_linked_accounts"
+              ? "Select a user with linked accounts to continue."
+              : "No eligible roster signups were found for that user.";
+      await interaction.editReply(message);
+      return;
+    }
+    await interaction.editReply({
+      embeds: [panel.panel.embed],
+      components: panel.panel.components,
+    });
+    return;
+  }
+
+  if (interactiveActions.includes(action) && !selectedUserId && playerTags.length <= 0) {
+    await interaction.editReply("Select a user to manage accounts for this action.");
     return;
   }
 

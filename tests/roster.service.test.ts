@@ -3453,6 +3453,105 @@ describe("RosterService", () => {
     ]);
   });
 
+  it("builds the manager add panel from the selected user's linked accounts and shows blocked reasons", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 40,
+      maxAccountsPerUser: 3,
+      minTownhall: 13,
+      maxTownhall: 15,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: null,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: makeValidRosterPlayerTag(1),
+        playerName: "Alpha",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: "Primary roster members", sortOrder: 0 },
+      },
+    ] as any);
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+      {
+        playerTag: makeValidRosterPlayerTag(1),
+        linkedName: "Alpha",
+        linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      {
+        playerTag: makeValidRosterPlayerTag(2),
+        linkedName: "Bravo",
+        linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        [makeValidRosterPlayerTag(1), { townHall: 15 }],
+        [makeValidRosterPlayerTag(2), { townHall: 16 }],
+      ]),
+    );
+
+    const opened = await rosterService.createRosterManageActionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      action: "add",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const description = String(opened.panel.embed.toJSON().description ?? "");
+    expect(description).toContain("User: <@222222222222222222>");
+    expect(description).toContain("Blocked accounts");
+    expect(description).toContain("Already signed up on this roster");
+    expect(description).not.toContain("No eligible accounts found for this action.");
+
+    const optionValues = flattenComponentRows(opened.panel.components)
+      .filter((component) => Array.isArray(component.options))
+      .filter((component) => String(component.customId ?? component.custom_id ?? component.data?.custom_id ?? "").includes(":accounts:"))
+      .flatMap((component) => (component.options ?? []).map((option: any) => option.value));
+    expect(optionValues).toEqual([makeValidRosterPlayerTag(2)]);
+  });
+
   it("pages manager add-user linked players across more than three select rows without dropping selections", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce(
       Array.from({ length: 76 }, (_, index) => ({
@@ -5515,6 +5614,13 @@ describe("RosterService", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2P0J0YL8", name: "Serenity" }]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      makePlayerCurrentMap([
+        ["#GGYLPVCUQ", 18],
+        ["#YJCLLYU8C", 17],
+        ["#PQL0002", null],
+      ]),
+    );
 
     const rosterOne = {
       id: "roster-1",
@@ -5591,6 +5697,7 @@ describe("RosterService", () => {
           groupId: "group-confirmed",
           playerTag: "#GGYLPVCUQ",
           playerName: "Charmander",
+          townHall: 18,
           signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
           roster: rosterOne,
           group: {
@@ -5607,6 +5714,7 @@ describe("RosterService", () => {
           groupId: "group-substitute",
           playerTag: "#YJCLLYU8C",
           playerName: "Bulbasaur",
+          townHall: 17,
           signedUpAt: new Date("2026-04-20T11:00:00.000Z"),
           roster: rosterOne,
           group: {
@@ -5623,6 +5731,7 @@ describe("RosterService", () => {
           groupId: null,
           playerTag: "#PQL0002",
           playerName: null,
+          townHall: null,
           signedUpAt: new Date("2026-04-22T10:00:00.000Z"),
           roster: rosterTwo,
           group: null,
@@ -5666,9 +5775,12 @@ describe("RosterService", () => {
     });
     expect(result.sections[0].groups.map((group) => group.name)).toEqual(["Confirmed", "Substitute"]);
     expect(result.sections[0].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#GGYLPVCUQ"]);
+    expect(result.sections[0].groups[0].signups[0]?.townHall).toBe(18);
     expect(result.sections[0].groups[1].signups.map((signup) => signup.playerTag)).toEqual(["#YJCLLYU8C"]);
+    expect(result.sections[0].groups[1].signups[0]?.townHall).toBe(17);
     expect(result.sections[1].groups.map((group) => group.name)).toEqual(["Ungrouped"]);
     expect(result.sections[1].groups[0].signups.map((signup) => signup.playerTag)).toEqual(["#PQL0002"]);
+    expect(result.sections[1].groups[0].signups[0]?.townHall).toBeNull();
     expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
