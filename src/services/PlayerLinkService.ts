@@ -1,3 +1,8 @@
+import {
+  PlayerLinkSource,
+  PlayerLinkVerificationMethod,
+  PlayerLinkVerificationStatus,
+} from "@prisma/client";
 import { prisma } from "../prisma";
 
 export type PlayerLinkCreateOutcome =
@@ -49,6 +54,34 @@ export type DiscordUserPlayerLink = {
   linkedName: string | null;
 };
 
+export type PlayerLinkTrustTier = "verified" | "trusted" | "legacy" | "untrusted" | "revoked";
+
+export type PlayerLinkVerificationOutcome =
+  | "verified"
+  | "invalid_tag"
+  | "invalid_user"
+  | "not_found"
+  | "not_owner"
+  | "invalid_token"
+  | "service_error";
+
+export type PlayerLinkWithTrust = {
+  playerTag: string;
+  discordUserId: string | null;
+  discordUsername: string | null;
+  playerName: string | null;
+  linkSource: PlayerLinkSource;
+  verificationStatus: PlayerLinkVerificationStatus;
+  verificationMethod: PlayerLinkVerificationMethod | null;
+  verifiedAt: Date | null;
+  verifiedByDiscordUserId: string | null;
+  lastVerifiedAt: Date | null;
+  verificationFailureReason: string | null;
+  importBatchKey: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type PlayerLinkNameBackfillResult = {
   playerTag: string;
   updated: boolean;
@@ -98,6 +131,229 @@ export function sanitizeDiscordUsernameForPersistence(input: unknown): string {
   return normalizePersistedDiscordUsername(input) ?? PLAYER_LINK_DISCORD_USERNAME_FALLBACK;
 }
 
+function normalizePlayerLinkVerificationMethod(
+  input: PlayerLinkVerificationMethod | null | undefined,
+): PlayerLinkVerificationMethod | null {
+  if (input === "PLAYER_API_TOKEN" || input === "ADMIN_OVERRIDE" || input === "IMPORT" || input === "LEGACY") {
+    return input;
+  }
+  return null;
+}
+
+function normalizePlayerLinkSource(input: PlayerLinkSource | null | undefined): PlayerLinkSource {
+  if (
+    input === "SELF_SERVICE" ||
+    input === "EMBED_SELF_SERVICE" ||
+    input === "ADMIN_CREATE" ||
+    input === "IMPORT_CLASHPERK" ||
+    input === "LEGACY"
+  ) {
+    return input;
+  }
+  return "LEGACY";
+}
+
+export function buildPlayerLinkTrustWriteData(input: {
+  linkSource: PlayerLinkSource;
+  verificationMethod?: PlayerLinkVerificationMethod | null;
+  importBatchKey?: string | null;
+}): {
+  linkSource: PlayerLinkSource;
+  verificationStatus: PlayerLinkVerificationStatus;
+  verificationMethod: PlayerLinkVerificationMethod | null;
+  verifiedAt: null;
+  verifiedByDiscordUserId: null;
+  lastVerifiedAt: null;
+  verificationFailureReason: null;
+  importBatchKey: string | null;
+} {
+  return {
+    linkSource: normalizePlayerLinkSource(input.linkSource),
+    verificationStatus: "UNVERIFIED" as const,
+    verificationMethod: normalizePlayerLinkVerificationMethod(input.verificationMethod),
+    verifiedAt: null,
+    verifiedByDiscordUserId: null,
+    lastVerifiedAt: null,
+    verificationFailureReason: null,
+    importBatchKey: String(input.importBatchKey ?? "").trim() || null,
+  };
+}
+
+function normalizePlayerLinkTrustRecord(row: {
+  playerTag: string;
+  discordUserId: string | null;
+  discordUsername: string | null;
+  playerName: string | null;
+  linkSource: PlayerLinkSource;
+  verificationStatus: PlayerLinkVerificationStatus;
+  verificationMethod: PlayerLinkVerificationMethod | null;
+  verifiedAt: Date | null;
+  verifiedByDiscordUserId: string | null;
+  lastVerifiedAt: Date | null;
+  verificationFailureReason: string | null;
+  importBatchKey: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): PlayerLinkWithTrust {
+  return {
+    playerTag: normalizePlayerTag(row.playerTag),
+    discordUserId: normalizeDiscordUserId(row.discordUserId),
+    discordUsername: normalizePersistedDiscordUsername(row.discordUsername),
+    playerName: normalizePersistedPlayerName(row.playerName),
+    linkSource: normalizePlayerLinkSource(row.linkSource),
+    verificationStatus: row.verificationStatus,
+    verificationMethod: normalizePlayerLinkVerificationMethod(row.verificationMethod),
+    verifiedAt: row.verifiedAt ?? null,
+    verifiedByDiscordUserId: normalizeDiscordUserId(row.verifiedByDiscordUserId),
+    lastVerifiedAt: row.lastVerifiedAt ?? null,
+    verificationFailureReason:
+      normalizePersistedDiscordUsername(row.verificationFailureReason) ?? null,
+    importBatchKey: normalizePersistedDiscordUsername(row.importBatchKey) ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function isTokenVerifiedLink(link: Pick<
+  PlayerLinkWithTrust,
+  "verificationStatus" | "verificationMethod"
+>): boolean {
+  return (
+    link.verificationStatus === "VERIFIED" &&
+    link.verificationMethod === "PLAYER_API_TOKEN"
+  );
+}
+
+function isTrustedNonVerifiedSource(link: Pick<PlayerLinkWithTrust, "linkSource">): boolean {
+  return (
+    link.linkSource === "ADMIN_CREATE" ||
+    link.linkSource === "IMPORT_CLASHPERK" ||
+    link.linkSource === "LEGACY"
+  );
+}
+
+function isVerifiedButNotTokenVerifiedLink(link: Pick<
+  PlayerLinkWithTrust,
+  "verificationStatus" | "verificationMethod"
+>): boolean {
+  return (
+    link.verificationStatus === "VERIFIED" &&
+    (link.verificationMethod === "ADMIN_OVERRIDE" || link.verificationMethod === "IMPORT")
+  );
+}
+
+function isVerifiedOrTrustedLink(link: Pick<
+  PlayerLinkWithTrust,
+  "linkSource" | "verificationStatus" | "verificationMethod"
+>): boolean {
+  if (link.verificationStatus === "REVOKED") return false;
+  if (isTokenVerifiedLink(link)) return true;
+  if (isVerifiedButNotTokenVerifiedLink(link)) return true;
+  return isTrustedNonVerifiedSource(link);
+}
+
+export function isPlayerLinkVerifiedForAutorole(link: Pick<
+  PlayerLinkWithTrust,
+  "verificationStatus" | "verificationMethod"
+>): boolean {
+  return isTokenVerifiedLink(link);
+}
+
+export function isPlayerLinkTrustedForAutorole(link: Pick<
+  PlayerLinkWithTrust,
+  "linkSource" | "verificationStatus" | "verificationMethod"
+>): boolean {
+  return isVerifiedOrTrustedLink(link);
+}
+
+export function getPlayerLinkTrustTier(link: Pick<
+  PlayerLinkWithTrust,
+  "linkSource" | "verificationStatus" | "verificationMethod"
+>): PlayerLinkTrustTier {
+  if (link.verificationStatus === "REVOKED") return "revoked";
+  if (isTokenVerifiedLink(link)) return "verified";
+  if (isVerifiedButNotTokenVerifiedLink(link)) return "trusted";
+  if (isTrustedNonVerifiedSource(link)) return link.linkSource === "LEGACY" ? "legacy" : "trusted";
+  return "untrusted";
+}
+
+export async function markPlayerLinkVerified(input: {
+  playerTag: string;
+  verifiedByDiscordUserId?: string | null;
+  verificationMethod?: PlayerLinkVerificationMethod | null;
+}): Promise<boolean> {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  if (!normalizedTag) return false;
+
+  const verifiedByDiscordUserId = normalizeDiscordUserId(input.verifiedByDiscordUserId);
+  const verifiedAt = new Date();
+  const updateResult = await prisma.playerLink.updateMany({
+    where: { playerTag: normalizedTag },
+    data: {
+      verificationStatus: "VERIFIED",
+      verificationMethod: normalizePlayerLinkVerificationMethod(
+        input.verificationMethod ?? "PLAYER_API_TOKEN",
+      ),
+      verifiedAt,
+      verifiedByDiscordUserId,
+      lastVerifiedAt: verifiedAt,
+      verificationFailureReason: null,
+    },
+  });
+  return updateResult.count > 0;
+}
+
+export async function revokePlayerLinkVerification(input: {
+  playerTag: string;
+}): Promise<boolean> {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  if (!normalizedTag) return false;
+
+  const updateResult = await prisma.playerLink.updateMany({
+    where: { playerTag: normalizedTag },
+    data: {
+      verificationStatus: "REVOKED",
+      verificationMethod: null,
+      verifiedAt: null,
+      verifiedByDiscordUserId: null,
+      verificationFailureReason: null,
+    },
+  });
+  return updateResult.count > 0;
+}
+
+export async function getPlayerLinksForDiscordUserWithTrust(input: {
+  discordUserId: string;
+}): Promise<PlayerLinkWithTrust[]> {
+  const normalizedUserId = normalizeDiscordUserId(input.discordUserId);
+  if (!normalizedUserId) return [];
+
+  const rows = await prisma.playerLink.findMany({
+    where: { discordUserId: normalizedUserId },
+    orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    select: {
+      playerTag: true,
+      discordUserId: true,
+      discordUsername: true,
+      playerName: true,
+      linkSource: true,
+      verificationStatus: true,
+      verificationMethod: true,
+      verifiedAt: true,
+      verifiedByDiscordUserId: true,
+      lastVerifiedAt: true,
+      verificationFailureReason: true,
+      importBatchKey: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return rows
+    .map((row) => normalizePlayerLinkTrustRecord(row))
+    .filter((row) => row.playerTag.length > 0);
+}
+
 /** Purpose: render a linked timestamp in deterministic UTC format. */
 export function formatLinkedAtUtc(input: Date): string {
   const year = input.getUTCFullYear();
@@ -145,6 +401,9 @@ export async function createPlayerLink(input: {
   }
 
   try {
+    const trustData = buildPlayerLinkTrustWriteData({
+      linkSource: input.selfService ? "SELF_SERVICE" : "ADMIN_CREATE",
+    });
     if (existing) {
       const updated = await prisma.playerLink.updateMany({
         where: {
@@ -153,6 +412,7 @@ export async function createPlayerLink(input: {
         },
         data: {
           discordUserId: normalizedUserId,
+          ...trustData,
         },
       });
 
@@ -182,6 +442,7 @@ export async function createPlayerLink(input: {
           data: {
             playerTag: normalizedTag,
             discordUserId: normalizedUserId,
+            ...trustData,
           },
         });
       }
@@ -190,6 +451,7 @@ export async function createPlayerLink(input: {
         data: {
           playerTag: normalizedTag,
           discordUserId: normalizedUserId,
+          ...trustData,
         },
       });
     }
@@ -252,6 +514,9 @@ export async function createPlayerLinkFromEmbed(input: {
   }
 
   try {
+    const trustData = buildPlayerLinkTrustWriteData({
+      linkSource: "EMBED_SELF_SERVICE",
+    });
     if (existing) {
       await prisma.playerLink.update({
         where: { playerTag: normalizedTag },
@@ -260,6 +525,7 @@ export async function createPlayerLinkFromEmbed(input: {
           discordUsername: sanitizeDiscordUsernameForPersistence(
             input.submittingDiscordUsername
           ),
+          ...trustData,
         },
       });
     } else {
@@ -270,6 +536,7 @@ export async function createPlayerLinkFromEmbed(input: {
           discordUsername: sanitizeDiscordUsernameForPersistence(
             input.submittingDiscordUsername
           ),
+          ...trustData,
         },
       });
     }
@@ -379,28 +646,14 @@ export async function listPlayerLinksForClanMembers(input: {
 export async function listPlayerLinksForDiscordUser(input: {
   discordUserId: string;
 }): Promise<DiscordUserPlayerLink[]> {
-  const normalizedUserId = normalizeDiscordUserId(input.discordUserId);
-  if (!normalizedUserId) return [];
-
-  const rows = await prisma.playerLink.findMany({
-    where: { discordUserId: normalizedUserId },
-    orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
-    select: { playerTag: true, playerName: true, createdAt: true },
+  const rows = await getPlayerLinksForDiscordUserWithTrust({
+    discordUserId: input.discordUserId,
   });
-
-  const seen = new Set<string>();
-  const ordered: DiscordUserPlayerLink[] = [];
-  for (const row of rows) {
-    const playerTag = normalizePlayerTag(row.playerTag);
-    if (!playerTag || seen.has(playerTag)) continue;
-    seen.add(playerTag);
-    ordered.push({
-      playerTag,
-      linkedAt: row.createdAt,
-      linkedName: normalizePersistedPlayerName(row.playerName),
-    });
-  }
-  return ordered;
+  return rows.map((row) => ({
+    playerTag: row.playerTag,
+    linkedAt: row.createdAt,
+    linkedName: row.playerName,
+  }));
 }
 
 /** Purpose: persist one linked in-game player name only when PlayerLink.playerName is currently missing. */

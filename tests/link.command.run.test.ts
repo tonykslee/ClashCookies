@@ -59,9 +59,10 @@ import {
 } from "../src/services/reminders/ReminderLinkActions";
 
 type InteractionInput = {
-  subcommand: "create" | "delete" | "list" | "embed" | "sync-clashperk";
+  subcommand: "create" | "delete" | "verify" | "status" | "list" | "embed" | "sync-clashperk";
   sheetUrl?: string | null;
   playerTag?: string | null;
+  token?: string | null;
   userOverride?: string | null;
   memberRoleIds?: string[];
   clanTag?: string | null;
@@ -114,6 +115,7 @@ function makeInteraction(input: InteractionInput) {
         if (name === "player-tag") return input.playerTag ?? null;
         if (name === "clan-tag") return input.clanTag ?? null;
         if (name === "sheet-url") return input.sheetUrl ?? null;
+        if (name === "token") return input.token ?? null;
         return null;
       }),
       getUser: vi.fn((name: string) => {
@@ -274,7 +276,18 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
-      data: { playerTag: "#PYL0289", discordUserId: "111111111111111111" },
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       "created: #PYL0289 linked to you.",
@@ -314,10 +327,32 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(1, {
-      data: { playerTag: "#PYL0289", discordUserId: "111111111111111111" },
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(2, {
-      data: { playerTag: "#QGRJ2222", discordUserId: "111111111111111111" },
+      data: {
+        playerTag: "#QGRJ2222",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       [
@@ -348,7 +383,18 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
-      data: { playerTag: "#PYL0289", discordUserId: "222222222222222222" },
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "222222222222222222",
+        linkSource: "ADMIN_CREATE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       [
@@ -380,10 +426,96 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
-      data: { playerTag: "#PYL0289", discordUserId: "222222222222222222" },
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "222222222222222222",
+        linkSource: "ADMIN_CREATE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       "created: #PYL0289 linked to <@222222222222222222>.",
+    );
+  });
+
+  it("verifies an owned link with a player API token", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "111111111111111111",
+    });
+    prismaMock.playerLink.updateMany.mockResolvedValue({ count: 1 });
+    const verifyPlayerToken = vi.fn().mockResolvedValue({
+      tag: "#PYL0289",
+      status: "ok",
+    });
+    const interaction = makeInteraction({
+      subcommand: "verify",
+      playerTag: "#pyl0289",
+      token: "TOKEN-123",
+      userId: "111111111111111111",
+    });
+
+    await Link.run({} as any, interaction as any, {
+      verifyPlayerToken,
+    } as any);
+
+    expect(verifyPlayerToken).toHaveBeenCalledWith("#PYL0289", "TOKEN-123");
+    expect(prismaMock.playerLink.updateMany).toHaveBeenCalledWith({
+      where: { playerTag: "#PYL0289" },
+      data: {
+        verificationStatus: "VERIFIED",
+        verificationMethod: "PLAYER_API_TOKEN",
+        verifiedAt: expect.any(Date),
+        verifiedByDiscordUserId: "111111111111111111",
+        lastVerifiedAt: expect.any(Date),
+        verificationFailureReason: null,
+      },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "verified: #PYL0289 now has verified ownership state.",
+    );
+  });
+
+  it("shows trust state for a selected linked player tag", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYL0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "discord-user",
+        playerName: "Player One",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "VERIFIED",
+        verificationMethod: "PLAYER_API_TOKEN",
+        verifiedAt: new Date("2026-04-30T12:34:00.000Z"),
+        verifiedByDiscordUserId: "111111111111111111",
+        lastVerifiedAt: new Date("2026-04-30T12:34:00.000Z"),
+        verificationFailureReason: null,
+        importBatchKey: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-30T12:34:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "status",
+      playerTag: "#pyl0289",
+      userId: "111111111111111111",
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Link trust state:"),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("verification: verified"),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("trusted for autorole: yes"),
     );
   });
 
@@ -1756,6 +1888,14 @@ describe("/link embed interactions", () => {
         playerTag: "#PYL0289",
         discordUserId: "111111111111111111",
         discordUsername: "test username",
+        linkSource: "EMBED_SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
       },
     });
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -1896,7 +2036,18 @@ describe("/reminder link interactions", () => {
     await handleReminderLinkConfirmButtonInteraction(interaction as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({
-      data: { playerTag: "#PYLQ0289", discordUserId: "111111111111111111" },
+      data: {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       "created: #PYLQ0289 linked to you.",

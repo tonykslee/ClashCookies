@@ -72,14 +72,25 @@ model BotSetting {
 }
 
 model PlayerLink {
-  playerTag     String   @id
-  discordUserId String?
-  discordUsername String?
-  playerName    String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  playerTag                String                       @id
+  discordUserId            String?
+  discordUsername          String?
+  playerName               String?
+  linkSource               PlayerLinkSource             @default(LEGACY)
+  verificationStatus       PlayerLinkVerificationStatus @default(UNVERIFIED)
+  verificationMethod       PlayerLinkVerificationMethod?
+  verifiedAt               DateTime?
+  verifiedByDiscordUserId  String?
+  lastVerifiedAt           DateTime?
+  verificationFailureReason String?
+  importBatchKey           String?
+  createdAt                DateTime                     @default(now())
+  updatedAt                DateTime                     @updatedAt
 
   @@index([discordUserId])
+  @@index([verificationStatus])
+  @@index([linkSource])
+  @@index([discordUserId, verificationStatus])
 }
 
 model PlayerCurrent {
@@ -197,6 +208,27 @@ enum AutoRoleRuleType {
   CLAN_ROLE
   TOWN_HALL
   LABEL
+}
+
+enum PlayerLinkSource {
+  SELF_SERVICE
+  EMBED_SELF_SERVICE
+  ADMIN_CREATE
+  IMPORT_CLASHPERK
+  LEGACY
+}
+
+enum PlayerLinkVerificationStatus {
+  UNVERIFIED
+  VERIFIED
+  REVOKED
+}
+
+enum PlayerLinkVerificationMethod {
+  PLAYER_API_TOKEN
+  ADMIN_OVERRIDE
+  IMPORT
+  LEGACY
 }
 
 model AutoRoleGuildConfig {

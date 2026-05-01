@@ -7,6 +7,7 @@ import {
   Configuration,
   Player,
   PlayersApi,
+  type VerifyTokenResponse,
 } from "../generated/coc-api";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { toFailureTelemetry } from "./telemetry/ingest";
@@ -426,6 +427,64 @@ export class CoCService {
           timeout: failure.timeout,
         });
       }
+      if (status) throw new Error(`CoC API error ${status}`);
+      throw err;
+    }
+  }
+
+  /** Purpose: verify a player API token for the requested player tag. */
+  async verifyPlayerToken(
+    tag: string | undefined,
+    token: string,
+  ): Promise<VerifyTokenResponse | null> {
+    if (!tag) return null;
+    const playerTag = tag.startsWith("#") ? tag : `#${tag}`;
+    const normalizedToken = String(token ?? "").trim();
+    if (!normalizedToken) return null;
+
+    const startedAtMs = Date.now();
+    try {
+      const { data } = await this.runQueuedRequest({
+        operation: "verifyPlayerToken",
+        detail: `tag=${playerTag}`,
+        run: () => this.playersApi.verifyToken(playerTag, { token: normalizedToken }),
+      });
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "verifyPlayerToken",
+        source: "api",
+        detail: `tag=${playerTag}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+      return data;
+    } catch (err) {
+      const status = (err as AxiosError)?.response?.status;
+      const failure = toFailureTelemetry(err);
+      if (status === 400 || status === 403 || status === 404) {
+        recordFetchEvent({
+          namespace: "coc",
+          operation: "verifyPlayerToken",
+          source: "api",
+          detail: `tag=${playerTag} status=${status}`,
+          durationMs: Date.now() - startedAtMs,
+          status: "failure",
+          errorCategory: "validation",
+          errorCode: `HTTP_${status}`,
+        });
+        return null;
+      }
+      recordFetchEvent({
+        namespace: "coc",
+        operation: "verifyPlayerToken",
+        source: "api",
+        detail: `tag=${playerTag} status=${status ?? "unknown"} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
       if (status) throw new Error(`CoC API error ${status}`);
       throw err;
     }

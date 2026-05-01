@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findUnique: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
     findMany: vi.fn(),
     updateMany: vi.fn(),
   },
@@ -20,9 +21,15 @@ import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
   backfillMissingDiscordUsernamesForClanMembers,
+  getPlayerLinkTrustTier,
+  getPlayerLinksForDiscordUserWithTrust,
   listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
   listPlayerLinksForDiscordUser,
+  markPlayerLinkVerified,
+  revokePlayerLinkVerification,
+  isPlayerLinkTrustedForAutorole,
+  isPlayerLinkVerifiedForAutorole,
   sanitizeDiscordUsernameForPersistence,
   normalizePersistedDiscordUsername,
   normalizePersistedPlayerName,
@@ -33,6 +40,7 @@ describe("PlayerLinkService link identity", () => {
     vi.clearAllMocks();
     prismaMock.playerLink.findUnique.mockReset();
     prismaMock.playerLink.create.mockReset();
+    prismaMock.playerLink.update.mockReset();
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerLink.updateMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
@@ -72,7 +80,22 @@ describe("PlayerLinkService link identity", () => {
     expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith({
       where: { discordUserId: "111111111111111111" },
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
-      select: { playerTag: true, playerName: true, createdAt: true },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        discordUsername: true,
+        playerName: true,
+        linkSource: true,
+        verificationStatus: true,
+        verificationMethod: true,
+        verifiedAt: true,
+        verifiedByDiscordUserId: true,
+        lastVerifiedAt: true,
+        verificationFailureReason: true,
+        importBatchKey: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
     expect(links).toEqual([
       {
@@ -201,6 +224,14 @@ describe("PlayerLinkService link identity", () => {
         playerTag: "#PYL0289",
         discordUserId: "111111111111111111",
         discordUsername: "test user",
+        linkSource: "EMBED_SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
       },
     });
     expect(result).toEqual({
@@ -302,5 +333,96 @@ describe("PlayerLinkService link identity", () => {
     });
 
     expect(Array.from(weights.entries())).toEqual([["#PYLQ0289", 145000]]);
+  });
+
+  it("returns trust tiers and autorole trust helpers for persisted links", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "discord-user",
+        playerName: "Player One",
+        linkSource: "ADMIN_CREATE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+        createdAt: new Date("2026-03-20T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-20T10:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "111111111111111111",
+        discordUsername: "discord-user",
+        playerName: "Player Two",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "VERIFIED",
+        verificationMethod: "PLAYER_API_TOKEN",
+        verifiedAt: new Date("2026-03-21T10:00:00.000Z"),
+        verifiedByDiscordUserId: "111111111111111111",
+        lastVerifiedAt: new Date("2026-03-21T10:00:00.000Z"),
+        verificationFailureReason: null,
+        importBatchKey: null,
+        createdAt: new Date("2026-03-20T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-21T10:00:00.000Z"),
+      },
+    ]);
+
+    const links = await getPlayerLinksForDiscordUserWithTrust({
+      discordUserId: "111111111111111111",
+    });
+
+    expect(links).toHaveLength(2);
+    expect(getPlayerLinkTrustTier(links[0])).toBe("trusted");
+    expect(isPlayerLinkTrustedForAutorole(links[0])).toBe(true);
+    expect(isPlayerLinkVerifiedForAutorole(links[0])).toBe(false);
+    expect(getPlayerLinkTrustTier(links[1])).toBe("verified");
+    expect(isPlayerLinkTrustedForAutorole(links[1])).toBe(true);
+    expect(isPlayerLinkVerifiedForAutorole(links[1])).toBe(true);
+  });
+
+  it("marks and revokes verification state without changing ownership", async () => {
+    prismaMock.playerLink.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.playerLink.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(
+      markPlayerLinkVerified({
+        playerTag: "#PYLQ0289",
+        verifiedByDiscordUserId: "111111111111111111",
+        verificationMethod: "PLAYER_API_TOKEN",
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.playerLink.updateMany).toHaveBeenNthCalledWith(1, {
+      where: { playerTag: "#PYLQ0289" },
+      data: {
+        verificationStatus: "VERIFIED",
+        verificationMethod: "PLAYER_API_TOKEN",
+        verifiedAt: expect.any(Date),
+        verifiedByDiscordUserId: "111111111111111111",
+        lastVerifiedAt: expect.any(Date),
+        verificationFailureReason: null,
+      },
+    });
+
+    await expect(
+      revokePlayerLinkVerification({
+        playerTag: "#PYLQ0289",
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.playerLink.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { playerTag: "#PYLQ0289" },
+      data: {
+        verificationStatus: "REVOKED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        verificationFailureReason: null,
+      },
+    });
   });
 });
