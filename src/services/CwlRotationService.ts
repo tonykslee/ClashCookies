@@ -576,7 +576,7 @@ async function loadCwlRotationExportRosterDetailsMap(input: {
   plans: Array<{
     id: string;
     clanTag: string;
-    metadata: Record<string, unknown> | null;
+    metadata: Prisma.JsonValue;
   }>;
 }): Promise<Map<string, { rosterTitle: string; rosterShortName: string | null }>> {
   const rosterIdByPlanId = new Map<string, string>();
