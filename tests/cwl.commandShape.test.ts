@@ -36,6 +36,10 @@ describe("/cwl command shape", () => {
     expect(show?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
     expect(importOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
     expect(exportOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
+    const size = create?.options?.find((option: any) => option.name === "size");
+    expect(size?.type).toBe(ApplicationCommandOptionType.Integer);
+    expect(size?.required).toBe(false);
+    expect(size?.choices?.map((choice: any) => choice.value)).toEqual([15, 30]);
     const roster = create?.options?.find((option: any) => option.name === "roster");
     expect(roster?.type).toBe(ApplicationCommandOptionType.String);
     expect(roster?.autocomplete).toBe(true);

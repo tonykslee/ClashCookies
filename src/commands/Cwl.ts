@@ -2031,6 +2031,54 @@ async function autocompleteCwlRotationCreateRoster(interaction: AutocompleteInte
   );
 }
 
+async function autocompleteCwlRotationShowClan(interaction: AutocompleteInteraction): Promise<void> {
+  if (!interaction.inGuild()) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const query = String(interaction.options.getFocused(true).value ?? "").trim().toLowerCase();
+  const season = resolveCurrentCwlSeasonKey();
+  const [activePlans, trackedClans] = await Promise.all([
+    cwlRotationService.listActivePlanExports({ season }),
+    prisma.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    }),
+  ]);
+  const trackedByTag = new Map(
+    trackedClans
+      .map((clan) => {
+        const tag = normalizeClanTag(clan.tag);
+        return tag ? ([tag, clan] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, { name: string | null; tag: string }] => Boolean(entry)),
+  );
+
+  await interaction.respond(
+    activePlans
+      .map((plan) => {
+        const trackedClan = trackedByTag.get(plan.clanTag);
+        if (!trackedClan) return null;
+        const clanName = String(trackedClan.name ?? "").trim() || String(plan.clanName ?? "").trim() || null;
+        const label = clanName ? `${clanName} (${plan.clanTag})` : plan.clanTag;
+        return {
+          name: label.slice(0, 100),
+          value: plan.clanTag,
+        };
+      })
+      .filter((choice): choice is { name: string; value: string } => Boolean(choice))
+      .filter(
+        (choice) =>
+          !query ||
+          choice.name.toLowerCase().includes(query) ||
+          choice.value.toLowerCase().includes(query),
+      )
+      .slice(0, 25),
+  );
+}
+
 async function handleMembersSubcommand(interaction: ChatInputCommandInteraction) {
   const season = resolveCurrentCwlSeasonKey();
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
@@ -2100,6 +2148,7 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
 async function handleRotationCreateSubcommand(interaction: ChatInputCommandInteraction) {
   const clanTag = interaction.options.getString("clan", true);
   const rosterId = interaction.options.getString("roster", false);
+  const size = interaction.options.getInteger("size", false);
   const exclude = interaction.options.getString("exclude", false);
   const overwrite = interaction.options.getBoolean("overwrite", false) ?? false;
   if (rosterId && (!interaction.inGuild() || !interaction.guildId)) {
@@ -2107,20 +2156,26 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     return;
   }
   const result = rosterId
-    ? await cwlRotationService.createPlanFromRoster({
+      ? await cwlRotationService.createPlanFromRoster({
         clanTag,
         rosterId,
         guildId: interaction.guildId ?? null,
+        lineupSize: size,
         overwrite,
       })
     : await cwlRotationService.createPlan({
         clanTag,
         excludeTagsRaw: exclude,
+        lineupSize: size,
         overwrite,
       });
 
   if (result.outcome === "not_tracked") {
     await interaction.editReply(`No tracked CWL clan found for ${result.clanTag || clanTag}.`);
+    return;
+  }
+  if (result.outcome === "invalid_size") {
+    await interaction.editReply("CWL rotation lineup size must be 15 or 30.");
     return;
   }
   if (!rosterId && result.outcome === "not_preparation") {
@@ -2141,7 +2196,7 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     );
     return;
   }
-  if (!rosterId && result.outcome === "not_enough_players") {
+  if (result.outcome === "not_enough_players") {
     await interaction.editReply(
       `Not enough CWL roster members remain after exclusions for ${result.clanTag}. Need ${result.lineupSize}, have ${result.availablePlayers}.`,
     );
@@ -3325,6 +3380,16 @@ export const Cwl: Command = {
               autocomplete: true,
             },
             {
+              name: "size",
+              description: "CWL lineup size",
+              type: ApplicationCommandOptionType.Integer,
+              required: false,
+              choices: [
+                { name: "15", value: 15 },
+                { name: "30", value: 30 },
+              ],
+            },
+            {
               name: "roster",
               description: "Optional CWL roster id to seed rotation players from",
               type: ApplicationCommandOptionType.String,
@@ -3429,6 +3494,22 @@ export const Cwl: Command = {
       return;
     }
     if (focused.name === "clan") {
+      let group = "";
+      let subcommand = "";
+      try {
+        group = interaction.options.getSubcommandGroup(false) ?? "";
+      } catch {
+        group = "";
+      }
+      try {
+        subcommand = interaction.options.getSubcommand(false) ?? "";
+      } catch {
+        subcommand = "";
+      }
+      if (group === "rotations" && subcommand === "show") {
+        await autocompleteCwlRotationShowClan(interaction);
+        return;
+      }
       await autocompleteCwlTrackedClan(interaction);
       return;
     }

@@ -81,6 +81,12 @@ export type CreateCwlRotationPlanResult =
       existingVersion: number;
     }
   | {
+      outcome: "invalid_size";
+      season: string;
+      clanTag: string;
+      requestedLineupSize: number | null;
+    }
+  | {
       outcome: "not_tracked";
       season: string;
       clanTag: string;
@@ -125,6 +131,14 @@ export type CreateCwlRotationRosterPlanResult =
       existingVersion: number;
     }
   | {
+      outcome: "invalid_size";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      requestedLineupSize: number | null;
+    }
+  | {
       outcome: "not_tracked";
       season: string;
       clanTag: string;
@@ -165,6 +179,15 @@ export type CreateCwlRotationRosterPlanResult =
       rosterId: string;
       rosterTitle: string;
       lifecycleState: string;
+    }
+  | {
+      outcome: "not_enough_players";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+      rosterTitle: string;
+      lineupSize: number;
+      availablePlayers: number;
     }
   | {
       outcome: "no_confirmed_players";
@@ -422,6 +445,15 @@ function buildCwlRosterRotationSourceLabel(rosterTitle: string | null | undefine
 function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; playerTag: string }): string {
   const playerName = normalizePersistedPlayerName(input.playerName);
   return playerName ? `${playerName} (${input.playerTag})` : input.playerTag;
+}
+
+const CWL_ROTATION_ALLOWED_LINEUP_SIZES = new Set([15, 30]);
+
+function normalizeCwlRotationLineupSize(input: unknown): 15 | 30 | null {
+  const size = Math.trunc(Number(input));
+  if (!Number.isFinite(size)) return null;
+  if (!CWL_ROTATION_ALLOWED_LINEUP_SIZES.has(size)) return null;
+  return size as 15 | 30;
 }
 
 async function loadActivePlan(input: {
@@ -710,6 +742,7 @@ export class CwlRotationService {
   async createPlan(input: {
     clanTag: string;
     excludeTagsRaw?: string | null;
+    lineupSize?: number | null;
     overwrite?: boolean;
     season?: string;
   }): Promise<CreateCwlRotationPlanResult> {
@@ -717,6 +750,19 @@ export class CwlRotationService {
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) {
       return { outcome: "not_tracked", season, clanTag: "" };
+    }
+
+    const explicitLineupSize =
+      typeof input.lineupSize === "undefined" || input.lineupSize === null
+        ? null
+        : normalizeCwlRotationLineupSize(input.lineupSize);
+    if (typeof input.lineupSize !== "undefined" && input.lineupSize !== null && explicitLineupSize === null) {
+      return {
+        outcome: "invalid_size",
+        season,
+        clanTag,
+        requestedLineupSize: Math.trunc(Number(input.lineupSize)),
+      };
     }
 
     const trackedClan = await prisma.cwlTrackedClan.findFirst({
@@ -769,8 +815,21 @@ export class CwlRotationService {
     const currentLineupTags = currentRound.members
       .filter((member) => member.subbedIn)
       .map((member) => member.playerTag);
-    const lineupSize = Math.max(0, currentLineupTags.length || currentRound.members.length);
+    const currentLineupSeedTags =
+      currentLineupTags.length > 0
+        ? currentLineupTags
+        : currentRound.members.map((member) => member.playerTag).filter(Boolean);
+    const lineupSize = explicitLineupSize ?? Math.max(0, currentLineupSeedTags.length);
     const seedRoundAlreadyCountedInParticipation = hasOverlapPreparation;
+    if (explicitLineupSize !== null && currentLineupSeedTags.length < lineupSize) {
+      return {
+        outcome: "not_enough_players",
+        season,
+        clanTag,
+        lineupSize,
+        availablePlayers: currentLineupSeedTags.length,
+      };
+    }
     if (includedRoster.length < lineupSize) {
       return {
         outcome: "not_enough_players",
@@ -786,7 +845,7 @@ export class CwlRotationService {
       roster: includedRoster,
       lineupSize,
       currentRoundDay: currentRound.roundDay,
-      currentLineupTags,
+      currentLineupTags: currentLineupSeedTags,
       seedRoundAlreadyCountedInParticipation,
     });
     const warnings = buildCoverageWarnings({
@@ -849,6 +908,7 @@ export class CwlRotationService {
     clanTag: string;
     rosterId: string;
     guildId?: string | null;
+    lineupSize?: number | null;
     overwrite?: boolean;
     season?: string;
   }): Promise<CreateCwlRotationRosterPlanResult> {
@@ -857,6 +917,21 @@ export class CwlRotationService {
     const rosterId = String(input.rosterId ?? "").trim();
     if (!clanTag) {
       return { outcome: "not_tracked", season, clanTag: "", rosterId };
+    }
+
+    const explicitLineupSize =
+      typeof input.lineupSize === "undefined" || input.lineupSize === null
+        ? null
+        : normalizeCwlRotationLineupSize(input.lineupSize);
+    if (typeof input.lineupSize !== "undefined" && input.lineupSize !== null && explicitLineupSize === null) {
+      return {
+        outcome: "invalid_size",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle: "",
+        requestedLineupSize: Math.trunc(Number(input.lineupSize)),
+      };
     }
 
     const trackedClan = await prisma.cwlTrackedClan.findFirst({
@@ -944,7 +1019,19 @@ export class CwlRotationService {
     }
 
     const configuredLineupSize = roster.maxMembers && roster.maxMembers > 0 ? roster.maxMembers : 15;
-    const lineupSize = Math.max(1, Math.min(15, configuredLineupSize, dedupedConfirmedSignups.length));
+    const defaultLineupSize = Math.max(1, Math.min(15, configuredLineupSize, dedupedConfirmedSignups.length));
+    const lineupSize = explicitLineupSize ?? defaultLineupSize;
+    if (explicitLineupSize !== null && dedupedConfirmedSignups.length < lineupSize) {
+      return {
+        outcome: "not_enough_players",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        lineupSize,
+        availablePlayers: dedupedConfirmedSignups.length,
+      };
+    }
     const rosterEntries = dedupedConfirmedSignups.map<CwlSeasonRosterEntry>((signup) => ({
       season,
       clanTag,
