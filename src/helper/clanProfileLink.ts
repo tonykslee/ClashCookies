@@ -16,5 +16,5 @@ export function buildClanProfileMarkdownLink(
   const label = sanitizeDisplayText(clanName) || normalizedClanTag || "Unknown Clan";
   if (!normalizedClanTag) return label;
   const encodedTag = normalizedClanTag.replace(/^#/, "");
-  return `[${label}](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag}>)`;
+  return `[${label}](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodedTag}>)`;
 }

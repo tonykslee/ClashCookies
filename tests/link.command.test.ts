@@ -3,7 +3,7 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { Link } from "../src/commands/Link";
 
 describe("/link command shape", () => {
-  it("registers create/delete/list/embed/sync-clashperk subcommands with expected options", () => {
+  it("registers create/delete/verify/status/list/embed/sync-clashperk subcommands with expected options", () => {
     const create = Link.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand && option.name === "create"
@@ -11,6 +11,14 @@ describe("/link command shape", () => {
     const del = Link.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand && option.name === "delete"
+    );
+    const verify = Link.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand && option.name === "verify"
+    );
+    const status = Link.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand && option.name === "status"
     );
     const list = Link.options?.find(
       (option) =>
@@ -28,6 +36,8 @@ describe("/link command shape", () => {
 
     expect(create).toBeTruthy();
     expect(del).toBeTruthy();
+    expect(verify).toBeTruthy();
+    expect(status).toBeTruthy();
     expect(list).toBeTruthy();
     expect(embed).toBeTruthy();
     expect(syncClashperk).toBeTruthy();
@@ -43,6 +53,20 @@ describe("/link command shape", () => {
 
     expect(del?.options?.find((o: any) => o.name === "player-tag")?.required).toBe(true);
     expect(del?.options?.find((o: any) => o.name === "player-tag")?.type).toBe(
+      ApplicationCommandOptionType.String
+    );
+
+    expect(verify?.options?.find((o: any) => o.name === "player-tag")?.required).toBe(true);
+    expect(verify?.options?.find((o: any) => o.name === "player-tag")?.type).toBe(
+      ApplicationCommandOptionType.String
+    );
+    expect(verify?.options?.find((o: any) => o.name === "token")?.required).toBe(true);
+    expect(verify?.options?.find((o: any) => o.name === "token")?.type).toBe(
+      ApplicationCommandOptionType.String
+    );
+
+    expect(status?.options?.find((o: any) => o.name === "player-tag")?.required).toBe(false);
+    expect(status?.options?.find((o: any) => o.name === "player-tag")?.type).toBe(
       ApplicationCommandOptionType.String
     );
 

@@ -702,8 +702,19 @@ describe("/accounts command", () => {
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
       select: {
         playerTag: true,
+        discordUserId: true,
+        discordUsername: true,
         playerName: true,
+        linkSource: true,
+        verificationStatus: true,
+        verificationMethod: true,
+        verifiedAt: true,
+        verifiedByDiscordUserId: true,
+        lastVerifiedAt: true,
+        verificationFailureReason: true,
+        importBatchKey: true,
         createdAt: true,
+        updatedAt: true,
       },
     });
   });
@@ -756,8 +767,19 @@ describe("/accounts command", () => {
       orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
       select: {
         playerTag: true,
+        discordUserId: true,
+        discordUsername: true,
         playerName: true,
+        linkSource: true,
+        verificationStatus: true,
+        verificationMethod: true,
+        verifiedAt: true,
+        verifiedByDiscordUserId: true,
+        lastVerifiedAt: true,
+        verificationFailureReason: true,
+        importBatchKey: true,
         createdAt: true,
+        updatedAt: true,
       },
     });
   });

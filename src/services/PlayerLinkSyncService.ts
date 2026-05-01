@@ -5,6 +5,7 @@ import { ClashKingService } from "./ClashKingService";
 import { SettingsService } from "./SettingsService";
 import axios from "axios";
 import {
+  buildPlayerLinkTrustWriteData,
   normalizePersistedDiscordUsername,
   normalizePersistedPlayerName,
 } from "./PlayerLinkService";
@@ -19,6 +20,10 @@ function normalizeTag(input: string): string {
     .toUpperCase();
   if (!trimmed) return "";
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+}
+
+function buildImportBatchKey(identity: PublicGoogleSheetIdentity): string {
+  return identity.gid ? `${identity.sheetId}:${identity.gid}` : identity.sheetId;
 }
 
 /** Purpose: normalize discord user id. */
@@ -150,7 +155,14 @@ export class PlayerLinkSyncService {
       await prisma.playerLink.upsert({
         where: { playerTag: tag },
         update: { discordUserId: userId },
-        create: { playerTag: tag, discordUserId: userId },
+        create: {
+          playerTag: tag,
+          discordUserId: userId,
+          ...buildPlayerLinkTrustWriteData({
+            linkSource: "LEGACY",
+            verificationMethod: "LEGACY",
+          }),
+        },
       });
       upserted += 1;
     }
@@ -272,6 +284,9 @@ export class PlayerLinkSyncService {
         discordUserId: true,
         discordUsername: true,
         playerName: true,
+        linkSource: true,
+        verificationStatus: true,
+        verificationMethod: true,
       },
     });
 
@@ -289,6 +304,11 @@ export class PlayerLinkSyncService {
             discordUserId: row.discordUserId,
             discordUsername: row.discordUsername,
             playerName: row.playerName,
+            ...buildPlayerLinkTrustWriteData({
+              linkSource: "IMPORT_CLASHPERK",
+              verificationMethod: "IMPORT",
+              importBatchKey: buildImportBatchKey(identity),
+            }),
           },
         });
         insertedCount += 1;
@@ -302,6 +322,10 @@ export class PlayerLinkSyncService {
       const existingPlayerName = normalizeClashPerkPlayerName(
         existing.playerName,
       );
+      const shouldApplyImportTrust =
+        String(existing.linkSource ?? "").trim() === "LEGACY" &&
+        String(existing.verificationStatus ?? "").trim() === "UNVERIFIED" &&
+        String(existing.verificationMethod ?? "").trim() === "LEGACY";
 
       const isSameDiscordUserId = existingDiscordUserId === row.discordUserId;
       const isSameDiscordUsername =
@@ -318,12 +342,30 @@ export class PlayerLinkSyncService {
         discordUserId: string;
         discordUsername: string | null;
         playerName?: string | null;
+        linkSource?: "SELF_SERVICE" | "EMBED_SELF_SERVICE" | "ADMIN_CREATE" | "IMPORT_CLASHPERK" | "LEGACY";
+        verificationStatus?: "UNVERIFIED" | "VERIFIED" | "REVOKED";
+        verificationMethod?: "PLAYER_API_TOKEN" | "ADMIN_OVERRIDE" | "IMPORT" | "LEGACY" | null;
+        verifiedAt?: Date | null;
+        verifiedByDiscordUserId?: string | null;
+        lastVerifiedAt?: Date | null;
+        verificationFailureReason?: string | null;
+        importBatchKey?: string | null;
       } = {
         discordUserId: row.discordUserId,
         discordUsername: row.discordUsername,
       };
       if (row.playerName !== null && row.playerName !== existingPlayerName) {
         updateData.playerName = row.playerName;
+      }
+      if (shouldApplyImportTrust) {
+        Object.assign(
+          updateData,
+          buildPlayerLinkTrustWriteData({
+            linkSource: "IMPORT_CLASHPERK",
+            verificationMethod: "IMPORT",
+            importBatchKey: buildImportBatchKey(identity),
+          }),
+        );
       }
 
       await prisma.playerLink.update({
@@ -399,7 +441,14 @@ export class PlayerLinkSyncService {
         await prisma.playerLink.upsert({
           where: { playerTag: tag },
           update: { discordUserId: userId },
-          create: { playerTag: tag, discordUserId: userId },
+          create: {
+            playerTag: tag,
+            discordUserId: userId,
+            ...buildPlayerLinkTrustWriteData({
+              linkSource: "LEGACY",
+              verificationMethod: "LEGACY",
+            }),
+          },
         });
         upserted += 1;
       }

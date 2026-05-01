@@ -27,13 +27,21 @@ import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
   deletePlayerLink,
+  formatLinkedAtUtc,
   listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
+  getPlayerLinkTrustTier,
+  getPlayerLinksForDiscordUserWithTrust,
+  isPlayerLinkTrustedForAutorole,
+  isPlayerLinkVerifiedForAutorole,
+  type PlayerLinkTrustTier,
+  type PlayerLinkWithTrust,
   type PlayerLinkCreateResult,
   normalizeClanTag,
   normalizePersistedDiscordUsername,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
+import { PlayerLinkVerificationService } from "../services/PlayerLinkVerificationService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
 import {
   buildReminderLinkCancelCustomId,
@@ -54,6 +62,8 @@ const LINK_EMBED_DESCRIPTION_FIELD = "embed_description";
 const LINK_EMBED_IMAGE_URL_FIELD = "embed_image_url";
 const LINK_EMBED_THUMBNAIL_URL_FIELD = "embed_thumbnail_url";
 const LINK_EMBED_PLAYER_TAG_FIELD = "player_tag";
+const LINK_STATUS_PLAYER_TAG_FIELD = "player-tag";
+const LINK_VERIFY_TOKEN_FIELD = "token";
 const LINK_EMBED_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
@@ -208,6 +218,39 @@ function formatLinkCreateResultMessage(input: {
     return "invalid_user: expected a Discord user.";
   }
   return "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.";
+}
+
+function formatPlayerLinkTrustTierLabel(tier: PlayerLinkTrustTier): string {
+  if (tier === "verified") return "Verified";
+  if (tier === "trusted") return "Trusted";
+  if (tier === "legacy") return "Legacy";
+  if (tier === "revoked") return "Revoked";
+  return "Untrusted";
+}
+
+function formatPlayerLinkSourceLabel(source: string): string {
+  return source.replace(/_/g, " ").toLowerCase();
+}
+
+function buildPlayerLinkStatusLines(link: PlayerLinkWithTrust): string[] {
+  const lines = [
+    `- ${link.playerTag}${link.playerName ? ` (${link.playerName})` : ""}`,
+    `  source: ${formatPlayerLinkSourceLabel(link.linkSource)}`,
+    `  verification: ${link.verificationStatus.toLowerCase()}`,
+    `  verification method: ${link.verificationMethod ?? "none"}`,
+    `  trusted for autorole: ${isPlayerLinkTrustedForAutorole(link) ? "yes" : "no"}`,
+    `  verified for autorole: ${isPlayerLinkVerifiedForAutorole(link) ? "yes" : "no"}`,
+    `  trust tier: ${formatPlayerLinkTrustTierLabel(getPlayerLinkTrustTier(link))}`,
+    `  verified at: ${link.verifiedAt ? formatLinkedAtUtc(link.verifiedAt) : "never"}`,
+    `  last verified at: ${link.lastVerifiedAt ? formatLinkedAtUtc(link.lastVerifiedAt) : "never"}`,
+  ];
+  if (link.verificationFailureReason) {
+    lines.push(`  verification failure: ${link.verificationFailureReason}`);
+  }
+  if (link.importBatchKey) {
+    lines.push(`  import batch: ${link.importBatchKey}`);
+  }
+  return lines;
 }
 
 function normalizeUrlInput(input: string): string | null {
@@ -945,6 +988,38 @@ async function buildLinkListView(input: {
     ok: true,
     payload: { embeds, components },
   };
+}
+
+async function buildLinkStatusMessage(input: {
+  discordUserId: string;
+  playerTag?: string | null;
+}): Promise<string> {
+  const normalizedPlayerTag = input.playerTag
+    ? normalizePlayerTag(input.playerTag)
+    : null;
+  if (input.playerTag && !normalizedPlayerTag) {
+    return "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.";
+  }
+
+  const links = await getPlayerLinksForDiscordUserWithTrust({
+    discordUserId: input.discordUserId,
+  });
+  const filtered = normalizedPlayerTag
+    ? links.filter((link) => link.playerTag === normalizedPlayerTag)
+    : links;
+
+  if (normalizedPlayerTag && filtered.length === 0) {
+    return `not_found: ${normalizedPlayerTag} is not linked to your Discord account.`;
+  }
+
+  if (filtered.length === 0) {
+    return "No linked player tags found.";
+  }
+
+  return [
+    "Link trust state:",
+    ...filtered.flatMap((link) => buildPlayerLinkStatusLines(link)),
+  ].join("\n");
 }
 
 async function updateDeferredLinkListInteraction(
@@ -1764,6 +1839,38 @@ export const Link: Command = {
       ],
     },
     {
+      name: "verify",
+      description: "Verify ownership of one of your linked player tags",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: LINK_STATUS_PLAYER_TAG_FIELD,
+          description: "Player tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+        {
+          name: LINK_VERIFY_TOKEN_FIELD,
+          description: "Player API token from the in-game settings",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+      ],
+    },
+    {
+      name: "status",
+      description: "Show link trust state for one of your linked player tags",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: LINK_STATUS_PLAYER_TAG_FIELD,
+          description: "Player tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+      ],
+    },
+    {
       name: "list",
       description: "List linked players for a clan's current roster",
       type: ApplicationCommandOptionType.Subcommand,
@@ -2001,6 +2108,68 @@ export const Link: Command = {
       await interaction.editReply(
         "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
       );
+      return;
+    }
+
+    if (subcommand === "verify") {
+      const rawTag = interaction.options.getString(LINK_STATUS_PLAYER_TAG_FIELD, true);
+      const token = interaction.options.getString(LINK_VERIFY_TOKEN_FIELD, true);
+      const verificationService = new PlayerLinkVerificationService(cocService);
+      const result = await verificationService.verifyPlayerToken({
+        playerTag: rawTag,
+        discordUserId: interaction.user.id,
+        token,
+      });
+
+      if (result.outcome === "verified") {
+        await interaction.editReply(
+          `verified: ${result.playerTag} now has verified ownership state.`,
+        );
+        return;
+      }
+      if (result.outcome === "invalid_tag") {
+        await interaction.editReply(
+          "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+        );
+        return;
+      }
+      if (result.outcome === "invalid_user") {
+        await interaction.editReply(
+          "invalid_user: expected a Discord user.",
+        );
+        return;
+      }
+      if (result.outcome === "not_found") {
+        await interaction.editReply(
+          `not_found: no active link for ${result.playerTag}.`,
+        );
+        return;
+      }
+      if (result.outcome === "not_owner") {
+        await interaction.editReply(
+          `not_owner: ${result.playerTag} is linked to another Discord user.`,
+        );
+        return;
+      }
+      if (result.outcome === "service_error") {
+        await interaction.editReply(
+          `verification_failed: ${result.playerTag} could not be verified right now.`,
+        );
+        return;
+      }
+      await interaction.editReply(
+        `invalid_token: ${result.playerTag} could not be verified.`,
+      );
+      return;
+    }
+
+    if (subcommand === "status") {
+      const rawTag = interaction.options.getString(LINK_STATUS_PLAYER_TAG_FIELD, false);
+      const result = await buildLinkStatusMessage({
+        discordUserId: interaction.user.id,
+        playerTag: rawTag,
+      });
+      await interaction.editReply(result);
       return;
     }
 
