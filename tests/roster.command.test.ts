@@ -852,7 +852,7 @@ describe("/roster command", () => {
     expect(String(firstEmbed?.title ?? "")).toBe("Roster Signups");
     expect(String(firstEmbed?.description ?? "")).toContain("User: <@222222222222222222>");
     expect(String(firstEmbed?.description ?? "")).toContain(
-      "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
+      "Masters 2 [C] | TH17 ([Serenity](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2P0J0YL8>))",
     );
     expect(String(firstEmbed?.description ?? "")).toContain("Confirmed");
     expect(String(firstEmbed?.description ?? "")).toContain("<:th18:1018> Charmander `#GGYLPVCUQ`");
@@ -964,7 +964,7 @@ describe("/roster command", () => {
 
   it("keeps roster sections atomic across list pagination when a section is large", async () => {
     const largeRosterBlock = [
-      "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
+      "Masters 2 [C] | TH17 ([Serenity](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2P0J0YL8>))",
       "Confirmed",
       ...Array.from({ length: 157 }, (_, index) => `TH18 Player ${index + 1} \`${makeValidRosterPlayerTag(index)}\``),
     ].join("\n");
@@ -3354,7 +3354,7 @@ describe("/roster command", () => {
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     });
     (rosterService.buildRosterManagerReadinessText as any).mockResolvedValue(
-      "State: Open\nClan: CWL Alpha `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>))\n**Groups**\n**Confirmed** (1)\n- <:th15:1001> Alpha <:yes:901>",
+      "State: Open\nClan: CWL Alpha `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>))\n**Groups**\n**Confirmed** (1)\n- <:th15:1001> Alpha <:yes:901>",
     );
     const cocService = {} as any;
 

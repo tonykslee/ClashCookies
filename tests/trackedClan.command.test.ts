@@ -386,7 +386,7 @@ describe("/tracked-clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     expect(description).toContain(
-      "**[Alpha Clan](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>)** `#2QG2C08UP`",
+      "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>)** `#2QG2C08UP`",
     );
     expect(description).toContain("shortName: AC");
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
@@ -412,7 +412,7 @@ describe("/tracked-clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     expect(description).toContain(
-      "**[CWL Alpha](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289`",
+      "**[CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289`",
     );
     expect(description).toContain("registry: CWL seasonal");
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
@@ -467,13 +467,13 @@ describe("/tracked-clan command behavior", () => {
     expect(description).toContain("**CWL**");
     expect(description).toContain("**RAIDS**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
     );
     expect(description).toContain(
-      "- [CWL Alpha](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289`",
+      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289`",
     );
     expect(description).toContain(
-      "- 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0`",
+      "- 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0`",
     );
     expect(payload?.components).toEqual([]);
     expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
@@ -506,7 +506,7 @@ describe("/tracked-clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     expect(description).toContain(
-      "**[#2QG2C08UP](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2QG2C08UP>)**",
+      "**[#2QG2C08UP](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>)**",
     );
     expect(description).not.toContain("undefined");
     expect(description).not.toContain("null");

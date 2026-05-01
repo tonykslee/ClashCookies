@@ -149,7 +149,7 @@ describe("RaidTrackedClanService", () => {
       },
     ]);
     expect(lines[0]).toBe(
-      "### 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0`",
+      "### 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0`",
     );
     expect(getRaidTrackedClanJoinTypeEmoji("inviteOnly")).toBe("🔒");
     expect(getRaidTrackedClanJoinTypeEmoji("closed")).toBe("🔒");

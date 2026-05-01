@@ -18,6 +18,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
@@ -479,12 +480,8 @@ function buildRosterSignupUserClanLine(clanName: string | null, clanTag: string 
     .replace(/\s+/g, " ")
     .trim();
   const normalizedClanTag = normalizeClanTag(clanTag ?? "");
-  if (normalizedClanName && normalizedClanTag) {
-    const encodedTag = normalizedClanTag.replace(/^#/, "");
-    return `[${normalizedClanName}](<https://cc.fwafarm.com/cc_n/clan.php?tag=${encodedTag}>)`;
-  }
   if (normalizedClanName) {
-    return normalizedClanName;
+    return normalizedClanTag ? buildClanProfileMarkdownLink(normalizedClanName, normalizedClanTag) : normalizedClanName;
   }
   if (normalizedClanTag) {
     return normalizedClanTag;
