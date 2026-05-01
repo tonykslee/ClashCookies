@@ -31,6 +31,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "link:create",
   "link:create:other-user",
   "link:delete",
+  "link:verify",
+  "link:status",
   "link:list",
   "link:embed",
   "link:sync-clashperk",

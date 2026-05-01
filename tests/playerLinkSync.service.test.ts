@@ -50,6 +50,14 @@ describe("PlayerLinkSyncService ClashPerk sync", () => {
         discordUserId: "111111111111111111",
         discordUsername: "discord-user",
         playerName: "Player One",
+        linkSource: "IMPORT_CLASHPERK",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: "IMPORT",
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: "test-sheet",
       },
     });
     expect(result).toMatchObject({
@@ -78,6 +86,9 @@ describe("PlayerLinkSyncService ClashPerk sync", () => {
         discordUserId: "111111111111111111",
         discordUsername: "discord-user",
         playerName: "Old Name",
+        linkSource: "LEGACY",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: "LEGACY",
       },
     ]);
     prismaMock.playerLink.update.mockResolvedValueOnce(undefined);
@@ -93,6 +104,14 @@ describe("PlayerLinkSyncService ClashPerk sync", () => {
         discordUserId: "111111111111111111",
         discordUsername: "discord-user",
         playerName: "New Name",
+        linkSource: "IMPORT_CLASHPERK",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: "IMPORT",
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: "test-sheet",
       },
     });
     expect(result.updatedCount).toBe(1);
