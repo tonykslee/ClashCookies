@@ -34,6 +34,7 @@ const prismaMock = vi.hoisted(() => ({
   cwlRotationPlan: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
@@ -65,6 +66,7 @@ describe("CwlRotationService", () => {
     prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
     txMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
@@ -727,6 +729,102 @@ describe("CwlRotationService", () => {
         clanDisplayName: "Rising Thrones",
         rosterTitle: "Masters 1 [A] | 175k+ WW",
         rosterShortName: "M1 [A]",
+      }),
+    );
+  });
+
+  it("deactivates the active CWL rotation plan without deleting history rows", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValue({
+      id: "plan-1",
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      version: 7,
+      isActive: true,
+      metadata: {
+        clanName: "CWL Alpha",
+      },
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "CWL Alpha",
+    } as any);
+
+    const result = await cwlRotationService.deleteActivePlan({
+      clanTag: "#2qg2c08up",
+      season: "2026-04",
+    });
+
+    expect(result).toEqual({
+      outcome: "deleted",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 7,
+    });
+    expect(prismaMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+  });
+
+  it("returns not_found when deleting a clan with no active CWL rotation", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
+
+    const result = await cwlRotationService.deleteActivePlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+    });
+
+    expect(result).toEqual({
+      outcome: "not_found",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+    });
+    expect(prismaMock.cwlRotationPlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("queries only active current-season plans for export and overview listings", async () => {
+    prismaMock.cwlRotationPlan.findMany.mockResolvedValue([
+      {
+        id: "plan-1",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 4,
+        isActive: true,
+        rosterSize: 2,
+        generatedFromRoundDay: null,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: {
+          source: "manual",
+          clanName: "Rising Thrones",
+        },
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+    ]);
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Rising Thrones" } as any]);
+    prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundHistory.findMany.mockResolvedValue([]);
+
+    await cwlRotationService.listActivePlanExports({ season: "2026-04" });
+    await cwlRotationService.listOverview({ season: "2026-04" });
+
+    expect(prismaMock.cwlRotationPlan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          season: "2026-04",
+          isActive: true,
+        }),
       }),
     );
   });

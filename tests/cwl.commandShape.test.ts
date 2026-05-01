@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers members, signup, roster manager controls, and rotations show/create/import/export without drift", () => {
+  it("registers members, signup, roster manager controls, and rotations show/create/delete/import/export without drift", () => {
     const members = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -16,6 +16,7 @@ describe("/cwl command shape", () => {
     );
     const show = rotations?.options?.find((option: any) => option.name === "show");
     const create = rotations?.options?.find((option: any) => option.name === "create");
+    const deleteOption = rotations?.options?.find((option: any) => option.name === "delete");
     const importOption = rotations?.options?.find((option: any) => option.name === "import");
     const exportOption = rotations?.options?.find((option: any) => option.name === "export");
 
@@ -25,6 +26,7 @@ describe("/cwl command shape", () => {
     expect(rotations).toBeTruthy();
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(importOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(exportOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(members?.options?.find((option: any) => option.name === "clan")?.required).toBe(true);
@@ -46,6 +48,7 @@ describe("/cwl command shape", () => {
     expect(create?.options?.find((option: any) => option.name === "overwrite")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );
+    expect(deleteOption?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(exportOption?.options?.find((option: any) => option.name === "new")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );

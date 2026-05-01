@@ -2101,7 +2101,7 @@ async function autocompleteCwlRotationCreateRoster(interaction: AutocompleteInte
   );
 }
 
-async function autocompleteCwlRotationShowClan(interaction: AutocompleteInteraction): Promise<void> {
+async function autocompleteCwlRotationActiveClan(interaction: AutocompleteInteraction): Promise<void> {
   if (!interaction.inGuild()) {
     await interaction.respond([]);
     return;
@@ -2147,6 +2147,14 @@ async function autocompleteCwlRotationShowClan(interaction: AutocompleteInteract
       )
       .slice(0, 25),
   );
+}
+
+async function autocompleteCwlRotationShowClan(interaction: AutocompleteInteraction): Promise<void> {
+  await autocompleteCwlRotationActiveClan(interaction);
+}
+
+async function autocompleteCwlRotationDeleteClan(interaction: AutocompleteInteraction): Promise<void> {
+  await autocompleteCwlRotationActiveClan(interaction);
 }
 
 async function handleMembersSubcommand(interaction: ChatInputCommandInteraction) {
@@ -2375,6 +2383,36 @@ async function handleRotationShowSubcommand(client: Client, interaction: ChatInp
   await interaction.editReply({
     embeds: [payload.payload.embed],
     components: payload.payload.components,
+  });
+}
+
+async function handleRotationDeleteSubcommand(interaction: ChatInputCommandInteraction) {
+  const clanTag = interaction.options.getString("clan", true);
+  const result = await cwlRotationService.deleteActivePlan({ clanTag });
+
+  if (result.outcome === "invalid_clan") {
+    await interaction.editReply("Invalid CWL clan tag.");
+    return;
+  }
+  if (result.outcome === "not_found") {
+    await interaction.editReply(`No active CWL rotation exists for ${result.clanTag} in season ${result.season}.`);
+    return;
+  }
+
+  const clanLabel = result.clanName ? `${result.clanName} (${result.clanTag})` : result.clanTag;
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(CWL_EMBED_COLOR)
+        .setTitle(`/cwl rotations delete ${result.clanTag}`)
+        .setDescription(
+          buildDescription([
+            `Deleted active CWL rotation plan for ${clanLabel}.`,
+            `Season: ${result.season}`,
+            `Version: ${result.version}`,
+          ]),
+        ),
+    ],
   });
 }
 
@@ -3531,6 +3569,20 @@ export const Cwl: Command = {
             },
           ],
         },
+        {
+          name: "delete",
+          description: "Delete the active CWL rotation plan for one tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked CWL clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
       ],
     },
   ],
@@ -3570,6 +3622,10 @@ export const Cwl: Command = {
         await handleRotationExportSubcommand(interaction);
         return;
       }
+      if (group === "rotations" && subcommand === "delete") {
+        await handleRotationDeleteSubcommand(interaction);
+        return;
+      }
       if (group === "rotations" && subcommand === "show") {
         await handleRotationShowSubcommand(client, interaction);
         return;
@@ -3605,6 +3661,10 @@ export const Cwl: Command = {
       }
       if (group === "rotations" && subcommand === "show") {
         await autocompleteCwlRotationShowClan(interaction);
+        return;
+      }
+      if (group === "rotations" && subcommand === "delete") {
+        await autocompleteCwlRotationDeleteClan(interaction);
         return;
       }
       await autocompleteCwlTrackedClan(interaction);
