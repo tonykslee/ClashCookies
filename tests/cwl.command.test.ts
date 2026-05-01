@@ -5,7 +5,7 @@ import {
   EmbedBuilder,
   StringSelectMenuBuilder,
 } from "discord.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
@@ -246,6 +246,8 @@ describe("/cwl command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-15T00:00:00.000Z"));
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
@@ -308,6 +310,10 @@ describe("/cwl command", () => {
         fetchedEmojiCount: 2,
       },
     } as any);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders the persisted season roster with current round summary for /cwl members", async () => {
