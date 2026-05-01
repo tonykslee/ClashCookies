@@ -580,6 +580,174 @@ async function loadCwlRotationExportClanNameMap(input: {
   return clanNameByClanTag;
 }
 
+type CwlRotationExportRosterRecord = {
+  id: string;
+  clanTag: string | null;
+  title: string;
+  lifecycleState: string;
+  postedAt: Date | null;
+  updatedAt: Date;
+  createdAt: Date;
+};
+
+async function loadCwlRotationExportRosterDetailsMap(input: {
+  season: string;
+  plans: Array<{
+    id: string;
+    clanTag: string;
+    metadata: Prisma.JsonValue;
+  }>;
+}): Promise<Map<string, { rosterTitle: string; rosterShortName: string | null }>> {
+  const rosterIdByPlanId = new Map<string, string>();
+  const clanTags = new Set<string>();
+  for (const plan of input.plans) {
+    const planMetadata = toRecordValue(plan.metadata);
+    const rosterId = sanitizeDisplayText(String(planMetadata?.rosterId ?? "")) || null;
+    if (rosterId) {
+      rosterIdByPlanId.set(plan.id, rosterId);
+    }
+    const clanTag = normalizeClanTag(plan.clanTag);
+    if (clanTag) {
+      clanTags.add(clanTag);
+    }
+  }
+
+  const rosterIds = [...new Set(rosterIdByPlanId.values())];
+  const rosterFilter: Prisma.RosterWhereInput[] = [];
+  if (rosterIds.length > 0) {
+    rosterFilter.push({ id: { in: rosterIds } });
+  }
+  if (clanTags.size > 0) {
+    rosterFilter.push({ clanTag: { in: [...clanTags] } });
+  }
+
+  const resolvedByPlanId = new Map<string, { rosterTitle: string; rosterShortName: string | null }>();
+  if (rosterFilter.length <= 0) {
+    return resolvedByPlanId;
+  }
+
+  const rosterRows = (await prisma.roster.findMany({
+    where: {
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      OR: rosterFilter,
+    },
+    select: {
+      id: true,
+      clanTag: true,
+      title: true,
+      lifecycleState: true,
+      postedAt: true,
+      updatedAt: true,
+      createdAt: true,
+    },
+  })) as CwlRotationExportRosterRecord[];
+
+  const rosterById = new Map<string, CwlRotationExportRosterRecord>();
+  const rosterByClanTag = new Map<string, CwlRotationExportRosterRecord[]>();
+  for (const roster of rosterRows) {
+    rosterById.set(roster.id, roster);
+    const clanTag = normalizeClanTag(roster.clanTag ?? "");
+    if (!clanTag) continue;
+    const existing = rosterByClanTag.get(clanTag) ?? [];
+    existing.push(roster);
+    rosterByClanTag.set(clanTag, existing);
+  }
+
+  for (const plan of input.plans) {
+    const planMetadata = toRecordValue(plan.metadata);
+    const explicitRosterTitle = sanitizeDisplayText(String(planMetadata?.rosterTitle ?? ""));
+    if (explicitRosterTitle) {
+      resolvedByPlanId.set(plan.id, {
+        rosterTitle: explicitRosterTitle,
+        rosterShortName:
+          sanitizeDisplayText(String(planMetadata?.rosterShortName ?? "")) ||
+          buildCwlRosterRotationShortName(explicitRosterTitle),
+      });
+      continue;
+    }
+
+    const explicitRosterId = sanitizeDisplayText(String(planMetadata?.rosterId ?? ""));
+    const explicitRoster = explicitRosterId ? rosterById.get(explicitRosterId) ?? null : null;
+    const clanTag = normalizeClanTag(plan.clanTag);
+    const clanRosters = clanTag ? rosterByClanTag.get(clanTag) ?? [] : [];
+    const resolvedRoster =
+      explicitRoster ??
+      pickCwlRotationExportRosterCandidate(clanRosters, input.season) ??
+      null;
+
+    if (!resolvedRoster) continue;
+
+    const rosterTitle = sanitizeDisplayText(resolvedRoster.title);
+    if (!rosterTitle) continue;
+    resolvedByPlanId.set(plan.id, {
+      rosterTitle,
+      rosterShortName:
+        sanitizeDisplayText(String(planMetadata?.rosterShortName ?? "")) ||
+        buildCwlRosterRotationShortName(rosterTitle),
+    });
+  }
+
+  return resolvedByPlanId;
+}
+
+function pickCwlRotationExportRosterCandidate(
+  rosterRows: CwlRotationExportRosterRecord[],
+  season: string,
+): CwlRotationExportRosterRecord | null {
+  if (rosterRows.length <= 0) {
+    return null;
+  }
+  return [...rosterRows].sort((left, right) => {
+    const leftLifecycleScore = scoreCwlRotationExportRosterLifecycle(left.lifecycleState);
+    const rightLifecycleScore = scoreCwlRotationExportRosterLifecycle(right.lifecycleState);
+    if (leftLifecycleScore !== rightLifecycleScore) {
+      return rightLifecycleScore - leftLifecycleScore;
+    }
+
+    const leftSeasonScore = scoreCwlRotationExportRosterSeasonMatch(left.title, season);
+    const rightSeasonScore = scoreCwlRotationExportRosterSeasonMatch(right.title, season);
+    if (leftSeasonScore !== rightSeasonScore) {
+      return rightSeasonScore - leftSeasonScore;
+    }
+
+    const leftPostedAt = left.postedAt?.getTime() ?? 0;
+    const rightPostedAt = right.postedAt?.getTime() ?? 0;
+    if (leftPostedAt !== rightPostedAt) {
+      return rightPostedAt - leftPostedAt;
+    }
+
+    const leftUpdatedAt = left.updatedAt.getTime();
+    const rightUpdatedAt = right.updatedAt.getTime();
+    if (leftUpdatedAt !== rightUpdatedAt) {
+      return rightUpdatedAt - leftUpdatedAt;
+    }
+
+    const leftCreatedAt = left.createdAt.getTime();
+    const rightCreatedAt = right.createdAt.getTime();
+    if (leftCreatedAt !== rightCreatedAt) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  })[0] ?? null;
+}
+
+function scoreCwlRotationExportRosterLifecycle(lifecycleState: string): number {
+  const normalized = sanitizeDisplayText(lifecycleState).toUpperCase();
+  if (normalized === ROSTER_LIFECYCLE_STATE.OPEN) return 3;
+  if (normalized === ROSTER_LIFECYCLE_STATE.CLOSED) return 2;
+  if (normalized === ROSTER_LIFECYCLE_STATE.ACTIVE) return 1;
+  return 0;
+}
+
+function scoreCwlRotationExportRosterSeasonMatch(title: string, season: string): number {
+  const normalizedTitle = sanitizeDisplayText(title).toLowerCase();
+  const normalizedSeason = sanitizeDisplayText(season).toLowerCase();
+  if (!normalizedTitle || !normalizedSeason) return 0;
+  return normalizedTitle.includes(normalizedSeason) ? 1 : 0;
+}
+
 function buildRosterRowsForMetadata(roster: CwlSeasonRosterEntry[]): Array<{
   playerTag: string;
   playerName: string;
@@ -1457,6 +1625,14 @@ export class CwlRotationService {
         .map((plan) => normalizeClanTag(plan.clanTag))
         .filter((clanTag): clanTag is string => Boolean(clanTag)),
     });
+    const rosterDetailsByPlanId = await loadCwlRotationExportRosterDetailsMap({
+      season,
+      plans: [...uniquePlans.values()].map((plan) => ({
+        id: plan.id,
+        clanTag: plan.clanTag,
+        metadata: plan.metadata,
+      })),
+    });
     const exports: CwlRotationPlanExport[] = [];
     for (const plan of uniquePlans.values()) {
       const days = await loadPlanDaysWithMembers(plan.id);
@@ -1465,12 +1641,16 @@ export class CwlRotationService {
         Array.isArray(planMetadata?.rosterRows) ? planMetadata.rosterRows : [],
       );
       const normalizedClanTag = normalizeClanTag(plan.clanTag) || plan.clanTag;
+      const resolvedRosterDetails = rosterDetailsByPlanId.get(plan.id) ?? null;
       const clanName =
         sanitizeDisplayText(String(planMetadata?.clanName ?? "")) ||
         clanNameByClanTag.get(normalizedClanTag) ||
         normalizedClanTag ||
         null;
-      const rosterTitle = sanitizeDisplayText(String(planMetadata?.rosterTitle ?? "")) || null;
+      const rosterTitle =
+        sanitizeDisplayText(String(planMetadata?.rosterTitle ?? "")) ||
+        resolvedRosterDetails?.rosterTitle ||
+        null;
       const rosterShortName =
         sanitizeDisplayText(String(planMetadata?.rosterShortName ?? "")) ||
         buildCwlRosterRotationShortName(rosterTitle) ||
