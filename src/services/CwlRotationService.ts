@@ -53,6 +53,11 @@ export type CwlRotationPlanExport = {
   season: string;
   clanTag: string;
   clanName: string | null;
+  rosterId: string | null;
+  rosterTitle: string | null;
+  rosterShortName: string | null;
+  clanDisplayName: string | null;
+  sourceLabel: string | null;
   version: number;
   updatedAt: Date;
   rosterSize: number;
@@ -442,6 +447,26 @@ function buildCwlRosterRotationSourceLabel(rosterTitle: string | null | undefine
   return title.length > 0 ? `CWL roster - ${title}` : "CWL roster";
 }
 
+export function buildCwlRosterRotationShortName(
+  rosterTitle: string | null | undefined,
+): string | null {
+  const title = String(rosterTitle ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) return null;
+
+  const shortMatch = title.match(/^Masters\s+(\d+)(\s*\[[^\]]+\])?/i);
+  if (shortMatch) {
+    const tier = shortMatch[1] ? `M${shortMatch[1]}` : null;
+    const bracket = shortMatch[2] ? shortMatch[2].replace(/\s+/g, " ").trim() : "";
+    if (tier) {
+      return `${tier}${bracket ? ` ${bracket}` : ""}`.trim();
+    }
+  }
+
+  return title;
+}
+
 function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; playerTag: string }): string {
   const playerName = normalizePersistedPlayerName(input.playerName);
   return playerName ? `${playerName} (${input.playerTag})` : input.playerTag;
@@ -767,7 +792,7 @@ export class CwlRotationService {
 
     const trackedClan = await prisma.cwlTrackedClan.findFirst({
       where: { season, tag: clanTag },
-      select: { tag: true },
+      select: { tag: true, name: true },
     });
     if (!trackedClan) {
       return { outcome: "not_tracked", season, clanTag };
@@ -936,7 +961,7 @@ export class CwlRotationService {
 
     const trackedClan = await prisma.cwlTrackedClan.findFirst({
       where: { season, tag: clanTag },
-      select: { tag: true },
+      select: { tag: true, name: true },
     });
     if (!trackedClan) {
       return { outcome: "not_tracked", season, clanTag, rosterId };
@@ -1070,6 +1095,7 @@ export class CwlRotationService {
       }),
     ];
     const sourceLabel = buildCwlRosterRotationSourceLabel(rosterTitle);
+    const rosterShortName = buildCwlRosterRotationShortName(rosterTitle) ?? rosterTitle;
     const rosterRows = buildRosterRowsForMetadata(rosterEntries);
     const existingActivePlan = await loadActivePlan({ clanTag, season });
     if (existingActivePlan && !input.overwrite) {
@@ -1096,8 +1122,10 @@ export class CwlRotationService {
         warningSummary: warnings.join(" | ") || null,
         metadata: {
           source: sourceLabel,
+          clanName: trackedClan.name,
           rosterId,
           rosterTitle,
+          rosterShortName,
           rosterClanTag,
           rosterRows,
           confirmedRosterSize: rosterEntries.length,
@@ -1109,8 +1137,10 @@ export class CwlRotationService {
           locked: false,
           metadata: {
             source: sourceLabel,
+            clanName: trackedClan.name,
             rosterId,
             rosterTitle,
+            rosterShortName,
             generatedFromRoundDay: null,
           } as Prisma.InputJsonValue,
           members: day.members.map((member, index) => ({
@@ -1299,13 +1329,22 @@ export class CwlRotationService {
       const rosterRows = normalizeRosterRows(
         Array.isArray(planMetadata?.rosterRows) ? planMetadata.rosterRows : [],
       );
-      const clanName =
-        sanitizeDisplayText(String(planMetadata?.clanName ?? "")) ||
+      const clanName = sanitizeDisplayText(String(planMetadata?.clanName ?? "")) || null;
+      const rosterTitle = sanitizeDisplayText(String(planMetadata?.rosterTitle ?? "")) || null;
+      const rosterShortName =
+        sanitizeDisplayText(String(planMetadata?.rosterShortName ?? "")) ||
+        buildCwlRosterRotationShortName(rosterTitle) ||
         null;
+      const sourceLabel = sanitizeDisplayText(String(planMetadata?.source ?? "")) || null;
       exports.push({
         season: plan.season,
         clanTag: plan.clanTag,
         clanName,
+        rosterId: sanitizeDisplayText(String(planMetadata?.rosterId ?? "")) || null,
+        rosterTitle,
+        rosterShortName,
+        clanDisplayName: clanName,
+        sourceLabel,
         version: plan.version,
         updatedAt: plan.updatedAt,
         rosterSize: plan.rosterSize,

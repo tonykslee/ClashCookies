@@ -11,6 +11,10 @@ const prismaMock = vi.hoisted(() => ({
   cwlRotationPlanDay: {
     findMany: vi.fn(),
   },
+  cwlRotationExport: {
+    findFirst: vi.fn(),
+    upsert: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -35,6 +39,8 @@ describe("CwlRotationSheetService", () => {
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    prismaMock.cwlRotationExport.findFirst.mockResolvedValue(null);
+    prismaMock.cwlRotationExport.upsert.mockResolvedValue({});
     vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
       {
         season: "2026-04",
@@ -601,7 +607,12 @@ describe("CwlRotationSheetService", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        clanName: "CWL Alpha",
+        clanName: "Rising Thrones",
+        rosterId: "roster-1",
+        rosterTitle: "Masters 1 [A] | 175k+ WW",
+        rosterShortName: "M1 [A]",
+        clanDisplayName: "Rising Thrones",
+        sourceLabel: "CWL roster - Masters 1 [A] | 175k+ WW",
         version: 3,
         rosterSize: 2,
         generatedFromRoundDay: 2,
@@ -651,14 +662,14 @@ describe("CwlRotationSheetService", () => {
 
     expect(createSpreadsheet).toHaveBeenCalledWith({
       title: "ClashCookies CWL Rotation Export 2026-04",
-      tabNames: ["CWL Alpha #2QG2C08UP"],
+      tabNames: ["M1 [A] | Rising Thrones"],
     });
     expect(writeTabs).toHaveBeenCalledWith(
       expect.objectContaining({
         spreadsheetId: "sheet-new",
         tabs: expect.arrayContaining([
           expect.objectContaining({
-            tabName: "CWL Alpha #2QG2C08UP",
+            tabName: "M1 [A] | Rising Thrones",
           }),
         ]),
       }),
@@ -666,19 +677,243 @@ describe("CwlRotationSheetService", () => {
     const exportedTabValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][] | undefined;
     expect(exportedTabValues).toEqual([
       ["Season: 2026-04"],
-      ["Clan: CWL Alpha"],
+      ["Roster: Masters 1 [A] | 175k+ WW"],
+      ["Clan: Rising Thrones"],
+      ["Clan Tag: #2QG2C08UP"],
       ["Warnings: Watch coverage"],
       [],
       ["Member", "Player Tag", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
-      ["Alpha", "#PYLQ0289", "1", "IN", "", "", "", "", "", ""],
-      ["Bravo", "#QGRJ2222", "0", "", "", "", "", "", "", ""],
+      ["Alpha", "#PYLQ0289", "1", "IN", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+      ["Bravo", "#QGRJ2222", "0", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
     ]);
     expect(publicSpy).toHaveBeenCalledWith("sheet-new");
     expect(result).toEqual({
       spreadsheetId: "sheet-new",
       spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
       tabCount: 1,
+      reused: false,
     });
+  });
+
+  it("reuses the same-season export link when the export fingerprint has not changed", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Thrones",
+        rosterId: "roster-1",
+        rosterTitle: "Masters 1 [A] | 175k+ WW",
+        rosterShortName: "M1 [A]",
+        clanDisplayName: "Rising Thrones",
+        sourceLabel: "CWL roster - Masters 1 [A] | 175k+ WW",
+        version: 3,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: ["#QGRJ2222"],
+        warningSummary: "Watch coverage",
+        metadata: { source: "sheet-import" },
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 2,
+            locked: false,
+            metadata: { source: "sheet-import" },
+            rows: [
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+            ],
+          },
+        ],
+      },
+    ]);
+    prismaMock.cwlRotationExport.findFirst.mockResolvedValue({
+      spreadsheetId: "sheet-old",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-old/edit?usp=sharing",
+      tabCount: 1,
+    });
+    const createSpreadsheet = vi.spyOn(GoogleSheetsService.prototype, "createSpreadsheet");
+    const writeTabs = vi.spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs");
+    const publicSpy = vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic");
+
+    const result = await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+      new: false,
+    });
+
+    expect(result).toEqual({
+      spreadsheetId: "sheet-old",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-old/edit?usp=sharing",
+      tabCount: 1,
+      reused: true,
+    });
+    expect(createSpreadsheet).not.toHaveBeenCalled();
+    expect(writeTabs).not.toHaveBeenCalled();
+    expect(publicSpy).not.toHaveBeenCalled();
+    expect(prismaMock.cwlRotationExport.upsert).not.toHaveBeenCalled();
+  });
+
+  it("creates a new export when forced even if the fingerprint matches an existing cache row", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Thrones",
+        rosterId: "roster-1",
+        rosterTitle: "Masters 1 [A] | 175k+ WW",
+        rosterShortName: "M1 [A]",
+        clanDisplayName: "Rising Thrones",
+        sourceLabel: "CWL roster - Masters 1 [A] | 175k+ WW",
+        version: 3,
+        rosterSize: 2,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: ["#QGRJ2222"],
+        warningSummary: "Watch coverage",
+        metadata: { source: "sheet-import" },
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 2,
+            locked: false,
+            metadata: { source: "sheet-import" },
+            rows: [
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+            ],
+          },
+        ],
+      },
+    ]);
+    prismaMock.cwlRotationExport.findFirst.mockResolvedValue({
+      spreadsheetId: "sheet-old",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-old/edit?usp=sharing",
+      tabCount: 1,
+    });
+    const createSpreadsheet = vi
+      .spyOn(GoogleSheetsService.prototype, "createSpreadsheet")
+      .mockResolvedValue({
+        spreadsheetId: "sheet-new",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+      });
+    const writeTabs = vi
+      .spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs")
+      .mockResolvedValue(undefined);
+    const publicSpy = vi
+      .spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic")
+      .mockResolvedValue(undefined);
+
+    const result = await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+      new: true,
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(createSpreadsheet).toHaveBeenCalledTimes(1);
+    expect(writeTabs).toHaveBeenCalledTimes(1);
+    expect(publicSpy).toHaveBeenCalledWith("sheet-new");
+    expect(prismaMock.cwlRotationExport.upsert).toHaveBeenCalledWith({
+      where: {
+        season_fingerprint: expect.any(Object),
+      },
+      create: expect.objectContaining({
+        season: "2026-04",
+        spreadsheetId: "sheet-new",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+        tabCount: 1,
+        createdByDiscordUserId: "111111111111111111",
+      }),
+      update: expect.objectContaining({
+        spreadsheetId: "sheet-new",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+        tabCount: 1,
+        createdByDiscordUserId: "111111111111111111",
+      }),
+    });
+    expect(result).toEqual({
+      spreadsheetId: "sheet-new",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+      tabCount: 1,
+      reused: false,
+    });
+  });
+
+  it("changes the export fingerprint when exported tab content changes", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports")
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "Rising Thrones",
+          rosterId: "roster-1",
+          rosterTitle: "Masters 1 [A] | 175k+ WW",
+          rosterShortName: "M1 [A]",
+          clanDisplayName: "Rising Thrones",
+          sourceLabel: "CWL roster - Masters 1 [A] | 175k+ WW",
+          version: 3,
+          rosterSize: 2,
+          generatedFromRoundDay: 2,
+          excludedPlayerTags: ["#QGRJ2222"],
+          warningSummary: "Watch coverage",
+          metadata: { source: "sheet-import" },
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 2,
+              locked: false,
+              metadata: { source: "sheet-import" },
+              rows: [
+                { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+              ],
+            },
+          ],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "Rising Knights",
+          rosterId: "roster-1",
+          rosterTitle: "Masters 2 [B] | TH18 & 17",
+          rosterShortName: "M2 [B]",
+          clanDisplayName: "Rising Knights",
+          sourceLabel: "CWL roster - Masters 2 [B] | TH18 & 17",
+          version: 3,
+          rosterSize: 2,
+          generatedFromRoundDay: 2,
+          excludedPlayerTags: ["#QGRJ2222"],
+          warningSummary: "Watch coverage",
+          metadata: { source: "sheet-import" },
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 2,
+              locked: false,
+              metadata: { source: "sheet-import" },
+              rows: [
+                { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: true, assignmentOrder: 1 },
+              ],
+            },
+          ],
+        },
+      ]);
+    const createSpreadsheet = vi
+      .spyOn(GoogleSheetsService.prototype, "createSpreadsheet")
+      .mockResolvedValue({
+        spreadsheetId: "sheet-new",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+      });
+    vi.spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs").mockResolvedValue(undefined);
+    vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic").mockResolvedValue(undefined);
+
+    await cwlRotationSheetService.exportActivePlans({ season: "2026-04", new: false });
+    await cwlRotationSheetService.exportActivePlans({ season: "2026-04", new: false });
+
+    expect(createSpreadsheet).toHaveBeenCalledTimes(2);
+    const firstFingerprint = prismaMock.cwlRotationExport.findFirst.mock.calls[0]?.[0]?.where?.fingerprint;
+    const secondFingerprint = prismaMock.cwlRotationExport.findFirst.mock.calls[1]?.[0]?.where?.fingerprint;
+    expect(firstFingerprint).not.toBe(secondFingerprint);
   });
 
   it("reimports canonical exported planner data with exact tag-based parity and no review", async () => {

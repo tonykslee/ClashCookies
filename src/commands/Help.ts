@@ -298,7 +298,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state. The clan autocomplete only lists tracked clans with an active current-season rotation.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan. Optional `size:15|30` selects the CWL lineup size, and optional `roster:<id>` seeds the plan from the confirmed group on one open/closed CWL roster for that clan, using persisted weight data when available.",
       "`/cwl rotations import` is admin-only by default and imports active planner tabs from one public Google Sheet after a confirmation preview and clan-by-clan row-review step. Structural rows may be skipped automatically, but player-like rows are never dropped silently. Public imports do not require Google Sheets credentials; export/write still does.",
-      "`/cwl rotations export` is admin-only by default and writes the active planner data to a brand-new public Google Sheet using the canonical re-importable tabular format.",
+      "`/cwl rotations export [new:true|false]` is admin-only by default and writes the active planner data to a public Google Sheet using the canonical re-importable tabular format. When `new:false` or omitted, unchanged payloads reuse the previous same-season export link instead of creating a new sheet.",
       "The `/cwl` surface is DB-first and does not live-query broad CWL state on render when persisted state exists.",
     ],
     examples: [
@@ -310,6 +310,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/cwl rotations create clan:#2QG2C08UP size:15 roster:roster-123 overwrite:true",
       "/cwl rotations import sheet:https://docs.google.com/spreadsheets/d/... overwrite:true",
       "/cwl rotations export",
+      "/cwl rotations export new:true",
     ],
   },
   autorole: {

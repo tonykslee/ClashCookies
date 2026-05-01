@@ -2327,7 +2327,16 @@ async function handleRotationImportSubcommand(interaction: ChatInputCommandInter
 }
 
 async function handleRotationExportSubcommand(interaction: ChatInputCommandInteraction) {
-  const result = await cwlRotationSheetService.exportActivePlans();
+  const forceNew = interaction.options.getBoolean("new", false) ?? false;
+  const result = await cwlRotationSheetService.exportActivePlans({
+    new: forceNew,
+    createdByDiscordUserId: interaction.user.id,
+  });
+  const messagePrefix = result.reused
+    ? "Reused the existing public Google Sheet because no rotation updates were detected."
+    : forceNew
+      ? "Created a new public Google Sheet with the current CWL planner tabs."
+      : "Created a new public Google Sheet with the current CWL planner tabs.";
   await interaction.editReply({
     embeds: [
       new EmbedBuilder()
@@ -2335,7 +2344,7 @@ async function handleRotationExportSubcommand(interaction: ChatInputCommandInter
         .setTitle("/cwl rotations export")
         .setDescription(
           buildDescription([
-            `Created a new public Google Sheet with ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
+            `${messagePrefix} ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
             `Link: ${result.spreadsheetUrl}`,
           ]),
         ),
@@ -3433,6 +3442,14 @@ export const Cwl: Command = {
           name: "export",
           description: "Export the active CWL planner data to a brand-new public Google Sheet",
           type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "new",
+              description: "Always create a new spreadsheet instead of reusing an unchanged export",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
+          ],
         },
       ],
     },

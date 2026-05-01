@@ -983,8 +983,6 @@ function escapeSheetTabName(tabName: string): string {
 function sanitizeSheetTabName(tabName: string): string {
   return String(tabName ?? "")
     .trim()
-    .replace(/\[/g, " ")
-    .replace(/\]/g, " ")
     .replace(/[*?:/\\]/g, " ")
     .replace(/\s+/g, " ")
     .slice(0, 100)
