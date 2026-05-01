@@ -481,6 +481,26 @@ describe("/link run", () => {
     );
   });
 
+  it("rejects verify when the linked tag belongs to another Discord user", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "222222222222222222",
+    });
+    const interaction = makeInteraction({
+      subcommand: "verify",
+      playerTag: "#pyl0289",
+      token: "TOKEN-123",
+      userId: "111111111111111111",
+    });
+
+    await Link.run({} as any, interaction as any, {
+      verifyPlayerToken: vi.fn(),
+    } as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "not_owner: #PYL0289 is linked to another Discord user.",
+    );
+  });
+
   it("shows trust state for a selected linked player tag", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
