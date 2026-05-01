@@ -678,6 +678,21 @@ model CwlRotationPlanMember {
   @@index([playerTag])
 }
 
+model CwlRotationExport {
+  id                   String   @id @default(cuid())
+  season               String
+  fingerprint          String
+  spreadsheetId        String
+  spreadsheetUrl       String
+  tabCount             Int
+  createdByDiscordUserId String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([season, fingerprint])
+  @@index([season, createdAt])
+}
+
 enum KickListSource {
   AUTO_INACTIVE
   MANUAL

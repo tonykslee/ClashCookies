@@ -46,5 +46,8 @@ describe("/cwl command shape", () => {
     expect(create?.options?.find((option: any) => option.name === "overwrite")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );
+    expect(exportOption?.options?.find((option: any) => option.name === "new")?.type).toBe(
+      ApplicationCommandOptionType.Boolean,
+    );
   });
 });
