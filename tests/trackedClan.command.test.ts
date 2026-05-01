@@ -64,6 +64,13 @@ type InteractionInput = {
 function createInteraction(input: InteractionInput) {
   const strings = input.strings ?? {};
   const integers = input.integers ?? {};
+  const collectorHandlers: Record<string, (button: any) => Promise<void>> = {};
+  const collector = {
+    on: vi.fn((event: string, handler: (button: any) => Promise<void>) => {
+      collectorHandlers[event] = handler;
+      return collector;
+    }),
+  };
   return {
     id: "tracked-clan-itx-1",
     commandName: "tracked-clan",
@@ -81,6 +88,10 @@ function createInteraction(input: InteractionInput) {
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
+    fetchReply: vi.fn().mockResolvedValue({
+      createMessageComponentCollector: vi.fn(() => collector),
+    }),
+    __collectorHandlers: collectorHandlers,
   };
 }
 
@@ -94,6 +105,18 @@ function getReplyContent(interaction: any): string {
 function getFirstEmbedDescription(interaction: any): string {
   const payload = interaction.editReply.mock.calls[0]?.[0] as any;
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+}
+
+function makeButtonInteraction(customId: string) {
+  return {
+    customId,
+    user: { id: "user-1" },
+    replied: false,
+    deferred: false,
+    reply: vi.fn().mockResolvedValue(undefined),
+    update: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 describe("/tracked-clan command behavior", () => {
@@ -417,6 +440,120 @@ describe("/tracked-clan command behavior", () => {
     expect(description).toContain("registry: CWL seasonal");
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("packs many short FWA clan blocks onto one page when they fit", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce(
+      Array.from({ length: 5 }, (_, index) => ({
+        tag: `#2QG2C08U${index}`,
+        name: `FWA Clan ${index + 1}`,
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        clanRoleId: null,
+        clanBadge: null,
+        shortName: `S${index + 1}`,
+        createdAt: new Date(`2026-04-0${index + 1}T00:00:00.000Z`),
+        updatedAt: new Date(`2026-04-0${index + 1}T00:00:00.000Z`),
+      })),
+    );
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = getFirstEmbedDescription(interaction);
+    expect((description.match(/shortName:/g) ?? []).length).toBe(5);
+    expect(description.length).toBeLessThanOrEqual(3900);
+    expect(payload?.components).toEqual([]);
+  });
+
+  it("packs many short CWL clan blocks onto one page when they fit", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      Array.from({ length: 6 }, (_, index) => ({
+        season: "2026-03",
+        tag: `#PYLQ028${index}`,
+        name: `CWL Clan ${index + 1}`,
+        createdAt: new Date(`2026-03-0${index + 1}T00:00:00.000Z`),
+      })),
+    );
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = getFirstEmbedDescription(interaction);
+    expect((description.match(/registry: CWL seasonal/g) ?? []).length).toBe(6);
+    expect(description.length).toBeLessThanOrEqual(3900);
+    expect(payload?.components).toEqual([]);
+  });
+
+  it("moves long FWA blocks to the next page without splitting and keeps the paginator active", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Long FWA Clan ".repeat(220),
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        clanRoleId: null,
+        clanBadge: null,
+        shortName: "LONG",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        tag: "#2QG2C08U9",
+        name: "Medium FWA Clan ".repeat(70),
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        clanRoleId: null,
+        clanBadge: null,
+        shortName: "MED",
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const initialPayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const initialDescription = getFirstEmbedDescription(interaction);
+    expect(initialDescription).toContain("shortName: LONG");
+    expect(initialDescription).not.toContain("shortName: MED");
+    expect(initialDescription.length).toBeLessThanOrEqual(3900);
+    expect(initialPayload?.components).toHaveLength(1);
+    expect(initialPayload?.embeds?.[0]?.toJSON?.().footer?.text).toBe("Page 1/2");
+
+    const collectHandler = interaction.__collectorHandlers.collect as ((button: any) => Promise<void>) | undefined;
+    expect(collectHandler).toBeDefined();
+
+    const nextButton = makeButtonInteraction("tracked-clan-list:tracked-clan-itx-1:next");
+    await collectHandler?.(nextButton);
+
+    expect(nextButton.update).toHaveBeenCalledTimes(1);
+    const nextPayload = nextButton.update.mock.calls[0]?.[0] as any;
+    const nextDescription = String(nextPayload?.embeds?.[0]?.toJSON?.().description ?? "");
+    expect(nextDescription).toContain("shortName: MED");
+    expect(nextDescription).not.toContain("shortName: LONG");
+    expect(nextDescription.length).toBeLessThanOrEqual(3900);
+    expect(nextPayload?.components?.[0]?.toJSON?.().components?.[0]?.disabled).toBe(false);
+    expect(nextPayload?.components?.[0]?.toJSON?.().components?.[1]?.disabled).toBe(true);
+    expect(nextPayload?.embeds?.[0]?.toJSON?.().footer?.text).toBe("Page 2/2");
   });
 
   it("renders a combined grouped embed when type is omitted", async () => {

@@ -99,6 +99,67 @@ function formatRelativeTimestamp(value: Date | null): string {
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
 }
 
+async function resolveTownHallEmojiMap(client: Client): Promise<Map<number, string>> {
+  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
+  if (!inventory?.ok) {
+    return new Map();
+  }
+
+  const renderedByTownHall = new Map<number, string>();
+  for (let townHall = 1; townHall <= 18; townHall += 1) {
+    const shortcode = `th${townHall}`;
+    const exact = inventory.snapshot.exactByName.get(shortcode);
+    const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());
+    const rendered = exact?.rendered ?? lower?.rendered ?? null;
+    if (rendered) {
+      renderedByTownHall.set(townHall, rendered);
+    }
+  }
+  return renderedByTownHall;
+}
+
+async function resolveCwlRosterSignupTagSet(input: {
+  guildId: string | null;
+  clanTag: string;
+  season: string;
+}): Promise<Set<string> | null> {
+  const guildId = String(input.guildId ?? "").trim();
+  if (!guildId) {
+    return null;
+  }
+
+  const roster = await rosterService.findCwlRosterForClan({
+    guildId,
+    clanTag: input.clanTag,
+    season: input.season,
+  });
+  if (!roster) {
+    return null;
+  }
+
+  const rosterView = await rosterService.getRosterView(roster.id);
+  if (!rosterView) {
+    return null;
+  }
+
+  return new Set(
+    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter((tag): tag is string =>
+      Boolean(tag),
+    ),
+  );
+}
+
+function renderTownHallIcon(
+  townHall: number | null | undefined,
+  townHallEmojiByLevel: Map<number, string>,
+): string {
+  const normalized = Math.trunc(Number(townHall));
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return "TH?";
+  }
+  return townHallEmojiByLevel.get(normalized) ?? `TH${normalized}`;
+}
+
 function buildDescription(lines: string[]): string {
   const description = lines.join("\n");
   if (description.length <= DISCORD_DESCRIPTION_LIMIT) {
@@ -399,6 +460,8 @@ function renderMembersListLines(input: {
   clanName: string | null;
   entries: Awaited<ReturnType<typeof cwlStateService.listSeasonRosterForClan>>;
   inWarOnly: boolean;
+  townHallEmojiByLevel: Map<number, string>;
+  rosterSignupTagSet: Set<string> | null;
 }) {
   const lines: string[] = [
     `Season: ${input.season}`,
@@ -406,16 +469,23 @@ function renderMembersListLines(input: {
     "",
   ];
   for (const entry of input.entries) {
+    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
     const linkLabel = entry.linkedDiscordUserId
       ? `<@${entry.linkedDiscordUserId}>`
       : "unlinked";
     const currentLabel = entry.currentRound
       ? entry.currentRound.inCurrentLineup
-        ? `${entry.currentRound.roundState} ${entry.currentRound.attacksUsed}/${entry.currentRound.attacksAvailable}`
+        ? `${entry.currentRound.attacksUsed}/${entry.currentRound.attacksAvailable}`
         : "not in current lineup"
       : "no current round";
+    const rosterWarning =
+      input.rosterSignupTagSet && normalizedPlayerTag && !input.rosterSignupTagSet.has(normalizedPlayerTag)
+        ? " :warning:"
+        : "";
     lines.push(
-      `${entry.playerName} \`${entry.playerTag}\` - days ${entry.daysParticipated} - ${linkLabel} - ${currentLabel}`,
+      `${renderTownHallIcon(entry.townHall, input.townHallEmojiByLevel)} ${entry.playerName} \`${
+        entry.playerTag
+      }\`${rosterWarning} - days ${entry.daysParticipated} - ${linkLabel} - ${currentLabel}`,
     );
   }
   if (input.entries.length <= 0) {
@@ -2100,6 +2170,14 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
+  const [townHallEmojiByLevel, rosterSignupTagSet] = await Promise.all([
+    resolveTownHallEmojiMap(interaction.client),
+    resolveCwlRosterSignupTagSet({
+      guildId: interaction.guildId ?? null,
+      clanTag,
+      season,
+    }),
+  ]);
 
   if (inWarOnly && !currentRound) {
     await interaction.editReply(`No active CWL round is persisted for ${clanTag}.`);
@@ -2115,6 +2193,8 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     clanName: trackedClan.name,
     entries,
     inWarOnly,
+    townHallEmojiByLevel,
+    rosterSignupTagSet,
   });
   if (currentRound) {
     lines.splice(
