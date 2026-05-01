@@ -1,14 +1,16 @@
+import crypto from "node:crypto";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import { GoogleSheetsService } from "./GoogleSheetsService";
 import { PublicGoogleSheetsService } from "./PublicGoogleSheetsService";
 import {
   cwlRotationService,
+  buildCwlRosterRotationShortName,
   type CwlRotationPlanExport,
   type PersistImportedCwlRotationPlanResult,
 } from "./CwlRotationService";
 import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
-import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { normalizeClanTag, normalizeDiscordUserId, normalizePlayerTag } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 
 const CWL_IMPORT_RANGE = "A:AZ";
@@ -143,6 +145,7 @@ export type CwlRotationSheetExportResult = {
   spreadsheetId: string;
   spreadsheetUrl: string;
   tabCount: number;
+  reused: boolean;
 };
 
 type ParsedImportDayRow = {
@@ -475,32 +478,76 @@ export class CwlRotationSheetService {
     };
   }
 
-  /** Purpose: export the active CWL planner state into one brand-new public workbook. */
+  /** Purpose: export the active CWL planner state into one public workbook, reusing unchanged exports when possible. */
   async exportActivePlans(input?: {
     season?: string;
+    new?: boolean;
+    createdByDiscordUserId?: string | null;
   }): Promise<CwlRotationSheetExportResult> {
-    const plans = await cwlRotationService.listActivePlanExports(input);
-    const tabNames = plans.map((plan) =>
-      plan.clanName ? `${plan.clanName} ${plan.clanTag}` : plan.clanTag,
-    );
-    const spreadsheet = await this.sheets.createSpreadsheet({
-      title: `ClashCookies CWL Rotation Export ${input?.season ?? resolveCurrentCwlSeasonKey()}`,
-      tabNames,
+    const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const plans = await cwlRotationService.listActivePlanExports({ season });
+    const payload = buildCwlRotationExportPayload({
+      season,
+      plans,
     });
-    const tabs = plans.map((plan) => ({
-      tabName: plan.clanName ? `${plan.clanName} ${plan.clanTag}` : plan.clanTag,
-      values: buildExportTabValues(plan),
-    }));
+    if (!input?.new) {
+      const cachedExport = await prisma.cwlRotationExport.findFirst({
+        where: {
+          season,
+          fingerprint: payload.fingerprint,
+        },
+        orderBy: [{ createdAt: "desc" }],
+      });
+      if (cachedExport) {
+        return {
+          spreadsheetId: cachedExport.spreadsheetId,
+          spreadsheetUrl: cachedExport.spreadsheetUrl,
+          tabCount: payload.tabs.length,
+          reused: true,
+        };
+      }
+    }
+
+    const spreadsheet = await this.sheets.createSpreadsheet({
+      title: `ClashCookies CWL Rotation Export ${season}`,
+      tabNames: payload.tabs.map((tab) => tab.tabName),
+    });
     await this.sheets.writeSpreadsheetTabs({
       spreadsheetId: spreadsheet.spreadsheetId,
-      tabs,
+      tabs: payload.tabs.map((tab) => ({
+        tabName: tab.tabName,
+        values: tab.values,
+      })),
     });
     await this.sheets.makeSpreadsheetPublic(spreadsheet.spreadsheetId);
+    await prisma.cwlRotationExport.upsert({
+      where: {
+        season_fingerprint: {
+          season,
+          fingerprint: payload.fingerprint,
+        },
+      },
+      create: {
+        season,
+        fingerprint: payload.fingerprint,
+        spreadsheetId: spreadsheet.spreadsheetId,
+        spreadsheetUrl: spreadsheet.spreadsheetUrl,
+        tabCount: payload.tabs.length,
+        createdByDiscordUserId: normalizeDiscordUserId(input?.createdByDiscordUserId),
+      },
+      update: {
+        spreadsheetId: spreadsheet.spreadsheetId,
+        spreadsheetUrl: spreadsheet.spreadsheetUrl,
+        tabCount: payload.tabs.length,
+        createdByDiscordUserId: normalizeDiscordUserId(input?.createdByDiscordUserId),
+      },
+    });
 
     return {
       spreadsheetId: spreadsheet.spreadsheetId,
       spreadsheetUrl: spreadsheet.spreadsheetUrl,
-      tabCount: tabs.length,
+      tabCount: payload.tabs.length,
+      reused: false,
     };
   }
 }
@@ -584,10 +631,114 @@ export function rebuildCwlRotationImportTabState(
   };
 }
 
+function buildCwlRotationExportPayload(input: {
+  season: string;
+  plans: CwlRotationPlanExport[];
+}): {
+  tabs: Array<{ tabName: string; values: string[][] }>;
+  fingerprint: string;
+} {
+  const baseTabs = input.plans.map((plan) => ({
+    tabName: buildCwlRotationExportTabName(plan),
+    values: buildExportTabValues(plan),
+  }));
+  const tabNames = ensureUniqueCwlRotationExportTabNames(
+    baseTabs.map((tab) => tab.tabName),
+  );
+  const tabs = baseTabs.map((tab, index) => ({
+    tabName: tabNames[index] ?? tab.tabName,
+    values: tab.values,
+  }));
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ season: input.season, tabs }))
+    .digest("hex");
+  return { tabs, fingerprint };
+}
+
+function buildCwlRotationExportTabName(plan: CwlRotationPlanExport): string {
+  const clanLabel = buildCwlRotationExportClanLabel(plan);
+  const rosterTitle = resolveCwlRotationExportRosterTitle(plan);
+  if (!rosterTitle) {
+    return clanLabel;
+  }
+
+  const shortRosterName =
+    plan.rosterShortName ||
+    buildCwlRosterRotationShortName(rosterTitle) ||
+    sanitizeCwlRotationExportTabText(rosterTitle);
+  const combined = `${shortRosterName} | ${clanLabel}`.trim();
+  return combined.length > 0 ? combined : clanLabel;
+}
+
+function buildCwlRotationExportClanLabel(plan: CwlRotationPlanExport): string {
+  return (
+    sanitizeCwlRotationExportTabText(plan.clanDisplayName ?? plan.clanName ?? "") ||
+    sanitizeCwlRotationExportTabText(plan.clanTag)
+  );
+}
+
+function resolveCwlRotationExportRosterTitle(plan: CwlRotationPlanExport): string | null {
+  const rosterTitle = sanitizeCwlRotationExportTabText(plan.rosterTitle ?? "");
+  if (rosterTitle) return rosterTitle;
+  const sourceLabel = sanitizeCwlRotationExportTabText(plan.sourceLabel ?? "");
+  if (sourceLabel) return sourceLabel;
+  return null;
+}
+
+function buildCwlRotationExportRosterLabel(plan: CwlRotationPlanExport): string {
+  const rosterTitle = resolveCwlRotationExportRosterTitle(plan);
+  if (rosterTitle) return rosterTitle;
+  return buildCwlRotationExportClanLabel(plan) || "unknown/manual/import source";
+}
+
+function sanitizeCwlRotationExportTabText(input: string): string {
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeCwlRotationExportTabName(input: string): string {
+  return String(input ?? "")
+    .trim()
+    .replace(/[*?:/\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 100)
+    .trim() || "Sheet";
+}
+
+function ensureUniqueCwlRotationExportTabNames(tabNames: string[]): string[] {
+  const used = new Set<string>();
+  const counts = new Map<string, number>();
+  return tabNames.map((rawTabName) => {
+    const baseName = sanitizeCwlRotationExportTabName(rawTabName);
+    const nextCount = (counts.get(baseName) ?? 0) + 1;
+    counts.set(baseName, nextCount);
+
+    let candidate = baseName;
+    if (nextCount > 1) {
+      const suffix = ` (${nextCount})`;
+      const maxBaseLength = Math.max(1, 100 - suffix.length);
+      candidate = sanitizeCwlRotationExportTabName(`${baseName.slice(0, maxBaseLength)}${suffix}`);
+    }
+    while (used.has(candidate)) {
+      const suffixCount = (counts.get(candidate) ?? 1) + 1;
+      counts.set(candidate, suffixCount);
+      const suffix = ` (${suffixCount})`;
+      const maxBaseLength = Math.max(1, 100 - suffix.length);
+      candidate = sanitizeCwlRotationExportTabName(`${baseName.slice(0, maxBaseLength)}${suffix}`);
+    }
+    used.add(candidate);
+    return candidate;
+  });
+}
+
 function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
   const values: string[][] = [];
   values.push([`Season: ${plan.season}`]);
-  values.push([`Clan: ${plan.clanName || plan.clanTag}`]);
+  values.push([`Roster: ${buildCwlRotationExportRosterLabel(plan)}`]);
+  values.push([`Clan: ${buildCwlRotationExportClanLabel(plan)}`]);
+  values.push([`Clan Tag: ${plan.clanTag}`]);
   if (plan.warningSummary) {
     values.push([`Warnings: ${plan.warningSummary}`]);
   }
@@ -634,11 +785,14 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
       player.playerName,
       player.playerTag,
       String(totalWars),
-      ...dayHeaders.map((_, index) => (player.dayMap.get(index + 1) ? "IN" : "")),
+      ...dayHeaders.map((_, index) => (player.dayMap.get(index + 1) ? "IN" : "OUT")),
     ]);
   }
 
-  while (values.length > 0 && values[values.length - 1]?.every((cell) => String(cell ?? "").trim().length <= 0)) {
+  while (
+    values.length > 0 &&
+    values[values.length - 1]?.every((cell) => String(cell ?? "").trim().length <= 0)
+  ) {
     values.pop();
   }
   return values;

@@ -63,6 +63,7 @@ function makeInteraction(input: {
   day?: number | null;
   exclude?: string | null;
   overwrite?: boolean | null;
+  newExport?: boolean | null;
   size?: number | null;
 }) {
   return {
@@ -85,6 +86,7 @@ function makeInteraction(input: {
       getBoolean: vi.fn((name: string) => {
         if (name === "inwar") return input.inwar ?? null;
         if (name === "overwrite") return input.overwrite ?? null;
+        if (name === "new") return input.newExport ?? null;
         return null;
       }),
       getInteger: vi.fn((name: string) => {
@@ -3508,6 +3510,7 @@ describe("/cwl command", () => {
       spreadsheetId: "sheet-new",
       spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
       tabCount: 1,
+      reused: false,
     });
     const interaction = makeInteraction({
       group: "rotations",
@@ -3516,9 +3519,55 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
-    expect(cwlRotationSheetService.exportActivePlans).toHaveBeenCalled();
+    expect(cwlRotationSheetService.exportActivePlans).toHaveBeenCalledWith({
+      new: false,
+      createdByDiscordUserId: "111111111111111111",
+    });
     expect(getDescription(interaction)).toContain("Created a new public Google Sheet");
     expect(getDescription(interaction)).toContain("https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing");
+  });
+
+  it("reports when /cwl rotations export reuses an unchanged spreadsheet", async () => {
+    vi.mocked(cwlRotationSheetService.exportActivePlans).mockResolvedValue({
+      spreadsheetId: "sheet-old",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-old/edit?usp=sharing",
+      tabCount: 1,
+      reused: true,
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "export",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationSheetService.exportActivePlans).toHaveBeenCalledWith({
+      new: false,
+      createdByDiscordUserId: "111111111111111111",
+    });
+    expect(getDescription(interaction)).toContain("Reused the existing public Google Sheet because no rotation updates were detected.");
+    expect(getDescription(interaction)).toContain("https://docs.google.com/spreadsheets/d/sheet-old/edit?usp=sharing");
+  });
+
+  it("passes new:true through to /cwl rotations export when requested", async () => {
+    vi.mocked(cwlRotationSheetService.exportActivePlans).mockResolvedValue({
+      spreadsheetId: "sheet-new",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-new/edit?usp=sharing",
+      tabCount: 1,
+      reused: false,
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "export",
+      newExport: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationSheetService.exportActivePlans).toHaveBeenCalledWith({
+      new: true,
+      createdByDiscordUserId: "111111111111111111",
+    });
   });
 
   it("autocompletes /cwl rotations show day choices 1 through 7", async () => {
