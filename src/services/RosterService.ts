@@ -2367,7 +2367,7 @@ function buildRosterManageClanLabel(roster: { clanTag: string | null }, clanName
     return clanName ? clanName : "-";
   }
   if (clanName) {
-    return `[${clanName}](<https://cc.fwafarm.com/cc_n/clan.php?tag=${encodeURIComponent(tag.replace(/^#/, ""))}>)`;
+    return `[${clanName}](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodeURIComponent(tag.replace(/^#/, ""))}>)`;
   }
   return `\`${tag}\``;
 }
@@ -3496,7 +3496,7 @@ function buildRosterReportClanLine(view: RosterManagerReadinessView): string {
   }
   const clanName = normalizeRosterText(view.signupView.clanDisplayName ?? null) ?? "Unknown Clan";
   const encodedTag = clanTag.replace(/^#/, "");
-  return `Clan: ${clanName} \`${clanTag}\` ([Open in-game](<https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag}>))`;
+  return `Clan: ${clanName} \`${clanTag}\` ([Open in-game](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodedTag}>))`;
 }
 
 function buildRosterManagerReportLines(view: RosterManagerReadinessView): string[] {
@@ -3722,7 +3722,7 @@ export function buildClanProfileMarkdownLink(clanName: string | null, clanTag: s
   const label = sanitizeRosterBoardText(clanName) || normalizedClanTag || "Unknown Clan";
   if (!normalizedClanTag) return label;
   const encodedTag = normalizedClanTag.replace(/^#/, "");
-  return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
+  return `[${label}](https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodedTag})`;
 }
 
 function getRosterDisplayColumnHeader(column: RosterDisplayColumn): string {
