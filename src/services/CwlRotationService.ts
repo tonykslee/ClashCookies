@@ -202,6 +202,25 @@ export type CreateCwlRotationRosterPlanResult =
       rosterTitle: string;
     };
 
+export type DeleteCwlRotationPlanResult =
+  | {
+      outcome: "deleted";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      version: number;
+    }
+  | {
+      outcome: "not_found";
+      season: string;
+      clanTag: string;
+    }
+  | {
+      outcome: "invalid_clan";
+      season: string;
+      clanTag: string;
+    };
+
 export type PersistImportedCwlRotationPlanResult =
   | {
       outcome: "created";
@@ -1148,6 +1167,62 @@ export class CwlRotationService {
       version,
       lineupSize,
       warnings,
+    };
+  }
+
+  async deleteActivePlan(input: {
+    clanTag: string;
+    season?: string;
+  }): Promise<DeleteCwlRotationPlanResult> {
+    const season = input.season ?? resolveCurrentCwlSeasonKey();
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) {
+      return {
+        outcome: "invalid_clan",
+        season,
+        clanTag: "",
+      };
+    }
+
+    const activePlan = await loadActivePlan({ clanTag, season });
+    if (!activePlan) {
+      return {
+        outcome: "not_found",
+        season,
+        clanTag,
+      };
+    }
+
+    await prisma.cwlRotationPlan.updateMany({
+      where: {
+        season,
+        clanTag,
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+
+    const trackedClan = await prisma.cwlTrackedClan.findFirst({
+      where: {
+        season,
+        tag: clanTag,
+      },
+      select: {
+        name: true,
+      },
+    });
+    const planMetadata = toRecordValue(activePlan.metadata);
+    const clanName =
+      sanitizeDisplayText(String(trackedClan?.name ?? planMetadata?.clanName ?? "")) || null;
+
+    return {
+      outcome: "deleted",
+      season,
+      clanTag,
+      clanName,
+      version: activePlan.version,
     };
   }
 
