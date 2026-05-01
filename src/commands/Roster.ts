@@ -53,7 +53,6 @@ import {
   parseRosterManageRosterSelectMenuCustomId,
   getRosterManageSession,
   buildRosterSignupRoleRequirementLines,
-  formatRosterTownhallIconsValue,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -516,14 +515,38 @@ function buildRosterSignupUserGroupHeading(group: {
   return normalizeRosterMutationLabel(group.key, "Ungrouped");
 }
 
+async function resolveRosterTownHallIconMap(client: Client): Promise<Map<number, string>> {
+  const fallback = new Map<number, string>(
+    Array.from({ length: 18 }, (_, index) => [index + 1, `TH${index + 1}`] as const),
+  );
+  const inventory = await emojiResolverService
+    .fetchApplicationEmojiInventory(client, { forceRefresh: true })
+    .catch(() => null);
+  if (!inventory?.ok) {
+    return fallback;
+  }
+
+  const resolved = new Map(fallback);
+  for (let level = 1; level <= 18; level += 1) {
+    const exact = inventory.snapshot.exactByName.get(`th${level}`);
+    const lowered = inventory.snapshot.lowercaseByName.get(`th${level}`);
+    const rendered = exact?.rendered ?? lowered?.rendered ?? null;
+    if (rendered) {
+      resolved.set(level, rendered);
+    }
+  }
+  return resolved;
+}
+
 function buildRosterSignupUserAccountLine(account: {
   playerTag: string;
   playerName: string | null;
-  townHall: number | null;
+  townHallIcon: string;
 }): string {
   const playerName = normalizeRosterMutationLabel(account.playerName, "");
-  const townHall = formatRosterTownhallIconsValue(account.townHall) ?? "TH?";
-  return playerName ? `${townHall} ${playerName} \`${account.playerTag}\`` : `${townHall} \`${account.playerTag}\``;
+  return playerName
+    ? `${account.townHallIcon} ${playerName} \`${account.playerTag}\``
+    : `${account.townHallIcon} \`${account.playerTag}\``;
 }
 
 export function paginateRosterSignupUserBlocks(blocks: string[]): string[] {
@@ -561,6 +584,7 @@ async function buildRosterSignupUserEmbeds(input: {
   client: Client;
   sections: Awaited<ReturnType<typeof rosterService.listRosterSignupsForDiscordUser>>["sections"];
 }): Promise<EmbedBuilder[]> {
+  const townHallIconByLevel = await resolveRosterTownHallIconMap(input.client);
   const blocks = [
     `User: <@${input.discordUserId}>`,
     ...input.sections.map((section) => {
@@ -571,7 +595,17 @@ async function buildRosterSignupUserEmbeds(input: {
       for (const group of section.groups) {
         lines.push(buildRosterSignupUserGroupHeading(group));
         for (const signup of group.signups) {
-          lines.push(buildRosterSignupUserAccountLine(signup));
+          const townHallIcon =
+            signup.townHall === null || signup.townHall === undefined
+              ? "TH?"
+              : townHallIconByLevel.get(signup.townHall) ?? `TH${signup.townHall}`;
+          lines.push(
+            buildRosterSignupUserAccountLine({
+              playerTag: signup.playerTag,
+              playerName: signup.playerName,
+              townHallIcon,
+            }),
+          );
         }
       }
 
@@ -579,13 +613,7 @@ async function buildRosterSignupUserEmbeds(input: {
     }),
   ];
   const pages = paginateRosterSignupUserBlocks(blocks);
-  const renderedPages = await Promise.all(
-    pages.map(async (description) => {
-      const rendered = await emojiResolverService.replaceShortcodes(input.client, description).catch(() => description);
-      return rendered.replace(/:th(\d+):/gi, (_match, level: string) => `TH${level}`);
-    }),
-  );
-  return renderedPages.map(
+  return pages.map(
     (description, index) =>
       new EmbedBuilder()
         .setColor(0xfee75c)

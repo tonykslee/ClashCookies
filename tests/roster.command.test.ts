@@ -260,7 +260,7 @@ function makeValidRosterPlayerTag(index: number): string {
   return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
 }
 
-function makeRosterEmojiClient() {
+function makeRosterEmojiClient(options?: { missing?: string[] }) {
   const makeEmoji = (name: string, rendered: string) => ({
     id: `${name}-id`,
     name,
@@ -268,14 +268,15 @@ function makeRosterEmojiClient() {
     toString: () => rendered,
   });
 
+  const missing = new Set((options?.missing ?? []).map((entry) => String(entry).trim()).filter(Boolean));
   const emojis = new Map(
     [
       ["yes", makeEmoji("yes", "<:yes:901>")],
       ["no", makeEmoji("no", "<:no:902>")],
       ...Array.from({ length: 18 }, (_, index) => {
         const name = `th${index + 1}`;
-        return [name, makeEmoji(name, `<:${name}:${index + 1001}>`)] as const;
-      }),
+        return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${index + 1001}>`)] as const);
+      }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
     ],
   );
 
@@ -834,6 +835,7 @@ describe("/roster command", () => {
       subcommand: "list",
       userId: "222222222222222222",
     }) as any;
+    interaction.client = makeRosterEmojiClient();
 
     await Roster.run({} as any, interaction as any);
 
@@ -853,12 +855,90 @@ describe("/roster command", () => {
       "Masters 2 [C] | TH17 ([Serenity](<https://cc.fwafarm.com/cc_n/clan.php?tag=2P0J0YL8>))",
     );
     expect(String(firstEmbed?.description ?? "")).toContain("Confirmed");
-    expect(String(firstEmbed?.description ?? "")).toContain("TH18 Charmander `#GGYLPVCUQ`");
+    expect(String(firstEmbed?.description ?? "")).toContain("<:th18:1018> Charmander `#GGYLPVCUQ`");
     expect(String(firstEmbed?.description ?? "")).toContain("Substitute");
-    expect(String(firstEmbed?.description ?? "")).toContain("TH17 Bulbasaur `#YJCLLYU8C`");
+    expect(String(firstEmbed?.description ?? "")).toContain("<:th17:1017> Bulbasaur `#YJCLLYU8C`");
     expect(String(firstEmbed?.description ?? "")).toContain("FWA Beta Signup (Beta Force)");
     expect(String(firstEmbed?.description ?? "")).toContain("Ungrouped");
     expect(String(firstEmbed?.description ?? "")).toContain(`TH? Pikachu \`${makeValidRosterPlayerTag(1)}\``);
+    expect(String(firstEmbed?.description ?? "")).not.toMatch(/(?:^|\n):th18:/i);
+    expect(String(firstEmbed?.description ?? "")).not.toMatch(/(?:^|\n):th17:/i);
+  });
+
+  it("falls back to readable TH text when a custom town hall emoji is missing", async () => {
+    vi.spyOn(rosterService, "listRosterSignupsForDiscordUser").mockResolvedValue({
+      discordUserId: "222222222222222222",
+      linkedAccountCount: 1,
+      signupCount: 1,
+      sections: [
+        {
+          roster: {
+            id: "roster-1",
+            guildId: "guild-1",
+            rosterType: "CWL",
+            rosterCategory: "signup",
+            title: "Masters 2 [C] | TH17",
+            clanTag: "#2P0J0YL8",
+            startsAt: new Date("2026-04-20T00:00:00.000Z"),
+            endsAt: null,
+            timezone: "America/Los_Angeles",
+            displayTimezone: "America/Los_Angeles",
+            maxMembers: 40,
+            maxAccountsPerUser: 2,
+            minTownhall: 17,
+            maxTownhall: 17,
+            requiredSignupRoleId: null,
+            noRoleSignupLimit: 0,
+            rosterRoleId: null,
+            allowMultiSignup: true,
+            sortBy: null,
+            displayColumns: null,
+            importMembers: false,
+            postButtonMode: "standard",
+            lifecycleState: "OPEN",
+            postedChannelId: null,
+            postedMessageId: null,
+            postedMessageUrl: null,
+            postedAt: null,
+            createdByDiscordUserId: null,
+            updatedByDiscordUserId: null,
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          },
+          clanName: "Serenity",
+          groups: [
+            {
+              id: "confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: null,
+              sortOrder: 0,
+              signups: [
+                {
+                  playerTag: "#GGYLPVCUQ",
+                  playerName: "Charmander",
+                  townHall: 18,
+                  signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "list",
+      userId: "222222222222222222",
+    }) as any;
+    interaction.client = makeRosterEmojiClient({ missing: ["th18"] });
+
+    await Roster.run({} as any, interaction as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const firstEmbed = payload.embeds[0]?.toJSON?.() ?? payload.embeds[0];
+    expect(String(firstEmbed?.description ?? "")).toContain("TH18 Charmander `#GGYLPVCUQ`");
+    expect(String(firstEmbed?.description ?? "")).not.toMatch(/(?:^|\n)<:th18:/i);
   });
 
   it("shows an empty state when the selected user has no linked roster signups", async () => {
@@ -873,6 +953,7 @@ describe("/roster command", () => {
       subcommand: "list",
       userId: "222222222222222222",
     }) as any;
+    interaction.client = makeRosterEmojiClient({ missing: ["th18"] });
 
     await Roster.run({} as any, interaction as any);
 
