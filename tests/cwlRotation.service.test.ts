@@ -18,15 +18,18 @@ const txMock = vi.hoisted(() => ({
 const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
   },
   currentCwlRound: {
     findUnique: vi.fn(),
   },
   cwlRoundHistory: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   currentCwlPrepSnapshot: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   cwlRotationPlan: {
     findFirst: vi.fn(),
@@ -54,9 +57,12 @@ describe("CwlRotationService", () => {
     vi.clearAllMocks();
 
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP" });
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue(null);
+    prismaMock.cwlRoundHistory.findMany.mockResolvedValue([]);
     prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
+    prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
@@ -642,6 +648,87 @@ describe("CwlRotationService", () => {
     );
     expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(7);
     expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data).toHaveLength(30);
+  });
+
+  it("falls back to the current tracked clan name when export metadata lacks a clan name", async () => {
+    prismaMock.cwlRotationPlan.findMany.mockResolvedValue([
+      {
+        id: "plan-1",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 4,
+        isActive: true,
+        rosterSize: 2,
+        generatedFromRoundDay: null,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: {
+          source: "sheet-import",
+          rosterTitle: "Masters 1 [A] | 175k+ WW",
+          rosterShortName: "M1 [A]",
+        },
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+    ]);
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([
+      {
+        id: 1,
+        planId: "plan-1",
+        roundDay: 1,
+        lineupSize: 2,
+        locked: false,
+        metadata: {},
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        members: [
+          {
+            id: 11,
+            planDayId: 1,
+            playerTag: "#PYLQ0289",
+            playerName: "Alpha",
+            assignmentOrder: 0,
+            manualOverride: false,
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          } as any,
+          {
+            id: 12,
+            planDayId: 1,
+            playerTag: "#QGRJ2222",
+            playerName: "Bravo",
+            assignmentOrder: 1,
+            manualOverride: false,
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          } as any,
+        ],
+      } as any,
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Rising Thrones" } as any]);
+    prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundHistory.findMany.mockResolvedValue([]);
+
+    const exports = await cwlRotationService.listActivePlanExports({ season: "2026-04" });
+
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-04",
+        tag: { in: ["#2QG2C08UP"] },
+      },
+      select: { tag: true, name: true },
+      orderBy: [{ tag: "asc" }],
+    });
+    expect(exports).toHaveLength(1);
+    expect(exports[0]).toEqual(
+      expect.objectContaining({
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Thrones",
+        clanDisplayName: "Rising Thrones",
+        rosterTitle: "Masters 1 [A] | 175k+ WW",
+        rosterShortName: "M1 [A]",
+      }),
+    );
   });
 
   it("dedupes duplicate confirmed roster tags before creating a roster-backed plan", async () => {

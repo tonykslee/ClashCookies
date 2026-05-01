@@ -984,5 +984,7 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans[0]?.parsedRows.every((row) => row.classification === "exact_match")).toBe(true);
     expect(preview.matchedClans[0]?.days[0]?.members[0]?.playerTag).toBe("#PYLQ0289");
     expect(preview.matchedClans[0]?.days[0]?.members[1]?.playerTag).toBe("#QGRJ2222");
+    expect(preview.matchedClans[0]?.days[0]?.members[0]?.subbedOut).toBe(false);
+    expect(preview.matchedClans[0]?.days[0]?.members[1]?.subbedOut).toBe(true);
   });
 });
