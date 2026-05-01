@@ -100,6 +100,41 @@ function makeInteraction(input: {
   };
 }
 
+function makeCwlEmojiInventory(options?: { missing?: string[] }) {
+  const missing = new Set((options?.missing ?? []).map((entry) => String(entry).trim()).filter(Boolean));
+  const makeEmoji = (name: string, rendered: string) => ({
+    rendered,
+    name,
+    shortcode: `:${name}:`,
+    id: `${name}-id`,
+    animated: false,
+  });
+  const entries = [
+    ["yes", makeEmoji("yes", "<:yes:111>")] as const,
+    ["no", makeEmoji("no", "<:no:222>")] as const,
+    ...Array.from({ length: 18 }, (_, index) => {
+      const name = `th${index + 1}`;
+      return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${1001 + index}>`)] as const);
+    }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
+  ];
+  return {
+    ok: true,
+    snapshot: {
+      fetchedAtMs: Date.now(),
+      entries: [],
+      exactByName: new Map(entries),
+      lowercaseByName: new Map(entries.map(([name, emoji]) => [name.toLowerCase(), emoji] as const)),
+    },
+    diagnostics: {
+      applicationExistedBeforeFetch: true,
+      applicationFetchAttempted: false,
+      applicationEmojiFetchAvailable: true,
+      emojiFetchSucceeded: true,
+      fetchedEmojiCount: entries.length,
+    },
+  } as any;
+}
+
 function makeAutocompleteInteraction(
   value: string,
   name: "clan" | "day" | "roster" = "clan",
@@ -264,10 +299,8 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "createRosterRemoveSelectionPanel");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
     vi.spyOn(rosterService, "refreshRosterSignupPayload");
-    vi.spyOn(rosterService, "findCwlRosterForClan");
     vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
-    vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "listCwlRostersForClan");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
@@ -278,6 +311,8 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "moveRosterSignups");
     vi.spyOn(rosterService, "removeRosterSignupsAsManager");
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
+    vi.spyOn(rosterService, "findCwlRosterForClan").mockResolvedValue(null as any);
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue(null as any);
     vi.spyOn(cwlRotationService, "createPlanFromRoster");
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("Roster Signup"),
@@ -296,28 +331,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationService, "validatePlanDay");
     vi.spyOn(cwlStateService, "getBattleDayStartForClanDay").mockResolvedValue(null);
     vi.spyOn(cwlStateService, "getParticipationCountsForClanDay").mockResolvedValue(new Map());
-    vi.spyOn(emojiResolverService, "fetchApplicationEmojiInventory").mockResolvedValue({
-      ok: true,
-      snapshot: {
-        fetchedAtMs: Date.now(),
-        entries: [],
-        exactByName: new Map([
-          ["yes", { rendered: "<:yes:111>", name: "yes", shortcode: ":yes:", id: "111", animated: false }],
-          ["no", { rendered: "<:no:222>", name: "no", shortcode: ":no:", id: "222", animated: false }],
-        ]),
-        lowercaseByName: new Map([
-          ["yes", { rendered: "<:yes:111>", name: "yes", shortcode: ":yes:", id: "111", animated: false }],
-          ["no", { rendered: "<:no:222>", name: "no", shortcode: ":no:", id: "222", animated: false }],
-        ]),
-      },
-      diagnostics: {
-        applicationExistedBeforeFetch: true,
-        applicationFetchAttempted: false,
-        applicationEmojiFetchAvailable: true,
-        emojiFetchSucceeded: true,
-        fetchedEmojiCount: 2,
-      },
-    } as any);
+    vi.spyOn(emojiResolverService, "fetchApplicationEmojiInventory").mockResolvedValue(makeCwlEmojiInventory());
   });
 
   afterEach(() => {
@@ -347,6 +361,12 @@ describe("/cwl command", () => {
         },
       },
     ]);
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      signups: [{ playerTag: "#P1" }],
+    });
     vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
@@ -373,7 +393,213 @@ describe("/cwl command", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(getDescription(interaction)).toContain("Season: 2026-04");
     expect(getDescription(interaction)).toContain("CWL Alpha (#2QG2C08UP) - Day 1 Preparation vs Opponent One (#OPP1)");
-    expect(getDescription(interaction)).toContain("Alpha `#P1` - days 2 - <@111111111111111111> - preparation 0/0");
+    expect(getDescription(interaction)).toContain("<:th16:1016> Alpha `#P1` - days 2 - <@111111111111111111> - 0/0");
+    expect(getDescription(interaction)).not.toContain("preparation 0/0");
+  });
+
+  it("adds town hall bullets and roster warnings for missing CWL signup members", async () => {
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      signups: [{ playerTag: "#PYLQ0289" }],
+    });
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 18,
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "alpha-user",
+        daysParticipated: 3,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: true,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 17,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: false,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+    ]);
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: null,
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      members: [],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "members",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("<:th18:1018> Alpha `#PYLQ0289` - days 3 - <@111111111111111111> - 0/0");
+    expect(description).toMatch(
+      /(?:<:th17:\d+>|TH17) Bravo `#QGRJ2222` :warning: - days 1 - unlinked - not in current lineup/,
+    );
+    expect(description).not.toContain("preparation 0/0");
+    expect(description).not.toContain("Bravo `#QGRJ2222` - days 1");
+  });
+
+  it("falls back to TH labels when town hall emojis are missing or town hall is unknown", async () => {
+    vi.spyOn(emojiResolverService, "fetchApplicationEmojiInventory").mockResolvedValue(
+      makeCwlEmojiInventory({ missing: ["th18"] }),
+    );
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue(null);
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#P1",
+        playerName: "Alpha",
+        townHall: 18,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 2,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#P2",
+        playerName: "Bravo",
+        townHall: null,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: null,
+      },
+    ]);
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue(null);
+
+    const interaction = makeInteraction({
+      subcommand: "members",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("TH18 Alpha `#P1` - days 2 - unlinked - no current round");
+    expect(description).toContain("TH? Bravo `#P2` - days 1 - unlinked - no current round");
+    expect(description).not.toContain(":warning:");
+  });
+
+  it("keeps /cwl members inwar:true filtered to the current lineup", async () => {
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      signups: [{ playerTag: "#PYLQ0289" }],
+    });
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 16,
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "alpha-user",
+        daysParticipated: 2,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: true,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: false,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+    ]);
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: null,
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      members: [],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "members",
+      clan: "#2QG2C08UP",
+      inwar: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
+    expect(description).not.toContain("Bravo `#QGRJ2222`");
   });
 
   it("posts a CWL signup roster with buttons and persistence", async () => {
