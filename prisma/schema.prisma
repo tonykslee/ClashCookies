@@ -190,6 +190,108 @@ model TodoUserUsage {
   lastUsedAt    DateTime @updatedAt
 }
 
+enum AutoRoleRuleType {
+  VERIFIED
+  FAMILY
+  CLAN
+  CLAN_ROLE
+  TOWN_HALL
+  LABEL
+}
+
+model AutoRoleGuildConfig {
+  id                     String   @id @default(cuid())
+  guildId                String   @unique
+  enabled                Boolean  @default(false)
+  killSwitchEnabled      Boolean  @default(false)
+  removeStaleManagedRoles Boolean @default(false)
+  applyNicknames         Boolean  @default(false)
+  nicknameTemplate       String?
+  trustedLinksAllowed    Boolean  @default(true)
+  verifiedOnlyMode       Boolean  @default(false)
+  syncEnabled            Boolean  @default(false)
+  syncIntervalMinutes    Int?
+  verifiedRoleId         String?
+  familyRoleId           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([enabled, killSwitchEnabled])
+}
+
+model AutoRoleRule {
+  id            String          @id @default(cuid())
+  guildId       String
+  type          AutoRoleRuleType
+  targetValue   String
+  discordRoleId String
+  priority      Int             @default(1000)
+  enabled       Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([guildId, type, targetValue, discordRoleId])
+  @@index([guildId, enabled, priority])
+  @@index([guildId, type])
+}
+
+model AutoRoleUserExclusion {
+  id             String   @id @default(cuid())
+  guildId        String
+  discordUserId  String
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([guildId, discordUserId])
+  @@index([guildId, createdAt])
+}
+
+model AutoRoleRoleExclusion {
+  id             String   @id @default(cuid())
+  guildId        String
+  discordRoleId   String
+  reason         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([guildId, discordRoleId])
+  @@index([guildId, createdAt])
+}
+
+model AutoRoleMemberState {
+  id               String   @id @default(cuid())
+  guildId          String
+  discordUserId    String
+  lastEvaluatedAt   DateTime?
+  lastAppliedAt     DateTime?
+  lastResultHash    String?
+  lastError         String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([guildId, discordUserId])
+  @@index([guildId, lastEvaluatedAt])
+}
+
+model AutoRoleSyncRun {
+  id              String   @id @default(cuid())
+  guildId         String
+  status          String   @default("RUNNING")
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  evaluatedCount  Int?
+  appliedCount    Int?
+  removedCount    Int?
+  skippedCount    Int?
+  error           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([guildId, startedAt])
+  @@index([guildId, status, startedAt])
+}
+
 enum ReminderType {
   WAR_CWL
   RAIDS

@@ -38,6 +38,10 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "kick-list:remove",
   "kick-list:show",
   "kick-list:clear",
+  "autorole",
+  "autorole:config",
+  "autorole:rules",
+  "autorole:exclusions",
   "sync:time:post",
   "bot-logs",
   "notify:war",
@@ -57,6 +61,10 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "roster:delete",
   "roster:report",
   "roster:refresh",
+  "autorole",
+  "autorole:config",
+  "autorole:rules",
+  "autorole:exclusions",
 ]);
 
 type CommandDoc = {
@@ -302,6 +310,24 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/cwl rotations create clan:#2QG2C08UP roster:roster-123 overwrite:true",
       "/cwl rotations import sheet:https://docs.google.com/spreadsheets/d/... overwrite:true",
       "/cwl rotations export",
+    ],
+  },
+  autorole: {
+    summary: "Manage durable autorole config, rules, and exclusions.",
+    details: [
+      "Phase 2 is persistence-only: it stores guild config, rule mappings, and exclusions without evaluating members or mutating Discord roles.",
+      "`config show` displays the current guild autorole policy snapshot.",
+      "`config set` updates one or more guild config fields, including nickname and sync policy settings.",
+      "`rules list/add/edit/remove` manage persisted rule mappings for verified, family, clan, clan-rank, town-hall, and label targets.",
+      "`exclusions list/add-user/remove-user/add-role/remove-role` manage guild-level user and role exclusions.",
+      "All autorole management commands are admin-only by default.",
+    ],
+    examples: [
+      "/autorole config show",
+      "/autorole config set enabled:true trusted_links_allowed:true",
+      "/autorole rules list",
+      "/autorole rules add type:CLAN role:@Clan target_value:#2QG2C08UP",
+      "/autorole exclusions list",
     ],
   },
   roster: {
