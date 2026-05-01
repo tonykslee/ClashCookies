@@ -53,7 +53,8 @@ function makeInteraction(input: {
     | "show"
     | "create"
     | "import"
-    | "export";
+    | "export"
+    | "delete";
   clan?: string | null;
   roster?: string | null;
   groupKey?: string | null;
@@ -325,6 +326,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationSheetService, "buildImportPreview");
     vi.spyOn(cwlRotationSheetService, "confirmImport");
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
+    vi.spyOn(cwlRotationService, "deleteActivePlan");
     vi.spyOn(cwlRotationService, "listActivePlanExports");
     vi.spyOn(cwlRotationService, "listOverview");
     vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
@@ -3796,6 +3798,49 @@ describe("/cwl command", () => {
     });
   });
 
+  it("deletes an active CWL rotation plan and reports the clan, season, and version", async () => {
+    vi.mocked(cwlRotationService.deleteActivePlan).mockResolvedValue({
+      outcome: "deleted",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 7,
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "delete",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.deleteActivePlan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+    });
+    expect(getDescription(interaction)).toContain("Deleted active CWL rotation plan for CWL Alpha (#2QG2C08UP).");
+    expect(getDescription(interaction)).toContain("Season: 2026-04");
+    expect(getDescription(interaction)).toContain("Version: 7");
+  });
+
+  it("reports when /cwl rotations delete finds no active plan", async () => {
+    vi.mocked(cwlRotationService.deleteActivePlan).mockResolvedValue({
+      outcome: "not_found",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "delete",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls[0]?.[0] ?? "")).toContain(
+      "No active CWL rotation exists for #2QG2C08UP in season 2026-04.",
+    );
+  });
+
   it("autocompletes /cwl rotations show day choices 1 through 7", async () => {
     const allDaysInteraction = makeAutocompleteInteraction("", "day");
 
@@ -3854,6 +3899,36 @@ describe("/cwl command", () => {
       { tag: "#9GLGQCCU", name: "CWL Beta", createdAt: new Date("2026-04-02T00:00:00.000Z") },
     ]);
     const interaction = makeAutocompleteInteraction("alpha", "clan", null, "rotations", "show");
+
+    await Cwl.autocomplete(interaction as any);
+
+    expect(cwlRotationService.listActivePlanExports).toHaveBeenCalledWith({ season: "2026-04" });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "CWL Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+  });
+
+  it("autocompletes only current-season active CWL rotation clans for /cwl rotations delete clan", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+        rosterSize: 15,
+        generatedFromRoundDay: null,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: null,
+        days: [],
+      } as any,
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "CWL Alpha", createdAt: new Date("2026-04-01T00:00:00.000Z") },
+      { tag: "#9GLGQCCU", name: "CWL Beta", createdAt: new Date("2026-04-02T00:00:00.000Z") },
+    ]);
+    const interaction = makeAutocompleteInteraction("alpha", "clan", null, "rotations", "delete");
 
     await Cwl.autocomplete(interaction as any);
 
