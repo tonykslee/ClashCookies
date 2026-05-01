@@ -113,27 +113,29 @@ function buildCwlTrackedClanBlock(clan: {
 
 function paginateTrackedClanBlocks(blocks: string[]): string[] {
   const pages: string[] = [];
-  let i = 0;
   const maxChars = 3900;
-  while (i < blocks.length) {
-    const remaining = blocks.length - i;
-    let pageSize = Math.min(3, remaining);
-    if (pageSize === 3) {
-      const candidate = blocks.slice(i, i + 3).join("\n\n");
-      if (candidate.length > maxChars) {
-        pageSize = Math.min(2, remaining);
-      }
-    }
-    if (pageSize >= 2) {
-      const candidate = blocks.slice(i, i + pageSize).join("\n\n");
-      if (candidate.length > maxChars) {
-        pageSize = 1;
-      }
+  let current = "";
+
+  for (const block of blocks) {
+    if (current.length === 0) {
+      current = block;
+      continue;
     }
 
-    pages.push(blocks.slice(i, i + pageSize).join("\n\n"));
-    i += pageSize;
+    const candidate = `${current}\n\n${block}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+
+    pages.push(current);
+    current = block;
   }
+
+  if (current.length > 0) {
+    pages.push(current);
+  }
+
   return pages;
 }
 
