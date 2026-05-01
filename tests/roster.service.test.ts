@@ -5798,6 +5798,86 @@ describe("RosterService", () => {
     );
   });
 
+  it("resolves CWL clan names for roster signup sections without requiring the current season", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#GGYLPVCUQ", linkedAt: new Date("2026-04-19T00:00:00.000Z"), linkedName: "Charmander" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "2P0J0YL8", name: "Serenity" } as any]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(makePlayerCurrentMap([["#GGYLPVCUQ", 18]]));
+
+    prismaMock.rosterSignup.findMany.mockImplementation(async () => [
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#GGYLPVCUQ",
+        playerName: "Charmander",
+        townHall: 18,
+        signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
+        roster: {
+          id: "roster-1",
+          guildId: "guild-1",
+          rosterType: "CWL",
+          rosterCategory: "signup",
+          title: "Masters 2 [C] | TH17",
+          clanTag: "2P0J0YL8",
+          startsAt: new Date("2026-04-20T00:00:00.000Z"),
+          endsAt: null,
+          timezone: "America/Los_Angeles",
+          displayTimezone: "America/Los_Angeles",
+          maxMembers: 40,
+          maxAccountsPerUser: 2,
+          minTownhall: 17,
+          maxTownhall: 17,
+          requiredSignupRoleId: null,
+          noRoleSignupLimit: 0,
+          rosterRoleId: null,
+          allowMultiSignup: true,
+          sortBy: null,
+          displayColumns: null,
+          importMembers: false,
+          postButtonMode: "standard",
+          lifecycleState: "OPEN",
+          postedChannelId: null,
+          postedMessageId: null,
+          postedMessageUrl: null,
+          postedAt: null,
+          createdByDiscordUserId: null,
+          updatedByDiscordUserId: null,
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        },
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+
+    const result = await rosterService.listRosterSignupsForDiscordUser({
+      guildId: "guild-1",
+      discordUserId: "222222222222222222",
+    });
+
+    expect(result.sections[0]?.clanName).toBe("Serenity");
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          tag: {
+            in: ["#2P0J0YL8"],
+          },
+        },
+      }),
+    );
+    const cwlQuery = prismaMock.cwlTrackedClan.findMany.mock.calls.at(-1)?.[0] as any;
+    expect(cwlQuery.where).not.toHaveProperty("season");
+  });
+
   it("lists only open-or-closed CWL rosters for the selected clan in roster autocomplete", async () => {
     prismaMock.roster.findMany.mockResolvedValueOnce([
       {

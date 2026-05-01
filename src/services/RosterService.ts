@@ -1506,7 +1506,6 @@ async function resolveRosterClanNameMap(clanTags: string[]): Promise<Map<string,
     return new Map();
   }
 
-  const season = resolveCurrentCwlSeasonKey();
   const [trackedRows, raidRows, cwlRows] = await Promise.all([
     prisma.trackedClan.findMany({
       where: { tag: { in: normalizedTags } },
@@ -1523,7 +1522,7 @@ async function resolveRosterClanNameMap(clanTags: string[]): Promise<Map<string,
       select: { clanTag: true, name: true },
     }),
     prisma.cwlTrackedClan.findMany({
-      where: { season, tag: { in: normalizedTags } },
+      where: { tag: { in: normalizedTags } },
       orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
       select: { tag: true, name: true },
     }),
