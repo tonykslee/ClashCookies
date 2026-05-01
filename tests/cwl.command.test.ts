@@ -63,6 +63,7 @@ function makeInteraction(input: {
   day?: number | null;
   exclude?: string | null;
   overwrite?: boolean | null;
+  size?: number | null;
 }) {
   return {
     user: { id: "111111111111111111" },
@@ -88,6 +89,7 @@ function makeInteraction(input: {
       }),
       getInteger: vi.fn((name: string) => {
         if (name === "day") return input.day ?? null;
+        if (name === "size") return input.size ?? null;
         return null;
       }),
     },
@@ -100,11 +102,15 @@ function makeAutocompleteInteraction(
   value: string,
   name: "clan" | "day" | "roster" = "clan",
   clan: string | null = "#2QG2C08UP",
+  group: "roster" | "rotations" | null = null,
+  subcommand: string | null = null,
 ) {
   return {
     guildId: "guild-1",
     inGuild: () => true,
     options: {
+      getSubcommandGroup: vi.fn(() => group),
+      getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((optionName: string) => {
         if (optionName === "clan") return clan;
         return null;
@@ -977,6 +983,7 @@ describe("/cwl command", () => {
       group: "rotations",
       subcommand: "create",
       clan: "#2QG2C08UP",
+      size: 15,
       exclude: "#P9",
       overwrite: true,
     });
@@ -986,10 +993,12 @@ describe("/cwl command", () => {
     expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
       clanTag: "#2QG2C08UP",
       excludeTagsRaw: "#P9",
+      lineupSize: 15,
       overwrite: true,
     });
     expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
     expect(getDescription(interaction)).toContain("Version: 2");
+    expect(getDescription(interaction)).toContain("Lineup size: 15");
     expect(getDescription(interaction)).toContain("Could not reach 5 planned CWL days");
   });
 
@@ -1012,10 +1021,38 @@ describe("/cwl command", () => {
     expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
       clanTag: "#2QG2C08UP",
       excludeTagsRaw: null,
+      lineupSize: null,
       overwrite: false,
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
       "A CWL rotation plan already exists for #2QG2C08UP this season. Use overwrite:true to replace version 4.",
+    );
+  });
+
+  it("rejects invalid CWL rotation lineup sizes", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "invalid_size",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      requestedLineupSize: 20,
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 20,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      excludeTagsRaw: null,
+      lineupSize: 20,
+      overwrite: false,
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "CWL rotation lineup size must be 15 or 30.",
     );
   });
 
@@ -1027,7 +1064,7 @@ describe("/cwl command", () => {
       rosterId: "roster-1",
       rosterTitle: "CWL Alpha roster",
       version: 3,
-      lineupSize: 2,
+      lineupSize: 30,
       warnings: ["Missing Town Hall data for confirmed roster players: Charlie (#P3)."],
       sourceLabel: "CWL roster - CWL Alpha roster",
     });
@@ -1036,6 +1073,7 @@ describe("/cwl command", () => {
       subcommand: "create",
       clan: "#2QG2C08UP",
       roster: "roster-1",
+      size: 30,
       overwrite: true,
     });
 
@@ -1045,11 +1083,13 @@ describe("/cwl command", () => {
       clanTag: "#2QG2C08UP",
       rosterId: "roster-1",
       guildId: "guild-1",
+      lineupSize: 30,
       overwrite: true,
     });
     expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
     expect(getDescription(interaction)).toContain("Source: CWL roster - CWL Alpha roster");
     expect(getDescription(interaction)).toContain("Version: 3");
+    expect(getDescription(interaction)).toContain("Lineup size: 30");
     expect(getDescription(interaction)).toContain("Missing Town Hall data for confirmed roster players");
   });
 
@@ -1076,6 +1116,7 @@ describe("/cwl command", () => {
       clanTag: "#2QG2C08UP",
       rosterId: "roster-1",
       guildId: "guild-1",
+      lineupSize: null,
       overwrite: false,
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
@@ -1162,6 +1203,7 @@ describe("/cwl command", () => {
         clanTag: "#2QG2C08UP",
         rosterId: "roster-1",
         guildId: "guild-1",
+        lineupSize: null,
         overwrite: false,
       }),
     );
@@ -3511,6 +3553,36 @@ describe("/cwl command", () => {
     await Cwl.autocomplete(interaction as any);
 
     expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalled();
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "CWL Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+  });
+
+  it("autocompletes only current-season active CWL rotation clans for /cwl rotations show clan", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+        rosterSize: 15,
+        generatedFromRoundDay: null,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: null,
+        days: [],
+      } as any,
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "CWL Alpha", createdAt: new Date("2026-04-01T00:00:00.000Z") },
+      { tag: "#9GLGQCCU", name: "CWL Beta", createdAt: new Date("2026-04-02T00:00:00.000Z") },
+    ]);
+    const interaction = makeAutocompleteInteraction("alpha", "clan", null, "rotations", "show");
+
+    await Cwl.autocomplete(interaction as any);
+
+    expect(cwlRotationService.listActivePlanExports).toHaveBeenCalledWith({ season: "2026-04" });
     expect(interaction.respond).toHaveBeenCalledWith([
       { name: "CWL Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
     ]);
