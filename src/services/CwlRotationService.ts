@@ -1148,21 +1148,33 @@ export class CwlRotationService {
         })
         .filter((entry): entry is readonly [string, (typeof rosterSignups)[number]] => Boolean(entry)),
     );
+    const liveSourcePositionByTag = new Map(
+      currentRound.members
+        .map((member) => {
+          const playerTag = normalizePlayerTag(member.playerTag);
+          if (!playerTag) return null;
+          const sourcePosition = Number.isFinite(Number(member.mapPosition))
+            ? Math.trunc(Number(member.mapPosition))
+            : null;
+          return [playerTag, sourcePosition] as const;
+        })
+        .filter((entry): entry is readonly [string, number | null] => Boolean(entry)),
+    );
     const eligibleRosterEntriesBase = correspondingRoster
       ? seasonRoster
           .filter((entry) => rosterSignupByTag.has(entry.playerTag))
-          .map((entry, index) => {
+          .map((entry) => {
             const signup = rosterSignupByTag.get(entry.playerTag) ?? null;
             return {
               ...entry,
               weight: signup?.weight ?? entry.currentWeight ?? null,
-              sourcePosition: index,
+              sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
             };
           })
-      : seasonRoster.map((entry, index) => ({
+      : seasonRoster.map((entry) => ({
           ...entry,
           weight: entry.currentWeight ?? null,
-          sourcePosition: index,
+          sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
         }));
     const eligibleRosterEntries = eligibleRosterEntriesBase.filter(
       (entry) => !excludeTags.includes(entry.playerTag),
@@ -1193,10 +1205,7 @@ export class CwlRotationService {
     const sourceOrderedRoster = buildStableRosterOrder({
       roster: eligibleRosterEntries,
       currentLineupTags: eligibleLineupTags,
-    }).map((entry, index) => ({
-      ...entry,
-      sourcePosition: index,
-    }));
+    });
     const planDays = buildPlanDays({
       roster: sourceOrderedRoster,
       lineupSize,
