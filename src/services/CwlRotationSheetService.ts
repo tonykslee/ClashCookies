@@ -753,31 +753,39 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
       playerTag: string;
       playerName: string;
       assignmentOrder: number;
+      sourcePosition: number | null;
+      weight: number | null;
+      townHall: number | null;
       dayMap: Map<number, boolean>;
     }
   >();
 
+  const sortMode = resolveCwlRotationExportSortMode(plan);
   for (const day of plan.days) {
     for (const row of day.rows) {
       const existing = playerRows.get(row.playerTag) ?? {
         playerTag: row.playerTag,
         playerName: row.playerName,
         assignmentOrder: playerRows.size,
+        sourcePosition: row.sourcePosition ?? null,
+        weight: row.weight ?? null,
+        townHall: row.townHall ?? null,
         dayMap: new Map<number, boolean>(),
       };
       existing.playerName = existing.playerName || row.playerName;
       existing.assignmentOrder = Math.min(existing.assignmentOrder, row.assignmentOrder);
+      existing.sourcePosition =
+        existing.sourcePosition !== null ? existing.sourcePosition : row.sourcePosition ?? null;
+      existing.weight = existing.weight !== null ? existing.weight : row.weight ?? null;
+      existing.townHall = existing.townHall !== null ? existing.townHall : row.townHall ?? null;
       existing.dayMap.set(day.roundDay, !row.subbedOut);
       playerRows.set(row.playerTag, existing);
     }
   }
 
-  const orderedPlayers = [...playerRows.values()].sort((a, b) => {
-    if (a.assignmentOrder !== b.assignmentOrder) return a.assignmentOrder - b.assignmentOrder;
-    const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
-    if (byName !== 0) return byName;
-    return a.playerTag.localeCompare(b.playerTag);
-  });
+  const orderedPlayers = [...playerRows.values()].sort((a, b) =>
+    compareCwlRotationExportPlayerRows(a, b, sortMode),
+  );
 
   for (const player of orderedPlayers) {
     const totalWars = [...player.dayMap.values()].filter(Boolean).length;
@@ -796,6 +804,84 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
     values.pop();
   }
   return values;
+}
+
+type CwlRotationExportSortMode = "live" | "roster" | "import" | "fallback";
+
+function resolveCwlRotationExportSortMode(plan: CwlRotationPlanExport): CwlRotationExportSortMode {
+  const metadata = plan.metadata;
+  const source = sanitizeCwlRotationExportTabText(String(metadata?.source ?? plan.sourceLabel ?? "")).toLowerCase();
+  if (source === "sheet-import") {
+    return "import";
+  }
+  if (plan.rosterId || metadata?.rosterId || source.startsWith("cwl roster")) {
+    return "roster";
+  }
+  if (source === "manual" || source.length > 0) {
+    return "live";
+  }
+  return "fallback";
+}
+
+function compareCwlRotationExportPlayerRows(
+  a: {
+    playerTag: string;
+    playerName: string;
+    assignmentOrder: number;
+    sourcePosition: number | null;
+    weight: number | null;
+    townHall: number | null;
+  },
+  b: {
+    playerTag: string;
+    playerName: string;
+    assignmentOrder: number;
+    sourcePosition: number | null;
+    weight: number | null;
+    townHall: number | null;
+  },
+  sortMode: CwlRotationExportSortMode,
+): number {
+  if (sortMode === "roster") {
+    const aHasWeight = a.weight !== null;
+    const bHasWeight = b.weight !== null;
+    if (aHasWeight !== bHasWeight) {
+      return aHasWeight ? -1 : 1;
+    }
+    if (aHasWeight && bHasWeight && a.weight !== b.weight) {
+      return (b.weight ?? -1) - (a.weight ?? -1);
+    }
+    if (!aHasWeight && !bHasWeight) {
+      const byTag = a.playerTag.localeCompare(b.playerTag);
+      if (byTag !== 0) return byTag;
+    }
+    const aTownHall = a.townHall ?? -1;
+    const bTownHall = b.townHall ?? -1;
+    if (aTownHall !== bTownHall) {
+      return bTownHall - aTownHall;
+    }
+    const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return a.playerTag.localeCompare(b.playerTag);
+  }
+
+  if (sortMode === "live") {
+    const aHasSource = a.sourcePosition !== null;
+    const bHasSource = b.sourcePosition !== null;
+    if (aHasSource !== bHasSource) {
+      return aHasSource ? -1 : 1;
+    }
+    if (aHasSource && bHasSource && a.sourcePosition !== b.sourcePosition) {
+      return (a.sourcePosition ?? 0) - (b.sourcePosition ?? 0);
+    }
+  }
+
+  if (a.assignmentOrder !== b.assignmentOrder) {
+    return a.assignmentOrder - b.assignmentOrder;
+  }
+  const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+  if (byName !== 0) return byName;
+  return a.playerTag.localeCompare(b.playerTag);
 }
 
 async function loadActiveRotationPlanVersion(input: {

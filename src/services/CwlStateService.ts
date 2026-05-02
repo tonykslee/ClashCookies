@@ -77,6 +77,8 @@ export type CwlSeasonRosterEntry = {
   playerTag: string;
   playerName: string;
   townHall: number | null;
+  currentWeight?: number | null;
+  role?: string | null;
   linkedDiscordUserId: string | null;
   linkedDiscordUsername: string | null;
   daysParticipated: number;
@@ -1992,7 +1994,7 @@ export class CwlStateService {
       orderBy: [{ lastRoundDay: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
     });
     const rosterTags = rosterRows.map((row) => row.playerTag);
-    const [currentRound, currentMembers, playerLinks] = await Promise.all([
+    const [currentRound, currentMembers, playerLinks, playerCurrents] = await Promise.all([
       prisma.currentCwlRound.findUnique({
         where: { season_clanTag: { season, clanTag } },
       }),
@@ -2010,13 +2012,27 @@ export class CwlStateService {
           discordUsername: true,
         },
       }),
+      prisma.playerCurrent.findMany({
+        where: {
+          playerTag: { in: rosterTags },
+        },
+        select: {
+          playerTag: true,
+          currentWeight: true,
+          role: true,
+        },
+      }),
     ]);
 
     const currentMemberByTag = new Map(currentMembers.map((member) => [member.playerTag, member]));
     const playerLinkByTag = new Map(playerLinks.map((row) => [row.playerTag, row]));
+    const playerCurrentByTag = new Map(
+      playerCurrents.map((row) => [row.playerTag, row]),
+    );
     return rosterRows.map((row) => {
       const currentMember = currentMemberByTag.get(row.playerTag) ?? null;
       const playerLink = playerLinkByTag.get(row.playerTag) ?? null;
+      const playerCurrent = playerCurrentByTag.get(row.playerTag) ?? null;
       return {
         season: row.season,
         clanTag: row.cwlClanTag,
@@ -2027,6 +2043,8 @@ export class CwlStateService {
           sanitizeCwlName(currentMember?.playerName) ??
           row.playerTag,
         townHall: currentMember?.townHall ?? row.townHall,
+        currentWeight: playerCurrent?.currentWeight ?? null,
+        role: playerCurrent?.role ?? null,
         linkedDiscordUserId: playerLink?.discordUserId ?? null,
         linkedDiscordUsername: playerLink?.discordUsername ?? null,
         daysParticipated: Math.max(0, Math.trunc(Number(row.daysParticipated ?? 0) || 0)),

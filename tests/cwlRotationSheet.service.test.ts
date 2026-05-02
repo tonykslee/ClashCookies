@@ -695,6 +695,99 @@ describe("CwlRotationSheetService", () => {
     });
   });
 
+  it("keeps live/manual export rows ordered by stored source position rather than assignment order", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Thrones",
+        rosterId: null,
+        rosterTitle: null,
+        rosterShortName: null,
+        clanDisplayName: "Rising Thrones",
+        sourceLabel: "manual",
+        version: 5,
+        rosterSize: 3,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: { source: "manual" },
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 3,
+            locked: false,
+            metadata: { source: "manual" },
+            rows: [
+              {
+                playerTag: "#PYLQ0289",
+                playerName: "Alpha",
+                subbedOut: false,
+                assignmentOrder: 2,
+                sourcePosition: 30,
+              },
+              {
+                playerTag: "#QGRJ2222",
+                playerName: "Bravo",
+                subbedOut: false,
+                assignmentOrder: 0,
+                sourcePosition: 10,
+              },
+              {
+                playerTag: "#CUV9082",
+                playerName: "Charlie",
+                subbedOut: false,
+                assignmentOrder: 1,
+                sourcePosition: 20,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const createSpreadsheet = vi
+      .spyOn(GoogleSheetsService.prototype, "createSpreadsheet")
+      .mockResolvedValue({
+        spreadsheetId: "sheet-live",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-live/edit?usp=sharing",
+      });
+    const writeTabs = vi
+      .spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs")
+      .mockResolvedValue(undefined);
+    const publicSpy = vi
+      .spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic")
+      .mockResolvedValue(undefined);
+
+    const result = await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+    });
+
+    expect(createSpreadsheet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tabNames: ["manual | Rising Thrones"],
+      }),
+    );
+    const exportedTabValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][] | undefined;
+    expect(exportedTabValues).toEqual([
+      ["Season: 2026-04"],
+      ["Roster: manual"],
+      ["Clan: Rising Thrones"],
+      ["Clan Tag: #2QG2C08UP"],
+      [],
+      ["Member", "Player Tag", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+      ["Bravo", "#QGRJ2222", "1", "IN", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+      ["Charlie", "#CUV9082", "1", "IN", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+      ["Alpha", "#PYLQ0289", "1", "IN", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+    ]);
+    expect(result).toEqual({
+      spreadsheetId: "sheet-live",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-live/edit?usp=sharing",
+      tabCount: 1,
+      reused: false,
+    });
+    expect(publicSpy).toHaveBeenCalledWith("sheet-live");
+  });
+
   it("reuses the same-season export link when the export fingerprint has not changed", async () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
       {

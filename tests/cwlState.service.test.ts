@@ -47,6 +47,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
   },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   playerLink: {
     findMany: vi.fn(),
   },
@@ -70,6 +73,7 @@ describe("CwlStateService", () => {
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
 
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
@@ -1064,6 +1068,13 @@ describe("CwlStateService", () => {
         lastRoundDay: 1,
       },
     ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        currentWeight: 177,
+        role: "leader",
+      },
+    ]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
@@ -1120,6 +1131,8 @@ describe("CwlStateService", () => {
           linkedDiscordUserId: "111111111111111111",
           linkedDiscordUsername: "alpha-user",
           daysParticipated: 2,
+          currentWeight: 177,
+          role: "leader",
           currentRound: expect.objectContaining({
             roundDay: 3,
             inCurrentLineup: true,
