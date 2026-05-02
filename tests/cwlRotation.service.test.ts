@@ -1541,6 +1541,135 @@ describe("CwlRotationService", () => {
     );
   });
 
+  it("persists live CWL source positions from the current lineup map order", async () => {
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 2,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-04-02T12:00:00.000Z"),
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      members: [
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          playerTag: "#PYLQ0289",
+          roundDay: 2,
+          playerName: "Alpha",
+          mapPosition: 10,
+          townHall: 16,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          stars: 0,
+          destruction: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          playerTag: "#QGRJ2222",
+          roundDay: 2,
+          playerName: "Bravo",
+          mapPosition: 20,
+          townHall: 15,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          stars: 0,
+          destruction: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          playerTag: "#CUV9082",
+          roundDay: 2,
+          playerName: "Charlie",
+          mapPosition: 30,
+          townHall: 15,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          stars: 0,
+          destruction: 0,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
+    });
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#CUV9082",
+        playerName: "Charlie",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+    ]);
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            rosterRows: [
+              expect.objectContaining({
+                playerTag: "#PYLQ0289",
+                sourcePosition: 10,
+              }),
+              expect.objectContaining({
+                playerTag: "#QGRJ2222",
+                sourcePosition: 20,
+              }),
+              expect.objectContaining({
+                playerTag: "#CUV9082",
+                sourcePosition: 30,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
   it("prefers the prep snapshot day in overview during overlap", async () => {
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([
       {
