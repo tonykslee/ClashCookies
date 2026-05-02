@@ -13,6 +13,19 @@ type CwlRotationPlanPlayerRow = {
   manualOverride?: boolean;
 };
 
+type CwlRotationSeedRosterEntry = CwlSeasonRosterEntry & {
+  weight: number | null;
+  sourcePosition: number | null;
+};
+
+type CwlRotationMetadataRosterRow = {
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  weight: number | null;
+  sourcePosition: number | null;
+};
+
 type CwlRotationPlanDayWriteInput = {
   roundDay: number;
   lineupSize: number;
@@ -39,6 +52,9 @@ export type CwlRotationPlanExportDayRow = {
   playerName: string;
   subbedOut: boolean;
   assignmentOrder: number;
+  townHall: number | null;
+  weight: number | null;
+  sourcePosition: number | null;
 };
 
 export type CwlRotationPlanExportDay = {
@@ -289,8 +305,8 @@ function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
 const fwaClanMembersSyncService = new FwaClanMembersSyncService();
 
 function compareRosterEntries(
-  a: CwlSeasonRosterEntry,
-  b: CwlSeasonRosterEntry,
+  a: CwlRotationSeedRosterEntry,
+  b: CwlRotationSeedRosterEntry,
   stableIndexByTag: Map<string, number>,
   totalCountByTag: Map<string, number>,
 ): number {
@@ -308,9 +324,9 @@ function compareRosterEntries(
 }
 
 function buildStableRosterOrder(input: {
-  roster: CwlSeasonRosterEntry[];
+  roster: CwlRotationSeedRosterEntry[];
   currentLineupTags: string[];
-}): CwlSeasonRosterEntry[] {
+}): CwlRotationSeedRosterEntry[] {
   const currentTagSet = new Set(input.currentLineupTags);
   const currentByTag = new Map(input.currentLineupTags.map((tag, index) => [tag, index]));
   const currentEntries = input.roster
@@ -336,12 +352,12 @@ function buildStableRosterOrder(input: {
 }
 
 function buildPlanDays(input: {
-  roster: CwlSeasonRosterEntry[];
+  roster: CwlRotationSeedRosterEntry[];
   lineupSize: number;
   currentRoundDay: number;
   currentLineupTags: string[];
   seedRoundAlreadyCountedInParticipation?: boolean;
-}): Array<{ roundDay: number; members: CwlSeasonRosterEntry[] }> {
+}): Array<{ roundDay: number; members: CwlRotationSeedRosterEntry[] }> {
   const stableRoster = buildStableRosterOrder({
     roster: input.roster,
     currentLineupTags: input.currentLineupTags,
@@ -353,12 +369,19 @@ function buildPlanDays(input: {
     stableRoster.map((entry) => [entry.playerTag, Math.max(0, entry.daysParticipated)]),
   );
   const rosterByTag = new Map(stableRoster.map((entry) => [entry.playerTag, entry]));
-  const days: Array<{ roundDay: number; members: CwlSeasonRosterEntry[] }> = [];
+  const days: Array<{ roundDay: number; members: CwlRotationSeedRosterEntry[] }> = [];
 
   const currentDayMembers = input.currentLineupTags
     .map((tag) => rosterByTag.get(tag))
-    .filter((entry): entry is CwlSeasonRosterEntry => Boolean(entry))
+    .filter((entry): entry is CwlRotationSeedRosterEntry => Boolean(entry))
     .slice(0, input.lineupSize);
+  if (currentDayMembers.length < input.lineupSize) {
+    const currentTagSet = new Set(currentDayMembers.map((member) => member.playerTag));
+    const remainingCandidates = [...stableRoster]
+      .filter((entry) => !currentTagSet.has(entry.playerTag))
+      .sort((a, b) => compareRosterEntries(a, b, stableIndexByTag, totalCountByTag));
+    currentDayMembers.push(...remainingCandidates.slice(0, input.lineupSize - currentDayMembers.length));
+  }
   if (!input.seedRoundAlreadyCountedInParticipation) {
     for (const member of currentDayMembers) {
       totalCountByTag.set(member.playerTag, (totalCountByTag.get(member.playerTag) ?? 0) + 1);
@@ -391,8 +414,8 @@ function buildPlanDays(input: {
 }
 
 function buildCoverageWarnings(input: {
-  roster: CwlSeasonRosterEntry[];
-  planDays: Array<{ roundDay: number; members: CwlSeasonRosterEntry[] }>;
+  roster: CwlRotationSeedRosterEntry[];
+  planDays: Array<{ roundDay: number; members: CwlRotationSeedRosterEntry[] }>;
   currentRoundDay: number;
   seedRoundAlreadyCountedInParticipation?: boolean;
 }): string[] {
@@ -748,13 +771,13 @@ function scoreCwlRotationExportRosterSeasonMatch(title: string, season: string):
   return normalizedTitle.includes(normalizedSeason) ? 1 : 0;
 }
 
-function buildRosterRowsForMetadata(roster: CwlSeasonRosterEntry[]): Array<{
-  playerTag: string;
-  playerName: string;
-}> {
+function buildRosterRowsForMetadata(roster: CwlRotationSeedRosterEntry[]): CwlRotationMetadataRosterRow[] {
   return roster.map((entry) => ({
     playerTag: entry.playerTag,
     playerName: entry.playerName,
+    townHall: entry.townHall ?? null,
+    weight: entry.weight ?? null,
+    sourcePosition: entry.sourcePosition ?? null,
   }));
 }
 
@@ -803,10 +826,7 @@ function toRecordValue(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function normalizeRosterRows(value: unknown): Array<{
-  playerTag: string;
-  playerName: string;
-}> {
+function normalizeRosterRows(value: unknown): CwlRotationMetadataRosterRow[] {
   if (!Array.isArray(value)) return [];
   const rows = value
     .map((row) => {
@@ -815,12 +835,20 @@ function normalizeRosterRows(value: unknown): Array<{
       const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
       if (!playerTag) return null;
       const playerName = sanitizeDisplayText(record.playerName);
+      const townHall = Number.isFinite(Number(record.townHall)) ? Math.trunc(Number(record.townHall)) : null;
+      const weight = Number.isFinite(Number(record.weight)) ? Math.trunc(Number(record.weight)) : null;
+      const sourcePosition = Number.isFinite(Number(record.sourcePosition))
+        ? Math.trunc(Number(record.sourcePosition))
+        : null;
       return {
         playerTag,
         playerName: playerName || playerTag,
+        townHall,
+        weight,
+        sourcePosition,
       };
     })
-    .filter((row): row is { playerTag: string; playerName: string } => Boolean(row));
+    .filter((row): row is CwlRotationMetadataRosterRow => Boolean(row));
   return [...new Map(rows.map((row) => [row.playerTag, row])).values()];
 }
 
@@ -833,6 +861,11 @@ function normalizeExportRows(value: unknown): CwlRotationPlanExportDayRow[] {
       const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
       if (!playerTag) return null;
       const playerName = sanitizeDisplayText(record.playerName) || playerTag;
+      const townHall = Number.isFinite(Number(record.townHall)) ? Math.trunc(Number(record.townHall)) : null;
+      const weight = Number.isFinite(Number(record.weight)) ? Math.trunc(Number(record.weight)) : null;
+      const sourcePosition = Number.isFinite(Number(record.sourcePosition))
+        ? Math.trunc(Number(record.sourcePosition))
+        : null;
       const subbedOut =
         typeof record.subbedOut === "boolean"
           ? record.subbedOut
@@ -848,6 +881,9 @@ function normalizeExportRows(value: unknown): CwlRotationPlanExportDayRow[] {
         playerName,
         subbedOut,
         assignmentOrder,
+        townHall,
+        weight,
+        sourcePosition,
       };
     })
     .filter((row): row is CwlRotationPlanExportDayRow => Boolean(row));
@@ -859,10 +895,16 @@ function buildExportRowsFromMembersAndRoster(input: {
     playerName: string;
     assignmentOrder: number;
     manualOverride?: boolean;
+    townHall?: number | null;
+    weight?: number | null;
+    sourcePosition?: number | null;
   }>;
   rosterRows: Array<{
     playerTag: string;
     playerName: string;
+    townHall?: number | null;
+    weight?: number | null;
+    sourcePosition?: number | null;
   }>;
 }): CwlRotationPlanExportDayRow[] {
   const activeMemberByTag = new Map(
@@ -878,6 +920,9 @@ function buildExportRowsFromMembersAndRoster(input: {
       playerName: rosterRow.playerName,
       subbedOut: !activeMember,
       assignmentOrder: activeMember?.assignmentOrder ?? rows.length,
+      townHall: rosterRow.townHall ?? activeMember?.townHall ?? null,
+      weight: rosterRow.weight ?? activeMember?.weight ?? null,
+      sourcePosition: rosterRow.sourcePosition ?? activeMember?.sourcePosition ?? null,
     });
     seenTags.add(rosterRow.playerTag);
   }
@@ -889,6 +934,9 @@ function buildExportRowsFromMembersAndRoster(input: {
       playerName: member.playerName,
       subbedOut: false,
       assignmentOrder: member.assignmentOrder,
+      townHall: member.townHall ?? null,
+      weight: member.weight ?? null,
+      sourcePosition: member.sourcePosition ?? null,
     });
   }
 
@@ -1010,6 +1058,7 @@ export class CwlRotationService {
     excludeTagsRaw?: string | null;
     lineupSize?: number | null;
     overwrite?: boolean;
+    guildId?: string | null;
     season?: string;
   }): Promise<CreateCwlRotationPlanResult> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
@@ -1070,14 +1119,54 @@ export class CwlRotationService {
       .map((value) => normalizePlayerTag(value))
       .filter(Boolean);
     const excludeTags = [...new Set(rawExcludeTags)];
-    const roster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
-    const rosterByTag = new Map(roster.map((entry) => [entry.playerTag, entry]));
-    const invalidTags = excludeTags.filter((tag) => !rosterByTag.has(tag));
+    const [seasonRoster, correspondingRoster] = await Promise.all([
+      cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+      input.guildId
+        ? (async () => {
+            const roster = await rosterService.findCwlRosterForClan({
+              guildId: input.guildId ?? "",
+              clanTag,
+              season,
+            });
+            if (!roster) return null;
+            return rosterService.getRosterView(roster.id);
+          })()
+        : Promise.resolve(null),
+    ]);
+    const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
+    const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));
     if (invalidTags.length > 0) {
       return { outcome: "invalid_excludes", season, clanTag, invalidTags };
     }
 
-    const includedRoster = roster.filter((entry) => !excludeTags.includes(entry.playerTag));
+    const rosterSignups = correspondingRoster?.signups ?? [];
+    const rosterSignupByTag = new Map(
+      rosterSignups
+        .map((signup) => {
+          const playerTag = normalizePlayerTag(signup.playerTag);
+          return playerTag ? ([playerTag, signup] as const) : null;
+        })
+        .filter((entry): entry is readonly [string, (typeof rosterSignups)[number]] => Boolean(entry)),
+    );
+    const eligibleRosterEntriesBase = correspondingRoster
+      ? seasonRoster
+          .filter((entry) => rosterSignupByTag.has(entry.playerTag))
+          .map((entry, index) => {
+            const signup = rosterSignupByTag.get(entry.playerTag) ?? null;
+            return {
+              ...entry,
+              weight: signup?.weight ?? entry.currentWeight ?? null,
+              sourcePosition: index,
+            };
+          })
+      : seasonRoster.map((entry, index) => ({
+          ...entry,
+          weight: entry.currentWeight ?? null,
+          sourcePosition: index,
+        }));
+    const eligibleRosterEntries = eligibleRosterEntriesBase.filter(
+      (entry) => !excludeTags.includes(entry.playerTag),
+    );
     const currentLineupTags = currentRound.members
       .filter((member) => member.subbedIn)
       .map((member) => member.playerTag);
@@ -1085,42 +1174,43 @@ export class CwlRotationService {
       currentLineupTags.length > 0
         ? currentLineupTags
         : currentRound.members.map((member) => member.playerTag).filter(Boolean);
+    const eligibleLineupTags = currentLineupSeedTags.filter((tag) =>
+      eligibleRosterEntries.some((entry) => entry.playerTag === tag),
+    );
     const lineupSize = explicitLineupSize ?? Math.max(0, currentLineupSeedTags.length);
     const seedRoundAlreadyCountedInParticipation = hasOverlapPreparation;
-    if (explicitLineupSize !== null && currentLineupSeedTags.length < lineupSize) {
+    if (eligibleRosterEntries.length < lineupSize) {
       return {
         outcome: "not_enough_players",
         season,
         clanTag,
         lineupSize,
-        availablePlayers: currentLineupSeedTags.length,
-      };
-    }
-    if (includedRoster.length < lineupSize) {
-      return {
-        outcome: "not_enough_players",
-        season,
-        clanTag,
-        lineupSize,
-        availablePlayers: includedRoster.length,
+        availablePlayers: eligibleRosterEntries.length,
       };
     }
 
     const version = (existingActivePlan?.version ?? 0) + 1;
+    const sourceOrderedRoster = buildStableRosterOrder({
+      roster: eligibleRosterEntries,
+      currentLineupTags: eligibleLineupTags,
+    }).map((entry, index) => ({
+      ...entry,
+      sourcePosition: index,
+    }));
     const planDays = buildPlanDays({
-      roster: includedRoster,
+      roster: sourceOrderedRoster,
       lineupSize,
       currentRoundDay: currentRound.roundDay,
-      currentLineupTags: currentLineupSeedTags,
+      currentLineupTags: eligibleLineupTags,
       seedRoundAlreadyCountedInParticipation,
     });
     const warnings = buildCoverageWarnings({
-      roster: includedRoster,
+      roster: sourceOrderedRoster,
       planDays,
       currentRoundDay: currentRound.roundDay,
       seedRoundAlreadyCountedInParticipation,
     });
-    const rosterRows = buildRosterRowsForMetadata(includedRoster);
+    const rosterRows = buildRosterRowsForMetadata(sourceOrderedRoster);
 
     await prisma.$transaction(async (tx) => {
       await persistRotationPlanVersion(tx, {
@@ -1137,7 +1227,7 @@ export class CwlRotationService {
           clanName: currentRound.clanName,
           createdFromRoundState: currentRound.roundState,
           hasOverlapPreparation,
-          currentLineupTags,
+          currentLineupTags: eligibleLineupTags,
           rosterRows,
         } as Prisma.InputJsonValue,
         days: planDays.map((day) => ({
@@ -1149,6 +1239,7 @@ export class CwlRotationService {
           metadata: {
             source: "manual",
             generatedFromRoundDay: currentRound.roundDay,
+            rosterRows: buildRosterRowsForMetadata(day.members),
           } as Prisma.InputJsonValue,
           members: day.members.map((member, index) => ({
             playerTag: member.playerTag,
@@ -1354,12 +1445,14 @@ export class CwlRotationService {
         availablePlayers: dedupedConfirmedSignups.length,
       };
     }
-    const rosterEntries = dedupedConfirmedSignups.map<CwlSeasonRosterEntry>((signup) => ({
+    const rosterEntries = dedupedConfirmedSignups.map<CwlRotationSeedRosterEntry>((signup, index) => ({
       season,
       clanTag,
       playerTag: signup.playerTag,
       playerName: signup.playerName,
       townHall: signup.townHall,
+      weight: signup.weight,
+      sourcePosition: index,
       linkedDiscordUserId: null,
       linkedDiscordUsername: null,
       daysParticipated: 0,

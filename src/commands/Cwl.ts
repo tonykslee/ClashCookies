@@ -149,6 +149,100 @@ async function resolveCwlRosterSignupTagSet(input: {
   );
 }
 
+function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader") return "coleader";
+  return null;
+}
+
+function compareCwlMembersListEntries(
+  left: {
+    playerTag: string;
+    playerName: string;
+    townHall: number | null;
+    currentWeight?: number | null;
+  },
+  right: {
+    playerTag: string;
+    playerName: string;
+    townHall: number | null;
+    currentWeight?: number | null;
+  },
+  rosterSignupTagSet: Set<string> | null,
+): number {
+  const leftInRoster = rosterSignupTagSet?.has(normalizePlayerTag(left.playerTag) ?? "") ?? false;
+  const rightInRoster = rosterSignupTagSet?.has(normalizePlayerTag(right.playerTag) ?? "") ?? false;
+  if (leftInRoster !== rightInRoster) {
+    return leftInRoster ? -1 : 1;
+  }
+
+  const leftHasWeight = left.currentWeight !== null && Number.isFinite(left.currentWeight);
+  const rightHasWeight = right.currentWeight !== null && Number.isFinite(right.currentWeight);
+  if (leftHasWeight !== rightHasWeight) {
+    return leftHasWeight ? -1 : 1;
+  }
+  if (leftHasWeight && rightHasWeight && left.currentWeight !== right.currentWeight) {
+    return (right.currentWeight ?? -1) - (left.currentWeight ?? -1);
+  }
+
+  const leftTownHall = left.townHall ?? -1;
+  const rightTownHall = right.townHall ?? -1;
+  if (leftTownHall !== rightTownHall) {
+    return rightTownHall - leftTownHall;
+  }
+
+  const byName = left.playerName.localeCompare(right.playerName, undefined, { sensitivity: "base" });
+  if (byName !== 0) return byName;
+  return left.playerTag.localeCompare(right.playerTag);
+}
+
+function formatCwlMembersRoleBadge(role: string | null | undefined): string {
+  const normalized = normalizeClanMemberRole(role);
+  return normalized ? "👑" : "";
+}
+
+function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> {
+  const rosterRowsValue = (plan.metadata as { rosterRows?: unknown } | null)?.rosterRows;
+  if (!Array.isArray(rosterRowsValue)) {
+    return new Set();
+  }
+
+  return new Set(
+    rosterRowsValue
+      .map((row) => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+        const record = row as { playerTag?: unknown };
+        return normalizePlayerTag(String(record.playerTag ?? ""));
+      })
+      .filter((tag): tag is string => Boolean(tag)),
+  );
+}
+
+function buildCwlRotationLeaderNames(
+  entries: Awaited<ReturnType<typeof cwlStateService.listSeasonRosterForClan>>,
+): string[] {
+  const leaders = entries
+    .map((entry) => ({
+      name: entry.playerName,
+      tag: entry.playerTag,
+      role: normalizeClanMemberRole(entry.role),
+    }))
+    .filter((entry) => entry.role !== null)
+    .sort((left, right) => {
+      const leftRank = left.role === "leader" ? 0 : 1;
+      const rightRank = right.role === "leader" ? 0 : 1;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      return left.tag.localeCompare(right.tag);
+    });
+  return leaders.map((entry) => entry.name);
+}
+
 function renderTownHallIcon(
   townHall: number | null | undefined,
   townHallEmojiByLevel: Map<number, string>,
@@ -463,12 +557,15 @@ function renderMembersListLines(input: {
   townHallEmojiByLevel: Map<number, string>;
   rosterSignupTagSet: Set<string> | null;
 }) {
+  const sortedEntries = [...input.entries].sort((left, right) =>
+    compareCwlMembersListEntries(left, right, input.rosterSignupTagSet),
+  );
   const lines: string[] = [
     `Season: ${input.season}`,
     `Clan: ${input.clanName ? `${input.clanName} (${input.clanTag})` : input.clanTag}`,
     "",
   ];
-  for (const entry of input.entries) {
+  for (const entry of sortedEntries) {
     const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
     const linkLabel = entry.linkedDiscordUserId
       ? `<@${entry.linkedDiscordUserId}>`
@@ -482,10 +579,11 @@ function renderMembersListLines(input: {
       input.rosterSignupTagSet && normalizedPlayerTag && !input.rosterSignupTagSet.has(normalizedPlayerTag)
         ? " :warning:"
         : "";
+    const badgeParts = [formatCwlMembersRoleBadge(entry.role), rosterWarning ? ":warning:" : ""].filter(Boolean);
     lines.push(
       `${renderTownHallIcon(entry.townHall, input.townHallEmojiByLevel)} ${entry.playerName} \`${
         entry.playerTag
-      }\`${rosterWarning} - days ${entry.daysParticipated} - ${linkLabel} - ${currentLabel}`,
+      }\`${badgeParts.length > 0 ? ` ${badgeParts.join(" ")}` : ""} - days ${entry.daysParticipated} - ${linkLabel} - ${currentLabel}`,
     );
   }
   if (input.entries.length <= 0) {
@@ -510,7 +608,13 @@ function buildCwlRotationMergedRosterLines(input: {
     playerName: string;
   }>;
   actualAvailable: boolean;
-}): string[] {
+  rosterTagSet: Set<string>;
+  excludedTagSet: Set<string>;
+}): {
+  lines: string[];
+  hasMismatchWarning: boolean;
+  hasBlockedWarning: boolean;
+} {
   const actualTagSet = new Set(
     input.actualPlayerRows.map((member) => normalizePlayerTag(member.playerTag)).filter(Boolean),
   );
@@ -530,12 +634,16 @@ function buildCwlRotationMergedRosterLines(input: {
     }));
 
   if (!input.actualAvailable) {
-    return [
+    return {
+      lines: [
       "Actual lineup unavailable",
       ...plannedBenchMembers.map(
         (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
       ),
-    ];
+      ],
+      hasMismatchWarning: false,
+      hasBlockedWarning: false,
+    };
   }
 
   const expectedMembers = input.plannedMembers.filter((member) => !member.subbedOut);
@@ -563,6 +671,9 @@ function buildCwlRotationMergedRosterLines(input: {
   });
 
   const lines: string[] = [];
+  let hasMismatchWarning = false;
+  let hasBlockedWarning = false;
+  const hasRosterTagSet = input.rosterTagSet.size > 0;
   let missingExpectedIndex = 0;
   for (const actual of actualRows) {
     if (actual.normalizedTag && expectedByTag.has(actual.normalizedTag)) {
@@ -570,15 +681,27 @@ function buildCwlRotationMergedRosterLines(input: {
       continue;
     }
 
+    const isBlocked =
+      Boolean(actual.normalizedTag) &&
+      (input.excludedTagSet.has(actual.normalizedTag) ||
+        (hasRosterTagSet && !input.rosterTagSet.has(actual.normalizedTag)));
+    if (isBlocked) {
+      hasBlockedWarning = true;
+      lines.push(`⛔️ ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
+      continue;
+    }
+
     const expected = missingExpectedRows[missingExpectedIndex] ?? null;
     if (expected) {
       missingExpectedIndex += 1;
+      hasMismatchWarning = true;
       lines.push(
         `:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount} - Expected ${expected.playerName} (${expected.playerTag})`,
       );
       continue;
     }
 
+    hasMismatchWarning = true;
     lines.push(`:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
   }
 
@@ -602,7 +725,11 @@ function buildCwlRotationMergedRosterLines(input: {
     lines.push("No actual lineup members.");
   }
 
-  return lines;
+  return {
+    lines,
+    hasMismatchWarning,
+    hasBlockedWarning,
+  };
 }
 
 function pruneExpiredCwlRotationImportSessions(nowMs = Date.now()): void {
@@ -1461,6 +1588,7 @@ function buildCwlRotationShowPageLines(input: {
   pageIndex: number;
   pageCount: number;
   battleDayStartAt: Date | null;
+  leaderNames: string[];
   warCountByPlayerTag: Map<string, number>;
   validation: {
     actualAvailable: boolean;
@@ -1475,6 +1603,10 @@ function buildCwlRotationShowPageLines(input: {
     days: input.plan.days,
     day: input.day,
   });
+  const rosterTagSet = buildCwlRotationRosterTagSet(input.plan);
+  const excludedTagSet = new Set(
+    input.plan.excludedPlayerTags.map((tag) => normalizePlayerTag(tag)).filter((tag): tag is string => Boolean(tag)),
+  );
   const lines: string[] = [
     `Season: ${input.plan.season}`,
     `Clan: ${input.plan.clanName || input.plan.clanTag}`,
@@ -1484,29 +1616,40 @@ function buildCwlRotationShowPageLines(input: {
   if (input.plan.excludedPlayerTags.length > 0) {
     lines.push(`Excluded: ${input.plan.excludedPlayerTags.join(", ")}`);
   }
+  lines.push(`Leaders/Co-leaders: ${input.leaderNames.length > 0 ? input.leaderNames.join(", ") : "unknown"}`);
   lines.push(`Page: ${input.pageIndex + 1} / ${input.pageCount}`);
   lines.push("");
   lines.push(`Day ${input.day.roundDay}`);
   lines.push("");
   if (!input.validation || !input.validation.actualAvailable) {
     lines.push("Actual lineup unavailable");
-    lines.push(
-      ...buildCwlRotationMergedRosterLines({
-        warCountByPlayerTag: input.warCountByPlayerTag,
-        plannedMembers: visibleDayRows,
-        actualPlayerRows: [],
-        actualAvailable: false,
-      }).slice(1),
-    );
+    const merged = buildCwlRotationMergedRosterLines({
+      warCountByPlayerTag: input.warCountByPlayerTag,
+      plannedMembers: visibleDayRows,
+      actualPlayerRows: [],
+      actualAvailable: false,
+      rosterTagSet,
+      excludedTagSet,
+    });
+    lines.push(...merged.lines.slice(1));
   } else {
-    lines.push(
-      ...buildCwlRotationMergedRosterLines({
-        warCountByPlayerTag: input.warCountByPlayerTag,
-        plannedMembers: visibleDayRows,
-        actualPlayerRows: input.validation.actualPlayerRows,
-        actualAvailable: input.validation.actualAvailable,
-      }),
-    );
+    const merged = buildCwlRotationMergedRosterLines({
+      warCountByPlayerTag: input.warCountByPlayerTag,
+      plannedMembers: visibleDayRows,
+      actualPlayerRows: input.validation.actualPlayerRows,
+      actualAvailable: input.validation.actualAvailable,
+      rosterTagSet,
+      excludedTagSet,
+    });
+    if (merged.hasMismatchWarning) {
+      lines.push(
+        "⚠️ Unexpected lineup mismatch: actual player is in where another planned player was expected.",
+      );
+    }
+    if (merged.hasBlockedWarning) {
+      lines.push("⛔️ Not on roster / excluded from rotation.");
+    }
+    lines.push(...merged.lines);
   }
 
   return lines;
@@ -1518,6 +1661,7 @@ function buildCwlRotationShowPageEmbed(input: {
   pageIndex: number;
   pageCount: number;
   battleDayStartAt: Date | null;
+  leaderNames: string[];
   warCountByPlayerTag: Map<string, number>;
   validation: {
     actualAvailable: boolean;
@@ -1538,6 +1682,7 @@ function buildCwlRotationShowPageEmbed(input: {
             pageIndex: input.pageIndex,
             pageCount: input.pageCount,
             battleDayStartAt: input.battleDayStartAt,
+            leaderNames: input.leaderNames,
             warCountByPlayerTag: input.warCountByPlayerTag,
             validation: input.validation,
           }),
@@ -1679,6 +1824,11 @@ async function loadCwlRotationShowClanPayload(input: {
       throughRoundDay: selectedDay.roundDay,
     }),
   ]);
+  const seasonRosterEntries = await cwlStateService.listSeasonRosterForClan({
+    clanTag: planView.clanTag,
+    season: planView.season,
+  });
+  const leaderNames = buildCwlRotationLeaderNames(seasonRosterEntries);
 
   return {
     payload: await buildCwlRotationShowClanPayload({
@@ -1689,10 +1839,11 @@ async function loadCwlRotationShowClanPayload(input: {
       pageIndex,
       pageCount: relevantDays.length,
       battleDayStartAt,
+      leaderNames,
       warCountByPlayerTag,
       validation: validation
         ? {
-            actualAvailable: validation.actualAvailable,
+          actualAvailable: validation.actualAvailable,
             complete: validation.complete,
             missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
             extraActualPlayerTags: validation.extraActualPlayerTags,
@@ -1718,6 +1869,7 @@ async function buildCwlRotationShowClanPayload(input: {
   pageIndex: number;
   pageCount: number;
   battleDayStartAt: Date | null;
+  leaderNames: string[];
   warCountByPlayerTag: Map<string, number>;
   validation: {
     actualAvailable: boolean;
@@ -1737,6 +1889,7 @@ async function buildCwlRotationShowClanPayload(input: {
       pageIndex: input.pageIndex,
       pageCount: input.pageCount,
       battleDayStartAt: input.battleDayStartAt,
+      leaderNames: input.leaderNames,
       warCountByPlayerTag: input.warCountByPlayerTag,
       validation: input.validation,
     }),
@@ -2256,6 +2409,7 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
         excludeTagsRaw: exclude,
         lineupSize: size,
         overwrite,
+        guildId: interaction.guildId ?? null,
       });
 
   if (result.outcome === "not_tracked") {

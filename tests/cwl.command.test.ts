@@ -12,6 +12,12 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findFirst: vi.fn(),
   },
+  cwlPlayerClanSeason: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -333,6 +339,9 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationService, "validatePlanDay");
     vi.spyOn(cwlStateService, "getBattleDayStartForClanDay").mockResolvedValue(null);
     vi.spyOn(cwlStateService, "getParticipationCountsForClanDay").mockResolvedValue(new Map());
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([] as any);
     vi.spyOn(emojiResolverService, "fetchApplicationEmojiInventory").mockResolvedValue(makeCwlEmojiInventory());
   });
 
@@ -1225,6 +1234,7 @@ describe("/cwl command", () => {
       excludeTagsRaw: "#P9",
       lineupSize: 15,
       overwrite: true,
+      guildId: "guild-1",
     });
     expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
     expect(getDescription(interaction)).toContain("Version: 2");
@@ -1253,6 +1263,7 @@ describe("/cwl command", () => {
       excludeTagsRaw: null,
       lineupSize: null,
       overwrite: false,
+      guildId: "guild-1",
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
       "A CWL rotation plan already exists for #2QG2C08UP this season. Use overwrite:true to replace version 4.",
@@ -1280,6 +1291,7 @@ describe("/cwl command", () => {
       excludeTagsRaw: null,
       lineupSize: 20,
       overwrite: false,
+      guildId: "guild-1",
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
       "CWL rotation lineup size must be 15 or 30.",
