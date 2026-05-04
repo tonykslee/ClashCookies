@@ -4,12 +4,10 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
-  EmbedBuilder,
-  GuildMember,
-  type MessageMentionOptions,
   ModalBuilder,
   ModalSubmitInteraction,
   PermissionFlagsBits,
+  MessageMentionOptions,
   TextInputBuilder,
   TextInputStyle,
   type Guild,
@@ -28,7 +26,11 @@ import {
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
-import { trackedMessageService } from "../services/TrackedMessageService";
+import {
+  buildSyncSpinStatusEmbed,
+  parseSyncTimeMetadata,
+  trackedMessageService,
+} from "../services/TrackedMessageService";
 import {
   autocompleteSyncTimeZones,
   normalizeSyncTimeZone,
@@ -236,23 +238,6 @@ async function getSyncBadgesWithTrackedClanFallback(
   return badges;
 }
 
-function parseAllowedRoleIds(raw: string | null): string[] {
-  if (!raw) return [];
-  return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
-}
-
-async function getLeaderRoleIds(settings: SettingsService, guildId: string): Promise<string[]> {
-  const preferredRole = await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`);
-  if (preferredRole && /^\d+$/.test(preferredRole.trim())) {
-    return [preferredRole.trim()];
-  }
-  // Preferred: guild-scoped fwa leader role (new default permission model).
-  // Fallback: command role whitelist for backwards compatibility.
-  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:sync:time:post"));
-  if (syncRoles.length > 0) return syncRoles;
-  return parseAllowedRoleIds(await settings.get("command_roles:sync"));
-}
-
 function activeSyncPostKey(guildId: string): string {
   return `active_sync_post:${guildId}`;
 }
@@ -366,116 +351,21 @@ async function handleSyncStatusSubcommand(
     return;
   }
 
-  const badges = await getSyncBadgesWithTrackedClanFallback(
-    interaction.client.user?.id,
-    interaction.guild
-  );
-  if (badges.length === 0) {
-    await interaction.editReply(
-      "No clan badge emoji configuration found."
-    );
+  const tracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(message.id);
+  const metadata = tracked ? parseSyncTimeMetadata(tracked.metadata) : null;
+  if (!tracked || tracked.status !== "ACTIVE" || tracked.featureType !== "SYNC_TIME_POST" || !metadata) {
+    await interaction.editReply("Could not find tracked sync status for that message.");
     return;
   }
 
-  const leaderRoleIds = await getLeaderRoleIds(settings, guild.id);
-  const memberCache = new Map<string, GuildMember | null>();
-  const getMember = async (userId: string): Promise<GuildMember | null> => {
-    if (memberCache.has(userId)) return memberCache.get(userId) ?? null;
-    const member = await guild.members.fetch(userId).catch(() => null);
-    memberCache.set(userId, member);
-    return member;
-  };
-
-  const claimedLines: string[] = [];
-  const unclaimedLines: string[] = [];
-  const unavailableUsers: string[] = [];
-
-  for (const badge of badges) {
-    const reaction = [...message.reactions.cache.values()].find((r) =>
-      reactionMatchesBadge(r, badge)
-    );
-    const claimedBy: string[] = [];
-    const nonLeader: string[] = [];
-
-    if (reaction) {
-      const users = await reaction.users.fetch().catch(() => null);
-      if (users) {
-        for (const user of users.values()) {
-          if (user.bot) continue;
-          const member = await getMember(user.id);
-          if (!member) continue;
-
-          const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
-          const hasLeaderRole =
-            leaderRoleIds.length > 0 &&
-            leaderRoleIds.some((roleId) => member.roles.cache.has(roleId));
-          if (isAdmin || hasLeaderRole) {
-            claimedBy.push(`<@${user.id}>`);
-          } else {
-            nonLeader.push(`<@${user.id}>`);
-          }
-        }
-      }
-    }
-
-    const emojiInline = badge.emojiInline;
-    if (claimedBy.length > 0) {
-      const extra =
-        nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
-      claimedLines.push(
-        `- ${emojiInline} **${badge.code}** (${badge.label}) - ${[...new Set(claimedBy)].join(", ")}${extra}`
-      );
-    } else {
-      const extra =
-        nonLeader.length > 0 ? ` (only non-leader: ${[...new Set(nonLeader)].join(", ")})` : "";
-      unclaimedLines.push(`- ${emojiInline} **${badge.code}** (${badge.label})${extra}`);
-    }
-  }
-
-  const unavailableReaction = [...message.reactions.cache.values()].find(
-    (reaction) => !reaction.emoji.id && reaction.emoji.name === SYNC_UNAVAILABLE_EMOJI
-  );
-  if (unavailableReaction) {
-    const users = await unavailableReaction.users.fetch().catch(() => null);
-    if (users) {
-      for (const user of users.values()) {
-        if (user.bot) continue;
-        unavailableUsers.push(`<@${user.id}>`);
-      }
-    }
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle("Sync Claim Status")
-    .setDescription(
-      [
-        `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
-        (() => {
-          const epoch = extractSyncEpochSeconds(message.content);
-          return epoch
-            ? `Sync time: <t:${epoch}:F> (<t:${epoch}:R>)`
-            : "Sync time: not detected from message content";
-        })(),
-        "",
-        `Claimed: **${claimedLines.length}/${badges.length}**`,
-        `Unavailable (${SYNC_UNAVAILABLE_EMOJI}): **${[...new Set(unavailableUsers)].length}**`,
-        ...(unavailableUsers.length > 0
-          ? [`${SYNC_UNAVAILABLE_EMOJI} ${[...new Set(unavailableUsers)].join(", ")}`]
-          : []),
-        "",
-        "**Claimed Clans**",
-        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
-        "",
-        "**Unclaimed Clans**",
-        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
-      ].join("\n")
-    )
-    .setFooter({
-      text:
-        leaderRoleIds.length > 0
-          ? "Leader eligibility: Administrator or role allowed for /sync time post"
-          : "Leader eligibility: Administrator only (no /sync time post role whitelist configured)",
-    });
+  const embed = buildSyncSpinStatusEmbed({
+    guildId: guild.id,
+    sourceChannelId: tracked.channelId,
+    sourceMessageId: tracked.referenceId ?? tracked.messageId,
+    metadata,
+    claimedClanTags: tracked.claims.map((claim) => claim.clanTag),
+    title: "Sync Spin Status",
+  });
 
   await interaction.editReply({ embeds: [embed] });
 }
@@ -632,14 +522,6 @@ function extractSyncEpochSeconds(content: string): number | null {
   const epoch = Number(match[1]);
   if (!Number.isFinite(epoch) || epoch <= 0) return null;
   return epoch;
-}
-
-function reactionMatchesBadge(
-  reaction: { emoji: { id: string | null; name: string | null } },
-  badge: SyncBadge
-): boolean {
-  if (reaction.emoji.id && badge.matchEmojiIds.includes(reaction.emoji.id)) return true;
-  return Boolean(reaction.emoji.name && badge.matchEmojiNames.includes(reaction.emoji.name));
 }
 
 function buildModalCustomId(userId: string): string {
@@ -928,6 +810,7 @@ export async function handlePostModalSubmit(
       syncEpochSeconds: epochSeconds,
       roleId: role.id,
       clans: badges.map((badge) => ({
+        code: badge.code,
         clanTag: badge.clanTag,
         clanName: badge.label,
         emojiId: badge.id,
