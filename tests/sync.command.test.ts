@@ -202,6 +202,7 @@ describe("/sync time post modal submit", () => {
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
     vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockResolvedValue(undefined);
+    vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
   });
 
@@ -220,5 +221,95 @@ describe("/sync time post modal submit", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("America/Chicago"),
     );
+  });
+
+  it("renders sync post status with the shared spin-status renderer", async () => {
+    const syncMessage = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+    };
+    const channel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(syncMessage),
+      },
+    };
+    const channelCache = new Map([["channel-1", channel]]) as any;
+    channelCache.filter = (fn: (value: any) => boolean) =>
+      new Map([...channelCache.entries()].filter(([, value]) => fn(value)));
+
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValue({
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: new Date("2026-04-10T02:00:00.000Z"),
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        reminderSentAt: null,
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+          {
+            code: "TWC",
+            clanTag: "#PYLG",
+            clanName: "TheWiseCowboys",
+            emojiId: "222",
+            emojiName: "twc",
+            emojiInline: "<:twc:222>",
+          },
+        ],
+      },
+      claims: [{ clanTag: "#PYLQ" }],
+    } as any);
+
+    const interaction = {
+      inGuild: () => true,
+      guildId: "guild-1",
+      guild: {
+        id: "guild-1",
+        channels: {
+          cache: channelCache,
+        },
+      },
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue("post"),
+        getSubcommand: vi.fn().mockReturnValue("status"),
+        getString: vi.fn((name: string) => (name === "message-id" ? syncMessage.id : null)),
+      },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: { user: { id: "bot-1" } },
+      user: { id: "user-1" },
+    };
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls
+      .map((call) => call[0])
+      .find((value) => value && typeof value === "object" && "embeds" in value) as any;
+    expect(payload).toBeTruthy();
+    const embed = payload.embeds[0].toJSON() as any;
+    expect(embed.title).toBe("Sync Spin Status");
+    expect(embed.description).toContain("Claimed: **1/2**");
+    expect(embed.description).toContain("✅ <:rr:111> **RR** (Rocky Road)");
+    expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
   });
 });

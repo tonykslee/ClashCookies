@@ -213,12 +213,22 @@ function getInteractionSubcommandPath(interaction: ChatInputCommandInteraction):
   return "";
 }
 
-async function respondBestEffortToRosterCustomizeFailure(
+async function handleBestEffortSelectMenuFailure(
   interaction: StringSelectMenuInteraction,
+  context: string,
+  fallbackContent: string,
+  err: unknown,
 ): Promise<void> {
+  const code = getDiscordErrorCode(err);
+  if (code === 10062) {
+    console.warn(`${context} expired before response (10062).`);
+    return;
+  }
+
+  console.error(`${context} failed: ${formatError(err)}`);
   const payload = {
     ephemeral: true,
-    content: "Failed to update roster customization.",
+    content: fallbackContent,
   };
 
   try {
@@ -229,7 +239,13 @@ async function respondBestEffortToRosterCustomizeFailure(
 
     await interaction.reply(payload);
   } catch (responseError) {
-    console.warn(`Roster customize fallback response failed: ${formatError(responseError)}`);
+    const responseCode = getDiscordErrorCode(responseError);
+    if (responseCode === 10062) {
+      console.warn(`${context} fallback response expired before response (10062).`);
+      return;
+    }
+
+    console.error(`${context} fallback response failed: ${formatError(responseError)}`);
   }
 }
 
@@ -417,13 +433,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterSelectionMenuInteraction(interaction);
     } catch (err) {
-      console.error(`Roster selection menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster selection.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster selection menu",
+        "Failed to update roster selection.",
+        err,
+      );
     }
     return;
   }
@@ -432,13 +447,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterManageAccountSelectInteraction(interaction);
     } catch (err) {
-      console.error(`Roster manage account menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster manage accounts.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster manage account menu",
+        "Failed to update roster manage accounts.",
+        err,
+      );
     }
     return;
   }
@@ -447,13 +461,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterManageGroupSelectInteraction(interaction);
     } catch (err) {
-      console.error(`Roster manage group menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster manage groups.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster manage group menu",
+        "Failed to update roster manage groups.",
+        err,
+      );
     }
     return;
   }
@@ -462,13 +475,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterManageRosterSelectInteraction(interaction);
     } catch (err) {
-      console.error(`Roster manage roster menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster manage target roster.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster manage roster menu",
+        "Failed to update roster manage target roster.",
+        err,
+      );
     }
     return;
   }
@@ -477,13 +489,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterSelectionMenuInteraction(interaction);
     } catch (err) {
-      console.error(`Roster selection group menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster selection.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster selection group menu",
+        "Failed to update roster selection.",
+        err,
+      );
     }
     return;
   }
@@ -492,13 +503,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterPostSettingsPlayerSelectInteraction(interaction);
     } catch (err) {
-      console.error(`Roster settings player menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster settings.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster settings player menu",
+        "Failed to update roster settings.",
+        err,
+      );
     }
     return;
   }
@@ -507,13 +517,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterPostSettingsGroupSelectInteraction(interaction);
     } catch (err) {
-      console.error(`Roster settings group menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster settings.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster settings group menu",
+        "Failed to update roster settings.",
+        err,
+      );
     }
     return;
   }
@@ -522,13 +531,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterPostSettingsMenuInteraction(interaction, cocService);
     } catch (err) {
-      console.error(`Roster settings menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update roster settings.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster settings menu",
+        "Failed to update roster settings.",
+        err,
+      );
     }
     return;
   }
@@ -537,8 +545,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
     } catch (err) {
-      console.error(`Roster customize menu failed: ${formatError(err)}`);
-      await respondBestEffortToRosterCustomizeFailure(interaction);
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster customize menu",
+        "Failed to update roster customization.",
+        err,
+      );
     }
     return;
   }
@@ -547,13 +559,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleCwlRotationImportSelectMenuInteraction(interaction);
     } catch (err) {
-      console.error(`CWL rotation import select menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update the CWL rotation import review.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "CWL rotation import select menu",
+        "Failed to update the CWL rotation import review.",
+        err,
+      );
     }
     return;
   }
@@ -562,13 +573,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleCwlRotationShowSelectMenuInteraction(interaction);
     } catch (err) {
-      console.error(`CWL rotation show select menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update the CWL rotation show overview.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "CWL rotation show select menu",
+        "Failed to update the CWL rotation show overview.",
+        err,
+      );
     }
     return;
   }
@@ -577,13 +587,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleLinkListSelectMenu(interaction, cocService);
     } catch (err) {
-      console.error(`Link list select menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update link list view.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Link list select menu",
+        "Failed to update link list view.",
+        err,
+      );
     }
     return;
   }
@@ -592,13 +601,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleFwaMatchSelectMenu(interaction);
     } catch (err) {
-      console.error(`FWA match select menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to open clan match view.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "FWA match select menu",
+        "Failed to open clan match view.",
+        err,
+      );
     }
     return;
   }
@@ -607,13 +615,12 @@ const handleSelectMenuInteraction = async (
     try {
       await handleCompoAdviceClanSelectMenuInteraction(interaction);
     } catch (err) {
-      console.error(`Compo advice clan select menu failed: ${formatError(err)}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          ephemeral: true,
-          content: "Failed to update compo advice clan selection.",
-        });
-      }
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Compo advice clan select menu",
+        "Failed to update compo advice clan selection.",
+        err,
+      );
     }
     return;
   }

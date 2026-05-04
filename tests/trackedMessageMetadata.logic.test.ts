@@ -171,6 +171,7 @@ describe("tracked message metadata parsing", () => {
       reminderSentAt: "2026-03-19T15:25:00.000Z",
       clans: [
         {
+          code: "RR",
           clanTag: "#AAA111",
           clanName: "Rocky Road",
           emojiId: " 111 ",
@@ -192,6 +193,7 @@ describe("tracked message metadata parsing", () => {
       reminderSentAt: "2026-03-19T15:25:00.000Z",
       clans: [
         {
+          code: "RR",
           clanTag: "#AAA111",
           clanName: "Rocky Road",
           emojiId: "111",

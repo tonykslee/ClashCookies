@@ -57,7 +57,14 @@ export default (client: Client): void => {
       }
 
       if (tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) {
-        await trackedMessageService.recordSyncClaim(fullReaction.message.id, fullUser.id, fullReaction);
+        const recorded = await trackedMessageService.recordSyncClaim(
+          fullReaction.message.id,
+          fullUser.id,
+          fullReaction,
+        );
+        if (recorded && tracked.referenceId) {
+          await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
+        }
       }
     } catch (err) {
       console.error(`messageReactionAdd failed: ${formatError(err)}`);

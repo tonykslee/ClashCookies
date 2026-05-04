@@ -2060,6 +2060,97 @@ describe("/cwl command", () => {
     expect(getComponentSelectMenuCustomIds(backInteraction)).toHaveLength(1);
   });
 
+  it("falls back best-effort when the CWL rotation show select update fails and the fallback reply expires", async () => {
+    vi.mocked(cwlRotationService.listOverview).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        roundDay: 2,
+        battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
+        leaderNames: ["Charlie"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+    ] as any);
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 2,
+            lineupSize: 2,
+            rows: [
+              { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(2);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: true,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: [],
+      actualPlayerTags: ["#VJQ28888", "#CUV02898"],
+      actualPlayerNames: ["Charlie", "Delta"],
+    } as any);
+    vi.mocked(cwlStateService.getBattleDayStartForClanDay).mockResolvedValue(
+      new Date("2026-04-03T12:00:00.000Z"),
+    );
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#VJQ28888", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
+    vi.mocked(cwlStateService.listSeasonRosterForClan).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#VJQ28888",
+        playerName: "Charlie",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: null,
+      },
+    ]);
+
+    const overviewInteraction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+    });
+    await Cwl.run({} as any, overviewInteraction as any);
+    const selectId = getComponentSelectMenuCustomIds(overviewInteraction)[0];
+    expect(selectId).toBeTruthy();
+
+    const expiredSelectInteraction = {
+      customId: selectId,
+      values: ["#2QG2C08UP"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockRejectedValue(Object.assign(new Error("Unknown interaction"), { code: 10062 })),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(handleCwlRotationShowSelectMenuInteraction(expiredSelectInteraction as any)).resolves.toBeUndefined();
+    expect(expiredSelectInteraction.update).toHaveBeenCalledTimes(1);
+    expect(expiredSelectInteraction.reply).not.toHaveBeenCalled();
+    expect(expiredSelectInteraction.followUp).not.toHaveBeenCalled();
+  });
+
   it("returns to a refreshed overview and reflects updated status after detail refresh", async () => {
     const alphaBattleDay = Math.floor(new Date("2026-04-03T12:00:00.000Z").getTime() / 1000);
     vi.mocked(cwlRotationService.listOverview)

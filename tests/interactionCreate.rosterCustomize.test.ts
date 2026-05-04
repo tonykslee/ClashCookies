@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
+import { handleRosterPostCustomizeMenuInteraction } from "../src/commands/Roster";
 
 vi.mock("../src/commands/Roster", async () => {
   const actual = await vi.importActual<typeof import("../src/commands/Roster")>(
@@ -69,6 +70,21 @@ describe("interactionCreate roster customize fallback", () => {
     await expect(handler(interaction as any)).resolves.toBeUndefined();
 
     expect(interaction.reply).toHaveBeenCalled();
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  }, 30000);
+
+  it("returns without attempting a fallback response when the select interaction already expired", async () => {
+    vi.mocked(handleRosterPostCustomizeMenuInteraction).mockRejectedValueOnce(
+      Object.assign(new Error("Unknown interaction"), { code: 10062 }),
+    );
+    const handler = await loadInteractionHandler();
+    const interaction = makeRosterCustomizeInteraction();
+    interaction.reply = vi.fn().mockResolvedValue(undefined);
+    interaction.followUp = vi.fn().mockResolvedValue(undefined);
+
+    await expect(handler(interaction as any)).resolves.toBeUndefined();
+
+    expect(interaction.reply).not.toHaveBeenCalled();
     expect(interaction.followUp).not.toHaveBeenCalled();
   }, 30000);
 });
