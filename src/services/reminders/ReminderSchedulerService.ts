@@ -65,6 +65,10 @@ type ReminderSchedulerCounts = {
   failed: number;
 };
 
+type ReminderSchedulerStartResult =
+  | { started: true }
+  | { started: false; reason: "already_started" };
+
 /** Purpose: evaluate and dispatch due reminder triggers on a bounded interval loop. */
 export class ReminderSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -78,13 +82,26 @@ export class ReminderSchedulerService {
   ) {}
 
   /** Purpose: start one immediate cycle and register periodic scheduler runs. */
-  start(): void {
-    if (this.timer) return;
-    void this.runCycle();
+  start(): ReminderSchedulerStartResult {
+    console.log(
+      `[reminders] scheduler start requested interval_ms=${this.intervalMs} has_timer=${Boolean(this.timer)}`,
+    );
+    if (this.timer) {
+      console.log(
+        `[reminders] scheduler start skipped reason=already_started interval_ms=${this.intervalMs}`,
+      );
+      return { started: false, reason: "already_started" };
+    }
+    void this.runCycle().catch((err) => {
+      console.error(`[reminders] scheduler immediate_cycle_failed error=${formatError(err)}`);
+    });
     this.timer = setInterval(() => {
-      void this.runCycle();
+      void this.runCycle().catch((err) => {
+        console.error(`[reminders] scheduler interval_cycle_failed error=${formatError(err)}`);
+      });
     }, this.intervalMs);
     console.log(`[reminders] scheduler started interval_ms=${this.intervalMs}`);
+    return { started: true };
   }
 
   /** Purpose: stop periodic reminder scheduling for process shutdown or tests. */

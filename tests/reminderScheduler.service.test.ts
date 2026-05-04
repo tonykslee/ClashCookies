@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReminderDispatchStatus, ReminderType } from "@prisma/client";
 
 const prismaMock = vi.hoisted(() => ({
@@ -35,6 +35,7 @@ vi.mock("../src/services/CwlRegistryService", () => ({
 }));
 
 import {
+  ReminderSchedulerService,
   runReminderSchedulerCycle,
   shouldReminderOffsetFireForTest,
 } from "../src/services/reminders/ReminderSchedulerService";
@@ -695,6 +696,91 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ReminderSchedulerService startup logging", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const flushEventLoop = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  it("logs startup and registers the scheduler timer", () => {
+    const scheduler = new ReminderSchedulerService({} as any, { dispatchReminder: vi.fn() } as any, 12_345);
+    const runCycleSpy = vi.spyOn(scheduler, "runCycle").mockResolvedValue({
+      evaluated: 0,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let intervalHandler: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      intervalHandler = handler as () => void;
+      expect(timeout).toBe(12_345);
+      return 1 as any;
+    }) as any);
+
+    const result = scheduler.start();
+
+    expect(result).toEqual({ started: true });
+    expect(intervalHandler).toEqual(expect.any(Function));
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith("[reminders] scheduler start requested interval_ms=12345 has_timer=false");
+    expect(logSpy).toHaveBeenCalledWith("[reminders] scheduler started interval_ms=12345");
+    expect(runCycleSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs immediate scheduler cycle failures", async () => {
+    const scheduler = new ReminderSchedulerService({} as any, { dispatchReminder: vi.fn() } as any, 12_345);
+    vi.spyOn(scheduler, "runCycle").mockRejectedValue(new Error("boom"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      expect(timeout).toBe(12_345);
+      return 1 as any;
+    }) as any);
+
+    const result = scheduler.start();
+
+    expect(result).toEqual({ started: true });
+    await flushEventLoop();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[reminders] scheduler immediate_cycle_failed error="),
+    );
+  });
+
+  it("logs interval scheduler cycle failures", async () => {
+    const scheduler = new ReminderSchedulerService({} as any, { dispatchReminder: vi.fn() } as any, 12_345);
+    const runCycleSpy = vi
+      .spyOn(scheduler, "runCycle")
+      .mockResolvedValueOnce({
+        evaluated: 0,
+        fired: 0,
+        deduped: 0,
+        failed: 0,
+      })
+      .mockRejectedValueOnce(new Error("interval boom"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let intervalHandler: (() => void) | null = null;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      intervalHandler = handler as () => void;
+      expect(timeout).toBe(12_345);
+      return 1 as any;
+    }) as any);
+
+    const result = scheduler.start();
+
+    expect(result).toEqual({ started: true });
+    expect(intervalHandler).toEqual(expect.any(Function));
+    intervalHandler?.();
+    await flushEventLoop();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[reminders] scheduler interval_cycle_failed error="),
+    );
+    expect(runCycleSpy).toHaveBeenCalledTimes(2);
   });
 });
 
