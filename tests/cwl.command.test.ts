@@ -1500,8 +1500,49 @@ describe("/cwl command", () => {
     );
     expect(getDescription(interaction)).toContain("- Leaders/Co-leaders: unknown");
     expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
-    expect(getComponentSelectMenuOptions(interaction).map((option) => option.label)).toEqual(
+    const dropdownOptions = getComponentSelectMenuOptions(interaction);
+    expect(dropdownOptions.map((option) => option.label)).toEqual(
       expect.arrayContaining(["CWL Alpha", "CWL Beta"]),
+    );
+    expect(dropdownOptions.map((option) => option.description)).toEqual(
+      expect.arrayContaining(["day 3 - ⚠️", "day 3 - ✅"]),
+    );
+    expect(dropdownOptions.map((option) => option.description?.toLowerCase() ?? "").join(" ")).not.toContain(
+      "complete",
+    );
+    expect(dropdownOptions.map((option) => option.description?.toLowerCase() ?? "").join(" ")).not.toContain(
+      "completed",
+    );
+    expect(dropdownOptions.map((option) => option.description?.toLowerCase() ?? "").join(" ")).not.toContain(
+      "mismatch",
+    );
+  });
+
+  it("renders overview dropdown status labels for completed clans with emoji", async () => {
+    vi.spyOn(cwlRotationService, "listOverview").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        roundDay: 3,
+        battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
+        leaderNames: ["Alpha"],
+        status: "completed" as any,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+    ]);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const dropdownOptions = getComponentSelectMenuOptions(interaction);
+    expect(dropdownOptions.map((option) => option.description)).toEqual(
+      expect.arrayContaining(["day 3 - ✅"]),
     );
   });
 
@@ -1542,6 +1583,60 @@ describe("/cwl command", () => {
         ],
       } as any,
     ]);
+    vi.mocked(cwlStateService.listSeasonRosterForClan).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#ALPHA1",
+        playerName: "Alpha Leader",
+        townHall: 18,
+        currentWeight: null,
+        role: "leader",
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#ALPHA2",
+        playerName: "Alpha CoLeader",
+        townHall: 17,
+        currentWeight: null,
+        role: "coleader",
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#BRAVO1",
+        playerName: "Bravo Leader",
+        townHall: 18,
+        currentWeight: null,
+        role: "leader",
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#BRAVO2",
+        playerName: "Bravo CoLeader",
+        townHall: 17,
+        currentWeight: null,
+        role: "coleader",
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      },
+    ] as any);
     vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(2);
     vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
       actualAvailable: true,
@@ -1595,6 +1690,9 @@ describe("/cwl command", () => {
     await handleCwlRotationShowSelectMenuInteraction(selectInteraction as any);
     expect(getUpdatedDescription(selectInteraction)).toContain("Day 2");
     expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getUpdatedDescription(selectInteraction)).toContain("Leaders/Co-leaders: Alpha Leader, Alpha CoLeader");
+    expect(getUpdatedDescription(selectInteraction)).not.toContain("Bravo Leader");
+    expect(getUpdatedDescription(selectInteraction)).not.toContain("Bravo CoLeader");
     expect(getUpdatedDescription(selectInteraction)).toContain("Battle day start: <t:");
     expect(getUpdatedDescription(selectInteraction)).toContain(":R>");
     expect(getComponentButtonCustomIds(selectInteraction)).toEqual(
