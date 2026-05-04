@@ -210,9 +210,10 @@ function buildReminderDispatchHeaderLines(input: {
   warHeadline: ConfirmedWarHeadline | null;
 }): string[] {
   const payload = input.input;
-  const clanLabel = payload.clanName
-    ? `${payload.clanName} ${payload.clanTag}`
-    : payload.clanTag;
+  const clanLabel = buildReminderClanLine({
+    clanName: payload.clanName,
+    clanTag: payload.clanTag,
+  });
   const offsetLabel = formatOffsetLabel(payload.offsetSeconds);
   const remainingSeconds = Math.max(
     0,
@@ -230,6 +231,26 @@ function buildReminderDispatchHeaderLines(input: {
     `Time remaining: <t:${endUnix}:R> (${remainingSeconds}s)`,
     `Ends at: <t:${endUnix}:F> (<t:${endUnix}:R>)`,
   ];
+}
+
+/** Purpose: render one Discord-safe clan label with a clickable clan profile link while preserving the visible clan tag. */
+function buildReminderClanLine(input: {
+  clanName: string | null;
+  clanTag: string;
+}): string {
+  const normalizedClanTag = normalizeClanTag(input.clanTag);
+  const clanTag = normalizedClanTag || String(input.clanTag ?? "").trim();
+  const clanName = String(input.clanName ?? "").replace(/\s+/g, " ").trim();
+  if (!clanTag) {
+    return clanName;
+  }
+  if (!normalizedClanTag) {
+    return clanName ? `${clanName} ${clanTag}` : clanTag;
+  }
+
+  const visibleClanName = clanName || clanTag;
+  const encodedTag = encodeURIComponent(normalizedClanTag);
+  return `[${visibleClanName}](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodedTag}>) ${clanTag}`;
 }
 
 /** Purpose: resolve roster semantics for WAR/CWL/RAIDS reminder sends, using event identity to split WAR vs CWL paths. */
