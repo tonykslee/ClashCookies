@@ -3298,6 +3298,38 @@ export async function handleCwlRotationShowButtonInteraction(
   });
 }
 
+function getDiscordErrorCode(err: unknown): number | null {
+  const code = (err as { code?: number } | null | undefined)?.code;
+  return typeof code === "number" ? code : null;
+}
+
+async function respondBestEffortToCwlRotationShowFailure(
+  interaction: StringSelectMenuInteraction,
+  content: string,
+): Promise<void> {
+  const payload = {
+    ephemeral: true,
+    content,
+  };
+
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload);
+      return;
+    }
+
+    await interaction.reply(payload);
+  } catch (responseError) {
+    const code = getDiscordErrorCode(responseError);
+    if (code === 10062) {
+      console.warn("CWL rotation show fallback response expired before response (10062).");
+      return;
+    }
+
+    console.error(`CWL rotation show fallback response failed: ${formatError(responseError)}`);
+  }
+}
+
 export async function handleCwlRotationShowSelectMenuInteraction(
   interaction: StringSelectMenuInteraction,
 ): Promise<void> {
@@ -3335,10 +3367,24 @@ export async function handleCwlRotationShowSelectMenuInteraction(
     return;
   }
 
-  await interaction.update({
-    embeds: [renderPayload.payload.embed],
-    components: renderPayload.payload.components,
-  });
+  try {
+    await interaction.update({
+      embeds: [renderPayload.payload.embed],
+      components: renderPayload.payload.components,
+    });
+  } catch (err) {
+    const code = getDiscordErrorCode(err);
+    if (code === 10062) {
+      console.warn("CWL rotation show select menu expired before update (10062).");
+      return;
+    }
+
+    console.error(`CWL rotation show select menu failed: ${formatError(err)}`);
+    await respondBestEffortToCwlRotationShowFailure(
+      interaction,
+      "Failed to update the CWL rotation show overview.",
+    );
+  }
 }
 
 export async function handleRosterSignupButtonInteraction(
