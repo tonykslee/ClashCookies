@@ -371,6 +371,15 @@ export default (client: Client, cocService: CoCService): void => {
       );
     }
 
+    console.log("[reminders] ready_start begin");
+    const reminderScheduler = new ReminderSchedulerService(client);
+    const reminderSchedulerStart = reminderScheduler.start();
+    console.log(
+      reminderSchedulerStart.started
+        ? "[reminders] ready_start complete started=true"
+        : `[reminders] ready_start complete started=false reason=${reminderSchedulerStart.reason}`,
+    );
+
     TelemetryIngestService.getInstance().startAutoFlush();
     startTelemetryScheduleLoop(client);
     console.log("Telemetry ingest + schedule loops enabled.");
@@ -829,10 +838,6 @@ export default (client: Client, cocService: CoCService): void => {
         `[mirror-sync] event=scheduler_started interval_minutes=${mirrorSyncIntervalMinutes}`,
       );
     }
-
-    const reminderScheduler = new ReminderSchedulerService(client);
-    reminderScheduler.start();
-    console.log("Reminder scheduler loop initialized.");
 
     if (activePollingEnabled) {
       const userActivityReminderScheduler = new UserActivityReminderSchedulerService(
