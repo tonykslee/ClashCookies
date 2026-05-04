@@ -1500,9 +1500,15 @@ describe("/cwl command", () => {
     );
     expect(getDescription(interaction)).toContain("- Leaders/Co-leaders: unknown");
     expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
-    expect(getComponentSelectMenuOptions(interaction).map((option) => option.label)).toEqual(
+    const overviewOptions = getComponentSelectMenuOptions(interaction);
+    expect(overviewOptions.map((option) => option.label)).toEqual(
       expect.arrayContaining(["CWL Alpha", "CWL Beta"]),
     );
+    const overviewDescriptions = overviewOptions.map((option) => option.description ?? "").join("\n");
+    expect(overviewDescriptions).toContain("day 3 - ⚠️");
+    expect(overviewDescriptions).toContain("day 3 - ✅");
+    expect(overviewDescriptions).not.toContain("complete");
+    expect(overviewDescriptions).not.toContain("mismatch");
   });
 
   it("navigates from the overview dropdown into clan view and back to overview, enforcing requester-only access", async () => {
@@ -1560,6 +1566,44 @@ describe("/cwl command", () => {
         ["#CUV02898", 1],
       ]),
     );
+    vi.mocked(cwlStateService.listSeasonRosterForClan).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#VJQ28888",
+        playerName: "Charlie",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: null,
+        role: "leader",
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#ZZZ11111",
+        playerName: "Other Clan Leader",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 4,
+        currentRound: null,
+        role: "leader",
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#ZZZ22222",
+        playerName: "Other Clan Co",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 3,
+        currentRound: null,
+        role: "coLeader",
+      },
+    ]);
 
     const overviewInteraction = makeInteraction({
       group: "rotations",
@@ -1595,6 +1639,9 @@ describe("/cwl command", () => {
     await handleCwlRotationShowSelectMenuInteraction(selectInteraction as any);
     expect(getUpdatedDescription(selectInteraction)).toContain("Day 2");
     expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getUpdatedDescription(selectInteraction)).toContain("Leaders/Co-leaders: Charlie");
+    expect(getUpdatedDescription(selectInteraction)).not.toContain("Other Clan Leader");
+    expect(getUpdatedDescription(selectInteraction)).not.toContain("Other Clan Co");
     expect(getUpdatedDescription(selectInteraction)).toContain("Battle day start: <t:");
     expect(getUpdatedDescription(selectInteraction)).toContain(":R>");
     expect(getComponentButtonCustomIds(selectInteraction)).toEqual(
@@ -2125,6 +2172,31 @@ describe("/cwl command", () => {
         linkedDiscordUsername: null,
         daysParticipated: 1,
         currentRound: null,
+        role: "leader",
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#ZZZ11111",
+        playerName: "Other Clan Leader",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 4,
+        currentRound: null,
+        role: "leader",
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        playerTag: "#ZZZ22222",
+        playerName: "Other Clan Co",
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 3,
+        currentRound: null,
+        role: "coLeader",
       },
     ]);
 

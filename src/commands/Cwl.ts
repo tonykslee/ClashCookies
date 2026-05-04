@@ -1576,10 +1576,16 @@ function buildCwlRotationShowOverviewActionRows(input: {
       input.overview.slice(0, CWL_ROTATION_SHOW_OVERVIEW_MAX_OPTIONS).map((entry) => ({
         label: (entry.clanName || entry.clanTag).slice(0, 100),
         value: entry.clanTag,
-        description: `day ${entry.roundDay ?? "unknown"} - ${entry.status.replace(/_/g, " ")}`,
+        description: `day ${entry.roundDay ?? "unknown"} - ${formatCwlRotationOverviewStatusLabel(entry.status)}`,
       })),
     );
   return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)];
+}
+
+function formatCwlRotationOverviewStatusLabel(status: string): string {
+  if (status === "complete") return "✅";
+  if (status === "mismatch") return "⚠️";
+  return status.replace(/_/g, " ");
 }
 
 function buildCwlRotationShowPageLines(input: {
@@ -1828,7 +1834,9 @@ async function loadCwlRotationShowClanPayload(input: {
     clanTag: planView.clanTag,
     season: planView.season,
   });
-  const leaderNames = buildCwlRotationLeaderNames(seasonRosterEntries);
+  const leaderNames = buildCwlRotationLeaderNames(
+    seasonRosterEntries.filter((entry) => normalizeClanTag(entry.clanTag) === normalizeClanTag(planView.clanTag)),
+  );
 
   return {
     payload: await buildCwlRotationShowClanPayload({
