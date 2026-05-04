@@ -518,7 +518,8 @@ function buildCwlRotationOverviewLines(input: {
   for (const entry of input.overview) {
     const clanName = entry.clanName || entry.clanTag;
     const clanLabel = `${clanName} (\`${entry.clanTag}\`)`;
-    const statusEmoji = entry.status === "complete" ? input.statusIcons.yes : input.statusIcons.no;
+    const statusLabel = formatCwlRotationOverviewStatusLabel(entry.status);
+    const statusEmoji = statusLabel === "✅" ? input.statusIcons.yes : input.statusIcons.no;
     const battleDayStart = formatRelativeTimestamp(entry.battleDayStartAt);
     lines.push(`${statusEmoji} ${clanLabel} - day ${entry.roundDay ?? "unknown"} - Next Battle Day ${battleDayStart}`);
     lines.push(
