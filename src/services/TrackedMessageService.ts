@@ -1,4 +1,5 @@
-import { Client } from "discord.js";
+import { Client, EmbedBuilder } from "discord.js";
+import { normalizeClanTag } from "./PlayerLinkService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 
@@ -70,6 +71,7 @@ export type SyncTimeTrackedMetadata = {
   syncEpochSeconds: number;
   roleId: string;
   clans: Array<{
+    code: string;
     clanTag: string;
     clanName: string;
     emojiId: string | null;
@@ -95,6 +97,24 @@ function normalizeTagBare(tag: string): string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function resolveSyncClanCode(input: { code?: unknown; clanTag: string; clanName: string }): string {
+  const explicitCode = String(input.code ?? "").replace(/\s+/g, " ").trim();
+  if (explicitCode) return explicitCode.toUpperCase();
+
+  const source = String(input.clanName ?? "").replace(/\s+/g, " ").trim() || input.clanTag.replace(/^#/, "");
+  const lettersAndNumbers = source
+    .normalize("NFKC")
+    .replace(/["'`]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  const base = lettersAndNumbers.length > 0 ? lettersAndNumbers : source.replace(/\s+/g, "");
+  const tagBase = input.clanTag.replace(/^#/, "").toUpperCase();
+  return (base + tagBase).slice(0, 3).toUpperCase();
 }
 
 export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMetadata | null {
@@ -188,6 +208,11 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
   const clans = value.clans
     .map((clan) => {
       if (!isObject(clan)) return null;
+      const clanCode = resolveSyncClanCode({
+        code: clan.code,
+        clanTag: String(clan.clanTag ?? "").trim(),
+        clanName: String(clan.clanName ?? "").trim(),
+      });
       const clanTag = String(clan.clanTag ?? "").trim();
       const clanName = String(clan.clanName ?? "").trim();
       const emojiInline = String(clan.emojiInline ?? "").trim();
@@ -195,6 +220,7 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
       const emojiNameRaw = String(clan.emojiName ?? "").trim();
       if (!clanTag || !clanName || !emojiInline) return null;
       return {
+        code: clanCode,
         clanTag,
         clanName,
         emojiId: emojiIdRaw || null,
@@ -211,6 +237,41 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     clans,
     reminderSentAt: typeof value.reminderSentAt === "string" ? value.reminderSentAt : null,
   };
+}
+
+/** Purpose: render the current sync spin/claim state into one embed shared by the scheduler and the manual command. */
+export function buildSyncSpinStatusEmbed(input: {
+  guildId: string;
+  sourceChannelId: string;
+  sourceMessageId: string;
+  metadata: SyncTimeTrackedMetadata;
+  claimedClanTags: Iterable<string>;
+  title?: string;
+}): EmbedBuilder {
+  const claimedSet = new Set(
+    [...input.claimedClanTags]
+      .map((clanTag) => normalizeClanTag(clanTag))
+      .filter((clanTag): clanTag is string => Boolean(clanTag)),
+  );
+  const claimedCount = input.metadata.clans.filter((clan) => claimedSet.has(normalizeClanTag(clan.clanTag))).length;
+
+  const embed = new EmbedBuilder()
+    .setTitle(input.title ?? "Sync Spin Status")
+    .setDescription(
+      [
+        `Message: https://discord.com/channels/${input.guildId}/${input.sourceChannelId}/${input.sourceMessageId}`,
+        `Sync time: <t:${input.metadata.syncEpochSeconds}:F> (<t:${input.metadata.syncEpochSeconds}:R>)`,
+        "",
+        `Claimed: **${claimedCount}/${input.metadata.clans.length}**`,
+        "",
+        "**Clan Status**",
+        ...input.metadata.clans.map((clan) => {
+          const prefix = claimedSet.has(normalizeClanTag(clan.clanTag)) ? "✅" : "-";
+          return `${prefix} ${clan.emojiInline} **${clan.code}** (${clan.clanName})`;
+        }),
+      ].join("\n"),
+    );
+  return embed;
 }
 
 function emojiMatches(
@@ -426,10 +487,24 @@ export class TrackedMessageService {
     const tracked = await prisma.trackedMessage.findUnique({ where: { messageId } });
     if (!tracked) return;
     if (tracked.status === TRACKED_MESSAGE_STATUS.DELETED) return;
-    await prisma.trackedMessage.update({
-      where: { messageId },
-      data: { status: TRACKED_MESSAGE_STATUS.DELETED },
-    });
+    await prisma.$transaction([
+      prisma.trackedMessage.update({
+        where: { messageId },
+        data: { status: TRACKED_MESSAGE_STATUS.DELETED },
+      }),
+      ...(tracked.referenceId
+        ? []
+        : [
+            prisma.trackedMessage.updateMany({
+              where: {
+                referenceId: messageId,
+                featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+                status: TRACKED_MESSAGE_STATUS.ACTIVE,
+              },
+              data: { status: TRACKED_MESSAGE_STATUS.DELETED },
+            }),
+          ]),
+    ]);
   }
 
   async handleFwaBaseSwapReaction(params: {
@@ -556,8 +631,9 @@ export class TrackedMessageService {
     guildId: string;
     channelId: string;
     messageId: string;
-    remindAt: Date;
+    remindAt?: Date | null;
     expiresAt: Date;
+    referenceId?: string | null;
     metadata: SyncTimeTrackedMetadata;
   }): Promise<void> {
     await prisma.trackedMessage.upsert({
@@ -567,7 +643,8 @@ export class TrackedMessageService {
         channelId: params.channelId,
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
-        remindAt: params.remindAt,
+        referenceId: params.referenceId ?? null,
+        remindAt: params.remindAt ?? null,
         expiresAt: params.expiresAt,
         metadata: params.metadata as any,
       },
@@ -577,7 +654,8 @@ export class TrackedMessageService {
         messageId: params.messageId,
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
-        remindAt: params.remindAt,
+        referenceId: params.referenceId ?? null,
+        remindAt: params.remindAt ?? null,
         expiresAt: params.expiresAt,
         metadata: params.metadata as any,
       },
@@ -632,6 +710,7 @@ export class TrackedMessageService {
     return prisma.trackedMessage.findFirst({
       where: {
         guildId,
+        referenceId: null,
         ...activeWhere(TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST),
       },
       orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
@@ -656,6 +735,7 @@ export class TrackedMessageService {
       where: {
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: null,
         remindAt: { lte: now },
       },
       include: { claims: true },
@@ -673,55 +753,104 @@ export class TrackedMessageService {
         continue;
       }
       if (metadata.reminderSentAt) continue;
-      const claimsByUser = new Map<string, string[]>();
-      const countByClan = new Map<string, number>();
-      for (const claim of tracked.claims) {
-        claimsByUser.set(claim.userId, [...(claimsByUser.get(claim.userId) ?? []), claim.clanTag]);
-        countByClan.set(claim.clanTag, (countByClan.get(claim.clanTag) ?? 0) + 1);
+      const existingStatus = await prisma.trackedMessage.findFirst({
+        where: {
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          referenceId: tracked.messageId,
+        },
+        select: { id: true },
+      });
+      if (existingStatus) {
+        if (!metadata.reminderSentAt) {
+          metadata.reminderSentAt = now.toISOString();
+          await prisma.trackedMessage.update({
+            where: { id: tracked.id },
+            data: { metadata: metadata as any },
+          });
+        }
+        continue;
       }
 
-      for (const [userId, clanTags] of claimsByUser.entries()) {
-        const user = await client.users.fetch(userId).catch(() => null);
-        if (!user) continue;
-        const uniqueClanTags = [...new Set(clanTags)];
-        const clans = uniqueClanTags
-          .map((clanTag) => {
-            const clan = metadata.clans.find((entry) => entry.clanTag === clanTag);
-            if (!clan) return null;
-            const claimedCount = countByClan.get(clanTag) ?? 0;
-            return {
-              clanTag,
-              clanName: clan.clanName,
-              claimedCount,
-              exclusive: claimedCount === 1,
-            };
-          })
-          .filter((entry): entry is { clanTag: string; clanName: string; claimedCount: number; exclusive: boolean } => Boolean(entry))
-          .sort((a, b) => {
-            if (a.exclusive !== b.exclusive) return a.exclusive ? -1 : 1;
-            return a.clanName.localeCompare(b.clanName, undefined, { sensitivity: "base" });
-          });
-        if (clans.length === 0) continue;
-
-        const lines = clans.map((clan) => `- ${clan.clanName} (${clan.claimedCount})`);
-        await user
-          .send([
-            `<@${userId}> sync reminder for <t:${metadata.syncEpochSeconds}:F> (<t:${metadata.syncEpochSeconds}:R>).`,
-            "You opted into these clans:",
-            ...lines,
-          ].join("\n"))
-          .catch((err) => {
-            console.error(
-              `[tracked-message] sync reminder DM failed user=${userId} message=${tracked.messageId} error=${formatError(err)}`,
-            );
-          });
+      const guild = await client.guilds.fetch(tracked.guildId).catch(() => null);
+      if (!guild) {
+        console.error(
+          `[tracked-message] sync status post skipped guild_missing message=${tracked.messageId}`,
+        );
+        continue;
+      }
+      const channel = await guild.channels.fetch(tracked.channelId).catch(() => null);
+      if (!channel || !channel.isTextBased() || !("send" in channel)) {
+        console.error(
+          `[tracked-message] sync status post skipped channel_unavailable guild=${tracked.guildId} channel=${tracked.channelId} message=${tracked.messageId}`,
+        );
+        continue;
       }
 
-      metadata.reminderSentAt = new Date().toISOString();
+      const embed = buildSyncSpinStatusEmbed({
+        guildId: tracked.guildId,
+        sourceChannelId: tracked.channelId,
+        sourceMessageId: tracked.messageId,
+        metadata,
+        claimedClanTags: new Set(
+          tracked.claims.map((claim) => String(claim.clanTag ?? "").trim()).filter(Boolean),
+        ),
+        title: "Sync Spin Status",
+      });
+
+      const sentMessage = await channel.send({
+        embeds: [embed],
+        allowedMentions: { parse: [] },
+      }).catch((err) => {
+        console.error(
+          `[tracked-message] sync status post failed guild=${tracked.guildId} channel=${tracked.channelId} message=${tracked.messageId} error=${formatError(err)}`,
+        );
+        return null;
+      });
+      if (!sentMessage) continue;
+
+      metadata.reminderSentAt = now.toISOString();
       await prisma.trackedMessage.update({
         where: { id: tracked.id },
         data: { metadata: metadata as any },
       });
+
+      await prisma.trackedMessage.upsert({
+        where: { messageId: sentMessage.id },
+        update: {
+          guildId: tracked.guildId,
+          channelId: tracked.channelId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          clanTag: tracked.clanTag ?? null,
+          referenceId: tracked.messageId,
+          remindAt: null,
+          expiresAt: tracked.expiresAt,
+          metadata: metadata as any,
+        },
+        create: {
+          guildId: tracked.guildId,
+          channelId: tracked.channelId,
+          messageId: sentMessage.id,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          clanTag: tracked.clanTag ?? null,
+          referenceId: tracked.messageId,
+          remindAt: null,
+          expiresAt: tracked.expiresAt,
+          metadata: metadata as any,
+        },
+      });
+
+      for (const clan of metadata.clans) {
+        try {
+          await sentMessage.react(clan.emojiInline);
+        } catch (err) {
+          console.error(
+            `[tracked-message] sync status post react failed guild=${tracked.guildId} channel=${tracked.channelId} message=${sentMessage.id} clan=${clan.clanTag} emoji=${clan.emojiInline} error=${formatError(err)}`,
+          );
+        }
+      }
       sentCount += 1;
     }
     return sentCount;
@@ -732,6 +861,35 @@ export class TrackedMessageService {
       where: { messageId },
       include: { claims: true },
     });
+  }
+
+  async refreshSyncSpinStatusMessage(message: {
+    id: string;
+    edit: (payload: { embeds: EmbedBuilder[] }) => Promise<unknown>;
+  }): Promise<boolean> {
+    const tracked = await prisma.trackedMessage.findUnique({
+      where: { messageId: message.id },
+      include: { claims: true },
+    });
+    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
+    if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return false;
+    if (!tracked.referenceId) return false;
+
+    const metadata = parseSyncTimeMetadata(tracked.metadata);
+    if (!metadata) return false;
+
+    const embed = buildSyncSpinStatusEmbed({
+      guildId: tracked.guildId,
+      sourceChannelId: tracked.channelId,
+      sourceMessageId: tracked.referenceId,
+      metadata,
+      claimedClanTags: new Set(
+        tracked.claims.map((claim) => String(claim.clanTag ?? "").trim()).filter(Boolean),
+      ),
+      title: "Sync Spin Status",
+    });
+    await message.edit({ embeds: [embed] });
+    return true;
   }
 }
 

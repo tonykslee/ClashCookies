@@ -44,7 +44,14 @@ export default (client: Client): void => {
       const tracked = await trackedMessageService.getActiveByMessageId(fullReaction.message.id);
       if (!tracked || tracked.status !== "ACTIVE") return;
       if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return;
-      await trackedMessageService.removeSyncClaim(fullReaction.message.id, fullUser.id, fullReaction);
+      const removed = await trackedMessageService.removeSyncClaim(
+        fullReaction.message.id,
+        fullUser.id,
+        fullReaction,
+      );
+      if (removed && tracked.referenceId) {
+        await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
+      }
     } catch (err) {
       console.error(`messageReactionRemove failed: ${formatError(err)}`);
     }
