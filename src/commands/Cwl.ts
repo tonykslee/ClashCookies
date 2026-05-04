@@ -224,8 +224,14 @@ function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> 
 
 function buildCwlRotationLeaderNames(
   entries: Awaited<ReturnType<typeof cwlStateService.listSeasonRosterForClan>>,
+  clanTag?: string | null,
 ): string[] {
+  const selectedClanTag = normalizeClanTag(clanTag ?? "");
   const leaders = entries
+    .filter((entry) => {
+      if (!selectedClanTag) return true;
+      return normalizeClanTag(entry.clanTag) === selectedClanTag;
+    })
     .map((entry) => ({
       name: entry.playerName,
       tag: entry.playerTag,
@@ -489,6 +495,15 @@ async function resolveCwlRotationOverviewStatusIcons(client: Client): Promise<{ 
   } catch {
     return fallback;
   }
+}
+
+function formatCwlRotationOverviewStatusLabel(status: string): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (normalized === "complete" || normalized === "completed") return "✅";
+  if (normalized === "mismatch") return "⚠️";
+  if (normalized === "no_active_round") return "no active round";
+  if (normalized === "no_plan_day") return "no plan day";
+  return normalized.replace(/_/g, " ");
 }
 
 function buildCwlRotationOverviewLines(input: {
@@ -1576,7 +1591,7 @@ function buildCwlRotationShowOverviewActionRows(input: {
       input.overview.slice(0, CWL_ROTATION_SHOW_OVERVIEW_MAX_OPTIONS).map((entry) => ({
         label: (entry.clanName || entry.clanTag).slice(0, 100),
         value: entry.clanTag,
-        description: `day ${entry.roundDay ?? "unknown"} - ${entry.status.replace(/_/g, " ")}`,
+        description: `day ${entry.roundDay ?? "unknown"} - ${formatCwlRotationOverviewStatusLabel(entry.status)}`,
       })),
     );
   return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)];
@@ -1828,7 +1843,7 @@ async function loadCwlRotationShowClanPayload(input: {
     clanTag: planView.clanTag,
     season: planView.season,
   });
-  const leaderNames = buildCwlRotationLeaderNames(seasonRosterEntries);
+  const leaderNames = buildCwlRotationLeaderNames(seasonRosterEntries, planView.clanTag);
 
   return {
     payload: await buildCwlRotationShowClanPayload({
