@@ -86,7 +86,9 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(contents).toHaveLength(2);
     const lines = contents[0].split("\n");
     expect(lines[0]).toBe("### BL war ends in 1h ⚫");
-    expect(lines[1]).toBe("Clan: Alpha Clan #PYLQ");
+    expect(lines[1]).toBe(
+      "Clan: [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=%23PYLQ>) #PYLQ",
+    );
     expect(lines[2]).toBe("Time remaining: <t:1775782800:R> (1800s)");
     expect(lines[3]).toBe("Ends at: <t:1775782800:F> (<t:1775782800:R>)");
     expect(contents[0]).not.toContain("WAR reminder");
@@ -286,6 +288,30 @@ describe("ReminderDispatchService roster rendering", () => {
     expect(contents[0].split("\n")[0]).toBe(expected);
   });
 
+  it("renders GAMES reminder clan header with a clickable clan profile link", async () => {
+    const contents = await buildReminderDispatchContentsForTest({
+      input: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        reminderId: "rem-1",
+        type: ReminderType.GAMES,
+        clanTag: "#PYLQ",
+        clanName: "Games Clan",
+        offsetSeconds: 1800,
+        eventIdentity: "GAMES:season-1",
+        eventEndsAt: new Date("2026-04-10T01:00:00.000Z"),
+        eventLabel: "games end",
+      },
+      nowMs: Date.parse("2026-04-10T00:30:00.000Z"),
+      cocService: null,
+    });
+
+    expect(contents).toHaveLength(1);
+    expect(contents[0].split("\n")[1]).toBe(
+      "Clan: [Games Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=%23PYLQ>) #PYLQ",
+    );
+  });
+
   it("ignores stale FwaWarMemberCurrent data when WarAttacks already has the authoritative counts", async () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       { playerTag: "#PYLQ", playerName: "Stale Alpha", position: 1, attacks: 0 },
@@ -469,6 +495,9 @@ describe("ReminderDispatchService roster rendering", () => {
     });
 
     expect(contents).toHaveLength(2);
+    expect(contents[0].split("\n")[1]).toBe(
+      "Clan: [Raid Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=%23PYLQ>) #PYLQ",
+    );
     const rosterLines = contents[0]
       .split("\n")
       .filter((line) => line.includes("/ 6"));
