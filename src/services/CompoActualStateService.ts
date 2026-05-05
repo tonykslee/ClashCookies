@@ -26,6 +26,7 @@ import {
   type CompoWarWeightBucket,
 } from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
+import { resolveLinkListDisplayWeightsByPlayerTags } from "./LinkListWeightService";
 import {
   listOpenDeferredWeightsByClanAndPlayerTags,
   normalizePlayerTag,
@@ -381,7 +382,10 @@ export async function loadCompoActualStateContext(
     }
   }
 
-  const [warFallbackMembers, deferredByClanTag] = await Promise.all([
+  const linkFallbackWeightsPromise = resolveLinkListDisplayWeightsByPlayerTags({
+    playerTagsInOrder: [...allPlayerTags],
+  });
+  const warFallbackMembersPromise =
     allPlayerTags.size === 0
       ? Promise.resolve([] as WarFallbackRow[])
       : prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
@@ -396,19 +400,25 @@ export async function loadCompoActualStateContext(
             updatedAt: true,
           },
           orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
-        }),
-    guildId
-      ? listOpenDeferredWeightsByClanAndPlayerTags({
-          guildId,
-          clanPlayerTags: trackedClanTags.map((clanTag) => ({
-            clanTag,
-            playerTags: (membersByClanTag.get(clanTag) ?? []).map(
-              (member) => member.playerTag,
-            ),
-          })),
-        })
-      : Promise.resolve(new Map<string, Map<string, number>>()),
-  ]);
+        });
+  const deferredByClanTagPromise = guildId
+    ? listOpenDeferredWeightsByClanAndPlayerTags({
+        guildId,
+        clanPlayerTags: trackedClanTags.map((clanTag) => ({
+          clanTag,
+          playerTags: (membersByClanTag.get(clanTag) ?? []).map(
+            (member) => member.playerTag,
+          ),
+        })),
+      })
+    : Promise.resolve(new Map<string, Map<string, number>>());
+
+  const [linkFallbackWeightByPlayerTag, warFallbackMembers, deferredByClanTag] =
+    await Promise.all([
+      linkFallbackWeightsPromise,
+      warFallbackMembersPromise,
+      deferredByClanTagPromise,
+    ]);
 
   const warFallbackByClanAndPlayerTag = new Map<string, number>();
   const warFallbackByPlayerTag = new Map<string, number>();
@@ -444,17 +454,23 @@ export async function loadCompoActualStateContext(
 
     for (const member of clanMembers) {
       const playerTag = normalizePlayerTag(member.playerTag);
+      const linkFallbackWeight = playerTag
+        ? linkFallbackWeightByPlayerTag.get(playerTag) ?? null
+        : null;
       const sameClanWarWeight = playerTag
         ? warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
         : null;
       const anyWarWeight = playerTag ? warFallbackByPlayerTag.get(playerTag) : null;
       const deferredWeight = playerTag ? deferredByPlayerTag.get(playerTag) : null;
-      const resolvedWeight = resolveActualCompoWeight({
-        memberWeight: member.weight,
-        deferredWeight,
-        sameClanWarWeight,
-        anyWarWeight,
-      });
+      const resolvedWeight =
+        toPositiveCompoWeight(member.weight) ??
+        linkFallbackWeight ??
+        resolveActualCompoWeight({
+          memberWeight: null,
+          deferredWeight,
+          sameClanWarWeight,
+          anyWarWeight,
+        });
       const bucket = getCompoWarWeightBucket(resolvedWeight);
       const normalizedTownHall =
         Number.isFinite(Number(member.townHall)) && Number(member.townHall) > 0
