@@ -9,6 +9,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -78,6 +84,20 @@ function makeMember(input: {
   };
 }
 
+function makeCatalog(input: { playerTag: string; latestKnownWeight: number }) {
+  return {
+    playerTag: input.playerTag,
+    latestKnownWeight: input.latestKnownWeight,
+  };
+}
+
+function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) {
+  return {
+    playerTag: input.playerTag,
+    currentWeight: input.currentWeight,
+  };
+}
+
 function makeWarFallback(input: {
   clanTag: string;
   playerTag: string;
@@ -111,9 +131,71 @@ describe("CompoActualStateService", () => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+  });
+
+  it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000008", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000009", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000020", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000028", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000088", weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 166000 }),
+      makeCatalog({ playerTag: "#P000009", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000020", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000028", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000088", latestKnownWeight: 0 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000009", currentWeight: 177000 }),
+      makePlayerCurrent({ playerTag: "#P000020", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000028", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000088", currentWeight: 0 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000020",
+        deferredWeight: 136000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      makeWarFallback({
+        clanTag: "#AAA111",
+        playerTag: "#P000028",
+        effectiveWeight: 174000,
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 2,
+        th17Count: 1,
+        th15Count: 1,
+        th14Count: 1,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1");
+
+    expect(result.stateRows).toEqual([
+      ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+      ["Alpha Clan", "798,000", "1", "6", "0", "0", "0", "0", "0", "0"],
+    ]);
   });
 
   it("renders ACTUAL state from persisted current-member data without sheet reads and still counts unresolved missing weights", async () => {

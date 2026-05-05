@@ -13,6 +13,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   fwaClanCatalog: {
     findMany: vi.fn(),
   },
@@ -96,6 +102,20 @@ function makeCurrentMember(input: {
   };
 }
 
+function makeCatalog(input: { playerTag: string; latestKnownWeight: number }) {
+  return {
+    playerTag: input.playerTag,
+    latestKnownWeight: input.latestKnownWeight,
+  };
+}
+
+function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) {
+  return {
+    playerTag: input.playerTag,
+    currentWeight: input.currentWeight,
+  };
+}
+
 function makeWarParent(input: {
   clanTag: string;
   clanName: string;
@@ -151,6 +171,8 @@ describe("CompoAdviceService", () => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.fwaClanCatalog.findMany.mockReset();
     prismaMock.fwaWarMemberCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockReset();
@@ -158,9 +180,112 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+  });
+
+  it("uses link-list fallback weights before deferred and war fallbacks in ACTUAL advice", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "Feed",
+        townHall: 15,
+        weight: 145000,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000008",
+        playerName: "Catalog",
+        townHall: 15,
+        weight: 0,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000009",
+        playerName: "PlayerCurrent",
+        townHall: 15,
+        weight: 0,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000020",
+        playerName: "Deferred",
+        townHall: 15,
+        weight: 0,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000028",
+        playerName: "War",
+        townHall: 15,
+        weight: 0,
+      }),
+      makeCurrentMember({
+        clanTag: "#AAA111",
+        playerTag: "#P000088",
+        playerName: "Missing",
+        townHall: 15,
+        weight: 0,
+      }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 166000 }),
+      makeCatalog({ playerTag: "#P000009", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000020", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000028", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000088", latestKnownWeight: 0 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000009", currentWeight: 177000 }),
+      makePlayerCurrent({ playerTag: "#P000020", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000028", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000088", currentWeight: 0 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000020",
+        deferredWeight: 136000,
+        createdAt: new Date("2026-04-12T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#P000028",
+        effectiveWeight: 174000,
+        updatedAt: new Date("2026-04-12T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 2,
+        th17Count: 1,
+        th15Count: 1,
+        th14Count: 1,
+      }),
+    ]);
+
+    const result = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#AAA111",
+      mode: "actual",
+      view: "raw",
+    });
+
+    expect(result.kind).toBe("ready");
+    expect(result.summary.currentWeight).toBe(798000);
+    expect(result.summary.currentProjection.totalWeight).toBe(798000);
+    expect(result.summary.currentProjection.missingWeights).toBe(1);
   });
 
   it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
