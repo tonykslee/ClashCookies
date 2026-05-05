@@ -22,6 +22,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   weightInputDeferment: {
     findMany: vi.fn(),
   },
@@ -252,12 +258,16 @@ describe("/link run", () => {
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -659,7 +669,7 @@ describe("/link run", () => {
     expect(interaction.editReply).toHaveBeenCalledWith("deleted: #PYL0289.");
   });
 
-  it("renders /link list with linked/unlinked count buckets and inline padded rows", async () => {
+  it("renders /link list with layered fallback weights and inline padded rows", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -693,13 +703,34 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
-        weight: 145000,
+        weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
-        weight: 98000,
+        weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        weight: 0,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        latestKnownWeight: 145000,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        latestKnownWeight: 0,
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        currentWeight: 166000,
       },
     ]);
 
@@ -724,6 +755,12 @@ describe("/link run", () => {
             townHallLevel: 15,
             mapPosition: 2,
           },
+          {
+            tag: "#LCUV0289",
+            name: "Mystery Zero",
+            townHallLevel: 14,
+            mapPosition: 3,
+          },
         ],
       }),
     };
@@ -737,7 +774,7 @@ describe("/link run", () => {
     expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
     const description = String(firstEmbed.description ?? "");
     expect(description).toContain("Linked Users: 1");
-    expect(description).toContain("Unlinked users: 1");
+    expect(description).toContain("Unlinked users: 2");
     expect(description).not.toContain("(111111111111111111)");
     expect(firstEmbed.fields ?? []).toHaveLength(0);
 
@@ -748,27 +785,41 @@ describe("/link run", () => {
           /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line) &&
           line.endsWith("`"),
       );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
 
     const linkedRow = rows.find((line: string) => line.includes("Tilonius"));
-    const unlinkedRow = rows.find((line: string) => line.includes("#QGRJ2222"));
+    const currentFallbackRow = rows.find((line: string) =>
+      line.includes("Unlinked Guy"),
+    );
+    const emptyFallbackRow = rows.find((line: string) =>
+      line.includes("Mystery Zero"),
+    );
     expect(linkedRow).toBeTruthy();
-    expect(unlinkedRow).toBeTruthy();
+    expect(currentFallbackRow).toBeTruthy();
+    expect(emptyFallbackRow).toBeTruthy();
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("|");
 
     const linkedParts = getInlineRowSegments(linkedRow as string);
-    const unlinkedParts = getInlineRowSegments(unlinkedRow as string);
+    const currentFallbackParts = getInlineRowSegments(
+      currentFallbackRow as string,
+    );
+    const emptyFallbackParts = getInlineRowSegments(emptyFallbackRow as string);
     expect(linkedParts.statusKind).toBe("linked");
-    expect(unlinkedParts.statusKind).toBe("unlinked");
+    expect(currentFallbackParts.statusKind).toBe("unlinked");
+    expect(emptyFallbackParts.statusKind).toBe("unlinked");
     expect(linkedParts.th).toBe("18");
-    expect(unlinkedParts.th).toBe("15");
+    expect(currentFallbackParts.th).toBe("15");
+    expect(emptyFallbackParts.th).toBe("14");
     expect(linkedParts.weight.trim()).toBe("145k");
-    expect(unlinkedParts.weight.trim()).toBe("98k");
+    expect(currentFallbackParts.weight.trim()).toBe("166k");
+    expect(emptyFallbackParts.weight.trim()).toBe("—");
     expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `/);
-    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
+    expect(currentFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
+    expect(emptyFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
     expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `\S/);
-    expect(unlinkedRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
+    expect(currentFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
+    expect(emptyFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
 
     const sortButton = payload.components[0].components[0].toJSON();
     expect(sortButton.label).toBe("Sort: Discord Name");
@@ -780,177 +831,6 @@ describe("/link run", () => {
         (opt: any) => opt.default && opt.value === "#PQL0289",
       ),
     ).toBe(true);
-  });
-
-  it("uses deferred weight fallback for zero-weight rows with normalized player-tag matching", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#PYLQ0289",
-        weight: 0,
-        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
-      {
-        scopeKey: "guild:guild-1|clan:PQL0289",
-        playerTag: "pylq0289",
-        deferredWeight: 145000,
-        createdAt: new Date("2026-03-22T09:07:00.000Z"),
-      },
-    ]);
-
-    const interaction = makeInteraction({
-      subcommand: "list",
-      clanTag: "#PQL0289",
-    });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Player Zero",
-            townHallLevel: 16,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
-
-    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const description = String(payload.embeds[0].toJSON().description ?? "");
-    const row = getInlineRows(description).find((line) =>
-      line.includes("#PYLQ0289"),
-    );
-    expect(row).toBeTruthy();
-
-    const rowParts = getInlineRowSegments(row as string);
-    expect(rowParts.weight.trim()).toBe("145k");
-    expect(row).toContain("⏳");
-    expect(prismaMock.weightInputDeferment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          playerTag: { in: ["#PYLQ0289"] },
-        }),
-      }),
-    );
-  });
-
-  it("keeps zero weight without marker when there is no deferred fallback match", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#QGRJ2222",
-        weight: 0,
-        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-
-    const interaction = makeInteraction({
-      subcommand: "list",
-      clanTag: "#PQL0289",
-    });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#QGRJ2222",
-            name: "Zero No Defer",
-            townHallLevel: 15,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
-
-    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const description = String(payload.embeds[0].toJSON().description ?? "");
-    const row = getInlineRows(description).find((line) =>
-      line.includes("#QGRJ2222"),
-    );
-    expect(row).toBeTruthy();
-
-    const rowParts = getInlineRowSegments(row as string);
-    expect(rowParts.weight.trim()).toBe("0k");
-    expect(row).not.toContain("⏳");
-  });
-
-  it("does not override non-zero weight and only shows fallback marker on fallback rows", async () => {
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#PYLQ0289",
-        weight: 0,
-        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
-      },
-      {
-        playerTag: "#QGRJ2222",
-        weight: 98000,
-        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
-      {
-        scopeKey: "guild:guild-1|clan:PQL0289",
-        playerTag: "#PYLQ0289",
-        deferredWeight: 145000,
-        createdAt: new Date("2026-03-22T09:07:00.000Z"),
-      },
-      {
-        scopeKey: "guild:guild-1|clan:PQL0289",
-        playerTag: "#QGRJ2222",
-        deferredWeight: 166000,
-        createdAt: new Date("2026-03-22T09:08:00.000Z"),
-      },
-    ]);
-
-    const interaction = makeInteraction({
-      subcommand: "list",
-      clanTag: "#PQL0289",
-    });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Fallback Candidate",
-            townHallLevel: 16,
-            mapPosition: 1,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Non-zero Candidate",
-            townHallLevel: 15,
-            mapPosition: 2,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
-
-    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const description = String(payload.embeds[0].toJSON().description ?? "");
-    const rows = getInlineRows(description);
-    const fallbackRow = rows.find((line) => line.includes("#PYLQ0289"));
-    const nonFallbackRow = rows.find((line) => line.includes("#QGRJ2222"));
-    expect(fallbackRow).toBeTruthy();
-    expect(nonFallbackRow).toBeTruthy();
-
-    const fallbackParts = getInlineRowSegments(fallbackRow as string);
-    const nonFallbackParts = getInlineRowSegments(nonFallbackRow as string);
-    expect(fallbackParts.weight.trim()).toBe("145k");
-    expect(nonFallbackParts.weight.trim()).toBe("98k");
-    expect(fallbackRow).toContain("⏳");
-    expect(nonFallbackRow).not.toContain("⏳");
   });
 
   it("renders custom yes/no application emojis in /link list rows when available", async () => {
@@ -1272,6 +1152,8 @@ describe("/link list select menu", () => {
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -1293,6 +1175,8 @@ describe("/link list select menu", () => {
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -1407,6 +1291,8 @@ describe("/link list sort button", () => {
     prismaMock.trackedClan.findUnique.mockReset();
     prismaMock.currentWar.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -1442,13 +1328,34 @@ describe("/link list sort button", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
-        weight: 98000,
+        weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
-        weight: 145000,
+        weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        weight: 0,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        latestKnownWeight: 120000,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        latestKnownWeight: 145000,
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#LCUV0289",
+        currentWeight: 166000,
       },
     ]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
@@ -1521,11 +1428,11 @@ describe("/link list sort button", () => {
     const embedWeight = payloadWeight.embeds[0].toJSON();
     const descriptionWeight = String(embedWeight.description ?? "");
     expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
+    expect(descriptionWeight.indexOf("BobUser")).toBeLessThan(
+      descriptionWeight.indexOf("AmyUser"),
+    );
     expect(descriptionWeight.indexOf("AmyUser")).toBeLessThan(
       descriptionWeight.indexOf("ZedUser"),
-    );
-    expect(descriptionWeight.indexOf("ZedUser")).toBeLessThan(
-      descriptionWeight.indexOf("BobUser"),
     );
     expect(payloadWeight.components[0].components[0].toJSON().label).toBe(
       "Sort: Weight Desc",
@@ -1540,11 +1447,11 @@ describe("/link list sort button", () => {
     const embedPlayerTags = payloadPlayerTags.embeds[0].toJSON();
     const descriptionPlayerTags = String(embedPlayerTags.description ?? "");
     expect(embedPlayerTags.footer?.text).toBe("Sort: Player Tags");
+    expect(descriptionPlayerTags.indexOf("#LCUV0289")).toBeLessThan(
+      descriptionPlayerTags.indexOf("#QGRJ2222"),
+    );
     expect(descriptionPlayerTags.indexOf("#QGRJ2222")).toBeLessThan(
       descriptionPlayerTags.indexOf("#PYLQ0289"),
-    );
-    expect(descriptionPlayerTags.indexOf("#PYLQ0289")).toBeLessThan(
-      descriptionPlayerTags.indexOf("#LCUV0289"),
     );
     expect(payloadPlayerTags.components[0].components[0].toJSON().label).toBe(
       "Sort: Player Tags",

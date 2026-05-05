@@ -2,8 +2,10 @@ import { Client } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CommandPermissionService } from "./CommandPermissionService";
+import { playerCurrentService } from "./PlayerCurrentService";
 import { buildFwaWeightPageUrl } from "./FwaStatsWeightService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
+import type { CoCService } from "./CoCService";
 
 export type DefermentStatus = "open" | "resolved" | "cleared";
 export type DefermentStage = "48h" | "5d" | "7d";
@@ -27,6 +29,13 @@ export type AddDefermentResult = {
     status: string;
   };
 };
+
+export type AddWeightInputDefermentWithPlayerProfileResult =
+  | AddDefermentResult
+  | {
+      outcome: "player_profile_not_found";
+      playerTag: string;
+    };
 
 const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
@@ -212,6 +221,46 @@ export async function addWeightInputDeferment(input: {
     },
   });
   return { outcome: "created", record: next };
+}
+
+/** Purpose: add one deferment row after resolving the live player profile and upserting deferred fallback weight. */
+export async function addWeightInputDefermentWithPlayerProfile(input: {
+  guildId: string;
+  channelId: string | null;
+  playerTag: string;
+  deferredWeight: number;
+  cocService: Pick<CoCService, "getPlayerRaw">;
+}): Promise<AddWeightInputDefermentWithPlayerProfileResult> {
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!playerTag) {
+    return {
+      outcome: "player_profile_not_found",
+      playerTag: "",
+    };
+  }
+
+  const livePlayer = await input.cocService.getPlayerRaw(playerTag);
+  if (!livePlayer) {
+    return {
+      outcome: "player_profile_not_found",
+      playerTag,
+    };
+  }
+
+  const result = await addWeightInputDeferment({
+    guildId: input.guildId,
+    channelId: input.channelId,
+    playerTag,
+    deferredWeight: input.deferredWeight,
+  });
+
+  await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+    playerTag,
+    livePlayer,
+    currentWeight: input.deferredWeight,
+  });
+
+  return result;
 }
 
 /** Purpose: list active deferments for the resolved command scope in deterministic oldest-first order. */

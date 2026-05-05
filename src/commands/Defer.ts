@@ -6,7 +6,7 @@ import {
 import { Command } from "../Command";
 import { CoCService } from "../services/CoCService";
 import {
-  addWeightInputDeferment,
+  addWeightInputDefermentWithPlayerProfile,
   clearOpenWeightInputDeferments,
   formatPendingAge,
   listOpenWeightInputDeferments,
@@ -76,7 +76,7 @@ export const Defer: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
     const guildId = interaction.guildId;
@@ -104,22 +104,36 @@ export const Defer: Command = {
         );
         return;
       }
-      const result = await addWeightInputDeferment({
-        guildId,
-        channelId,
-        playerTag,
-        deferredWeight,
-      });
-      if (result.outcome === "already_exists") {
+      try {
+        const result = await addWeightInputDefermentWithPlayerProfile({
+          guildId,
+          channelId,
+          playerTag,
+          deferredWeight,
+          cocService,
+        });
+        if (result.outcome === "player_profile_not_found") {
+          await interaction.editReply(
+            `not_found: player profile for ${playerTag} could not be resolved before writing the deferment.`
+          );
+          return;
+        }
+        if (result.outcome === "already_exists") {
+          await interaction.editReply(
+            `already_exists: ${playerTag} is already open in ${renderScopeLabel(result.record)}.`
+          );
+          return;
+        }
         await interaction.editReply(
-          `already_exists: ${playerTag} is already open in ${renderScopeLabel(result.record)}.`
+          `created: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
+        );
+        return;
+      } catch {
+        await interaction.editReply(
+          `failed: unable to resolve player profile for ${playerTag} before writing the deferment.`
         );
         return;
       }
-      await interaction.editReply(
-        `created: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
-      );
-      return;
     }
 
     if (subcommand === "list") {
