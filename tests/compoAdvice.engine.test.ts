@@ -318,8 +318,11 @@ describe("CompoAdviceEngine", () => {
         currentBandLabel: "(no band)",
         targetBandLabel: "(no band)",
         currentProjection: {
+          view: "raw",
           totalWeight: NaN,
           missingWeights: 0,
+          unresolvedWeightCount: 0,
+          missingTo50Count: 0,
           selectedHeatMapRef: null,
         } as any,
         heatMapRefs: [],
@@ -328,6 +331,7 @@ describe("CompoAdviceEngine", () => {
         targetBandMatchrate: null,
         resultingMatchrate: null,
         currentWeight: null,
+        resolvedRosterWeight: null,
         targetBandMidpoint: null,
         targetHeatMapRef: null,
         recommendationText: "No improvement found.",
@@ -338,9 +342,13 @@ describe("CompoAdviceEngine", () => {
       } as any,
     });
 
-    expect(lines).toContain("Current Weight: unknown");
-    expect(lines).toContain("Missing weights: 0");
+    expect(lines).toContain("Resolved roster weight: unknown");
+    expect(lines).toContain("Scoring basis: resolved roster");
+    expect(lines).toContain("Unresolved weights: 0");
+    expect(lines).toContain("Missing-to-50 fills: 0");
+    expect(lines).toContain("Displayed missing weights: 0");
     expect(lines).toContain("Band midpoint: unknown");
+    expect(lines).toContain("Target band source: resolved roster total");
     expect(lines).toContain("Matchrate: Unknown");
   });
 
@@ -360,8 +368,11 @@ describe("CompoAdviceEngine", () => {
         currentBandLabel: "1,000,000 - 2,000,000",
         targetBandLabel: "1,000,000 - 2,000,000",
         currentProjection: {
+          view: "auto",
           totalWeight: 1_500_000,
           missingWeights: 2,
+          unresolvedWeightCount: 1,
+          missingTo50Count: 1,
           selectedHeatMapRef: refs[1],
         } as any,
         heatMapRefs: refs,
@@ -374,6 +385,7 @@ describe("CompoAdviceEngine", () => {
         targetBandMatchrate: 0.7214,
         resultingMatchrate: 0.6989,
         currentWeight: 1_500_000,
+        resolvedRosterWeight: 1_250_000,
         targetBandMidpoint: 1_500_000,
         targetHeatMapRef: refs[1],
         recommendationText: "Add TH17",
@@ -386,11 +398,17 @@ describe("CompoAdviceEngine", () => {
 
     expect(lines).toContain("Current Deviation Score: **32.5**");
     expect(lines).toContain(
-      "Missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
+      "Displayed missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
     );
+    expect(lines).toContain("Resolved roster weight: 1,250,000");
+    expect(lines).toContain("Projected 50-player weight: 1,500,000");
+    expect(lines).toContain("Scoring basis: projected 50-player roster");
+    expect(lines).toContain("Unresolved weights: 1");
+    expect(lines).toContain("Missing-to-50 fills: 1");
     expect(lines).toContain("Matchrate: 66.29%");
     expect(lines).toContain("Band matchrate: 72.14%");
     expect(lines).toContain("Band midpoint: +0");
+    expect(lines).toContain("Target band source: projected total");
     expect(lines).toContain("Deviation Score: **12.5**");
     expect(lines).toContain("Matchrate: 69.89%");
     expect(lines).toContain("Lower band: **0 - 999,999**");
@@ -405,13 +423,17 @@ describe("CompoAdviceEngine", () => {
       refreshLine: null,
       clanTag: "#AAA111",
       summary: {
+        view: "custom",
         viewLabel: "Custom",
         currentScore: 5,
         currentBandLabel: "1,000,000 - 1,499,999",
         targetBandLabel: "2,000,000 - 2,500,000",
         currentProjection: {
+          view: "raw",
           totalWeight: 1_500_000,
           missingWeights: 1,
+          unresolvedWeightCount: 1,
+          missingTo50Count: 0,
           selectedHeatMapRef: makeHeatMapRef({
             weightMinInclusive: 1_000_000,
             weightMaxInclusive: 1_499_999,
@@ -429,6 +451,7 @@ describe("CompoAdviceEngine", () => {
         targetBandMatchrate: 0.6,
         resultingMatchrate: 0.59,
         currentWeight: 1_500_000,
+        resolvedRosterWeight: 1_500_000,
         targetBandMidpoint: 1_420_000,
         targetHeatMapRef: makeHeatMapRef({
           weightMinInclusive: 2_000_000,
@@ -443,6 +466,7 @@ describe("CompoAdviceEngine", () => {
     });
 
     expect(lines).toContain("Band midpoint: :warning: -80k");
+    expect(lines).toContain("Target band source: custom-selected band");
     expect(lines.join("\n")).not.toContain(":small_red_triangle");
     expect(lines.join("\n")).not.toContain(":small_red_triangle_down");
   });

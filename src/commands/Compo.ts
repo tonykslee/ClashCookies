@@ -1185,7 +1185,21 @@ async function buildCompoAdviceEmbed(input: {
         `Mode: **${input.advice.mode.toUpperCase()}**`,
         `Advice View: **${COMPO_ADVICE_VIEW_LABELS[input.advice.selectedView]}**`,
         `Members: ${summary.currentProjection.memberCount} / 50`,
-        `Missing weights: ${summary.currentProjection.missingWeights}${
+        `Resolved roster weight: ${formatCompoAdviceFullWeight(summary.resolvedRosterWeight)}`,
+        ...(summary.currentProjection.view !== "raw" ||
+        summary.currentWeight !== summary.resolvedRosterWeight
+          ? [
+              `Projected 50-player weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
+            ]
+          : []),
+        `Scoring basis: ${
+          summary.currentProjection.view === "raw"
+            ? "resolved roster"
+            : "projected 50-player roster"
+        }`,
+        `Unresolved weights: ${summary.currentProjection.unresolvedWeightCount}`,
+        `Missing-to-50 fills: ${summary.currentProjection.missingTo50Count}`,
+        `Displayed missing weights: ${summary.currentProjection.missingWeights}${
           summary.currentProjection.missingWeights > 0 && input.advice.clanTag
             ? ` [FWA Stats](${buildFwaWeightPageUrl(input.advice.clanTag)})`
             : ""
@@ -1196,7 +1210,18 @@ async function buildCompoAdviceEmbed(input: {
     const currentValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
       [
-        `Current Weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
+        `Resolved roster weight: ${formatCompoAdviceFullWeight(summary.resolvedRosterWeight)}`,
+        ...(summary.currentProjection.view !== "raw" ||
+        summary.currentWeight !== summary.resolvedRosterWeight
+          ? [
+              `Projected 50-player weight: ${formatCompoAdviceFullWeight(summary.currentWeight)}`,
+            ]
+          : []),
+        `Scoring basis: ${
+          summary.currentProjection.view === "raw"
+            ? "resolved roster"
+            : "projected 50-player roster"
+        }`,
         `Current Deviation Score: **${formatAdviceScore(summary.currentScore)}**`,
         `Matchrate: ${formatMatchratePercent(summary.currentMatchrate)}`,
       ].join("\n"),
@@ -1205,6 +1230,13 @@ async function buildCompoAdviceEmbed(input: {
       input.client,
       [
         `Target Band: **${summary.targetBandLabel}**`,
+        `Target band source: ${
+          summary.view === "custom"
+            ? "custom-selected band"
+            : summary.currentProjection.view === "raw"
+              ? "resolved roster total"
+              : "projected total"
+        }`,
         `Band matchrate: ${formatMatchratePercent(summary.targetBandMatchrate)}`,
         `Band midpoint: ${formatCompoAdviceBandMidpointLine({
           currentWeight: summary.currentWeight,

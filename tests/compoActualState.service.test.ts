@@ -192,9 +192,29 @@ describe("CompoActualStateService", () => {
 
     const result = await new CompoActualStateService().readState("guild-1");
 
-    expect(result.stateRows).toEqual([
-      ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
-      ["Alpha Clan", "798,000", "1", "6", "0", "0", "0", "0", "0", "0"],
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan",
+      "Resolved Total",
+      "Missing",
+      "Players",
+      "TH18",
+      "TH17",
+      "TH16",
+      "TH15",
+      "TH14",
+      "<=TH13",
+    ]);
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "798,000",
+      "1",
+      "6",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
     ]);
   });
 
@@ -252,11 +272,127 @@ describe("CompoActualStateService", () => {
     expect(result.trackedClanTags).toEqual(["#AAA111", "#BBB222"]);
     expect(result.renderableClanTags).toEqual(["#AAA111", "#BBB222"]);
     expect(result.contentLines[0]).toContain("RAW Data last refreshed:");
-    expect(result.stateRows).toEqual([
-      ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
-      ["Alpha Clan", "466,000", "1", "4", "0", "0", "0", "-1", "0", "0"],
-      ["Bravo Clan", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan",
+      "Resolved Total",
+      "Missing",
+      "Players",
+      "TH18",
+      "TH17",
+      "TH16",
+      "TH15",
+      "TH14",
+      "<=TH13",
     ]);
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "466,000",
+      "1",
+      "4",
+      "0",
+      "0",
+      "0",
+      "-1",
+      "0",
+      "0",
+    ]);
+    expect(result.stateRows?.[2]).toEqual([
+      "Bravo Clan",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+  });
+
+  it("shows projected totals separately in ACTUAL auto view and labels projected deltas", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000008", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000009", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000020", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000028", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000088", weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 166000 }),
+      makeCatalog({ playerTag: "#P000009", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000020", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000028", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000088", latestKnownWeight: 0 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000009", currentWeight: 177000 }),
+      makePlayerCurrent({ playerTag: "#P000020", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000028", currentWeight: 0 }),
+      makePlayerCurrent({ playerTag: "#P000088", currentWeight: 0 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000020",
+        deferredWeight: 136000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      makeWarFallback({
+        clanTag: "#AAA111",
+        playerTag: "#P000028",
+        effectiveWeight: 174000,
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 2,
+        th17Count: 1,
+        th15Count: 1,
+        th14Count: 1,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan",
+      "Resolved Total",
+      "Projected Total",
+      "Missing",
+      "Players",
+      "TH18",
+      "TH17",
+      "TH16",
+      "TH15",
+      "TH14",
+      "<=TH13",
+    ]);
+    expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
+    expect(result.stateRows?.[1]?.[1]).toBe("798,000");
+    expect(result.stateRows?.[1]?.[2]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[3]).toBe("45");
+    expect(result.stateRows?.[1]?.[4]).toBe("6");
+    expect(result.stateRows?.[1]?.[5]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[6]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[7]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[8]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[9]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[10]).toEqual(expect.any(String));
+    expect(result.contentLines).toContain(
+      "Resolved roster weight is shown separately from the projected 50-player total.",
+    );
+    expect(result.contentLines).toContain("Selected band source: projected total.");
+    expect(result.contentLines).toContain("Deltas: projected vs HeatMapRef.");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {
@@ -292,9 +428,29 @@ describe("CompoActualStateService", () => {
 
     const result = await new CompoActualStateService().readState("guild-1");
 
-    expect(result.stateRows).toEqual([
-      ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
-      ["Alpha Clan", "439,000", "0", "4", "0", "0", "0", "0", "0", "-3"],
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan",
+      "Resolved Total",
+      "Missing",
+      "Players",
+      "TH18",
+      "TH17",
+      "TH16",
+      "TH15",
+      "TH14",
+      "<=TH13",
+    ]);
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "439,000",
+      "0",
+      "4",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "-3",
     ]);
   });
 
