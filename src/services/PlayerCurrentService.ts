@@ -578,6 +578,7 @@ export class PlayerCurrentService {
     existing?: PlayerCurrentLike | null;
     source?: PlayerCurrentResolutionSource;
     now?: Date;
+    currentWeight?: number | null;
   }): Promise<PlayerCurrentLike | null> {
     const playerTag = normalizePlayerTag(input.playerTag);
     if (!playerTag || !input.livePlayer) {
@@ -586,6 +587,9 @@ export class PlayerCurrentService {
 
     const state = input.existing ? { ...input.existing } : createMissingPlayerCurrent({ playerTag });
     applyLivePlayer(state, input.livePlayer, input.now ?? new Date());
+    if (input.currentWeight !== undefined) {
+      state.currentWeight = input.currentWeight;
+    }
     const source = input.source ?? "live_refresh";
     state.lastSource = source;
     const data = buildPersistData(state);

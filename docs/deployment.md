@@ -1,122 +1,85 @@
 # Deployment and Install Links
 
-## Current Deployment Model
+## Deployment Model
 
-The current production and staging deployments are droplet-based containerized app runtimes.
+Production and staging deploy to droplet-hosted containers with health-gated promotion.
 
-Important runtime assumptions:
+Runtime expectations:
 
 - Production runs with `POLLING_MODE=active`.
-- Staging runs with `POLLING_MODE=mirror`, `MIRROR_SOURCE_DATABASE_URL` set to production, and `POLLING_ENV=staging`.
-- Command registration still happens at startup as guild commands using `GUILD_ID`.
-- Application startup still relies on `prisma migrate deploy` through the normal start command.
+- Staging runs with `POLLING_MODE=mirror`, `POLLING_ENV=staging`, and a production mirror source URL.
+- The app exposes `/livez` and `/healthz`.
+- `/healthz` is the readiness gate for deploy promotion.
+- Docker container running status is not used as readiness.
 
-## Build And Start Path
+## Deploy Modes
 
-The current droplet/container path is:
+### Non-migration deploy
 
-1. Base image setup installs required fonts from `nixpacks.toml`.
-2. Container entrypoint runs `ops/deploy/container-start.sh`.
-3. The entrypoint calls `ops/deploy/ensure-yarn-deps.sh`.
-4. If dependency manifests changed, it runs `yarn install --frozen-lockfile`.
-5. The container then runs `yarn build` and `yarn start`.
+Non-migration deploys are near-zero downtime, not true zero downtime.
 
-Relevant files:
+Flow:
 
-- `nixpacks.toml`
-- `ops/deploy/container-start.sh`
-- `ops/deploy/ensure-yarn-deps.sh`
+1. Capture `OLD_SHA` from the current checkout.
+2. Fetch the target branch tip into `NEW_SHA`.
+3. Diff `OLD_SHA..NEW_SHA` for `prisma/migrations/**` and `prisma/schema.prisma`.
+4. If no Prisma files changed, create a temporary worktree and start a replacement container in parallel.
+5. Wait for the replacement container to return HTTP 200 from `/healthz`.
+6. Stop the old app only after replacement health passes.
+7. Start the canonical app on the normal port.
+8. Verify the canonical app returns HTTP 200 from `/healthz`.
+9. If the canonical app fails health, roll back to `OLD_SHA` and restore the old app.
 
-## Active vs Mirror Runtime Ownership
+### Prisma migration deploy
 
-Production owns upstream background work:
+If the `OLD_SHA..NEW_SHA` diff includes `prisma/migrations/**` or `prisma/schema.prisma`, deploy uses the intentional downtime path.
 
-- activity observe loop
-- war-event polling and refresh loops
-- FWA feed scheduler loops
-- reminder schedulers
-- user-activity reminder scheduler
+Flow:
 
-Staging mirror mode does not duplicate those upstream pollers. Instead it runs guarded prod-to-staging snapshot sync for the runtime allowlist.
+1. Capture `OLD_SHA` and `NEW_SHA`.
+2. Detect Prisma changes from the diff.
+3. Stop the old app first.
+4. Start the new app through the normal startup path so `prisma migrate deploy` runs.
+5. Verify the canonical app returns HTTP 200 from `/healthz`.
+6. If the startup or health check fails, the deploy exits nonzero after cleanup.
 
-Mirror mode safety expectations:
+## Environment Matrix
 
-- never point source and target at the same database
-- never run mirror sync in production
-- treat mirrored tables as full-overwrite runtime copies
+| Environment | Runtime mode | Canonical health | Temporary replacement health |
+| --- | --- | --- | --- |
+| Staging | `POLLING_MODE=mirror`, `POLLING_ENV=staging` | `127.0.0.1:8086/healthz` | `127.0.0.1:18086/healthz` |
+| Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` | `127.0.0.1:18085/healthz` |
+
+Staging mirror mode must not run the upstream pollers directly. Production continues to own active polling and schedulers.
+
+## Operational Notes
+
+- Build happens inside the replacement container before `/healthz` is available.
+- A cold deploy can take a long time, so deploy scripts allow a long replacement health timeout.
+- The replacement container may be running while it is still building, but that does not count as ready.
+- Promotion is gated on app-level `/healthz`, not Docker status.
+- The final handoff still includes a brief restart window when the old app is stopped and the canonical app is started.
 
 ## Health Endpoints
 
-The app exposes:
+From the droplet host, use:
 
-- `/livez` for process liveness
-- `/healthz` for readiness
-
-Default health server behavior:
-
-- host: `0.0.0.0`
-- port: `8080`
-- enabled by default
-
-Environment overrides:
-
-- `HEALTHCHECK_ENABLED`
-- `HEALTHCHECK_HOST`
-- `HEALTHCHECK_PORT`
-- `HEALTHCHECK_LIVE_PATH`
-- `HEALTHCHECK_READY_PATH`
-
-Recommended localhost-only port mapping on the droplet:
-
-- Production app: `127.0.0.1:8085:8080`
-- Staging app: `127.0.0.1:8086:8080`
-## Deployment Notes
-- Commands are registered as guild commands using `GUILD_ID` on startup.
-- If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.
-- Polling ownership:
-  - Prod: `POLLING_MODE=active`
-  - Staging: `POLLING_MODE=mirror` with `MIRROR_SOURCE_DATABASE_URL` set to prod DB and `POLLING_ENV=staging`
-- Observability is documented separately in `docs/observability.md` and is intended to stay localhost-only by default on the droplet.
-- Droplet app deploys use the Yarn path (`yarn.lock`) for deterministic installs.
-- Current localhost-only app health port mappings on the droplet:
-  - Production app: `127.0.0.1:8085:8080`
-  - Staging app: `127.0.0.1:8086:8080`
-- The app health server defaults are:
-  - `HEALTHCHECK_ENABLED=true`
-  - `HEALTHCHECK_HOST=0.0.0.0`
-  - `HEALTHCHECK_PORT=8080`
-  - `HEALTHCHECK_LIVE_PATH=/livez`
-  - `HEALTHCHECK_READY_PATH=/healthz`
-- These defaults are currently relied on directly; no extra env overrides are required unless you intentionally want non-default paths or ports.
-- Startup command registration logs now include the runtime environment, bot identity, guild scope, and the `/roster create` option names so staging deploys can verify the published slash-command shape.
-
-## Droplet Dependency Cache
-
-- The droplet app containers use persistent `node_modules` and Yarn cache state so code-only deploys can skip a full reinstall.
-- `ops/deploy/ensure-yarn-deps.sh` hashes `package.json` and `yarn.lock` and only runs `yarn install --frozen-lockfile` when the manifest hash changed or the dependency volume is missing.
-- Deploys still run `yarn build` and `yarn start` after the dependency check, so runtime startup and migration ownership stay unchanged.
-
-Operator note:
-
-- The dependency cache is invalidated by changes to `package.json` or `yarn.lock`, by deleting the `node_modules` volume, or by losing `.yarn-integrity` / the stored manifest hash file inside that volume.
-
-## Observability
-
-External droplet observability is documented in `docs/observability.md`.
-
-The current intended model is:
-
-- app-level structured logs and telemetry inside ClashCookies
-- localhost-only Uptime Kuma / Dozzle / Netdata on the droplet
-- optional HTTP readiness monitoring through the app health endpoint
-## Health Endpoint Validation
-- From the droplet host, use:
-  - `curl http://127.0.0.1:8085/livez`
-  - `curl http://127.0.0.1:8085/healthz`
+- Staging:
   - `curl http://127.0.0.1:8086/livez`
   - `curl http://127.0.0.1:8086/healthz`
-- `/livez` is liveness only and does not require Discord readiness.
-- `/healthz` should return success only when the Discord client is ready and the database probe succeeds.
+- Production:
+  - `curl http://127.0.0.1:8085/livez`
+  - `curl http://127.0.0.1:8085/healthz`
+
+`/livez` is process liveness only. `/healthz` should succeed only when the app is ready.
+
+## Deployment Notes
+
+- Commands are registered as guild commands using `GUILD_ID` on startup.
+- If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.
+- Observability is documented separately in `docs/observability.md` and stays localhost-only by default on the droplet.
+- Droplet deploys use the Yarn path (`yarn.lock`) for deterministic installs.
+- The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard, builds, and then starts the app.
 
 ## Install Links
 

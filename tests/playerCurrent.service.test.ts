@@ -192,6 +192,36 @@ describe("PlayerCurrentService", () => {
     );
   });
 
+  it("persists an override current weight when upserting from a live player profile", async () => {
+    const livePlayer = makeLivePlayer({
+      clan: {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+      },
+    });
+
+    await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+      playerTag: "#PYLQ0289",
+      livePlayer,
+      currentWeight: 145000,
+      source: "accounts-refresh",
+    });
+
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        create: expect.objectContaining({
+          playerTag: "#PYLQ0289",
+          playerName: "Live Player",
+          townHall: 16,
+          currentClanTag: "#PQL0289",
+          currentClanName: "Alpha Clan",
+          currentWeight: 145000,
+        }),
+      }),
+    );
+  });
+
   it("refreshes stale signup-path player current data even when town hall is already populated", async () => {
     prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
       makeCurrentRow({
