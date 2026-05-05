@@ -85,7 +85,7 @@ npm start
 ## Deployment Model
 Production and staging currently run on a droplet-based container deployment.
 
-Production uses `POLLING_MODE=active` and owns upstream pollers/schedulers. Staging uses `POLLING_MODE=mirror` with guarded prod-to-staging runtime snapshot sync so it can stay operational without duplicating upstream polling. Health endpoints are built into the app, and the droplet observability stack is documented in [Observability](docs/observability.md).
+Production uses `POLLING_MODE=active` and owns upstream pollers/schedulers. Staging uses `POLLING_MODE=mirror` with guarded prod-to-staging runtime snapshot sync so it can stay operational without duplicating upstream polling. Near-zero-downtime deploy behavior, Prisma migration downtime handling, and health-gated promotion are documented in [Deployment and Install Links](docs/deployment.md). Health endpoints are built into the app, and the droplet observability stack is documented in [Observability](docs/observability.md).
 
 ## Documentation
 - [Setup and Environment](docs/setup.md)
