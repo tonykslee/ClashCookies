@@ -84,19 +84,6 @@ export type CompoActualStateReadResult = {
   view: CompoActualStateView;
 };
 
-type ActualStateRow = {
-  clanName: string;
-  totalWeight: string;
-  missingWeights: string;
-  players: string;
-  th18Delta: string;
-  th17Delta: string;
-  th16Delta: string;
-  th15Delta: string;
-  th14Delta: string;
-  th13OrLowerDelta: string;
-};
-
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
   if (!latestSourceSyncedAt) {
     return "RAW Data last refreshed: (not available)";
@@ -110,38 +97,38 @@ function normalizeActualStateClanDisplayName(value: string): string {
 
 function buildActualStateRow(input: {
   clanName: string;
+  view: CompoActualStateView;
+  base: CompoActualStateBaseMetrics;
   projection: CompoActualStateProjection;
-}): ActualStateRow {
-  return {
-    clanName: normalizeActualStateClanDisplayName(input.clanName),
-    totalWeight: input.projection.totalWeight.toLocaleString("en-US"),
-    missingWeights: `${input.projection.missingWeights}`,
-    players: `${input.projection.memberCount}`,
-    th18Delta:
-      input.projection.deltaByBucket.TH18 !== null
-        ? `${input.projection.deltaByBucket.TH18}`
-        : "?",
-    th17Delta:
-      input.projection.deltaByBucket.TH17 !== null
-        ? `${input.projection.deltaByBucket.TH17}`
-        : "?",
-    th16Delta:
-      input.projection.deltaByBucket.TH16 !== null
-        ? `${input.projection.deltaByBucket.TH16}`
-        : "?",
-    th15Delta:
-      input.projection.deltaByBucket.TH15 !== null
-        ? `${input.projection.deltaByBucket.TH15}`
-        : "?",
-    th14Delta:
-      input.projection.deltaByBucket.TH14 !== null
-        ? `${input.projection.deltaByBucket.TH14}`
-        : "?",
-    th13OrLowerDelta:
-      input.projection.deltaByBucket["<=TH13"] !== null
-        ? `${input.projection.deltaByBucket["<=TH13"]}`
-        : "?",
-  };
+}): string[] {
+  const row = [normalizeActualStateClanDisplayName(input.clanName)];
+  row.push(input.base.resolvedTotalWeight.toLocaleString("en-US"));
+  if (input.view !== "raw") {
+    row.push(input.projection.totalWeight.toLocaleString("en-US"));
+  }
+  row.push(
+    `${input.projection.missingWeights}`,
+    `${input.projection.memberCount}`,
+    input.projection.deltaByBucket.TH18 !== null
+      ? `${input.projection.deltaByBucket.TH18}`
+      : "?",
+    input.projection.deltaByBucket.TH17 !== null
+      ? `${input.projection.deltaByBucket.TH17}`
+      : "?",
+    input.projection.deltaByBucket.TH16 !== null
+      ? `${input.projection.deltaByBucket.TH16}`
+      : "?",
+    input.projection.deltaByBucket.TH15 !== null
+      ? `${input.projection.deltaByBucket.TH15}`
+      : "?",
+    input.projection.deltaByBucket.TH14 !== null
+      ? `${input.projection.deltaByBucket.TH14}`
+      : "?",
+    input.projection.deltaByBucket["<=TH13"] !== null
+      ? `${input.projection.deltaByBucket["<=TH13"]}`
+      : "?",
+  );
+  return row;
 }
 
 function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
@@ -158,17 +145,19 @@ function buildActualViewSummaryLines(
     `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
   ];
   if (view === "raw") {
-    contentLines.push("Displayed totals use resolved DB-backed ACTUAL weights only.");
+    contentLines.push("Resolved roster weight is shown directly in the table.");
+    contentLines.push("Projected 50-player weight is not applied in RAW view.");
+    contentLines.push("Deltas: resolved vs HeatMapRef.");
     contentLines.push("Missing = unresolved weights only.");
   } else if (view === "auto") {
-    contentLines.push(
-      "Displayed totals use iterative missing-slot estimation and the converged HeatMapRef band.",
-    );
+    contentLines.push("Resolved roster weight is shown separately from the projected 50-player total.");
+    contentLines.push("Selected band source: projected total.");
+    contentLines.push("Deltas: projected vs HeatMapRef.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
   } else {
-    contentLines.push(
-      "Displayed totals use best-fit band scoring; shown estimates are guidance, not persisted truth.",
-    );
+    contentLines.push("Resolved roster weight is shown separately from the projected best-fit total.");
+    contentLines.push("Selected band source: projected total.");
+    contentLines.push("Deltas: projected vs HeatMapRef.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
   }
   if (missingHeatMapBands.length > 0) {
@@ -562,6 +551,8 @@ export class CompoActualStateService {
 
       const row = buildActualStateRow({
         clanName: displayName,
+        view,
+        base: clan.base,
         projection,
       });
       maybeLogCompoActualDiagnostics({
@@ -573,24 +564,27 @@ export class CompoActualStateService {
         projection,
         heatMapRefs: context.heatMapRefs,
       });
-      rows.push([
-        row.clanName,
-        row.totalWeight,
-        row.missingWeights,
-        row.players,
-        row.th18Delta,
-        row.th17Delta,
-        row.th16Delta,
-        row.th15Delta,
-        row.th14Delta,
-        row.th13OrLowerDelta,
-      ]);
+      rows.push(row);
       renderableClanTags.push(clan.clanTag);
     }
 
     return {
       stateRows: [
-        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        view === "raw"
+          ? ["Clan", "Resolved Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"]
+          : [
+              "Clan",
+              "Resolved Total",
+              "Projected Total",
+              "Missing",
+              "Players",
+              "TH18",
+              "TH17",
+              "TH16",
+              "TH15",
+              "TH14",
+              "<=TH13",
+            ],
         ...rows,
       ],
       contentLines: buildActualViewSummaryLines(

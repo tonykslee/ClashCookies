@@ -98,6 +98,7 @@ export type CompoAdviceSummary = {
   currentProjection: CompoActualStateProjection;
   heatMapRefs: readonly HeatMapRef[];
   bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
+  resolvedRosterWeight: number;
   currentWeight: number | null;
   targetBandMidpoint: number | null;
   currentMatchrate: number | null;
@@ -789,6 +790,7 @@ export function evaluateCompoAdvice(input: {
     currentProjection,
     heatMapRefs: projectionState.heatMapRefs,
     bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
+    resolvedRosterWeight: input.base.resolvedTotalWeight,
     currentWeight,
     targetBandMidpoint,
     currentMatchrate,
@@ -828,9 +830,24 @@ export function buildCompoAdviceContentLines(input: {
   lines.push(`Advice View: **${input.summary.viewLabel}**`);
   lines.push(`Current Deviation Score: **${formatScore(input.summary.currentScore)}**`);
   lines.push(`Target Band: **${input.summary.targetBandLabel}**`);
-  lines.push(`Current Weight: ${formatFullWeight(input.summary.currentWeight)}`);
+  lines.push(`Resolved roster weight: ${formatFullWeight(input.summary.resolvedRosterWeight)}`);
+  if (
+    input.summary.currentProjection.view !== "raw" ||
+    input.summary.currentWeight !== input.summary.resolvedRosterWeight
+  ) {
+    lines.push(`Projected 50-player weight: ${formatFullWeight(input.summary.currentWeight)}`);
+  }
   lines.push(
-    `Missing weights: ${input.summary.currentProjection.missingWeights}${
+    `Scoring basis: ${
+      input.summary.currentProjection.view === "raw"
+        ? "resolved roster"
+        : "projected 50-player roster"
+    }`,
+  );
+  lines.push(`Unresolved weights: ${input.summary.currentProjection.unresolvedWeightCount}`);
+  lines.push(`Missing-to-50 fills: ${input.summary.currentProjection.missingTo50Count}`);
+  lines.push(
+    `Displayed missing weights: ${input.summary.currentProjection.missingWeights}${
       input.summary.currentProjection.missingWeights > 0 && input.clanTag
         ? ` [FWA Stats](${buildFwaWeightPageUrl(input.clanTag)})`
         : ""
@@ -844,6 +861,15 @@ export function buildCompoAdviceContentLines(input: {
       targetBandMidpoint: input.summary.targetBandMidpoint,
       selectedHeatMapRef: input.summary.targetHeatMapRef,
     })}`,
+  );
+  lines.push(
+    `Target band source: ${
+      input.summary.view === "custom"
+        ? "custom-selected band"
+        : input.summary.currentProjection.view === "raw"
+          ? "resolved roster total"
+          : "projected total"
+    }`,
   );
   lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
   lines.push(`Deviation Score: **${formatScore(input.summary.resultingScore)}**`);

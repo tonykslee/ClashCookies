@@ -283,6 +283,7 @@ describe("CompoAdviceService", () => {
     });
 
     expect(result.kind).toBe("ready");
+    expect(result.summary.resolvedRosterWeight).toBe(798000);
     expect(result.summary.currentWeight).toBe(798000);
     expect(result.summary.currentProjection.totalWeight).toBe(798000);
     expect(result.summary.currentProjection.missingWeights).toBe(1);
@@ -345,6 +346,10 @@ describe("CompoAdviceService", () => {
     expect(result.kind).toBe("ready");
     expect(result.selectedView).toBe("auto");
     expect(result.summary.viewLabel).toBe("Auto-Detect Band");
+    expect(result.summary.resolvedRosterWeight).toBeGreaterThan(0);
+    expect(result.summary.currentWeight).toBeGreaterThanOrEqual(
+      result.summary.resolvedRosterWeight,
+    );
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
@@ -441,6 +446,7 @@ describe("CompoAdviceService", () => {
     expect(result.kind).toBe("ready");
     expect(result.selectedView).toBe("custom");
     expect(result.summary.viewLabel).toBe("Custom");
+    expect(result.summary.resolvedRosterWeight).toBeGreaterThan(0);
     expect(result.summary.selectedCustomBandIndex).toBe(1);
     expect(result.summary.currentBandLabel).toBe("(no band)");
     expect(result.summary.targetBandLabel).toContain("1,500,000");

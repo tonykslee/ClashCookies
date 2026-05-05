@@ -35,6 +35,7 @@ export type CompoActualStateBaseMetrics = {
 export type CompoActualStateProjection = {
   view: CompoActualStateView;
   totalWeight: number;
+  resolvedRosterWeight: number;
   missingWeights: number;
   memberCount: number;
   missingTo50Count: number;
@@ -311,6 +312,7 @@ function buildEstimatedProjectionForBand(input: {
   return {
     view: input.view,
     totalWeight: input.base.resolvedTotalWeight + fillPlan.addedWeight,
+    resolvedRosterWeight: input.base.resolvedTotalWeight,
     missingWeights: nMissing,
     memberCount: input.base.memberCount,
     missingTo50Count,
@@ -355,6 +357,7 @@ function buildRawProjection(input: {
   return {
     view: "raw",
     totalWeight: input.base.resolvedTotalWeight,
+    resolvedRosterWeight: input.base.resolvedTotalWeight,
     missingWeights: input.base.unresolvedWeightCount,
     memberCount: input.base.memberCount,
     missingTo50Count: Math.max(0, 50 - input.base.memberCount),

@@ -91,9 +91,12 @@ describe("/compo advice command", () => {
             ["2000001-3000000", 0.74],
           ]),
           currentProjection: {
+            view: "auto",
             totalWeight: 1_500_000,
             memberCount: 50,
             missingWeights: 2,
+            unresolvedWeightCount: 1,
+            missingTo50Count: 1,
             selectedHeatMapRef: {
               weightMinInclusive: 1_000_000,
               weightMaxInclusive: 2_000_000,
@@ -111,6 +114,7 @@ describe("/compo advice command", () => {
           targetBandMatchrate: 0.7214,
           resultingMatchrate: 0.7214,
           currentWeight: 1_500_000,
+          resolvedRosterWeight: 1_250_000,
           targetBandMidpoint: 1_500_000,
           currentScore: 0,
           currentBandLabel: "1,000,000 - 2,000,000",
@@ -171,14 +175,27 @@ describe("/compo advice command", () => {
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
       "Advice View: **Auto-Detect Band**",
     );
-    expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Weight: 1,500,000");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Resolved roster weight: 1,250,000",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Projected 50-player weight: 1,500,000",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Scoring basis: projected 50-player roster",
+    );
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Current Deviation Score: **0**");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Matchrate: 72.14%");
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
-      "Missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
+      "Displayed missing weights: 2 [FWA Stats](https://fwastats.com/Clan/AAA111/Weight)",
     );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Unresolved weights: 1");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Missing-to-50 fills: 1");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Band matchrate: 72.14%");
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Band midpoint: +0");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Target band source: projected total",
+    );
     expect(String(embed?.title ?? "")).toContain("Alpha Clan (#AAA111)");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Alternates");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("Snapshot");
@@ -225,13 +242,17 @@ describe("/compo advice command", () => {
           { weightMinInclusive: 0, weightMaxInclusive: 9_999_999 },
         ],
         bandMatchRatesByBandKey: new Map([["0-9999999", 0.5]]),
-        currentProjection: {
-          totalWeight: 1_500_000,
-          memberCount: 50,
-          selectedHeatMapRef: {
-            weightMinInclusive: 0,
-            weightMaxInclusive: 9_999_999,
-          },
+          currentProjection: {
+            view: "raw",
+            totalWeight: 1_500_000,
+            memberCount: 50,
+            missingWeights: 0,
+            unresolvedWeightCount: 0,
+            missingTo50Count: 0,
+            selectedHeatMapRef: {
+              weightMinInclusive: 0,
+              weightMaxInclusive: 9_999_999,
+            },
           deltaByBucket: {
             TH18: 0,
             TH17: 0,
@@ -245,6 +266,7 @@ describe("/compo advice command", () => {
         targetBandMatchrate: 0.5,
         resultingMatchrate: 0.5,
         currentWeight: 1_500_000,
+        resolvedRosterWeight: 1_500_000,
         targetBandMidpoint: 1_500_000,
         currentScore: 0,
         currentBandLabel: "0 - 9999999",
@@ -274,6 +296,9 @@ describe("/compo advice command", () => {
     expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
     expect(JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? [])).toContain(
       "Advice View: **Raw Data**",
+    );
+    expect(JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? [])).toContain(
+      "Scoring basis: resolved roster",
     );
     expect(payload?.embeds?.[0]?.data?.footer).toBeUndefined();
     expect(getComponentCustomIds(payload)).toEqual([
