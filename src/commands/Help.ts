@@ -485,8 +485,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`verify` checks ownership with the player's API token and marks the link verified when the token matches.",
       "`status` shows the persisted trust state for one or more of your linked player tags, including source, verification status, verification method, and verified timestamps.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
-      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then the manual `ExternalPlayerWeightCurrent` fallback when needed, and is shown as compact lowercase `k` text (for example `145k`), with `—` when missing.",
-      "If `Wt` resolves to `0` and an open deferred weight exists for the same normalized player tag, `/link list` shows that deferred weight and appends a right-side `⏳` marker for that row.",
+      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, and is shown as compact lowercase `k` text (for example `145k`), with `—` when no resolved positive weight exists.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
       "`list` shows active sort mode in the embed footer.",
@@ -591,7 +590,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   defer: {
     summary: "Track deferred FWA weight-input tasks for prospective members.",
     details: [
-      "`add` queues a player tag + known weight when FWAStats roster entry is not yet possible.",
+      "`add` queues a player tag + known weight when FWAStats roster entry is not yet possible and upserts the same deferred weight into `PlayerCurrent.currentWeight` after fetching the live player profile.",
       "`list` shows only open deferments in oldest-first order for the active scope.",
       "`remove` resolves one open deferment after weight entry is completed in FWAStats.",
       "`clear` marks all open deferments in scope as cleared.",

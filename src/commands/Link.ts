@@ -18,17 +18,17 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { Command } from "../Command";
+import { toPositiveCompoWeight } from "../helper/compoActualWeight";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
-import { listOpenDeferredWeightsByPlayerTags } from "../services/WeightInputDefermentService";
+import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
   deletePlayerLink,
   formatLinkedAtUtc,
-  listCurrentWeightsForClanMembers,
   listPlayerLinksForClanMembers,
   getPlayerLinkTrustTier,
   getPlayerLinksForDiscordUserWithTrust,
@@ -85,7 +85,6 @@ const LINK_LIST_UNLINKED_EMOJI_NAME = "no";
 const LINK_LIST_LINKED_FALLBACK_EMOJI = "✅";
 const LINK_LIST_UNLINKED_FALLBACK_EMOJI = "❌";
 const WEIGHT_PLACEHOLDER = "—";
-const LINK_LIST_DEFERRED_WEIGHT_FALLBACK_EMOJI = "⏳";
 const LINK_LIST_SORT_MODE_CYCLE = [
   "discord",
   "weight",
@@ -731,11 +730,11 @@ function sortLinkListRows(
 }
 
 function formatCompactWeightK(weight: number | null | undefined): string {
-  if (weight === null || weight === undefined || !Number.isFinite(weight)) {
+  const resolvedWeight = toPositiveCompoWeight(weight);
+  if (resolvedWeight === null) {
     return WEIGHT_PLACEHOLDER;
   }
-  const normalized = Math.max(0, Math.trunc(weight));
-  return `${Math.trunc(normalized / 1000)}k`;
+  return `${Math.trunc(resolvedWeight / 1000)}k`;
 }
 
 function formatAlignedInlineRow(
@@ -865,13 +864,8 @@ async function buildLinkListView(input: {
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: members.map((row) => row.playerTag),
   });
-  const weightByTag = await listCurrentWeightsForClanMembers({
-    memberTagsInOrder: members.map((row) => row.playerTag),
-  });
-  const deferredWeightByTag = await listOpenDeferredWeightsByPlayerTags({
-    guildId: input.interaction.guildId,
-    clanTag: input.clanTag,
-    playerTags: members.map((row) => row.playerTag),
+  const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
+    playerTagsInOrder: members.map((row) => row.playerTag),
   });
 
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
@@ -882,24 +876,7 @@ async function buildLinkListView(input: {
       member.playerName,
       MAX_PLAYER_NAME_CHARS,
     );
-    const rawWeight = weightByTag.get(member.playerTag);
-    const normalWeightValue =
-      typeof rawWeight === "number" && Number.isFinite(rawWeight)
-        ? Math.trunc(rawWeight)
-        : null;
-    const deferredWeightRaw = deferredWeightByTag.get(member.playerTag);
-    const deferredWeightValue =
-      typeof deferredWeightRaw === "number" &&
-      Number.isFinite(deferredWeightRaw)
-        ? Math.max(0, Math.trunc(deferredWeightRaw))
-        : null;
-    const shouldUseDeferredWeight =
-      normalWeightValue === 0 &&
-      deferredWeightValue !== null &&
-      deferredWeightValue > 0;
-    const weightValue = shouldUseDeferredWeight
-      ? deferredWeightValue
-      : normalWeightValue;
+    const weightValue = weightByTag.get(member.playerTag) ?? null;
     const weight = formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
     const third = truncateWithEllipsis(
@@ -927,9 +904,7 @@ async function buildLinkListView(input: {
         weight,
         playerName,
         third,
-        rightMarker: shouldUseDeferredWeight
-          ? LINK_LIST_DEFERRED_WEIGHT_FALLBACK_EMOJI
-          : null,
+        rightMarker: null,
       },
     });
   });
