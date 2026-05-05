@@ -34,9 +34,11 @@ jobs:
           if [ "${GITHUB_REF_NAME}" = "main" ]; then
             echo "script=~/deploy-prod.sh" >> "$GITHUB_OUTPUT"
             echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "ref_label=main" >> "$GITHUB_OUTPUT"
           else
             echo "script=~/deploy-staging.sh" >> "$GITHUB_OUTPUT"
             echo "environment=staging" >> "$GITHUB_OUTPUT"
+            echo "ref_label=dev" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy to droplet over SSH
@@ -46,9 +48,10 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 45m
           script_stop: true
           script: |
-            echo "Deploying ${GITHUB_REF_NAME} to ${{ steps.target.outputs.environment }}"
+            echo "Deploying ${{ steps.target.outputs.ref_label }} to ${{ steps.target.outputs.environment }}"
             ${{ steps.target.outputs.script }}
 
   pr-check:
