@@ -28,9 +28,6 @@ const prismaMock = vi.hoisted(() => ({
   playerCurrent: {
     findMany: vi.fn(),
   },
-  weightInputDeferment: {
-    findMany: vi.fn(),
-  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -260,7 +257,6 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
-    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -268,7 +264,6 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("creates a self-link when tag is unlinked", async () => {
@@ -1154,7 +1149,6 @@ describe("/link list select menu", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
-    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -1177,7 +1171,6 @@ describe("/link list select menu", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("updates same message in place for valid selection", async () => {
@@ -1293,7 +1286,6 @@ describe("/link list sort button", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
-    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -1358,7 +1350,6 @@ describe("/link list sort button", () => {
         currentWeight: 166000,
       },
     ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("cycles sort mode in stable order and rerenders rows", async () => {

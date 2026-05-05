@@ -91,6 +91,11 @@ describe("/defer add", () => {
     await Defer.run({} as any, interaction as any, cocService as any);
 
     expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      prismaMock.playerCurrent.upsert.mock.invocationCallOrder[0],
+    ).toBeLessThan(prismaMock.weightInputDeferment.upsert.mock.invocationCallOrder[0]);
     expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
@@ -117,6 +122,35 @@ describe("/defer add", () => {
     );
   });
 
+  it("returns already_exists without calling cocService.getPlayerRaw when an open deferment already exists", async () => {
+    prismaMock.weightInputDeferment.findUnique.mockResolvedValue({
+      id: "defer-open-1",
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+      scopeKey: "guild:guild-1|clan:PQL0289",
+      playerTag: "#PYLQ0289",
+      deferredWeight: 145000,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      status: "open",
+    });
+    const interaction = makeInteraction({
+      playerTag: "#pylq0289",
+      weight: "145k",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    await Defer.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "already_exists: #PYLQ0289 is already open in #PQL0289.",
+    );
+  });
+
   it("fails before writing the deferment when the player profile cannot be fetched", async () => {
     const interaction = makeInteraction({
       playerTag: "#pylq0289",
@@ -133,6 +167,36 @@ describe("/defer add", () => {
     expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
       "not_found: player profile for #PYLQ0289 could not be resolved before writing the deferment.",
+    );
+  });
+
+  it("does not write the deferment row when playerCurrent upsert fails", async () => {
+    const interaction = makeInteraction({
+      playerTag: "#pylq0289",
+      weight: "145k",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        name: "Live Player",
+        townHallLevel: 16,
+        clan: {
+          tag: "#PQL0289",
+          name: "Alpha Clan",
+        },
+      }),
+    };
+    prismaMock.playerCurrent.upsert.mockRejectedValueOnce(
+      new Error("player_current_failed"),
+    );
+
+    await Defer.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "failed: unable to resolve player profile for #PYLQ0289 before writing the deferment.",
     );
   });
 });

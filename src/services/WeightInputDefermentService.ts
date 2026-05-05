@@ -92,6 +92,24 @@ function parseStatus(input: string): DefermentStatus | null {
   return null;
 }
 
+async function findOpenWeightInputDeferment(input: {
+  scopeKey: string;
+  playerTag: string;
+}) {
+  const existing = await prisma.weightInputDeferment.findUnique({
+    where: {
+      scopeKey_playerTag: {
+        scopeKey: input.scopeKey,
+        playerTag: input.playerTag,
+      },
+    },
+  });
+  if (existing && parseStatus(existing.status) === "open") {
+    return existing;
+  }
+  return null;
+}
+
 async function resolveClanScopeFromChannel(
   guildId: string,
   channelId: string | null
@@ -179,15 +197,11 @@ export async function addWeightInputDeferment(input: {
     guildId: input.guildId,
     channelId: input.channelId,
   });
-  const existing = await prisma.weightInputDeferment.findUnique({
-    where: {
-      scopeKey_playerTag: {
-        scopeKey: scope.scopeKey,
-        playerTag: input.playerTag,
-      },
-    },
+  const existing = await findOpenWeightInputDeferment({
+    scopeKey: scope.scopeKey,
+    playerTag: input.playerTag,
   });
-  if (existing && parseStatus(existing.status) === "open") {
+  if (existing) {
     return { outcome: "already_exists", record: existing };
   }
 
@@ -239,6 +253,21 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
     };
   }
 
+  const scope = await resolveDefermentScopeContext({
+    guildId: input.guildId,
+    channelId: input.channelId,
+  });
+  const existing = await findOpenWeightInputDeferment({
+    scopeKey: scope.scopeKey,
+    playerTag,
+  });
+  if (existing) {
+    return {
+      outcome: "already_exists",
+      record: existing,
+    };
+  }
+
   const livePlayer = await input.cocService.getPlayerRaw(playerTag);
   if (!livePlayer) {
     return {
@@ -247,17 +276,17 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
     };
   }
 
+  await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+    playerTag,
+    livePlayer,
+    currentWeight: input.deferredWeight,
+  });
+
   const result = await addWeightInputDeferment({
     guildId: input.guildId,
     channelId: input.channelId,
     playerTag,
     deferredWeight: input.deferredWeight,
-  });
-
-  await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
-    playerTag,
-    livePlayer,
-    currentWeight: input.deferredWeight,
   });
 
   return result;
@@ -280,89 +309,6 @@ export async function listOpenWeightInputDeferments(input: {
     orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
   });
   return { scope, rows };
-}
-
-/** Purpose: resolve open deferred weights for specific player tags with clan-scope precedence for read-only consumers. */
-export async function listOpenDeferredWeightsByPlayerTags(input: {
-  guildId: string;
-  clanTag: string | null;
-  playerTags: string[];
-}): Promise<Map<string, number>> {
-  const normalizedPlayerTags = [
-    ...new Set(
-      (input.playerTags ?? [])
-        .map((tag) => normalizePlayerTag(tag))
-        .filter((tag): tag is string => Boolean(tag)),
-    ),
-  ];
-  if (normalizedPlayerTags.length === 0) return new Map<string, number>();
-
-  const normalizedClanTag = normalizeTag(input.clanTag);
-  const clanScopeKey = buildDeferScopeKey(
-    input.guildId,
-    normalizedClanTag || null,
-  );
-  const guildScopeKey = buildDeferScopeKey(input.guildId, null);
-  const scopeKeys =
-    clanScopeKey === guildScopeKey
-      ? [clanScopeKey]
-      : [clanScopeKey, guildScopeKey];
-
-  const rows = await prisma.weightInputDeferment.findMany({
-    where: {
-      guildId: input.guildId,
-      status: "open",
-      scopeKey: { in: scopeKeys },
-      playerTag: { in: normalizedPlayerTags },
-    },
-    select: {
-      scopeKey: true,
-      playerTag: true,
-      deferredWeight: true,
-      createdAt: true,
-    },
-    orderBy: [{ createdAt: "desc" }],
-  });
-
-  const bestByTag = new Map<
-    string,
-    { deferredWeight: number; scopePriority: number; createdAtMs: number }
-  >();
-  for (const row of rows) {
-    const playerTag = normalizePlayerTag(row.playerTag);
-    if (!playerTag) continue;
-    const deferredWeight =
-      row.deferredWeight !== null &&
-      row.deferredWeight !== undefined &&
-      Number.isFinite(row.deferredWeight)
-        ? Math.max(0, Math.trunc(row.deferredWeight))
-        : null;
-    if (deferredWeight === null) continue;
-    const scopePriority = row.scopeKey === clanScopeKey ? 0 : 1;
-    const createdAtMs = row.createdAt.getTime();
-    const existing = bestByTag.get(playerTag);
-    if (!existing) {
-      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
-      continue;
-    }
-    if (scopePriority < existing.scopePriority) {
-      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
-      continue;
-    }
-    if (
-      scopePriority === existing.scopePriority &&
-      createdAtMs > existing.createdAtMs
-    ) {
-      bestByTag.set(playerTag, { deferredWeight, scopePriority, createdAtMs });
-    }
-  }
-
-  return new Map(
-    [...bestByTag.entries()].map(([playerTag, value]) => [
-      playerTag,
-      value.deferredWeight,
-    ]),
-  );
 }
 
 /** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
