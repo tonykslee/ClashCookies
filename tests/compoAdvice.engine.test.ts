@@ -352,6 +352,131 @@ describe("CompoAdviceEngine", () => {
     expect(lines).toContain("Matchrate: Unknown");
   });
 
+  it("shows raw ACTUAL roster deficits before projected planning when the roster is underfilled", () => {
+    const lines = buildCompoAdviceContentLinesForTest({
+      modeLabel: "ACTUAL",
+      refreshLine: null,
+      clanTag: "#2QVGPQP0U",
+      summary: {
+        mode: "actual",
+        view: "raw",
+        viewLabel: "Raw Data",
+        currentScore: 17.5,
+        currentBandLabel: "0 - 7,200,000",
+        targetBandLabel: "0 - 7,200,000",
+        currentProjection: {
+          view: "raw",
+          totalWeight: 2_439_000,
+          missingWeights: 16,
+          unresolvedWeightCount: 16,
+          missingTo50Count: 17,
+          memberCount: 33,
+          selectedHeatMapRef: makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+            th18Count: 6,
+            th17Count: 5,
+            th16Count: 6,
+            th15Count: 8,
+            th14Count: 8,
+            th13Count: 7,
+            th12Count: 5,
+            th11Count: 3,
+            th10OrLowerCount: 2,
+          }),
+          deltaByBucket: {
+            TH18: -3,
+            TH17: -4,
+            TH16: -4,
+            TH15: -5,
+            TH14: -6,
+            "<=TH13": -11,
+          },
+        } as any,
+        projectedProjection: {
+          view: "auto",
+          totalWeight: 6_986_085,
+          missingWeights: 33,
+          unresolvedWeightCount: 16,
+          missingTo50Count: 17,
+          memberCount: 33,
+          selectedHeatMapRef: makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+            th18Count: 6,
+            th17Count: 5,
+            th16Count: 6,
+            th15Count: 8,
+            th14Count: 8,
+            th13Count: 7,
+            th12Count: 5,
+            th11Count: 3,
+            th10OrLowerCount: 2,
+          }),
+          deltaByBucket: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: 0,
+            "<=TH13": 0,
+          },
+        } as any,
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+            th18Count: 6,
+            th17Count: 5,
+            th16Count: 6,
+            th15Count: 8,
+            th14Count: 8,
+            th13Count: 7,
+            th12Count: 5,
+            th11Count: 3,
+            th10OrLowerCount: 2,
+          }),
+        ],
+        bandMatchRatesByBandKey: new Map([["0-7200000", 0.4]]),
+        currentMatchrate: 0.35,
+        targetBandMatchrate: 0.4,
+        resultingMatchrate: 0.4,
+        currentWeight: 2_439_000,
+        resolvedRosterWeight: 2_439_000,
+        targetBandMidpoint: 3_600_000,
+        targetHeatMapRef: makeHeatMapRef({
+          weightMinInclusive: 0,
+          weightMaxInclusive: 7_200_000,
+          th18Count: 6,
+          th17Count: 5,
+          th16Count: 6,
+          th15Count: 8,
+          th14Count: 8,
+          th13Count: 7,
+          th12Count: 5,
+          th11Count: 3,
+          th10OrLowerCount: 2,
+        }),
+        recommendationText: "Add TH18",
+        resultingScore: 0,
+        resultingBandLabel: "0 - 7,200,000",
+        alternateTexts: [],
+        statusText: "Projected planning is shown separately below.",
+        selectedCustomBandIndex: 0,
+        customBandCount: 1,
+      } as any,
+    });
+
+    expect(lines).toContain("Raw roster deficits:");
+    expect(lines).toContain("TH18: -3");
+    expect(lines).toContain("TH17: -4");
+    expect(lines).toContain("TH16: -4");
+    expect(lines).toContain("TH15: -5");
+    expect(lines).toContain("TH14: -6");
+    expect(lines).toContain("<=TH13: -11");
+    expect(lines).toContain("Projected planning is shown separately below.");
+  });
+
   it("renders current, target, and adjacent matchrate lines from band rates and deviation penalties", () => {
     const refs = [
       makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 999_999 }),

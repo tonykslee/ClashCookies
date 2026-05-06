@@ -108,7 +108,7 @@ describe("/compo state mode:war DB cutover", () => {
     expect(Object.prototype.hasOwnProperty.call(payload, "files")).toBe(false);
   });
 
-  it("renders mode:actual from the DB-backed ACTUAL state service without sheet reads and defaults to Auto-Detect Band", async () => {
+  it("renders mode:actual from the DB-backed ACTUAL state service without sheet reads and defaults to Raw Data", async () => {
     const readStateSpy = vi.spyOn(CompoWarStateService.prototype, "readState");
     const actualReadStateSpy = vi
       .spyOn(CompoActualStateService.prototype, "readState")
@@ -130,7 +130,7 @@ describe("/compo state mode:war DB cutover", () => {
 
     expect(readStateSpy).not.toHaveBeenCalled();
     expect(actualReadStateSpy).toHaveBeenCalledTimes(1);
-    expect(actualReadStateSpy).toHaveBeenCalledWith("guild-1", { view: "auto" });
+    expect(actualReadStateSpy).toHaveBeenCalledWith("guild-1", { view: "raw" });
     expect(getSheetSpy).not.toHaveBeenCalled();
     expect(readSheetSpy).not.toHaveBeenCalled();
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
@@ -138,8 +138,8 @@ describe("/compo state mode:war DB cutover", () => {
     expect(Array.isArray(payload?.files)).toBe(true);
     expect(getComponentCustomIds(payload)).toEqual(
       expect.arrayContaining([
-        "compo-refresh:state:user-1:actual:auto",
-        "compo-refresh:view:user-1:state:auto",
+        "compo-refresh:state:user-1:actual:raw",
+        "compo-refresh:view:user-1:state:raw",
       ]),
     );
   });

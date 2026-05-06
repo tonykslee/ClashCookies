@@ -204,7 +204,7 @@ export class CompoAdviceService {
   }): Promise<CompoAdviceReadResult> {
     const targetTag = normalizeTag(input.targetTag);
     const view =
-      input.mode === "actual" ? input.view ?? "auto" : "raw";
+      input.mode === "actual" ? input.view ?? "raw" : "raw";
 
     if (!targetTag) {
       return buildEmptyResult({
@@ -384,7 +384,7 @@ export class CompoAdviceService {
     customBandIndex?: number | null;
   }): Promise<CompoAdviceReadResult> {
     const view =
-      input.mode === "actual" ? input.view ?? "auto" : "raw";
+      input.mode === "actual" ? input.view ?? "raw" : "raw";
 
     if (input.mode === "actual") {
       await this.actualStateService.refreshState(input.guildId ?? null, {

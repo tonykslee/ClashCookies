@@ -289,7 +289,7 @@ describe("CompoAdviceService", () => {
     expect(result.summary.currentProjection.missingWeights).toBe(1);
   });
 
-  it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
+  it("loads ACTUAL advice from DB-backed state, defaults to Raw Data, and computes rushed members without sheet reads", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),
     ]);
@@ -344,12 +344,10 @@ describe("CompoAdviceService", () => {
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
     expect(result.kind).toBe("ready");
-    expect(result.selectedView).toBe("auto");
-    expect(result.summary.viewLabel).toBe("Auto-Detect Band");
+    expect(result.selectedView).toBe("raw");
+    expect(result.summary.viewLabel).toBe("Raw Data");
     expect(result.summary.resolvedRosterWeight).toBeGreaterThan(0);
-    expect(result.summary.currentWeight).toBeGreaterThanOrEqual(
-      result.summary.resolvedRosterWeight,
-    );
+    expect(result.summary.currentWeight).toBe(result.summary.resolvedRosterWeight);
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
