@@ -25,6 +25,23 @@ function docsCommandNames(): Set<string> {
   return names;
 }
 
+function helpEmbedText(commandName: string): string {
+  const command = Commands.find((entry) => entry.name === commandName);
+  expect(command).toBeTruthy();
+  return buildHelpDetailEmbeds(command!)
+    .map((embed) => {
+      const json = embed.toJSON() as any;
+      return [
+        json.title,
+        json.description,
+        ...(json.fields ?? []).flatMap((field: any) => [field.name, field.value]),
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
+}
+
 describe("command coverage", () => {
   it("ensures every registered command has a permissions target", () => {
     const missing = Commands.map((command) => command.name).filter(
@@ -101,6 +118,12 @@ describe("command coverage", () => {
         "continued/truncated",
       );
     }
+  });
+
+  it("omits the removed standalone /fwa mail send command from FWA help", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    expect(fwaHelpText).not.toContain("/fwa mail send");
+    expect(fwaHelpText).not.toContain("command:fwa:mail:send");
   });
 
   it("moves and resets help detail navigation state", () => {

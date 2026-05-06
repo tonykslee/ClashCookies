@@ -42,4 +42,11 @@ describe("/fwa base-swap command shape", () => {
     expect(clan?.description).toContain("FWA");
     expect(clan?.description).toContain("CWL");
   });
+
+  it("does not register a standalone mail send subcommand group", () => {
+    const mail = Fwa.options?.find(
+      (option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "mail",
+    );
+    expect(mail).toBeUndefined();
+  });
 });
