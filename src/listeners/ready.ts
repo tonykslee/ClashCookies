@@ -49,6 +49,7 @@ import {
 import { PollCycleGuardService } from "../services/PollCycleGuardService";
 import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
+import { dozzleLog } from "../helper/dozzleLogger";
 import {
   isActivePollingMode,
   resolveMirrorSyncIntervalMsFromEnv,
@@ -187,7 +188,7 @@ export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
     if (!client.application) return;
 
-    console.log("ClashCookies is starting...");
+    dozzleLog.info("ClashCookies is starting...");
     let applicationFetchAttempted = false;
     let applicationFetchSucceeded = false;
     if (client.application) {
@@ -204,7 +205,7 @@ export default (client: Client, cocService: CoCService): void => {
         client.application.emojis &&
         typeof client.application.emojis.fetch === "function"
     );
-    console.log(
+    dozzleLog.debug(
       `[startup:discord] discord_js_version=${discordJsVersion} application_present=${Boolean(client.application)} application_fetch_attempted=${applicationFetchAttempted} application_fetch_succeeded=${applicationFetchSucceeded} application_emoji_fetch_available=${hasApplicationEmojiFetch}`
     );
 
@@ -216,7 +217,7 @@ export default (client: Client, cocService: CoCService): void => {
     let firstFailureMs: number | null = null;
     let totalFailures = 0;
     let bootstrapStage = "guild_fetch";
-    console.log(
+    dozzleLog.info(
       `[startup:bootstrap] start ${formatStartupLogFields({
         base_backoff_ms: bootstrapConfig.baseBackoffMs,
         guild_id_present: guildIdPresent,
@@ -265,9 +266,9 @@ export default (client: Client, cocService: CoCService): void => {
           transient: context.transient,
         });
         if (context.willRetry && context.backoffMs !== null) {
-          console.warn(`[startup:bootstrap] retry ${baseLog}`);
+          dozzleLog.warn(`[startup:bootstrap] retry ${baseLog}`);
           if (shouldEmitStartupRetrySummary(totalFailures, summaryEvery)) {
-            console.warn(
+            dozzleLog.warn(
               `[startup:bootstrap] retry_summary ${formatStartupLogFields({
                 every: summaryEvery,
                 first_failure_ms_ago: firstFailureMs === null ? 0 : now - firstFailureMs,
@@ -283,7 +284,7 @@ export default (client: Client, cocService: CoCService): void => {
           return;
         }
 
-        console.error(`[startup:bootstrap] fatal_non_transient ${baseLog}`);
+        dozzleLog.fatal(`[startup:bootstrap] fatal_non_transient ${baseLog}`);
       },
     });
     if (bootstrap.status !== "success") {
@@ -291,7 +292,7 @@ export default (client: Client, cocService: CoCService): void => {
       return;
     }
 
-    console.log(
+    dozzleLog.info(
       `[startup:bootstrap] success ${formatStartupLogFields({
         attempts: bootstrap.attempts,
         elapsed_ms: Date.now() - startupBootstrapStartMs,
@@ -318,10 +319,10 @@ export default (client: Client, cocService: CoCService): void => {
       .filter(([bit]) => !guildPerms.has(bit))
       .map(([, label]) => label);
     if (missingGuildPerms.length > 0) {
-      console.warn(
-        `Bot is missing recommended guild permissions: ${missingGuildPerms.join(", ")}.`
-      );
-      console.warn(
+    dozzleLog.warn(
+      `Bot is missing recommended guild permissions: ${missingGuildPerms.join(", ")}.`
+    );
+      dozzleLog.warn(
         "Some commands may partially fail depending on channel overrides. Update role/channel permissions and redeploy."
       );
     }
@@ -330,7 +331,7 @@ export default (client: Client, cocService: CoCService): void => {
     const commandsWithVisibility = Commands.map((cmd) => injectVisibilityOptions(cmd));
     const registrationDebugSummary = buildCommandRegistrationDebugSummary(commandsWithVisibility);
     const runtimeEnvironment = resolveRuntimeEnvironment(process.env);
-    console.log(
+    dozzleLog.info(
       `[startup:commands] env=${runtimeEnvironment} bot_id=${client.user?.id ?? "unknown"} bot_username=${
         client.user?.username ?? "unknown"
       } guild_id=${guildId} scope=guild payload_count=${registrationDebugSummary.commandCount} roster_included=${
@@ -353,9 +354,9 @@ export default (client: Client, cocService: CoCService): void => {
       logger: console,
     });
     if (registrationResult.status === "success") {
-      console.log(`[startup:commands] registration complete count=${Commands.length}`);
+      dozzleLog.info(`[startup:commands] registration complete count=${Commands.length}`);
     } else if (registrationResult.status === "skipped") {
-      console.warn(
+      dozzleLog.warn(
         `[startup:commands] registration skipped by config. payload_count=${Commands.length}`
       );
     } else {
@@ -366,15 +367,15 @@ export default (client: Client, cocService: CoCService): void => {
           optionCount: Array.isArray(c?.options) ? c.options.length : 0,
         }))
       );
-      console.warn(
+      dozzleLog.warn(
         `[startup:commands] registration unavailable after ${registrationResult.attempts} attempt(s); startup continuing.`
       );
     }
 
-    console.log("[reminders] ready_start begin");
+    dozzleLog.debug("[reminders] ready_start begin");
     const reminderScheduler = new ReminderSchedulerService(client);
     const reminderSchedulerStart = reminderScheduler.start();
-    console.log(
+    dozzleLog.info(
       reminderSchedulerStart.started
         ? "[reminders] ready_start complete started=true"
         : `[reminders] ready_start complete started=false reason=${reminderSchedulerStart.reason}`,
@@ -382,7 +383,7 @@ export default (client: Client, cocService: CoCService): void => {
 
     TelemetryIngestService.getInstance().startAutoFlush();
     startTelemetryScheduleLoop(client);
-    console.log("Telemetry ingest + schedule loops enabled.");
+    dozzleLog.info("Telemetry ingest + schedule loops enabled.");
 
     const activityService = new ActivityService(cocService);
     const warEventLogService = new WarEventLogService(client, cocService);
@@ -392,7 +393,7 @@ export default (client: Client, cocService: CoCService): void => {
     const activePollingEnabled = isActivePollingMode(process.env);
     const mirrorSyncService = new MirrorSyncService();
     const heatMapRefRebuildService = new HeatMapRefRebuildService();
-    console.log(`[polling-mode] mode=${pollingMode}`);
+    dozzleLog.info(`[polling-mode] mode=${pollingMode}`);
 
     const observeTrackedClans = async (): Promise<{
       observedTags: string[];

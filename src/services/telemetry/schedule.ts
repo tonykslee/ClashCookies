@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "discord.js";
 import { truncateDiscordContent } from "../../helper/discordContent";
 import { formatError } from "../../helper/formatError";
+import { dozzleLog } from "../../helper/dozzleLogger";
 import { prisma } from "../../prisma";
 import { buildTelemetryReportForWindow, renderTelemetryReport } from "./report";
 import {
@@ -238,7 +239,7 @@ export async function runTelemetryScheduleOnce(
         WHERE "id" = ${runId}
       `
     );
-    console.error(
+    dozzleLog.warn(
       `[telemetry-v2] scheduled report failed guild=${schedule.guildId} channel=${schedule.channelId} window_start=${window.start.toISOString()} error=${formatError(
         err
       )}`
@@ -282,7 +283,7 @@ export function startTelemetryScheduleLoop(client: Client): void {
     try {
       await runDueTelemetrySchedules(client);
     } catch (err) {
-      console.error(`[telemetry-v2] schedule loop failed error=${formatError(err)}`);
+      dozzleLog.error(`[telemetry-v2] schedule loop failed error=${formatError(err)}`);
     }
   };
 

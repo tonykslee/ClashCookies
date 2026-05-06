@@ -2,6 +2,7 @@ import { ReminderDispatchStatus, ReminderTargetClanType, ReminderType } from "@p
 import { Client } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { formatError } from "../../helper/formatError";
+import { dozzleLog } from "../../helper/dozzleLogger";
 import { prisma } from "../../prisma";
 import {
   isCoCQueueSkippedError,
@@ -17,6 +18,7 @@ const RETRYABLE_WAR_24H_OFFSET_SECONDS = 24 * 60 * 60;
 const RETRYABLE_WAR_24H_RETRY_WINDOW_MS = 15 * 60 * 1000;
 const RETRYABLE_WAR_24H_ERROR_MESSAGE = "attack_window_not_active";
 const RETRYABLE_WAR_24H_RETRY_LOCK_PREFIX = `${RETRYABLE_WAR_24H_ERROR_MESSAGE}|retry_lock=`;
+const reminderRetryWindowExpiredLogKeys = new Set<string>();
 
 type ReminderSchedulerRow = {
   id: string;
@@ -83,24 +85,24 @@ export class ReminderSchedulerService {
 
   /** Purpose: start one immediate cycle and register periodic scheduler runs. */
   start(): ReminderSchedulerStartResult {
-    console.log(
+    dozzleLog.info(
       `[reminders] scheduler start requested interval_ms=${this.intervalMs} has_timer=${Boolean(this.timer)}`,
     );
     if (this.timer) {
-      console.log(
+      dozzleLog.debug(
         `[reminders] scheduler start skipped reason=already_started interval_ms=${this.intervalMs}`,
       );
       return { started: false, reason: "already_started" };
     }
     void this.runCycle().catch((err) => {
-      console.error(`[reminders] scheduler immediate_cycle_failed error=${formatError(err)}`);
+      dozzleLog.error(`[reminders] scheduler immediate_cycle_failed error=${formatError(err)}`);
     });
     this.timer = setInterval(() => {
       void this.runCycle().catch((err) => {
-        console.error(`[reminders] scheduler interval_cycle_failed error=${formatError(err)}`);
+        dozzleLog.error(`[reminders] scheduler interval_cycle_failed error=${formatError(err)}`);
       });
     }, this.intervalMs);
-    console.log(`[reminders] scheduler started interval_ms=${this.intervalMs}`);
+    dozzleLog.info(`[reminders] scheduler started interval_ms=${this.intervalMs}`);
     return { started: true };
   }
 
@@ -114,7 +116,7 @@ export class ReminderSchedulerService {
   /** Purpose: run one deduped reminder scheduling pass while guarding against overlap. */
   async runCycle(nowMs: number = Date.now()): Promise<ReminderSchedulerCounts> {
     if (this.inFlight) {
-      console.log("[reminders] scheduler skipped reason=in_flight");
+      dozzleLog.debug("[reminders] scheduler skipped reason=in_flight");
       return {
         evaluated: 0,
         fired: 0,
@@ -139,13 +141,13 @@ export class ReminderSchedulerService {
             intervalMs: this.intervalMs,
           }),
       );
-      console.log(
+      dozzleLog.debug(
         `[reminders] scheduler evaluated=${counts.evaluated} fired=${counts.fired} deduped=${counts.deduped} failed=${counts.failed}`,
       );
       return counts;
     } catch (err) {
       if (isCoCQueueSkippedError(err)) {
-        console.warn(`[reminders] scheduler skipped reason=stale_queue ${err.message}`);
+        dozzleLog.warn(`[reminders] scheduler skipped reason=stale_queue ${err.message}`);
         return {
           evaluated: 0,
           fired: 0,
@@ -158,6 +160,18 @@ export class ReminderSchedulerService {
       this.inFlight = false;
     }
   }
+}
+
+/** Purpose: expose reminder retry-window log suppression behavior for focused tests. */
+export function shouldLogReminderRetryWindowExpiredForTest(logKey: string): boolean {
+  if (reminderRetryWindowExpiredLogKeys.has(logKey)) return false;
+  reminderRetryWindowExpiredLogKeys.add(logKey);
+  return true;
+}
+
+/** Purpose: reset reminder retry-window log suppression state for isolated tests. */
+export function resetReminderRetryWindowExpiredLogStateForTest(): void {
+  reminderRetryWindowExpiredLogKeys.clear();
 }
 
 /** Purpose: execute one scheduler cycle for enabled reminders, trigger resolution, dedupe, and dispatch. */
@@ -258,7 +272,7 @@ export async function runReminderSchedulerCycle(input: {
             continue;
           }
 
-          console.log(
+          dozzleLog.debug(
             `[reminders] retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
           );
 
@@ -281,7 +295,7 @@ export async function runReminderSchedulerCycle(input: {
               messageId: dispatchResult.messageId,
               nowMs,
             });
-            console.log(
+            dozzleLog.info(
               `[reminders] retry_sent reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId} outcome=sent`,
             );
             continue;
@@ -303,9 +317,15 @@ export async function runReminderSchedulerCycle(input: {
               : dispatchResult.errorMessage.slice(0, 500),
             nowMs,
           });
-          console.error(
-            `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=${retryableAgain ? "retryable_attack_window_not_active" : "terminal"} error=${dispatchResult.errorMessage}`,
-          );
+          if (retryableAgain) {
+            dozzleLog.warn(
+              `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active error=${dispatchResult.errorMessage}`,
+            );
+          } else {
+            dozzleLog.error(
+              `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=terminal error=${dispatchResult.errorMessage}`,
+            );
+          }
           continue;
         }
 
@@ -339,7 +359,7 @@ export async function runReminderSchedulerCycle(input: {
             messageId: dispatchResult.messageId,
             nowMs,
           });
-          console.log(
+          dozzleLog.info(
             `[reminders] fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId}`,
           );
           continue;
@@ -351,7 +371,7 @@ export async function runReminderSchedulerCycle(input: {
           errorMessage: dispatchResult.errorMessage.slice(0, 500),
           nowMs,
         });
-        console.error(
+        dozzleLog.error(
           `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
         );
       }
@@ -426,7 +446,7 @@ async function createReminderFireLogIfFirst(input: {
     if (code === "P2002") {
       return { created: false };
     }
-    console.error(`[reminders] firelog_create_failed error=${formatError(error)}`);
+    dozzleLog.error(`[reminders] firelog_create_failed error=${formatError(error)}`);
     return { created: false };
   }
 }
@@ -480,9 +500,13 @@ async function resolveRetryableWar24hFireLog(input: {
       fireLog.dispatchStatus === ReminderDispatchStatus.FAILED &&
       parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)?.isRetryable
     ) {
-      console.warn(
-        `[reminders] retry_window_expired reminder_id=${input.reminder.id} clan=${input.context.clanTag} offset_s=${input.offsetSeconds} identity=${input.context.eventIdentity} prior_status=${fireLog.dispatchStatus} prior_error=${fireLog.errorMessage ?? ""} due_at=${new Date(dueAtMs).toISOString()} now=${new Date(input.nowMs).toISOString()} outcome=expired`,
-      );
+      const logKey = `${input.reminder.id}|${input.context.eventIdentity}|${input.offsetSeconds}`;
+      if (!reminderRetryWindowExpiredLogKeys.has(logKey)) {
+        reminderRetryWindowExpiredLogKeys.add(logKey);
+        dozzleLog.warn(
+          `[reminders] retry_window_expired reminder_id=${input.reminder.id} clan=${input.context.clanTag} offset_s=${input.offsetSeconds} identity=${input.context.eventIdentity} prior_status=${fireLog.dispatchStatus} prior_error=${fireLog.errorMessage ?? ""} due_at=${new Date(dueAtMs).toISOString()} now=${new Date(input.nowMs).toISOString()} outcome=expired`,
+        );
+      }
     }
     return null;
   }

@@ -12,6 +12,7 @@ import {
 import { Commands } from "../Commands";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
+import { dozzleLog } from "../helper/dozzleLogger";
 import { CoCService } from "../services/CoCService";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
 import {
@@ -407,13 +408,13 @@ export default (client: Client, cocService: CoCService): void => {
       .map((opt) => `${opt.name}=${String(opt.value ?? "")}`)
       .join(", ");
 
-    console.log(
+    dozzleLog.info(
       `[cmd] user=${user} guild=${guild} command=/${interaction.commandName}` +
         (options ? ` options={${options}}` : "")
     );
     if (interaction.commandName === "compo") {
       const sub = interaction.options.getSubcommand(false) ?? "unknown";
-      console.log(
+      dozzleLog.debug(
         `[compo-command] stage=interaction_received command=compo subcommand=${sub} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id}`
       );
     }
@@ -1642,7 +1643,7 @@ const handleSlashCommand = async (
         timeout: failure.timeout,
       });
     }
-    console.error(`Command failed: ${formatError(err)}`);
+    dozzleLog.error(`Command failed: ${formatError(err)}`);
     const message = isMissingBotPermissionsError(err)
       ? missingPermissionMessage(`/${interaction.commandName}`)
       : "Something went wrong.";
@@ -1661,7 +1662,7 @@ const handleSlashCommand = async (
       const code = getDiscordErrorCode(responseErr);
       // 10062 Unknown interaction: token expired/invalid; cannot recover.
       if (code === 10062) {
-        console.warn(
+        dozzleLog.warn(
           `Failed to send error response for /${interaction.commandName}: interaction expired (10062).`
         );
         return;
@@ -1674,7 +1675,7 @@ const handleSlashCommand = async (
         return;
       }
 
-      console.error(
+      dozzleLog.error(
         `Failed to send error response for /${interaction.commandName}: ${formatError(responseErr)}`
       );
     }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { dozzleLog } from "../../helper/dozzleLogger";
 import { getTelemetryContext } from "./context";
 import { classifyTelemetryError, type TelemetryErrorCategory } from "./errorTaxonomy";
 
@@ -272,7 +273,7 @@ export class TelemetryIngestService {
     if (this.flushIntervalHandle) return;
     this.flushIntervalHandle = setInterval(() => {
       this.flush().catch((err) => {
-        console.error(`[telemetry-v2] flush failed error=${String((err as Error)?.message ?? err)}`);
+        dozzleLog.warn(`[telemetry-v2] flush failed error=${String((err as Error)?.message ?? err)}`);
       });
     }, this.flushIntervalMs);
   }
@@ -563,7 +564,7 @@ export class TelemetryIngestService {
       await this.persistApiRollups([...apiMap.values()]);
       await this.persistStageRollups([...stageMap.values()]);
     } catch (err) {
-      console.error(`[telemetry-v2] flush persist failed error=${String((err as Error)?.message ?? err)}`);
+      dozzleLog.warn(`[telemetry-v2] flush persist failed error=${String((err as Error)?.message ?? err)}`);
       mergeMapValues(this.commandRollups, commandMap, mergeCommandRollup);
       mergeMapValues(this.userRollups, userMap, mergeUserRollup);
       mergeMapValues(this.apiRollups, apiMap, mergeApiRollup);
@@ -582,7 +583,7 @@ export class TelemetryIngestService {
       ...payload,
       sampleCount: nextCount,
     };
-    console.info(`[telemetry-v2] ${JSON.stringify(enriched)}`);
+    dozzleLog.debug(`[telemetry-v2] ${JSON.stringify(enriched)}`);
   }
 
   private async persistCommandRollups(rows: CommandRollup[]): Promise<void> {
