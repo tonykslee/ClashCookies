@@ -7544,7 +7544,8 @@ async function handleFwaMailConfirmAction(
   if (!payload) {
     await interaction.reply({
       ephemeral: true,
-      content: "This mail preview expired. Run /fwa mail send again.",
+      content:
+        "This mail preview expired. Open /fwa match and use Send Mail again.",
     });
     return;
   }
@@ -12857,27 +12858,6 @@ export const Fwa: Command = {
         },
       ],
     },
-    {
-      name: "mail",
-      description: "Configure and send tracked clan war mail",
-      type: ApplicationCommandOptionType.SubcommandGroup,
-      options: [
-        {
-          name: "send",
-          description: "Preview and send war mail for a tracked clan",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "tag",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-      ],
-    },
   ],
   run: async (
     _client: Client,
@@ -13009,25 +12989,6 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
-      return;
-    }
-
-    if (subcommandGroup === "mail" && subcommand === "send") {
-      if (!interaction.inGuild() || !interaction.guildId) {
-        await editReplySafe("This command can only be used in a server.");
-        return;
-      }
-      if (!tag) {
-        await editReplySafe("Please provide `tag`.");
-        return;
-      }
-      await showWarMailPreview(
-        interaction,
-        interaction.guildId,
-        interaction.user.id,
-        tag,
-        cocService,
-      );
       return;
     }
 

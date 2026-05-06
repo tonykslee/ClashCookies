@@ -70,7 +70,6 @@ export const COMMAND_PERMISSION_TARGETS = [
   "defer:list",
   "defer:remove",
   "defer:clear",
-  "fwa:mail:send",
   "fwa:leader-role",
   "link:create:admin",
   "link:delete:admin",
