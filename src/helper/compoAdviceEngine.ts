@@ -96,6 +96,7 @@ export type CompoAdviceSummary = {
   view: CompoAdviceView;
   viewLabel: string;
   currentProjection: CompoActualStateProjection;
+  projectedProjection: CompoActualStateProjection | null;
   heatMapRefs: readonly HeatMapRef[];
   bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   resolvedRosterWeight: number;
@@ -203,6 +204,28 @@ function formatSignedCompactWeight(value: number | null | undefined): string {
   const normalized = Math.trunc(value);
   const sign = normalized >= 0 ? "+" : "-";
   return `${sign}${formatCompactWeight(Math.abs(normalized))}`;
+}
+
+export function buildCompoActualDeltaLines(input: {
+  deltaByBucket: Record<CompoWarDisplayBucket, number | null>;
+}): string[] {
+  const lines = COMPO_ADVICE_DISPLAY_BUCKETS.flatMap((bucket) => {
+    const delta = input.deltaByBucket[bucket];
+    if (
+      delta === null ||
+      delta === undefined ||
+      !Number.isFinite(delta) ||
+      Math.trunc(delta) === 0
+    ) {
+      return [] as string[];
+    }
+
+    const normalized = Math.trunc(delta);
+    const sign = normalized > 0 ? "+" : "";
+    return [`${bucket}: ${sign}${normalized}`];
+  });
+
+  return lines.length > 0 ? lines : ["No raw roster deficits detected."];
 }
 
 function formatBandMidpointLine(input: {
@@ -726,6 +749,16 @@ export function evaluateCompoAdvice(input: {
   const currentWeight = Number.isFinite(currentProjection.totalWeight)
     ? currentProjection.totalWeight
     : null;
+  const projectedProjection =
+    input.mode === "actual" &&
+    currentProjection.view === "raw" &&
+    currentProjection.memberCount < 50
+      ? projectCompoActualStateView({
+          view: "auto",
+          base: input.base,
+          heatMapRefs: input.heatMapRefs,
+        })
+      : null;
   const currentBandMatchrate = getBandMatchrate({
     summary: {
       currentProjection,
@@ -788,6 +821,7 @@ export function evaluateCompoAdvice(input: {
     view: input.view,
     viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
+    projectedProjection,
     heatMapRefs: projectionState.heatMapRefs,
     bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
     resolvedRosterWeight: input.base.resolvedTotalWeight,
@@ -832,6 +866,16 @@ export function buildCompoAdviceContentLines(input: {
   lines.push(`Target Band: **${input.summary.targetBandLabel}**`);
   lines.push(`Resolved roster weight: ${formatFullWeight(input.summary.resolvedRosterWeight)}`);
   if (
+    input.summary.projectedProjection &&
+    input.summary.projectedProjection.totalWeight !== input.summary.currentWeight
+  ) {
+    lines.push(
+      `Projected 50-player weight: ${formatFullWeight(
+        input.summary.projectedProjection.totalWeight,
+      )}`,
+    );
+  }
+  if (
     input.summary.currentProjection.view !== "raw" ||
     input.summary.currentWeight !== input.summary.resolvedRosterWeight
   ) {
@@ -844,6 +888,9 @@ export function buildCompoAdviceContentLines(input: {
         : "projected 50-player roster"
     }`,
   );
+  if (input.summary.projectedProjection) {
+    lines.push("Projected planning basis: projected 50-player roster");
+  }
   lines.push(`Unresolved weights: ${input.summary.currentProjection.unresolvedWeightCount}`);
   lines.push(`Missing-to-50 fills: ${input.summary.currentProjection.missingTo50Count}`);
   lines.push(
@@ -862,6 +909,23 @@ export function buildCompoAdviceContentLines(input: {
       selectedHeatMapRef: input.summary.targetHeatMapRef,
     })}`,
   );
+  if (
+    input.summary.mode === "actual" &&
+    input.summary.currentProjection.view === "raw" &&
+    input.summary.currentProjection.memberCount < 50
+  ) {
+    lines.push("Raw roster deficits:");
+    lines.push(
+      ...buildCompoActualDeltaLines({
+        deltaByBucket: input.summary.currentProjection.deltaByBucket,
+      }),
+    );
+    if (input.summary.projectedProjection) {
+      lines.push("Projected planning is shown separately below.");
+    }
+  } else {
+    lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
+  }
   lines.push(
     `Target band source: ${
       input.summary.view === "custom"
@@ -871,7 +935,6 @@ export function buildCompoAdviceContentLines(input: {
           : "projected total"
     }`,
   );
-  lines.push(`Recommendation: :arrow_arrow: __${input.summary.recommendationText}__`);
   lines.push(`Deviation Score: **${formatScore(input.summary.resultingScore)}**`);
   lines.push(`Matchrate: ${formatMatchratePercent(input.summary.resultingMatchrate)}`);
   const adjacent = getAdjacentHeatMapRefs({
@@ -898,7 +961,14 @@ export function buildCompoAdviceContentLines(input: {
       getBandMatchrate({ summary: input.summary, heatMapRef: adjacent.higher }),
     )}`,
   );
-  if (input.summary.statusText) {
+  if (
+    input.summary.statusText &&
+    !(
+      input.summary.mode === "actual" &&
+      input.summary.currentProjection.view === "raw" &&
+      input.summary.currentProjection.memberCount < 50
+    )
+  ) {
     lines.push(input.summary.statusText);
   }
   return lines;

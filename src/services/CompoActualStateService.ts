@@ -147,17 +147,20 @@ function buildActualViewSummaryLines(
   if (view === "raw") {
     contentLines.push("Resolved roster weight is shown directly in the table.");
     contentLines.push("Projected 50-player weight is not applied in RAW view.");
+    contentLines.push("Projected 50-player planning is available in Auto-Detect Band and Best Fit.");
     contentLines.push("Deltas: resolved vs HeatMapRef.");
     contentLines.push("Missing = unresolved weights only.");
   } else if (view === "auto") {
     contentLines.push("Resolved roster weight is shown separately from the projected 50-player total.");
     contentLines.push("Selected band source: projected total.");
     contentLines.push("Deltas: projected vs HeatMapRef.");
+    contentLines.push("Resolved roster deficits remain available in Raw Data.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
   } else {
     contentLines.push("Resolved roster weight is shown separately from the projected best-fit total.");
     contentLines.push("Selected band source: projected total.");
     contentLines.push("Deltas: projected vs HeatMapRef.");
+    contentLines.push("Resolved roster deficits remain available in Raw Data.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
   }
   if (missingHeatMapBands.length > 0) {

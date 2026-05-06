@@ -222,6 +222,119 @@ describe("/compo advice command", () => {
     );
   });
 
+  it("renders ACTUAL underfilled advice with raw roster deficits before projected planning", async () => {
+    vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
+      kind: "ready",
+      mode: "actual",
+      selectedView: "raw",
+      trackedClanTags: ["#2QVGPQP0U"],
+      trackedClanChoices: [{ tag: "#2QVGPQP0U", name: "Rocky Road" }],
+      clanTag: "#2QVGPQP0U",
+      clanName: "Rocky Road",
+      memberCount: 33,
+      rushedCount: 0,
+      refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
+      summary: {
+        mode: "actual",
+        view: "raw",
+        viewLabel: "Raw Data",
+        heatMapRefs: [
+          {
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+          },
+        ],
+        bandMatchRatesByBandKey: new Map([["0-7200000", 0.4]]),
+        currentProjection: {
+          view: "raw",
+          totalWeight: 2_439_000,
+          memberCount: 33,
+          missingWeights: 16,
+          unresolvedWeightCount: 16,
+          missingTo50Count: 17,
+          selectedHeatMapRef: {
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+          },
+          deltaByBucket: {
+            TH18: -3,
+            TH17: -4,
+            TH16: -4,
+            TH15: -5,
+            TH14: -6,
+            "<=TH13": -11,
+          },
+        } as any,
+        projectedProjection: {
+          view: "auto",
+          totalWeight: 6_986_085,
+          memberCount: 33,
+          missingWeights: 33,
+          unresolvedWeightCount: 16,
+          missingTo50Count: 17,
+          selectedHeatMapRef: {
+            weightMinInclusive: 0,
+            weightMaxInclusive: 7_200_000,
+          },
+          deltaByBucket: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: 0,
+            "<=TH13": 0,
+          },
+        } as any,
+        currentMatchrate: 0.35,
+        targetBandMatchrate: 0.4,
+        resultingMatchrate: 0.4,
+        currentWeight: 2_439_000,
+        resolvedRosterWeight: 2_439_000,
+        targetBandMidpoint: 3_600_000,
+        currentScore: 17.5,
+        currentBandLabel: "0 - 7,200,000",
+        targetBandLabel: "0 - 7,200,000",
+        targetHeatMapRef: {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 7_200_000,
+        },
+        recommendationText: "No improvement found.",
+        resultingScore: 0,
+        resultingBandLabel: "0 - 7,200,000",
+        alternateTexts: [],
+        statusText: null,
+        selectedCustomBandIndex: 0,
+        customBandCount: 1,
+      } as any,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "advice",
+      tag: "#2QVGPQP0U",
+    });
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload?.embeds?.[0]?.data ?? {};
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Raw roster deficits:");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("TH18: -3");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("TH17: -4");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("TH16: -4");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("TH15: -5");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("TH14: -6");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("<=TH13: -11");
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Projected planning is shown separately below.",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Projected planning band: **0 - 7,200,000**",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain(
+      "Projected planning source: projected 50-player roster",
+    );
+    expect(JSON.stringify(embed?.fields ?? [])).not.toContain("No improvement found.");
+  });
+
   it("renders WAR advice with only a refresh button", async () => {
     vi.spyOn(CompoAdviceService.prototype, "readAdvice").mockResolvedValue({
       kind: "ready",
