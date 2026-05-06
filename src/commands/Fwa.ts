@@ -32,6 +32,12 @@ import {
   CommandPermissionService,
   FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
+import {
+  buildBaseSwapClanAutocompleteChoices,
+  resolveBaseSwapRosterForClan,
+  type BaseSwapClanKind,
+  type BaseSwapRosterMember,
+} from "../services/BaseSwapRosterService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import { trackedMessageService } from "../services/TrackedMessageService";
@@ -250,6 +256,7 @@ const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
 const pointsDirectFetchGate = new PointsDirectFetchGateService();
 
 type FwaBaseSwapSection = "war_bases" | "base_errors" | "fwa_bases";
+type FwaBaseSwapClanKind = BaseSwapClanKind;
 
 type FwaBaseSwapPositionSelectionLabel =
   | "war-bases"
@@ -268,13 +275,7 @@ type ParsedFwaBaseSwapPositionSelection = {
   positions: number[];
 };
 
-type FwaBaseSwapRosterMember = {
-  position: number;
-  playerTag: string;
-  playerName: string;
-  townhallLevel: number | null;
-  discordUserId: string | null;
-};
+type FwaBaseSwapRosterMember = BaseSwapRosterMember;
 
 type FwaBaseSwapAnnouncementEntry = {
   position: number;
@@ -292,6 +293,7 @@ type FwaBaseSwapLayoutLink = {
 };
 
 type FwaBaseSwapAnnouncementState = {
+  clanKind?: FwaBaseSwapClanKind;
   guildId: string;
   channelId: string;
   messageId: string;
@@ -319,7 +321,10 @@ const FWA_BASE_SWAP_DM_ACTIVE_PREFIX = "ACTIVE WAR BASE: swap to FWA now";
 const FWA_BASE_SWAP_DM_ACTIVE_LABEL = "Active war base messages:";
 const FWA_BASE_SWAP_DM_FWA_PREFIX = "ACTIVE FWA BASE: swap to WAR BASE now";
 const FWA_BASE_SWAP_DM_FWA_LABEL = "FWA base swap messages:";
+const CWL_BASE_SWAP_DM_FWA_PREFIX = "ACTIVE CWL LINEUP: swap to WAR BASE now";
+const CWL_BASE_SWAP_DM_FWA_LABEL = "CWL lineup swap messages:";
 const FWA_BASE_SWAP_DM_BASE_ERROR_LABEL = "Base error messages:";
+const CWL_BASE_SWAP_DM_BASE_ERROR_LABEL = "CWL base error messages:";
 const FWA_BASE_SWAP_DM_SECTION_SEPARATOR = "----------";
 const FWA_BASE_SWAP_DM_MAX_PINGS_PER_LINE = 5;
 const FWA_BASE_SWAP_DM_MAX_LINE_CHARS = 256;
@@ -332,6 +337,10 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
+const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
+  "# {emoji} YOU HAVE AN ACTIVE CWL LINEUP {emoji}";
+const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
+  "These players currently have an active CWL lineup. Please swap to an active war base.";
 const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
@@ -343,6 +352,7 @@ type FwaBaseSwapRenderPlan = {
 };
 
 type FwaBaseSwapSplitPostPayload = {
+  clanKind?: FwaBaseSwapClanKind;
   userId: string;
   username: string;
   guildId: string;
@@ -465,6 +475,7 @@ export async function handleFwaBaseSwapSplitPostButton(
   }
 
   try {
+    const clanKind = payload.clanKind ?? "FWA";
     const postedA = await (channel as any).send({
       content: payload.splitContents[0],
       allowedMentions: { users: payload.mentionUserIds },
@@ -485,6 +496,7 @@ export async function handleFwaBaseSwapSplitPostButton(
           channelId: payload.channelId,
           messageId: postedA.id,
           metadata: {
+            clanKind,
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
@@ -501,6 +513,7 @@ export async function handleFwaBaseSwapSplitPostButton(
           channelId: payload.channelId,
           messageId: postedB.id,
           metadata: {
+            clanKind,
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
@@ -537,6 +550,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       sourceChannelId: payload.channelId,
       userId: payload.userId,
       username: payload.username,
+      clanKind,
       clanTag: payload.clanTag,
       clanName: payload.clanName,
       commandText: payload.commandText,
@@ -544,6 +558,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     });
 
     await deliverFwaBaseSwapDmMessages({
+      clanKind,
       entries: payload.entries,
       guildId: payload.guildId,
       channelId: payload.channelId,
@@ -729,7 +744,8 @@ function parseFwaBaseSwapPositionSelections(input: {
   };
 }
 
-function buildFwaBaseSwapAnnouncementEntries(input: {
+function buildBaseSwapAnnouncementEntries(input: {
+  clanKind: FwaBaseSwapClanKind;
   clanTag: string;
   roster: readonly FwaBaseSwapRosterMember[];
   selections: readonly ParsedFwaBaseSwapPositionSelection[];
@@ -740,13 +756,32 @@ function buildFwaBaseSwapAnnouncementEntries(input: {
     input.roster.map((member) => [member.position, member]),
   );
   const requestedPositions = input.selections.flatMap((selection) => selection.positions);
+  if (input.clanKind === "CWL") {
+    const outOfRangePositions = [...new Set(
+      requestedPositions.filter(
+        (position) => position < 1 || position > input.roster.length,
+      ),
+    )];
+    if (outOfRangePositions.length > 0) {
+      return {
+        ok: false,
+        error: [
+          `Invalid positions in the current active CWL lineup for #${input.clanTag}: ${formatBaseSwapPositionList(outOfRangePositions)}.`,
+          `Valid range is #1-#${input.roster.length}.`,
+        ].join(" "),
+      };
+    }
+  }
   const missingPositions = requestedPositions.filter(
     (position) => !memberByPosition.has(position),
   );
   if (missingPositions.length > 0) {
     return {
       ok: false,
-      error: `These positions were not found in the current war roster for #${input.clanTag}: ${formatBaseSwapPositionList([...new Set(missingPositions)])}`,
+      error:
+        input.clanKind === "CWL"
+          ? `These positions were not found in the current active CWL lineup for #${input.clanTag}: ${formatBaseSwapPositionList([...new Set(missingPositions)])}.`
+          : `These positions were not found in the current war roster for #${input.clanTag}: ${formatBaseSwapPositionList([...new Set(missingPositions)])}`,
     };
   }
 
@@ -771,6 +806,21 @@ function buildFwaBaseSwapAnnouncementEntries(input: {
     ok: true,
     entries,
   };
+}
+
+function buildFwaBaseSwapAnnouncementEntries(input: {
+  clanTag: string;
+  roster: readonly FwaBaseSwapRosterMember[];
+  selections: readonly ParsedFwaBaseSwapPositionSelection[];
+}):
+  | { ok: true; entries: FwaBaseSwapAnnouncementEntry[] }
+  | { ok: false; error: string } {
+  return buildBaseSwapAnnouncementEntries({
+    clanKind: "FWA",
+    clanTag: input.clanTag,
+    roster: input.roster,
+    selections: input.selections,
+  });
 }
 
 function toPositiveIntegerOrNull(value: unknown): number | null {
@@ -936,6 +986,57 @@ function batchFwaBaseSwapPingLines(
   return lines;
 }
 
+function resolveFwaBaseSwapAnnouncementHeading(
+  clanKind: FwaBaseSwapClanKind,
+  emoji: string,
+): string {
+  return (clanKind === "CWL"
+    ? CWL_BASE_SWAP_ANNOUNCEMENT_HEADING
+    : FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING
+  ).split("{emoji}").join(emoji);
+}
+
+function resolveFwaBaseSwapAnnouncementNote(
+  clanKind: FwaBaseSwapClanKind,
+): string {
+  return clanKind === "CWL"
+    ? CWL_BASE_SWAP_ANNOUNCEMENT_NOTE
+    : FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE;
+}
+
+function resolveFwaBaseSwapFwaDmPrefix(
+  clanKind: FwaBaseSwapClanKind,
+): string {
+  return clanKind === "CWL"
+    ? CWL_BASE_SWAP_DM_FWA_PREFIX
+    : FWA_BASE_SWAP_DM_FWA_PREFIX;
+}
+
+function resolveFwaBaseSwapFwaDmLabel(
+  clanKind: FwaBaseSwapClanKind,
+): string {
+  return clanKind === "CWL"
+    ? CWL_BASE_SWAP_DM_FWA_LABEL
+    : FWA_BASE_SWAP_DM_FWA_LABEL;
+}
+
+function resolveFwaBaseSwapBaseErrorDmLabel(
+  clanKind: FwaBaseSwapClanKind,
+): string {
+  return clanKind === "CWL"
+    ? CWL_BASE_SWAP_DM_BASE_ERROR_LABEL
+    : FWA_BASE_SWAP_DM_BASE_ERROR_LABEL;
+}
+
+function resolveFwaBaseSwapBaseErrorPrefix(
+  clanKind: FwaBaseSwapClanKind,
+  townhall: number,
+): string {
+  return clanKind === "CWL"
+    ? `TH${townhall} update CWL layout: !th${townhall}`
+    : `TH${townhall} update FWA layout: !th${townhall}`;
+}
+
 /** Purpose: build copy/paste lines for one base-swap section from finalized announcement ordering. */
 function buildFwaBaseSwapSectionDmLines(
   entries: readonly FwaBaseSwapAnnouncementEntry[],
@@ -962,20 +1063,22 @@ function buildFwaBaseSwapActiveWarDmLines(
   );
 }
 
-/** Purpose: build ACTIVE FWA BASE copy/paste lines from finalized base-swap announcement ordering. */
+/** Purpose: build ACTIVE FWA/CWL lineup copy/paste lines from finalized base-swap announcement ordering. */
 function buildFwaBaseSwapFwaBaseDmLines(
   entries: readonly FwaBaseSwapAnnouncementEntry[],
+  clanKind: FwaBaseSwapClanKind = "FWA",
 ): string[] {
   return buildFwaBaseSwapSectionDmLines(
     entries,
     "fwa_bases",
-    FWA_BASE_SWAP_DM_FWA_PREFIX,
+    resolveFwaBaseSwapFwaDmPrefix(clanKind),
   );
 }
 
 /** Purpose: build TH-grouped base-error copy/paste lines while preserving original member order within each TH group. */
 function buildFwaBaseSwapBaseErrorDmLines(
   entries: readonly FwaBaseSwapAnnouncementEntry[],
+  clanKind: FwaBaseSwapClanKind = "FWA",
 ): string[] {
   const orderedTownhalls: number[] = [];
   const tokensByTownhall = new Map<number, string[]>();
@@ -1001,7 +1104,7 @@ function buildFwaBaseSwapBaseErrorDmLines(
   for (const townhall of orderedTownhalls) {
     const thTokens = tokensByTownhall.get(townhall) ?? [];
     if (thTokens.length === 0) continue;
-    const prefix = `TH${townhall} update FWA layout: !th${townhall}`;
+    const prefix = resolveFwaBaseSwapBaseErrorPrefix(clanKind, townhall);
     lines.push(...batchFwaBaseSwapPingLines(prefix, thTokens));
   }
   return lines;
@@ -1015,10 +1118,11 @@ function wrapFwaBaseSwapDmCopyLine(line: string): string {
 /** Purpose: compose the final DM body with optional sections and separator while preserving raw line constraints. */
 function buildFwaBaseSwapDmContent(
   entries: readonly FwaBaseSwapAnnouncementEntry[],
+  clanKind: FwaBaseSwapClanKind = "FWA",
 ): string | null {
   const activeWarLines = buildFwaBaseSwapActiveWarDmLines(entries);
-  const fwaBaseLines = buildFwaBaseSwapFwaBaseDmLines(entries);
-  const baseErrorLines = buildFwaBaseSwapBaseErrorDmLines(entries);
+  const fwaBaseLines = buildFwaBaseSwapFwaBaseDmLines(entries, clanKind);
+  const baseErrorLines = buildFwaBaseSwapBaseErrorDmLines(entries, clanKind);
   const lines: string[] = [];
 
   if (activeWarLines.length > 0) {
@@ -1032,14 +1136,14 @@ function buildFwaBaseSwapDmContent(
     lines.push("", FWA_BASE_SWAP_DM_SECTION_SEPARATOR, "");
   }
   if (fwaBaseLines.length > 0) {
-    lines.push(FWA_BASE_SWAP_DM_FWA_LABEL);
+    lines.push(resolveFwaBaseSwapFwaDmLabel(clanKind));
     lines.push(...fwaBaseLines.map(wrapFwaBaseSwapDmCopyLine));
   }
   if (fwaBaseLines.length > 0 && baseErrorLines.length > 0) {
     lines.push("", FWA_BASE_SWAP_DM_SECTION_SEPARATOR, "");
   }
   if (baseErrorLines.length > 0) {
-    lines.push(FWA_BASE_SWAP_DM_BASE_ERROR_LABEL);
+    lines.push(resolveFwaBaseSwapBaseErrorDmLabel(clanKind));
     lines.push(...baseErrorLines.map(wrapFwaBaseSwapDmCopyLine));
   }
 
@@ -1049,6 +1153,7 @@ function buildFwaBaseSwapDmContent(
 
 /** Purpose: attempt post-send DM delivery and preserve command success by downgrading DM transport failures to an ephemeral notice. */
 async function deliverFwaBaseSwapDmMessages(input: {
+  clanKind?: FwaBaseSwapClanKind;
   entries: readonly FwaBaseSwapAnnouncementEntry[];
   guildId: string | null;
   channelId: string | null;
@@ -1057,7 +1162,10 @@ async function deliverFwaBaseSwapDmMessages(input: {
   sendDm: (content: string) => Promise<unknown>;
   sendFailureNotice: (content: string) => Promise<unknown>;
 }): Promise<"sent" | "skipped_empty" | "failed_notified" | "failed_unnoticed"> {
-  const dmContent = buildFwaBaseSwapDmContent(input.entries);
+  const dmContent = buildFwaBaseSwapDmContent(
+    input.entries,
+    input.clanKind ?? "FWA",
+  );
   if (!dmContent) {
     console.info(
       `[fwa base-swap] dm status=skipped_empty guild=${input.guildId ?? "dm"} channel=${input.channelId ?? "dm"} clan=#${input.clanTag} user=${input.userId}`,
@@ -1147,6 +1255,7 @@ function formatFwaBaseSwapAuditBlock(input: string | null | undefined): string {
 }
 
 function buildFwaBaseSwapAuditLogContent(input: {
+  clanKind?: FwaBaseSwapClanKind;
   userId: string;
   username: string;
   sourceChannelId: string | null;
@@ -1156,11 +1265,12 @@ function buildFwaBaseSwapAuditLogContent(input: {
   messageUrls: readonly string[];
 }): string {
   const displayUsername = String(input.username ?? "").trim() || "unknown";
+  const clanKind = input.clanKind ?? "FWA";
   const links = input.messageUrls
     .map((url) => String(url ?? "").trim())
     .filter(Boolean);
   const lines = [
-    "FWA base-swap announcement posted",
+    `${clanKind} base-swap announcement posted`,
     `<@${input.userId}> (${displayUsername}, ${input.userId}) posted /fwa base-swap in ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"} for ${input.clanName} (#${input.clanTag})`,
     `Source channel: ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"}`,
     "Posted message link(s):",
@@ -1209,6 +1319,7 @@ export const validateFwaBaseSwapSwapReminderOptionForTest =
   validateFwaBaseSwapSwapReminderOption;
 
 async function logFwaBaseSwapPublication(input: {
+  clanKind?: FwaBaseSwapClanKind;
   client: Client;
   guildId: string | null;
   sourceChannelId: string | null;
@@ -1229,6 +1340,7 @@ async function logFwaBaseSwapPublication(input: {
   try {
     await logChannel.send({
       content: buildFwaBaseSwapAuditLogContent({
+        clanKind: input.clanKind ?? "FWA",
         userId: input.userId,
         username: input.username,
         sourceChannelId: input.sourceChannelId,
@@ -1343,6 +1455,7 @@ function buildFwaBaseSwapPhaseTimingLine(input: {
 
 /** Purpose: materialize deterministic line tokens for base-swap rendering so sizing/splitting can be evaluated before posting. */
 function buildFwaBaseSwapAnnouncementLines(state: {
+  clanKind?: FwaBaseSwapClanKind;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
@@ -1358,6 +1471,7 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   const layoutBulletEmoji =
     String(state.layoutBulletEmoji ?? "").trim() ||
     FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI;
+  const clanKind = state.clanKind ?? "FWA";
   const warBaseLines = getFwaBaseSwapEntriesBySection(
     state.entries,
     "war_bases",
@@ -1392,10 +1506,11 @@ function buildFwaBaseSwapAnnouncementLines(state: {
       lines,
       entries: state.entries,
       section: "fwa_bases",
-      headingLine: FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING.split("{emoji}").join(
+      headingLine: resolveFwaBaseSwapAnnouncementHeading(
+        clanKind,
         fwaAlertEmoji,
       ),
-      noteLine: FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
+      noteLine: resolveFwaBaseSwapAnnouncementNote(clanKind),
       separatorBefore: true,
     });
   }
@@ -1467,6 +1582,7 @@ function splitFwaBaseSwapAnnouncementLines(
 
 /** Purpose: build posting plan for base-swap messages and determine whether split fallback is available without truncation. */
 function buildFwaBaseSwapRenderPlan(state: {
+  clanKind?: FwaBaseSwapClanKind;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   phaseTimingLine?: string | null;
@@ -1492,6 +1608,7 @@ function buildFwaBaseSwapRenderPlan(state: {
 
 function renderFwaBaseSwapAnnouncement(
   state: {
+    clanKind?: FwaBaseSwapClanKind;
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
     phaseTimingLine?: string | null;
@@ -8837,6 +8954,8 @@ export const buildBaseSwapLayoutLinksForTest = buildBaseSwapLayoutLinks;
 export const batchFwaBaseSwapPingLinesForTest = batchFwaBaseSwapPingLines;
 export const parseFwaBaseSwapPositionSelectionsForTest =
   parseFwaBaseSwapPositionSelections;
+export const buildBaseSwapAnnouncementEntriesForTest =
+  buildBaseSwapAnnouncementEntries;
 export const buildFwaBaseSwapAnnouncementEntriesForTest =
   buildFwaBaseSwapAnnouncementEntries;
 export const buildFwaBaseSwapActiveWarDmLinesForTest =
@@ -12461,7 +12580,8 @@ export const Fwa: Command = {
       options: [
         {
           name: "clan",
-          description: "Tracked clan tag (with or without #)",
+          description:
+            "Tracked FWA or current-season CWL clan tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
           autocomplete: true,
@@ -12916,7 +13036,7 @@ export const Fwa: Command = {
         );
         return;
       }
-      const clanTag = normalizeTag(interaction.options.getString("clan", true));
+      const clanRef = interaction.options.getString("clan", true);
       const warBasesRaw = interaction.options.getString("war-bases", false);
       const fwaBasesRaw = interaction.options.getString("fwa-bases", false);
       const baseErrorsRaw = interaction.options.getString("base-errors", false);
@@ -12933,13 +13053,6 @@ export const Fwa: Command = {
         return;
       }
       const swapReminder = fwaBasesRaw === null ? null : swapReminderRaw ?? true;
-      const commandText = buildFwaBaseSwapCommandText({
-        clanTag,
-        warBases: warBasesRaw,
-        fwaBases: fwaBasesRaw,
-        baseErrors: baseErrorsRaw,
-        swapReminder,
-      });
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
           {
@@ -12974,98 +13087,34 @@ export const Fwa: Command = {
         parsedSelectionsByLabel.get("fwa-bases"),
         parsedSelectionsByLabel.get("base-errors"),
       ].filter(Boolean) as ParsedFwaBaseSwapPositionSelection[];
-
-      const trackedClan = await prisma.trackedClan.findFirst({
-        where: {
-          OR: [
-            { tag: { equals: `#${clanTag}`, mode: "insensitive" } },
-            { tag: { equals: clanTag, mode: "insensitive" } },
-          ],
-        },
-        select: { tag: true, name: true },
-      });
-      if (!trackedClan) {
-        await editReplySafe(`Clan #${clanTag} is not in tracked clans.`);
-        return;
-      }
-
-      const currentWarRow = await prisma.currentWar.findFirst({
-        where: {
-          guildId: interaction.guildId,
-          OR: [{ clanTag: `#${clanTag}` }, { clanTag: clanTag }],
-        },
-        orderBy: [{ updatedAt: "desc" }],
-        select: {
-          state: true,
-          startTime: true,
-          endTime: true,
-        },
-      });
-      const baseSwapPhaseTimingLine = buildFwaBaseSwapPhaseTimingLine({
-        warState: deriveWarState(currentWarRow?.state ?? null),
-        prepEndMs: currentWarRow?.startTime
-          ? currentWarRow.startTime.getTime()
-          : null,
-        warEndMs: currentWarRow?.endTime ? currentWarRow.endTime.getTime() : null,
-      });
-
-      const war = await getCurrentWarCached(
+      const resolvedRosterResult = await resolveBaseSwapRosterForClan({
+        clanRef,
+        guildId: interaction.guildId,
         cocService,
-        clanTag,
-        warLookupCache,
-      ).catch(() => null);
-      if (
-        !war ||
-        !war.clan ||
-        !Array.isArray(war.clan.members) ||
-        war.clan.members.length === 0
-      ) {
-        await editReplySafe(
-          `No active current war roster found for #${clanTag}.`,
-        );
+      });
+      if (!resolvedRosterResult.ok) {
+        await editReplySafe(resolvedRosterResult.error);
         return;
       }
 
-      const roster = war.clan.members
-        .map((member) => ({
-          position:
-            typeof member.mapPosition === "number" &&
-            Number.isFinite(member.mapPosition)
-              ? Math.trunc(member.mapPosition)
-              : null,
-          playerTag: normalizeTag(String(member.tag ?? "")),
-          playerName: String(member.name ?? "Unknown").trim() || "Unknown",
-          townhallLevel: getBaseSwapTownhallLevel(member),
-        }))
-        .filter(
-          (
-            member,
-          ): member is {
-            position: number;
-            playerTag: string;
-            playerName: string;
-            townhallLevel: number | null;
-          } =>
-            member.position !== null &&
-            member.position > 0 &&
-            member.playerTag.length > 0,
-        )
-        .sort((a, b) => a.position - b.position);
-
-      const links = await listPlayerLinksForClanMembers({
-        memberTagsInOrder: roster.map((member) => member.playerTag),
+      const { clanKind, clanTag, clanName, rosterMembers, phaseTiming } =
+        resolvedRosterResult.roster;
+      const commandText = buildFwaBaseSwapCommandText({
+        clanTag,
+        warBases: warBasesRaw,
+        fwaBases: fwaBasesRaw,
+        baseErrors: baseErrorsRaw,
+        swapReminder,
       });
-      const linkByTag = new Map(
-        links.map((link) => [normalizeTag(link.playerTag), link]),
-      );
-      const rosterMembers: FwaBaseSwapRosterMember[] = roster.map((member) => ({
-        position: member.position,
-        playerTag: member.playerTag,
-        playerName: member.playerName,
-        townhallLevel: member.townhallLevel,
-        discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
-      }));
-      const entriesResult = buildFwaBaseSwapAnnouncementEntries({
+      const baseSwapPhaseTimingLine = phaseTiming
+        ? buildFwaBaseSwapPhaseTimingLine({
+            warState: deriveWarState(phaseTiming.warState),
+            prepEndMs: phaseTiming.prepEndMs,
+            warEndMs: phaseTiming.warEndMs,
+          })
+        : null;
+      const entriesResult = buildBaseSwapAnnouncementEntries({
+        clanKind,
         clanTag,
         roster: rosterMembers,
         selections: renderSelections,
@@ -13100,9 +13149,9 @@ export const Fwa: Command = {
         interaction.client,
       );
 
-      const clanName = sanitizeClanName(trackedClan.name) ?? `#${clanTag}`;
       const createdAtIso = new Date().toISOString();
       const renderPlan = buildFwaBaseSwapRenderPlan({
+        clanKind,
         entries,
         layoutLinks,
         phaseTimingLine: baseSwapPhaseTimingLine,
@@ -13129,6 +13178,7 @@ export const Fwa: Command = {
           channelId: interaction.channelId,
           clanTag,
           clanName,
+          clanKind,
           commandText,
           entries,
           layoutLinks,
@@ -13187,6 +13237,7 @@ export const Fwa: Command = {
               alertEmoji: inlineEmojis.alertEmoji,
               fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
+              clanKind,
               renderVariant: "single",
               swapReminder: Boolean(swapReminder),
             },
@@ -13208,6 +13259,7 @@ export const Fwa: Command = {
         sourceChannelId: interaction.channelId,
         userId: interaction.user.id,
         username: interaction.user.username,
+        clanKind,
         clanTag,
         clanName,
         commandText,
@@ -13224,6 +13276,7 @@ export const Fwa: Command = {
         ].join("\n"),
       );
       await deliverFwaBaseSwapDmMessages({
+        clanKind,
         entries,
         guildId: interaction.guildId,
         channelId: interaction.channelId,
@@ -15236,6 +15289,14 @@ export const Fwa: Command = {
         focusedText: String(focused.value ?? ""),
         includeOngoing: true,
         guildId: interaction.guildId,
+      });
+      await interaction.respond(choices);
+      return;
+    }
+
+    if (subcommand === "base-swap" && focused.name === "clan") {
+      const choices = await buildBaseSwapClanAutocompleteChoices({
+        query: String(focused.value ?? ""),
       });
       await interaction.respond(choices);
       return;

@@ -35,5 +35,11 @@ describe("/fwa base-swap command shape", () => {
     );
     expect(swapReminder?.type).toBe(ApplicationCommandOptionType.Boolean);
     expect(swapReminder?.required).toBe(false);
+
+    const clan = baseSwap?.options?.find(
+      (option: { name: string }) => option.name === "clan",
+    );
+    expect(clan?.description).toContain("FWA");
+    expect(clan?.description).toContain("CWL");
   });
 });

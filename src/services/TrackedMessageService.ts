@@ -22,6 +22,7 @@ export type TrackedMessageStatus =
   (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS];
 
 export type FwaBaseSwapTrackedMetadata = {
+  clanKind?: "FWA" | "CWL";
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
@@ -119,6 +120,11 @@ function resolveSyncClanCode(input: { code?: unknown; clanTag: string; clanName:
 
 export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMetadata | null {
   if (!isObject(value) || !Array.isArray(value.entries)) return null;
+  const clanKindRaw = String(value.clanKind ?? "").trim().toUpperCase();
+  const clanKind =
+    clanKindRaw === "CWL"
+      ? "CWL"
+      : "FWA";
   const clanName = String(value.clanName ?? "").trim();
   const createdByUserId = String(value.createdByUserId ?? "").trim();
   const createdAtIso = String(value.createdAtIso ?? "").trim();
@@ -185,6 +191,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
       ? rawRenderVariant
       : "single";
   return {
+    clanKind,
     clanName,
     createdByUserId,
     createdAtIso,
