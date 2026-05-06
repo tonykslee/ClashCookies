@@ -82,6 +82,12 @@ export type AutoRoleExclusionList = {
   roles: AutoRoleRoleExclusionRecord[];
 };
 
+export type AutoRoleGuildStateSnapshot = {
+  config: AutoRoleGuildConfigRecord;
+  rules: AutoRoleRuleRecord[];
+  exclusions: AutoRoleExclusionList;
+};
+
 export type AutoRoleRuleDisplayType =
   | "all_verified"
   | "all_family"
@@ -415,6 +421,21 @@ export class AutoRoleService {
       create: { guildId: normalizedGuildId, ...data },
       update: data,
     });
+  }
+
+  /** Purpose: load one guild's current autorole snapshot with the three persisted sources the refresh path needs. */
+  async getGuildStateSnapshot(guildId: string): Promise<AutoRoleGuildStateSnapshot> {
+    const config = await this.getOrCreateGuildConfig(guildId);
+    const [rules, exclusions] = await Promise.all([
+      this.listRules(guildId),
+      this.listExclusions(guildId),
+    ]);
+
+    return {
+      config,
+      rules,
+      exclusions,
+    };
   }
 
   /** Purpose: list one guild's persisted autorole rules in deterministic order. */

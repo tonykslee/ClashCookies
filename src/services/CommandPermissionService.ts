@@ -113,6 +113,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "autorole:exclusions:remove-user",
   "autorole:exclusions:add-role",
   "autorole:exclusions:remove-role",
+  "autorole:refresh",
   "sync",
   "sync:time:post",
   "sync:post:status",
@@ -187,6 +188,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
+  "autorole:refresh",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);

@@ -15,22 +15,33 @@ const autoRoleServiceMock = vi.hoisted(() => ({
   removeRoleExclusion: vi.fn(),
 }));
 
+const autoRoleRefreshServiceMock = vi.hoisted(() => ({
+  refreshGuild: vi.fn(),
+  refreshUser: vi.fn(),
+  refreshRole: vi.fn(),
+}));
+
 vi.mock("../src/services/AutoRoleService", () => ({
   autoRoleService: autoRoleServiceMock,
   formatAutoRoleRuleTarget: (rule: any) => String(rule.targetValue ?? ""),
   formatAutoRoleRuleType: (type: string) => type,
 }));
 
+vi.mock("../src/services/AutoRoleRefreshService", () => ({
+  autoRoleRefreshService: autoRoleRefreshServiceMock,
+}));
+
 import { Autorole } from "../src/commands/Autorole";
 
 type InteractionInput = {
-  group: string;
+  group: string | null;
   subcommand: string;
   strings?: Record<string, string | null | undefined>;
   booleans?: Record<string, boolean | null | undefined>;
   integers?: Record<string, number | null | undefined>;
   roles?: Record<string, { id: string } | null | undefined>;
   users?: Record<string, { id: string } | null | undefined>;
+  guild?: { members: { fetch: ReturnType<typeof vi.fn> } } | null;
 };
 
 function createInteraction(input: InteractionInput) {
@@ -43,6 +54,13 @@ function createInteraction(input: InteractionInput) {
   return {
     inGuild: vi.fn(() => true),
     guildId: "111111111111111111",
+    guild:
+      input.guild ??
+      ({
+        members: {
+          fetch: vi.fn(),
+        },
+      } as any),
     memberPermissions: {
       has: vi.fn(() => true),
     },
@@ -157,11 +175,60 @@ describe("/autorole command", () => {
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
     autoRoleServiceMock.removeRoleExclusion.mockResolvedValue(true);
+    autoRoleRefreshServiceMock.refreshGuild.mockResolvedValue({
+      guildId: "111111111111111111",
+      scope: { kind: "guild" },
+      runId: "run-1",
+      evaluatedCount: 0,
+      addedCount: 0,
+      removedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      memberResults: [],
+    });
+    autoRoleRefreshServiceMock.refreshUser.mockResolvedValue({
+      guildId: "111111111111111111",
+      scope: { kind: "user", discordUserId: "333333333333333333" },
+      runId: "run-2",
+      evaluatedCount: 1,
+      addedCount: 1,
+      removedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      memberResults: [
+        {
+          discordUserId: "333333333333333333",
+          status: "applied",
+          skipReason: null,
+          rolesAdded: ["222222222222222222"],
+          rolesRemoved: [],
+          nicknameStatus: "skipped",
+          nicknameReason: "nickname renderer not implemented",
+          failureReasons: [],
+          resultHash: "hash-1",
+        },
+      ],
+    });
+    autoRoleRefreshServiceMock.refreshRole.mockResolvedValue({
+      guildId: "111111111111111111",
+      scope: { kind: "role", discordRoleId: "444444444444444444" },
+      runId: "run-3",
+      evaluatedCount: 2,
+      addedCount: 1,
+      removedCount: 0,
+      skippedCount: 1,
+      failedCount: 0,
+      memberResults: [],
+    });
   });
 
   it("registers config, rules, and exclusions subcommand groups", () => {
     const groups = Autorole.options?.map((option: any) => option.name);
-    expect(groups).toEqual(["config", "rules", "exclusions"]);
+    expect(groups).toEqual(["refresh", "config", "rules", "exclusions"]);
+
+    const refresh = Autorole.options?.find((option: any) => option.name === "refresh");
+    expect(refresh?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(refresh?.options?.map((option: any) => option.name)).toEqual(["user", "role"]);
 
     const configGroup = Autorole.options?.find((option: any) => option.name === "config");
     const rulesGroup = Autorole.options?.find((option: any) => option.name === "rules");
@@ -183,6 +250,90 @@ describe("/autorole command", () => {
       "add-role",
       "remove-role",
     ]);
+  });
+
+  it("routes /autorole refresh through the shared refresh service", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const interaction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      guild,
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(autoRoleRefreshServiceMock.refreshGuild).toHaveBeenCalledWith({
+      guild,
+      guildId: "111111111111111111",
+      cocService: {},
+    });
+    expect(getEditReplyPayload(interaction).content).toContain("Autorole refresh completed for guild.");
+  });
+
+  it("routes scoped /autorole refresh calls to the matching refresh service", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+
+    const userInteraction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      guild,
+      users: {
+        user: { id: "333333333333333333" },
+      },
+    });
+    await Autorole.run({} as any, userInteraction as any, {} as any);
+    expect(autoRoleRefreshServiceMock.refreshUser).toHaveBeenCalledWith({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: "333333333333333333",
+      cocService: {},
+    });
+
+    const roleInteraction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      guild,
+      roles: {
+        role: { id: "444444444444444444" },
+      },
+    });
+    await Autorole.run({} as any, roleInteraction as any, {} as any);
+    expect(autoRoleRefreshServiceMock.refreshRole).toHaveBeenCalledWith({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: "444444444444444444",
+      cocService: {},
+    });
+  });
+
+  it("rejects /autorole refresh when both user and role are provided", async () => {
+    const interaction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      users: {
+        user: { id: "333333333333333333" },
+      },
+      roles: {
+        role: { id: "444444444444444444" },
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(autoRoleRefreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshUser).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshRole).not.toHaveBeenCalled();
+    expect(getEditReplyPayload(interaction).content).toBe(
+      "Please choose either user or role for /autorole refresh, not both.",
+    );
   });
 
   it("shows guild config state without touching evaluator or sync code", async () => {
