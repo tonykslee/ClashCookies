@@ -1,3 +1,4 @@
+import "./bootstrap/installDozzleConsole";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import ready from "./listeners/ready";
 import interactionCreate from "./listeners/interactionCreate";
@@ -18,9 +19,10 @@ import {
 import { startHealthcheckServer } from "./services/HealthcheckServer";
 import { prisma } from "./prisma";
 import "dotenv/config";
+import { dozzleLog } from "./helper/dozzleLogger";
 
 const discordRestTimeoutMs = getDiscordRestTimeoutMsFromEnv(process.env);
-console.log(`[startup:discord-rest] timeout_ms=${discordRestTimeoutMs}`);
+dozzleLog.info(`[startup:discord-rest] timeout_ms=${discordRestTimeoutMs}`);
 
 const client = new Client({
   intents: [
@@ -59,7 +61,7 @@ async function loginWithRetry(): Promise<void> {
   const tokenPresent = token.length > 0;
   let firstFailureMs: number | null = null;
   let totalFailures = 0;
-  console.log(
+  dozzleLog.info(
     `[startup:login] start ${formatStartupLogFields({
       base_backoff_ms: retryConfig.baseBackoffMs,
       max_backoff_ms: retryConfig.maxBackoffMs,
@@ -104,9 +106,9 @@ async function loginWithRetry(): Promise<void> {
         error_stack_head: diagnostics.stackHead,
       });
       if (context.willRetry && context.backoffMs !== null) {
-        console.warn(`[startup:login] retry ${baseLog}`);
+        dozzleLog.warn(`[startup:login] retry ${baseLog}`);
         if (shouldEmitStartupRetrySummary(totalFailures, summaryEvery)) {
-          console.warn(
+          dozzleLog.warn(
             `[startup:login] retry_summary ${formatStartupLogFields({
               every: summaryEvery,
               first_failure_ms_ago: firstFailureMs === null ? 0 : now - firstFailureMs,
@@ -121,12 +123,12 @@ async function loginWithRetry(): Promise<void> {
         return;
       }
 
-      console.error(`[startup:login] fatal_non_transient ${baseLog}`);
+      dozzleLog.fatal(`[startup:login] fatal_non_transient ${baseLog}`);
     },
   });
 
   if (result.status === "success") {
-    console.log(
+    dozzleLog.info(
       `[startup:login] success ${formatStartupLogFields({
         attempts: result.attempts,
         elapsed_ms: Date.now() - startupLoginStartMs,
@@ -141,6 +143,6 @@ async function loginWithRetry(): Promise<void> {
 
 void loginWithRetry().catch((error) => {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  console.error(`[startup:login] fatal_non_transient error=${errorMessage}`);
+  dozzleLog.fatal(`[startup:login] fatal_non_transient error=${errorMessage}`);
   process.exit(1);
 });

@@ -37,8 +37,11 @@ vi.mock("../src/services/CwlRegistryService", () => ({
 import {
   ReminderSchedulerService,
   runReminderSchedulerCycle,
+  resetReminderRetryWindowExpiredLogStateForTest,
   shouldReminderOffsetFireForTest,
+  shouldLogReminderRetryWindowExpiredForTest,
 } from "../src/services/reminders/ReminderSchedulerService";
+import { dozzleConsoleSink } from "../src/helper/dozzleLogger";
 
 function setTodoSnapshotRows(input: {
   cwlRows?: Array<{
@@ -577,7 +580,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     const dispatch = {
       dispatchReminder: vi.fn(),
     };
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logSpy = vi.spyOn(dozzleConsoleSink, "info").mockImplementation(() => undefined);
 
     const counts = await runReminderSchedulerCycle({
       client: {} as any,
@@ -716,7 +719,7 @@ describe("ReminderSchedulerService startup logging", () => {
       deduped: 0,
       failed: 0,
     });
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logSpy = vi.spyOn(dozzleConsoleSink, "info").mockImplementation(() => undefined);
     let intervalHandler: (() => void) | null = null;
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
       intervalHandler = handler as () => void;
@@ -729,15 +732,15 @@ describe("ReminderSchedulerService startup logging", () => {
     expect(result).toEqual({ started: true });
     expect(intervalHandler).toEqual(expect.any(Function));
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith("[reminders] scheduler start requested interval_ms=12345 has_timer=false");
-    expect(logSpy).toHaveBeenCalledWith("[reminders] scheduler started interval_ms=12345");
+    expect(logSpy).toHaveBeenCalledWith("[info] [reminders] scheduler start requested interval_ms=12345 has_timer=false");
+    expect(logSpy).toHaveBeenCalledWith("[info] [reminders] scheduler started interval_ms=12345");
     expect(runCycleSpy).toHaveBeenCalledTimes(1);
   });
 
   it("logs immediate scheduler cycle failures", async () => {
     const scheduler = new ReminderSchedulerService({} as any, { dispatchReminder: vi.fn() } as any, 12_345);
     vi.spyOn(scheduler, "runCycle").mockRejectedValue(new Error("boom"));
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(dozzleConsoleSink, "error").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
       expect(timeout).toBe(12_345);
       return 1 as any;
@@ -748,7 +751,7 @@ describe("ReminderSchedulerService startup logging", () => {
     expect(result).toEqual({ started: true });
     await flushEventLoop();
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[reminders] scheduler immediate_cycle_failed error="),
+      expect.stringContaining("[error] [reminders] scheduler immediate_cycle_failed error="),
     );
   });
 
@@ -763,7 +766,7 @@ describe("ReminderSchedulerService startup logging", () => {
         failed: 0,
       })
       .mockRejectedValueOnce(new Error("interval boom"));
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(dozzleConsoleSink, "error").mockImplementation(() => undefined);
     let intervalHandler: (() => void) | null = null;
     vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
       intervalHandler = handler as () => void;
@@ -778,9 +781,22 @@ describe("ReminderSchedulerService startup logging", () => {
     intervalHandler?.();
     await flushEventLoop();
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[reminders] scheduler interval_cycle_failed error="),
+      expect.stringContaining("[error] [reminders] scheduler interval_cycle_failed error="),
     );
     expect(runCycleSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ReminderSchedulerService retry-window-expired log suppression", () => {
+  beforeEach(() => {
+    resetReminderRetryWindowExpiredLogStateForTest();
+  });
+
+  it("logs once per reminder identity and offset", () => {
+    expect(shouldLogReminderRetryWindowExpiredForTest("reminder-1|event-1|0")).toBe(true);
+    expect(shouldLogReminderRetryWindowExpiredForTest("reminder-1|event-1|0")).toBe(false);
+    expect(shouldLogReminderRetryWindowExpiredForTest("reminder-1|event-1|300")).toBe(true);
+    expect(shouldLogReminderRetryWindowExpiredForTest("reminder-2|event-1|0")).toBe(true);
   });
 });
 

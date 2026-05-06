@@ -1,4 +1,5 @@
 import { formatError } from "../helper/formatError";
+import { dozzleLog } from "../helper/dozzleLogger";
 import type { CoCQueuePriority } from "./CoCQueueContext";
 import type { TelemetryCommandContext } from "./telemetry/context";
 import { TelemetryIngestService } from "./telemetry/ingest";
@@ -75,6 +76,21 @@ function resolveHttpStatus(err: unknown): number | null {
   const genericStatus = message.match(/HTTP[_\s](\d{3})/i);
   if (genericStatus) return Math.trunc(Number(genericStatus[1]));
   return null;
+}
+
+/** Purpose: map queue wait times to Dozzle-friendly verbosity without changing queue behavior. */
+export function resolveCoCQueueLogLevelForTest(
+  priority: CoCQueuePriority,
+  waitMs: number,
+): "trace" | "debug" | "warn" {
+  if (priority === "interactive") {
+    if (waitMs >= 30_000) return "warn";
+    if (waitMs >= 5_000) return "debug";
+    return "trace";
+  }
+  if (waitMs >= 60_000) return "warn";
+  if (waitMs >= 10_000) return "debug";
+  return "trace";
 }
 
 /** Purpose: signal one background queue task was intentionally skipped after becoming stale. */
@@ -181,7 +197,7 @@ export class CoCRequestQueueService {
         this.backgroundQueue.push(pending as PendingCoCQueueTask<unknown>);
       }
 
-      console.info(
+      dozzleLog.trace(
         `[coc-queue] event=enqueue priority=${priority} source=${source} operation=${task.operation} detail=${task.detail ?? "none"} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight}`,
       );
       this.ensureDispatchLoop();
@@ -231,7 +247,7 @@ export class CoCRequestQueueService {
     if (this.dispatchLoop) return;
     this.dispatchLoop = this.runDispatchLoop()
       .catch((err) => {
-        console.error(`[coc-queue] event=dispatcher_failed error=${formatError(err)}`);
+        dozzleLog.error(`[coc-queue] event=dispatcher_failed error=${formatError(err)}`);
       })
       .finally(() => {
         this.dispatchLoop = null;
@@ -343,7 +359,7 @@ export class CoCRequestQueueService {
       this.lastBackgroundWaitMs = waitMs;
     }
 
-    console.info(
+    dozzleLog[resolveCoCQueueLogLevelForTest(task.priority, waitMs)](
       `[coc-queue] event=dispatch priority=${task.priority} source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} wait_ms=${waitMs} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()}`,
     );
     this.recordDispatchTelemetry(task, waitMs);
@@ -357,7 +373,7 @@ export class CoCRequestQueueService {
     this.backgroundSkippedCount += 1;
     this.lastBackgroundWaitMs = waitMs;
 
-    console.warn(
+    dozzleLog.warn(
       `[coc-queue] event=background_skipped source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} wait_ms=${waitMs} reason=${staleness.reason} scheduled_at_ms=${task.scheduledAtMs ?? "none"} next_scheduled_at_ms=${task.nextScheduledAtMs ?? "none"} freshness_deadline_ms=${task.freshnessDeadlineMs ?? "none"} stale_deadline_ms=${staleness.deadlineMs ?? "none"} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length}`,
     );
     this.telemetryIngest.recordApiTiming({
@@ -388,7 +404,7 @@ export class CoCRequestQueueService {
       const now = Date.now();
       if (now - this.lastRecoveredLogAtMs >= this.rateLimitLogIntervalMs) {
         this.lastRecoveredLogAtMs = now;
-        console.info(
+        dozzleLog.info(
           `[coc-queue] event=recovered penalty_ms=0 spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length}`,
         );
         this.telemetryIngest.recordApiTiming({
@@ -423,7 +439,7 @@ export class CoCRequestQueueService {
       now - this.lastRateLimitLogAtMs >= this.rateLimitLogIntervalMs
     ) {
       this.lastRateLimitLogAtMs = now;
-      console.warn(
+      dozzleLog.warn(
         `[coc-queue] event=rate_limited status=429 priority=${task.priority} source=${task.source} operation=${task.operation} detail=${task.detail ?? "none"} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} error=${formatError(err)}`,
       );
       this.telemetryIngest.recordApiTiming({
@@ -445,7 +461,7 @@ export class CoCRequestQueueService {
     }
     this.lastDegradedDelayLogAtMs = now;
     const interactivePresent = this.interactiveQueue.length > 0;
-    console.warn(
+    dozzleLog.warn(
       `[coc-queue] event=degraded_delay delay_ms=${delayMs} penalty_ms=${this.penaltyMs} spacing_ms=${this.currentSpacingMs()} interactive_depth=${this.interactiveQueue.length} background_depth=${this.backgroundQueue.length} in_flight=${this.inFlight} interactive_present=${interactivePresent}`,
     );
     this.telemetryIngest.recordApiTiming({
