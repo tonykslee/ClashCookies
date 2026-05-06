@@ -31,6 +31,10 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("fwa:mail:send");
   });
 
+  it("exposes autorole refresh as an explicit permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:refresh");
+  });
+
   it("allows non-admin users for verify and status by default", async () => {
     const settings = {
       get: vi.fn().mockResolvedValue(null),

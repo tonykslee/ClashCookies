@@ -21,6 +21,7 @@
 - `/sync time post`
 - `/bot-logs`
 - `/notify war`
+- `/autorole`, `/autorole config`, `/autorole rules`, `/autorole exclusions`, `/autorole refresh`
 - `/cwl rotations create`
 - `/cwl rotations import`
 - `/cwl rotations export`
