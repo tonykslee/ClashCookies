@@ -2749,7 +2749,7 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).not.toContain("Status:");
   });
 
-  it("shows unexpected actual members with zero war count when they are absent from the plan", async () => {
+  it("shows the expected original slot player when an active CWL lineup member is substituted in", async () => {
     vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
       {
         season: "2026-04",
@@ -2791,7 +2791,112 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
-    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
+    expect(getDescription(interaction)).not.toContain("Expected Hotel (#JQJQ2222)");
+  });
+
+  it("shows a blocked substituted CWL lineup member with the expected original slot player suffix", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        metadata: {
+          rosterRows: [
+            { playerTag: "#PYLQ0289", playerName: "Alpha" },
+            { playerTag: "#GGLLP22RJ", playerName: "Achin4Bacon" },
+            { playerTag: "#QGRJ2222", playerName: "Bravo" },
+          ],
+        },
+        days: [
+          {
+            roundDay: 6,
+            lineupSize: 3,
+            rows: [
+              { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+              { playerTag: "#GGLLP22RJ", playerName: "Achin4Bacon", subbedOut: true, assignmentOrder: 1 },
+              { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 2 },
+            ],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: ["#GGLLP22RJ"],
+      extraActualPlayerTags: ["#GUR9CGGVQ"],
+      actualPlayerTags: ["#PYLQ0289", "#GUR9CGGVQ", "#QGRJ2222"],
+      actualPlayerNames: ["Alpha", "TouchGrassLLC", "Bravo"],
+    } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#PYLQ0289", 1],
+        ["#GUR9CGGVQ", 0],
+        ["#QGRJ2222", 1],
+      ]),
+    );
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 6,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain(
+      "TouchGrassLLC (#GUR9CGGVQ) | War count: 0 - Expected Achin4Bacon (#GGLLP22RJ)",
+    );
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Bravo (#QGRJ2222) | War count: 1");
+    expect(getDescription(interaction)).not.toContain("TouchGrassLLC (#GUR9CGGVQ) | War count: 0 - Expected TouchGrassLLC");
+  });
+
+  it("keeps the current output when no expected CWL slot can be resolved", async () => {
+    vi.mocked(cwlRotationService.listActivePlanExports).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        warningSummary: null,
+        excludedPlayerTags: [],
+        days: [
+          {
+            roundDay: 7,
+            lineupSize: 0,
+            rows: [],
+            actual: null,
+          },
+        ],
+      } as any,
+    ]);
+    vi.mocked(cwlRotationService.validatePlanDay).mockResolvedValue({
+      actualAvailable: true,
+      complete: false,
+      missingExpectedPlayerTags: [],
+      extraActualPlayerTags: ["#VJQ28888"],
+      actualPlayerTags: ["#VJQ28888"],
+      actualPlayerNames: ["Visitor"],
+    } as any);
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([["#VJQ28888", 0]]),
+    );
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 7,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).not.toContain("Expected");
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {

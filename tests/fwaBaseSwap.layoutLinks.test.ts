@@ -1753,6 +1753,8 @@ describe("CWL base-swap labels", () => {
         }),
       ],
       layoutLinks: [],
+      phaseTimingLine:
+        "## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
       alertEmoji: "<a:alert:10001>",
       fwaAlertEmoji: "<a:alert_blue:10003>",
     });
@@ -1787,7 +1789,16 @@ describe("CWL base-swap labels", () => {
       "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
     );
     expect(announcementContent).toContain(
-      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE CWL LINEUP <a:alert_blue:10003>",
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE IN CWL <a:alert_blue:10003>",
+    );
+    expect(announcementContent).toContain(
+      "These players currently have an active FWA base in CWL. Please swap to an active war base.",
+    );
+    expect(announcementContent).toContain(
+      "\n## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
+    );
+    expect(announcementContent).not.toContain(
+      "\n\n## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
     );
     expect(dmContent).toContain("CWL lineup swap messages:");
     expect(dmContent).toContain("CWL base error messages:");
