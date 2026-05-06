@@ -19,6 +19,7 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
   COMPO_ADVICE_VIEWS,
+  buildCompoActualDeltaLines,
   formatMatchratePercent,
   getAdjacentHeatMapRefs,
   stepCompoAdviceCustomBandIndexByCount,
@@ -214,7 +215,7 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   }
   if (payload.kind === "advice-clan") {
     if (payload.mode === "actual") {
-      const base = `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:actual:${payload.targetTag}:${payload.adviceView ?? "auto"}`;
+      const base = `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:actual:${payload.targetTag}:${payload.adviceView ?? "raw"}`;
       return `${base}:${Math.trunc(payload.customBandCount ?? 0)}:${Math.trunc(payload.customBandIndex ?? 0)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:war:${payload.targetTag}`;
@@ -1178,6 +1179,25 @@ async function buildCompoAdviceEmbed(input: {
       `TH14: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH14)}`,
       `<=TH13: ${formatSignedValue(summary.currentProjection.deltaByBucket["<=TH13"])}`,
     ].join("\n");
+    const projectedDeltas = summary.projectedProjection
+      ? [
+          `TH18: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH18)}`,
+          `TH17: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH17)}`,
+          `TH16: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH16)}`,
+          `TH15: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH15)}`,
+          `TH14: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH14)}`,
+          `<=TH13: ${formatSignedValue(summary.projectedProjection.deltaByBucket["<=TH13"])}`,
+        ].join("\n")
+      : null;
+    const underfilledActualRaw =
+      summary.mode === "actual" &&
+      summary.currentProjection.view === "raw" &&
+      summary.currentProjection.memberCount < 50;
+    const rawDeficitLines = underfilledActualRaw
+      ? buildCompoActualDeltaLines({
+          deltaByBucket: summary.currentProjection.deltaByBucket,
+        })
+      : [];
 
     const overviewValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
@@ -1245,12 +1265,37 @@ async function buildCompoAdviceEmbed(input: {
         })}`,
       ].join("\n"),
     );
+    const projectedValue = summary.projectedProjection
+      ? await renderCompoAdviceEmojiShortcodes(
+          input.client,
+          [
+            `Projected 50-player weight: ${formatCompoAdviceFullWeight(
+              summary.projectedProjection.totalWeight,
+            )}`,
+            `Projected planning band: **${
+              summary.projectedProjection.selectedHeatMapRef
+                ? formatHeatMapRefBandLabel(summary.projectedProjection.selectedHeatMapRef)
+                : "(no band)"
+            }**`,
+            `Projected planning source: projected 50-player roster`,
+            `Projected Deltas:\n${projectedDeltas}`,
+          ].join("\n"),
+        )
+      : null;
     const recommendationValue = await renderCompoAdviceEmojiShortcodes(
       input.client,
-      [
-        `:arrow_arrow: __${summary.recommendationText}__`,
-        summary.statusText ?? null,
-      ]
+      (underfilledActualRaw
+        ? [
+            "Raw roster deficits:",
+            ...rawDeficitLines,
+            summary.projectedProjection
+              ? "Projected planning is shown separately below."
+              : null,
+          ]
+        : [
+            `:arrow_arrow: __${summary.recommendationText}__`,
+            summary.statusText ?? null,
+          ])
         .filter((line): line is string => line !== null)
         .join("\n"),
     );
@@ -1301,6 +1346,15 @@ async function buildCompoAdviceEmbed(input: {
         value: targetValue,
         inline: false,
       },
+      ...(projectedValue
+        ? [
+            {
+              name: "Projected",
+              value: projectedValue,
+              inline: false,
+            },
+          ]
+        : []),
       {
         name: "Recommendation",
         value: recommendationValue,
@@ -1776,7 +1830,7 @@ export async function handleCompoRefreshButton(
             kind: "advice",
             userId: parsed.userId,
             mode: "actual",
-            adviceView: parsed.adviceView ?? "auto",
+            adviceView: parsed.adviceView ?? "raw",
             targetTag: parsed.targetTag,
             customBandIndex: parsed.customBandIndex ?? 0,
             customBandCount: parsed.customBandCount ?? 0,
@@ -2056,7 +2110,7 @@ export async function handleCompoAdviceClanSelectMenuInteraction(
           kind: "advice",
           userId: parsed.userId,
           mode: "actual",
-          adviceView: parsed.adviceView ?? "auto",
+          adviceView: parsed.adviceView ?? "raw",
           targetTag: selectedTargetTag,
           customBandIndex: parsed.customBandIndex ?? 0,
           customBandCount: parsed.customBandCount ?? 0,
@@ -2284,7 +2338,7 @@ export const Compo: Command = {
                 const actualState = await new CompoActualStateService().readState(
                   interaction.guildId ?? null,
                   {
-                    view: "auto",
+                    view: "raw",
                   },
                 );
                 logCompoStage(interaction, "db_fetch", {
@@ -2320,12 +2374,12 @@ export const Compo: Command = {
           ...payload,
           components: buildCompoRefreshComponents({
             refreshPayload:
-              mode === "actual"
+            mode === "actual"
                   ? {
                       kind: "state",
                       userId: interaction.user.id,
                       mode: "actual",
-                      actualView: "auto",
+                      actualView: "raw",
                     }
                 : {
                     kind: "state",
