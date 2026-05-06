@@ -58,6 +58,7 @@ describe("tracked message metadata parsing", () => {
     });
 
     expect(parsed).toEqual({
+      clanKind: "FWA",
       clanName: "Rocky Road",
       createdByUserId: "123456",
       createdAtIso: "2026-03-19T12:00:00.000Z",
@@ -119,6 +120,7 @@ describe("tracked message metadata parsing", () => {
     });
 
     expect(parsed).toEqual({
+      clanKind: "FWA",
       clanName: "Clan",
       createdByUserId: "123",
       createdAtIso: "2026-03-19T12:00:00.000Z",

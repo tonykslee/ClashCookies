@@ -38,6 +38,7 @@ import {
   buildFwaBaseSwapDmContentForTest,
   buildFwaBaseSwapFwaBaseDmLinesForTest,
   buildFwaBaseSwapRenderPlanForTest,
+  buildBaseSwapAnnouncementEntriesForTest,
   clearFwaBaseSwapSplitPostPayloadsForTest,
   deliverFwaBaseSwapDmMessagesForTest,
   FWA_BASE_SWAP_ACK_EMOJI,
@@ -1718,6 +1719,153 @@ describe("FWA base-swap DM copy helpers", () => {
       expect(raw.includes("\n")).toBe(false);
       expect(raw.length).toBeLessThanOrEqual(256);
     }
+  });
+});
+
+describe("CWL base-swap labels", () => {
+  it("renders CWL-specific labels in the announcement and DM copy blocks", () => {
+    const announcementContent = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "CWL",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          discordUserId: "101",
+          townhallLevel: 17,
+        }),
+        buildEntry({
+          position: 3,
+          playerTag: "#CCC333",
+          playerName: "Charlie",
+          section: "base_errors",
+          discordUserId: "102",
+          townhallLevel: 16,
+        }),
+      ],
+      layoutLinks: [],
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
+    });
+    const dmContent = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 1,
+        playerTag: "#AAA111",
+        playerName: "Alpha",
+        section: "war_bases",
+        discordUserId: "100",
+        townhallLevel: 18,
+      }),
+      buildEntry({
+        position: 2,
+        playerTag: "#BBB222",
+        playerName: "Bravo",
+        section: "fwa_bases",
+        discordUserId: "101",
+        townhallLevel: 17,
+      }),
+      buildEntry({
+        position: 3,
+        playerTag: "#CCC333",
+        playerName: "Charlie",
+        section: "base_errors",
+        discordUserId: "102",
+        townhallLevel: 16,
+      }),
+    ], "CWL");
+
+    expect(announcementContent).toContain(
+      "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
+    );
+    expect(announcementContent).toContain(
+      "# <a:alert_blue:10003> YOU HAVE AN ACTIVE CWL LINEUP <a:alert_blue:10003>",
+    );
+    expect(dmContent).toContain("CWL lineup swap messages:");
+    expect(dmContent).toContain("CWL base error messages:");
+    expect(dmContent).toContain("ACTIVE CWL LINEUP: swap to WAR BASE now");
+    expect(dmContent).toContain("TH16 update CWL layout: !th16");
+  });
+
+  it("rejects out-of-range CWL lineup positions with a valid range", () => {
+    const result = buildBaseSwapAnnouncementEntriesForTest({
+      clanKind: "CWL",
+      clanTag: "2QG2C08UP",
+      roster: [
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          townhallLevel: 18,
+          discordUserId: "100",
+        },
+        {
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          townhallLevel: 17,
+          discordUserId: "101",
+        },
+      ],
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          positions: [3],
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) return;
+    expect(result.error).toContain(
+      "Invalid positions in the current active CWL lineup for #2QG2C08UP: #3.",
+    );
+    expect(result.error).toContain("Valid range is #1-#2.");
+  });
+
+  it("rejects missing CWL lineup slots with a clear lineup message", () => {
+    const result = buildBaseSwapAnnouncementEntriesForTest({
+      clanKind: "CWL",
+      clanTag: "2QG2C08UP",
+      roster: [
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          townhallLevel: 18,
+          discordUserId: "100",
+        },
+        {
+          position: 3,
+          playerTag: "#CCC333",
+          playerName: "Charlie",
+          townhallLevel: 16,
+          discordUserId: "102",
+        },
+      ],
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [2],
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) return;
+    expect(result.error).toContain(
+      "These positions were not found in the current active CWL lineup for #2QG2C08UP: #2.",
+    );
   });
 });
 
