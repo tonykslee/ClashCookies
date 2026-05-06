@@ -514,6 +514,16 @@ function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; 
   return playerName ? `${playerName} (${input.playerTag})` : input.playerTag;
 }
 
+function buildCurrentCwlParticipationTagSet(
+  currentRound: Awaited<ReturnType<typeof cwlStateService.getCurrentRoundForClan>> | null,
+): Set<string> {
+  return new Set(
+    (currentRound?.members ?? [])
+      .map((member) => normalizePlayerTag(member.playerTag))
+      .filter((tag): tag is string => Boolean(tag)),
+  );
+}
+
 const CWL_ROTATION_ALLOWED_LINEUP_SIZES = new Set([15, 30]);
 
 function normalizeCwlRotationLineupSize(input: unknown): 15 | 30 | null {
@@ -1092,6 +1102,7 @@ export class CwlRotationService {
       cwlStateService.getCurrentRoundForClan({ clanTag, season }),
       cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
     ]);
+    const currentCwlParticipationTagSet = buildCurrentCwlParticipationTagSet(currentRound);
     const currentRoundState = currentRound?.roundState.toLowerCase() ?? "";
     const hasOverlapPreparation =
       currentRound !== null &&
@@ -1160,9 +1171,13 @@ export class CwlRotationService {
         })
         .filter((entry): entry is readonly [string, number | null] => Boolean(entry)),
     );
+    const notInCurrentCwlRosterPlayers = seasonRoster.filter(
+      (entry) => !currentCwlParticipationTagSet.has(entry.playerTag),
+    );
     const eligibleRosterEntriesBase = correspondingRoster
       ? seasonRoster
           .filter((entry) => rosterSignupByTag.has(entry.playerTag))
+          .filter((entry) => currentCwlParticipationTagSet.has(entry.playerTag))
           .map((entry) => {
             const signup = rosterSignupByTag.get(entry.playerTag) ?? null;
             return {
@@ -1171,11 +1186,13 @@ export class CwlRotationService {
               sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
             };
           })
-      : seasonRoster.map((entry) => ({
-          ...entry,
-          weight: entry.currentWeight ?? null,
-          sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
-        }));
+      : seasonRoster
+          .filter((entry) => currentCwlParticipationTagSet.has(entry.playerTag))
+          .map((entry) => ({
+            ...entry,
+            weight: entry.currentWeight ?? null,
+            sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
+          }));
     const eligibleRosterEntries = eligibleRosterEntriesBase.filter(
       (entry) => !excludeTags.includes(entry.playerTag),
     );
@@ -1219,6 +1236,18 @@ export class CwlRotationService {
       currentRoundDay: currentRound.roundDay,
       seedRoundAlreadyCountedInParticipation,
     });
+    if (notInCurrentCwlRosterPlayers.length > 0) {
+      warnings.unshift(
+        `Not in current CWL: ${notInCurrentCwlRosterPlayers
+          .map((entry) =>
+            formatCwlRosterRotationPlayerLabel({
+              playerName: entry.playerName,
+              playerTag: entry.playerTag,
+            }),
+          )
+          .join(", ")}.`,
+      );
+    }
     const rosterRows = buildRosterRowsForMetadata(sourceOrderedRoster);
 
     await prisma.$transaction(async (tx) => {
@@ -1406,6 +1435,8 @@ export class CwlRotationService {
       };
     }
 
+    const currentRound = await cwlStateService.getCurrentRoundForClan({ clanTag, season });
+    const currentCwlParticipationTagSet = buildCurrentCwlParticipationTagSet(currentRound);
     const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
     const normalizedConfirmedSignups = confirmedSignups
       .map((signup) => ({
@@ -1440,10 +1471,28 @@ export class CwlRotationService {
       return { outcome: "no_confirmed_players", season, clanTag, rosterId, rosterTitle };
     }
 
+    const eligibleConfirmedSignups = dedupedConfirmedSignups.filter((signup) =>
+      currentCwlParticipationTagSet.has(signup.playerTag),
+    );
+    const notInCurrentCwlPlayers = dedupedConfirmedSignups.filter(
+      (signup) => !currentCwlParticipationTagSet.has(signup.playerTag),
+    );
+    if (eligibleConfirmedSignups.length <= 0) {
+      return {
+        outcome: "not_enough_players",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        lineupSize: explicitLineupSize ?? 1,
+        availablePlayers: 0,
+      };
+    }
+
     const configuredLineupSize = roster.maxMembers && roster.maxMembers > 0 ? roster.maxMembers : 15;
-    const defaultLineupSize = Math.max(1, Math.min(15, configuredLineupSize, dedupedConfirmedSignups.length));
+    const defaultLineupSize = Math.max(1, Math.min(15, configuredLineupSize, eligibleConfirmedSignups.length));
     const lineupSize = explicitLineupSize ?? defaultLineupSize;
-    if (explicitLineupSize !== null && dedupedConfirmedSignups.length < lineupSize) {
+    if (eligibleConfirmedSignups.length < lineupSize) {
       return {
         outcome: "not_enough_players",
         season,
@@ -1451,10 +1500,10 @@ export class CwlRotationService {
         rosterId,
         rosterTitle,
         lineupSize,
-        availablePlayers: dedupedConfirmedSignups.length,
+        availablePlayers: eligibleConfirmedSignups.length,
       };
     }
-    const rosterEntries = dedupedConfirmedSignups.map<CwlRotationSeedRosterEntry>((signup, index) => ({
+    const rosterEntries = eligibleConfirmedSignups.map<CwlRotationSeedRosterEntry>((signup, index) => ({
       season,
       clanTag,
       playerTag: signup.playerTag,
@@ -1479,6 +1528,16 @@ export class CwlRotationService {
       ...(invalidTagPlayers.length > 0
         ? [
             `Skipped invalid confirmed roster tags: ${invalidTagPlayers.join(", ")}.`,
+          ]
+        : []),
+      ...(notInCurrentCwlPlayers.length > 0
+        ? [
+            `Not in current CWL: ${notInCurrentCwlPlayers
+              .map((entry) => formatCwlRosterRotationPlayerLabel({
+                playerName: entry.playerName,
+                playerTag: entry.playerTag,
+              }))
+              .join(", ")}.`,
           ]
         : []),
       ...(missingTownHallPlayers.length > 0

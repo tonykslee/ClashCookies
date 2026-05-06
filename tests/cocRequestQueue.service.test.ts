@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CoCQueueSkippedError,
   CoCRequestQueueService,
+  resolveCoCQueueLogLevelForTest,
 } from "../src/services/CoCRequestQueueService";
+import { dozzleConsoleSink } from "../src/helper/dozzleLogger";
 import { TelemetryIngestService } from "../src/services/telemetry/ingest";
 
 function snapshotQueueEnv() {
@@ -95,6 +97,15 @@ describe("CoCRequestQueueService", () => {
     expect(order).toEqual(["int1", "int2", "bg1", "bg2"]);
     expect(queue.getStatus().interactiveDispatchedCount).toBe(2);
     expect(queue.getStatus().backgroundDispatchedCount).toBe(2);
+  });
+
+  it("maps queue wait levels to trace debug and warn by priority and threshold", () => {
+    expect(resolveCoCQueueLogLevelForTest("interactive", 0)).toBe("trace");
+    expect(resolveCoCQueueLogLevelForTest("interactive", 5_000)).toBe("debug");
+    expect(resolveCoCQueueLogLevelForTest("interactive", 30_000)).toBe("warn");
+    expect(resolveCoCQueueLogLevelForTest("background", 0)).toBe("trace");
+    expect(resolveCoCQueueLogLevelForTest("background", 10_000)).toBe("debug");
+    expect(resolveCoCQueueLogLevelForTest("background", 60_000)).toBe("warn");
   });
 
   it("preserves FIFO ordering within background work", async () => {
@@ -215,6 +226,7 @@ describe("CoCRequestQueueService", () => {
   it("skips stale background work before dispatch and logs/counts the skip", async () => {
     const queue = new CoCRequestQueueService();
     const runSpy = vi.fn();
+    const warnSpy = vi.spyOn(dozzleConsoleSink, "warn").mockImplementation(() => undefined);
 
     const stalePromise = queue.enqueue({
       priority: "background",
@@ -241,7 +253,7 @@ describe("CoCRequestQueueService", () => {
     await expect(stalePromise).rejects.toBeInstanceOf(CoCQueueSkippedError);
     expect(runSpy).not.toHaveBeenCalled();
     expect(queue.getStatus().backgroundSkippedCount).toBe(1);
-    expect(console.warn).toHaveBeenCalledWith(
+    expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("[coc-queue] event=background_skipped"),
     );
   });

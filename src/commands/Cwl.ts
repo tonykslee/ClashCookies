@@ -205,21 +205,38 @@ function formatCwlMembersRoleBadge(role: string | null | undefined): string {
   return normalized ? "👑" : "";
 }
 
-function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> {
+function sanitizeDisplayText(input: unknown): string {
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCwlRotationOriginalRosterMembers(plan: CwlRotationPlanExport): Array<{
+  playerTag: string;
+  playerName: string;
+}> {
   const rosterRowsValue = (plan.metadata as { rosterRows?: unknown } | null)?.rosterRows;
   if (!Array.isArray(rosterRowsValue)) {
-    return new Set();
+    return [];
   }
 
-  return new Set(
-    rosterRowsValue
-      .map((row) => {
-        if (!row || typeof row !== "object" || Array.isArray(row)) return null;
-        const record = row as { playerTag?: unknown };
-        return normalizePlayerTag(String(record.playerTag ?? ""));
-      })
-      .filter((tag): tag is string => Boolean(tag)),
-  );
+  return rosterRowsValue
+    .map((row) => {
+      if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+      const record = row as { playerTag?: unknown; playerName?: unknown };
+      const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
+      if (!playerTag) return null;
+      const playerName = sanitizeDisplayText(record.playerName);
+      return {
+        playerTag,
+        playerName: playerName || playerTag,
+      };
+    })
+    .filter((row): row is { playerTag: string; playerName: string } => Boolean(row));
+}
+
+function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> {
+  return new Set(buildCwlRotationOriginalRosterMembers(plan).map((member) => member.playerTag));
 }
 
 function buildCwlRotationLeaderNames(
@@ -618,7 +635,12 @@ function buildCwlRotationMergedRosterLines(input: {
     playerName: string;
     subbedOut: boolean;
   }>;
+  originalRosterMembers: Array<{
+    playerTag: string;
+    playerName: string;
+  }>;
   actualPlayerRows: Array<{
+    position: number;
     playerTag: string;
     playerName: string;
   }>;
@@ -672,6 +694,7 @@ function buildCwlRotationMergedRosterLines(input: {
   }
 
   const actualRows = input.actualPlayerRows.map((member) => ({
+    position: Math.max(1, Math.trunc(member.position)),
     normalizedTag: normalizePlayerTag(member.playerTag),
     playerTag: member.playerTag,
     playerName: member.playerName,
@@ -691,8 +714,34 @@ function buildCwlRotationMergedRosterLines(input: {
   const hasRosterTagSet = input.rosterTagSet.size > 0;
   let missingExpectedIndex = 0;
   for (const actual of actualRows) {
+    const expectedForPosition = input.originalRosterMembers[actual.position - 1] ?? null;
     if (actual.normalizedTag && expectedByTag.has(actual.normalizedTag)) {
       lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
+      continue;
+    }
+
+    const expectedSuffix =
+      expectedForPosition &&
+      normalizePlayerTag(expectedForPosition.playerTag) &&
+      (!actual.normalizedTag ||
+        normalizePlayerTag(expectedForPosition.playerTag) !== actual.normalizedTag)
+        ? ` - Expected ${expectedForPosition.playerName} (${expectedForPosition.playerTag})`
+        : "";
+
+    const isBlockedForExpected =
+      Boolean(actual.normalizedTag) &&
+      (input.excludedTagSet.has(actual.normalizedTag) ||
+        (hasRosterTagSet && !input.rosterTagSet.has(actual.normalizedTag)));
+    if (isBlockedForExpected && expectedSuffix) {
+      hasBlockedWarning = true;
+      lines.push(`â›”ï¸ ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}${expectedSuffix}`);
+      continue;
+    }
+    if (expectedSuffix) {
+      hasMismatchWarning = true;
+      lines.push(
+        `:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}${expectedSuffix}`,
+      );
       continue;
     }
 
@@ -1610,7 +1659,7 @@ function buildCwlRotationShowPageLines(input: {
     complete: boolean;
     missingExpectedPlayerTags: string[];
     extraActualPlayerTags: string[];
-    actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
+    actualPlayerRows: Array<{ position: number; playerTag: string; playerName: string }>;
   } | null;
 }): string[] {
   const visibleDayRows = cwlRotationService.getVisibleRotationShowDayRows({
@@ -1618,6 +1667,7 @@ function buildCwlRotationShowPageLines(input: {
     days: input.plan.days,
     day: input.day,
   });
+  const originalRosterMembers = buildCwlRotationOriginalRosterMembers(input.plan);
   const rosterTagSet = buildCwlRotationRosterTagSet(input.plan);
   const excludedTagSet = new Set(
     input.plan.excludedPlayerTags.map((tag) => normalizePlayerTag(tag)).filter((tag): tag is string => Boolean(tag)),
@@ -1641,6 +1691,7 @@ function buildCwlRotationShowPageLines(input: {
     const merged = buildCwlRotationMergedRosterLines({
       warCountByPlayerTag: input.warCountByPlayerTag,
       plannedMembers: visibleDayRows,
+      originalRosterMembers,
       actualPlayerRows: [],
       actualAvailable: false,
       rosterTagSet,
@@ -1651,6 +1702,7 @@ function buildCwlRotationShowPageLines(input: {
     const merged = buildCwlRotationMergedRosterLines({
       warCountByPlayerTag: input.warCountByPlayerTag,
       plannedMembers: visibleDayRows,
+      originalRosterMembers,
       actualPlayerRows: input.validation.actualPlayerRows,
       actualAvailable: input.validation.actualAvailable,
       rosterTagSet,
@@ -1683,7 +1735,7 @@ function buildCwlRotationShowPageEmbed(input: {
     complete: boolean;
     missingExpectedPlayerTags: string[];
     extraActualPlayerTags: string[];
-    actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
+    actualPlayerRows: Array<{ position: number; playerTag: string; playerName: string }>;
   } | null;
 }): EmbedBuilder {
   return new EmbedBuilder()
@@ -1863,6 +1915,7 @@ async function loadCwlRotationShowClanPayload(input: {
             missingExpectedPlayerTags: validation.missingExpectedPlayerTags,
             extraActualPlayerTags: validation.extraActualPlayerTags,
             actualPlayerRows: validation.actualPlayerTags.map((playerTag, index) => ({
+              position: index + 1,
               playerTag,
               playerName: validation.actualPlayerNames[index] ?? playerTag,
             })),
@@ -1891,7 +1944,7 @@ async function buildCwlRotationShowClanPayload(input: {
     complete: boolean;
     missingExpectedPlayerTags: string[];
     extraActualPlayerTags: string[];
-    actualPlayerRows: Array<{ playerTag: string; playerName: string }>;
+    actualPlayerRows: Array<{ position: number; playerTag: string; playerName: string }>;
   } | null;
 }): Promise<{
   embed: EmbedBuilder;

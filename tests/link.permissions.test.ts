@@ -27,6 +27,10 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("link:status");
   });
 
+  it("does not expose fwa mail send as a public permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).not.toContain("fwa:mail:send");
+  });
+
   it("allows non-admin users for verify and status by default", async () => {
     const settings = {
       get: vi.fn().mockResolvedValue(null),
@@ -69,6 +73,24 @@ describe("link permission defaults", () => {
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["link:status"], interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps the hidden fwa mail send policy on the FWA leader default path", async () => {
+    const settings = {
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce("123456789012345678"),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({
+      isAdmin: false,
+      roleIds: ["123456789012345678"],
+    });
+
+    await expect(
+      service.canUseCommand("fwa:mail:send", interaction),
     ).resolves.toBe(true);
   });
 });

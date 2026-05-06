@@ -338,9 +338,9 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
 const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
-  "# {emoji} YOU HAVE AN ACTIVE CWL LINEUP {emoji}";
+  "# {emoji} YOU HAVE AN ACTIVE FWA BASE IN CWL {emoji}";
 const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
-  "These players currently have an active CWL lineup. Please swap to an active war base.";
+  "These players currently have an active FWA base in CWL. Please swap to an active war base.";
 const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
@@ -1526,9 +1526,15 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   }
 
   if (lines.length > 0) {
-    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
-    if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
-    if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
+    if (clanKind === "CWL") {
+      lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+      if (layoutLinkLines.length > 0) lines.push(...layoutLinkLines);
+      if (state.phaseTimingLine) lines.push(state.phaseTimingLine);
+    } else {
+      lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
+      if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
+      if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
+    }
     lines.push("", FWA_BASE_SWAP_REACT_LINE);
   }
 
@@ -7538,7 +7544,8 @@ async function handleFwaMailConfirmAction(
   if (!payload) {
     await interaction.reply({
       ephemeral: true,
-      content: "This mail preview expired. Run /fwa mail send again.",
+      content:
+        "This mail preview expired. Open /fwa match and use Send Mail again.",
     });
     return;
   }
@@ -12851,27 +12858,6 @@ export const Fwa: Command = {
         },
       ],
     },
-    {
-      name: "mail",
-      description: "Configure and send tracked clan war mail",
-      type: ApplicationCommandOptionType.SubcommandGroup,
-      options: [
-        {
-          name: "send",
-          description: "Preview and send war mail for a tracked clan",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "tag",
-              description: "Tracked clan tag (with or without #)",
-              type: ApplicationCommandOptionType.String,
-              required: true,
-              autocomplete: true,
-            },
-          ],
-        },
-      ],
-    },
   ],
   run: async (
     _client: Client,
@@ -13003,25 +12989,6 @@ export const Fwa: Command = {
       const permissionService = new CommandPermissionService();
       await permissionService.setFwaLeaderRoleId(interaction.guildId, role.id);
       await editReplySafe(`FWA leader role set to <@&${role.id}>.`);
-      return;
-    }
-
-    if (subcommandGroup === "mail" && subcommand === "send") {
-      if (!interaction.inGuild() || !interaction.guildId) {
-        await editReplySafe("This command can only be used in a server.");
-        return;
-      }
-      if (!tag) {
-        await editReplySafe("Please provide `tag`.");
-        return;
-      }
-      await showWarMailPreview(
-        interaction,
-        interaction.guildId,
-        interaction.user.id,
-        tag,
-        cocService,
-      );
       return;
     }
 

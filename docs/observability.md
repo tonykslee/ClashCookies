@@ -40,6 +40,28 @@ Internal telemetry surfaces:
 - `/telemetry schedule disable`
 - `/telemetry schedule run-now`
 
+### Dozzle log levels
+
+App-owned log lines are normalized to one of these Dozzle-friendly levels:
+
+- `fatal`: boot-blocking or process-ending failures
+- `error`: failed command, job, API, or database operations
+- `warn`: recovered failures, skipped work, stale config, slow waits, retry exhaustion
+- `info`: startup milestones, readiness, command invocation/completion, scheduler lifecycle, successful side effects
+- `debug`: routine scheduler summaries, telemetry success samples, config and payload summaries
+- `trace`: high-volume loop churn such as CoC queue enqueue and dispatch events
+
+Representative examples:
+
+- `[info] [startup:login] start ...`
+- `[warn] [coc-queue] event=degraded_delay ...`
+- `[debug] [telemetry-v2] ...`
+- `[trace] [coc-queue] event=enqueue ...`
+
+Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
+
+At runtime, the app installs a console shim so existing app-owned `console.*` call sites are normalized without changing their structured fields.
+
 Queue observability now includes:
 
 - interactive vs background CoC queue depth in runtime status/logs
