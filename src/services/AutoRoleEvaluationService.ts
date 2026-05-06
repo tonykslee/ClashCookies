@@ -89,10 +89,14 @@ function isEligibleAutoroleLink(
   link: Pick<PlayerLinkWithTrust, "linkSource" | "verificationStatus" | "verificationMethod">,
   config: AutoRoleGuildConfigSnapshot,
 ): boolean {
+  if (link.verificationStatus === "REVOKED") {
+    return false;
+  }
+
   if (config.verifiedOnlyMode || config.trustedLinksAllowed === false) {
     return isPlayerLinkVerifiedForAutorole(link);
   }
-  return isPlayerLinkTrustedForAutorole(link);
+  return true;
 }
 
 function resolveMemberSourceCurrentClanTag(
