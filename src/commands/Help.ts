@@ -42,6 +42,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
+  "autorole:refresh",
   "sync:time:post",
   "bot-logs",
   "notify:war",
@@ -66,6 +67,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
+  "autorole:refresh",
 ]);
 
 type CommandDoc = {
@@ -317,16 +319,20 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   autorole: {
-    summary: "Manage durable autorole config, rules, and exclusions.",
+    summary: "Manage durable autorole config, rules, exclusions, and manual refresh.",
     details: [
-      "Phase 2 is persistence-only: it stores guild config, rule mappings, and exclusions without evaluating members or mutating Discord roles.",
+      "Phase 2 stores guild config, rule mappings, and exclusions, and `/autorole refresh` evaluates the current guild immediately using the same persisted data.",
+      "`refresh` manually evaluates the guild, one user, or one managed role and applies autorole changes immediately.",
       "`config show` displays the current guild autorole policy snapshot.",
       "`config set` updates one or more guild config fields, including nickname and sync policy settings.",
       "`rules list/add/edit/remove` manage persisted rule mappings for verified, family, clan, clan-rank, town-hall, and label targets.",
       "`exclusions list/add-user/remove-user/add-role/remove-role` manage guild-level user and role exclusions.",
-      "All autorole management commands are admin-only by default.",
+      "All autorole management commands, including manual refresh, are admin-only by default.",
     ],
     examples: [
+      "/autorole refresh",
+      "/autorole refresh user:@SomeUser",
+      "/autorole refresh role:@SomeRole",
       "/autorole config show",
       "/autorole config set enabled:true trusted_links_allowed:true",
       "/autorole rules list",

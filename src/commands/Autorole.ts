@@ -15,6 +15,10 @@ import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import {
+  autoRoleRefreshService,
+  type AutoRoleRefreshResult,
+} from "../services/AutoRoleRefreshService";
+import {
   autoRoleService,
   formatAutoRoleRuleTarget,
   formatAutoRoleRuleType,
@@ -391,10 +395,62 @@ function buildSuccessContent(action: string): string {
   return `Autorole ${action}.`;
 }
 
+function formatRoleMentions(roleIds: string[]): string {
+  if (roleIds.length === 0) return "none";
+  return roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
+}
+
+function formatRefreshSummary(result: AutoRoleRefreshResult): string {
+  const scopeLabel =
+    result.scope.kind === "guild"
+      ? "guild"
+      : result.scope.kind === "user"
+        ? `<@${result.scope.discordUserId}>`
+        : `<@&${result.scope.discordRoleId}>`;
+  const lines = [
+    `Autorole refresh completed for ${scopeLabel}.`,
+    `Evaluated: ${result.evaluatedCount}. Added: ${result.addedCount}. Removed: ${result.removedCount}. Skipped: ${result.skippedCount}. Failed: ${result.failedCount}.`,
+  ];
+
+  if (result.scope.kind === "user" && result.memberResults.length > 0) {
+    const member = result.memberResults[0];
+    lines.push(`Roles added: ${formatRoleMentions(member.rolesAdded)}.`);
+    lines.push(`Roles removed: ${formatRoleMentions(member.rolesRemoved)}.`);
+    lines.push(`Nickname: ${member.nicknameStatus}${member.nicknameReason ? ` (${member.nicknameReason})` : ""}.`);
+    if (member.skipReason) {
+      lines.push(`Skipped reason: ${member.skipReason}.`);
+    }
+    if (member.failureReasons.length > 0) {
+      lines.push(`Failures: ${member.failureReasons.join(" | ")}.`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export const Autorole: Command = {
   name: "autorole",
   description: "Manage autorole config, rules, exclusions, and read-only admin state",
   options: [
+    {
+      name: "refresh",
+      description: "Manually refresh autorole evaluation and Discord writes",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "user",
+          description: "Discord user to refresh",
+          type: ApplicationCommandOptionType.User,
+          required: false,
+        },
+        {
+          name: "role",
+          description: "Managed Discord role to refresh",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+      ],
+    },
     {
       name: "config",
       description: "View and update guild autorole config",
@@ -632,11 +688,54 @@ export const Autorole: Command = {
 
     await interaction.deferReply({ ephemeral: true });
 
-    const group = interaction.options.getSubcommandGroup(true);
+    const group = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
     const guildId = interaction.guildId;
 
     try {
+      if (subcommand === "refresh" && group === null) {
+        const user = interaction.options.getUser("user", false);
+        const role = interaction.options.getRole("role", false);
+        if (user && role) {
+          await interaction.editReply({
+            content: "Please choose either user or role for /autorole refresh, not both.",
+          });
+          return;
+        }
+
+        if (!interaction.guild) {
+          await interaction.editReply({
+            content: "This command can only be used in a server.",
+          });
+          return;
+        }
+
+        const result = user
+          ? await autoRoleRefreshService.refreshUser({
+              guild: interaction.guild,
+              guildId,
+              discordUserId: user.id,
+              cocService: _cocService,
+            })
+          : role
+            ? await autoRoleRefreshService.refreshRole({
+                guild: interaction.guild,
+                guildId,
+                discordRoleId: role.id,
+                cocService: _cocService,
+              })
+            : await autoRoleRefreshService.refreshGuild({
+                guild: interaction.guild,
+                guildId,
+                cocService: _cocService,
+              });
+
+        await interaction.editReply({
+          content: formatRefreshSummary(result),
+        });
+        return;
+      }
+
       if (group === "config") {
         if (subcommand === "show") {
           const config = await autoRoleService.getOrCreateGuildConfig(guildId);

@@ -126,6 +126,12 @@ describe("command coverage", () => {
     expect(fwaHelpText).not.toContain("command:fwa:mail:send");
   });
 
+  it("documents /autorole refresh in the autorole help detail text", () => {
+    const autoroleHelpText = helpEmbedText("autorole");
+    expect(autoroleHelpText).toContain("/autorole refresh");
+    expect(autoroleHelpText).toContain("manual refresh");
+  });
+
   it("moves and resets help detail navigation state", () => {
     const commands = [Commands.find((command) => command.name === "help")!, Commands.find((command) => command.name === "fwa")!];
     const state = {
