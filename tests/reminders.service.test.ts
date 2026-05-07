@@ -16,6 +16,10 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     deleteMany: vi.fn(),
   },
+  reminderTargetClan: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -39,6 +43,8 @@ describe("ReminderService create-draft flow", () => {
     ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.reminder.findMany.mockResolvedValue([]);
+    prismaMock.reminderTargetClan.findMany.mockResolvedValue([]);
+    prismaMock.reminderTargetClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.reminder.create.mockResolvedValue({
       id: "rem-new-1",
       guildId: "guild-1",
@@ -431,6 +437,8 @@ describe("ReminderService reminder listing and autocomplete", () => {
         name: "Zero Gravity",
       },
     ]);
+    prismaMock.reminderTargetClan.findMany.mockResolvedValue([]);
+    prismaMock.reminderTargetClan.createMany.mockResolvedValue({ count: 0 });
   });
 
   it("resolves reminder list targets to clan names and tag fallbacks", async () => {
@@ -537,5 +545,137 @@ describe("ReminderService reminder listing and autocomplete", () => {
         label: "WAR_CWL reminder | 1h, 12h | Rising Dawn, Zero Gravity | enabled",
       }),
     );
+  });
+});
+
+describe("ReminderService CWL target reconciliation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2C00C0JQ2",
+        name: "Rising Queens",
+      },
+      {
+        tag: "#2CL0LQJ88",
+        name: "Rising Wood",
+      },
+      {
+        tag: "#2CL2JGJPC",
+        name: "Rising Kings",
+      },
+    ]);
+    prismaMock.reminder.findFirst.mockResolvedValue({
+      id: "reminder-1",
+      guildId: "guild-1",
+      type: ReminderType.WAR_CWL,
+      channelId: "123456789012345678",
+      isEnabled: true,
+      createdByUserId: "user-1",
+      updatedByUserId: "user-1",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [],
+    });
+    prismaMock.reminderTargetClan.findMany.mockResolvedValue([]);
+    prismaMock.reminderTargetClan.createMany.mockResolvedValue({ count: 0 });
+  });
+
+  it("reconciles missing current-season CWL target rows without duplicating existing rows", async () => {
+    prismaMock.reminderTargetClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#2C00C0JQ2",
+        clanType: ReminderTargetClanType.CWL,
+      },
+    ]);
+
+    const service = new ReminderService();
+    const summary = await service.reconcileCurrentSeasonCwlTargets({
+      guildId: "guild-1",
+      reminderId: "reminder-1",
+      actorUserId: "user-1",
+    });
+
+    expect(summary.currentSeasonCwlClanCount).toBe(3);
+    expect(summary.existingCwlTargetCount).toBe(1);
+    expect(summary.addedTargetCount).toBe(2);
+    expect(summary.skippedExistingCount).toBe(1);
+    expect(summary.addedClans.map((row) => row.clanTag)).toEqual([
+      "#2CL0LQJ88",
+      "#2CL2JGJPC",
+    ]);
+    expect(prismaMock.reminderTargetClan.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            reminderId: "reminder-1",
+            clanTag: "#2CL0LQJ88",
+            clanType: ReminderTargetClanType.CWL,
+          }),
+          expect.objectContaining({
+            reminderId: "reminder-1",
+            clanTag: "#2CL2JGJPC",
+            clanType: ReminderTargetClanType.CWL,
+          }),
+        ],
+        skipDuplicates: true,
+      }),
+    );
+  });
+
+  it("does not add CWL targets for reminders that are not WAR_CWL", async () => {
+    prismaMock.reminder.findFirst.mockResolvedValueOnce({
+      id: "reminder-1",
+      guildId: "guild-1",
+      type: ReminderType.RAIDS,
+      channelId: "123456789012345678",
+      isEnabled: true,
+      createdByUserId: "user-1",
+      updatedByUserId: "user-1",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#2C00C0JQ2", clanType: ReminderTargetClanType.CWL }],
+    });
+
+    const service = new ReminderService();
+    const summary = await service.reconcileCurrentSeasonCwlTargets({
+      guildId: "guild-1",
+      reminderId: "reminder-1",
+      actorUserId: "user-1",
+    });
+
+    expect(summary.warning).toContain("Reminder type is RAIDS");
+    expect(summary.addedTargetCount).toBe(0);
+    expect(prismaMock.reminderTargetClan.createMany).not.toHaveBeenCalled();
+  });
+
+  it("audits missing and extra current-season CWL target rows and reports 24h offsets", async () => {
+    prismaMock.reminderTargetClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#2C00C0JQ2",
+        clanType: ReminderTargetClanType.CWL,
+      },
+      {
+        clanTag: "#STALEROW",
+        clanType: ReminderTargetClanType.CWL,
+      },
+    ]);
+
+    const service = new ReminderService();
+    const summary = await service.auditCurrentSeasonCwlTargets({
+      guildId: "guild-1",
+      reminderId: "reminder-1",
+    });
+
+    expect(summary.currentSeasonCwlClanCount).toBe(3);
+    expect(summary.existingCwlTargetCount).toBe(2);
+    expect(summary.has24hOffset).toBe(true);
+    expect(summary.missingCurrentSeasonCwlTargets.map((row) => row.clanTag)).toEqual([
+      "#2CL0LQJ88",
+      "#2CL2JGJPC",
+    ]);
+    expect(summary.extraCwlTargets.map((row) => row.clanTag)).toEqual(["#STALEROW"]);
   });
 });

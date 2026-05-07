@@ -14,6 +14,16 @@ describe("/reminders command shape", () => {
         option.type === ApplicationCommandOptionType.Subcommand &&
         option.name === "list",
     );
+    const reconcile = Reminders.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "reconcile-cwl",
+    );
+    const audit = Reminders.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "audit-cwl",
+    );
     const edit = Reminders.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -22,6 +32,8 @@ describe("/reminders command shape", () => {
 
     expect(create).toBeTruthy();
     expect(list).toBeTruthy();
+    expect(reconcile).toBeTruthy();
+    expect(audit).toBeTruthy();
     expect(edit).toBeTruthy();
 
     expect(create?.options?.find((o: any) => o.name === "type")?.required).toBe(false);
@@ -50,6 +62,18 @@ describe("/reminders command shape", () => {
       ApplicationCommandOptionType.String,
     );
     expect(create?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
+
+    expect(reconcile?.options?.find((o: any) => o.name === "reminder")?.required).toBe(true);
+    expect(reconcile?.options?.find((o: any) => o.name === "reminder")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(reconcile?.options?.find((o: any) => o.name === "reminder")?.autocomplete).toBe(true);
+
+    expect(audit?.options?.find((o: any) => o.name === "reminder")?.required).toBe(true);
+    expect(audit?.options?.find((o: any) => o.name === "reminder")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(audit?.options?.find((o: any) => o.name === "reminder")?.autocomplete).toBe(true);
 
     expect(edit?.options?.find((o: any) => o.name === "id")?.required).toBe(false);
     expect(edit?.options?.find((o: any) => o.name === "id")?.type).toBe(

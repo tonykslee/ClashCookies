@@ -16,6 +16,8 @@ const reminderServiceMock = vi.hoisted(() => ({
   saveDraftReminder: vi.fn(),
   setReminderChannel: vi.fn(),
   tryPrefillReminderChannelFromTrackedClanLog: vi.fn(),
+  reconcileCurrentSeasonCwlTargets: vi.fn(),
+  auditCurrentSeasonCwlTargets: vi.fn(),
   deleteReminder: vi.fn(),
 }));
 
@@ -37,12 +39,13 @@ function buildCollector() {
 }
 
 function createInteraction(input: {
-  subcommand: "create" | "list" | "edit";
+  subcommand: "create" | "list" | "edit" | "reconcile-cwl" | "audit-cwl";
   type?: ReminderType;
   timeLeft?: string;
   channelId?: string;
   clan?: string;
   id?: string;
+  reminder?: string;
 }) {
   const collector = buildCollector();
   const fetchReply = vi.fn().mockResolvedValue({
@@ -71,6 +74,7 @@ function createInteraction(input: {
         if (name === "time_left") return input.timeLeft ?? null;
         if (name === "clan") return input.clan ?? null;
         if (name === "id") return input.id ?? null;
+        if (name === "reminder") return input.reminder ?? null;
         return null;
       }),
       getChannel: vi.fn((name: string) => {
@@ -153,11 +157,60 @@ describe("/reminders command", () => {
       updatedAt: new Date("2026-03-26T00:00:00.000Z"),
       offsetsSeconds: [],
       targets: [],
-    });
-    reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog.mockResolvedValue(null);
-    reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([]);
-    reminderServiceMock.findReminderSummariesByClan.mockResolvedValue([]);
-    reminderServiceMock.listReminderAutocompleteRowsForGuild.mockResolvedValue([]);
+  });
+  reminderServiceMock.tryPrefillReminderChannelFromTrackedClanLog.mockResolvedValue(null);
+  reminderServiceMock.reconcileCurrentSeasonCwlTargets.mockResolvedValue({
+    reminderId: "reminder-1",
+    guildId: "guild-1",
+    reminderType: ReminderType.WAR_CWL,
+    currentSeason: "2026-03",
+    currentSeasonCwlClanCount: 2,
+    existingCwlTargetCount: 1,
+    addedTargetCount: 1,
+    skippedExistingCount: 1,
+    addedClans: [
+      {
+        clanTag: "#2QG2C08UP",
+        name: "CWL One",
+      },
+    ],
+    warning: null,
+  });
+  reminderServiceMock.auditCurrentSeasonCwlTargets.mockResolvedValue({
+    reminderId: "reminder-1",
+    guildId: "guild-1",
+    reminderType: ReminderType.WAR_CWL,
+    currentSeason: "2026-03",
+    currentSeasonCwlClanCount: 2,
+    existingCwlTargetCount: 1,
+    missingCurrentSeasonCwlTargets: [
+      {
+        clanTag: "#2QG2C08UP",
+        name: "CWL One",
+      },
+    ],
+    extraCwlTargets: [],
+    reminderCwlTargets: [
+      {
+        clanTag: "#PQL0289",
+        name: "FWA One",
+      },
+    ],
+    currentSeasonCwlClans: [
+      {
+        clanTag: "#2QG2C08UP",
+        name: "CWL One",
+      },
+      {
+        clanTag: "#2QG2C08UP2",
+        name: null,
+      },
+    ],
+    has24hOffset: true,
+  });
+  reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([]);
+  reminderServiceMock.findReminderSummariesByClan.mockResolvedValue([]);
+  reminderServiceMock.listReminderAutocompleteRowsForGuild.mockResolvedValue([]);
   });
 
   it("initializes create flow with a blank preview panel when no create args are supplied", async () => {
@@ -499,6 +552,108 @@ describe("/reminders command", () => {
     );
   });
 
+  it("reconciles missing current-season CWL reminder targets and shows added clans", async () => {
+    const interaction = createInteraction({
+      subcommand: "reconcile-cwl",
+      reminder: "reminder-1",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.reconcileCurrentSeasonCwlTargets).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      reminderId: "reminder-1",
+      actorUserId: "user-1",
+    });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.content).toContain("Added 1 current-season CWL target");
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.title).toContain("Reminders - Reconcile CWL");
+    expect(String(embed.description)).toContain("Reminder `reminder-1`");
+    expect(String(embed.description)).toContain("WAR_CWL");
+    expect(String(embed.fields[0].value)).toContain("CWL One (#2QG2C08UP)");
+  });
+
+  it("shows a no-op reconcile message when no current-season CWL targets are missing", async () => {
+    reminderServiceMock.reconcileCurrentSeasonCwlTargets.mockResolvedValueOnce({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      reminderType: ReminderType.WAR_CWL,
+      currentSeason: "2026-03",
+      currentSeasonCwlClanCount: 2,
+      existingCwlTargetCount: 2,
+      addedTargetCount: 0,
+      skippedExistingCount: 2,
+      addedClans: [],
+      warning: null,
+    });
+    const interaction = createInteraction({
+      subcommand: "reconcile-cwl",
+      reminder: "reminder-1",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "No missing current-season CWL targets found.",
+      }),
+    );
+  });
+
+  it("shows a warning when reconcile runs on a non-WAR_CWL reminder", async () => {
+    reminderServiceMock.reconcileCurrentSeasonCwlTargets.mockResolvedValueOnce({
+      reminderId: "reminder-1",
+      guildId: "guild-1",
+      reminderType: ReminderType.RAIDS,
+      currentSeason: "2026-03",
+      currentSeasonCwlClanCount: 2,
+      existingCwlTargetCount: 1,
+      addedTargetCount: 0,
+      skippedExistingCount: 2,
+      addedClans: [],
+      warning: "Reminder type is RAIDS; CWL targets were not changed.",
+    });
+    const interaction = createInteraction({
+      subcommand: "reconcile-cwl",
+      reminder: "reminder-1",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Reminder type is RAIDS; CWL targets were not changed.",
+      }),
+    );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.fields.find((field: any) => field.name === "Warning")?.value)).toContain(
+      "Reminder type is RAIDS; CWL targets were not changed.",
+    );
+  });
+
+  it("audits CWL reminder target coverage and shows missing clans", async () => {
+    const interaction = createInteraction({
+      subcommand: "audit-cwl",
+      reminder: "reminder-1",
+    });
+
+    await Reminders.run({} as any, interaction as any, {} as any);
+
+    expect(reminderServiceMock.auditCurrentSeasonCwlTargets).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      reminderId: "reminder-1",
+    });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.content).toContain("Found 1 missing current-season CWL target");
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.title).toContain("Reminders - Audit CWL");
+    expect(String(embed.description)).toContain("24h offset present: **yes**");
+    expect(String(embed.fields[0].value)).toContain("CWL One (#2QG2C08UP)");
+    expect(String(embed.fields[2].value)).toContain("CWL One (#2QG2C08UP)");
+  });
+
   it("renders populated list rows in scan-friendly output", async () => {
     reminderServiceMock.listReminderSummariesForGuild.mockResolvedValue([
       {
@@ -784,6 +939,41 @@ describe("/reminders command", () => {
       expect.objectContaining({
         name: "WAR_CWL reminder-1 | 1h | Rising Dawn | enabled",
         value: "reminder-1234abcd",
+      }),
+    ]);
+  });
+
+  it("autocompletes reminder ids for reconcile/audit reminder selections", async () => {
+    reminderServiceMock.listReminderAutocompleteRowsForGuild.mockResolvedValue([
+      {
+        id: "reminder-abc12345",
+        type: ReminderType.WAR_CWL,
+        channelId: "channel-55",
+        isEnabled: true,
+        offsetsSeconds: [3600],
+        targets: [],
+        value: "reminder-abc12345",
+        label: "WAR_CWL reminder-abc12345 | 1h | enabled",
+      },
+    ]);
+    const interaction: any = {
+      guildId: "guild-1",
+      options: {
+        getFocused: vi.fn().mockReturnValue({ name: "reminder", value: "reminder" }),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await Reminders.autocomplete(interaction);
+
+    expect(reminderServiceMock.listReminderAutocompleteRowsForGuild).toHaveBeenCalledWith(
+      "guild-1",
+      "reminder",
+    );
+    expect(interaction.respond).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: "WAR_CWL reminder-abc12345 | 1h | enabled",
+        value: "reminder-abc12345",
       }),
     ]);
   });
