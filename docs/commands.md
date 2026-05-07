@@ -43,7 +43,7 @@
 - `/war history clan-tag:<tag> [limit:<number>]` - Show recent clan-level war history from stored war records.
 - `/war war-id clan-tag:<tag> war-id:<number>` - Export stored war lookup payload for one clan-scoped war ID as CSV. `war-id` supports autocomplete after `clan-tag` is selected and returns recent ended wars for that clan only (up to 10).
 - `/cwl members clan:<trackedCwlClanTag> [inwar:true]` - Show the persisted observed current-season CWL roster for one tracked CWL clan, optionally narrowed to the current/prep lineup only.
-- `/autorole refresh [user:<discordUser>] [role:<discordRole>]`, `/autorole config show`, `/autorole config set ...`, `/autorole rules list|add|edit|remove`, and `/autorole exclusions list|add-user|remove-user|add-role|remove-role` - Admin-only autorole management for guild config, rule mappings, exclusions, and manual refresh. `/autorole refresh` evaluates the guild immediately using the same persisted autorole data; `user` refreshes one Discord member; `role` refreshes one managed Discord role; and both scope arguments together are rejected.
+- `/autorole refresh [user:<discordUser>] [role:<discordRole>]`, `/autorole config show`, `/autorole config set ...`, `/autorole rules list|add|edit|remove`, and `/autorole exclusions list|add-user|remove-user|add-role|remove-role` - Admin-only autorole management for guild config, rule mappings, exclusions, manual refresh, and nickname templates. `/autorole refresh` evaluates the guild immediately using the same persisted autorole data; `user` refreshes one Discord member; `role` refreshes one managed Discord role; and both scope arguments together are rejected. Nickname sync is enabled with `apply_nicknames:true` plus a `nickname_template`, for example `{player} | {trackedClans}`.
 - `/roster create category:<CWL|FWA> clan:<trackedClanTag> [name:<text>] [title:<text>] [timezone:<ianaTz>] [start_time:YYYY-MM-DD HH:mm] [end_time:YYYY-MM-DD HH:mm] [max_members:<n>] [max_accounts_per_user:<n>] [min_townhall:<n>] [max_townhall:<n>] [required-role:<discordRole>] [no-role-signup-limit:<n>] [roster_role:<role>] [allow_multi_signup:<bool>] [sort_by:<signed_up_at|player_name|player_tag|discord_user|townhall>] [import_members:<bool>]` - Create a roster object without posting it yet. CWL/FWA are the supported categories for now and `name` is the preferred command-facing label even though the DB keeps `title`; `title` remains a compatibility alias.
 - `/roster list [name:<text>] [user:<discordId>] [player:<playerTagOrName>] [clan:<clanTag>]` - Show roster title, type, clan scope, lifecycle state, posted status, and signup counts for rosters in the guild. When `user` is provided, this becomes a user-scoped signup view that lists that user's linked accounts signed up for current rosters, grouped by roster and roster group. Posted rosters include a clickable link to the original post, and clan values render as `{clan name} (\`{clan tag}\`)` when both are known. This is the public roster-inspection surface; manager mutations stay separate.
 - `/roster post roster:<roster>` - Post the signup message for an existing roster, or refresh the existing posted message if it already exists. The posted board uses a compact Player / Discord / Clan table by default plus `Refresh`, `Signup`, `Opt-out`, and `Settings` controls. `Settings` includes `Customize` for saved column-order and sort-mode overrides, `Add User` and `Remove User` roster member panels, and can enable optional `Townhall Icons`, `Index`, `Weight Source`, and `Weight Age` columns.
@@ -126,3 +126,51 @@
 - `/force mail update tag:<trackedClanTag>` - Reconcile active-war lifecycle tracking first (marking definitively missing tracked references as `DELETED`), then refresh an existing sent war-mail embed in place (no re-ping) and resume 20-minute refresh tracking when the tracked message is still valid.
 - `/remaining war [tag:<trackedClanTag>]` - With `tag`, show one tracked clan's phase-end and remaining duration. Without `tag`, summarize alliance-wide active-war timing using a 10-minute dominant cluster (mean + spread) and list outlier clans.
 - `/remaining cwl [tag:<trackedCwlClanTag>] [all:true]` - With `tag`, show one tracked CWL clan's persisted round state and timing from DB-backed CWL tables only, remembering the last CWL clan you queried for this command. Without `tag`, it reuses the remembered CWL clan when available or prompts for `tag`/`all:true`. `all:true` lists all tracked CWL clans with public output and `Unknown` where persisted timing is missing.
+
+## Autorole nickname templates
+
+Autorole can apply Discord nicknames during `/autorole refresh` when nickname sync is enabled:
+
+```text
+/autorole config set apply_nicknames:true nickname_template:"{player} | {trackedClans}"
+```
+
+Recommended ClashPerk-style template:
+
+```text
+{player} | {trackedClans}
+```
+
+Example rendered nicknames:
+
+```text
+Elrond ♣️ | RR
+Elrond ♣️ | RR | GB
+Elrond ♣️ | RR | GB | RD | SE | TWC
+```
+
+Supported tokens:
+
+| Token | Meaning |
+| --- | --- |
+| `{player}` | Primary Clash player name. |
+| `{tag}` | Primary Clash player tag. |
+| `{th}` | Primary account Town Hall. |
+| `{clan}` | Primary current clan name. |
+| `{clanTag}` | Primary current clan tag. |
+| `{clanShort}` | Primary permanent FWA tracked clan short name. |
+| `{trackedClans}` | Distinct permanent FWA tracked clan short names across eligible linked accounts, joined with ` | `. |
+| `{discord}` | Current Discord server display name. |
+| `{username}` | Discord username when available. |
+| `{role}` | Primary account in-game clan role. |
+
+Primary account selection prefers eligible linked accounts in permanent FWA tracked clans, then highest Town Hall, then link trust tier, then oldest link, then player tag. `{trackedClans}` de-dupes multiple accounts in the same clan, puts the primary account clan first, then sorts remaining clan short names alphabetically.
+
+Nicknames are cleaned up when tokens are missing and capped to Discord's 32-character nickname limit. Unicode emoji in player names or templates can render in nicknames; custom Discord emoji markup like `<:name:id>` does not render in nicknames and should not be used in templates.
+
+Permissions required for live application:
+
+- The bot needs **Manage Nicknames** to change nicknames.
+- The bot's highest role must be above the target member's highest role.
+- Role autorole still requires **Manage Roles** and the bot's highest role above every managed role it adds or removes.
+

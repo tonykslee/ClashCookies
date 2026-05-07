@@ -70,3 +70,5 @@ Examples:
 ## Notes
 - `/fwa match-type` is Administrator-only by default.
 - The `/fwa match` single-clan `Send Mail` button uses the same FWA leader-role + Administrator permission policy as the mail-send flow.
+- Autorole role application requires Discord **Manage Roles** plus bot role hierarchy above every managed role.
+- Autorole nickname application requires Discord **Manage Nicknames** plus bot role hierarchy above the target member's highest role.
