@@ -1,12 +1,14 @@
+import { normalizeNicknameTemplate } from "./AutoRoleService";
 import type { AutoRoleGuildConfigSnapshot } from "./AutoRoleEvaluationService";
 import {
   getPlayerLinkTrustTier,
-  isPlayerLinkTrustedForAutorole,
   isPlayerLinkVerifiedForAutorole,
   normalizeClanTag,
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
+
+export { normalizeNicknameTemplate };
 
 export type AutoRoleNicknameTrackedClanLike = {
   tag: string;
@@ -110,7 +112,7 @@ function isEligibleAutoroleLink(
     return isPlayerLinkVerifiedForAutorole(link);
   }
 
-  return isPlayerLinkTrustedForAutorole(link);
+  return true;
 }
 
 function compareLinkedAccounts(left: RankedNicknameAccount, right: RankedNicknameAccount): number {
@@ -154,6 +156,12 @@ function cleanNicknameOutput(input: string): string {
   output = output.replace(/\s{2,}/g, " ").trim();
 
   return output;
+}
+
+function isMeaningfulNicknameOutput(input: string): boolean {
+  return String(input ?? "")
+    .replace(/[\p{P}\p{Z}]+/gu, "")
+    .trim().length > 0;
 }
 
 function resolveTrackedClanLabel(clan: NormalizedTrackedClan): string {
@@ -236,10 +244,33 @@ export class AutoRoleNicknameService {
       role: tokens.role,
     };
 
-    const template = normalizeText(input.template) ?? "";
+    const template = normalizeNicknameTemplate(input.template) ?? "";
     const rendered = template ? this.renderTemplate(template, tokenLookup) : "";
     const cleaned = cleanNicknameOutput(rendered);
+    if (!cleaned || !isMeaningfulNicknameOutput(cleaned)) {
+      return {
+        renderedNickname: null,
+        primaryPlayerTag,
+        primaryPlayerName,
+        primaryClanTag,
+        primaryClanName,
+        primaryClanShort,
+        trackedClans: trackedClanLabels,
+      };
+    }
+
     const truncated = safeTruncate(cleaned, 32);
+    if (!isMeaningfulNicknameOutput(truncated)) {
+      return {
+        renderedNickname: null,
+        primaryPlayerTag,
+        primaryPlayerName,
+        primaryClanTag,
+        primaryClanName,
+        primaryClanShort,
+        trackedClans: trackedClanLabels,
+      };
+    }
 
     return {
       renderedNickname: truncated.length > 0 ? truncated : null,

@@ -16,6 +16,7 @@ import {
   type AutoRoleMemberEvaluation,
 } from "./AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
+import { normalizeNicknameTemplate } from "./AutoRoleService";
 import {
   autoRoleService,
   type AutoRoleGuildStateSnapshot,
@@ -766,8 +767,8 @@ export class AutoRoleRefreshService {
         linkedAccountsByUserId,
         cocService: input.cocService ?? null,
       });
-      const nicknameTemplate = String(snapshot.config.nicknameTemplate ?? "").trim();
-      const trackedClans = snapshot.config.applyNicknames && nicknameTemplate.length > 0
+      const nicknameTemplate = normalizeNicknameTemplate(snapshot.config.nicknameTemplate);
+      const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
         ? await loadTrackedClansForNickname()
         : [];
       const clanMembershipIndex = await loadClanMembershipIndex({
