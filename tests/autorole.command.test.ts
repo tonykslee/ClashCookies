@@ -243,6 +243,11 @@ describe("/autorole command", () => {
       "edit",
       "remove",
     ]);
+    const ruleTypeChoices = rulesGroup?.options
+      ?.find((option: any) => option.name === "add")
+      ?.options?.find((option: any) => option.name === "type")
+      ?.choices?.map((choice: any) => ({ name: choice.name, value: choice.value }));
+    expect(ruleTypeChoices).toContainEqual({ name: "League", value: "LEAGUE" });
     expect(exclusionsGroup?.options?.map((option: any) => option.name)).toEqual([
       "list",
       "add-user",
@@ -423,6 +428,31 @@ describe("/autorole command", () => {
     });
     expect(getEditReplyPayload(addInteraction).content).toContain("Autorole rule added");
     expect(getDescription(addInteraction)).toContain("rule-1");
+
+    const leagueAddInteraction = createInteraction({
+      group: "rules",
+      subcommand: "add",
+      strings: {
+        type: "LEAGUE",
+        target_value: "Legend League",
+      },
+      roles: {
+        role: { id: "333333333333333333" },
+      },
+      booleans: {
+        enabled: true,
+      },
+    });
+
+    await Autorole.run({} as any, leagueAddInteraction as any, {} as any);
+    expect(autoRoleServiceMock.createRule).toHaveBeenCalledWith("111111111111111111", {
+      type: "LEAGUE",
+      discordRoleId: "333333333333333333",
+      targetValue: "Legend League",
+      priority: null,
+      enabled: true,
+    });
+    expect(getEditReplyPayload(leagueAddInteraction).content).toContain("Autorole rule added");
 
     const editInteraction = createInteraction({
       group: "rules",

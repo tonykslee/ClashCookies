@@ -13,6 +13,7 @@ export const AUTO_ROLE_RULE_TYPES = [
   "FAMILY",
   "CLAN",
   "CLAN_ROLE",
+  "LEAGUE",
   "TOWN_HALL",
   "LABEL",
 ] as const satisfies readonly AutoRoleRuleType[];
@@ -27,8 +28,9 @@ const AUTO_ROLE_RULE_TYPE_ORDER: Record<AutoRoleRuleType, number> = {
   FAMILY: 1,
   CLAN: 2,
   CLAN_ROLE: 3,
-  TOWN_HALL: 4,
-  LABEL: 5,
+  LEAGUE: 4,
+  TOWN_HALL: 5,
+  LABEL: 6,
 };
 
 const AUTO_ROLE_CLAN_ROLE_VALUES = new Set([
@@ -152,6 +154,11 @@ function normalizeOptionalSnowflakeId(
   return normalized;
 }
 
+/** Purpose: normalize human-readable league text for persistence. */
+function normalizeLeagueText(input: unknown): string {
+  return String(input ?? "").replace(/\s+/g, " ").trim();
+}
+
 /** Purpose: normalize and validate a rule target for persistence. */
 function normalizeRuleTarget(input: AutoRoleRuleCreateInput): string {
   switch (input.type) {
@@ -177,6 +184,11 @@ function normalizeRuleTarget(input: AutoRoleRuleCreateInput): string {
         throw new Error("TOWN_HALL rules require a TH value between 1 and 18.");
       }
       return String(value);
+    }
+    case "LEAGUE": {
+      const normalized = normalizeLeagueText(input.targetValue);
+      if (!normalized) throw new Error("LEAGUE rules require a non-empty target value.");
+      return normalized;
     }
     case "LABEL": {
       const normalized = String(input.targetValue ?? "").trim();
@@ -647,6 +659,8 @@ export function formatAutoRoleRuleTarget(rule: AutoRoleRuleRecord): string {
       return `clan ${rule.targetValue}`;
     case "CLAN_ROLE":
       return `clan rank ${rule.targetValue}`;
+    case "LEAGUE":
+      return `league ${rule.targetValue}`;
     case "TOWN_HALL":
       return `TH${rule.targetValue}`;
     case "LABEL":
@@ -667,6 +681,8 @@ export function formatAutoRoleRuleType(ruleType: AutoRoleRuleType): string {
       return "CLAN";
     case "CLAN_ROLE":
       return "CLAN_ROLE";
+    case "LEAGUE":
+      return "LEAGUE";
     case "TOWN_HALL":
       return "TOWN_HALL";
     case "LABEL":

@@ -39,6 +39,7 @@ const AUTOROLE_RULE_TYPE_CHOICES = [
   { name: "Family", value: "FAMILY" },
   { name: "Clan", value: "CLAN" },
   { name: "Clan Rank", value: "CLAN_ROLE" },
+  { name: "League", value: "LEAGUE" },
   { name: "Town Hall", value: "TOWN_HALL" },
   { name: "Label", value: "LABEL" },
 ] as const;

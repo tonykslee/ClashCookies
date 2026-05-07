@@ -113,6 +113,13 @@ function resolveMemberSourceCurrentClanTag(
   return currentClanTag || null;
 }
 
+function normalizeLeagueNameForComparison(input: unknown): string {
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function isLinkedAccountInClanTarget(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
@@ -269,6 +276,14 @@ export class AutoRoleEvaluationService {
         const targetTownHall = Math.trunc(Number(rule.targetValue));
         if (!Number.isFinite(targetTownHall)) return false;
         return linkedAccounts.some((account) => account.playerCurrent?.townHall === targetTownHall);
+      }
+      case AutoRoleRuleType.LEAGUE: {
+        const targetLeague = normalizeLeagueNameForComparison(rule.targetValue);
+        if (!targetLeague) return false;
+        return linkedAccounts.some(
+          (account) =>
+            normalizeLeagueNameForComparison(account.playerCurrent?.leagueName) === targetLeague,
+        );
       }
       case AutoRoleRuleType.LABEL:
         return false;

@@ -275,6 +275,11 @@ describe("AutoRoleRefreshService", () => {
       discordUserId: userId,
     });
 
+    expect(playerCurrentService.resolveCurrentPlayersForTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requireFields: ["currentClanTag", "townHall", "role", "leagueName"],
+      }),
+    );
     expect(member.roles.add).toHaveBeenCalledWith(roleId);
     expect(member.roles.remove).not.toHaveBeenCalled();
     expect(result).toMatchObject({
