@@ -43,10 +43,15 @@ export type InactiveWarSummary = {
   trackedTags: string[];
   trackedNameByTag: Map<string, string>;
   warnings: string[];
+  diagnosticNote: string | null;
 };
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function buildClanTagQueryValues(trackedTags: string[]): string[] {
+  return [...new Set(trackedTags.flatMap((tag) => [tag, `#${tag}`]))];
 }
 
 function normalizePlayerName(playerName: string | null | undefined, playerTag: string): string {
@@ -55,12 +60,34 @@ function normalizePlayerName(playerName: string | null | undefined, playerTag: s
 }
 
 function buildTrackedNameMap(trackedClans: TrackedClanRow[]): Map<string, string> {
-  return new Map(
-    trackedClans.map((clan) => {
-      const clanTag = normalizeClanTagInput(clan.tag);
-      return [clanTag, String(clan.name ?? "").trim() || clanTag] as const;
-    })
-  );
+  const trackedNameByTag = new Map<string, string>();
+  for (const clan of trackedClans) {
+    const clanTag = normalizeClanTagInput(clan.tag);
+    if (!clanTag) continue;
+    const clanName = String(clan.name ?? "").trim() || clanTag;
+    trackedNameByTag.set(clanTag, clanName);
+    trackedNameByTag.set(`#${clanTag}`, clanName);
+  }
+  return trackedNameByTag;
+}
+
+function buildTrackedTagList(trackedClans: TrackedClanRow[]): string[] {
+  const trackedTags: string[] = [];
+  const seenTags = new Set<string>();
+  for (const clan of trackedClans) {
+    const clanTag = normalizeClanTagInput(clan.tag);
+    if (!clanTag || seenTags.has(clanTag)) continue;
+    seenTags.add(clanTag);
+    trackedTags.push(clanTag);
+  }
+  return trackedTags;
+}
+
+function buildInactiveWarDiagnosticNote(input: {
+  endedWarCount: number;
+  participationRowCount: number;
+}): string {
+  return `Diagnostic: ended wars found ${input.endedWarCount > 0 ? "yes" : "no"} (${input.endedWarCount}), participation rows found ${input.participationRowCount > 0 ? "yes" : "no"} (${input.participationRowCount}).`;
 }
 
 function buildRecentEndedWarSelection(input: {
@@ -203,7 +230,7 @@ function aggregateInactiveWarRows(input: {
   }
 
   return [...rowsByKey.values()]
-    .filter((row) => row.participationWars > 0 && row.missedWars === row.participationWars)
+    .filter((row) => row.participationWars > 0 && row.missedWars > 0)
     .map((row) => ({
       clanTag: row.clanTag,
       playerTag: row.playerTag,
@@ -227,15 +254,16 @@ export class InactiveWarService {
       orderBy: { createdAt: "asc" },
       select: { tag: true, name: true },
     });
-    const trackedTags = trackedClans.map((clan) => normalizeClanTagInput(clan.tag));
+    const trackedTags = buildTrackedTagList(trackedClans);
     const trackedNameByTag = buildTrackedNameMap(trackedClans);
     if (trackedTags.length === 0) {
-      return { results: [], trackedTags, trackedNameByTag, warnings: [] };
+      return { results: [], trackedTags, trackedNameByTag, warnings: [], diagnosticNote: null };
     }
+    const trackedClanTagValues = buildClanTagQueryValues(trackedTags);
 
     const historyRows = await prisma.clanWarHistory.findMany({
       where: {
-        clanTag: { in: trackedTags },
+        clanTag: { in: trackedClanTagValues },
         warEndTime: { not: null },
         matchType: "FWA",
       },
@@ -268,7 +296,7 @@ export class InactiveWarService {
       ? await prisma.clanWarParticipation.findMany({
           where: {
             guildId: input.guildId,
-            clanTag: { in: trackedTags },
+            clanTag: { in: trackedClanTagValues },
             warId: { in: selectedWarIds },
             matchType: "FWA",
           },
@@ -297,6 +325,13 @@ export class InactiveWarService {
       selectionByClan,
       participationRows,
     });
+    const diagnosticNote =
+      results.length === 0
+        ? buildInactiveWarDiagnosticNote({
+            endedWarCount: historyRows.length,
+            participationRowCount: participationRows.length,
+          })
+        : null;
     const warnings = trackedTags
       .map((clanTag) => {
         const selection = selectionByClan.get(clanTag);
@@ -307,7 +342,7 @@ export class InactiveWarService {
       })
       .filter((value): value is string => value !== null);
 
-    return { results, trackedTags, trackedNameByTag, warnings };
+    return { results, trackedTags, trackedNameByTag, warnings, diagnosticNote };
   }
 }
 

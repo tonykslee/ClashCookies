@@ -53,6 +53,24 @@ function makeParticipationRow(input: {
   };
 }
 
+function getQueryInValues(args: any, path: "clanTag" | "warId"): Set<string> {
+  return new Set((args?.where?.[path]?.in ?? []).map((value: string) => String(value)));
+}
+
+function filterHistoryRowsByClanTags(rows: Array<{ clanTag: string }>, args: any) {
+  const clanTags = getQueryInValues(args, "clanTag");
+  return rows.filter((row) => clanTags.has(String(row.clanTag)));
+}
+
+function filterParticipationRows(
+  rows: Array<{ clanTag: string; warId: string }>,
+  args: any
+) {
+  const clanTags = getQueryInValues(args, "clanTag");
+  const warIds = getQueryInValues(args, "warId");
+  return rows.filter((row) => clanTags.has(String(row.clanTag)) && warIds.has(String(row.warId)));
+}
+
 describe("InactiveWarService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,8 +94,7 @@ describe("InactiveWarService", () => {
       }),
     ];
     prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) => {
-      const warIds = new Set((args?.where?.warId?.in ?? []).map((value: string) => String(value)));
-      return participationRows.filter((row) => warIds.has(String(row.warId)));
+      return filterParticipationRows(participationRows, args);
     });
 
     const service = new InactiveWarService();
@@ -94,9 +111,12 @@ describe("InactiveWarService", () => {
     ]);
     expect(summary.results).toEqual([]);
     expect(summary.warnings).toEqual([]);
+    expect(summary.diagnosticNote).toBe(
+      "Diagnostic: ended wars found yes (4), participation rows found no (0)."
+    );
   });
 
-  it("flags a player inactive only when every counted participation row is missedBoth", async () => {
+  it("includes a player when at least one of the selected wars was missedBoth and excludes players with no missed-both rows", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
       makeHistoryRow(400, "#AAA111", "2026-04-04T00:00:00.000Z"),
@@ -119,7 +139,7 @@ describe("InactiveWarService", () => {
         playerTag: "#B",
         playerName: "Bravo",
         warId: "399",
-        missedBoth: true,
+        missedBoth: false,
         trueStars: 0,
         attackDelayMinutes: 55,
         attackWindowMissed: false,
@@ -129,15 +149,34 @@ describe("InactiveWarService", () => {
         playerTag: "#B",
         playerName: "Bravo",
         warId: "398",
-        missedBoth: true,
+        missedBoth: false,
         trueStars: 0,
         attackDelayMinutes: null,
         attackWindowMissed: null,
       }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#C",
+        playerName: "Charlie",
+        warId: "400",
+        missedBoth: false,
+        trueStars: 2,
+        attackDelayMinutes: 12,
+        attackWindowMissed: false,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#C",
+        playerName: "Charlie",
+        warId: "399",
+        missedBoth: false,
+        trueStars: 1,
+        attackDelayMinutes: 20,
+        attackWindowMissed: false,
+      }),
     ];
     prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) => {
-      const warIds = new Set((args?.where?.warId?.in ?? []).map((value: string) => String(value)));
-      return participationRows.filter((row) => warIds.has(String(row.warId)));
+      return filterParticipationRows(participationRows, args);
     });
 
     const service = new InactiveWarService();
@@ -151,16 +190,73 @@ describe("InactiveWarService", () => {
       clanTag: "AAA111",
       playerTag: "B",
       playerName: "Bravo",
-      missedWars: 3,
+      missedWars: 1,
       participationWars: 3,
       totalTrueStars: 0,
       lateAttacks: 1,
       warsAvailable: 3,
     });
     expect(summary.results[0]?.avgAttackDelay).toBeCloseTo(47.5);
+    expect(summary.results.some((row) => row.playerTag === "C")).toBe(false);
   });
 
-  it("excludes a player who was active in any counted participation row", async () => {
+  it("matches tracked-clan history and participation rows stored with either bare or # clan tags", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "AAA111", name: "Alpha" }]);
+    const historyRows = [
+      makeHistoryRow(400, "AAA111", "2026-04-04T00:00:00.000Z"),
+      makeHistoryRow(399, "#AAA111", "2026-04-03T00:00:00.000Z"),
+    ];
+    prismaMock.clanWarHistory.findMany.mockImplementation(async (args: any) =>
+      filterHistoryRowsByClanTags(historyRows, args)
+    );
+    const participationRows = [
+      makeParticipationRow({
+        clanTag: "AAA111",
+        playerTag: "#B",
+        playerName: "Bravo",
+        warId: "400",
+        missedBoth: true,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#C",
+        playerName: "Charlie",
+        warId: "399",
+        missedBoth: true,
+      }),
+    ];
+    prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) =>
+      filterParticipationRows(participationRows, args)
+    );
+
+    const service = new InactiveWarService();
+    const summary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 2,
+    });
+
+    expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          clanTag: expect.objectContaining({
+            in: expect.arrayContaining(["AAA111", "#AAA111"]),
+          }),
+        }),
+      })
+    );
+    expect(prismaMock.clanWarParticipation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          clanTag: expect.objectContaining({
+            in: expect.arrayContaining(["AAA111", "#AAA111"]),
+          }),
+        }),
+      })
+    );
+    expect(summary.results.map((row) => row.playerTag).sort()).toEqual(["B", "C"]);
+  });
+
+  it("omits players with no missed-both rows", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
       makeHistoryRow(400, "#AAA111", "2026-04-04T00:00:00.000Z"),
@@ -173,7 +269,7 @@ describe("InactiveWarService", () => {
         playerTag: "#C",
         playerName: "Charlie",
         warId: "400",
-        missedBoth: true,
+        missedBoth: false,
       }),
       makeParticipationRow({
         clanTag: "#AAA111",
@@ -184,8 +280,7 @@ describe("InactiveWarService", () => {
       }),
     ];
     prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) => {
-      const warIds = new Set((args?.where?.warId?.in ?? []).map((value: string) => String(value)));
-      return participationRows.filter((row) => warIds.has(String(row.warId)));
+      return filterParticipationRows(participationRows, args);
     });
 
     const service = new InactiveWarService();
@@ -195,9 +290,10 @@ describe("InactiveWarService", () => {
     });
 
     expect(summary.results).toEqual([]);
+    expect(summary.diagnosticNote).toContain("ended wars found yes");
   });
 
-  it("treats partial roster participation as inactive only when all counted participation rows are missedBoth", async () => {
+  it("reports a short diagnostic note when no inactive players are found but data exists", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
       makeHistoryRow(400, "#AAA111", "2026-04-04T00:00:00.000Z"),
@@ -210,19 +306,18 @@ describe("InactiveWarService", () => {
         playerTag: "#D",
         playerName: "Delta",
         warId: "400",
-        missedBoth: true,
+        missedBoth: false,
       }),
       makeParticipationRow({
         clanTag: "#AAA111",
         playerTag: "#D",
         playerName: "Delta",
         warId: "398",
-        missedBoth: true,
+        missedBoth: false,
       }),
     ];
     prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) => {
-      const warIds = new Set((args?.where?.warId?.in ?? []).map((value: string) => String(value)));
-      return participationRows.filter((row) => warIds.has(String(row.warId)));
+      return filterParticipationRows(participationRows, args);
     });
 
     const service = new InactiveWarService();
@@ -231,13 +326,9 @@ describe("InactiveWarService", () => {
       wars: 3,
     });
 
-    expect(summary.results).toHaveLength(1);
-    expect(summary.results[0]).toMatchObject({
-      clanTag: "AAA111",
-      playerTag: "D",
-      playerName: "Delta",
-      missedWars: 2,
-      participationWars: 2,
-    });
+    expect(summary.results).toEqual([]);
+    expect(summary.diagnosticNote).toBe(
+      "Diagnostic: ended wars found yes (3), participation rows found yes (2)."
+    );
   });
 });
