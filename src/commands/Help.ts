@@ -134,14 +134,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: ["/lastseen tag:ABC123XYZ"],
   },
   inactive: {
-    summary: "List players inactive for a given number of days.",
+    summary: "List players inactive for a given number of days or missed wars.",
     details: [
       "Shows oldest inactive players first.",
-      "Supports `wars` mode to list tracked members who missed both attacks in at least one of the last X ended FWA wars.",
+      "Supports `clan` autocomplete to scope days mode, wars mode, and the combined days+wars mode to one tracked clan.",
+      "Wars mode groups results by clan and missed-war count, then shows the linked Discord user, player tag, and missed-war emoji sequence.",
       "When wars mode finds no rows, the bot includes a short diagnostic note about ended-war and participation-row coverage.",
       "Large results are clipped to keep replies readable.",
     ],
-    examples: ["/inactive days:7", "/inactive days:30", "/inactive wars:3"],
+    examples: [
+      "/inactive days:7",
+      "/inactive days:30",
+      "/inactive days:7 clan:#AAA111",
+      "/inactive wars:3",
+      "/inactive wars:3 clan:#AAA111",
+    ],
   },
   "clan-health": {
     summary:

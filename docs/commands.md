@@ -12,7 +12,7 @@
 - `/permission list [command:<name>]` - List role policy for one command target, or all if omitted.
 - `/lastseen tag:<playerTag>` - Show a player's last seen activity, with drill-down button for tracked signal timestamps.
 - `/inactive days:<number>` - List players inactive for N days.
-- `/inactive wars:<number>` - List tracked-clan members who missed both attacks in at least one of the last N ended FWA wars (requires war-history tracking window). When no rows match, the bot includes a short diagnostic note showing whether ended-war rows and participation rows were found.
+- `/inactive wars:<number> [clan:<tag>]` - List tracked-clan members who missed both attacks in at least one of the last N ended tracked wars (requires war-history tracking window). The clan filter scopes days mode, wars mode, and the combined days+wars mode. Wars output groups by clan, then missed-count, and shows the linked Discord user, player tag, and missed-war emoji sequence. When no rows match, the bot includes a short diagnostic note showing whether ended-war rows and participation rows were found.
 - `/clan-health [visibility:private|public] tag:<trackedClanTag>` - Leadership snapshot from persisted data only: match rate and win rate (last 30 ended wars), inactive counts (missed-both in last 3 ended FWA wars + last-seen >=7d), and missing Discord links among observed members.
 - `/role-users role:<discordRole>` - List users in a role with pagination.
 - `/layout [th:<number>] [type:RISINGDAWN|BASIC|ICE] [edit:<layout-link>] [img-url:<url>]` - Fetch or list stored FWA layouts; `edit` upserts are admin-only at runtime, and `img-url` is only valid when `edit` is provided.

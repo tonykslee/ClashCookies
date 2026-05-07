@@ -5,13 +5,17 @@ import {
   ChatInputCommandInteraction,
   Client,
   ComponentType,
+  AutocompleteInteraction,
   EmbedBuilder,
+  ApplicationCommandOptionType,
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { InactiveWarService, type InactiveWarSummary } from "../services/InactiveWarService";
 import { formatError } from "../helper/formatError";
+import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
+import { normalizeClanTag } from "../services/PlayerLinkService";
 
 const DEFAULT_STALE_HOURS = 6;
 const DEFAULT_MIN_COVERAGE = 0.8;
@@ -20,6 +24,219 @@ const MAX_DESCRIPTION_LENGTH = 3900;
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function formatInactiveClanTag(tag: string): string {
+  const normalized = normalizeClanTagInput(tag);
+  return normalized ? `#${normalized}` : tag.trim();
+}
+
+function formatInactivePlayerTag(tag: string): string {
+  const normalized = normalizeClanTagInput(tag);
+  return normalized ? `#${normalized}` : tag.trim();
+}
+
+function buildInactiveWarRatioText(input: {
+  missedWars: number;
+  participationWars: number;
+  requestedWars: number;
+}): string | null {
+  if (
+    input.missedWars === input.requestedWars &&
+    input.participationWars === input.requestedWars
+  ) {
+    return null;
+  }
+  return `${input.missedWars}/${input.participationWars} wars missed`;
+}
+
+function buildInactiveWarEmojiSequence(missedWarStates: { emoji: string }[]): string {
+  return missedWarStates.map((state) => state.emoji).join(" ");
+}
+
+function sortInactiveWarRowsForDisplay(
+  rows: InactiveWarSummary["results"],
+  trackedTags: string[],
+): InactiveWarSummary["results"] {
+  const orderByClan = new Map(
+    trackedTags.map((tag, index) => [normalizeClanTagInput(tag), index] as const),
+  );
+  return [...rows].sort((left, right) => {
+    const clanLeft = orderByClan.get(normalizeClanTagInput(left.clanTag)) ?? Number.MAX_SAFE_INTEGER;
+    const clanRight =
+      orderByClan.get(normalizeClanTagInput(right.clanTag)) ?? Number.MAX_SAFE_INTEGER;
+    if (clanLeft !== clanRight) return clanLeft - clanRight;
+    const leftName = left.playerName.toLowerCase();
+    const rightName = right.playerName.toLowerCase();
+    if (left.missedWars !== right.missedWars) return right.missedWars - left.missedWars;
+    if (left.participationWars !== right.participationWars) {
+      return right.participationWars - left.participationWars;
+    }
+    if (leftName !== rightName) return leftName.localeCompare(rightName);
+    return left.playerTag.localeCompare(right.playerTag);
+  });
+}
+
+async function loadInactiveDiscordLinksForTags(tags: string[]): Promise<Map<string, string>> {
+  const orderedTags = [...new Set(tags.map((tag) => formatInactivePlayerTag(tag)))];
+  const links = await listPlayerLinksForClanMembers({ memberTagsInOrder: orderedTags });
+  const discordUserIdByPlayerTag = new Map<string, string>();
+  for (const link of links) {
+    const normalizedTag = normalizeClanTagInput(link.playerTag);
+    if (!normalizedTag) continue;
+    discordUserIdByPlayerTag.set(normalizedTag, link.discordUserId);
+  }
+  return discordUserIdByPlayerTag;
+}
+
+function buildInactivePlayerDiscordText(
+  discordUserIdByPlayerTag: Map<string, string>,
+  playerTag: string,
+): string {
+  const discordUserId = discordUserIdByPlayerTag.get(normalizeClanTagInput(playerTag)) ?? null;
+  return discordUserId ? `<@${discordUserId}>` : "—";
+}
+
+async function loadInactiveWarDiscordLinks(
+  rows: InactiveWarSummary["results"],
+): Promise<Map<string, string>> {
+  return loadInactiveDiscordLinksForTags(rows.map((row) => row.playerTag));
+}
+
+function buildInactiveWarClanAutocompleteChoices(query: string) {
+  return prisma.trackedClan
+    .findMany({
+      orderBy: { createdAt: "asc" },
+      select: { name: true, tag: true },
+    })
+    .then((tracked) =>
+      tracked
+        .map((clan) => {
+          const tag = normalizeClanTag(clan.tag);
+          if (!tag) return null;
+          const label = clan.name?.trim() ? `${clan.name.trim()} (${tag})` : tag;
+          return { name: label.slice(0, 100), value: tag };
+        })
+        .filter((choice): choice is { name: string; value: string } => {
+          if (!choice) return false;
+          return (
+            choice.name.toLowerCase().includes(query) ||
+            choice.value.toLowerCase().includes(query)
+          );
+        })
+        .slice(0, 25),
+    );
+}
+
+function buildInactiveWarScopedEmptyMessage(input: {
+  wars: number;
+  clanTag: string | null | undefined;
+  trackedTags: string[];
+  trackedNameByTag: Map<string, string>;
+  diagnosticNote: string | null;
+  warnings: string[];
+}): string {
+  const warningText =
+    input.warnings.length > 0 ? `\n\nTracking note:\n- ${input.warnings.join("\n- ")}` : "";
+  const diagnosticText = input.diagnosticNote ? `\n\n${input.diagnosticNote}` : "";
+  const scopedClanTag = input.clanTag ? formatInactiveClanTag(input.clanTag) : null;
+  const scopedClanName =
+    scopedClanTag && input.trackedTags.length > 0
+      ? input.trackedNameByTag.get(input.trackedTags[0]!) ?? scopedClanTag
+      : null;
+
+  if (input.clanTag && scopedClanName) {
+    return `No players found in ${scopedClanName} who missed both attacks in at least one of the last ${input.wars} ended tracked war(s).${warningText}${diagnosticText}`;
+  }
+
+  if (scopedClanTag) {
+    return `No players found for scoped clan ${scopedClanTag} who missed both attacks in at least one of the last ${input.wars} ended tracked war(s).${warningText}${diagnosticText}`;
+  }
+
+  return `No players found who missed both attacks in at least one of the last ${input.wars} ended tracked war(s).${warningText}${diagnosticText}`;
+}
+
+function buildInactiveWarGroupedPages(input: {
+  rows: InactiveWarSummary["results"];
+  trackedTags: string[];
+  trackedNameByTag: Map<string, string>;
+  discordUserIdByPlayerTag: Map<string, string>;
+  requestedWars: number;
+}): string[] {
+  const rowsByClan = new Map<string, InactiveWarSummary["results"]>();
+  for (const row of input.rows) {
+    const clanTag = normalizeClanTagInput(row.clanTag);
+    const existing = rowsByClan.get(clanTag) ?? [];
+    existing.push(row);
+    rowsByClan.set(clanTag, existing);
+  }
+
+  const lines: string[] = [];
+  for (const trackedTag of input.trackedTags) {
+    const clanTag = normalizeClanTagInput(trackedTag);
+    const clanRows = rowsByClan.get(clanTag) ?? [];
+    if (clanRows.length === 0) continue;
+
+    const clanName = input.trackedNameByTag.get(trackedTag) ?? input.trackedNameByTag.get(clanTag) ?? clanTag;
+    lines.push(`${clanName} (${clanRows.length})`);
+
+    const byMissedCount = new Map<number, InactiveWarSummary["results"]>();
+    for (const row of clanRows) {
+      const existing = byMissedCount.get(row.missedWars) ?? [];
+      existing.push(row);
+      byMissedCount.set(row.missedWars, existing);
+    }
+
+    for (const missedWars of [...byMissedCount.keys()].sort((a, b) => b - a)) {
+      const subRows = (byMissedCount.get(missedWars) ?? []).sort((left, right) => {
+        if (left.participationWars !== right.participationWars) {
+          return right.participationWars - left.participationWars;
+        }
+        const nameCompare = left.playerName.localeCompare(right.playerName);
+        if (nameCompare !== 0) return nameCompare;
+        return left.playerTag.localeCompare(right.playerTag);
+      });
+      const label = missedWars === 1 ? "1 war missed" : `${missedWars} wars missed`;
+      lines.push(`- ${label}`);
+      for (const row of subRows) {
+        const ratioText = buildInactiveWarRatioText({
+          missedWars: row.missedWars,
+          participationWars: row.participationWars,
+          requestedWars: input.requestedWars,
+        });
+        const discordText = buildInactivePlayerDiscordText(
+          input.discordUserIdByPlayerTag,
+          row.playerTag,
+        );
+        const emojiSequence = buildInactiveWarEmojiSequence(row.missedWarStates);
+        const playerTag = formatInactivePlayerTag(row.playerTag);
+        const rowText = ratioText
+          ? `  - ${row.playerName} \`${playerTag}\` ${discordText} - ${ratioText} - ${emojiSequence}`
+          : `  - ${row.playerName} \`${playerTag}\` ${discordText} - ${emojiSequence}`;
+        lines.push(rowText);
+      }
+    }
+
+    lines.push("");
+  }
+
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  const pages: string[] = [];
+  let currentPage: string[] = [];
+  for (const line of lines) {
+    if (currentPage.length >= MAX_LINES_PER_PAGE) {
+      pages.push(currentPage.join("\n"));
+      currentPage = [];
+    }
+    currentPage.push(line);
+  }
+  if (currentPage.length > 0) {
+    pages.push(currentPage.join("\n"));
+  }
+  return pages.length > 0 ? pages : [""];
 }
 
 type RosterSnapshot = {
@@ -46,13 +263,20 @@ function buildPaginationRow(customIdPrefix: string, page: number, totalPages: nu
   );
 }
 
-async function getRosterSnapshot(cocService: CoCService): Promise<RosterSnapshot> {
+async function getRosterSnapshot(
+  cocService: CoCService,
+  clanTag?: string | null
+): Promise<RosterSnapshot> {
   const dbTracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true },
   });
-  const trackedTags = dbTracked.map((c) => c.tag);
-  const trackedNameByTag = new Map(dbTracked.map((c) => [c.tag, c.name?.trim() || c.tag]));
+  const normalizedClanFilter = normalizeClanTagInput(clanTag ?? "");
+  const scopedTracked = normalizedClanFilter
+    ? dbTracked.filter((c) => normalizeClanTagInput(c.tag) === normalizedClanFilter)
+    : dbTracked;
+  const trackedTags = scopedTracked.map((c) => c.tag);
+  const trackedNameByTag = new Map(scopedTracked.map((c) => [c.tag, c.name?.trim() || c.tag]));
 
   const liveMemberTags = new Set<string>();
   const liveMembersByClan = new Map<string, Set<string>>();
@@ -101,19 +325,22 @@ const inactiveWarService = new InactiveWarService();
 async function fetchInactiveDaysEntries(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
-  days: number
+  days: number,
+  clanTag?: string | null,
 ): Promise<{
   entries: InactiveDaysEntry[];
   roster: RosterSnapshot | null;
   staleHours: number;
   freshObservedCount: number;
   observedRecordCount: number;
+  scopeClanTag: string | null;
+  scopeClanName: string | null;
 }> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
   }
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const roster = await getRosterSnapshot(cocService);
+  const roster = await getRosterSnapshot(cocService, clanTag);
 
   if (roster.trackedTags.length === 0) {
     return {
@@ -122,6 +349,8 @@ async function fetchInactiveDaysEntries(
       staleHours: DEFAULT_STALE_HOURS,
       freshObservedCount: 0,
       observedRecordCount: 0,
+      scopeClanTag: null,
+      scopeClanName: null,
     };
   }
   if (roster.liveMemberTags.size === 0) {
@@ -131,10 +360,49 @@ async function fetchInactiveDaysEntries(
       staleHours: DEFAULT_STALE_HOURS,
       freshObservedCount: 0,
       observedRecordCount: 0,
+      scopeClanTag: null,
+      scopeClanName: null,
     };
   }
 
-  const liveMemberTagList = [...roster.liveMemberTags];
+  const normalizedClanFilter = normalizeClanTagInput(clanTag ?? "");
+  const scopedTrackedTags = normalizedClanFilter
+    ? roster.trackedTags.filter((tag) => normalizeClanTagInput(tag) === normalizedClanFilter)
+    : roster.trackedTags;
+  const scopeClanTag = scopedTrackedTags[0] ?? null;
+  const scopeClanName =
+    scopeClanTag !== null ? roster.trackedNameByTag.get(scopeClanTag) ?? scopeClanTag : null;
+
+  if (normalizedClanFilter && scopedTrackedTags.length === 0) {
+    return {
+      entries: [],
+      roster,
+      staleHours: DEFAULT_STALE_HOURS,
+      freshObservedCount: 0,
+      observedRecordCount: 0,
+      scopeClanTag: null,
+      scopeClanName: null,
+    };
+  }
+
+  const scopedClanTagSet = new Set(scopedTrackedTags.map((tag) => normalizeClanTagInput(tag)));
+  const scopedLiveMemberTags = [...roster.liveMemberTags].filter((tag) => {
+    const trackedClanTag = roster.liveMemberTrackedClanByTag.get(tag) ?? "";
+    return scopedClanTagSet.has(normalizeClanTagInput(trackedClanTag));
+  });
+  if (scopedLiveMemberTags.length === 0) {
+    return {
+      entries: [],
+      roster,
+      staleHours: DEFAULT_STALE_HOURS,
+      freshObservedCount: 0,
+      observedRecordCount: 0,
+      scopeClanTag,
+      scopeClanName,
+    };
+  }
+
+  const liveMemberTagList = scopedLiveMemberTags;
   const activitySnapshot = await prisma.playerActivity.aggregate({
     where: {
       guildId: interaction.guildId,
@@ -156,6 +424,8 @@ async function fetchInactiveDaysEntries(
       staleHours,
       freshObservedCount: 0,
       observedRecordCount: activitySnapshot._count.tag,
+      scopeClanTag,
+      scopeClanName,
     };
   }
 
@@ -182,6 +452,8 @@ async function fetchInactiveDaysEntries(
       staleHours,
       freshObservedCount,
       observedRecordCount: activitySnapshot._count.tag,
+      scopeClanTag,
+      scopeClanName,
     };
   }
 
@@ -218,12 +490,15 @@ async function fetchInactiveDaysEntries(
     staleHours,
     freshObservedCount,
     observedRecordCount: activitySnapshot._count.tag,
+    scopeClanTag,
+    scopeClanName,
   };
 }
 
 async function fetchInactiveWarEntries(
   interaction: ChatInputCommandInteraction,
-  wars: number
+  wars: number,
+  clanTag?: string | null,
 ): Promise<InactiveWarSummary> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
@@ -231,6 +506,7 @@ async function fetchInactiveWarEntries(
   return inactiveWarService.listInactiveWarPlayers({
     guildId: interaction.guildId,
     wars,
+    clanTag,
   });
 }
 
@@ -350,16 +626,28 @@ function buildGroupedPages<T>(
 async function runDaysMode(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
-  days: number
+  days: number,
+  clanTag?: string | null,
 ): Promise<void> {
   if (!interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
     return;
   }
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const roster = await getRosterSnapshot(cocService);
+  const roster = await getRosterSnapshot(cocService, clanTag);
+
+  const scopeClanTag = roster.trackedTags[0] ?? null;
+  const scopeClanName = scopeClanTag
+    ? roster.trackedNameByTag.get(scopeClanTag) ?? scopeClanTag
+    : null;
 
   if (roster.trackedTags.length === 0) {
+    if (clanTag) {
+      await interaction.editReply(
+        `No tracked clan matched ${formatInactiveClanTag(clanTag)}. Configure at least one tracked clan with \`/tracked-clan configure\` before using \`/inactive\` in wars or days mode.`
+      );
+      return;
+    }
     await interaction.editReply(
       "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
     );
@@ -367,7 +655,9 @@ async function runDaysMode(
   }
   if (roster.liveMemberTags.size === 0) {
     await interaction.editReply(
-      "Tracked clans are configured, but live rosters could not be read from CoC API. Try again shortly."
+      clanTag && scopeClanName
+        ? `Tracked clan ${scopeClanName} is configured, but live rosters could not be read from CoC API. Try again shortly.`
+        : "Tracked clans are configured, but live rosters could not be read from CoC API. Try again shortly."
     );
     return;
   }
@@ -393,7 +683,9 @@ async function runDaysMode(
       ? `<t:${Math.floor(latestObservedAt.getTime() / 1000)}:R>`
       : "unavailable";
     await interaction.editReply(
-      `Inactive data is stale (latest observation: ${snapshotAge}). Wait for observation refresh and retry.`
+      clanTag && scopeClanName
+        ? `Inactive data for ${scopeClanName} is stale (latest observation: ${snapshotAge}). Wait for observation refresh and retry.`
+        : `Inactive data is stale (latest observation: ${snapshotAge}). Wait for observation refresh and retry.`
     );
     return;
   }
@@ -417,9 +709,13 @@ async function runDaysMode(
 
   if (observationCoverage < minCoverage) {
     await interaction.editReply(
-      `Inactive data is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
-        observationCoverage * 100
-      )}% coverage). Wait for observation refresh and retry.`
+      clanTag && scopeClanName
+        ? `Inactive data for ${scopeClanName} is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
+            observationCoverage * 100
+          )}% coverage). Wait for observation refresh and retry.`
+        : `Inactive data is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
+            observationCoverage * 100
+          )}% coverage). Wait for observation refresh and retry.`
     );
     return;
   }
@@ -435,7 +731,11 @@ async function runDaysMode(
   });
 
   if (inactivePlayers.length === 0) {
-    await interaction.editReply(`No inactive players for ${days}+ days.`);
+    await interaction.editReply(
+      clanTag && scopeClanName
+        ? `No inactive players for ${days}+ days in ${scopeClanName}.`
+        : `No inactive players for ${days}+ days.`
+    );
     return;
   }
 
@@ -458,12 +758,19 @@ async function runDaysMode(
     return a.player.lastSeenAt.getTime() - b.player.lastSeenAt.getTime();
   });
 
+  const daysDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
+    inactivePlayers.map((player) => player.tag)
+  );
   const pages = buildGroupedPages(
     inactiveWithClan,
     (e) => e.clan,
     (e) => {
       const daysAgo = Math.floor((Date.now() - e.player.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000));
-      return `- **${e.player.name}** (${e.player.tag}) - ${daysAgo}d`;
+      const discordText = buildInactivePlayerDiscordText(
+        daysDiscordUserIdByPlayerTag,
+        e.player.tag
+      );
+      return `- **${e.player.name}** (\`${formatInactivePlayerTag(e.player.tag)}\`) ${discordText} - ${daysAgo}d`;
     }
   );
 
@@ -480,43 +787,50 @@ async function runDaysMode(
 
 async function runWarsMode(
   interaction: ChatInputCommandInteraction,
-  wars: number
+  wars: number,
+  clanTag?: string | null,
 ): Promise<void> {
   const { results, trackedTags, trackedNameByTag, warnings, diagnosticNote } =
-    await fetchInactiveWarEntries(interaction, wars);
+    await fetchInactiveWarEntries(interaction, wars, clanTag);
 
   if (trackedTags.length === 0) {
-    await interaction.editReply(
-      "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
-    );
+    if (diagnosticNote || warnings.length > 0) {
+      await interaction.editReply(
+        `No tracked clan matched ${formatInactiveClanTag(clanTag ?? "")}.${
+          diagnosticNote ? `\n\n${diagnosticNote}` : ""
+        }`
+      );
+    } else {
+      await interaction.editReply(
+        "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
+      );
+    }
     return;
   }
 
   if (results.length === 0) {
-    const warningText = warnings.length > 0 ? `\n\nTracking note:\n- ${warnings.join("\n- ")}` : "";
-    const diagnosticText = diagnosticNote ? `\n\n${diagnosticNote}` : "";
     await interaction.editReply(
-      `No players found who missed both attacks in at least one of the last ${wars} ended FWA war(s).${warningText}${diagnosticText}`
+      buildInactiveWarScopedEmptyMessage({
+        wars,
+        clanTag,
+        trackedTags,
+        trackedNameByTag,
+        diagnosticNote,
+        warnings,
+      }),
     );
     return;
   }
 
-  const clanOrder = new Map<string, number>();
-  trackedTags.forEach((tag, i) => clanOrder.set(tag, i));
-  results.sort((a, b) => {
-    const orderA = clanOrder.get(a.clanTag) ?? Number.MAX_SAFE_INTEGER;
-    const orderB = clanOrder.get(b.clanTag) ?? Number.MAX_SAFE_INTEGER;
-    if (orderA !== orderB) return orderA - orderB;
-    if (a.missedWars !== b.missedWars) return b.missedWars - a.missedWars;
-    return a.playerName.localeCompare(b.playerName);
+  const sortedResults = sortInactiveWarRowsForDisplay(results, trackedTags);
+  const discordUserIdByPlayerTag = await loadInactiveWarDiscordLinks(sortedResults);
+  const pages = buildInactiveWarGroupedPages({
+    rows: sortedResults,
+    trackedTags,
+    trackedNameByTag,
+    discordUserIdByPlayerTag,
+    requestedWars: wars,
   });
-
-  const pages = buildGroupedPages(
-    results,
-    (e) => trackedNameByTag.get(e.clanTag) ?? e.clanTag,
-    (e) =>
-      `- **${e.playerName}** (${e.playerTag}) - missed both in ${e.missedWars}/${e.participationWars} war(s), true stars ${e.totalTrueStars}, avg delay ${e.avgAttackDelay !== null ? `${Math.round(e.avgAttackDelay)}m` : "n/a"}, late attacks ${e.lateAttacks}`
-  );
 
   const footerSuffix = warnings.length > 0 ? ` • Partial data: ${warnings.length} clan(s)` : "";
   await renderEmbedsWithPager(
@@ -531,12 +845,19 @@ async function runCombinedMode(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
   days: number,
-  wars: number
+  wars: number,
+  clanTag?: string | null,
 ): Promise<void> {
-  const daysResult = await fetchInactiveDaysEntries(interaction, cocService, days);
-  const warsResult = await fetchInactiveWarEntries(interaction, wars);
+  const daysResult = await fetchInactiveDaysEntries(interaction, cocService, days, clanTag);
+  const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag);
 
   if (!daysResult.roster || daysResult.roster.trackedTags.length === 0 || warsResult.trackedTags.length === 0) {
+    if (clanTag && warsResult.diagnosticNote) {
+      await interaction.editReply(
+        `No tracked clan matched ${formatInactiveClanTag(clanTag)}.\n\n${warsResult.diagnosticNote}`
+      );
+      return;
+    }
     await interaction.editReply(
       "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
     );
@@ -599,8 +920,10 @@ async function runCombinedMode(
     const warningText =
       warsResult.warnings.length > 0 ? `\n\nTracking note:\n- ${warsResult.warnings.join("\n- ")}` : "";
     const diagnosticText = warsResult.diagnosticNote ? `\n\n${warsResult.diagnosticNote}` : "";
+    const scopedClanName = clanTag ? formatInactiveClanTag(clanTag) : null;
+    const scopedPrefix = scopedClanName ? ` in ${scopedClanName}` : "";
     await interaction.editReply(
-      `No players matched \`days:${days}\` or \`wars:${wars}\`.${warningText}${diagnosticText}`
+      `No players matched \`days:${days}\` or \`wars:${wars}\`${scopedPrefix}.${warningText}${diagnosticText}`
     );
     return;
   }
@@ -617,9 +940,17 @@ async function runCombinedMode(
     const missedA = a.missedWars ?? -1;
     const missedB = b.missedWars ?? -1;
     if (missedA !== missedB) return missedB - missedA;
-    return a.playerName.localeCompare(b.playerName);
+    const participationA = a.participationWars ?? -1;
+    const participationB = b.participationWars ?? -1;
+    if (participationA !== participationB) return participationB - participationA;
+    const nameCompare = a.playerName.localeCompare(b.playerName);
+    if (nameCompare !== 0) return nameCompare;
+    return a.playerTag.localeCompare(b.playerTag);
   });
 
+  const warsDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
+    rows.map((row) => row.playerTag)
+  );
   const pages = buildGroupedPages(
     rows,
     (e) => e.clanName,
@@ -629,13 +960,18 @@ async function runCombinedMode(
       if (e.missedWars !== null) {
         reasons.push(`missed both in ${e.missedWars}/${e.participationWars ?? 0} war(s)`);
       }
-      const metrics =
-        e.missedWars !== null
-          ? `, true stars ${e.totalTrueStars ?? 0}, avg delay ${
-              e.avgAttackDelay !== null ? `${Math.round(e.avgAttackDelay)}m` : "n/a"
-            }, late attacks ${e.lateAttacks ?? 0}`
-          : "";
-      return `- **${e.playerName}** (${e.playerTag}) - ${reasons.join(" | ")}${metrics}`;
+      const warsRow = warsResult.results.find(
+        (row) => normalizeClanTagInput(row.playerTag) === normalizeClanTagInput(e.playerTag),
+      );
+      const discordText = buildInactivePlayerDiscordText(
+        warsDiscordUserIdByPlayerTag,
+        e.playerTag
+      );
+      const emojiSequence = warsRow ? buildInactiveWarEmojiSequence(warsRow.missedWarStates) : "";
+      const playerTag = formatInactivePlayerTag(e.playerTag);
+      const reasonText = reasons.length > 0 ? ` - ${reasons.join(" | ")}` : "";
+      const emojiText = warsRow ? ` - ${emojiSequence}` : "";
+      return `- ${e.playerName} \`${playerTag}\` ${discordText}${reasonText}${emojiText}`;
     }
   );
 
@@ -665,6 +1001,13 @@ export const Inactive: Command = {
       type: 4, // INTEGER
       required: false,
     },
+    {
+      name: "clan",
+      description: "Filter inactive players to one tracked clan",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      autocomplete: true,
+    },
   ],
 
   run: async (
@@ -676,6 +1019,7 @@ export const Inactive: Command = {
 
     const daysValue = interaction.options.getInteger("days", false) ?? undefined;
     const warsValue = interaction.options.getInteger("wars", false) ?? undefined;
+    const clanValue = interaction.options.getString("clan", false) ?? undefined;
 
     if (!daysValue && !warsValue) {
       await interaction.editReply("Provide at least one filter: `days` and/or `wars`.");
@@ -692,14 +1036,25 @@ export const Inactive: Command = {
     }
 
     if (daysValue && warsValue) {
-      await runCombinedMode(interaction, cocService, daysValue, warsValue);
+      await runCombinedMode(interaction, cocService, daysValue, warsValue, clanValue);
       return;
     }
     if (daysValue) {
-      await runDaysMode(interaction, cocService, daysValue);
+      await runDaysMode(interaction, cocService, daysValue, clanValue);
       return;
     }
-    await runWarsMode(interaction, warsValue!);
+    await runWarsMode(interaction, warsValue!, clanValue);
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const choices = await buildInactiveWarClanAutocompleteChoices(query);
+    await interaction.respond(choices);
   },
 };
 
