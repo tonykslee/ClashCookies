@@ -81,6 +81,7 @@ import {
   type WarStateForSync,
   withSyncModeLabel,
 } from "./fwa/matchState";
+import { resolveFwaMatchStateEmoji } from "./fwa/matchStateEmoji";
 import {
   asMailConfigInputJson,
   buildDiscordMessageUrl,
@@ -2012,20 +2013,6 @@ function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
   return String(input ?? "").replace(/`/g, "'");
 }
 
-/** Purpose: resolve the compact copy row state icon from the exact match state shown to users. */
-function buildFwaMatchCompactCopyStateEmoji(params: {
-  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
-  outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
-}): "⚫" | "⚪" | "🟢" | "🔴" | "◯" {
-  if (params.matchType === "BL") return "⚫";
-  if (params.matchType === "MM") return "⚪";
-  if (params.matchType === "FWA") {
-    if (params.outcome === "WIN") return "🟢";
-    if (params.outcome === "LOSE") return "🔴";
-  }
-  return "◯";
-}
-
 /** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
 function buildFwaMatchCompactCopyLine(params: {
   mailStatusEmoji?: string;
@@ -2042,7 +2029,7 @@ function buildFwaMatchCompactCopyLine(params: {
   const opponentTag = opponentTagRaw
     ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
     : "—";
-  const matchStateEmoji = buildFwaMatchCompactCopyStateEmoji({
+  const matchStateEmoji = resolveFwaMatchStateEmoji({
     matchType: params.matchType,
     outcome: params.outcome,
   });
@@ -5660,14 +5647,11 @@ function startWarMailPolling(client: Client, key: string): void {
 /** Purpose: append a compact alliance dropdown state indicator aligned to the effective displayed match state. */
 function resolveAllianceDropdownMatchStateEmoji(
   view: MatchView | null | undefined,
-): "⚪" | "⚫" | "🟢" | "🔴" | "💤" {
-  if (view?.matchTypeCurrent === "MM") return "⚪";
-  if (view?.matchTypeCurrent === "BL") return "⚫";
-  if (view?.matchTypeCurrent === "FWA") {
-    if (view.outcomeAction?.currentOutcome === "WIN") return "🟢";
-    if (view.outcomeAction?.currentOutcome === "LOSE") return "🔴";
-  }
-  return "💤";
+): "⚪" | "⚫" | "🟢" | "🔴" | "🔘" {
+  return resolveFwaMatchStateEmoji({
+    matchType: view?.matchTypeCurrent ?? null,
+    outcome: view?.outcomeAction?.currentOutcome ?? null,
+  });
 }
 
 function buildFwaMatchCopyComponents(
@@ -9066,7 +9050,7 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
 export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
 export const buildFwaMatchCompactCopyStateEmojiForTest =
-  buildFwaMatchCompactCopyStateEmoji;
+  resolveFwaMatchStateEmoji;
 export const buildFwaMatchCompactCopyLineForTest =
   buildFwaMatchCompactCopyLine;
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;

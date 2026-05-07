@@ -21,7 +21,6 @@ import {
   resolveForceSyncMatchupEvidenceForTest,
   resolveSingleClanMatchEmbedColorForTest,
   buildSingleClanMatchLinksForTest,
-  resolveAllianceDropdownMatchStateEmojiForTest,
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
@@ -29,6 +28,7 @@ import {
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
 } from "../src/commands/Fwa";
+import { resolveFwaMatchStateEmoji } from "../src/commands/fwa/matchStateEmoji";
 import {
   WAR_MAIL_COLOR_BL,
   WAR_MAIL_COLOR_FALLBACK,
@@ -1730,14 +1730,14 @@ describe("fwa single-clan links presentation", () => {
   });
 });
 
-describe("fwa alliance dropdown state emoji", () => {
+describe("fwa match state emoji resolver", () => {
   it("maps effective displayed match state to the expected dropdown emoji", () => {
     const cases: Array<{
       view: {
         matchTypeCurrent?: "FWA" | "BL" | "MM" | "SKIP" | null;
         outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
       } | null;
-      expected: "⚪" | "⚫" | "🟢" | "🔴" | "💤";
+      expected: "⚪" | "⚫" | "🟢" | "🔴" | "🔘";
     }> = [
       { view: { matchTypeCurrent: "MM" }, expected: "⚪" },
       { view: { matchTypeCurrent: "BL" }, expected: "⚫" },
@@ -1755,14 +1755,17 @@ describe("fwa alliance dropdown state emoji", () => {
         },
         expected: "🔴",
       },
-      { view: { matchTypeCurrent: "FWA", outcomeAction: null }, expected: "💤" },
-      { view: { matchTypeCurrent: "SKIP" }, expected: "💤" },
-      { view: null, expected: "💤" },
+      { view: { matchTypeCurrent: "FWA", outcomeAction: null }, expected: "🔘" },
+      { view: { matchTypeCurrent: "SKIP" }, expected: "🔘" },
+      { view: null, expected: "🔘" },
     ];
 
     for (const testCase of cases) {
       expect(
-        resolveAllianceDropdownMatchStateEmojiForTest(testCase.view as any),
+        resolveFwaMatchStateEmoji({
+          matchType: testCase.view?.matchTypeCurrent ?? null,
+          outcome: testCase.view?.outcomeAction?.currentOutcome ?? null,
+        }),
       ).toBe(testCase.expected);
     }
   });

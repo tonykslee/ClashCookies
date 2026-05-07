@@ -11,7 +11,7 @@ describe("fwa match compact copy view", () => {
     { matchType: "MM" as const, outcome: null, expected: "⚪" },
     { matchType: "FWA" as const, outcome: "WIN" as const, expected: "🟢" },
     { matchType: "FWA" as const, outcome: "LOSE" as const, expected: "🔴" },
-    { matchType: "UNKNOWN" as const, outcome: null, expected: "◯" },
+    { matchType: "UNKNOWN" as const, outcome: null, expected: "🔘" },
   ])("maps %s/%s to the expected compact state emoji", ({ matchType, outcome, expected }) => {
     expect(
       buildFwaMatchCompactCopyStateEmojiForTest({
@@ -65,7 +65,7 @@ describe("fwa match compact copy view", () => {
       clanName: "Alpha",
       opponentName: "Bravo",
       opponentTag: "#OPP456",
-      expected: "📬 | ◯ | Alpha vs `Bravo` (`#OPP456`)",
+      expected: "📬 | 🔘 | Alpha vs `Bravo` (`#OPP456`)",
     },
     {
       mailStatusEmoji: "📭",
@@ -74,7 +74,7 @@ describe("fwa match compact copy view", () => {
       clanName: "Al`pha",
       opponentName: "Br`avo",
       opponentTag: "#OP`P456",
-      expected: "📭 | ◯ | Al'pha vs `Br'avo` (`#OP'P456`)",
+      expected: "📭 | 🔘 | Al'pha vs `Br'avo` (`#OP'P456`)",
     },
     {
       mailStatusEmoji: "📬",
@@ -83,7 +83,7 @@ describe("fwa match compact copy view", () => {
       clanName: "Alpha",
       opponentName: null,
       opponentTag: null,
-      expected: "📬 | ◯ | Alpha vs `unknown` (`—`)",
+      expected: "📬 | 🔘 | Alpha vs `unknown` (`—`)",
     },
   ])("renders compact copy rows for %s", (input) => {
     expect(buildFwaMatchCompactCopyLineForTest(input)).toBe(input.expected);
