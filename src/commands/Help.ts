@@ -421,7 +421,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Default behavior lists accounts linked to your Discord account.",
       "If `discord-id` is provided, lists accounts for that Discord user.",
-      "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts.",
+      "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts and shows `Linked Discord: <@id>` under the title.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
       "Account display uses persisted local data only, with TH badges, crowns for leaders/co-leaders, and compact FWA weights when available.",
