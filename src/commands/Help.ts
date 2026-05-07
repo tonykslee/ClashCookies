@@ -542,6 +542,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Final mail confirm/send persists explicit match confirmation for that same active war identity, so rerender/refresh does not regress to inferred fallback.",
       "Tracked clan mail channel is configured via `/tracked-clan configure ... mail-channel`.",
       "`/fwa match` opens an ephemeral war mail preview; inferred matches can preview, but send stays blocked until the current active war is confirmed.",
+      "`/fwa match` copy/paste view now collapses to one compact line per clan in alliance overview and one compact line in single-clan view, with opponent name/tag sanitized for mobile copy.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
       "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
       "`/fwa match` war-changing state now shows field-specific mismatch lines (opponent, sync #, outcome, match type) against persisted points validation.",
