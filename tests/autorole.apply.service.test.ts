@@ -40,7 +40,8 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
   };
 }
 
-function makeMember(displayName = "Old Nick"): TestMember {
+function makeMember(displayName = "Old Nick", roleIds: string[] = []): TestMember {
+  const roleState = [...roleIds];
   return {
     id: "111111111111111111",
     displayName,
@@ -51,11 +52,20 @@ function makeMember(displayName = "Old Nick"): TestMember {
     },
     roles: {
       cache: {
-        keys: () => [].values(),
-        has: () => false,
+        keys: () => roleState.values(),
+        has: (roleId: string) => roleState.includes(roleId),
       },
-      add: vi.fn(async () => undefined),
-      remove: vi.fn(async () => undefined),
+      add: vi.fn(async (roleId: string) => {
+        if (!roleState.includes(roleId)) {
+          roleState.push(roleId);
+        }
+      }),
+      remove: vi.fn(async (roleId: string) => {
+        const index = roleState.indexOf(roleId);
+        if (index >= 0) {
+          roleState.splice(index, 1);
+        }
+      }),
     },
     setNickname: vi.fn(async () => undefined),
   };
@@ -123,6 +133,93 @@ function makeEvaluation(overrides: Partial<AutoRoleMemberEvaluation> = {}): Auto
 describe("AutoRoleApplyService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("removes stale managed roles and adds new managed roles when desired state changes", async () => {
+    const cases = [
+      {
+        name: "Town Hall 16 to Town Hall 17",
+        currentRoleIds: ["111111111111111111"],
+        desiredRoleIds: ["222222222222222222"],
+        managedRoleIds: new Set(["111111111111111111", "222222222222222222"]),
+        expectedAdded: ["222222222222222222"],
+        expectedRemoved: ["111111111111111111"],
+      },
+      {
+        name: "Clan A to Clan B",
+        currentRoleIds: ["333333333333333333"],
+        desiredRoleIds: ["444444444444444444"],
+        managedRoleIds: new Set(["333333333333333333", "444444444444444444"]),
+        expectedAdded: ["444444444444444444"],
+        expectedRemoved: ["333333333333333333"],
+      },
+      {
+        name: "coLeader to member",
+        currentRoleIds: ["555555555555555555"],
+        desiredRoleIds: ["666666666666666666"],
+        managedRoleIds: new Set(["555555555555555555", "666666666666666666"]),
+        expectedAdded: ["666666666666666666"],
+        expectedRemoved: ["555555555555555555"],
+      },
+      {
+        name: "member to coLeader",
+        currentRoleIds: ["666666666666666666"],
+        desiredRoleIds: ["555555555555555555"],
+        managedRoleIds: new Set(["555555555555555555", "666666666666666666"]),
+        expectedAdded: ["555555555555555555"],
+        expectedRemoved: ["666666666666666666"],
+      },
+      {
+        name: "Crystal League to Legend League",
+        currentRoleIds: ["777777777777777777"],
+        desiredRoleIds: ["888888888888888888"],
+        managedRoleIds: new Set(["777777777777777777", "888888888888888888"]),
+        expectedAdded: ["888888888888888888"],
+        expectedRemoved: ["777777777777777777"],
+      },
+      {
+        name: "family role removed when no longer in tracked clan",
+        currentRoleIds: ["999999999999999999"],
+        desiredRoleIds: [],
+        managedRoleIds: new Set(["999999999999999999"]),
+        expectedAdded: [],
+        expectedRemoved: ["999999999999999999"],
+      },
+      {
+        name: "generic CWL clan role removed when no longer in tracked clan",
+        currentRoleIds: ["101010101010101010"],
+        desiredRoleIds: [],
+        managedRoleIds: new Set(["101010101010101010"]),
+        expectedAdded: [],
+        expectedRemoved: ["101010101010101010"],
+      },
+      {
+        name: "manual unmanaged roles are preserved",
+        currentRoleIds: ["121212121212121212", "131313131313131313"],
+        desiredRoleIds: ["131313131313131313"],
+        managedRoleIds: new Set(["131313131313131313"]),
+        expectedAdded: [],
+        expectedRemoved: [],
+      },
+    ] as const;
+
+    for (const entry of cases) {
+      const member = makeMember("Old Nick", [...entry.currentRoleIds]);
+      const result = await autoRoleApplyService.applyMember({
+        config: makeConfig(),
+        managedRoleIds: entry.managedRoleIds,
+        member: member as any,
+        evaluation: makeEvaluation({ desiredManagedRoleIds: [...entry.desiredRoleIds] }),
+        linkedAccounts: [makeLinkedAccount()],
+        playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV" })]]),
+        trackedClans: [{ tag: "#2CGG9GGRV", name: "Tracked Clan", shortName: "TC" }],
+      });
+
+      expect(member.roles.add.mock.calls.map((call) => call[0])).toEqual(entry.expectedAdded);
+      expect(member.roles.remove.mock.calls.map((call) => call[0])).toEqual(entry.expectedRemoved);
+      expect(result.rolesAdded).toEqual(entry.expectedAdded);
+      expect(result.rolesRemoved).toEqual(entry.expectedRemoved);
+    }
   });
 
   it("skips nickname sync when disabled", async () => {

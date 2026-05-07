@@ -77,6 +77,7 @@ function makePlayerCurrent(input: {
   playerTag: string;
   leagueName?: string | null;
   currentClanTag?: string | null;
+  role?: string | null;
 }): PlayerCurrentLike {
   return {
     playerTag: input.playerTag,
@@ -88,7 +89,7 @@ function makePlayerCurrent(input: {
     builderTrophies: null,
     warStars: null,
     expLevel: null,
-    role: null,
+    role: input.role ?? null,
     leagueName: input.leagueName ?? null,
     currentWeight: null,
     currentWeightSource: null,
@@ -203,6 +204,102 @@ describe("AutoRoleEvaluationService league rules", () => {
     expect(differentLeagueResult.matchedRuleIds).not.toContain("rule-1");
     expect(missingLeagueResult.desiredManagedRoleIds).not.toContain("222222222222222222");
     expect(missingLeagueResult.matchedRuleIds).not.toContain("rule-1");
+  });
+
+  it("matches CLAN rules against the current clan tag", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [
+        {
+          id: "rule-clan",
+          guildId: "111111111111111111",
+          type: AutoRoleRuleType.CLAN,
+          targetValue: "#2QG2C08UP",
+          discordRoleId: "222222222222222222",
+          priority: 100,
+          enabled: true,
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      ],
+      managedRoleIds: new Set(["222222222222222222"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag: new Map([
+        ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", currentClanTag: "#2QG2C08UP" })],
+      ]),
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+
+    expect(result.desiredManagedRoleIds).toContain("222222222222222222");
+    expect(result.matchedRuleIds).toContain("rule-clan");
+  });
+
+  it("matches CLAN_ROLE rules against the current in-game clan rank", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [
+        {
+          id: "rule-rank",
+          guildId: "111111111111111111",
+          type: AutoRoleRuleType.CLAN_ROLE,
+          targetValue: "coLeader",
+          discordRoleId: "333333333333333333",
+          priority: 100,
+          enabled: true,
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      ],
+      managedRoleIds: new Set(["333333333333333333"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag: new Map([
+        ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", role: "coLeader" })],
+      ]),
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+
+    expect(result.desiredManagedRoleIds).toContain("333333333333333333");
+    expect(result.matchedRuleIds).toContain("rule-rank");
+  });
+
+  it("matches TOWN_HALL rules against the current town hall", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [
+        {
+          id: "rule-th",
+          guildId: "111111111111111111",
+          type: AutoRoleRuleType.TOWN_HALL,
+          targetValue: "16",
+          discordRoleId: "444444444444444444",
+          priority: 100,
+          enabled: true,
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      ],
+      managedRoleIds: new Set(["444444444444444444"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag: new Map([
+        ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP" })],
+      ]),
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+
+    expect(result.desiredManagedRoleIds).toContain("444444444444444444");
+    expect(result.matchedRuleIds).toContain("rule-th");
   });
 
   it("grants the CWL clan role and family role for eligible linked accounts in tracked CWL clans", () => {

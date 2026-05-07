@@ -173,11 +173,12 @@ function makePlayerCurrent(input: {
   playerTag: string;
   playerName: string;
   currentClanTag?: string | null;
+  townHall?: number;
 }) {
   return {
     playerTag: input.playerTag,
     playerName: input.playerName,
-    townHall: 16,
+    townHall: input.townHall ?? 16,
     currentClanTag: input.currentClanTag ?? "#2QG2C08UP",
     currentClanName: "Clan Name",
     trophies: 5000,
@@ -419,6 +420,85 @@ describe("AutoRoleRefreshService", () => {
       skippedCount: 0,
       failedCount: 0,
     });
+  });
+
+  it("removes TH16 and adds TH17 consistently for scoped user and guild refreshes", async () => {
+    const th16RoleId = "222222222222222222";
+    const th17RoleId = "333333333333333333";
+    const userId = "111111111111111111";
+    const makeRules = () => [
+      {
+        id: "rule-th16",
+        guildId: "111111111111111111",
+        type: AutoRoleRuleType.TOWN_HALL,
+        targetValue: "16",
+        discordRoleId: th16RoleId,
+        priority: 100,
+        enabled: true,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        id: "rule-th17",
+        guildId: "111111111111111111",
+        type: AutoRoleRuleType.TOWN_HALL,
+        targetValue: "17",
+        discordRoleId: th17RoleId,
+        priority: 100,
+        enabled: true,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ] as const;
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      makeLinkedAccount({
+        playerTag: "#2QG2C08UP",
+        discordUserId: userId,
+        playerName: "TownHall User",
+      }),
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({ removeStaleManagedRoles: true }),
+      rules: makeRules(),
+      exclusions: { users: [], roles: [] },
+    } as any);
+    vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockResolvedValue(
+      new Map([
+        [
+          "#2QG2C08UP",
+          makePlayerCurrent({
+            playerTag: "#2QG2C08UP",
+            playerName: "TownHall User",
+            currentClanTag: "#2QG2C08UP",
+            townHall: 17,
+          }),
+        ],
+      ]),
+    );
+
+    const userGuild = makeGuild(new Map([[userId, makeMember(userId, [th16RoleId])]]));
+    const userResult = await autoRoleRefreshService.refreshUser({
+      guild: userGuild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+    });
+
+    expect(userGuild.members.fetch).toHaveBeenCalledWith(userId);
+    expect(userResult.memberResults[0]?.rolesAdded).toEqual([th17RoleId]);
+    expect(userResult.memberResults[0]?.rolesRemoved).toEqual([th16RoleId]);
+
+    const guildMember = makeMember(userId, [th16RoleId]);
+    const guild = makeGuild(new Map([[userId, guildMember]]));
+    const guildResult = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(guildMember.roles.add).toHaveBeenCalledWith(th17RoleId);
+    expect(guildMember.roles.remove).toHaveBeenCalledWith(th16RoleId);
+    expect(guildResult.memberResults[0]?.rolesAdded).toEqual([th17RoleId]);
+    expect(guildResult.memberResults[0]?.rolesRemoved).toEqual([th16RoleId]);
   });
 
   it("uses current-season tracked CWL clans for family and CWL clan roles", async () => {
