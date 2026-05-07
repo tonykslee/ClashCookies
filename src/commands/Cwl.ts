@@ -1,4 +1,4 @@
-import {
+﻿import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
@@ -608,10 +608,6 @@ function buildCwlRotationMergedRosterLines(input: {
     playerName: string;
     subbedOut: boolean;
   }>;
-  originalRosterMembers: Array<{
-    playerTag: string;
-    playerName: string;
-  }>;
   actualPlayerRows: Array<{
     position: number;
     playerTag: string;
@@ -646,10 +642,10 @@ function buildCwlRotationMergedRosterLines(input: {
   if (!input.actualAvailable) {
     return {
       lines: [
-      "Actual lineup unavailable",
-      ...plannedBenchMembers.map(
-        (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
-      ),
+        'Actual lineup unavailable',
+        ...plannedBenchMembers.map(
+          (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
+        ),
       ],
       hasMismatchWarning: false,
       hasBlockedWarning: false,
@@ -667,7 +663,6 @@ function buildCwlRotationMergedRosterLines(input: {
   }
 
   const actualRows = input.actualPlayerRows.map((member) => ({
-    position: Math.max(1, Math.trunc(member.position)),
     normalizedTag: normalizePlayerTag(member.playerTag),
     playerTag: member.playerTag,
     playerName: member.playerName,
@@ -685,36 +680,12 @@ function buildCwlRotationMergedRosterLines(input: {
   let hasMismatchWarning = false;
   let hasBlockedWarning = false;
   const hasRosterTagSet = input.rosterTagSet.size > 0;
-  let missingExpectedIndex = 0;
+  const matchedActualRows: Array<(typeof actualRows)[number]> = [];
+  const unexpectedActualRows: Array<(typeof actualRows)[number] & { isBlocked: boolean }> = [];
+
   for (const actual of actualRows) {
-    const expectedForPosition = input.originalRosterMembers[actual.position - 1] ?? null;
     if (actual.normalizedTag && expectedByTag.has(actual.normalizedTag)) {
-      lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
-      continue;
-    }
-
-    const expectedSuffix =
-      expectedForPosition &&
-      normalizePlayerTag(expectedForPosition.playerTag) &&
-      (!actual.normalizedTag ||
-        normalizePlayerTag(expectedForPosition.playerTag) !== actual.normalizedTag)
-        ? ` - Expected ${expectedForPosition.playerName} (${expectedForPosition.playerTag})`
-        : "";
-
-    const isBlockedForExpected =
-      Boolean(actual.normalizedTag) &&
-      (input.excludedTagSet.has(actual.normalizedTag) ||
-        (hasRosterTagSet && !input.rosterTagSet.has(actual.normalizedTag)));
-    if (isBlockedForExpected && expectedSuffix) {
-      hasBlockedWarning = true;
-      lines.push(`â›”ï¸ ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}${expectedSuffix}`);
-      continue;
-    }
-    if (expectedSuffix) {
-      hasMismatchWarning = true;
-      lines.push(
-        `:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}${expectedSuffix}`,
-      );
+      matchedActualRows.push(actual);
       continue;
     }
 
@@ -724,42 +695,59 @@ function buildCwlRotationMergedRosterLines(input: {
         (hasRosterTagSet && !input.rosterTagSet.has(actual.normalizedTag)));
     if (isBlocked) {
       hasBlockedWarning = true;
-      lines.push(`⛔️ ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
-      continue;
     }
-
-    const expected = missingExpectedRows[missingExpectedIndex] ?? null;
-    if (expected) {
-      missingExpectedIndex += 1;
-      hasMismatchWarning = true;
-      lines.push(
-        `:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount} - Expected ${expected.playerName} (${expected.playerTag})`,
-      );
-      continue;
-    }
-
-    hasMismatchWarning = true;
-    lines.push(`:warning: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
+    unexpectedActualRows.push({
+      ...actual,
+      isBlocked,
+    });
   }
 
-  lines.push(
-    ...missingExpectedRows.map((member) => {
-      const expectedWarCount = getCwlRotationWarCount({
-        playerTag: member.playerTag,
-        warCountByPlayerTag: input.warCountByPlayerTag,
-      });
-      return `:x: ${member.playerName} (${member.playerTag}) | War count: ${expectedWarCount}`;
-    }),
-  );
+  for (const actual of matchedActualRows) {
+    lines.push(`:white_check_mark: ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
+  }
 
-  lines.push(
-    ...plannedBenchMembers.map(
-      (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
-    ),
-  );
+  if (unexpectedActualRows.length > 0) {
+    hasMismatchWarning = true;
+    if (lines.length > 0) {
+      lines.push('');
+    }
+    lines.push('Unexpected actual players');
+    for (const actual of unexpectedActualRows) {
+      const icon = actual.isBlocked ? '⛔️' : ':warning:';
+      lines.push(`${icon} ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
+    }
+  }
+
+  if (missingExpectedRows.length > 0) {
+    hasMismatchWarning = true;
+    if (lines.length > 0) {
+      lines.push('');
+    }
+    lines.push('Missing expected players');
+    lines.push(
+      ...missingExpectedRows.map((member) => {
+        const expectedWarCount = getCwlRotationWarCount({
+          playerTag: member.playerTag,
+          warCountByPlayerTag: input.warCountByPlayerTag,
+        });
+        return `:x: ${member.playerName} (${member.playerTag}) | War count: ${expectedWarCount}`;
+      }),
+    );
+  }
+
+  if (plannedBenchMembers.length > 0) {
+    if (lines.length > 0) {
+      lines.push('');
+    }
+    lines.push(
+      ...plannedBenchMembers.map(
+        (member) => `:x: ${member.playerName} (${member.playerTag}) | War count: ${member.warCount}`,
+      ),
+    );
+  }
 
   if (lines.length <= 0) {
-    lines.push("No actual lineup members.");
+    lines.push('No actual lineup members.');
   }
 
   return {
@@ -768,7 +756,6 @@ function buildCwlRotationMergedRosterLines(input: {
     hasBlockedWarning,
   };
 }
-
 function pruneExpiredCwlRotationImportSessions(nowMs = Date.now()): void {
   for (const [sessionId, session] of cwlRotationImportSessions.entries()) {
     if (session.createdAtMs + CWL_ROTATION_IMPORT_SESSION_TTL_MS <= nowMs) {
@@ -1664,7 +1651,6 @@ function buildCwlRotationShowPageLines(input: {
     const merged = buildCwlRotationMergedRosterLines({
       warCountByPlayerTag: input.warCountByPlayerTag,
       plannedMembers: visibleDayRows,
-      originalRosterMembers,
       actualPlayerRows: [],
       actualAvailable: false,
       rosterTagSet,
@@ -1675,7 +1661,6 @@ function buildCwlRotationShowPageLines(input: {
     const merged = buildCwlRotationMergedRosterLines({
       warCountByPlayerTag: input.warCountByPlayerTag,
       plannedMembers: visibleDayRows,
-      originalRosterMembers,
       actualPlayerRows: input.validation.actualPlayerRows,
       actualAvailable: input.validation.actualAvailable,
       rosterTagSet,
@@ -1683,7 +1668,7 @@ function buildCwlRotationShowPageLines(input: {
     });
     if (merged.hasMismatchWarning) {
       lines.push(
-        "⚠️ Unexpected lineup mismatch: actual player is in where another planned player was expected.",
+        "⚠️ Actual lineup differs from the rotation plan.",
       );
     }
     if (merged.hasBlockedWarning) {
@@ -3916,3 +3901,8 @@ export const Cwl: Command = {
     await interaction.respond([]);
   },
 };
+
+
+
+
+
