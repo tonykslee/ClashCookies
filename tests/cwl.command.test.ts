@@ -1708,7 +1708,7 @@ describe("/cwl command", () => {
     };
     await handleCwlRotationShowSelectMenuInteraction(selectInteraction as any);
     expect(getUpdatedDescription(selectInteraction)).toContain("Day 2");
-    expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie `#VJQ28888` | War count: 1");
     expect(getUpdatedDescription(selectInteraction)).toContain("Leaders/Co-leaders: Alpha Leader, Alpha CoLeader");
     expect(getUpdatedDescription(selectInteraction)).not.toContain("Bravo Leader");
     expect(getUpdatedDescription(selectInteraction)).not.toContain("Bravo CoLeader");
@@ -2011,16 +2011,18 @@ describe("/cwl command", () => {
     });
     expect(getDescription(interaction)).toContain("Battle day start: <t:");
     expect(getDescription(interaction)).toContain(":R>");
-    expect(getDescription(interaction)).toContain("Excluded: Player One (#GGGYCUGR9), #GGC02JR8P");
+    expect(getDescription(interaction)).toContain("Excluded: Player One `#GGGYCUGR9`, `#GGC02JR8P`");
+    expect(getDescription(interaction)).not.toContain("Player One (#GGGYCUGR9)");
+    expect(getDescription(interaction)).not.toContain("Player One (#GGC02JR8P)");
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Warnings:");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha `#PYLQ0289` | War count: 1");
     expect(getDescription(interaction)).toContain("⚠️ Actual lineup differs from the rotation plan.");
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain(":warning: Charlie (#VJQ28888) | War count: 1");
+    expect(getDescription(interaction)).toContain(":warning: Charlie `#VJQ28888` | War count: 1");
     expect(getDescription(interaction)).toContain("Missing expected players");
-    expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
-    expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Bravo `#QGRJ2222` | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Delta `#CUV02898` | War count: 0");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -2044,12 +2046,12 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(buttonInteraction)).toContain("Battle day start: <t:");
     expect(getUpdatedDescription(buttonInteraction)).toContain(":R>");
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":warning: Bravo (#QGRJ2222) | War count: 1",
+      ":warning: Bravo `#QGRJ2222` | War count: 1",
     );
     expect(getUpdatedDescription(buttonInteraction)).toContain(
-      ":white_check_mark: Delta (#CUV02898) | War count: 1",
+      ":white_check_mark: Delta `#CUV02898` | War count: 1",
     );
-    expect(getUpdatedDescription(buttonInteraction)).not.toContain(":x: Bravo (#QGRJ2222)");
+    expect(getUpdatedDescription(buttonInteraction)).not.toContain(":x: Bravo `#QGRJ2222`");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
     expect(getComponentSelectMenuCustomIds(buttonInteraction)).toHaveLength(1);
@@ -2144,7 +2146,7 @@ describe("/cwl command", () => {
     };
     await handleCwlRotationShowSelectMenuInteraction(selectInteraction as any);
     expect(getUpdatedDescription(selectInteraction)).toContain("Day 2");
-    expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
+    expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie `#VJQ28888` | War count: 1");
     expect(getUpdatedDescription(selectInteraction)).toContain("Battle day start: <t:");
     expect(getUpdatedDescription(selectInteraction)).toContain(":R>");
     expect(getComponentSelectMenuCustomIds(selectInteraction)).toHaveLength(1);
@@ -2737,12 +2739,12 @@ describe("/cwl command", () => {
 
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).toContain("Battle day start: <t:");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha `#PYLQ0289` | War count: 1");
     expect(getDescription(interaction)).toContain(
-      ":warning: Bench Later (#QGRJ2222) | War count: 1",
+      ":warning: Bench Later `#QGRJ2222` | War count: 1",
     );
-    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
-    expect(getDescription(interaction)).not.toContain(":x: Bench Later (#QGRJ2222)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta `#CUV02898` | War count: 1");
+    expect(getDescription(interaction)).not.toContain(":x: Bench Later `#QGRJ2222`");
     expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -2803,8 +2805,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 4");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie `#VJQ28888` | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta `#CUV02898` | War count: 1");
     expect(getDescription(interaction)).not.toContain("Day 3");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -2856,8 +2858,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Day 2");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Delta (#CUV02898) | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Charlie `#VJQ28888` | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Delta `#CUV02898` | War count: 1");
     expect(getDescription(interaction)).not.toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -2909,7 +2911,7 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Day 7");
     expect(getDescription(interaction)).toContain("Battle day start: unknown");
     expect(getDescription(interaction)).toContain("Actual lineup unavailable");
-    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
+    expect(getDescription(interaction)).not.toContain(":x: Hotel `#JQJQ2222`");
     expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -2971,7 +2973,7 @@ describe("/cwl command", () => {
 
     expect(getDescription(interaction)).toContain("Day 2");
     expect(getDescription(interaction)).toContain("Actual lineup unavailable");
-    expect(getDescription(interaction)).toContain(":x: ChipsAreTasty (#2JVRPVGLQ) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: ChipsAreTasty `#2JVRPVGLQ` | War count: 0");
     expect(getDescription(interaction)).not.toContain("War count: 1");
   });
 
@@ -3023,13 +3025,13 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
-    expect(getDescription(interaction)).toContain(":white_check_mark: Echo (#PYLQ0289)");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Echo `#PYLQ0289`");
     expect(getDescription(interaction)).toContain("⚠️ Actual lineup differs from the rotation plan.");
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain(":warning: Zulu (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).toContain(":warning: Zulu `#VJQ28888` | War count: 0");
     expect(getDescription(interaction)).toContain("Missing expected players");
-    expect(getDescription(interaction)).toContain(":x: Foxtrot (#QGRJ2222) | War count: 0");
-    expect(getDescription(interaction)).toContain(":x: Golf (#CUV02898) | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Foxtrot `#QGRJ2222` | War count: 0");
+    expect(getDescription(interaction)).toContain(":x: Golf `#CUV02898` | War count: 0");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
@@ -3077,7 +3079,7 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).toContain(":warning: Visitor `#VJQ28888` | War count: 0");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
   });
 
@@ -3136,9 +3138,9 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain("<:no_entry:333> TouchGrassLLC (#GUR9CGGVQ) | War count: 0");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
-    expect(getDescription(interaction)).toContain(":white_check_mark: Bravo (#QGRJ2222) | War count: 1");
+    expect(getDescription(interaction)).toContain("<:no_entry:333> TouchGrassLLC `#GUR9CGGVQ` | War count: 0");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Alpha `#PYLQ0289` | War count: 1");
+    expect(getDescription(interaction)).toContain(":white_check_mark: Bravo `#QGRJ2222` | War count: 1");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
   });
@@ -3183,7 +3185,7 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).toContain(":warning: Visitor `#VJQ28888` | War count: 0");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
   });
 
