@@ -682,13 +682,18 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   "copy-channel": {
     summary: "Export recent messages from the current channel as copy-friendly text.",
     details: [
-      "Reads the last `messages` recent messages from the current server text or announcement channel.",
+      "Reads up to `messages:200` recent messages from the current server text or announcement channel.",
+      "`after` and `before` anchor exports relative to one Discord message id and exclude the anchor itself.",
       "Each row is formatted as `[YYYY-MM-DD HH:mm] DisplayName: content` using UTC timestamps.",
       "Short exports are returned in a formatted code block; longer exports are returned as a `.txt` attachment.",
       "Non-text messages are annotated with safe placeholders for attachments, embeds, stickers, or empty content.",
       "The response is ephemeral.",
     ],
-    examples: ["/copy-channel messages:10", "/copy-channel messages:100"],
+    examples: [
+      "/copy-channel messages:10",
+      "/copy-channel messages:200 after:123456789012345678",
+      "/copy-channel messages:50 before:123456789012345678",
+    ],
   },
   "bot-logs": {
     summary: "Set or inspect the guild channel used for important bot logs.",
