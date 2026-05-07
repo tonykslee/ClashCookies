@@ -45,7 +45,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ### Clan management tooling
 - Manages tracked clan configuration, mail channels/roles, and war plans.
-- Supports player-linking, roster-related utilities, and operational helper commands.
+- Supports player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands.
 - Provides FWA-focused tooling for points, match handling, layouts, and related workflows.
 - Adds persisted CWL round tracking plus `/cwl members`, `/cwl rotations`, and CWL sheet import/export planner flows on top of seasonal CWL clan tracking.
 
@@ -73,6 +73,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.
 - FWAStats feed ingestion is DB-backed (`FwaFeedSyncState`, `FwaClanWarsWatchState`, related current-state tables) with bounded scheduler cadence.
+- Autorole can apply Discord roles and ClashPerk-style nicknames from linked accounts, permanent FWA tracked-clan membership, and guild-managed autorole rules.
 
 ## Quick Start
 ```bash
@@ -93,6 +94,30 @@ Production uses `POLLING_MODE=active` and owns upstream pollers/schedulers. Stag
 - [Command Access and Permissions](docs/permissions.md)
 - [Deployment and Install Links](docs/deployment.md)
 - [Observability](docs/observability.md)
+
+## Autorole Nickname Templates
+Autorole nickname sync can render Discord nicknames from linked Clash accounts during `/autorole refresh`. The recommended ClashPerk-style template is:
+
+```text
+{player} | {trackedClans}
+```
+
+Example rendered nicknames:
+
+```text
+Elrond ♣️ | RR
+Elrond ♣️ | RR | GB | RD | SE | TWC
+```
+
+Enable it with:
+
+```text
+/autorole config set apply_nicknames:true nickname_template:"{player} | {trackedClans}"
+```
+
+Supported tokens are `{player}`, `{tag}`, `{th}`, `{clan}`, `{clanTag}`, `{clanShort}`, `{trackedClans}`, `{discord}`, `{username}`, and `{role}`. `{trackedClans}` includes distinct permanent FWA tracked-clan short names from eligible linked accounts, de-duped with the primary account clan first. Nicknames are cleaned up when tokens are missing and capped to Discord's 32-character nickname limit. Unicode emoji can render in nicknames; custom Discord emoji markup does not render in nicknames.
+
+The bot needs Discord **Manage Nicknames** and must be above the target member in role hierarchy to change nicknames. Role application still requires **Manage Roles** and role hierarchy above the managed roles.
 
 ## Development
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
