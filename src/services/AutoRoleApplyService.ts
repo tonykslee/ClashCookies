@@ -1,6 +1,12 @@
 import type { AutoRoleGuildConfigSnapshot, AutoRoleEvaluationMemberLike, AutoRoleMemberEvaluation } from "./AutoRoleEvaluationService";
+import {
+  autoRoleNicknameService,
+  type AutoRoleNicknameTrackedClanLike,
+} from "./AutoRoleNicknameService";
+import type { PlayerCurrentLike } from "./PlayerCurrentService";
+import type { PlayerLinkWithTrust } from "./PlayerLinkService";
 
-export type AutoRoleApplyNicknameStatus = "changed" | "skipped" | "unchanged";
+export type AutoRoleApplyNicknameStatus = "changed" | "skipped" | "unchanged" | "failed";
 
 export type AutoRoleMemberApplyResult = {
   discordUserId: string;
@@ -19,6 +25,9 @@ export type AutoRoleApplyInput = {
   managedRoleIds: Set<string>;
   member: AutoRoleEvaluationMemberLike;
   evaluation: AutoRoleMemberEvaluation;
+  linkedAccounts: PlayerLinkWithTrust[];
+  playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  trackedClans: AutoRoleNicknameTrackedClanLike[];
 };
 
 function normalizeRoleIds(roleIds: Iterable<string>): Set<string> {
@@ -32,6 +41,21 @@ function formatRoleMention(roleId: string): string {
 function formatFailureReason(action: "add" | "remove", roleId: string, error: unknown): string {
   const message = String((error as { message?: string } | null | undefined)?.message ?? error ?? "").trim();
   return `${action} ${formatRoleMention(roleId)} failed${message ? `: ${message}` : ""}`;
+}
+
+function formatNicknameFailureReason(error: unknown): string {
+  const code = String((error as { code?: string } | null | undefined)?.code ?? "").trim();
+  const message = String((error as { message?: string } | null | undefined)?.message ?? error ?? "").trim();
+  const normalizedMessage = message.toLowerCase();
+  if (code === "50013" || normalizedMessage.includes("missing permissions") || normalizedMessage.includes("missing access") || normalizedMessage.includes("hierarchy")) {
+    return `nickname update failed: ${message || "insufficient permissions"}`;
+  }
+  return `nickname update failed${message ? `: ${message}` : ""}`;
+}
+
+function normalizeText(input: unknown): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 /** Purpose: apply the evaluated autorole state to one Discord member while respecting kill switch and stale-removal policy. */
@@ -54,7 +78,7 @@ export class AutoRoleApplyService {
         rolesAdded: [],
         rolesRemoved: [],
         nicknameStatus: "skipped",
-        nicknameReason: input.config.applyNicknames ? "nickname renderer not implemented" : "nickname sync disabled",
+        nicknameReason: input.config.applyNicknames ? input.evaluation.skipReason : "nickname sync disabled",
         failureReasons: [],
         resultHash: input.evaluation.resultHash,
       };
@@ -101,15 +125,51 @@ export class AutoRoleApplyService {
       }
     }
 
-    const nicknameStatus: AutoRoleApplyNicknameStatus = "skipped";
-    const nicknameReason = input.config.applyNicknames
-      ? "nickname renderer not implemented"
-      : "nickname sync disabled";
+    let nicknameStatus: AutoRoleApplyNicknameStatus = "skipped";
+    let nicknameReason: string | null = null;
+    if (!input.config.applyNicknames) {
+      nicknameReason = "nickname sync disabled";
+    } else if (!normalizeText(input.config.nicknameTemplate)) {
+      nicknameReason = "nickname template not configured";
+    } else {
+      const nicknameResult = autoRoleNicknameService.renderNickname({
+        config: input.config,
+        template: input.config.nicknameTemplate ?? null,
+        member: input.member,
+        linkedAccounts: input.linkedAccounts,
+        playerCurrentByTag: input.playerCurrentByTag,
+        trackedClans: input.trackedClans,
+      });
+
+      const renderedNickname = nicknameResult.renderedNickname;
+      if (!renderedNickname) {
+        nicknameReason = "nickname template rendered empty";
+      } else {
+        const currentDisplayNickname = normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "";
+        if (currentDisplayNickname === renderedNickname) {
+          nicknameStatus = "unchanged";
+        } else {
+          try {
+            if (typeof input.member.setNickname === "function") {
+              await input.member.setNickname(renderedNickname);
+              nicknameStatus = "changed";
+            } else {
+              nicknameStatus = "skipped";
+              nicknameReason = "nickname updates are not supported on this member";
+            }
+          } catch (error) {
+            nicknameStatus = "failed";
+            nicknameReason = formatNicknameFailureReason(error);
+            failureReasons.push(nicknameReason);
+          }
+        }
+      }
+    }
 
     let status: AutoRoleMemberApplyResult["status"] = "skipped";
     if (failureReasons.length > 0) {
       status = rolesAdded.length > 0 || rolesRemoved.length > 0 ? "failed" : "failed";
-    } else if (rolesAdded.length > 0 || rolesRemoved.length > 0) {
+    } else if (rolesAdded.length > 0 || rolesRemoved.length > 0 || nicknameStatus === "changed") {
       status = "applied";
     }
 

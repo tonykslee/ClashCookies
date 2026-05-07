@@ -15,6 +15,7 @@ import {
   type AutoRoleClanMembershipIndexRow,
   type AutoRoleMemberEvaluation,
 } from "./AutoRoleEvaluationService";
+import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
 import {
   autoRoleService,
   type AutoRoleGuildStateSnapshot,
@@ -49,7 +50,8 @@ export type AutoRoleRefreshResult = {
 type AutoRoleGuildMemberLike = {
   id: string;
   displayName?: string;
-  user: { id: string };
+  nickname?: string | null;
+  user: { id: string; username?: string | null; globalName?: string | null };
   roles: {
     cache: {
       keys(): IterableIterator<string>;
@@ -58,6 +60,7 @@ type AutoRoleGuildMemberLike = {
     add(roleId: string): Promise<unknown>;
     remove(roleId: string): Promise<unknown>;
   };
+  setNickname?(nickname: string | null): Promise<unknown>;
 };
 
 type AutoRoleMemberCollectionLike =
@@ -189,6 +192,24 @@ async function loadPlayerCurrentByLinkedAccounts(input: {
     },
     resolution,
   );
+}
+
+async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedClanLike[]> {
+  const rows = await prisma.trackedClan.findMany({
+    select: {
+      tag: true,
+      name: true,
+      shortName: true,
+    },
+  });
+
+  return rows
+    .map((row) => ({
+      tag: normalizeClanTag(row.tag),
+      name: row.name ?? null,
+      shortName: row.shortName ?? null,
+    }))
+    .filter((row) => row.tag.length > 0);
 }
 
 async function loadClanMembershipIndex(input: {
@@ -509,6 +530,7 @@ async function runRefreshPass(input: {
   membersById: Map<string, AutoRoleGuildMemberLike>;
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  trackedClans: AutoRoleNicknameTrackedClanLike[];
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   runId: string;
 }): Promise<AutoRoleRefreshResult> {
@@ -601,6 +623,9 @@ async function runRefreshPass(input: {
         managedRoleIds,
         member,
         evaluation,
+        linkedAccounts,
+        playerCurrentByTag: input.playerCurrentByTag,
+        trackedClans: input.trackedClans,
       });
 
       memberResults.push(result);
@@ -741,6 +766,10 @@ export class AutoRoleRefreshService {
         linkedAccountsByUserId,
         cocService: input.cocService ?? null,
       });
+      const nicknameTemplate = String(snapshot.config.nicknameTemplate ?? "").trim();
+      const trackedClans = snapshot.config.applyNicknames && nicknameTemplate.length > 0
+        ? await loadTrackedClansForNickname()
+        : [];
       const clanMembershipIndex = await loadClanMembershipIndex({
         season: resolveCurrentCwlSeasonKey(),
         rules: snapshot.rules,
@@ -758,6 +787,7 @@ export class AutoRoleRefreshService {
         membersById,
         linkedAccountsByUserId,
         playerCurrentByTag,
+        trackedClans,
         clanMembershipIndex,
         runId: run.id,
       });

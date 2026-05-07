@@ -17,10 +17,11 @@ export type AutoRoleNicknameTrackedClanLike = {
 export type AutoRoleNicknameMemberLike = {
   id: string;
   displayName?: string | null;
-  user: {
+  nickname?: string | null;
+  user?: {
     username?: string | null;
     globalName?: string | null;
-  };
+  } | null;
 };
 
 export type AutoRoleNicknameRenderInput = {
@@ -147,12 +148,9 @@ function cleanNicknameOutput(input: string): string {
   }
 
   output = output.replace(/\s*([|/-])\s*/g, " $1 ");
-  output = output.replace(/^(?:\s*[|/-]\s*)+/g, "");
-  output = output.replace(/(?:\s*[|/-]\s*)+$/g, "");
   output = output.replace(/\s{2,}/g, " ").trim();
-  output = output.replace(/\s*([|/-])(?:\s*\1)+\s*/g, " $1 ");
-  output = output.replace(/^(?:\s*[|/-]\s*)+/g, "");
-  output = output.replace(/(?:\s*[|/-]\s*)+$/g, "");
+  output = output.replace(/^(?:[|/-]\s*)+/g, "");
+  output = output.replace(/(?:\s*[|/-])+\s*$/g, "");
   output = output.replace(/\s{2,}/g, " ").trim();
 
   return output;
@@ -204,7 +202,7 @@ export class AutoRoleNicknameService {
       normalizeText(primaryPlayerCurrent?.playerName) ??
       normalizeText(primary?.playerName) ??
       null;
-    const primaryClanTag = primaryClan?.tag ?? null;
+    const primaryClanTag = primaryClan?.tag ?? primaryPlayerCurrent?.currentClanTag ?? null;
     const primaryClanName =
       normalizeText(primaryClan?.name) ??
       normalizeText(primaryPlayerCurrent?.currentClanName) ??
@@ -218,11 +216,11 @@ export class AutoRoleNicknameService {
         ? String(primaryPlayerCurrent.townHall)
         : "",
       clan: primaryClanName ?? primaryClanShort ?? primaryClanTag ?? "",
-      "clanTag": primaryClanTag ?? "",
+      clanTag: primaryClanTag ?? "",
       clanShort: primaryClanShort ?? primaryClanName ?? primaryClanTag ?? "",
       trackedClans: trackedClanLabels.join(" | "),
-      discord: normalizeText(input.member.displayName) ?? "",
-      username: normalizeText(input.member.user.username ?? input.member.user.globalName ?? null) ?? "",
+      discord: normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "",
+      username: normalizeText(input.member.user?.username ?? input.member.user?.globalName ?? null) ?? "",
       role: normalizeText(primaryPlayerCurrent?.role ?? null) ?? "",
     };
     const tokenLookup: AutoRoleNicknameTokenLookup = {
@@ -239,9 +237,7 @@ export class AutoRoleNicknameService {
     };
 
     const template = normalizeText(input.template) ?? "";
-    const rendered = template
-      ? this.renderTemplate(template, tokenLookup)
-      : "";
+    const rendered = template ? this.renderTemplate(template, tokenLookup) : "";
     const cleaned = cleanNicknameOutput(rendered);
     const truncated = safeTruncate(cleaned, 32);
 
@@ -276,7 +272,9 @@ export class AutoRoleNicknameService {
       }
     }
 
-    const labels = [...tags].map((tag) => input.trackedClanIndex.get(tag)!).filter(Boolean);
+    const labels = [...tags]
+      .map((tag) => input.trackedClanIndex.get(tag)!)
+      .filter(Boolean);
     labels.sort((left, right) => {
       const leftLabel = resolveTrackedClanLabel(left).toLowerCase();
       const rightLabel = resolveTrackedClanLabel(right).toLowerCase();
