@@ -119,6 +119,7 @@ function makeCwlEmojiInventory(options?: { missing?: string[] }) {
   const entries = [
     ["yes", makeEmoji("yes", "<:yes:111>")] as const,
     ["no", makeEmoji("no", "<:no:222>")] as const,
+    ["no_entry", makeEmoji("no_entry", "<:no_entry:333>")] as const,
     ...Array.from({ length: 18 }, (_, index) => {
       const name = `th${index + 1}`;
       return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${1001 + index}>`)] as const);
@@ -334,7 +335,20 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationSheetService, "exportActivePlans");
     vi.spyOn(cwlRotationService, "deleteActivePlan");
     vi.spyOn(cwlRotationService, "listActivePlanExports");
-    vi.spyOn(cwlRotationService, "listOverview");
+    vi.spyOn(cwlRotationService, "listOverview").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        roundDay: 2,
+        battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
+        leaderNames: ["Alpha"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+    ] as any);
     vi.spyOn(cwlRotationService, "listClanLeadershipNames").mockResolvedValue([] as any);
     vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
     vi.spyOn(cwlRotationService, "validatePlanDay");
@@ -1906,7 +1920,14 @@ describe("/cwl command", () => {
         clanName: "CWL Alpha",
         version: 4,
         warningSummary: "1 warning",
-        excludedPlayerTags: ["#P9"],
+        excludedPlayerTags: ["#GGGYCUGR9", "#GGC02JR8P"],
+        metadata: {
+          rosterRows: [
+            { playerTag: "#GGGYCUGR9", playerName: "Player One" },
+            { playerTag: "#VJQ28888", playerName: "Charlie" },
+            { playerTag: "#QGRJ2222", playerName: "Bravo" },
+          ],
+        },
         days: [
           {
             roundDay: 1,
@@ -1990,7 +2011,7 @@ describe("/cwl command", () => {
     });
     expect(getDescription(interaction)).toContain("Battle day start: <t:");
     expect(getDescription(interaction)).toContain(":R>");
-    expect(getDescription(interaction)).toContain("Excluded: #P9");
+    expect(getDescription(interaction)).toContain("Excluded: Player One (#GGGYCUGR9), #GGC02JR8P");
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
@@ -2003,9 +2024,12 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
-    expect(getComponentButtonCustomIds(interaction)).toHaveLength(4);
+    expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
+    expect(getComponentButtonCustomIds(interaction)).toHaveLength(5);
 
-    const nextButtonId = getComponentButtonCustomIds(interaction).find((id) => id.endsWith(":1"));
+    const nextButtonId = getComponentButtonCustomIds(interaction).find(
+      (id) => id.includes(":page:") && id.endsWith(":1"),
+    );
     expect(nextButtonId).toBeTruthy();
     const buttonInteraction = {
       customId: nextButtonId,
@@ -2028,6 +2052,7 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(buttonInteraction)).not.toContain(":x: Bravo (#QGRJ2222)");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Actual:");
     expect(getUpdatedDescription(buttonInteraction)).not.toContain("Status:");
+    expect(getComponentSelectMenuCustomIds(buttonInteraction)).toHaveLength(1);
   });
 
   it("navigates from the overview dropdown into clan view and back to overview, enforcing requester-only access", async () => {
@@ -2122,6 +2147,7 @@ describe("/cwl command", () => {
     expect(getUpdatedDescription(selectInteraction)).toContain(":white_check_mark: Charlie (#VJQ28888) | War count: 1");
     expect(getUpdatedDescription(selectInteraction)).toContain("Battle day start: <t:");
     expect(getUpdatedDescription(selectInteraction)).toContain(":R>");
+    expect(getComponentSelectMenuCustomIds(selectInteraction)).toHaveLength(1);
     expect(getComponentButtonCustomIds(selectInteraction)).toEqual(
       expect.arrayContaining([
         expect.stringContaining(":back:"),
@@ -2162,6 +2188,257 @@ describe("/cwl command", () => {
       `<:yes:111> CWL Alpha (\`#2QG2C08UP\`) - day 2 - Next Battle Day <t:${alphaBattleDay}:R>`,
     );
     expect(getComponentSelectMenuCustomIds(backInteraction)).toHaveLength(1);
+  });
+
+  it("switches single-clan views through the dropdown and preserves the selected day when available", async () => {
+    vi.mocked(cwlRotationService.listOverview).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        roundDay: 2,
+        battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
+        leaderNames: ["Alpha"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        clanName: "CWL Beta",
+        version: 1,
+        roundDay: 2,
+        battleDayStartAt: new Date("2026-04-04T12:00:00.000Z"),
+        leaderNames: ["Beta"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+    ] as any);
+    vi.mocked(cwlRotationService.listActivePlanExports)
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          version: 4,
+          warningSummary: null,
+          excludedPlayerTags: [],
+          days: [
+            {
+              roundDay: 2,
+              lineupSize: 2,
+              rows: [
+                { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
+              ],
+              actual: null,
+            },
+          ],
+        } as any,
+      ])
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#9GLGQCCU",
+          clanName: "CWL Beta",
+          version: 3,
+          warningSummary: null,
+          excludedPlayerTags: [],
+          days: [
+            {
+              roundDay: 2,
+              lineupSize: 2,
+              rows: [
+                { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+              ],
+              actual: null,
+            },
+          ],
+        } as any,
+      ]);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(2);
+    vi.mocked(cwlRotationService.validatePlanDay)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: true,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+        actualPlayerTags: ["#PYLQ0289", "#QGRJ2222"],
+        actualPlayerNames: ["Alpha", "Bravo"],
+      } as any)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: true,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+        actualPlayerTags: ["#VJQ28888", "#CUV02898"],
+        actualPlayerNames: ["Charlie", "Delta"],
+      } as any);
+    vi.mocked(cwlStateService.getBattleDayStartForClanDay).mockResolvedValue(
+      new Date("2026-04-03T12:00:00.000Z"),
+    );
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#PYLQ0289", 1],
+        ["#QGRJ2222", 1],
+        ["#VJQ28888", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 2,
+    });
+    await Cwl.run({} as any, interaction as any);
+
+    expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
+    expect(getComponentSelectMenuOptions(interaction).map((option) => option.label)).toEqual(
+      expect.arrayContaining(["CWL Alpha", "CWL Beta"]),
+    );
+
+    const selectId = getComponentSelectMenuCustomIds(interaction)[0];
+    const switchInteraction = {
+      customId: selectId,
+      values: ["#9GLGQCCU"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationShowSelectMenuInteraction(switchInteraction as any);
+
+    expect(getUpdatedDescription(switchInteraction)).toContain("Clan: CWL Beta");
+    expect(getUpdatedDescription(switchInteraction)).toContain("Day 2");
+    expect(getComponentSelectMenuCustomIds(switchInteraction)).toHaveLength(1);
+  });
+
+  it("falls back to the target clan's available day when the preserved day does not exist", async () => {
+    vi.mocked(cwlRotationService.listOverview).mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 1,
+        roundDay: 2,
+        battleDayStartAt: new Date("2026-04-03T12:00:00.000Z"),
+        leaderNames: ["Alpha"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+      {
+        season: "2026-04",
+        clanTag: "#9GLGQCCU",
+        clanName: "CWL Beta",
+        version: 1,
+        roundDay: 1,
+        battleDayStartAt: new Date("2026-04-04T12:00:00.000Z"),
+        leaderNames: ["Beta"],
+        status: "complete",
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+      },
+    ] as any);
+    vi.mocked(cwlRotationService.listActivePlanExports)
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          version: 4,
+          warningSummary: null,
+          excludedPlayerTags: [],
+          days: [
+            {
+              roundDay: 2,
+              lineupSize: 2,
+              rows: [
+                { playerTag: "#PYLQ0289", playerName: "Alpha", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#QGRJ2222", playerName: "Bravo", subbedOut: false, assignmentOrder: 1 },
+              ],
+              actual: null,
+            },
+          ],
+        } as any,
+      ])
+      .mockResolvedValueOnce([
+        {
+          season: "2026-04",
+          clanTag: "#9GLGQCCU",
+          clanName: "CWL Beta",
+          version: 3,
+          warningSummary: null,
+          excludedPlayerTags: [],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 2,
+              rows: [
+                { playerTag: "#VJQ28888", playerName: "Charlie", subbedOut: false, assignmentOrder: 0 },
+                { playerTag: "#CUV02898", playerName: "Delta", subbedOut: false, assignmentOrder: 1 },
+              ],
+              actual: null,
+            },
+          ],
+        } as any,
+      ]);
+    vi.mocked(cwlRotationService.getPreferredDisplayDay).mockResolvedValue(2);
+    vi.mocked(cwlRotationService.validatePlanDay)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: true,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+        actualPlayerTags: ["#PYLQ0289", "#QGRJ2222"],
+        actualPlayerNames: ["Alpha", "Bravo"],
+      } as any)
+      .mockResolvedValueOnce({
+        actualAvailable: true,
+        complete: true,
+        missingExpectedPlayerTags: [],
+        extraActualPlayerTags: [],
+        actualPlayerTags: ["#VJQ28888", "#CUV02898"],
+        actualPlayerNames: ["Charlie", "Delta"],
+      } as any);
+    vi.mocked(cwlStateService.getBattleDayStartForClanDay).mockResolvedValue(
+      new Date("2026-04-03T12:00:00.000Z"),
+    );
+    vi.mocked(cwlStateService.getParticipationCountsForClanDay).mockResolvedValue(
+      makeParticipationCounts([
+        ["#PYLQ0289", 1],
+        ["#QGRJ2222", 1],
+        ["#VJQ28888", 1],
+        ["#CUV02898", 1],
+      ]),
+    );
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "show",
+      clan: "#2QG2C08UP",
+      day: 2,
+    });
+    await Cwl.run({} as any, interaction as any);
+
+    const selectId = getComponentSelectMenuCustomIds(interaction)[0];
+    const switchInteraction = {
+      customId: selectId,
+      values: ["#9GLGQCCU"],
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCwlRotationShowSelectMenuInteraction(switchInteraction as any);
+
+    expect(getUpdatedDescription(switchInteraction)).toContain("Clan: CWL Beta");
+    expect(getUpdatedDescription(switchInteraction)).toContain("Day 1");
+    expect(getComponentSelectMenuCustomIds(switchInteraction)).toHaveLength(1);
   });
 
   it("falls back best-effort when the CWL rotation show select update fails and the fallback reply expires", async () => {
@@ -2584,7 +2861,8 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).not.toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
-    expect(getComponentButtonCustomIds(interaction)).toHaveLength(3);
+    expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
+    expect(getComponentButtonCustomIds(interaction)).toHaveLength(4);
     expect(getComponentButtonCustomIds(interaction)).toEqual(
       expect.arrayContaining([expect.stringContaining(":refresh:")]),
     );
@@ -2858,10 +3136,11 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain("Unexpected actual players");
-    expect(getDescription(interaction)).toContain("⛔️ TouchGrassLLC (#GUR9CGGVQ) | War count: 0");
+    expect(getDescription(interaction)).toContain("<:no_entry:333> TouchGrassLLC (#GUR9CGGVQ) | War count: 0");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(":white_check_mark: Bravo (#QGRJ2222) | War count: 1");
     expect(getDescription(interaction)).not.toContain(" - Expected ");
+    expect(getComponentSelectMenuCustomIds(interaction)).toHaveLength(1);
   });
 
   it("keeps the current output when no expected CWL slot can be resolved", async () => {
