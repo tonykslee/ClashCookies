@@ -101,21 +101,41 @@ function formatRelativeTimestamp(value: Date | null): string {
 
 async function resolveTownHallEmojiMap(client: Client): Promise<Map<number, string>> {
   const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
-  if (!inventory?.ok) {
-    return new Map();
-  }
-
   const renderedByTownHall = new Map<number, string>();
+  if (!inventory?.ok) {
+    return renderedByTownHall;
+  }
   for (let townHall = 1; townHall <= 18; townHall += 1) {
-    const shortcode = `th${townHall}`;
-    const exact = inventory.snapshot.exactByName.get(shortcode);
-    const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());
-    const rendered = exact?.rendered ?? lower?.rendered ?? null;
+    const rendered = resolveApplicationEmojiRendered(inventory.snapshot, `th${townHall}`);
     if (rendered) {
       renderedByTownHall.set(townHall, rendered);
     }
   }
   return renderedByTownHall;
+}
+
+async function resolveNoEntryEmoji(client: Client): Promise<string> {
+  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
+  if (!inventory?.ok) {
+    return "\u26d4\ufe0f";
+  }
+  return resolveApplicationEmojiRendered(inventory.snapshot, "no_entry") ?? "\u26d4\ufe0f";
+}
+
+function resolveApplicationEmojiRendered(
+  snapshot: {
+    exactByName: Map<string, { rendered: string }>;
+    lowercaseByName: Map<string, { rendered: string }>;
+  },
+  name: string,
+): string | null {
+  const normalizedName = String(name ?? "").trim();
+  if (!normalizedName) return null;
+  const exact = snapshot.exactByName.get(normalizedName);
+  if (exact?.rendered) return exact.rendered;
+  const lower = snapshot.lowercaseByName.get(normalizedName.toLowerCase());
+  if (lower?.rendered) return lower.rendered;
+  return null;
 }
 
 async function resolveCwlRosterSignupTagSet(input: {
@@ -233,6 +253,50 @@ function buildCwlRotationOriginalRosterMembers(plan: CwlRotationPlanExport): Arr
       };
     })
     .filter((row): row is { playerTag: string; playerName: string } => Boolean(row));
+}
+
+function buildCwlRotationPlanPlayerNameIndex(plan: CwlRotationPlanExport): Map<string, string> {
+  const nameByTag = new Map<string, string>();
+  const addEntry = (playerTag: string | null | undefined, playerName: string | null | undefined) => {
+    const normalizedTag = normalizePlayerTag(playerTag ?? "");
+    const normalizedName = sanitizeDisplayText(playerName ?? "");
+    if (!normalizedTag || !normalizedName || nameByTag.has(normalizedTag)) {
+      return;
+    }
+    nameByTag.set(normalizedTag, normalizedName);
+  };
+
+  for (const row of ((plan.metadata as { rosterRows?: unknown } | null)?.rosterRows ?? []) as Array<{
+    playerTag?: unknown;
+    playerName?: unknown;
+  }>) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    addEntry(String(row.playerTag ?? ""), String(row.playerName ?? ""));
+  }
+
+  for (const member of buildCwlRotationOriginalRosterMembers(plan)) {
+    addEntry(member.playerTag, member.playerName);
+  }
+
+  for (const day of plan.days) {
+    for (const row of day.rows) {
+      addEntry(row.playerTag, row.playerName);
+    }
+  }
+
+  return nameByTag;
+}
+
+function formatCwlRotationExcludedPlayerLabel(input: {
+  playerTag: string;
+  playerNameByTag: Map<string, string>;
+}): string {
+  const normalizedTag = normalizePlayerTag(input.playerTag);
+  if (!normalizedTag) {
+    return String(input.playerTag ?? "").trim() || input.playerTag;
+  }
+  const playerName = input.playerNameByTag.get(normalizedTag);
+  return playerName ? `${playerName} (${normalizedTag})` : normalizedTag;
 }
 
 function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> {
@@ -616,6 +680,7 @@ function buildCwlRotationMergedRosterLines(input: {
   actualAvailable: boolean;
   rosterTagSet: Set<string>;
   excludedTagSet: Set<string>;
+  noEntryEmoji: string;
 }): {
   lines: string[];
   hasMismatchWarning: boolean;
@@ -713,7 +778,7 @@ function buildCwlRotationMergedRosterLines(input: {
     }
     lines.push('Unexpected actual players');
     for (const actual of unexpectedActualRows) {
-      const icon = actual.isBlocked ? '⛔️' : ':warning:';
+      const icon = actual.isBlocked ? input.noEntryEmoji : ':warning:';
       lines.push(`${icon} ${actual.playerName} (${actual.playerTag}) | War count: ${actual.warCount}`);
     }
   }
@@ -1455,8 +1520,13 @@ function buildCwlRotationShowRefreshButtonCustomId(input: {
 function buildCwlRotationShowSelectMenuCustomId(input: {
   userId: string;
   season: string;
+  selectedDay?: number | null;
 }): string {
-  return `${CWL_ROTATION_SHOW_SESSION_PREFIX}:select:${input.userId}:${input.season}`;
+  const selectedDay =
+    typeof input.selectedDay === "number" && Number.isFinite(input.selectedDay) && input.selectedDay > 0
+      ? `:${Math.max(1, Math.trunc(input.selectedDay))}`
+      : "";
+  return `${CWL_ROTATION_SHOW_SESSION_PREFIX}:select:${input.userId}:${input.season}${selectedDay}`;
 }
 
 type CwlRotationShowCustomId =
@@ -1470,7 +1540,7 @@ type CwlRotationShowCustomId =
       pageIndex: number;
       showBackButton: boolean;
     }
-  | { action: "select"; userId: string; season: string };
+  | { action: "select"; userId: string; season: string; selectedDay: number | null };
 
 function parseCwlRotationShowCustomId(customId: string): CwlRotationShowCustomId | null {
   const parts = String(customId ?? "").split(":");
@@ -1497,7 +1567,8 @@ function parseCwlRotationShowCustomId(customId: string): CwlRotationShowCustomId
   if (action === "back" || action === "select") {
     const season = String(parts[3] ?? "").trim();
     if (!userId || !season) return null;
-    return { action, userId, season };
+    const selectedDay = action === "select" && parts.length >= 5 ? Math.max(0, Math.trunc(Number(parts[4] ?? "0") || 0)) : null;
+    return { action, userId, season, selectedDay };
   }
   return null;
 }
@@ -1582,6 +1653,7 @@ function buildCwlRotationShowOverviewActionRows(input: {
   userId: string;
   season: string;
   overview: Awaited<ReturnType<typeof cwlRotationService.listOverview>>;
+  selectedDay?: number | null;
 }): ActionRowBuilder<StringSelectMenuBuilder>[] {
   if (input.overview.length <= 0) {
     return [];
@@ -1591,6 +1663,7 @@ function buildCwlRotationShowOverviewActionRows(input: {
       buildCwlRotationShowSelectMenuCustomId({
         userId: input.userId,
         season: input.season,
+        selectedDay: input.selectedDay ?? null,
       }),
     )
     .setPlaceholder("Select a clan to open")
@@ -1602,8 +1675,38 @@ function buildCwlRotationShowOverviewActionRows(input: {
         value: entry.clanTag,
         description: `day ${entry.roundDay ?? "unknown"} - ${formatCwlRotationOverviewStatusLabel(entry.status)}`,
       })),
-    );
+  );
   return [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)];
+}
+
+function buildCwlRotationShowClanActionRows(input: {
+  userId: string;
+  season: string;
+  overview: Awaited<ReturnType<typeof cwlRotationService.listOverview>>;
+  selectedDay?: number | null;
+  clanTag: string;
+  pageIndex: number;
+  totalPages: number;
+  showBackButton: boolean;
+  loading?: boolean;
+}): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
+  return [
+    ...buildCwlRotationShowOverviewActionRows({
+      userId: input.userId,
+      season: input.season,
+      overview: input.overview,
+      selectedDay: input.selectedDay ?? null,
+    }),
+    ...buildCwlRotationShowActionRows({
+      userId: input.userId,
+      clanTag: input.clanTag,
+      season: input.season,
+      pageIndex: input.pageIndex,
+      totalPages: input.totalPages,
+      showBackButton: input.showBackButton,
+      loading: input.loading ?? false,
+    }),
+  ];
 }
 
 function buildCwlRotationShowPageLines(input: {
@@ -1613,7 +1716,9 @@ function buildCwlRotationShowPageLines(input: {
   pageCount: number;
   battleDayStartAt: Date | null;
   leaderNames: string[];
+  excludedPlayerLabels: string[];
   warCountByPlayerTag: Map<string, number>;
+  noEntryEmoji: string;
   validation: {
     actualAvailable: boolean;
     complete: boolean;
@@ -1627,7 +1732,6 @@ function buildCwlRotationShowPageLines(input: {
     days: input.plan.days,
     day: input.day,
   });
-  const originalRosterMembers = buildCwlRotationOriginalRosterMembers(input.plan);
   const rosterTagSet = buildCwlRotationRosterTagSet(input.plan);
   const excludedTagSet = new Set(
     input.plan.excludedPlayerTags.map((tag) => normalizePlayerTag(tag)).filter((tag): tag is string => Boolean(tag)),
@@ -1638,8 +1742,8 @@ function buildCwlRotationShowPageLines(input: {
     `Version: ${input.plan.version}`,
   ];
   lines.push(`Battle day start: ${formatRelativeTimestamp(input.battleDayStartAt)}`);
-  if (input.plan.excludedPlayerTags.length > 0) {
-    lines.push(`Excluded: ${input.plan.excludedPlayerTags.join(", ")}`);
+  if (input.excludedPlayerLabels.length > 0) {
+    lines.push(`Excluded: ${input.excludedPlayerLabels.join(", ")}`);
   }
   lines.push(`Leaders/Co-leaders: ${input.leaderNames.length > 0 ? input.leaderNames.join(", ") : "unknown"}`);
   lines.push(`Page: ${input.pageIndex + 1} / ${input.pageCount}`);
@@ -1655,6 +1759,7 @@ function buildCwlRotationShowPageLines(input: {
       actualAvailable: false,
       rosterTagSet,
       excludedTagSet,
+      noEntryEmoji: input.noEntryEmoji,
     });
     lines.push(...merged.lines.slice(1));
   } else {
@@ -1665,14 +1770,13 @@ function buildCwlRotationShowPageLines(input: {
       actualAvailable: input.validation.actualAvailable,
       rosterTagSet,
       excludedTagSet,
+      noEntryEmoji: input.noEntryEmoji,
     });
     if (merged.hasMismatchWarning) {
-      lines.push(
-        "⚠️ Actual lineup differs from the rotation plan.",
-      );
+      lines.push("\u26a0\ufe0f Actual lineup differs from the rotation plan.");
     }
     if (merged.hasBlockedWarning) {
-      lines.push("⛔️ Not on roster / excluded from rotation.");
+      lines.push(`${input.noEntryEmoji} Not on roster / excluded from rotation.`);
     }
     lines.push(...merged.lines);
   }
@@ -1687,7 +1791,9 @@ function buildCwlRotationShowPageEmbed(input: {
   pageCount: number;
   battleDayStartAt: Date | null;
   leaderNames: string[];
+  excludedPlayerLabels: string[];
   warCountByPlayerTag: Map<string, number>;
+  noEntryEmoji: string;
   validation: {
     actualAvailable: boolean;
     complete: boolean;
@@ -1708,7 +1814,9 @@ function buildCwlRotationShowPageEmbed(input: {
             pageCount: input.pageCount,
             battleDayStartAt: input.battleDayStartAt,
             leaderNames: input.leaderNames,
+            excludedPlayerLabels: input.excludedPlayerLabels,
             warCountByPlayerTag: input.warCountByPlayerTag,
+            noEntryEmoji: input.noEntryEmoji,
             validation: input.validation,
           }),
       ),
@@ -1776,61 +1884,62 @@ async function loadCwlRotationShowOverviewPayload(input: {
 }
 
 async function loadCwlRotationShowClanPayload(input: {
+  client: Client;
   userId: string;
   season: string;
   clanTag: string;
   showBackButton: boolean;
   explicitDay?: number | null;
   pageIndex?: number | null;
+  loading?: boolean;
 }): Promise<{
   payload: {
     embed: EmbedBuilder;
-    components: ActionRowBuilder<ButtonBuilder>[];
+    components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
   };
   planView: CwlRotationPlanExport;
   dayEntry: CwlRotationPlanExport["days"][number];
   pageIndex: number;
   pageCount: number;
 } | null> {
-  const [planView] = await cwlRotationService.listActivePlanExports({
-    season: input.season,
-    clanTags: [input.clanTag],
-  });
+  const [overview, planExports, preferredDay, noEntryEmoji] = await Promise.all([
+    cwlRotationService.listOverview({ season: input.season }),
+    cwlRotationService.listActivePlanExports({
+      season: input.season,
+      clanTags: [input.clanTag],
+    }),
+    cwlRotationService.getPreferredDisplayDay({
+      clanTag: input.clanTag,
+      season: input.season,
+    }),
+    resolveNoEntryEmoji(input.client),
+  ]);
+  const [planView] = planExports;
   if (!planView) {
     return null;
   }
 
   const hasExplicitDay =
     typeof input.explicitDay === "number" && Number.isFinite(input.explicitDay) && input.explicitDay > 0;
-  const relevantDays = hasExplicitDay
-    ? planView.days.filter((entry) =>
-        entry.roundDay === Math.max(1, Math.trunc(Number(input.explicitDay) || 0)),
-      )
-    : planView.days;
-  if (hasExplicitDay && relevantDays.length <= 0) {
+  if (planView.days.length <= 0) {
     return null;
   }
 
-  const preferredDay = hasExplicitDay
-    ? null
-    : await cwlRotationService.getPreferredDisplayDay({
-        clanTag: input.clanTag,
-        season: input.season,
-      });
-  const pageIndex =
-    typeof input.pageIndex === "number"
-      ? Math.max(0, Math.min(Math.max(0, relevantDays.length - 1), input.pageIndex))
-      : hasExplicitDay
-        ? 0
-        : Math.max(
-            0,
-            preferredDay ? relevantDays.findIndex((entry) => entry.roundDay === preferredDay) : 0,
-          );
-
-  const selectedDay = relevantDays[pageIndex];
+  const explicitRoundDay = hasExplicitDay ? Math.max(1, Math.trunc(Number(input.explicitDay) || 0)) : null;
+  const explicitDayEntry =
+    explicitRoundDay !== null ? planView.days.find((entry) => entry.roundDay === explicitRoundDay) ?? null : null;
+  const preferredDayEntry = preferredDay
+    ? planView.days.find((entry) => entry.roundDay === preferredDay) ?? null
+    : null;
+  const selectedDay =
+    explicitDayEntry ??
+    (typeof input.pageIndex === "number" && !hasExplicitDay
+      ? planView.days[Math.max(0, Math.min(Math.max(0, planView.days.length - 1), input.pageIndex))] ?? null
+      : preferredDayEntry ?? planView.days[0] ?? null);
   if (!selectedDay) {
     return null;
   }
+  const pageIndex = Math.max(0, planView.days.findIndex((entry) => entry.roundDay === selectedDay.roundDay));
 
   const [validation, battleDayStartAt, warCountByPlayerTag] = await Promise.all([
     cwlRotationService.validatePlanDay({
@@ -1852,18 +1961,28 @@ async function loadCwlRotationShowClanPayload(input: {
   const leaderNames = await cwlRotationService.listClanLeadershipNames({
     clanTag: planView.clanTag,
   });
+  const playerNameByTag = buildCwlRotationPlanPlayerNameIndex(planView);
+  const excludedPlayerLabels = planView.excludedPlayerTags.map((playerTag) =>
+    formatCwlRotationExcludedPlayerLabel({
+      playerTag,
+      playerNameByTag,
+    }),
+  );
 
   return {
     payload: await buildCwlRotationShowClanPayload({
       userId: input.userId,
       showBackButton: input.showBackButton,
+      overview,
       plan: planView,
       day: selectedDay,
       pageIndex,
-      pageCount: relevantDays.length,
+      pageCount: planView.days.length,
       battleDayStartAt,
       leaderNames,
+      excludedPlayerLabels,
       warCountByPlayerTag,
+      noEntryEmoji,
       validation: validation
         ? {
           actualAvailable: validation.actualAvailable,
@@ -1877,24 +1996,28 @@ async function loadCwlRotationShowClanPayload(input: {
             })),
           }
         : null,
+      loading: input.loading ?? false,
     }),
     planView,
     dayEntry: selectedDay,
     pageIndex,
-    pageCount: relevantDays.length,
+    pageCount: planView.days.length,
   };
 }
 
 async function buildCwlRotationShowClanPayload(input: {
   userId: string;
   showBackButton: boolean;
+  overview: Awaited<ReturnType<typeof cwlRotationService.listOverview>>;
   plan: CwlRotationPlanExport;
   day: CwlRotationPlanExport["days"][number];
   pageIndex: number;
   pageCount: number;
   battleDayStartAt: Date | null;
   leaderNames: string[];
+  excludedPlayerLabels: string[];
   warCountByPlayerTag: Map<string, number>;
+  noEntryEmoji: string;
   validation: {
     actualAvailable: boolean;
     complete: boolean;
@@ -1902,9 +2025,10 @@ async function buildCwlRotationShowClanPayload(input: {
     extraActualPlayerTags: string[];
     actualPlayerRows: Array<{ position: number; playerTag: string; playerName: string }>;
   } | null;
+  loading?: boolean;
 }): Promise<{
   embed: EmbedBuilder;
-  components: ActionRowBuilder<ButtonBuilder>[];
+  components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
 }> {
   return {
     embed: buildCwlRotationShowPageEmbed({
@@ -1914,16 +2038,21 @@ async function buildCwlRotationShowClanPayload(input: {
       pageCount: input.pageCount,
       battleDayStartAt: input.battleDayStartAt,
       leaderNames: input.leaderNames,
+      excludedPlayerLabels: input.excludedPlayerLabels,
       warCountByPlayerTag: input.warCountByPlayerTag,
+      noEntryEmoji: input.noEntryEmoji,
       validation: input.validation,
     }),
-    components: buildCwlRotationShowActionRows({
+    components: buildCwlRotationShowClanActionRows({
       userId: input.userId,
-      clanTag: input.plan.clanTag,
       season: input.plan.season,
+      overview: input.overview,
+      selectedDay: input.day.roundDay,
+      clanTag: input.plan.clanTag,
       pageIndex: input.pageIndex,
       totalPages: input.pageCount,
       showBackButton: input.showBackButton,
+      loading: input.loading ?? false,
     }),
   };
 }
@@ -2544,6 +2673,7 @@ async function handleRotationShowSubcommand(client: Client, interaction: ChatInp
   }
 
   const payload = await loadCwlRotationShowClanPayload({
+    client,
     userId: interaction.user.id,
     season,
     clanTag,
@@ -3233,11 +3363,13 @@ export async function handleCwlRotationShowButtonInteraction(
 
   if (parsed.action === "refresh") {
     const currentView = await loadCwlRotationShowClanPayload({
+      client: interaction.client,
       userId: interaction.user.id,
       season: parsed.season,
       clanTag: parsed.clanTag,
       pageIndex: parsed.pageIndex,
       showBackButton: parsed.showBackButton,
+      loading: true,
     });
     if (!currentView) {
       await interaction.reply({
@@ -3249,15 +3381,7 @@ export async function handleCwlRotationShowButtonInteraction(
 
     await interaction.update({
       embeds: [currentView.payload.embed],
-      components: buildCwlRotationShowActionRows({
-        userId: interaction.user.id,
-        clanTag: parsed.clanTag,
-        season: parsed.season,
-        pageIndex: currentView.pageIndex,
-        totalPages: currentView.pageCount,
-        showBackButton: parsed.showBackButton,
-        loading: true,
-      }),
+      components: currentView.payload.components,
     });
 
     try {
@@ -3267,6 +3391,7 @@ export async function handleCwlRotationShowButtonInteraction(
         season: parsed.season,
       });
       const refreshedView = await loadCwlRotationShowClanPayload({
+        client: interaction.client,
         userId: interaction.user.id,
         season: parsed.season,
         clanTag: parsed.clanTag,
@@ -3302,6 +3427,7 @@ export async function handleCwlRotationShowButtonInteraction(
   }
 
   const payload = await loadCwlRotationShowClanPayload({
+    client: interaction.client,
     userId: interaction.user.id,
     season: parsed.season,
     clanTag: parsed.clanTag,
@@ -3378,10 +3504,12 @@ export async function handleCwlRotationShowSelectMenuInteraction(
   }
 
   const renderPayload = await loadCwlRotationShowClanPayload({
+    client: interaction.client,
     userId: interaction.user.id,
     season,
     clanTag,
     showBackButton: true,
+    explicitDay: parsed.selectedDay,
   });
   if (!renderPayload) {
     await interaction.reply({
