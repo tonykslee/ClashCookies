@@ -1,0 +1,1 @@
+ALTER TABLE "AutoRoleGuildConfig" ADD COLUMN IF NOT EXISTS "cwlClanRoleId" TEXT;

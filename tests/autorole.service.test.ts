@@ -65,6 +65,7 @@ describe("AutoRoleService", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -127,6 +128,7 @@ describe("AutoRoleService", () => {
       trustedLinksAllowed: false,
       nicknameTemplate: "TH{th} {name}",
       verifiedRoleId: "222222222222222222",
+      cwlClanRoleId: "333333333333333333",
     });
     expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
       where: { guildId: "111111111111111111" },
@@ -136,12 +138,14 @@ describe("AutoRoleService", () => {
         trustedLinksAllowed: false,
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
+        cwlClanRoleId: "333333333333333333",
       },
       update: {
         enabled: true,
         trustedLinksAllowed: false,
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
+        cwlClanRoleId: "333333333333333333",
       },
     });
   });
