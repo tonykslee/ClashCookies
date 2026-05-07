@@ -16,6 +16,7 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
     verifiedRoleId: null,
     familyRoleId: null,
     cwlClanRoleId: null,
+    clanRoleRemovalDelayMinutes: null,
     ...overrides,
   };
 }

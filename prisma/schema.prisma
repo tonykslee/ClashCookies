@@ -247,6 +247,7 @@ model AutoRoleGuildConfig {
   verifiedRoleId         String?
   familyRoleId           String?
   cwlClanRoleId          String?
+  clanRoleRemovalDelayMinutes Int?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
@@ -306,6 +307,23 @@ model AutoRoleMemberState {
 
   @@unique([guildId, discordUserId])
   @@index([guildId, lastEvaluatedAt])
+}
+
+model AutoRolePendingRemoval {
+  id             String   @id @default(cuid())
+  guildId        String
+  discordUserId  String
+  discordRoleId   String
+  ruleId         String
+  reason         String
+  firstMissingAt DateTime
+  lastCheckedAt  DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([guildId, discordUserId, discordRoleId, ruleId])
+  @@index([guildId, discordUserId])
+  @@index([guildId, firstMissingAt])
 }
 
 model AutoRoleSyncRun {

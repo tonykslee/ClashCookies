@@ -43,6 +43,8 @@ const AUTO_ROLE_CLAN_ROLE_VALUES = new Set([
 const AUTO_ROLE_SNOWFLAKE_RE = /^\d{15,22}$/;
 const AUTO_ROLE_TOWN_HALL_MIN = 1;
 const AUTO_ROLE_TOWN_HALL_MAX = 18;
+const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN = 0;
+const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX = 10080;
 
 export type AutoRoleGuildConfigRecord = AutoRoleGuildConfig;
 export type AutoRoleRuleRecord = AutoRoleRule;
@@ -62,6 +64,7 @@ export type AutoRoleGuildConfigUpdateInput = {
   verifiedRoleId?: string | null;
   familyRoleId?: string | null;
   cwlClanRoleId?: string | null;
+  clanRoleRemovalDelayMinutes?: number | null;
 };
 
 export type AutoRoleRuleCreateInput = {
@@ -153,6 +156,24 @@ function normalizeOptionalSnowflakeId(
   const normalized = normalizeSnowflakeId(trimmed);
   if (!normalized) throw new Error("Selected Discord role is invalid.");
   return normalized;
+}
+
+function normalizeClanRoleRemovalDelayMinutes(
+  input: number | null | undefined,
+): number | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  const value = Math.trunc(input);
+  if (
+    !Number.isFinite(value) ||
+    value < AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN ||
+    value > AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX
+  ) {
+    throw new Error(
+      `Clan role removal delay must be between ${AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN} and ${AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX} minutes.`,
+    );
+  }
+  return value === 0 ? null : value;
 }
 
 /** Purpose: normalize human-readable league text for persistence. */
@@ -394,6 +415,12 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
 
   if (input.cwlClanRoleId !== undefined) {
     data.cwlClanRoleId = normalizeOptionalSnowflakeId(input.cwlClanRoleId) ?? null;
+  }
+
+  if (input.clanRoleRemovalDelayMinutes !== undefined) {
+    data.clanRoleRemovalDelayMinutes = normalizeClanRoleRemovalDelayMinutes(
+      input.clanRoleRemovalDelayMinutes,
+    ) ?? null;
   }
 
   return data;

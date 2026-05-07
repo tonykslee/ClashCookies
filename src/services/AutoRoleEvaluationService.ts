@@ -24,6 +24,7 @@ export type AutoRoleGuildConfigSnapshot = Pick<
   | "verifiedRoleId"
   | "familyRoleId"
   | "cwlClanRoleId"
+  | "clanRoleRemovalDelayMinutes"
 >;
 
 export type AutoRoleTrackedClanScope = {
