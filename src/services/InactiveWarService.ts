@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { resolveFwaMatchStateEmoji } from "../commands/fwa/matchStateEmoji";
 
 type TrackedClanRow = {
   tag: string;
@@ -11,6 +12,8 @@ type ClanWarHistoryRow = {
   clanName: string | null;
   warStartTime: Date;
   warEndTime: Date | null;
+  matchType: string | null;
+  actualOutcome: string | null;
 };
 
 type ClanWarParticipationRow = {
@@ -26,6 +29,15 @@ type ClanWarParticipationRow = {
   createdAt: Date;
 };
 
+export type InactiveWarMissedState = {
+  warId: string;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  emoji: string;
+};
+
 export type InactiveWarRow = {
   clanTag: string;
   playerTag: string;
@@ -36,6 +48,7 @@ export type InactiveWarRow = {
   avgAttackDelay: number | null;
   lateAttacks: number;
   warsAvailable: number;
+  missedWarStates: InactiveWarMissedState[];
 };
 
 export type InactiveWarSummary = {
@@ -52,6 +65,31 @@ function normalizeClanTagInput(input: string): string {
 
 function buildClanTagQueryValues(trackedTags: string[]): string[] {
   return [...new Set(trackedTags.flatMap((tag) => [tag, `#${tag}`]))];
+}
+
+function normalizeInactiveWarMatchType(
+  input: string | null | undefined,
+): "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null {
+  const normalized = String(input ?? "").trim().toUpperCase();
+  if (!normalized) return null;
+  if (
+    normalized === "FWA" ||
+    normalized === "BL" ||
+    normalized === "MM" ||
+    normalized === "SKIP"
+  ) {
+    return normalized;
+  }
+  return "UNKNOWN";
+}
+
+function normalizeInactiveWarOutcome(
+  input: string | null | undefined,
+): "WIN" | "LOSE" | "UNKNOWN" | null {
+  const normalized = String(input ?? "").trim().toUpperCase();
+  if (!normalized) return null;
+  if (normalized === "WIN" || normalized === "LOSE") return normalized;
+  return "UNKNOWN";
 }
 
 function normalizePlayerName(playerName: string | null | undefined, playerTag: string): string {
@@ -88,6 +126,46 @@ function buildInactiveWarDiagnosticNote(input: {
   participationRowCount: number;
 }): string {
   return `Diagnostic: ended wars found ${input.endedWarCount > 0 ? "yes" : "no"} (${input.endedWarCount}), participation rows found ${input.participationRowCount > 0 ? "yes" : "no"} (${input.participationRowCount}).`;
+}
+
+function buildInactiveWarFilterMismatchDiagnosticNote(clanTag: string): string {
+  return `Diagnostic: clan filter ${clanTag} matched no tracked clan.`;
+}
+
+function buildInactiveWarMissedState(row: ClanWarHistoryRow): InactiveWarMissedState {
+  const matchType = normalizeInactiveWarMatchType(row.matchType);
+  const outcome = normalizeInactiveWarOutcome(row.actualOutcome);
+  return {
+    warId: String(row.warId),
+    warStartTime: row.warStartTime ?? null,
+    warEndTime: row.warEndTime ?? null,
+    matchType,
+    outcome,
+    emoji: resolveFwaMatchStateEmoji({
+      matchType,
+      outcome,
+    }),
+  };
+}
+
+function compareInactiveWarMissedStates(
+  a: InactiveWarMissedState,
+  b: InactiveWarMissedState,
+): number {
+  const endA = a.warEndTime?.getTime() ?? 0;
+  const endB = b.warEndTime?.getTime() ?? 0;
+  if (endA !== endB) return endB - endA;
+
+  const startA = a.warStartTime?.getTime() ?? 0;
+  const startB = b.warStartTime?.getTime() ?? 0;
+  if (startA !== startB) return startB - startA;
+
+  const warIdA = Number(a.warId);
+  const warIdB = Number(b.warId);
+  if (Number.isFinite(warIdA) && Number.isFinite(warIdB) && warIdA !== warIdB) {
+    return warIdB - warIdA;
+  }
+  return b.warId.localeCompare(a.warId);
 }
 
 function buildRecentEndedWarSelection(input: {
@@ -165,6 +243,7 @@ function aggregateInactiveWarRows(input: {
       selectedWarIds: string[];
     }
   >;
+  historyByWarId: Map<string, ClanWarHistoryRow>;
   participationRows: ClanWarParticipationRow[];
 }): InactiveWarRow[] {
   const rowsByKey = new Map<
@@ -180,6 +259,7 @@ function aggregateInactiveWarRows(input: {
       avgAttackDelayCount: number;
       lateAttacks: number;
       warsAvailable: number;
+      missedWarStates: InactiveWarMissedState[];
     }
   >();
 
@@ -203,6 +283,7 @@ function aggregateInactiveWarRows(input: {
       avgAttackDelayCount: 0,
       lateAttacks: 0,
       warsAvailable: clanSelection.warsAvailable,
+      missedWarStates: [],
     };
 
     if (!rowsByKey.has(key)) {
@@ -227,6 +308,22 @@ function aggregateInactiveWarRows(input: {
     if (row.attackWindowMissed === true) {
       existing.lateAttacks += 1;
     }
+
+    if (row.missedBoth) {
+      const historyRow = input.historyByWarId.get(String(row.warId));
+      existing.missedWarStates.push(
+        historyRow
+          ? buildInactiveWarMissedState(historyRow)
+          : {
+              warId: String(row.warId),
+              warStartTime: row.warStartTime ?? null,
+              warEndTime: null,
+              matchType: null,
+              outcome: null,
+              emoji: resolveFwaMatchStateEmoji({ matchType: null, outcome: null }),
+            },
+      );
+    }
   }
 
   return [...rowsByKey.values()]
@@ -242,6 +339,7 @@ function aggregateInactiveWarRows(input: {
         row.avgAttackDelayCount > 0 ? row.avgAttackDelaySum / row.avgAttackDelayCount : null,
       lateAttacks: row.lateAttacks,
       warsAvailable: row.warsAvailable,
+      missedWarStates: [...row.missedWarStates].sort(compareInactiveWarMissedStates),
     }));
 }
 
@@ -249,13 +347,35 @@ export class InactiveWarService {
   async listInactiveWarPlayers(input: {
     guildId: string;
     wars: number;
+    clanTag?: string | null;
   }): Promise<InactiveWarSummary> {
     const trackedClans = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { tag: true, name: true },
     });
-    const trackedTags = buildTrackedTagList(trackedClans);
-    const trackedNameByTag = buildTrackedNameMap(trackedClans);
+    const normalizedClanFilter = normalizeClanTagInput(input.clanTag ?? "");
+    const selectedTrackedClans = normalizedClanFilter
+      ? trackedClans.filter(
+          (clan) => normalizeClanTagInput(clan.tag) === normalizedClanFilter,
+        )
+      : trackedClans;
+    const trackedTags = buildTrackedTagList(selectedTrackedClans);
+    const trackedNameByTag = buildTrackedNameMap(selectedTrackedClans);
+    if (normalizedClanFilter && trackedTags.length === 0) {
+      return {
+        results: [],
+        trackedTags,
+        trackedNameByTag,
+        warnings: [
+          buildInactiveWarFilterMismatchDiagnosticNote(
+            `#${normalizedClanFilter}`,
+          ),
+        ],
+        diagnosticNote: buildInactiveWarFilterMismatchDiagnosticNote(
+          `#${normalizedClanFilter}`,
+        ),
+      };
+    }
     if (trackedTags.length === 0) {
       return { results: [], trackedTags, trackedNameByTag, warnings: [], diagnosticNote: null };
     }
@@ -265,7 +385,6 @@ export class InactiveWarService {
       where: {
         clanTag: { in: trackedClanTagValues },
         warEndTime: { not: null },
-        matchType: "FWA",
       },
       orderBy: [
         { clanTag: "asc" },
@@ -279,13 +398,16 @@ export class InactiveWarService {
         clanName: true,
         warStartTime: true,
         warEndTime: true,
+        matchType: true,
+        actualOutcome: true,
       },
     });
     const selectionByClan = buildRecentEndedWarSelection({
-      trackedClans,
+      trackedClans: selectedTrackedClans,
       historyRows,
       wars: input.wars,
     });
+    const historyByWarId = new Map(historyRows.map((row) => [String(row.warId), row]));
     const selectedWarIds = [
       ...new Set(
         [...selectionByClan.values()].flatMap((entry) => entry.selectedWarIds)
@@ -298,7 +420,6 @@ export class InactiveWarService {
             guildId: input.guildId,
             clanTag: { in: trackedClanTagValues },
             warId: { in: selectedWarIds },
-            matchType: "FWA",
           },
           orderBy: [
             { clanTag: "asc" },
@@ -323,6 +444,7 @@ export class InactiveWarService {
 
     const results = aggregateInactiveWarRows({
       selectionByClan,
+      historyByWarId,
       participationRows,
     });
     const diagnosticNote =
