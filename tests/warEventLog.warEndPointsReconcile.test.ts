@@ -339,7 +339,7 @@ describe("War-end expected points persistence via processSubscription", () => {
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,
-        resultLabel: "LOSE",
+        resultLabel: "TIE",
       },
       expectedWarEndFwaPoints: 503,
     });
@@ -351,7 +351,7 @@ describe("War-end expected points persistence via processSubscription", () => {
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,
-        resultLabel: "LOSE",
+        resultLabel: "TIE",
       },
       expectedWarEndFwaPoints: 503,
     });

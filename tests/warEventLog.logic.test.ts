@@ -216,7 +216,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     expect(delta).toBe(3);
   });
 
-  it("BL war: returns +3 points for a perfect 50v50 war even on LOSE", () => {
+  it("BL war: returns +3 points for a perfect 50v50 war on TIE", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
       before: 100,
@@ -228,13 +228,13 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,
-        resultLabel: "LOSE",
+        resultLabel: "TIE",
       },
     });
     expect(delta).toBe(3);
   });
 
-  it("BL war: returns +3 points for a perfect 45v45 war even on LOSE", () => {
+  it("BL war: returns +3 points for a perfect 45v45 war on TIE", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
       before: 100,
@@ -246,7 +246,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,
-        resultLabel: "LOSE",
+        resultLabel: "TIE",
       },
     });
     expect(delta).toBe(3);
