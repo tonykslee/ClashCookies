@@ -122,12 +122,21 @@ function toIntegerOrNull(input: unknown): number | null | undefined {
   return Math.trunc(input);
 }
 
-/** Purpose: normalize an optional template string. */
-function normalizeTemplate(input: string | null | undefined): string | null | undefined {
+/** Purpose: normalize an optional nickname template while preserving explicit clears. */
+export function normalizeNicknameTemplate(input: string | null | undefined): string | null | undefined {
   if (input === undefined) return undefined;
   if (input === null) return null;
-  const normalized = String(input).trim();
-  return normalized.length > 0 ? normalized : null;
+  const trimmed = String(input).trim();
+  if (!trimmed) return null;
+
+  const firstChar = trimmed.at(0);
+  const lastChar = trimmed.at(-1);
+  if (trimmed.length >= 2 && firstChar === lastChar && (firstChar === '"' || firstChar === "'")) {
+    const unquoted = trimmed.slice(1, -1);
+    return unquoted.length > 0 ? unquoted : null;
+  }
+
+  return trimmed;
 }
 
 /** Purpose: normalize an optional snowflake string while preserving explicit clears. */
@@ -342,7 +351,7 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
   const applyNicknames = toBooleanOrUndefined(input.applyNicknames);
   if (applyNicknames !== undefined) data.applyNicknames = applyNicknames;
 
-  const nicknameTemplate = normalizeTemplate(input.nicknameTemplate);
+  const nicknameTemplate = normalizeNicknameTemplate(input.nicknameTemplate);
   if (nicknameTemplate !== undefined) data.nicknameTemplate = nicknameTemplate;
 
   const trustedLinksAllowed = toBooleanOrUndefined(input.trustedLinksAllowed);

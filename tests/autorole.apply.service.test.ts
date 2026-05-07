@@ -60,7 +60,7 @@ function makeMember(displayName = "Old Nick"): TestMember {
   };
 }
 
-function makeLinkedAccount(tag = "#2CGG9GGRV", playerName = "Alpha"): PlayerLinkWithTrust {
+function makeLinkedAccount(tag = "#2CGG9GGRV", playerName: string | null = "Alpha"): PlayerLinkWithTrust {
   return {
     playerTag: tag,
     discordUserId: "111111111111111111",
@@ -156,6 +156,35 @@ describe("AutoRoleApplyService", () => {
     expect(member.setNickname).not.toHaveBeenCalled();
     expect(result.nicknameStatus).toBe("skipped");
     expect(result.nicknameReason).toBe("nickname template not configured");
+  });
+
+  it("skips nickname sync when rendering produces only separators", async () => {
+    const member = makeMember();
+    const result = await autoRoleApplyService.applyMember({
+      config: makeConfig({ nicknameTemplate: '"{player} | {trackedClans}"' }),
+      managedRoleIds: new Set(),
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [
+        makeLinkedAccount("#2CGG9GGRV", null),
+      ],
+      playerCurrentByTag: new Map([
+        [
+          "#2CGG9GGRV",
+          makePlayerCurrent({
+            playerTag: "#2CGG9GGRV",
+            playerName: null,
+            currentClanTag: null,
+            currentClanName: null,
+          }),
+        ],
+      ]),
+      trackedClans: [],
+    });
+
+    expect(member.setNickname).not.toHaveBeenCalled();
+    expect(result.nicknameStatus).toBe("skipped");
+    expect(result.nicknameReason).toBe("nickname template rendered empty");
   });
 
   it("returns unchanged when the rendered nickname already matches", async () => {

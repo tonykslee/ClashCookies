@@ -2,6 +2,7 @@ import type { AutoRoleGuildConfigSnapshot, AutoRoleEvaluationMemberLike, AutoRol
 import {
   autoRoleNicknameService,
   type AutoRoleNicknameTrackedClanLike,
+  normalizeNicknameTemplate,
 } from "./AutoRoleNicknameService";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
 import type { PlayerLinkWithTrust } from "./PlayerLinkService";
@@ -129,7 +130,7 @@ export class AutoRoleApplyService {
     let nicknameReason: string | null = null;
     if (!input.config.applyNicknames) {
       nicknameReason = "nickname sync disabled";
-    } else if (!normalizeText(input.config.nicknameTemplate)) {
+    } else if (!normalizeNicknameTemplate(input.config.nicknameTemplate)) {
       nicknameReason = "nickname template not configured";
     } else {
       const nicknameResult = autoRoleNicknameService.renderNickname({

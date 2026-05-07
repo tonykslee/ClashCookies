@@ -81,6 +81,56 @@ function makePlayerCurrent(overrides: Partial<PlayerCurrentLike> & Pick<PlayerCu
 describe("AutoRoleNicknameService", () => {
   const service = new AutoRoleNicknameService();
 
+  const baseTrackedClans = [
+    {
+      tag: "#2CGG9GGRV",
+      name: "Tracked Clan",
+      shortName: "TC",
+    },
+  ];
+
+  function makeAllowedRenderInput(overrides: {
+    template?: string;
+    config?: Partial<AutoRoleGuildConfigSnapshot>;
+    linkOverrides?: Partial<PlayerLinkWithTrust> & Pick<PlayerLinkWithTrust, "playerTag">;
+    playerCurrent?: Partial<PlayerCurrentLike> & Pick<PlayerCurrentLike, "playerTag">;
+    trackedClans?: AutoRoleNicknameRenderInput["trackedClans"];
+  } = {}): AutoRoleNicknameRenderInput {
+    const playerTag = overrides.linkOverrides?.playerTag ?? "#2CGG9GGRV";
+    const trackedClans = overrides.trackedClans ?? baseTrackedClans;
+    const link = makeLink({
+      playerTag,
+      playerName: overrides.linkOverrides?.playerName ?? "Alpha",
+      linkSource: overrides.linkOverrides?.linkSource ?? "SELF_SERVICE",
+      verificationStatus: overrides.linkOverrides?.verificationStatus ?? "VERIFIED",
+      verificationMethod: overrides.linkOverrides?.verificationMethod ?? "PLAYER_API_TOKEN",
+      verifiedAt: overrides.linkOverrides?.verifiedAt ?? new Date("2026-04-01T00:00:00.000Z"),
+      ...overrides.linkOverrides,
+    });
+
+    return {
+      config: makeConfig(overrides.config),
+      template: overrides.template ?? "{player}",
+      member: makeMember(),
+      linkedAccounts: [link],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          playerTag,
+          makePlayerCurrent({
+            playerTag,
+            playerName: overrides.playerCurrent?.playerName ?? "Alpha",
+            currentClanTag: overrides.playerCurrent?.currentClanTag ?? "#2CGG9GGRV",
+            currentClanName: overrides.playerCurrent?.currentClanName ?? "Tracked Clan",
+            townHall: overrides.playerCurrent?.townHall ?? 16,
+            role: overrides.playerCurrent?.role ?? "member",
+            ...overrides.playerCurrent,
+          }),
+        ],
+      ]),
+      trackedClans,
+    };
+  }
+
   it("renders the basic template from the selected linked account", () => {
     const result = service.renderNickname({
       config: makeConfig(),
@@ -202,6 +252,187 @@ describe("AutoRoleNicknameService", () => {
 
     expect(result.trackedClans).toEqual(["Charlie", "Alpha"]);
     expect(result.renderedNickname).toBe("Charlie | Alpha");
+  });
+
+  it.each([
+    {
+      name: "EMBED_SELF_SERVICE",
+      linkSource: "EMBED_SELF_SERVICE",
+    },
+    {
+      name: "SELF_SERVICE",
+      linkSource: "SELF_SERVICE",
+    },
+  ])("allows unverified $name links when trusted links are allowed", ({ linkSource }) => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: "{tag}",
+        linkOverrides: {
+          playerTag: "#2CGG9GGRV",
+          playerName: "Alpha",
+          linkSource: linkSource as PlayerLinkWithTrust["linkSource"],
+          verificationStatus: "UNVERIFIED",
+          verificationMethod: null,
+          verifiedAt: null,
+        },
+      }),
+    );
+
+    expect(result.primaryPlayerTag).toBe("#2CGG9GGRV");
+    expect(result.renderedNickname).toBe("#2CGG9GGRV");
+  });
+
+  it.each([
+    {
+      name: "verified-only mode enabled",
+      config: { verifiedOnlyMode: true },
+    },
+    {
+      name: "trusted links disabled",
+      config: { trustedLinksAllowed: false },
+    },
+  ])("blocks unverified links when $name", ({ config }) => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: "{tag}",
+        config,
+        linkOverrides: {
+          playerTag: "#2CGG9GGRV",
+          playerName: "Alpha",
+          linkSource: "EMBED_SELF_SERVICE",
+          verificationStatus: "UNVERIFIED",
+          verificationMethod: null,
+          verifiedAt: null,
+        },
+      }),
+    );
+
+    expect(result.primaryPlayerTag).toBeNull();
+    expect(result.renderedNickname).toBeNull();
+  });
+
+  it("blocks revoked links even when trusted links are allowed", () => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: "{tag}",
+        linkOverrides: {
+          playerTag: "#2CGG9GGRV",
+          playerName: "Alpha",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "REVOKED",
+          verificationMethod: null,
+          verifiedAt: null,
+        },
+      }),
+    );
+
+    expect(result.primaryPlayerTag).toBeNull();
+    expect(result.renderedNickname).toBeNull();
+  });
+
+  it("strips matching outer double quotes before rendering", () => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: '"{player} | {trackedClans}"',
+        linkOverrides: {
+          playerTag: "#8PJLYRC8P",
+          playerName: "Elrond♣️",
+          linkSource: "EMBED_SELF_SERVICE",
+          verificationStatus: "UNVERIFIED",
+          verificationMethod: null,
+          verifiedAt: null,
+        },
+        playerCurrent: {
+          playerTag: "#8PJLYRC8P",
+          playerName: "Elrond♣️",
+          currentClanTag: "#2CGG9GGRV",
+          currentClanName: "Tracked Clan",
+          townHall: 15,
+          role: "member",
+        },
+        trackedClans: [
+          {
+            tag: "#2CGG9GGRV",
+            name: "Tracked Clan",
+            shortName: "RR",
+          },
+        ],
+      }),
+    );
+
+    expect(result.renderedNickname).toBe("Elrond♣️ | RR");
+  });
+
+  it("strips matching outer single quotes before rendering", () => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: "'{player} | {trackedClans}'",
+        linkOverrides: {
+          playerTag: "#8PJLYRC8P",
+          playerName: "Elrond♣️",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+        },
+        playerCurrent: {
+          playerTag: "#8PJLYRC8P",
+          playerName: "Elrond♣️",
+          currentClanTag: "#2CGG9GGRV",
+          currentClanName: "Tracked Clan",
+          townHall: 15,
+          role: "member",
+        },
+        trackedClans: [
+          {
+            tag: "#2CGG9GGRV",
+            name: "Tracked Clan",
+            shortName: "RR",
+          },
+        ],
+      }),
+    );
+
+    expect(result.renderedNickname).toBe("Elrond♣️ | RR");
+  });
+
+  it("preserves interior quotes while stripping only the outer pair", () => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: '"{player} - "VIP""',
+        linkOverrides: {
+          playerTag: "#2CGG9GGRV",
+          playerName: "Alpha",
+        },
+      }),
+    );
+
+    expect(result.renderedNickname).toBe('Alpha - "VIP"');
+  });
+
+  it("returns null for separator-only output", () => {
+    const result = service.renderNickname(
+      makeAllowedRenderInput({
+        template: '"{player} | {trackedClans}"',
+        linkOverrides: {
+          playerTag: "#2CGG9GGRV",
+          playerName: null,
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+        },
+        playerCurrent: {
+          playerTag: "#2CGG9GGRV",
+          playerName: null,
+          currentClanTag: null,
+          currentClanName: null,
+          townHall: 16,
+          role: null,
+        },
+        trackedClans: [],
+      }),
+    );
+
+    expect(result.renderedNickname).toBeNull();
   });
 
   it("falls back to the clan name when a tracked clan has no short name", () => {
