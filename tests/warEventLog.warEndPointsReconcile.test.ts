@@ -335,7 +335,7 @@ describe("War-end expected points persistence via processSubscription", () => {
       subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
       finalResult: {
         clanStars: 150,
-        opponentStars: 149,
+        opponentStars: 150,
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,
@@ -347,7 +347,7 @@ describe("War-end expected points persistence via processSubscription", () => {
       subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 45 },
       finalResult: {
         clanStars: 135,
-        opponentStars: 134,
+        opponentStars: 135,
         clanDestruction: 60,
         opponentDestruction: 60,
         warEndTime: null,

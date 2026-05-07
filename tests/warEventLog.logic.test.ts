@@ -219,16 +219,16 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
   it("BL war: returns +3 points for a perfect 50v50 war on TIE", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
-      before: 100,
-      after: 100,
-      teamSize: 50,
-      finalResult: {
-        clanStars: 150,
-        opponentStars: 149,
-        clanDestruction: 60,
-        opponentDestruction: 60,
-        warEndTime: null,
-        resultLabel: "TIE",
+        before: 100,
+        after: 100,
+        teamSize: 50,
+        finalResult: {
+          clanStars: 150,
+          opponentStars: 150,
+          clanDestruction: 60,
+          opponentDestruction: 60,
+          warEndTime: null,
+          resultLabel: "TIE",
       },
     });
     expect(delta).toBe(3);
@@ -237,16 +237,16 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
   it("BL war: returns +3 points for a perfect 45v45 war on TIE", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
-      before: 100,
-      after: 100,
-      teamSize: 45,
-      finalResult: {
-        clanStars: 135,
-        opponentStars: 134,
-        clanDestruction: 60,
-        opponentDestruction: 60,
-        warEndTime: null,
-        resultLabel: "TIE",
+        before: 100,
+        after: 100,
+        teamSize: 45,
+        finalResult: {
+          clanStars: 135,
+          opponentStars: 135,
+          clanDestruction: 60,
+          opponentDestruction: 60,
+          warEndTime: null,
+          resultLabel: "TIE",
       },
     });
     expect(delta).toBe(3);
