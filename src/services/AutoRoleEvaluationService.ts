@@ -23,7 +23,14 @@ export type AutoRoleGuildConfigSnapshot = Pick<
   | "verifiedOnlyMode"
   | "verifiedRoleId"
   | "familyRoleId"
+  | "cwlClanRoleId"
+  | "clanRoleRemovalDelayMinutes"
 >;
+
+export type AutoRoleTrackedClanScope = {
+  fwaClanTags: Set<string>;
+  cwlClanTags: Set<string>;
+};
 
 export type AutoRoleEvaluationMemberLike = {
   id: string;
@@ -62,6 +69,7 @@ export type AutoRoleEvaluationInput = {
   linkedAccounts: PlayerLinkWithTrust[];
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   clanMembershipByTag: AutoRoleClanMembershipIndex;
+  trackedClanScope: AutoRoleTrackedClanScope;
 };
 
 type RankedLinkedAccount = PlayerLinkWithTrust & {
@@ -113,6 +121,22 @@ function resolveMemberSourceCurrentClanTag(
   return currentClanTag || null;
 }
 
+function normalizeLeagueNameForComparison(input: unknown): string {
+  return String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isLinkedAccountCurrentlyInTrackedClan(
+  linkedAccount: RankedLinkedAccount,
+  trackedClanTags: Set<string>,
+): boolean {
+  if (trackedClanTags.size === 0) return false;
+  const currentClanTag = normalizeClanTag(linkedAccount.playerCurrent?.currentClanTag ?? "");
+  return currentClanTag.length > 0 && trackedClanTags.has(currentClanTag);
+}
+
 function isLinkedAccountInClanTarget(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
@@ -160,6 +184,7 @@ export class AutoRoleEvaluationService {
     const roleIds = new Set<string>();
     if (input.config.verifiedRoleId) roleIds.add(input.config.verifiedRoleId);
     if (input.config.familyRoleId) roleIds.add(input.config.familyRoleId);
+    if (input.config.cwlClanRoleId) roleIds.add(input.config.cwlClanRoleId);
     for (const rule of input.rules) {
       if (!rule.enabled) continue;
       roleIds.add(rule.discordRoleId);
@@ -207,6 +232,33 @@ export class AutoRoleEvaluationService {
         desiredManagedRoleIds.add(rule.discordRoleId);
         matchedRuleIds.add(rule.id);
       }
+    }
+
+    if (
+      input.config.familyRoleId &&
+      input.managedRoleIds.has(input.config.familyRoleId) &&
+      linkedAccounts.some((account) =>
+        isLinkedAccountCurrentlyInTrackedClan(
+          account,
+          input.trackedClanScope.fwaClanTags,
+        ) ||
+        isLinkedAccountCurrentlyInTrackedClan(
+          account,
+          input.trackedClanScope.cwlClanTags,
+        ),
+      )
+    ) {
+      desiredManagedRoleIds.add(input.config.familyRoleId);
+    }
+
+    if (
+      input.config.cwlClanRoleId &&
+      input.managedRoleIds.has(input.config.cwlClanRoleId) &&
+      linkedAccounts.some((account) =>
+        isLinkedAccountCurrentlyInTrackedClan(account, input.trackedClanScope.cwlClanTags),
+      )
+    ) {
+      desiredManagedRoleIds.add(input.config.cwlClanRoleId);
     }
 
     const primary = linkedAccounts[0] ?? null;
@@ -269,6 +321,14 @@ export class AutoRoleEvaluationService {
         const targetTownHall = Math.trunc(Number(rule.targetValue));
         if (!Number.isFinite(targetTownHall)) return false;
         return linkedAccounts.some((account) => account.playerCurrent?.townHall === targetTownHall);
+      }
+      case AutoRoleRuleType.LEAGUE: {
+        const targetLeague = normalizeLeagueNameForComparison(rule.targetValue);
+        if (!targetLeague) return false;
+        return linkedAccounts.some(
+          (account) =>
+            normalizeLeagueNameForComparison(account.playerCurrent?.leagueName) === targetLeague,
+        );
       }
       case AutoRoleRuleType.LABEL:
         return false;

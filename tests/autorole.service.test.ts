@@ -65,6 +65,8 @@ describe("AutoRoleService", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
+      clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -127,6 +129,7 @@ describe("AutoRoleService", () => {
       trustedLinksAllowed: false,
       nicknameTemplate: "TH{th} {name}",
       verifiedRoleId: "222222222222222222",
+      cwlClanRoleId: "333333333333333333",
     });
     expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
       where: { guildId: "111111111111111111" },
@@ -136,12 +139,14 @@ describe("AutoRoleService", () => {
         trustedLinksAllowed: false,
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
+        cwlClanRoleId: "333333333333333333",
       },
       update: {
         enabled: true,
         trustedLinksAllowed: false,
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
+        cwlClanRoleId: "333333333333333333",
       },
     });
   });
@@ -167,6 +172,11 @@ describe("AutoRoleService", () => {
         type: "CLAN_ROLE",
         targetValue: "leader",
         expectedTarget: "leader",
+      },
+      {
+        type: "LEAGUE",
+        targetValue: "  Legend   League  ",
+        expectedTarget: "Legend League",
       },
       {
         type: "TOWN_HALL",
@@ -259,6 +269,14 @@ describe("AutoRoleService", () => {
         discordRoleId: "222222222222222222",
       }),
     ).rejects.toThrow("TOWN_HALL rules require a TH value between 1 and 18.");
+
+    await expect(
+      service.createRule("111111111111111111", {
+        type: "LEAGUE",
+        targetValue: "   ",
+        discordRoleId: "222222222222222222",
+      }),
+    ).rejects.toThrow("LEAGUE rules require a non-empty target value.");
   });
 
   it("preserves canonical verified/family targets when a rule type changes", async () => {

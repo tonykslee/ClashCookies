@@ -109,6 +109,8 @@ describe("/autorole command", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
+      clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -126,6 +128,8 @@ describe("/autorole command", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
+      clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -237,12 +241,26 @@ describe("/autorole command", () => {
     expect(rulesGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(exclusionsGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(configGroup?.options?.map((option: any) => option.name)).toEqual(["show", "set"]);
+    const configSetOptions = configGroup?.options
+      ?.find((option: any) => option.name === "set")
+      ?.options?.map((option: any) => option.name);
+    expect(configSetOptions).toEqual(expect.arrayContaining([
+      "clan_role_removal_delay_minutes",
+      "clear_clan_role_removal_delay",
+      "cwl_clan_role",
+      "clear_cwl_clan_role",
+    ]));
     expect(rulesGroup?.options?.map((option: any) => option.name)).toEqual([
       "list",
       "add",
       "edit",
       "remove",
     ]);
+    const ruleTypeChoices = rulesGroup?.options
+      ?.find((option: any) => option.name === "add")
+      ?.options?.find((option: any) => option.name === "type")
+      ?.choices?.map((choice: any) => ({ name: choice.name, value: choice.value }));
+    expect(ruleTypeChoices).toContainEqual({ name: "League", value: "LEAGUE" });
     expect(exclusionsGroup?.options?.map((option: any) => option.name)).toEqual([
       "list",
       "add-user",
@@ -353,6 +371,8 @@ describe("/autorole command", () => {
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(getDescription(interaction)).toContain("Enabled: disabled");
     expect(getDescription(interaction)).toContain("Trusted links allowed: enabled");
+    expect(getDescription(interaction)).toContain("CWL clan role: none");
+    expect(getDescription(interaction)).toContain("Clan role removal delay: none");
   });
 
   it("updates config fields from /autorole config set", async () => {
@@ -378,6 +398,66 @@ describe("/autorole command", () => {
       nicknameTemplate: "TH{th} {name}",
     });
     expect(getEditReplyPayload(interaction).content).toContain("Autorole config updated.");
+  });
+
+  it("sets and clears the CWL clan role from /autorole config set", async () => {
+    const setInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      roles: {
+        cwl_clan_role: { id: "555555555555555555" },
+      },
+    });
+
+    await Autorole.run({} as any, setInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      cwlClanRoleId: "555555555555555555",
+    });
+
+    const clearInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        clear_cwl_clan_role: true,
+      },
+    });
+
+    await Autorole.run({} as any, clearInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      cwlClanRoleId: null,
+    });
+  });
+
+  it("sets and clears the clan role removal delay from /autorole config set", async () => {
+    const setInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      integers: {
+        clan_role_removal_delay_minutes: 60,
+      },
+    });
+
+    await Autorole.run({} as any, setInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      clanRoleRemovalDelayMinutes: 60,
+    });
+
+    const clearInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        clear_clan_role_removal_delay: true,
+      },
+    });
+
+    await Autorole.run({} as any, clearInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      clanRoleRemovalDelayMinutes: null,
+    });
   });
 
   it("creates, lists, edits, and removes rules", async () => {
@@ -423,6 +503,31 @@ describe("/autorole command", () => {
     });
     expect(getEditReplyPayload(addInteraction).content).toContain("Autorole rule added");
     expect(getDescription(addInteraction)).toContain("rule-1");
+
+    const leagueAddInteraction = createInteraction({
+      group: "rules",
+      subcommand: "add",
+      strings: {
+        type: "LEAGUE",
+        target_value: "Legend League",
+      },
+      roles: {
+        role: { id: "333333333333333333" },
+      },
+      booleans: {
+        enabled: true,
+      },
+    });
+
+    await Autorole.run({} as any, leagueAddInteraction as any, {} as any);
+    expect(autoRoleServiceMock.createRule).toHaveBeenCalledWith("111111111111111111", {
+      type: "LEAGUE",
+      discordRoleId: "333333333333333333",
+      targetValue: "Legend League",
+      priority: null,
+      enabled: true,
+    });
+    expect(getEditReplyPayload(leagueAddInteraction).content).toContain("Autorole rule added");
 
     const editInteraction = createInteraction({
       group: "rules",

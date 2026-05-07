@@ -13,6 +13,7 @@ export const AUTO_ROLE_RULE_TYPES = [
   "FAMILY",
   "CLAN",
   "CLAN_ROLE",
+  "LEAGUE",
   "TOWN_HALL",
   "LABEL",
 ] as const satisfies readonly AutoRoleRuleType[];
@@ -27,8 +28,9 @@ const AUTO_ROLE_RULE_TYPE_ORDER: Record<AutoRoleRuleType, number> = {
   FAMILY: 1,
   CLAN: 2,
   CLAN_ROLE: 3,
-  TOWN_HALL: 4,
-  LABEL: 5,
+  LEAGUE: 4,
+  TOWN_HALL: 5,
+  LABEL: 6,
 };
 
 const AUTO_ROLE_CLAN_ROLE_VALUES = new Set([
@@ -41,6 +43,8 @@ const AUTO_ROLE_CLAN_ROLE_VALUES = new Set([
 const AUTO_ROLE_SNOWFLAKE_RE = /^\d{15,22}$/;
 const AUTO_ROLE_TOWN_HALL_MIN = 1;
 const AUTO_ROLE_TOWN_HALL_MAX = 18;
+const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN = 0;
+const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX = 10080;
 
 export type AutoRoleGuildConfigRecord = AutoRoleGuildConfig;
 export type AutoRoleRuleRecord = AutoRoleRule;
@@ -59,6 +63,8 @@ export type AutoRoleGuildConfigUpdateInput = {
   syncIntervalMinutes?: number | null;
   verifiedRoleId?: string | null;
   familyRoleId?: string | null;
+  cwlClanRoleId?: string | null;
+  clanRoleRemovalDelayMinutes?: number | null;
 };
 
 export type AutoRoleRuleCreateInput = {
@@ -152,6 +158,29 @@ function normalizeOptionalSnowflakeId(
   return normalized;
 }
 
+function normalizeClanRoleRemovalDelayMinutes(
+  input: number | null | undefined,
+): number | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  const value = Math.trunc(input);
+  if (
+    !Number.isFinite(value) ||
+    value < AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN ||
+    value > AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX
+  ) {
+    throw new Error(
+      `Clan role removal delay must be between ${AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN} and ${AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX} minutes.`,
+    );
+  }
+  return value === 0 ? null : value;
+}
+
+/** Purpose: normalize human-readable league text for persistence. */
+function normalizeLeagueText(input: unknown): string {
+  return String(input ?? "").replace(/\s+/g, " ").trim();
+}
+
 /** Purpose: normalize and validate a rule target for persistence. */
 function normalizeRuleTarget(input: AutoRoleRuleCreateInput): string {
   switch (input.type) {
@@ -177,6 +206,11 @@ function normalizeRuleTarget(input: AutoRoleRuleCreateInput): string {
         throw new Error("TOWN_HALL rules require a TH value between 1 and 18.");
       }
       return String(value);
+    }
+    case "LEAGUE": {
+      const normalized = normalizeLeagueText(input.targetValue);
+      if (!normalized) throw new Error("LEAGUE rules require a non-empty target value.");
+      return normalized;
     }
     case "LABEL": {
       const normalized = String(input.targetValue ?? "").trim();
@@ -377,6 +411,16 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
 
   if (input.familyRoleId !== undefined) {
     data.familyRoleId = normalizeOptionalSnowflakeId(input.familyRoleId) ?? null;
+  }
+
+  if (input.cwlClanRoleId !== undefined) {
+    data.cwlClanRoleId = normalizeOptionalSnowflakeId(input.cwlClanRoleId) ?? null;
+  }
+
+  if (input.clanRoleRemovalDelayMinutes !== undefined) {
+    data.clanRoleRemovalDelayMinutes = normalizeClanRoleRemovalDelayMinutes(
+      input.clanRoleRemovalDelayMinutes,
+    ) ?? null;
   }
 
   return data;
@@ -647,6 +691,8 @@ export function formatAutoRoleRuleTarget(rule: AutoRoleRuleRecord): string {
       return `clan ${rule.targetValue}`;
     case "CLAN_ROLE":
       return `clan rank ${rule.targetValue}`;
+    case "LEAGUE":
+      return `league ${rule.targetValue}`;
     case "TOWN_HALL":
       return `TH${rule.targetValue}`;
     case "LABEL":
@@ -667,6 +713,8 @@ export function formatAutoRoleRuleType(ruleType: AutoRoleRuleType): string {
       return "CLAN";
     case "CLAN_ROLE":
       return "CLAN_ROLE";
+    case "LEAGUE":
+      return "LEAGUE";
     case "TOWN_HALL":
       return "TOWN_HALL";
     case "LABEL":

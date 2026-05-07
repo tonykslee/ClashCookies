@@ -1,5 +1,18 @@
+import { AutoRoleRuleType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { autoRoleApplyService } from "../src/services/AutoRoleApplyService";
+const prismaMock = vi.hoisted(() => ({
+  autoRolePendingRemoval: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
 import type { AutoRoleGuildConfigSnapshot, AutoRoleMemberEvaluation } from "../src/services/AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "../src/services/AutoRoleNicknameService";
 import type { PlayerCurrentLike } from "../src/services/PlayerCurrentService";
@@ -35,11 +48,14 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
     verifiedOnlyMode: false,
     verifiedRoleId: null,
     familyRoleId: null,
+    cwlClanRoleId: null,
+    clanRoleRemovalDelayMinutes: null,
     ...overrides,
   };
 }
 
-function makeMember(displayName = "Old Nick"): TestMember {
+function makeMember(displayName = "Old Nick", roleIds: string[] = []): TestMember {
+  const roleState = [...roleIds];
   return {
     id: "111111111111111111",
     displayName,
@@ -50,8 +66,8 @@ function makeMember(displayName = "Old Nick"): TestMember {
     },
     roles: {
       cache: {
-        keys: () => [].values(),
-        has: () => false,
+        keys: () => roleState.values(),
+        has: (roleId: string) => roleState.includes(roleId),
       },
       add: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
@@ -119,16 +135,40 @@ function makeEvaluation(overrides: Partial<AutoRoleMemberEvaluation> = {}): Auto
   };
 }
 
+function makeRule(input: {
+  id?: string;
+  type: AutoRoleRuleType;
+  discordRoleId: string;
+  targetValue?: string;
+}) {
+  return {
+    id: input.id ?? `rule-${input.discordRoleId}`,
+    guildId: "111111111111111111",
+    type: input.type,
+    targetValue: input.targetValue ?? "__target__",
+    discordRoleId: input.discordRoleId,
+    priority: 100,
+    enabled: true,
+    createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+  } as any;
+}
+
 describe("AutoRoleApplyService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.autoRolePendingRemoval.findMany.mockResolvedValue([]);
+    prismaMock.autoRolePendingRemoval.upsert.mockResolvedValue({});
+    prismaMock.autoRolePendingRemoval.deleteMany.mockResolvedValue({});
   });
 
   it("skips nickname sync when disabled", async () => {
     const member = makeMember();
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ applyNicknames: false }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [makeLinkedAccount()],
@@ -144,8 +184,10 @@ describe("AutoRoleApplyService", () => {
   it("skips nickname sync when the template is not configured", async () => {
     const member = makeMember();
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ nicknameTemplate: "   " }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [makeLinkedAccount()],
@@ -161,8 +203,10 @@ describe("AutoRoleApplyService", () => {
   it("skips nickname sync when rendering produces only separators", async () => {
     const member = makeMember();
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ nicknameTemplate: '"{player} | {trackedClans}"' }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [
@@ -190,8 +234,10 @@ describe("AutoRoleApplyService", () => {
   it("returns unchanged when the rendered nickname already matches", async () => {
     const member = makeMember("Alpha");
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ nicknameTemplate: "{player}" }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [makeLinkedAccount()],
@@ -207,8 +253,10 @@ describe("AutoRoleApplyService", () => {
   it("applies a rendered nickname when it differs from the current display nickname", async () => {
     const member = makeMember("Old Nick");
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ nicknameTemplate: "{player}" }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [makeLinkedAccount()],
@@ -226,8 +274,10 @@ describe("AutoRoleApplyService", () => {
     member.setNickname.mockRejectedValueOnce(new Error("Missing Permissions"));
 
     const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
       config: makeConfig({ nicknameTemplate: "{player}" }),
       managedRoleIds: new Set(),
+      rules: [],
       member: member as any,
       evaluation: makeEvaluation(),
       linkedAccounts: [makeLinkedAccount()],
@@ -239,5 +289,232 @@ describe("AutoRoleApplyService", () => {
     expect(result.nicknameStatus).toBe("failed");
     expect(result.failureReasons[0]).toContain("nickname update failed");
     expect(result.status).toBe("failed");
+  });
+
+  it("removes stale CLAN roles immediately when no delay is configured", async () => {
+    const roleId = "222222222222222222";
+    const member = makeMember("Alpha", [roleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: null }),
+      managedRoleIds: new Set([roleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(roleId);
+    expect(result.rolesRemoved).toEqual([roleId]);
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stale CLAN role on the first missing refresh when delay is configured", async () => {
+    const roleId = "222222222222222222";
+    const now = new Date("2026-04-01T01:00:00.000Z");
+    const member = makeMember("Alpha", [roleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: 60 }),
+      managedRoleIds: new Set([roleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now,
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result.rolesRemoved).toEqual([]);
+    expect(prismaMock.autoRolePendingRemoval.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId_discordUserId_discordRoleId_ruleId: expect.objectContaining({
+            guildId: "111111111111111111",
+            discordUserId: "111111111111111111",
+            discordRoleId: roleId,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("keeps a stale CLAN role at 59 minutes but removes it at 61 minutes", async () => {
+    const roleId = "222222222222222222";
+    const rule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" });
+    const member = makeMember("Alpha", [roleId]);
+    const base = new Date("2026-04-01T01:00:00.000Z");
+
+    prismaMock.autoRolePendingRemoval.findMany.mockResolvedValueOnce([
+      {
+        ruleId: rule.id,
+        discordRoleId: roleId,
+        firstMissingAt: new Date(base.getTime() - 59 * 60_000),
+        lastCheckedAt: new Date(base.getTime() - 59 * 60_000),
+      },
+    ]).mockResolvedValueOnce([
+      {
+        ruleId: rule.id,
+        discordRoleId: roleId,
+        firstMissingAt: new Date(base.getTime() - 61 * 60_000),
+        lastCheckedAt: new Date(base.getTime() - 61 * 60_000),
+      },
+    ]);
+
+    const keepResult = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: 60 }),
+      managedRoleIds: new Set([roleId]),
+      rules: [rule],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: base,
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(keepResult.rolesRemoved).toEqual([]);
+
+    const removeMember = makeMember("Alpha", [roleId]);
+    const removeResult = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: 60 }),
+      managedRoleIds: new Set([roleId]),
+      rules: [rule],
+      member: removeMember as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: base,
+    });
+
+    expect(removeMember.roles.remove).toHaveBeenCalledWith(roleId);
+    expect(removeResult.rolesRemoved).toEqual([roleId]);
+    expect(prismaMock.autoRolePendingRemoval.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "111111111111111111",
+          discordUserId: "111111111111111111",
+          discordRoleId: { in: [roleId] },
+        }),
+      }),
+    );
+  });
+
+  it("clears pending clan removals when the member is desired again", async () => {
+    const roleId = "222222222222222222";
+    const rule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" });
+    const member = makeMember("Alpha", [roleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: 60 }),
+      managedRoleIds: new Set([roleId]),
+      rules: [rule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [roleId], matchedRuleIds: [rule.id] }),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV" })]]),
+      trackedClans: [],
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result.rolesRemoved).toEqual([]);
+    expect(prismaMock.autoRolePendingRemoval.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "111111111111111111",
+          discordUserId: "111111111111111111",
+          discordRoleId: { in: [roleId] },
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    { label: "Town Hall", type: AutoRoleRuleType.TOWN_HALL, targetValue: "17" },
+    { label: "League", type: AutoRoleRuleType.LEAGUE, targetValue: "Legend League" },
+    { label: "Clan Rank", type: AutoRoleRuleType.CLAN_ROLE, targetValue: "leader" },
+  ])("removes stale $label roles immediately even with a delay configured", async ({ type, targetValue }) => {
+    const roleId = "222222222222222222";
+    const member = makeMember("Alpha", [roleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true, clanRoleRemovalDelayMinutes: 60 }),
+      managedRoleIds: new Set([roleId]),
+      rules: [makeRule({ type, discordRoleId: roleId, targetValue })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(roleId);
+    expect(result.rolesRemoved).toEqual([roleId]);
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
+  });
+
+  it("keeps Family and generic CWL clan roles immediate when stale even with a delay configured", async () => {
+    const familyRoleId = "333333333333333333";
+    const cwlClanRoleId = "444444444444444444";
+    const member = makeMember("Alpha", [familyRoleId, cwlClanRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        removeStaleManagedRoles: true,
+        familyRoleId,
+        cwlClanRoleId,
+        clanRoleRemovalDelayMinutes: 60,
+      }),
+      managedRoleIds: new Set([familyRoleId, cwlClanRoleId]),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.remove).toHaveBeenCalledWith(cwlClanRoleId);
+    expect(result.rolesRemoved).toEqual(expect.arrayContaining([familyRoleId, cwlClanRoleId]));
+  });
+
+  it("leaves unmanaged manual roles untouched", async () => {
+    const unmanagedRoleId = "999999999999999999";
+    const member = makeMember("Alpha", [unmanagedRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true }),
+      managedRoleIds: new Set(),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(member.roles.cache.has(unmanagedRoleId)).toBe(true);
+    expect(result.rolesRemoved).toEqual([]);
   });
 });
