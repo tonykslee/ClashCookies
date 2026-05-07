@@ -69,6 +69,38 @@ export type ReminderAutocompleteRow = {
   label: string;
 };
 
+export type ReminderCwlClanSummary = {
+  clanTag: string;
+  name: string | null;
+};
+
+export type ReminderCwlReconcileSummary = {
+  reminderId: string;
+  guildId: string;
+  reminderType: ReminderType;
+  currentSeason: string;
+  currentSeasonCwlClanCount: number;
+  existingCwlTargetCount: number;
+  addedTargetCount: number;
+  skippedExistingCount: number;
+  addedClans: ReminderCwlClanSummary[];
+  warning: string | null;
+};
+
+export type ReminderCwlAuditSummary = {
+  reminderId: string;
+  guildId: string;
+  reminderType: ReminderType;
+  currentSeason: string;
+  currentSeasonCwlClanCount: number;
+  existingCwlTargetCount: number;
+  missingCurrentSeasonCwlTargets: ReminderCwlClanSummary[];
+  extraCwlTargets: ReminderCwlClanSummary[];
+  reminderCwlTargets: ReminderCwlClanSummary[];
+  currentSeasonCwlClans: ReminderCwlClanSummary[];
+  has24hOffset: boolean;
+};
+
 type ReminderDraftRow = {
   id: string;
   guildId: string;
@@ -605,6 +637,144 @@ export class ReminderService {
     return normalizedTargets.length;
   }
 
+  /** Purpose: reconcile missing current-season CWL targets for one reminder without removing existing target rows. */
+  async reconcileCurrentSeasonCwlTargets(input: {
+    reminderId: string;
+    guildId: string;
+    actorUserId: string;
+  }): Promise<ReminderCwlReconcileSummary> {
+    const reminder = await this.getReminderWithDetails({
+      reminderId: input.reminderId,
+      guildId: input.guildId,
+    });
+    const season = resolveCurrentCwlSeasonKey();
+    const [currentSeasonRows, existingCwlRows] = await Promise.all([
+      prisma.cwlTrackedClan.findMany({
+        where: { season },
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: { tag: true, name: true },
+      }),
+      prisma.reminderTargetClan.findMany({
+        where: {
+          reminderId: input.reminderId,
+          clanType: ReminderTargetClanType.CWL,
+        },
+        orderBy: [{ clanTag: "asc" }],
+        select: { clanTag: true, clanType: true },
+      }),
+    ]);
+
+    const currentSeasonCwlClans = dedupeCwlClanSummaries(
+      currentSeasonRows.map((row) => ({
+        clanTag: normalizeClanTag(row.tag),
+        name: sanitizeDisplayText(row.name),
+      })),
+    );
+    const existingCwlTargets = dedupeCwlClanSummaries(
+      await resolveReminderTargetDisplays(existingCwlRows),
+    );
+    const existingTags = new Set(existingCwlTargets.map((row) => row.clanTag));
+    const addedClans = currentSeasonCwlClans.filter((row) => !existingTags.has(row.clanTag));
+
+    let warning: string | null = null;
+    let addedTargetCount = 0;
+    if (reminder.type !== ReminderType.WAR_CWL) {
+      warning = `Reminder type is ${reminder.type}; CWL targets were not changed.`;
+      console.log(
+        `[reminders] action=reconcile_cwl_targets reminder_id=${input.reminderId} guild=${input.guildId} season=${season} current=${currentSeasonCwlClans.length} existing=${existingCwlTargets.length} added=0 skipped=${currentSeasonCwlClans.length} warning="${warning}" actor=${input.actorUserId}`,
+      );
+    } else if (addedClans.length > 0) {
+      await prisma.reminderTargetClan.createMany({
+        data: addedClans.map((row) => ({
+          reminderId: input.reminderId,
+          clanTag: row.clanTag,
+          clanType: ReminderTargetClanType.CWL,
+        })),
+        skipDuplicates: true,
+      });
+      addedTargetCount = addedClans.length;
+      console.log(
+        `[reminders] action=reconcile_cwl_targets reminder_id=${input.reminderId} guild=${input.guildId} season=${season} current=${currentSeasonCwlClans.length} existing=${existingCwlTargets.length} added=${addedTargetCount} skipped=${currentSeasonCwlClans.length - addedTargetCount} actor=${input.actorUserId}`,
+      );
+    } else {
+      console.log(
+        `[reminders] action=reconcile_cwl_targets reminder_id=${input.reminderId} guild=${input.guildId} season=${season} current=${currentSeasonCwlClans.length} existing=${existingCwlTargets.length} added=0 skipped=${currentSeasonCwlClans.length} actor=${input.actorUserId}`,
+      );
+    }
+
+    return {
+      reminderId: reminder.id,
+      guildId: reminder.guildId,
+      reminderType: reminder.type,
+      currentSeason: season,
+      currentSeasonCwlClanCount: currentSeasonCwlClans.length,
+      existingCwlTargetCount: existingCwlTargets.length,
+      addedTargetCount,
+      skippedExistingCount: currentSeasonCwlClans.length - addedTargetCount,
+      addedClans: addedTargetCount > 0 ? addedClans : [],
+      warning,
+    };
+  }
+
+  /** Purpose: inspect CWL reminder target coverage for one reminder without mutating target rows. */
+  async auditCurrentSeasonCwlTargets(input: {
+    reminderId: string;
+    guildId: string;
+  }): Promise<ReminderCwlAuditSummary> {
+    const reminder = await this.getReminderWithDetails({
+      reminderId: input.reminderId,
+      guildId: input.guildId,
+    });
+    const season = resolveCurrentCwlSeasonKey();
+    const [currentSeasonRows, existingCwlRows] = await Promise.all([
+      prisma.cwlTrackedClan.findMany({
+        where: { season },
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: { tag: true, name: true },
+      }),
+      prisma.reminderTargetClan.findMany({
+        where: {
+          reminderId: input.reminderId,
+          clanType: ReminderTargetClanType.CWL,
+        },
+        orderBy: [{ clanTag: "asc" }],
+        select: { clanTag: true, clanType: true },
+      }),
+    ]);
+
+    const currentSeasonCwlClans = dedupeCwlClanSummaries(
+      currentSeasonRows.map((row) => ({
+        clanTag: normalizeClanTag(row.tag),
+        name: sanitizeDisplayText(row.name),
+      })),
+    );
+    const reminderCwlTargets = dedupeCwlClanSummaries(
+      await resolveReminderTargetDisplays(existingCwlRows),
+    );
+    const currentSeasonTags = new Set(currentSeasonCwlClans.map((row) => row.clanTag));
+    const reminderTags = new Set(reminderCwlTargets.map((row) => row.clanTag));
+    const missingCurrentSeasonCwlTargets = currentSeasonCwlClans.filter(
+      (row) => !reminderTags.has(row.clanTag),
+    );
+    const extraCwlTargets = reminderCwlTargets.filter(
+      (row) => !currentSeasonTags.has(row.clanTag),
+    );
+
+    return {
+      reminderId: reminder.id,
+      guildId: reminder.guildId,
+      reminderType: reminder.type,
+      currentSeason: season,
+      currentSeasonCwlClanCount: currentSeasonCwlClans.length,
+      existingCwlTargetCount: reminderCwlTargets.length,
+      missingCurrentSeasonCwlTargets,
+      extraCwlTargets,
+      reminderCwlTargets,
+      currentSeasonCwlClans,
+      has24hOffset: reminder.offsetsSeconds.includes(24 * 60 * 60),
+    };
+  }
+
   /** Purpose: load one reminder with resolved offsets + target labels for embed rendering/edit UX. */
   async getReminderWithDetails(input: {
     reminderId: string;
@@ -986,6 +1156,21 @@ function areReminderTargetListsEqual(
     if (left[idx]?.clanTag !== right[idx]?.clanTag) return false;
   }
   return true;
+}
+
+/** Purpose: dedupe CWL clan summaries by normalized clan tag while preserving stable order. */
+function dedupeCwlClanSummaries(
+  rows: ReminderCwlClanSummary[],
+): ReminderCwlClanSummary[] {
+  const unique = new Map<string, ReminderCwlClanSummary>();
+  for (const row of rows) {
+    if (!row.clanTag) continue;
+    unique.set(row.clanTag, {
+      clanTag: row.clanTag,
+      name: row.name,
+    });
+  }
+  return [...unique.values()];
 }
 
 /** Purpose: resolve reminder target clan labels with source-aware names for FWA and seasonal CWL tags. */

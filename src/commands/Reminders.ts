@@ -24,6 +24,8 @@ import {
   getReminderOffsetPresetSeconds,
   parseReminderOffsetsInputList,
   reminderService,
+  type ReminderCwlAuditSummary,
+  type ReminderCwlReconcileSummary,
   type ReminderAutocompleteRow,
   type ReminderClanOption,
   type ReminderListRow,
@@ -94,6 +96,103 @@ function buildTargetLines(targets: ReminderWithDetails["targets"]): string[] {
     lines.push(`- ...and ${targets.length - 20} more`);
   }
   return lines;
+}
+
+/** Purpose: render a compact CWL clan summary list for reminder audit/reconcile embeds. */
+function formatCwlClanSummaryList(
+  rows: Array<{ clanTag: string; name: string | null }>,
+  emptyLabel = "none",
+): string {
+  if (rows.length <= 0) return emptyLabel;
+  const lines = rows.slice(0, 20).map((row) => `- ${row.name ? `${row.name} (${row.clanTag})` : row.clanTag}`);
+  if (rows.length > 20) {
+    lines.push(`- ...and ${rows.length - 20} more`);
+  }
+  return lines.join("\n");
+}
+
+/** Purpose: render one-line reminder identity text for reconcile/audit confirmations. */
+function formatReminderIdentity(reminderId: string, reminderType: string): string {
+  return `Reminder \`${reminderId}\` (${reminderType})`;
+}
+
+/** Purpose: build a CWL reconcile confirmation embed with counts and added clan details. */
+function buildReminderCwlReconcileEmbed(input: ReminderCwlReconcileSummary): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle("Reminders - Reconcile CWL")
+    .setColor(input.warning ? 0xfee75c : 0x57f287)
+    .setDescription(
+      [
+        formatReminderIdentity(input.reminderId, input.reminderType),
+        `Current season: **${input.currentSeason}**`,
+        `Current-season CWL clans: **${input.currentSeasonCwlClanCount}**`,
+        `Existing CWL targets: **${input.existingCwlTargetCount}**`,
+      ].join("\n"),
+    )
+    .addFields(
+      {
+        name: "Added CWL targets",
+        value: formatCwlClanSummaryList(input.addedClans),
+        inline: false,
+      },
+      {
+        name: "Already present",
+        value: String(input.skippedExistingCount),
+        inline: true,
+      },
+      {
+        name: "Added",
+        value: String(input.addedTargetCount),
+        inline: true,
+      },
+      ...(input.warning
+        ? [
+            {
+              name: "Warning",
+              value: input.warning,
+              inline: false,
+            },
+          ]
+        : []),
+    );
+}
+
+/** Purpose: build a CWL audit embed showing missing and stale reminder targets. */
+function buildReminderCwlAuditEmbed(input: ReminderCwlAuditSummary): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle("Reminders - Audit CWL")
+    .setColor(0x5865f2)
+    .setDescription(
+      [
+        formatReminderIdentity(input.reminderId, input.reminderType),
+        `Current season: **${input.currentSeason}**`,
+        `24h offset present: **${input.has24hOffset ? "yes" : "no"}**`,
+        `Current-season CWL clans: **${input.currentSeasonCwlClanCount}**`,
+        `Reminder CWL targets: **${input.existingCwlTargetCount}**`,
+      ].join("\n"),
+    )
+    .addFields(
+      {
+        name: "Current-season CWL clans",
+        value: formatCwlClanSummaryList(input.currentSeasonCwlClans),
+        inline: false,
+      },
+      {
+        name: "Reminder CWL targets",
+        value: formatCwlClanSummaryList(input.reminderCwlTargets),
+        inline: false,
+      },
+      {
+        name: "Missing current-season CWL targets",
+        value: formatCwlClanSummaryList(input.missingCurrentSeasonCwlTargets),
+        inline: false,
+      },
+      {
+        name: "Extra / stale CWL targets",
+        value: formatCwlClanSummaryList(input.extraCwlTargets),
+        inline: false,
+      },
+    );
 }
 
 /** Purpose: render the main reminder preview/config embed used by create/edit interaction flows. */
@@ -673,6 +772,34 @@ export const Reminders: Command = {
       type: ApplicationCommandOptionType.Subcommand,
     },
     {
+      name: "reconcile-cwl",
+      description: "Reconcile current-season CWL reminder targets",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "reminder",
+          description: "Reminder id to reconcile",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
+      name: "audit-cwl",
+      description: "Audit CWL reminder target coverage",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "reminder",
+          description: "Reminder id to audit",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+      ],
+    },
+    {
       name: "edit",
       description: "Edit reminder configs by clan or id",
       type: ApplicationCommandOptionType.Subcommand,
@@ -792,6 +919,72 @@ export const Reminders: Command = {
           reminderId: created.id,
           mode: REMINDER_CREATE_MODE,
           ownerUserId: interaction.user.id,
+        });
+        return;
+      }
+
+      if (subcommand === "reconcile-cwl" || subcommand === "audit-cwl") {
+        const reminderId = String(interaction.options.getString("reminder", true) ?? "").trim();
+        if (!reminderId) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Provide a reminder id.",
+          });
+          return;
+        }
+
+        if (subcommand === "reconcile-cwl") {
+          let summary: ReminderCwlReconcileSummary;
+          try {
+            summary = await reminderService.reconcileCurrentSeasonCwlTargets({
+              guildId: interaction.guildId,
+              reminderId,
+              actorUserId: interaction.user.id,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message === "REMINDER_NOT_FOUND") {
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: `No reminder found for id ${reminderId}.`,
+              });
+              return;
+            }
+            throw error;
+          }
+
+          await interaction.editReply({
+            content:
+              summary.warning ??
+              (summary.addedTargetCount > 0
+                ? `Added ${summary.addedTargetCount} current-season CWL target${summary.addedTargetCount === 1 ? "" : "s"}.`
+                : "No missing current-season CWL targets found."),
+            embeds: [buildReminderCwlReconcileEmbed(summary)],
+          });
+          return;
+        }
+
+        let summary: ReminderCwlAuditSummary;
+        try {
+          summary = await reminderService.auditCurrentSeasonCwlTargets({
+            guildId: interaction.guildId,
+            reminderId,
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message === "REMINDER_NOT_FOUND") {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `No reminder found for id ${reminderId}.`,
+            });
+            return;
+          }
+          throw error;
+        }
+
+        await interaction.editReply({
+          content: summary.missingCurrentSeasonCwlTargets.length > 0
+            ? `Found ${summary.missingCurrentSeasonCwlTargets.length} missing current-season CWL target${summary.missingCurrentSeasonCwlTargets.length === 1 ? "" : "s"}.`
+            : "No missing current-season CWL targets found.",
+          embeds: [buildReminderCwlAuditEmbed(summary)],
         });
         return;
       }
@@ -973,7 +1166,7 @@ export const Reminders: Command = {
       await interaction.respond([]);
       return;
     }
-    if (focused.name === "id") {
+    if (focused.name === "id" || focused.name === "reminder") {
       const rows = await reminderService.listReminderAutocompleteRowsForGuild(
         interaction.guildId,
         String(focused.value ?? ""),
