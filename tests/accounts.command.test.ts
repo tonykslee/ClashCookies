@@ -744,6 +744,7 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, makeCocService() as any);
 
     const description = getEmbedDescription(interaction);
+    expect(description.startsWith("Linked Discord: <@222222222222222222>\n")).toBe(true);
     expect(description).toContain("Current Alpha");
     expect(description).toContain(
       "**[Current Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
@@ -808,6 +809,7 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, makeCocService() as any);
 
     const description = getEmbedDescription(interaction);
+    expect(description.startsWith("Linked Discord: <@222222222222222222>\n")).toBe(true);
     expect(description).toContain("Discord Alpha");
     expect(description).toContain(
       "**[Discord Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",

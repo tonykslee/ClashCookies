@@ -629,13 +629,19 @@ function buildAccountsControlsRow(
 function buildEmbeds(
   rows: AccountRow[],
   townHallEmojiByLevel: AccountDisplayEmojiMap,
+  linkedDiscordUserId?: string | null,
 ): EmbedBuilder[] {
   const groups = buildGroups(rows);
   const pages = buildPages(groups, townHallEmojiByLevel);
+  const linkedDiscordLine = linkedDiscordUserId
+    ? `Linked Discord: <@${linkedDiscordUserId}>`
+    : "";
   return pages.map((description, index) =>
     new EmbedBuilder()
       .setTitle(`My Accounts by Clan (${rows.length})`)
-      .setDescription(description)
+      .setDescription(
+        linkedDiscordLine ? `${linkedDiscordLine}\n\n${description}` : description,
+      )
       .setFooter({ text: `Page ${index + 1}/${pages.length}` })
   );
 }
@@ -690,9 +696,11 @@ export const Accounts: Command = {
     }
 
     let targetDiscordUserId = interaction.user.id;
+    let linkedDiscordHeaderId: string | null = null;
     let sourceLabel = "your Discord account";
     if (selectedDiscordUser) {
       targetDiscordUserId = selectedDiscordUser.id;
+      linkedDiscordHeaderId = selectedDiscordUser.id;
       sourceLabel = `Discord user <@${selectedDiscordUser.id}>`;
     } else if (rawTag) {
       const tag = normalizeTag(rawTag);
@@ -713,6 +721,7 @@ export const Accounts: Command = {
         return;
       }
       targetDiscordUserId = linkedDiscordId;
+      linkedDiscordHeaderId = linkedDiscordId;
       sourceLabel = `player tag \`${tag}\` (linked Discord ID \`${linkedDiscordId}\`)`;
     }
 
@@ -742,7 +751,7 @@ export const Accounts: Command = {
       linkedNameByTag,
       tags: uniqueTags,
     });
-    const embeds = buildEmbeds(rows, townHallEmojiByLevel);
+    const embeds = buildEmbeds(rows, townHallEmojiByLevel, linkedDiscordHeaderId);
     for (const embed of embeds) {
       embed.setTitle(`Accounts by Clan (${rows.length})`);
     }
@@ -795,7 +804,11 @@ export const Accounts: Command = {
               linkedNameByTag,
               tags: uniqueTags,
             });
-            const refreshedEmbeds = buildEmbeds(refreshedRows, townHallEmojiByLevel);
+            const refreshedEmbeds = buildEmbeds(
+              refreshedRows,
+              townHallEmojiByLevel,
+              linkedDiscordHeaderId,
+            );
             for (const embed of refreshedEmbeds) {
               embed.setTitle(`Accounts by Clan (${refreshedRows.length})`);
             }
