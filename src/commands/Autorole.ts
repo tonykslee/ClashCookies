@@ -224,6 +224,7 @@ function buildConfigEmbed(config: AutoRoleGuildConfigRecord): EmbedBuilder {
     `Sync interval: ${maybeMinutesLabel(config.syncIntervalMinutes)}`,
     `Verified role: ${maybeRoleLabel(config.verifiedRoleId)}`,
     `Family role: ${maybeRoleLabel(config.familyRoleId)}`,
+    `CWL clan role: ${maybeRoleLabel(config.cwlClanRoleId)}`,
   ];
 
   return new EmbedBuilder()
@@ -345,6 +346,14 @@ function buildConfigUpdateInput(
     update.familyRoleId = null;
   } else if (familyRoleId !== null) {
     update.familyRoleId = familyRoleId;
+  }
+
+  const cwlClanRoleId = getRoleOptionId(interaction, "cwl_clan_role");
+  const clearCwlClanRole = Boolean(getBooleanOption(interaction, "clear_cwl_clan_role"));
+  if (clearCwlClanRole) {
+    update.cwlClanRoleId = null;
+  } else if (cwlClanRoleId !== null) {
+    update.cwlClanRoleId = cwlClanRoleId;
   }
 
   return update;
@@ -482,6 +491,8 @@ export const Autorole: Command = {
             { name: "clear_verified_role", description: "Clear the verified role", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "family_role", description: "Role used for family/member links", type: ApplicationCommandOptionType.Role, required: false },
             { name: "clear_family_role", description: "Clear the family role", type: ApplicationCommandOptionType.Boolean, required: false },
+            { name: "cwl_clan_role", description: "Role used for active current-season CWL clan members", type: ApplicationCommandOptionType.Role, required: false },
+            { name: "clear_cwl_clan_role", description: "Clear the CWL clan role", type: ApplicationCommandOptionType.Boolean, required: false },
           ],
         },
       ],

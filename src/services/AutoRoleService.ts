@@ -61,6 +61,7 @@ export type AutoRoleGuildConfigUpdateInput = {
   syncIntervalMinutes?: number | null;
   verifiedRoleId?: string | null;
   familyRoleId?: string | null;
+  cwlClanRoleId?: string | null;
 };
 
 export type AutoRoleRuleCreateInput = {
@@ -389,6 +390,10 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
 
   if (input.familyRoleId !== undefined) {
     data.familyRoleId = normalizeOptionalSnowflakeId(input.familyRoleId) ?? null;
+  }
+
+  if (input.cwlClanRoleId !== undefined) {
+    data.cwlClanRoleId = normalizeOptionalSnowflakeId(input.cwlClanRoleId) ?? null;
   }
 
   return data;

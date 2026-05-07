@@ -109,6 +109,7 @@ describe("/autorole command", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -126,6 +127,7 @@ describe("/autorole command", () => {
       syncIntervalMinutes: null,
       verifiedRoleId: null,
       familyRoleId: null,
+      cwlClanRoleId: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
@@ -358,6 +360,7 @@ describe("/autorole command", () => {
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(getDescription(interaction)).toContain("Enabled: disabled");
     expect(getDescription(interaction)).toContain("Trusted links allowed: enabled");
+    expect(getDescription(interaction)).toContain("CWL clan role: none");
   });
 
   it("updates config fields from /autorole config set", async () => {
@@ -383,6 +386,36 @@ describe("/autorole command", () => {
       nicknameTemplate: "TH{th} {name}",
     });
     expect(getEditReplyPayload(interaction).content).toContain("Autorole config updated.");
+  });
+
+  it("sets and clears the CWL clan role from /autorole config set", async () => {
+    const setInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      roles: {
+        cwl_clan_role: { id: "555555555555555555" },
+      },
+    });
+
+    await Autorole.run({} as any, setInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      cwlClanRoleId: "555555555555555555",
+    });
+
+    const clearInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        clear_cwl_clan_role: true,
+      },
+    });
+
+    await Autorole.run({} as any, clearInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      cwlClanRoleId: null,
+    });
   });
 
   it("creates, lists, edits, and removes rules", async () => {
