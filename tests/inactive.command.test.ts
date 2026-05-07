@@ -108,33 +108,30 @@ describe("/inactive command", () => {
     });
 
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
-    prismaMock.playerActivity.aggregate.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return { _max: { updatedAt: new Date() }, _count: { tag: 2 } };
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 2 },
     });
-    prismaMock.playerActivity.count.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return 2;
-    });
-    prismaMock.playerActivity.findMany.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return [
-        {
-          tag: "#A1",
-          name: "Alpha One",
-          clanTag: "#AAA111",
-          lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
-          updatedAt: new Date(),
-        },
-        {
-          tag: "#A2",
-          name: "Alpha Two",
-          clanTag: "#AAA111",
-          lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
-          updatedAt: new Date(),
-        },
-      ];
-    });
+    prismaMock.playerActivity.count.mockResolvedValue(2);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      { playerTag: "#A1", discordUserId: "111111111111111111" },
+    ]);
 
     const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
     const cocService = { getClan } as any;
@@ -146,6 +143,8 @@ describe("/inactive command", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
     expect(embed.description).toContain("Alpha (2)");
+    expect(embed.description).toContain("**Alpha One** (`#A1`) <@111111111111111111> - 8d");
+    expect(embed.description).toContain("**Alpha Two** (`#A2`) — - 9d");
     expect(embed.description).not.toContain("Beta");
   });
 
@@ -161,26 +160,27 @@ describe("/inactive command", () => {
     });
 
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
-    prismaMock.playerActivity.aggregate.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return { _max: { updatedAt: new Date() }, _count: { tag: 2 } };
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 2 },
     });
-    prismaMock.playerActivity.count.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return 2;
-    });
-    prismaMock.playerActivity.findMany.mockImplementation(async (args: any) => {
-      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
-      return [
-        {
-          tag: "#A1",
-          name: "Alpha One",
-          clanTag: "#AAA111",
-          lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
-          updatedAt: new Date(),
-        },
-      ];
-    });
+    prismaMock.playerActivity.count.mockResolvedValue(2);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
 
     inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
       results: [
@@ -225,6 +225,7 @@ describe("/inactive command", () => {
     const embed = payload.embeds[0].toJSON();
     expect(embed.description).toContain("Alpha");
     expect(embed.description).toContain("`#A1`");
+    expect(embed.description).toContain("<@111111111111111111>");
     expect(embed.description).toContain("🟢");
     expect(embed.description).not.toContain("Beta");
   });
@@ -319,6 +320,54 @@ describe("/inactive command", () => {
     expect(embed.description).not.toContain("avg delay");
     expect(embed.description).not.toContain("late attacks");
     expect(embed.description).not.toContain("3/3 wars missed");
+  });
+
+  it("renders days mode rows with backticked tags and Discord mentions", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [{ tag: "#A1" }, { tag: "#A2" }],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 2 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(2);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      { playerTag: "#A1", discordUserId: "111111111111111111" },
+    ]);
+
+    const interaction = makeInteraction({ days: 7 });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("**Alpha One** (`#A1`) <@111111111111111111> - 8d");
+    expect(embed.description).toContain("**Alpha Two** (`#A2`) — - 9d");
   });
 
   it("shows ratios for other missed-war count combinations", async () => {

@@ -77,10 +77,8 @@ function sortInactiveWarRowsForDisplay(
   });
 }
 
-async function loadInactiveWarDiscordLinks(
-  rows: InactiveWarSummary["results"],
-): Promise<Map<string, string>> {
-  const orderedTags = [...new Set(rows.map((row) => formatInactivePlayerTag(row.playerTag)))];
+async function loadInactiveDiscordLinksForTags(tags: string[]): Promise<Map<string, string>> {
+  const orderedTags = [...new Set(tags.map((tag) => formatInactivePlayerTag(tag)))];
   const links = await listPlayerLinksForClanMembers({ memberTagsInOrder: orderedTags });
   const discordUserIdByPlayerTag = new Map<string, string>();
   for (const link of links) {
@@ -91,12 +89,18 @@ async function loadInactiveWarDiscordLinks(
   return discordUserIdByPlayerTag;
 }
 
-function buildInactiveWarPlayerDiscordText(
+function buildInactivePlayerDiscordText(
   discordUserIdByPlayerTag: Map<string, string>,
   playerTag: string,
 ): string {
   const discordUserId = discordUserIdByPlayerTag.get(normalizeClanTagInput(playerTag)) ?? null;
   return discordUserId ? `<@${discordUserId}>` : "—";
+}
+
+async function loadInactiveWarDiscordLinks(
+  rows: InactiveWarSummary["results"],
+): Promise<Map<string, string>> {
+  return loadInactiveDiscordLinksForTags(rows.map((row) => row.playerTag));
 }
 
 function buildInactiveWarClanAutocompleteChoices(query: string) {
@@ -200,7 +204,7 @@ function buildInactiveWarGroupedPages(input: {
           participationWars: row.participationWars,
           requestedWars: input.requestedWars,
         });
-        const discordText = buildInactiveWarPlayerDiscordText(
+        const discordText = buildInactivePlayerDiscordText(
           input.discordUserIdByPlayerTag,
           row.playerTag,
         );
@@ -754,12 +758,19 @@ async function runDaysMode(
     return a.player.lastSeenAt.getTime() - b.player.lastSeenAt.getTime();
   });
 
+  const daysDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
+    inactivePlayers.map((player) => player.tag)
+  );
   const pages = buildGroupedPages(
     inactiveWithClan,
     (e) => e.clan,
     (e) => {
       const daysAgo = Math.floor((Date.now() - e.player.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000));
-      return `- **${e.player.name}** (${e.player.tag}) - ${daysAgo}d`;
+      const discordText = buildInactivePlayerDiscordText(
+        daysDiscordUserIdByPlayerTag,
+        e.player.tag
+      );
+      return `- **${e.player.name}** (\`${formatInactivePlayerTag(e.player.tag)}\`) ${discordText} - ${daysAgo}d`;
     }
   );
 
@@ -937,7 +948,9 @@ async function runCombinedMode(
     return a.playerTag.localeCompare(b.playerTag);
   });
 
-  const warsDiscordUserIdByPlayerTag = await loadInactiveWarDiscordLinks(warsResult.results);
+  const warsDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
+    rows.map((row) => row.playerTag)
+  );
   const pages = buildGroupedPages(
     rows,
     (e) => e.clanName,
@@ -950,9 +963,10 @@ async function runCombinedMode(
       const warsRow = warsResult.results.find(
         (row) => normalizeClanTagInput(row.playerTag) === normalizeClanTagInput(e.playerTag),
       );
-      const discordText = warsRow
-        ? buildInactiveWarPlayerDiscordText(warsDiscordUserIdByPlayerTag, warsRow.playerTag)
-        : "—";
+      const discordText = buildInactivePlayerDiscordText(
+        warsDiscordUserIdByPlayerTag,
+        e.playerTag
+      );
       const emojiSequence = warsRow ? buildInactiveWarEmojiSequence(warsRow.missedWarStates) : "";
       const playerTag = formatInactivePlayerTag(e.playerTag);
       const reasonText = reasons.length > 0 ? ` - ${reasons.join(" | ")}` : "";
