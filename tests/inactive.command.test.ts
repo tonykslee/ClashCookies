@@ -8,6 +8,21 @@ const playerLinkServiceMock = vi.hoisted(() => ({
   listPlayerLinksForClanMembers: vi.fn(),
 }));
 
+const prismaMock = vi.hoisted(() => ({
+  trackedClan: {
+    findMany: vi.fn(),
+  },
+  playerActivity: {
+    aggregate: vi.fn(),
+    count: vi.fn(),
+    findMany: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
 vi.mock("../src/services/InactiveWarService", async () => {
   const actual = await vi.importActual("../src/services/InactiveWarService");
   return {
@@ -79,6 +94,139 @@ describe("/inactive command", () => {
       wars: 3,
       clanTag: "#AAA111",
     });
+  });
+
+  it("scopes days mode to the selected clan", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [{ tag: "#A1" }, { tag: "#A2" }],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.playerActivity.aggregate.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return { _max: { updatedAt: new Date() }, _count: { tag: 2 } };
+    });
+    prismaMock.playerActivity.count.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return 2;
+    });
+    prismaMock.playerActivity.findMany.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return [
+        {
+          tag: "#A1",
+          name: "Alpha One",
+          clanTag: "#AAA111",
+          lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+          updatedAt: new Date(),
+        },
+        {
+          tag: "#A2",
+          name: "Alpha Two",
+          clanTag: "#AAA111",
+          lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+          updatedAt: new Date(),
+        },
+      ];
+    });
+
+    const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(getClan).toHaveBeenCalledTimes(1);
+    expect(getClan).toHaveBeenCalledWith("#AAA111");
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("Alpha (2)");
+    expect(embed.description).not.toContain("Beta");
+  });
+
+  it("scopes combined mode to the selected clan", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [{ tag: "#A1" }, { tag: "#A2" }],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.playerActivity.aggregate.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return { _max: { updatedAt: new Date() }, _count: { tag: 2 } };
+    });
+    prismaMock.playerActivity.count.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return 2;
+    });
+    prismaMock.playerActivity.findMany.mockImplementation(async (args: any) => {
+      expect(args.where.tag.in).toEqual(["#A1", "#A2"]);
+      return [
+        {
+          tag: "#A1",
+          name: "Alpha One",
+          clanTag: "#AAA111",
+          lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+          updatedAt: new Date(),
+        },
+      ];
+    });
+
+    inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
+      results: [
+        {
+          clanTag: "AAA111",
+          playerTag: "A1",
+          playerName: "Alpha One",
+          missedWars: 3,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [
+            { warId: "503", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "WIN", emoji: "🟢" },
+            { warId: "502", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "LOSE", emoji: "🔴" },
+            { warId: "501", warStartTime: null, warEndTime: null, matchType: "BL", outcome: null, emoji: "⚫" },
+          ],
+        },
+      ],
+      trackedTags: ["AAA111"],
+      trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      warnings: [],
+      diagnosticNote: null,
+    });
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      { playerTag: "#A1", discordUserId: "111111111111111111" },
+    ]);
+
+    const interaction = makeInteraction({ days: 7, wars: 3, clan: "#AAA111" });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(inactiveWarServiceMock.listInactiveWarPlayers).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      wars: 3,
+      clanTag: "#AAA111",
+    });
+    expect(getClan).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("Alpha");
+    expect(embed.description).toContain("`#A1`");
+    expect(embed.description).toContain("🟢");
+    expect(embed.description).not.toContain("Beta");
   });
 
   it("renders grouped wars output with linked Discord users, ratios, and missed-war emojis", async () => {
@@ -161,12 +309,12 @@ describe("/inactive command", () => {
     const embed = payload.embeds[0].toJSON();
     expect(embed.title).toContain("Missed Both Attacks - Last 3 War(s) (3)");
     expect(embed.description).toContain("Alpha (2)");
-    expect(embed.description).toContain("2 wars missed");
+    expect(embed.description).toContain("- 3 wars missed");
+    expect(embed.description).toContain("  - Alpha One `#A1` <@111111111111111111> - 🟢 🔴 ⚫");
+    expect(embed.description).toContain("- 2 wars missed");
+    expect(embed.description).toContain("  - Alpha Two `#A2` — - 2/3 wars missed - ⚪ 🔘");
     expect(embed.description).toContain("Beta (1)");
-    expect(embed.description).toContain("1 war missed");
-    expect(embed.description).toContain("Alpha One `#A1` <@111111111111111111> - 🟢 🔴 ⚫");
-    expect(embed.description).toContain("Alpha Two `#A2` — - 2/3 wars missed - ⚪ 🔘");
-    expect(embed.description).toContain("Beta One `#B1` <@222222222222222222> - 1/2 wars missed - ⚪");
+    expect(embed.description).toContain("  - Beta One `#B1` <@222222222222222222> - 1/2 wars missed - ⚪");
     expect(embed.description).not.toContain("true stars");
     expect(embed.description).not.toContain("avg delay");
     expect(embed.description).not.toContain("late attacks");
@@ -254,7 +402,9 @@ describe("/inactive command", () => {
     await Inactive.run({} as any, interaction as any, cocService);
 
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("No players found in Alpha who missed both attacks in at least one of the last 3 ended war(s)."),
+      expect.stringContaining(
+        "No players found in Alpha who missed both attacks in at least one of the last 3 ended tracked war(s).",
+      ),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Diagnostic: ended wars found yes (3), participation rows found yes (6)."),

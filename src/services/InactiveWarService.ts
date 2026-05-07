@@ -459,7 +459,7 @@ export class InactiveWarService {
         const selection = selectionByClan.get(clanTag);
         const warsAvailable = selection?.warsAvailable ?? 0;
         return warsAvailable < input.wars
-          ? `${trackedNameByTag.get(clanTag) ?? clanTag}: only ${warsAvailable}/${input.wars} ended FWA wars tracked`
+          ? `${trackedNameByTag.get(clanTag) ?? clanTag}: only ${warsAvailable}/${input.wars} ended tracked wars available`
           : null;
       })
       .filter((value): value is string => value !== null);
