@@ -27,6 +27,12 @@ export type AutoRoleGuildConfigSnapshot = Pick<
 
 export type AutoRoleEvaluationMemberLike = {
   id: string;
+  displayName?: string | null;
+  nickname?: string | null;
+  user?: {
+    username?: string | null;
+    globalName?: string | null;
+  } | null;
   roles: {
     cache: {
       keys(): IterableIterator<string>;
@@ -35,6 +41,7 @@ export type AutoRoleEvaluationMemberLike = {
     add(roleId: string): Promise<unknown>;
     remove(roleId: string): Promise<unknown>;
   };
+  setNickname?(nickname: string | null): Promise<unknown>;
 };
 
 export type AutoRoleMemberEvaluation = {

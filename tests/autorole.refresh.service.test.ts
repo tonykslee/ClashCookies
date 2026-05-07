@@ -49,6 +49,7 @@ type GuildMemberLike = {
   id: string;
   user: { id: string };
   displayName: string;
+  nickname: string | null;
   roles: {
     cache: {
       keys(): IterableIterator<string>;
@@ -57,6 +58,7 @@ type GuildMemberLike = {
     add: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
   };
+  setNickname: ReturnType<typeof vi.fn>;
   __roleIds: string[];
 };
 
@@ -73,10 +75,12 @@ function makeMember(id: string, roleIds: string[] = []): GuildMemberLike {
       roleState.splice(index, 1);
     }
   });
+  const setNickname = vi.fn(async () => undefined);
   return {
     id,
     user: { id },
     displayName: `Member ${id}`,
+    nickname: null,
     roles: {
       cache: {
         keys: () => roleState.values(),
@@ -85,6 +89,7 @@ function makeMember(id: string, roleIds: string[] = []): GuildMemberLike {
       add,
       remove,
     },
+    setNickname,
     __roleIds: roleState,
   };
 }
@@ -110,7 +115,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
     killSwitchEnabled: false,
     removeStaleManagedRoles: false,
     applyNicknames: true,
-    nicknameTemplate: "TH{th} {name}",
+    nicknameTemplate: "TH{th} {player}",
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     syncEnabled: true,
@@ -238,6 +243,19 @@ describe("AutoRoleRefreshService", () => {
         }),
       ].filter((row) => wanted.has(row.discordUserId));
     });
+    vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockImplementationOnce(async ({ playerTags }) => {
+      const map = new Map<string, any>();
+      for (const playerTag of playerTags) {
+        map.set(
+          playerTag,
+          makePlayerCurrent({
+            playerTag,
+            playerName: playerTag === "#2QG2C08UP" ? "Alpha" : `Player ${playerTag}`,
+          }),
+        );
+      }
+      return map;
+    });
 
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({ applyNicknames: true, removeStaleManagedRoles: false }),
@@ -270,9 +288,10 @@ describe("AutoRoleRefreshService", () => {
     expect(result.memberResults[0]).toMatchObject({
       discordUserId: userId,
       status: "applied",
-      nicknameStatus: "skipped",
-      nicknameReason: "nickname renderer not implemented",
+      nicknameStatus: "changed",
+      nicknameReason: null,
     });
+    expect(member.setNickname).toHaveBeenCalledWith("TH16 Alpha");
     expect(prismaMock.autoRoleSyncRun.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
