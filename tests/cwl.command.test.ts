@@ -1994,13 +1994,13 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain("Day 1");
     expect(getDescription(interaction)).not.toContain("Warnings:");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
-    expect(getDescription(interaction)).toContain(
-      ":warning: Charlie (#VJQ28888) | War count: 1 - Expected Bravo (#QGRJ2222)",
-    );
+    expect(getDescription(interaction)).toContain("⚠️ Actual lineup differs from the rotation plan.");
+    expect(getDescription(interaction)).toContain("Unexpected actual players");
+    expect(getDescription(interaction)).toContain(":warning: Charlie (#VJQ28888) | War count: 1");
+    expect(getDescription(interaction)).toContain("Missing expected players");
     expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
     expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
-    expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
-    expect(cwlStateService.listSeasonRosterForClan).not.toHaveBeenCalled();
+    expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(4);
@@ -2746,11 +2746,13 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     expect(getDescription(interaction)).toContain(":white_check_mark: Echo (#PYLQ0289)");
-    expect(getDescription(interaction)).toContain(
-      ":warning: Zulu (#VJQ28888) | War count: 0 - Expected Foxtrot (#QGRJ2222)",
-    );
+    expect(getDescription(interaction)).toContain("⚠️ Actual lineup differs from the rotation plan.");
+    expect(getDescription(interaction)).toContain("Unexpected actual players");
+    expect(getDescription(interaction)).toContain(":warning: Zulu (#VJQ28888) | War count: 0");
+    expect(getDescription(interaction)).toContain("Missing expected players");
     expect(getDescription(interaction)).toContain(":x: Foxtrot (#QGRJ2222) | War count: 0");
     expect(getDescription(interaction)).toContain(":x: Golf (#CUV02898) | War count: 0");
+    expect(getDescription(interaction)).not.toContain(" - Expected ");
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
   });
@@ -2796,8 +2798,9 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
+    expect(getDescription(interaction)).toContain("Unexpected actual players");
     expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
-    expect(getDescription(interaction)).not.toContain("Expected Hotel (#JQJQ2222)");
+    expect(getDescription(interaction)).not.toContain(" - Expected ");
   });
 
   it("shows a blocked substituted CWL lineup member with the expected original slot player suffix", async () => {
@@ -2854,12 +2857,11 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
-    expect(getDescription(interaction)).toContain(
-      "TouchGrassLLC (#GUR9CGGVQ) | War count: 0 - Expected Achin4Bacon (#GGLLP22RJ)",
-    );
+    expect(getDescription(interaction)).toContain("Unexpected actual players");
+    expect(getDescription(interaction)).toContain("⛔️ TouchGrassLLC (#GUR9CGGVQ) | War count: 0");
     expect(getDescription(interaction)).toContain(":white_check_mark: Alpha (#PYLQ0289) | War count: 1");
     expect(getDescription(interaction)).toContain(":white_check_mark: Bravo (#QGRJ2222) | War count: 1");
-    expect(getDescription(interaction)).not.toContain("TouchGrassLLC (#GUR9CGGVQ) | War count: 0 - Expected TouchGrassLLC");
+    expect(getDescription(interaction)).not.toContain(" - Expected ");
   });
 
   it("keeps the current output when no expected CWL slot can be resolved", async () => {
@@ -2901,8 +2903,9 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
+    expect(getDescription(interaction)).toContain("Unexpected actual players");
     expect(getDescription(interaction)).toContain(":warning: Visitor (#VJQ28888) | War count: 0");
-    expect(getDescription(interaction)).not.toContain("Expected");
+    expect(getDescription(interaction)).not.toContain(" - Expected ");
   });
 
   it("renders an import preview before save and confirms only after a button interaction", async () => {
