@@ -176,6 +176,81 @@ async function loadLinkedAccountsForGuildMemberIds(input: {
   return byUserId;
 }
 
+async function loadLinkedAccountsForPlayerTags(input: {
+  playerTags: string[];
+}): Promise<Map<string, PlayerLinkWithTrust[]>> {
+  const normalizedTags = normalizePlayerTags(input.playerTags);
+  if (normalizedTags.length === 0) {
+    return new Map();
+  }
+
+  const rows = await prisma.playerLink.findMany({
+    where: {
+      playerTag: { in: normalizedTags },
+    },
+    select: {
+      playerTag: true,
+      discordUserId: true,
+      discordUsername: true,
+      playerName: true,
+      linkSource: true,
+      verificationStatus: true,
+      verificationMethod: true,
+      verifiedAt: true,
+      verifiedByDiscordUserId: true,
+      lastVerifiedAt: true,
+      verificationFailureReason: true,
+      importBatchKey: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  const byUserId = new Map<string, PlayerLinkWithTrust[]>();
+  for (const row of rows) {
+    const discordUserId = String(row.discordUserId ?? "").trim();
+    if (!discordUserId) continue;
+    const list = byUserId.get(discordUserId) ?? [];
+    list.push({
+      playerTag: row.playerTag,
+      discordUserId,
+      discordUsername: row.discordUsername,
+      playerName: row.playerName,
+      linkSource: row.linkSource,
+      verificationStatus: row.verificationStatus,
+      verificationMethod: row.verificationMethod,
+      verifiedAt: row.verifiedAt,
+      verifiedByDiscordUserId: row.verifiedByDiscordUserId,
+      lastVerifiedAt: row.lastVerifiedAt,
+      verificationFailureReason: row.verificationFailureReason,
+      importBatchKey: row.importBatchKey,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    byUserId.set(discordUserId, list);
+  }
+  return byUserId;
+}
+
+async function collectMembershipScopedCandidateUsers(input: {
+  membersById: Map<string, AutoRoleGuildMemberLike>;
+  trackedMemberPlayerTags: string[];
+  targetRoleId: string;
+}): Promise<Set<string>> {
+  const candidateIds = collectCurrentRoleHolders(input.membersById, new Set([input.targetRoleId]));
+  const linkedAccountsByUserId = await loadLinkedAccountsForPlayerTags({
+    playerTags: input.trackedMemberPlayerTags,
+  });
+
+  for (const userId of linkedAccountsByUserId.keys()) {
+    if (input.membersById.has(userId)) {
+      candidateIds.add(userId);
+    }
+  }
+
+  return candidateIds;
+}
+
 function collectPlayerCurrentRequirementFields(input: {
   snapshot: AutoRoleGuildStateSnapshot;
   nicknameEnabled: boolean;
@@ -924,9 +999,39 @@ export class AutoRoleRefreshService {
       }
 
       const membersById = await fetchGuildMembersMap(input.guild, input.scope);
-      const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
-        guildMemberIds: [...membersById.keys()],
+      const cwlSeason = resolveCurrentCwlSeasonKey();
+      const trackedMembershipScope = await loadTrackedClanMembershipScope({
+        season: cwlSeason,
+        cocService: input.cocService ?? null,
       });
+      const clanMembershipIndex = await loadClanMembershipIndex({
+        season: cwlSeason,
+        rules: snapshot.rules,
+      });
+      const roleScope = input.scope.kind === "role" ? input.scope : null;
+      const isFamilyRoleScope = roleScope !== null && snapshot.config.familyRoleId === roleScope.discordRoleId;
+      const isCwlClanRoleScope = roleScope !== null && snapshot.config.cwlClanRoleId === roleScope.discordRoleId;
+
+      const candidateUserIds =
+        roleScope && (isFamilyRoleScope || isCwlClanRoleScope)
+          ? await collectMembershipScopedCandidateUsers({
+              membersById,
+              trackedMemberPlayerTags: isFamilyRoleScope
+                ? [...trackedMembershipScope.fwaMemberTags, ...trackedMembershipScope.cwlMemberTags]
+                : [...trackedMembershipScope.cwlMemberTags],
+              targetRoleId: roleScope.discordRoleId,
+            })
+          : new Set<string>(membersById.keys());
+
+      const linkedAccountsByUserId =
+        input.scope.kind === "guild" || roleScope === null || (!isFamilyRoleScope && !isCwlClanRoleScope)
+          ? await loadLinkedAccountsForGuildMemberIds({
+              guildMemberIds: [...membersById.keys()],
+            })
+          : await loadLinkedAccountsForGuildMemberIds({
+              guildMemberIds: [...candidateUserIds],
+            });
+
       const nicknameTemplate = normalizeNicknameTemplate(snapshot.config.nicknameTemplate);
       const playerCurrentRequiredFields = collectPlayerCurrentRequirementFields({
         snapshot,
@@ -940,18 +1045,9 @@ export class AutoRoleRefreshService {
       const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
         ? await loadTrackedClansForNickname()
         : [];
-      const cwlSeason = resolveCurrentCwlSeasonKey();
-      const trackedMembershipScope = await loadTrackedClanMembershipScope({
-        season: cwlSeason,
-        cocService: input.cocService ?? null,
-      });
-      const clanMembershipIndex = await loadClanMembershipIndex({
-        season: cwlSeason,
-        rules: snapshot.rules,
-      });
 
       dozzleLog.info(
-        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} candidate_members=${membersById.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size} player_current_fields=${playerCurrentRequiredFields.length > 0 ? playerCurrentRequiredFields.join(",") : "none"}`,
+        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size} player_current_fields=${playerCurrentRequiredFields.length > 0 ? playerCurrentRequiredFields.join(",") : "none"}`,
       );
 
       return runRefreshPass({

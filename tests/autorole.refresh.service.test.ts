@@ -530,6 +530,186 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
+  it("builds family role-scoped candidates from tracked member tags and current holders without resolving PlayerCurrent", async () => {
+    const familyRoleId = "222222222222222222";
+    const staleHolderId = "111111111111111111";
+    const fwaCandidateId = "333333333333333333";
+    const cwlCandidateId = "444444444444444444";
+    const staleHolder = makeMember(staleHolderId, [familyRoleId]);
+    const fwaCandidate = makeMember(fwaCandidateId);
+    const cwlCandidate = makeMember(cwlCandidateId);
+    const guild = makeGuild(new Map([
+      [staleHolderId, staleHolder],
+      [fwaCandidateId, fwaCandidate],
+      [cwlCandidateId, cwlCandidate],
+    ]));
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      if (where.playerTag?.in) {
+        const wanted = new Set(where.playerTag.in);
+        return [
+          makeLinkedAccount({
+            playerTag: "#2QG2C08UP",
+            discordUserId: fwaCandidateId,
+            playerName: "FWA Candidate",
+          }),
+          makeLinkedAccount({
+            playerTag: "#PYLQ0289",
+            discordUserId: cwlCandidateId,
+            playerName: "CWL Candidate",
+          }),
+        ].filter((row) => wanted.has(row.playerTag));
+      }
+      if (where.discordUserId?.in) {
+        const wanted = new Set(where.discordUserId.in);
+        return [
+          makeLinkedAccount({
+            playerTag: "#QGRJ2222",
+            discordUserId: staleHolderId,
+            playerName: "Stale Holder",
+          }),
+          makeLinkedAccount({
+            playerTag: "#2QG2C08UP",
+            discordUserId: fwaCandidateId,
+            playerName: "FWA Candidate",
+          }),
+          makeLinkedAccount({
+            playerTag: "#PYLQ0289",
+            discordUserId: cwlCandidateId,
+            playerName: "CWL Candidate",
+          }),
+        ].filter((row) => wanted.has(row.discordUserId));
+      }
+      return [];
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#2QG2C08UP",
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        playerTag: "#PYLQ0289",
+      },
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        familyRoleId,
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: familyRoleId,
+    });
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          playerTag: { in: expect.arrayContaining(["#2QG2C08UP", "#PYLQ0289"]) },
+        }),
+      }),
+    );
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(familyRoleId);
+    expect(fwaCandidate.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(cwlCandidate.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(result).toMatchObject({
+      evaluatedCount: 3,
+      addedCount: 2,
+      removedCount: 1,
+    });
+  });
+
+  it("builds cwl role-scoped candidates from tracked member tags and current holders without resolving PlayerCurrent", async () => {
+    const cwlClanRoleId = "333333333333333333";
+    const staleHolderId = "111111111111111111";
+    const cwlCandidateId = "444444444444444444";
+    const staleHolder = makeMember(staleHolderId, [cwlClanRoleId]);
+    const cwlCandidate = makeMember(cwlCandidateId);
+    const guild = makeGuild(new Map([
+      [staleHolderId, staleHolder],
+      [cwlCandidateId, cwlCandidate],
+    ]));
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      if (where.playerTag?.in) {
+        const wanted = new Set(where.playerTag.in);
+        return [
+          makeLinkedAccount({
+            playerTag: "#PYLQ0289",
+            discordUserId: cwlCandidateId,
+            playerName: "CWL Candidate",
+          }),
+        ].filter((row) => wanted.has(row.playerTag));
+      }
+      if (where.discordUserId?.in) {
+        const wanted = new Set(where.discordUserId.in);
+        return [
+          makeLinkedAccount({
+            playerTag: "#QGRJ2222",
+            discordUserId: staleHolderId,
+            playerName: "Stale Holder",
+          }),
+          makeLinkedAccount({
+            playerTag: "#PYLQ0289",
+            discordUserId: cwlCandidateId,
+            playerName: "CWL Candidate",
+          }),
+        ].filter((row) => wanted.has(row.discordUserId));
+      }
+      return [];
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        playerTag: "#PYLQ0289",
+      },
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        cwlClanRoleId,
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: cwlClanRoleId,
+    });
+
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          playerTag: { in: ["#PYLQ0289"] },
+        }),
+      }),
+    );
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(cwlClanRoleId);
+    expect(cwlCandidate.roles.add).toHaveBeenCalledWith(cwlClanRoleId);
+    expect(result).toMatchObject({
+      evaluatedCount: 2,
+      addedCount: 1,
+      removedCount: 1,
+    });
+  });
+
   it("removes the generic CWL clan role when the member is no longer in a tracked CWL clan", async () => {
     const cwlClanRoleId = "333333333333333333";
     const userId = "111111111111111111";
