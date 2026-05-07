@@ -117,7 +117,7 @@ describe("compo refresh button behavior", () => {
 
     expect(CompoActualStateService.prototype.refreshState).toHaveBeenCalledWith(
       "guild-1",
-      { view: "raw" },
+      { view: "auto" },
     );
     const loadingPayload = interaction.update.mock.calls[0]?.[0];
     expect(readFirstButton(loadingPayload)).toEqual({
@@ -201,7 +201,7 @@ describe("compo refresh button behavior", () => {
       }),
     );
     viewInteraction.message.components = [
-      makeMessageRow("compo-refresh:state:user-1:actual:raw", "Refresh Data"),
+      makeMessageRow("compo-refresh:state:user-1:actual:auto", "Refresh Data"),
       makeMessageRow("compo-refresh:view:user-1:raw", "Raw Data"),
       makeMessageRow("post-channel:user-1", "Post to Channel"),
     ];
@@ -218,7 +218,6 @@ describe("compo refresh button behavior", () => {
         "compo-refresh:state:user-1:actual:auto",
         "compo-refresh:view:user-1:state:raw",
         "compo-refresh:view:user-1:state:auto",
-        "compo-refresh:view:user-1:state:best",
       ]),
     );
 
@@ -235,6 +234,48 @@ describe("compo refresh button behavior", () => {
     expect(CompoActualStateService.prototype.refreshState).toHaveBeenCalledWith(
       "guild-1",
       { view: "auto" },
+    );
+  });
+
+  it("maps stale ACTUAL state best ids to auto without crashing", async () => {
+    vi.spyOn(CompoActualStateService.prototype, "readState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["ACTUAL CLAN", "1,635,000", "2", "49", "1", "0", "-1", "0", "0", "0"],
+      ],
+      contentLines: [
+        "RAW Data last refreshed: <t:1709900001:F>",
+        "ACTUAL View: **Auto-Detect Band**",
+      ],
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      view: "auto",
+    });
+
+    const viewInteraction = makeInteraction("compo-refresh:view:user-1:state:best");
+    viewInteraction.message.components = [
+      makeMessageRow("compo-refresh:state:user-1:actual:auto", "Refresh Data"),
+      makeMessageRow("compo-refresh:view:user-1:state:raw", "Raw Data"),
+      makeMessageRow("compo-refresh:view:user-1:state:auto", "Auto-Detect Band"),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(viewInteraction as any, {} as any);
+
+    expect(CompoActualStateService.prototype.readState).toHaveBeenCalledWith(
+      "guild-1",
+      { view: "auto" },
+    );
+    const payload = viewInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(collectButtonCustomIds(payload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:state:user-1:actual:auto",
+        "compo-refresh:view:user-1:state:raw",
+        "compo-refresh:view:user-1:state:auto",
+      ]),
+    );
+    expect(collectButtonCustomIds(payload)).not.toContain(
+      "compo-refresh:view:user-1:state:best",
     );
   });
 

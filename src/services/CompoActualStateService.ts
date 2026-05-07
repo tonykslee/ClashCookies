@@ -102,10 +102,23 @@ function buildActualStateRow(input: {
   projection: CompoActualStateProjection;
 }): string[] {
   const row = [normalizeActualStateClanDisplayName(input.clanName)];
-  row.push(input.base.resolvedTotalWeight.toLocaleString("en-US"));
-  if (input.view !== "raw") {
-    row.push(input.projection.totalWeight.toLocaleString("en-US"));
+  if (input.view === "raw") {
+    row.push(
+      input.base.resolvedTotalWeight.toLocaleString("en-US"),
+      `${input.projection.unresolvedWeightCount}`,
+      `${input.projection.memberCount}`,
+      `${input.projection.displayCounts.TH18}`,
+      `${input.projection.displayCounts.TH17}`,
+      `${input.projection.displayCounts.TH16}`,
+      `${input.projection.displayCounts.TH15}`,
+      `${input.projection.displayCounts.TH14}`,
+      `${input.projection.displayCounts["<=TH13"]}`,
+    );
+    return row;
   }
+
+  row.push(input.base.resolvedTotalWeight.toLocaleString("en-US"));
+  row.push(input.projection.totalWeight.toLocaleString("en-US"));
   row.push(
     `${input.projection.missingWeights}`,
     `${input.projection.memberCount}`,
@@ -139,17 +152,18 @@ function buildActualViewSummaryLines(
   view: CompoActualStateView,
   latestSourceSyncedAt: Date | null,
   missingHeatMapBands: string[],
+  missingTo50Count: number,
 ): string[] {
   const contentLines = [
     buildPersistedRefreshLine(latestSourceSyncedAt),
     `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
   ];
   if (view === "raw") {
+    contentLines.push("Raw Data: current resolved roster composition.");
+    contentLines.push("No estimated fill-ins or heatmap deltas.");
     contentLines.push("Resolved roster weight is shown directly in the table.");
-    contentLines.push("Projected 50-player weight is not applied in RAW view.");
-    contentLines.push("Projected 50-player planning is available in Auto-Detect Band and Best Fit.");
-    contentLines.push("Deltas: resolved vs HeatMapRef.");
     contentLines.push("Missing = unresolved weights only.");
+    contentLines.push(`Missing-to-50 roster fill info: ${missingTo50Count}`);
   } else if (view === "auto") {
     contentLines.push("Resolved roster weight is shown separately from the projected 50-player total.");
     contentLines.push("Selected band source: projected total.");
@@ -163,7 +177,7 @@ function buildActualViewSummaryLines(
     contentLines.push("Resolved roster deficits remain available in Raw Data.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
   }
-  if (missingHeatMapBands.length > 0) {
+  if (view !== "raw" && missingHeatMapBands.length > 0) {
     contentLines.push(
       `Missing HeatMapRef band for displayed ACTUAL totals: ${missingHeatMapBands.join("; ")}`,
     );
@@ -515,7 +529,7 @@ export class CompoActualStateService {
     guildId?: string | null,
     options?: { view?: CompoActualStateView },
   ): Promise<CompoActualStateReadResult> {
-    const view = options?.view ?? "raw";
+    const view = options?.view ?? "auto";
     const context = await loadCompoActualStateContext(guildId);
 
     if (context.trackedClanTags.length === 0) {
@@ -535,6 +549,10 @@ export class CompoActualStateService {
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
     const rows: string[][] = [];
+    const totalMissingTo50Count = context.clans.reduce(
+      (sum, clan) => sum + Math.max(0, 50 - clan.base.memberCount),
+      0,
+    );
 
     for (const clan of context.clans) {
       const projection = projectCompoActualStateView({
@@ -594,6 +612,7 @@ export class CompoActualStateService {
         view,
         context.latestSourceSyncedAt,
         missingHeatMapBands,
+        totalMissingTo50Count,
       ),
       trackedClanTags: context.trackedClanTags,
       renderableClanTags,

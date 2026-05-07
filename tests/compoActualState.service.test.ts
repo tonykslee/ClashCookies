@@ -190,7 +190,9 @@ describe("CompoActualStateService", () => {
       }),
     ]);
 
-    const result = await new CompoActualStateService().readState("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
 
     expect(result.stateRows?.[0]).toEqual([
       "Clan",
@@ -209,13 +211,22 @@ describe("CompoActualStateService", () => {
       "798,000",
       "1",
       "6",
+      "2",
+      "1",
       "0",
-      "0",
-      "0",
-      "0",
-      "0",
+      "1",
+      "1",
       "0",
     ]);
+    expect(result.contentLines).toContain(
+      "Raw Data: current resolved roster composition.",
+    );
+    expect(result.contentLines).toContain(
+      "No estimated fill-ins or heatmap deltas.",
+    );
+    expect(result.contentLines).toContain(
+      "Missing-to-50 roster fill info: 44",
+    );
   });
 
   it("renders ACTUAL state from persisted current-member data without sheet reads and still counts unresolved missing weights", async () => {
@@ -265,7 +276,9 @@ describe("CompoActualStateService", () => {
       "readCompoLinkedValues",
     );
 
-    const result = await new CompoActualStateService().readState("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
 
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
@@ -290,9 +303,9 @@ describe("CompoActualStateService", () => {
       "1",
       "4",
       "0",
-      "0",
-      "0",
-      "-1",
+      "1",
+      "1",
+      "1",
       "0",
       "0",
     ]);
@@ -308,6 +321,12 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
+    expect(result.contentLines).toContain(
+      "Raw Data: current resolved roster composition.",
+    );
+    expect(result.contentLines).toContain(
+      "No estimated fill-ins or heatmap deltas.",
+    );
   });
 
   it("shows projected totals separately in ACTUAL auto view and labels projected deltas", async () => {
@@ -426,7 +445,9 @@ describe("CompoActualStateService", () => {
       }),
     ]);
 
-    const result = await new CompoActualStateService().readState("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
 
     expect(result.stateRows?.[0]).toEqual([
       "Clan",
@@ -445,13 +466,16 @@ describe("CompoActualStateService", () => {
       "439,000",
       "0",
       "4",
+      "1",
       "0",
       "0",
       "0",
       "0",
-      "0",
-      "-3",
+      "3",
     ]);
+    expect(result.contentLines).not.toContain(
+      "Missing HeatMapRef band for displayed ACTUAL totals:",
+    );
   });
 
   it("refreshes ACTUAL member weights and live member counts for all tracked clans before rereading persisted ACTUAL state", async () => {
