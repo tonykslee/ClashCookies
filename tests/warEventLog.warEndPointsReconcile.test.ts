@@ -296,7 +296,7 @@ describe("War-end expected points persistence via processSubscription", () => {
 
   it("persists BL expected points as +3 / +2 / +1 with strict >60 threshold", async () => {
     await runProcessSubscriptionCase({
-      subOverrides: { matchType: "BL", warStartFwaPoints: 500 },
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
       finalResult: {
         clanStars: 100,
         opponentStars: 99,
@@ -308,7 +308,7 @@ describe("War-end expected points persistence via processSubscription", () => {
       expectedWarEndFwaPoints: 503,
     });
     await runProcessSubscriptionCase({
-      subOverrides: { matchType: "BL", warStartFwaPoints: 500 },
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
       finalResult: {
         clanStars: 90,
         opponentStars: 100,
@@ -320,12 +320,48 @@ describe("War-end expected points persistence via processSubscription", () => {
       expectedWarEndFwaPoints: 502,
     });
     await runProcessSubscriptionCase({
-      subOverrides: { matchType: "BL", warStartFwaPoints: 500 },
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
       finalResult: {
         clanStars: 90,
         opponentStars: 100,
         clanDestruction: 60,
         opponentDestruction: 70,
+        warEndTime: null,
+        resultLabel: "LOSE",
+      },
+      expectedWarEndFwaPoints: 501,
+    });
+    await runProcessSubscriptionCase({
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
+      finalResult: {
+        clanStars: 150,
+        opponentStars: 149,
+        clanDestruction: 60,
+        opponentDestruction: 60,
+        warEndTime: null,
+        resultLabel: "LOSE",
+      },
+      expectedWarEndFwaPoints: 503,
+    });
+    await runProcessSubscriptionCase({
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 45 },
+      finalResult: {
+        clanStars: 135,
+        opponentStars: 134,
+        clanDestruction: 60,
+        opponentDestruction: 60,
+        warEndTime: null,
+        resultLabel: "LOSE",
+      },
+      expectedWarEndFwaPoints: 503,
+    });
+    await runProcessSubscriptionCase({
+      subOverrides: { matchType: "BL", warStartFwaPoints: 500, teamSize: 50 },
+      finalResult: {
+        clanStars: 135,
+        opponentStars: 134,
+        clanDestruction: 60,
+        opponentDestruction: 60,
         warEndTime: null,
         resultLabel: "LOSE",
       },

@@ -306,7 +306,7 @@ export class WarEventHistoryService {
         "This is our opportunity to gain some extra FWA points!",
         "\u2795 30+ people switch to war base = +1 point",
         "\u2795 60% total destruction = +1 point",
-        "\u2795 win war = +1 point",
+        "\u2795 win war or perfect war = +1 point",
         "---",
         "If you need war base, check https://clashofclans-layouts.com/ or bases",
       ].join("\n");

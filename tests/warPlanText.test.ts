@@ -124,6 +124,7 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     const firstLine = String(out).split("\n")[0] ?? "";
     expect(firstLine).toContain("# ");
     expect(firstLine).toContain("__**BLACKLIST**__ vs OPPONENT_NAME");
+    expect(out).toContain("win war or perfect war = +1 point");
   });
 
   it("returns MM default with header format in first line", async () => {

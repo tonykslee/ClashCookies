@@ -168,6 +168,7 @@ export function computeWarPointsDeltaForTest(input: {
   before: number | null;
   after: number | null;
   finalResult: WarEndResultSnapshot;
+  teamSize?: number | null;
 }): number | null {
   const before = input.before !== null && Number.isFinite(input.before) ? input.before : null;
   if (before === null) return null;
@@ -176,6 +177,7 @@ export function computeWarPointsDeltaForTest(input: {
     before,
     finalResult: input.finalResult,
     outcome: null,
+    teamSize: input.teamSize ?? null,
   });
   if (expectedAfter === null || !Number.isFinite(expectedAfter)) return null;
   return expectedAfter - before;
@@ -187,6 +189,7 @@ export function computeExpectedWarEndPointsForTest(input: {
   before: number | null;
   finalResult: WarEndResultSnapshot;
   outcome: "WIN" | "LOSE" | null;
+  teamSize?: number | null;
 }): number | null {
   const before = input.before !== null && Number.isFinite(input.before) ? Math.trunc(input.before) : null;
   if (before === null) return null;
@@ -201,7 +204,14 @@ export function computeExpectedWarEndPointsForTest(input: {
     return before;
   }
   if (input.matchType === "BL") {
-    if (resolvedOutcome === "WIN") return before + 3;
+    const teamSize = Number.isFinite(Number(input.teamSize)) ? Math.trunc(Number(input.teamSize)) : null;
+    const perfectWar =
+      teamSize === 50
+        ? Number(input.finalResult.clanStars ?? 0) === 150
+        : teamSize === 45
+          ? Number(input.finalResult.clanStars ?? 0) === 135
+          : false;
+    if (resolvedOutcome === "WIN" || perfectWar) return before + 3;
     if (Number(input.finalResult.clanDestruction ?? 0) > 60) return before + 2;
     return before + 1;
   }
