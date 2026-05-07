@@ -26,7 +26,6 @@ import {
   type CompoAdviceView,
 } from "../helper/compoAdviceEngine";
 import {
-  COMPO_ACTUAL_STATE_VIEWS,
   getCompoActualStateViewLabel,
   type CompoActualStateView,
 } from "../helper/compoActualStateView";
@@ -58,6 +57,17 @@ import {
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
+}
+
+const COMPO_ACTUAL_STATE_VISIBLE_VIEWS: readonly CompoActualStateView[] = [
+  "raw",
+  "auto",
+];
+
+function normalizeCompoActualStateView(
+  view?: string | null,
+): CompoActualStateView {
+  return view === "raw" ? "raw" : "auto";
 }
 
 function getSubcommandSafe(interaction: ChatInputCommandInteraction): string {
@@ -200,7 +210,7 @@ type CompoRefreshPayload =
 function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   if (payload.kind === "state") {
     if (payload.mode === "actual") {
-      return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:actual:${payload.actualView ?? "raw"}`;
+      return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:actual:${normalizeCompoActualStateView(payload.actualView)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:state:${payload.userId}:war`;
   }
@@ -215,7 +225,7 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   }
   if (payload.kind === "advice-clan") {
     if (payload.mode === "actual") {
-      const base = `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:actual:${payload.targetTag}:${payload.adviceView ?? "raw"}`;
+      const base = `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:actual:${payload.targetTag}:${payload.adviceView ?? "auto"}`;
       return `${base}:${Math.trunc(payload.customBandCount ?? 0)}:${Math.trunc(payload.customBandIndex ?? 0)}`;
     }
     return `${COMPO_REFRESH_PREFIX}:advice-clan:${payload.userId}:war:${payload.targetTag}`;
@@ -256,15 +266,11 @@ function parseCompoRefreshCustomId(
       mode === "actual" &&
       (parts.length === 4 || parts.length === 5)
     ) {
-      const actualView = parts[4] ?? "raw";
-      if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
-        return null;
-      }
       return {
         kind: "state",
         userId,
         mode,
-        actualView: actualView as CompoActualStateView,
+        actualView: normalizeCompoActualStateView(parts[4]),
       };
     }
     return null;
@@ -360,15 +366,11 @@ function parseCompoRefreshCustomId(
   if (kind === "view" && parts.length >= 5) {
     const target = parts[3];
     if (target === "state" && parts.length === 5) {
-      const actualView = parts[4];
-      if (!COMPO_ACTUAL_STATE_VIEWS.includes(actualView as CompoActualStateView)) {
-        return null;
-      }
       return {
         kind: "view",
         userId,
         target,
-        actualView: actualView as CompoActualStateView,
+        actualView: normalizeCompoActualStateView(parts[4]),
       };
     }
     if (
@@ -478,7 +480,7 @@ function buildCompoActualViewActionRow(input: {
 }): ActionRowBuilder<ButtonBuilder> {
   const loading = input.loading ?? false;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    COMPO_ACTUAL_STATE_VIEWS.map((view) =>
+    COMPO_ACTUAL_STATE_VISIBLE_VIEWS.map((view) =>
       (() => {
         const payload =
           input.target === "advice"
@@ -1646,7 +1648,7 @@ function buildCompoRefreshComponents(input: {
       buildCompoActualViewActionRow({
         userId: input.refreshPayload.userId,
         target: "state",
-        selectedView: input.refreshPayload.actualView,
+        selectedView: normalizeCompoActualStateView(input.refreshPayload.actualView),
         loading: input.loading,
       }),
     );
@@ -1830,7 +1832,7 @@ export async function handleCompoRefreshButton(
             kind: "advice",
             userId: parsed.userId,
             mode: "actual",
-            adviceView: parsed.adviceView ?? "raw",
+            adviceView: parsed.adviceView ?? "auto",
             targetTag: parsed.targetTag,
             customBandIndex: parsed.customBandIndex ?? 0,
             customBandCount: parsed.customBandCount ?? 0,
@@ -1865,7 +1867,7 @@ export async function handleCompoRefreshButton(
   });
 
   try {
-    if (parsed.kind === "state") {
+  if (parsed.kind === "state") {
       let payload: CompoRenderPayload;
       if (parsed.mode === "war") {
         const warState = await new CompoWarStateService().refreshState();
@@ -1891,7 +1893,7 @@ export async function handleCompoRefreshButton(
               stateRows: actualState.stateRows,
               contentLines: actualState.contentLines,
               titleLabel: getCompoActualStateViewLabel(
-                actualState.view ?? "raw",
+                actualState.view ?? "auto",
               ).toUpperCase(),
             })
           : {
@@ -1956,7 +1958,7 @@ export async function handleCompoRefreshButton(
               stateRows: actualState.stateRows,
               contentLines: actualState.contentLines,
               titleLabel: getCompoActualStateViewLabel(
-                actualState.view ?? "raw",
+                actualState.view ?? "auto",
               ).toUpperCase(),
             })
           : {
@@ -2110,7 +2112,7 @@ export async function handleCompoAdviceClanSelectMenuInteraction(
           kind: "advice",
           userId: parsed.userId,
           mode: "actual",
-          adviceView: parsed.adviceView ?? "raw",
+          adviceView: parsed.adviceView ?? "auto",
           targetTag: selectedTargetTag,
           customBandIndex: parsed.customBandIndex ?? 0,
           customBandCount: parsed.customBandCount ?? 0,
@@ -2137,7 +2139,7 @@ export async function handleCompoAdviceClanSelectMenuInteraction(
       guildId: interaction.guildId ?? null,
       targetTag: selectedTargetTag,
       mode: parsed.mode,
-      view: parsed.mode === "actual" ? parsed.adviceView : "raw",
+      view: parsed.mode === "actual" ? parsed.adviceView ?? "auto" : "raw",
       customBandIndex:
         parsed.mode === "actual" ? parsed.customBandIndex ?? 0 : null,
     });
@@ -2338,7 +2340,7 @@ export const Compo: Command = {
                 const actualState = await new CompoActualStateService().readState(
                   interaction.guildId ?? null,
                   {
-                    view: "raw",
+                    view: "auto",
                   },
                 );
                 logCompoStage(interaction, "db_fetch", {
@@ -2353,12 +2355,12 @@ export const Compo: Command = {
                   result: actualState.stateRows ? "found" : "partial_or_missing",
                 });
                 return actualState.stateRows
-                  ? buildCompoStatePayloadFromRows({
+                    ? buildCompoStatePayloadFromRows({
                       mode: "actual",
                       stateRows: actualState.stateRows,
                       contentLines: actualState.contentLines,
                       titleLabel: getCompoActualStateViewLabel(
-                        actualState.view ?? "raw",
+                        actualState.view ?? "auto",
                       ).toUpperCase(),
                     })
                   : {
@@ -2379,7 +2381,7 @@ export const Compo: Command = {
                       kind: "state",
                       userId: interaction.user.id,
                       mode: "actual",
-                      actualView: "raw",
+                      actualView: "auto",
                     }
                 : {
                     kind: "state",
