@@ -203,6 +203,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
       matchType: "BL",
       before: 100,
       after: 100,
+      teamSize: 50,
       finalResult: {
         clanStars: 100,
         opponentStars: 99,
@@ -215,11 +216,66 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
     expect(delta).toBe(3);
   });
 
+  it("BL war: returns +3 points for a perfect 50v50 war on TIE", () => {
+    const delta = computeWarPointsDeltaForTest({
+      matchType: "BL",
+        before: 100,
+        after: 100,
+        teamSize: 50,
+        finalResult: {
+          clanStars: 150,
+          opponentStars: 150,
+          clanDestruction: 60,
+          opponentDestruction: 60,
+          warEndTime: null,
+          resultLabel: "TIE",
+      },
+    });
+    expect(delta).toBe(3);
+  });
+
+  it("BL war: returns +3 points for a perfect 45v45 war on TIE", () => {
+    const delta = computeWarPointsDeltaForTest({
+      matchType: "BL",
+        before: 100,
+        after: 100,
+        teamSize: 45,
+        finalResult: {
+          clanStars: 135,
+          opponentStars: 135,
+          clanDestruction: 60,
+          opponentDestruction: 60,
+          warEndTime: null,
+          resultLabel: "TIE",
+      },
+    });
+    expect(delta).toBe(3);
+  });
+
+  it("BL war: does not treat 135 stars as perfect for a 50v50 war", () => {
+    const delta = computeWarPointsDeltaForTest({
+      matchType: "BL",
+      before: 100,
+      after: 100,
+      teamSize: 50,
+      finalResult: {
+        clanStars: 135,
+        opponentStars: 134,
+        clanDestruction: 60,
+        opponentDestruction: 60,
+        warEndTime: null,
+        resultLabel: "LOSE",
+      },
+    });
+    expect(delta).toBe(1);
+  });
+
   it("BL war: returns +2 points when not a win but clan destruction is > 60%", () => {
     const delta = computeWarPointsDeltaForTest({
       matchType: "BL",
       before: 100,
       after: 100,
+      teamSize: 50,
       finalResult: {
         clanStars: 90,
         opponentStars: 100,
@@ -237,6 +293,7 @@ describe("WarEventLogService.computeWarPointsDeltaForTest", () => {
       matchType: "BL",
       before: 100,
       after: 100,
+      teamSize: 50,
       finalResult: {
         clanStars: 90,
         opponentStars: 100,

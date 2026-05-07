@@ -1750,6 +1750,13 @@ export class WarEventLogService {
       fwaPoints: sub.fwaPoints,
     });
     let testWarEndFwaPoints = sub.warEndFwaPoints;
+    const testTeamSize = Number.isFinite(
+      Number((currentWar as { teamSize?: number | null } | null)?.teamSize),
+    )
+      ? Number((currentWar as { teamSize?: number | null } | null)?.teamSize)
+      : Number.isFinite(Number((sub as { teamSize?: number | null }).teamSize))
+        ? Number((sub as { teamSize?: number | null }).teamSize)
+        : null;
     if (
       params.source === "current" &&
       params.eventType === "war_ended" &&
@@ -1764,6 +1771,7 @@ export class WarEventLogService {
         before,
         finalResult: testFinalResultOverride,
         outcome,
+        teamSize: testTeamSize,
       });
     }
 
@@ -2590,12 +2598,14 @@ export class WarEventLogService {
     before: number | null;
     finalResult: WarEndResultSnapshot;
     outcome: "WIN" | "LOSE" | null;
+    teamSize?: number | null;
   }): number | null {
     return computeExpectedWarEndPointsForTest({
       matchType: input.matchType,
       before: input.before,
       finalResult: input.finalResult,
       outcome: input.outcome,
+      teamSize: input.teamSize ?? null,
     });
   }
 
@@ -2998,7 +3008,9 @@ export class WarEventLogService {
       : null;
     const nextTeamSize = Number.isFinite(Number(war?.teamSize))
       ? Number(war?.teamSize)
-      : null;
+      : Number.isFinite(Number((sub as { teamSize?: number | null }).teamSize))
+        ? Number((sub as { teamSize?: number | null }).teamSize)
+        : null;
     const nextAttacksPerMember = Number.isFinite(Number(war?.attacksPerMember))
       ? Number(war?.attacksPerMember)
       : null;
@@ -3190,6 +3202,7 @@ export class WarEventLogService {
         before,
         finalResult,
         outcome: normalizeOutcome(nextOutcome),
+        teamSize: nextTeamSize,
       });
     }
 
@@ -3496,6 +3509,7 @@ export class WarEventLogService {
         before: canonicalBeforePoints,
         finalResult: canonicalFinalResult,
         outcome: normalizeOutcome(payloadForDelivery.outcome),
+        teamSize: payloadForDelivery.teamSize ?? null,
       });
       payloadForDelivery = {
         ...payloadForDelivery,
