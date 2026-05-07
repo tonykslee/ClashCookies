@@ -23,6 +23,7 @@ function makeMember(overrides: Partial<AutoRoleNicknameRenderInput["member"]> = 
   return {
     id: "111111111111111111",
     displayName: "D",
+    nickname: null,
     user: {
       username: "U",
       globalName: "DG",
@@ -102,7 +103,7 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#2QG2C08UP",
             playerName: "Untracked",
             townHall: 18,
-            currentClanTag: "#PQLQG",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Untracked Clan",
             role: "member",
           }),
@@ -170,7 +171,7 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#2QG2C08UP",
             playerName: "Second",
             townHall: 16,
-            currentClanTag: "#2QG2C08UP",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Alpha Clan",
           }),
         ],
@@ -180,14 +181,14 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#PQLQGRJV",
             playerName: "Third",
             townHall: 14,
-            currentClanTag: "#2QG2C08UP",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Alpha Clan",
           }),
         ],
       ]),
       trackedClans: [
         {
-          tag: "#2QG2C08UP",
+          tag: "#PYLQ0289",
           name: "Alpha Clan",
           shortName: "Alpha",
         },
@@ -221,20 +222,21 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#2CGG9GGRV",
             playerName: "Primary",
             townHall: 16,
-            currentClanTag: "#2QG2C08UP",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Fallback Clan",
           }),
         ],
       ]),
       trackedClans: [
         {
-          tag: "#2QG2C08UP",
+          tag: "#PYLQ0289",
           name: "Fallback Clan",
           shortName: null,
         },
       ],
     });
 
+    expect(result.primaryClanShort).toBeNull();
     expect(result.trackedClans).toEqual(["Fallback Clan"]);
     expect(result.renderedNickname).toBe("Fallback Clan");
   });
@@ -257,14 +259,14 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#2CGG9GGRV",
             playerName: null,
             townHall: 16,
-            currentClanTag: "#2QG2C08UP",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Active Clan",
           }),
         ],
       ]),
       trackedClans: [
         {
-          tag: "#2QG2C08UP",
+          tag: "#PYLQ0289",
           name: "Active Clan",
           shortName: "AC",
         },
@@ -292,14 +294,14 @@ describe("AutoRoleNicknameService", () => {
             playerTag: "#2CGG9GGRV",
             playerName: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
             townHall: 16,
-            currentClanTag: "#2QG2C08UP",
+            currentClanTag: "#PYLQ0289",
             currentClanName: "Active Clan",
           }),
         ],
       ]),
       trackedClans: [
         {
-          tag: "#2QG2C08UP",
+          tag: "#PYLQ0289",
           name: "Active Clan",
           shortName: "AC",
         },
