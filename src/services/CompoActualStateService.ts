@@ -515,7 +515,7 @@ export class CompoActualStateService {
     guildId?: string | null,
     options?: { view?: CompoActualStateView },
   ): Promise<CompoActualStateReadResult> {
-    const view = options?.view ?? "raw";
+    const view = options?.view ?? "auto";
     const context = await loadCompoActualStateContext(guildId);
 
     if (context.trackedClanTags.length === 0) {
