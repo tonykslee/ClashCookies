@@ -482,10 +482,8 @@ async function runWarsMode(
   interaction: ChatInputCommandInteraction,
   wars: number
 ): Promise<void> {
-  const { results, trackedTags, trackedNameByTag, warnings } = await fetchInactiveWarEntries(
-    interaction,
-    wars
-  );
+  const { results, trackedTags, trackedNameByTag, warnings, diagnosticNote } =
+    await fetchInactiveWarEntries(interaction, wars);
 
   if (trackedTags.length === 0) {
     await interaction.editReply(
@@ -496,8 +494,9 @@ async function runWarsMode(
 
   if (results.length === 0) {
     const warningText = warnings.length > 0 ? `\n\nTracking note:\n- ${warnings.join("\n- ")}` : "";
+    const diagnosticText = diagnosticNote ? `\n\n${diagnosticNote}` : "";
     await interaction.editReply(
-      `No players found who missed both attacks in the last ${wars} FWA war(s).${warningText}`
+      `No players found who missed both attacks in at least one of the last ${wars} ended FWA war(s).${warningText}${diagnosticText}`
     );
     return;
   }
@@ -599,8 +598,9 @@ async function runCombinedMode(
   if (rows.length === 0) {
     const warningText =
       warsResult.warnings.length > 0 ? `\n\nTracking note:\n- ${warsResult.warnings.join("\n- ")}` : "";
+    const diagnosticText = warsResult.diagnosticNote ? `\n\n${warsResult.diagnosticNote}` : "";
     await interaction.editReply(
-      `No players matched \`days:${days}\` or \`wars:${wars}\`.${warningText}`
+      `No players matched \`days:${days}\` or \`wars:${wars}\`.${warningText}${diagnosticText}`
     );
     return;
   }
@@ -661,7 +661,7 @@ export const Inactive: Command = {
     },
     {
       name: "wars",
-      description: "Missed both attacks for the last X wars",
+      description: "Players who missed both attacks in at least one of the last X ended wars",
       type: 4, // INTEGER
       required: false,
     },

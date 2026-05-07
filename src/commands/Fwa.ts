@@ -81,6 +81,7 @@ import {
   type WarStateForSync,
   withSyncModeLabel,
 } from "./fwa/matchState";
+import { resolveFwaMatchStateEmoji } from "./fwa/matchStateEmoji";
 import {
   asMailConfigInputJson,
   buildDiscordMessageUrl,
@@ -2005,6 +2006,35 @@ function buildSingleClanMatchLinks(input: {
       `Points (us): [points.fwafarm](<${trackedPointsUrl}>)`,
     ],
   };
+}
+
+/** Purpose: sanitize copy text so inline-code formatting stays intact in compact match rows. */
+function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
+  return String(input ?? "").replace(/`/g, "'");
+}
+
+/** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
+function buildFwaMatchCompactCopyLine(params: {
+  mailStatusEmoji?: string;
+  clanName: string | null | undefined;
+  opponentName: string | null | undefined;
+  opponentTag: string | null | undefined;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+}): string {
+  const mailStatusEmoji = params.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
+  const clanName = sanitizeFwaMatchCopyText(params.clanName) || "unknown";
+  const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
+  const opponentTagRaw = normalizeTag(String(params.opponentTag ?? ""));
+  const opponentTag = opponentTagRaw
+    ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
+    : "—";
+  const matchStateEmoji = resolveFwaMatchStateEmoji({
+    matchType: params.matchType,
+    outcome: params.outcome,
+  });
+
+  return `${mailStatusEmoji} | ${matchStateEmoji} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
 }
 
 const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
@@ -5617,14 +5647,11 @@ function startWarMailPolling(client: Client, key: string): void {
 /** Purpose: append a compact alliance dropdown state indicator aligned to the effective displayed match state. */
 function resolveAllianceDropdownMatchStateEmoji(
   view: MatchView | null | undefined,
-): "⚪" | "⚫" | "🟢" | "🔴" | "💤" {
-  if (view?.matchTypeCurrent === "MM") return "⚪";
-  if (view?.matchTypeCurrent === "BL") return "⚫";
-  if (view?.matchTypeCurrent === "FWA") {
-    if (view.outcomeAction?.currentOutcome === "WIN") return "🟢";
-    if (view.outcomeAction?.currentOutcome === "LOSE") return "🔴";
-  }
-  return "💤";
+): "⚪" | "⚫" | "🟢" | "🔴" | "🔘" {
+  return resolveFwaMatchStateEmoji({
+    matchType: view?.matchTypeCurrent ?? null,
+    outcome: view?.outcomeAction?.currentOutcome ?? null,
+  });
 }
 
 function buildFwaMatchCopyComponents(
@@ -9022,6 +9049,10 @@ export const isLowConfidenceAllianceMismatchScenarioForTest =
   isLowConfidenceAllianceMismatchScenario;
 export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
+export const buildFwaMatchCompactCopyStateEmojiForTest =
+  resolveFwaMatchStateEmoji;
+export const buildFwaMatchCompactCopyLineForTest =
+  buildFwaMatchCompactCopyLine;
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
 export const resolveAllianceDropdownMatchStateEmojiForTest =
   resolveAllianceDropdownMatchStateEmoji;
@@ -10523,28 +10554,21 @@ async function buildTrackedMatchOverview(
         nonActiveMailProjection.mailStatusLine,
         ...preWarMailDebugLines,
       ];
+      const preWarCopyLine = buildFwaMatchCompactCopyLine({
+        mailStatusEmoji,
+        clanName,
+        opponentName: "unknown",
+        opponentTag: null,
+        matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
+        outcome: null,
+      });
       if (includeInOverview) {
         embed.addFields({
           name: preWarHeader,
           value: preWarLines.join("\n"),
           inline: false,
         });
-        copyLines.push(
-          `## ${preWarHeader}`,
-          outOfSync
-            ? "WARNING: out of sync with points site"
-            : "Data in sync with points site",
-          `Clan points: ${clanPoints !== null && clanPoints !== undefined ? clanPoints : "unknown"}`,
-          `Members: ${memberCount ?? "?"}/50`,
-          `Total weight (ACTUAL): ${actual?.totalWeight ?? "unknown"}`,
-          `Weight compo (ACTUAL): ${actual?.weightCompo ?? "unknown"}`,
-          `Weight deltas (ACTUAL): ${actual?.weightDeltas ?? "unknown"}`,
-          `Compo advice (ACTUAL): ${actual?.compoAdvice ?? "none"}`,
-          `War State: ${clanWarStateLine}`,
-          `Time Remaining: ${clanTimeRemainingLine}`,
-          `Sync: ${clanSyncLine}`,
-          ...preWarMailDebugLines,
-        );
+        copyLines.push(preWarCopyLine);
       }
       singleViews[clanTag] = {
         embed: new EmbedBuilder()
@@ -10564,9 +10588,7 @@ async function buildTrackedMatchOverview(
               effectiveExpectedOutcome: null,
             }),
           ),
-        copyText: limitDiscordContent(
-          [`# ${preWarHeader}`, ...preWarLines].join("\n"),
-        ),
+        copyText: limitDiscordContent(preWarCopyLine),
         matchTypeAction: null,
         matchTypeCurrent:
           (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ??
@@ -10625,16 +10647,21 @@ async function buildTrackedMatchOverview(
         nonActiveMailProjection.mailStatusLine,
         ...noOpponentMailDebugLines,
       ];
+      const noOpponentCopyLine = buildFwaMatchCompactCopyLine({
+        mailStatusEmoji,
+        clanName,
+        opponentName: "unknown",
+        opponentTag: null,
+        matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
+        outcome: null,
+      });
       if (includeInOverview) {
         embed.addFields({
           name: noOpponentHeader,
           value: noOpponentLines.join("\n"),
           inline: false,
         });
-        copyLines.push(
-          `## ${noOpponentHeader}`,
-          ...noOpponentLines.map((line) => line.replace(/\*\*/g, "")),
-        );
+        copyLines.push(noOpponentCopyLine);
       }
       singleViews[clanTag] = {
         embed: new EmbedBuilder()
@@ -10654,9 +10681,7 @@ async function buildTrackedMatchOverview(
               effectiveExpectedOutcome: null,
             }),
           ),
-        copyText: limitDiscordContent(
-          [`# ${noOpponentHeader}`, ...noOpponentLines].join("\n"),
-        ),
+        copyText: limitDiscordContent(noOpponentCopyLine),
         matchTypeAction: null,
         matchTypeCurrent:
           (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ??
@@ -11122,6 +11147,14 @@ async function buildTrackedMatchOverview(
     const mailDebugLines = mailStatusDebugEnabled
       ? buildMailStatusDebugLines(liveMailStatus.debug)
       : [];
+    const compactCopyLine = buildFwaMatchCompactCopyLine({
+      mailStatusEmoji,
+      clanName,
+      opponentName,
+      opponentTag: opponentTag || null,
+      matchType: effectiveMatchType,
+      outcome: effectiveExpectedOutcome ?? "UNKNOWN",
+    });
 
     if (effectiveMatchType === "FWA") {
       const warnSuffix = effectiveInferredMatchType
@@ -11155,26 +11188,7 @@ async function buildTrackedMatchOverview(
             .join("\n"),
           inline: false,
         });
-        copyLines.push(
-          `## ${matchHeader}`,
-          `### Opponent Name`,
-          `\`${opponentName}\``,
-          `### Opponent Tag`,
-          `\`${opponentTag}\``,
-          `${pointsLine}`,
-          pointsSyncStatus,
-          storedSyncSummary.stateLine,
-          mailLifecycleStatusLine.replace(/\*\*/g, ""),
-          `Match Type: FWA${effectiveInferredMatchType ? " :warning:" : ""}`,
-          effectiveInferredMatchType
-            ? `Verify: ${buildCcVerifyUrl(opponentTag)}`
-            : "",
-          `Outcome: ${effectiveExpectedOutcome ?? "UNKNOWN"}`,
-          `War State: ${clanWarStateLine}`,
-          `Time Remaining: ${clanTimeRemainingLine}`,
-          mismatchLines,
-          ...mailDebugLines,
-        );
+        copyLines.push(compactCopyLine);
       }
     } else {
       const warnSuffix = effectiveInferredMatchType
@@ -11206,24 +11220,7 @@ async function buildTrackedMatchOverview(
             .join("\n"),
           inline: false,
         });
-        copyLines.push(
-          `## ${matchHeader}`,
-          `### Opponent Name`,
-          `\`${opponentName}\``,
-          `### Opponent Tag`,
-          `\`${opponentTag}\``,
-          pointsSyncStatus,
-          storedSyncSummary.stateLine,
-          mailLifecycleStatusLine.replace(/\*\*/g, ""),
-          `Match Type: ${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}`,
-          effectiveInferredMatchType
-            ? `Verify: ${buildCcVerifyUrl(opponentTag)}`
-            : "",
-          `War State: ${clanWarStateLine}`,
-          `Time Remaining: ${clanTimeRemainingLine}`,
-          mismatchLines,
-          ...mailDebugLines,
-        );
+        copyLines.push(compactCopyLine);
       }
     }
 
@@ -11274,11 +11271,11 @@ async function buildTrackedMatchOverview(
           }
         : null;
     if (syncAction) syncActionAvailableCount += 1;
-    singleViews[clanTag] = {
-      embed: new EmbedBuilder()
-        .setTitle(
-          buildMatchStatusHeader({
-            clanName,
+      singleViews[clanTag] = {
+        embed: new EmbedBuilder()
+          .setTitle(
+            buildMatchStatusHeader({
+              clanName,
             clanTag,
             opponentName,
             opponentTag,
@@ -11307,63 +11304,13 @@ async function buildTrackedMatchOverview(
                   : "Unavailable",
             inline: true,
           },
-          {
-            name: singleClanLinks.linksFieldName,
-            value: singleClanLinks.linksFieldValue,
-            inline: true,
-          },
-        ),
-      copyText: limitDiscordContent(
-        [
-          `# ${buildMatchStatusHeader({
-            clanName,
-            clanTag,
-            opponentName,
-            opponentTag,
-            matchType: effectiveMatchType,
-            outcome: effectiveExpectedOutcome ?? "UNKNOWN",
-            mailStatusEmoji,
-          })}`,
-          ...buildInferredMatchWarningLines({
-            inferredMatchType: effectiveInferredMatchType,
-            mailBlockedReason,
-          }),
-          pointsSyncStatus,
-          storedSyncSummary.stateLine,
-          mailLifecycleStatusLine.replace(/\*\*/g, ""),
-          `Sync: ${clanSyncLine}`,
-          `Sync #: ${storedSyncSummary.syncLine}`,
-          storedSyncSummary.updatedLine
-            ? `Last points fetch: ${storedSyncSummary.updatedLine}`
-            : "",
-          `War State: ${clanWarStateLine}`,
-          `Time Remaining: ${clanTimeRemainingLine}`,
-          `## Opponent Name`,
-          `\`${opponentName}\``,
-          `## Opponent Tag`,
-          `\`${opponentTag}\``,
-          ...singleClanLinks.copyLines,
-          `## Points`,
-          hasPrimaryPoints && hasOpponentPoints
-            ? `${clanName}: ${primaryPoints!.balance}${clanWinnerMarker}`
-            : "Unavailable",
-          effectiveMatchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-            ? `${opponentName}: ${opponentPoints!.balance}${opponentWinnerMarker}`
-            : "",
-          `## Match Type`,
-          `${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}`,
-          effectiveInferredMatchType
-            ? `Verify: ${buildCcVerifyUrl(opponentTag)}`
-            : "",
-          effectiveMatchType === "FWA"
-            ? `Expected outcome: ${effectiveExpectedOutcome ?? "UNKNOWN"}`
-            : "",
-          mismatchLines,
-          ...mailDebugLines,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      ),
+            {
+              name: singleClanLinks.linksFieldName,
+              value: singleClanLinks.linksFieldValue,
+              inline: true,
+            },
+          ),
+      copyText: limitDiscordContent(compactCopyLine),
       matchTypeAction:
         effectiveInferredMatchType &&
         (effectiveMatchType === "FWA" ||
@@ -11417,24 +11364,9 @@ async function buildTrackedMatchOverview(
     `clans=${includedTracked.length} inferred_match_type=${hasAnyInferredMatchType ? 1 : 0} sync_action_available=${syncActionAvailableCount} missed_sync=${missedSyncTags.size} source_sync=${sourceSync ?? "unknown"}`,
   );
 
-  const copyHeaderLines = [`# FWA Match Overview (${includedTracked.length})`];
-  copyHeaderLines.push(`Source of truth ${sourceOfTruthSyncLine}`);
-  if (hasAnyInferredMatchType) {
-    copyHeaderLines.push(MATCHTYPE_WARNING_LEGEND);
-  }
-  if (missedSyncTags.size > 0) {
-    copyHeaderLines.push(
-      `Ignored missed sync clans: ${missedSyncTags.size} (started >2h late or no war after 2h)`,
-    );
-  }
-  const copyHeader = copyHeaderLines.join("\n");
   return {
     embed,
-    copyText: buildLimitedMessage(
-      copyHeader,
-      copyLines.map((l) => `${l}\n`),
-      "",
-    ),
+    copyText: limitDiscordContent(copyLines.join("\n")),
     singleViews,
   };
 }
@@ -14897,10 +14829,6 @@ export const Fwa: Command = {
           mailBlockedReason,
           includeSpacer: true,
         });
-        const inferredWarningCopyLines = buildInferredMatchWarningLines({
-          inferredMatchType,
-          mailBlockedReason,
-        });
         const mailDebugLines = matchMailStatusDebugEnabled
           ? buildMailStatusDebugLines(liveMailStatus.debug)
           : [];
@@ -14978,43 +14906,15 @@ export const Fwa: Command = {
               inline: true,
             },
           );
-        const copyText = limitDiscordContent(
-          [
-            `# ${singleHeader}`,
-            ...inferredWarningCopyLines,
-            siteStatusLine,
-            storedSyncSummary.stateLine,
-            mailStatusLine.replace(/\*\*/g, ""),
-            mailBlockedReasonLine
-              ? `${mailBlockedReasonLine.replace(/^:warning: /, "Warning: ").replace(/^:envelope_with_arrow: /, "Mail: ")}`
-              : "",
-            `Sync #: ${storedSyncSummary.syncLine}`,
-            storedSyncSummary.updatedLine
-              ? `Last points fetch: ${storedSyncSummary.updatedLine}`
-              : "",
-            `War State: ${formatWarStateLabel(warState)}`,
-            `Time Remaining: ${warRemaining}`,
-            `## Opponent Name`,
-            `\`${rightName}\``,
-            `## Opponent Tag`,
-            `\`${opponentTag}\``,
-            ...singleClanLinks.copyLines,
-            `## Points`,
-            hasPrimaryPoints && hasOpponentPoints
-              ? `${leftName}: ${primary.balance}${leftWinnerMarker}`
-              : "Unavailable",
-            matchType === "FWA" && hasPrimaryPoints && hasOpponentPoints
-              ? `${rightName}: ${opponent.balance}${rightWinnerMarker}`
-              : "",
-            `Match Type: ${matchTypeText}`,
-            verifyLink ? `Verify: ${buildCcVerifyUrl(opponentTag)}` : "",
-            outcomeLine ? `Expected outcome: ${outcomeLine}` : "",
-            mismatchLines,
-            ...mailDebugLines,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        );
+        const compactCopyLine = buildFwaMatchCompactCopyLine({
+          mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+          clanName: leftName,
+          opponentName: rightName,
+          opponentTag: opponentTag || null,
+          matchType,
+          outcome: effectiveExpectedOutcome ?? "UNKNOWN",
+        });
+        const copyText = limitDiscordContent(compactCopyLine);
         let alliance = overview;
         const syncActionSiteMatchType: "FWA" | "BL" | "MM" | null =
           inferredFromPointsType &&

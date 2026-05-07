@@ -78,4 +78,23 @@ describe("/inactive command", () => {
     expect(embed.description).toContain("Bravo");
     expect(embed.description).toContain("missed both in 3/3 war(s)");
   });
+
+  it("includes the service diagnostic note when wars mode has no inactive players", async () => {
+    inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
+      results: [],
+      trackedTags: ["#AAA111"],
+      trackedNameByTag: new Map([["#AAA111", "Alpha"]]),
+      warnings: [],
+      diagnosticNote: "Diagnostic: ended wars found yes (3), participation rows found yes (6).",
+    });
+
+    const interaction = makeInteraction(3);
+    const cocService = {} as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Diagnostic: ended wars found yes (3), participation rows found yes (6).")
+    );
+  });
 });
