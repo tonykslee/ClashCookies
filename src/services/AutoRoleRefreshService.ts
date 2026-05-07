@@ -175,10 +175,10 @@ async function loadPlayerCurrentByLinkedAccounts(input: {
     return new Map();
   }
   const resolution = () =>
-    playerCurrentService.resolveCurrentPlayersForTags({
+      playerCurrentService.resolveCurrentPlayersForTags({
       playerTags,
       cocService: input.cocService ?? null,
-      requireFields: ["currentClanTag", "townHall", "role"],
+      requireFields: ["currentClanTag", "townHall", "role", "leagueName"],
       refreshPolicy: "missing_only",
     });
 

@@ -169,6 +169,11 @@ describe("AutoRoleService", () => {
         expectedTarget: "leader",
       },
       {
+        type: "LEAGUE",
+        targetValue: "  Legend   League  ",
+        expectedTarget: "Legend League",
+      },
+      {
         type: "TOWN_HALL",
         targetValue: 18,
         expectedTarget: "18",
@@ -259,6 +264,14 @@ describe("AutoRoleService", () => {
         discordRoleId: "222222222222222222",
       }),
     ).rejects.toThrow("TOWN_HALL rules require a TH value between 1 and 18.");
+
+    await expect(
+      service.createRule("111111111111111111", {
+        type: "LEAGUE",
+        targetValue: "   ",
+        discordRoleId: "222222222222222222",
+      }),
+    ).rejects.toThrow("LEAGUE rules require a non-empty target value.");
   });
 
   it("preserves canonical verified/family targets when a rule type changes", async () => {

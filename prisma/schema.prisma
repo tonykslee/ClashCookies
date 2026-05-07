@@ -206,6 +206,7 @@ enum AutoRoleRuleType {
   FAMILY
   CLAN
   CLAN_ROLE
+  LEAGUE
   TOWN_HALL
   LABEL
 }
