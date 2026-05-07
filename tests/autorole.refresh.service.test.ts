@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
+  cwlRoundMemberCurrent: {
+    findMany: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -217,6 +220,7 @@ describe("AutoRoleRefreshService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.autoRolePendingRemoval.findMany.mockResolvedValue([]);
@@ -430,7 +434,7 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
-  it("uses current-season tracked CWL clans for family and CWL clan roles", async () => {
+  it("uses current-season tracked CWL member tags for family and CWL clan roles", async () => {
     const familyRoleId = "222222222222222222";
     const cwlClanRoleId = "333333333333333333";
     const fwaMemberId = "111111111111111111";
@@ -467,39 +471,28 @@ describe("AutoRoleRefreshService", () => {
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#2QG2C08UP",
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        playerTag: "#PYLQ0289",
+      },
+    ]);
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({
         familyRoleId,
         cwlClanRoleId,
+        applyNicknames: false,
         removeStaleManagedRoles: true,
       }),
       rules: [],
       exclusions: { users: [], roles: [] },
     } as any);
-    vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockImplementation(async ({ playerTags }) => {
-      const map = new Map<string, any>();
-      for (const playerTag of playerTags) {
-        map.set(
-          playerTag,
-          makePlayerCurrent({
-            playerTag,
-            playerName:
-              playerTag === "#2QG2C08UP"
-                ? "FWA Member"
-                : playerTag === "#PYLQ0289"
-                  ? "CWL Member"
-                  : "Outsider",
-            currentClanTag:
-              playerTag === "#2QG2C08UP"
-                ? "#2QG2C08UP"
-                : playerTag === "#PYLQ0289"
-                  ? "#PYLQ0289"
-                  : "#QGRJ2222",
-          }),
-        );
-      }
-      return map;
-    });
 
     const result = await autoRoleRefreshService.refreshGuild({
       guild,
@@ -513,6 +506,19 @@ describe("AutoRoleRefreshService", () => {
         select: { tag: true },
       }),
     );
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { clanTag: { in: ["#2QG2C08UP"] } },
+        select: { clanTag: true, playerTag: true },
+      }),
+    );
+    expect(prismaMock.cwlRoundMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { season: "2026-04", clanTag: { in: ["#PYLQ0289"] } },
+        select: { clanTag: true, playerTag: true },
+      }),
+    );
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
     expect(fwaMember.roles.add).toHaveBeenCalledWith(familyRoleId);
     expect(cwlMember.roles.add).toHaveBeenCalledWith(familyRoleId);
     expect(cwlMember.roles.add).toHaveBeenCalledWith(cwlClanRoleId);
@@ -539,32 +545,23 @@ describe("AutoRoleRefreshService", () => {
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({
         cwlClanRoleId,
+        applyNicknames: false,
         removeStaleManagedRoles: true,
       }),
       rules: [],
       exclusions: { users: [], roles: [] },
     } as any);
-    vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockResolvedValue(
-      new Map([
-        [
-          "#PYLQ0289",
-          makePlayerCurrent({
-            playerTag: "#PYLQ0289",
-            playerName: "CWL Member",
-            currentClanTag: "#QGRJ2222",
-          }),
-        ],
-      ]),
-    );
 
     const result = await autoRoleRefreshService.refreshGuild({
       guild,
       guildId: "111111111111111111",
     });
 
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
     expect(member.roles.remove).toHaveBeenCalledWith(cwlClanRoleId);
     expect(result.removedCount).toBe(1);
     expect(result.addedCount).toBe(0);

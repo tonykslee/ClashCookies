@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { AutoRoleRuleType, type AutoRoleGuildConfig, type AutoRoleRule } from "@prisma/client";
-import { normalizeClanTag, getPlayerLinkTrustTier, isPlayerLinkTrustedForAutorole, isPlayerLinkVerifiedForAutorole, type PlayerLinkWithTrust } from "./PlayerLinkService";
+import {
+  getPlayerLinkTrustTier,
+  isPlayerLinkTrustedForAutorole,
+  isPlayerLinkVerifiedForAutorole,
+  normalizeClanTag,
+  normalizePlayerTag,
+  type PlayerLinkWithTrust,
+} from "./PlayerLinkService";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
 
 export type AutoRoleClanMembershipSource = "FWA" | "CWL" | "AMBIGUOUS" | "UNKNOWN";
@@ -30,6 +37,8 @@ export type AutoRoleGuildConfigSnapshot = Pick<
 export type AutoRoleTrackedClanScope = {
   fwaClanTags: Set<string>;
   cwlClanTags: Set<string>;
+  fwaMemberTags: Set<string>;
+  cwlMemberTags: Set<string>;
 };
 
 export type AutoRoleEvaluationMemberLike = {
@@ -137,6 +146,15 @@ function isLinkedAccountCurrentlyInTrackedClan(
   return currentClanTag.length > 0 && trackedClanTags.has(currentClanTag);
 }
 
+function isLinkedAccountInTrackedMembershipTags(
+  linkedAccount: RankedLinkedAccount,
+  trackedMemberTags: Set<string>,
+): boolean {
+  if (trackedMemberTags.size === 0) return false;
+  const playerTag = normalizePlayerTag(linkedAccount.playerTag);
+  return playerTag.length > 0 && trackedMemberTags.has(playerTag);
+}
+
 function isLinkedAccountInClanTarget(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
@@ -238,14 +256,8 @@ export class AutoRoleEvaluationService {
       input.config.familyRoleId &&
       input.managedRoleIds.has(input.config.familyRoleId) &&
       linkedAccounts.some((account) =>
-        isLinkedAccountCurrentlyInTrackedClan(
-          account,
-          input.trackedClanScope.fwaClanTags,
-        ) ||
-        isLinkedAccountCurrentlyInTrackedClan(
-          account,
-          input.trackedClanScope.cwlClanTags,
-        ),
+        isLinkedAccountInTrackedMembershipTags(account, input.trackedClanScope.fwaMemberTags) ||
+        isLinkedAccountInTrackedMembershipTags(account, input.trackedClanScope.cwlMemberTags),
       )
     ) {
       desiredManagedRoleIds.add(input.config.familyRoleId);
@@ -255,7 +267,7 @@ export class AutoRoleEvaluationService {
       input.config.cwlClanRoleId &&
       input.managedRoleIds.has(input.config.cwlClanRoleId) &&
       linkedAccounts.some((account) =>
-        isLinkedAccountCurrentlyInTrackedClan(account, input.trackedClanScope.cwlClanTags),
+        isLinkedAccountInTrackedMembershipTags(account, input.trackedClanScope.cwlMemberTags),
       )
     ) {
       desiredManagedRoleIds.add(input.config.cwlClanRoleId);

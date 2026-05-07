@@ -125,6 +125,8 @@ describe("AutoRoleEvaluationService league rules", () => {
   const trackedClanScope = {
     fwaClanTags: new Set(["#2QG2C08UP"]),
     cwlClanTags: new Set(["#PYLQ0289"]),
+    fwaMemberTags: new Set(["#2QG2C08UP"]),
+    cwlMemberTags: new Set(["#PYLQ0289"]),
   };
 
   it("matches a linked account with leagueName set to Legend League", () => {
@@ -210,7 +212,7 @@ describe("AutoRoleEvaluationService league rules", () => {
     const member = makeMember();
     const linkedAccounts = [makeLinkedAccount({ playerTag: "#PYLQ0289" })];
     const playerCurrentByTag = new Map([
-      ["#PYLQ0289", makePlayerCurrent({ playerTag: "#PYLQ0289", currentClanTag: "#PYLQ0289" })],
+      ["#PYLQ0289", makePlayerCurrent({ playerTag: "#PYLQ0289", currentClanTag: "#QGRJ2222" })],
     ]);
 
     const result = service.evaluateMember({
@@ -235,10 +237,15 @@ describe("AutoRoleEvaluationService league rules", () => {
 
   it("grants the family role for eligible linked accounts in tracked FWA clans", () => {
     const member = makeMember();
-    const linkedAccounts = [makeLinkedAccount({ playerTag: "#FWA12345" })];
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#PYLQ0289" })];
     const playerCurrentByTag = new Map([
-      ["#FWA12345", makePlayerCurrent({ playerTag: "#FWA12345", currentClanTag: "#2QG2C08UP" })],
+      ["#PYLQ0289", makePlayerCurrent({ playerTag: "#PYLQ0289", currentClanTag: "#QGRJ2222" })],
     ]);
+    const fwaTrackedScope = {
+      ...trackedClanScope,
+      fwaMemberTags: new Set(["#PYLQ0289"]),
+      cwlMemberTags: new Set<string>(),
+    };
 
     const result = service.evaluateMember({
       config: makeConfig({
@@ -251,10 +258,47 @@ describe("AutoRoleEvaluationService league rules", () => {
       linkedAccounts,
       playerCurrentByTag,
       clanMembershipByTag,
-      trackedClanScope,
+      trackedClanScope: fwaTrackedScope,
     });
 
     expect(result.desiredManagedRoleIds).toEqual(["333333333333333333"]);
+  });
+
+  it("matches clan roles from current clan tags as before", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const playerCurrentByTag = new Map([
+      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", currentClanTag: "#2QG2C08UP" })],
+    ]);
+
+    const result = service.evaluateMember({
+      config: makeConfig({
+        familyRoleId: "333333333333333333",
+        cwlClanRoleId: "444444444444444444",
+      }),
+      rules: [
+        {
+          id: "rule-1",
+          guildId: "111111111111111111",
+          type: AutoRoleRuleType.CLAN,
+          targetValue: "#2QG2C08UP",
+          discordRoleId: "555555555555555555",
+          priority: 100,
+          enabled: true,
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      ],
+      managedRoleIds: new Set(["333333333333333333", "444444444444444444", "555555555555555555"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag,
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+
+    expect(result.desiredManagedRoleIds).toContain("555555555555555555");
+    expect(result.matchedRuleIds).toContain("rule-1");
   });
 
   it("does not grant tracked-clan roles to untrusted or revoked links when trusted links are disabled", () => {

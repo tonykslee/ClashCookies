@@ -4,7 +4,11 @@ import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { isMirrorPollingMode } from "./PollingModeService";
-import { playerCurrentService, type PlayerCurrentLike } from "./PlayerCurrentService";
+import {
+  playerCurrentService,
+  type PlayerCurrentLike,
+  type PlayerCurrentResolutionField,
+} from "./PlayerCurrentService";
 import {
   autoRoleApplyService,
   type AutoRoleMemberApplyResult,
@@ -172,21 +176,63 @@ async function loadLinkedAccountsForGuildMemberIds(input: {
   return byUserId;
 }
 
+function collectPlayerCurrentRequirementFields(input: {
+  snapshot: AutoRoleGuildStateSnapshot;
+  nicknameEnabled: boolean;
+}): PlayerCurrentResolutionField[] {
+  const fields: PlayerCurrentResolutionField[] = [];
+  const addField = (field: PlayerCurrentResolutionField) => {
+    if (!fields.includes(field)) {
+      fields.push(field);
+    }
+  };
+
+  if (input.nicknameEnabled) {
+    addField("currentClanTag");
+    addField("townHall");
+    addField("role");
+    addField("leagueName");
+  }
+
+  for (const rule of input.snapshot.rules) {
+    if (!rule.enabled) continue;
+    switch (rule.type) {
+      case "TOWN_HALL":
+        addField("townHall");
+        break;
+      case "CLAN_ROLE":
+        addField("role");
+        break;
+      case "LEAGUE":
+        addField("leagueName");
+        break;
+      case "CLAN":
+        addField("currentClanTag");
+        break;
+      default:
+        break;
+    }
+  }
+
+  return fields;
+}
+
 async function loadPlayerCurrentByLinkedAccounts(input: {
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   cocService?: CoCService | null;
+  requireFields: PlayerCurrentResolutionField[];
 }): Promise<Map<string, PlayerCurrentLike>> {
   const playerTags = normalizePlayerTags(
     [...input.linkedAccountsByUserId.values()].flatMap((rows) => rows.map((row) => row.playerTag)),
   );
-  if (playerTags.length === 0) {
+  if (playerTags.length === 0 || input.requireFields.length === 0) {
     return new Map();
   }
   const resolution = () =>
-      playerCurrentService.resolveCurrentPlayersForTags({
+    playerCurrentService.resolveCurrentPlayersForTags({
       playerTags,
       cocService: input.cocService ?? null,
-      requireFields: ["currentClanTag", "townHall", "role", "leagueName"],
+      requireFields: input.requireFields,
       refreshPolicy: "missing_only",
     });
 
@@ -221,9 +267,16 @@ async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedCla
     .filter((row) => row.tag.length > 0);
 }
 
-async function loadTrackedClanScope(input: {
+async function loadTrackedClanMembershipScope(input: {
   season: string;
-}): Promise<{ fwaClanTags: Set<string>; cwlClanTags: Set<string> }> {
+  cocService?: CoCService | null;
+}): Promise<{
+  fwaClanTags: Set<string>;
+  cwlClanTags: Set<string>;
+  fwaMemberTags: Set<string>;
+  cwlMemberTags: Set<string>;
+  cwlClanFetchCount: number;
+}> {
   const [fwaRows, cwlRows] = await Promise.all([
     prisma.trackedClan.findMany({
       select: { tag: true },
@@ -234,9 +287,74 @@ async function loadTrackedClanScope(input: {
     }),
   ]);
 
+  const fwaClanTags = normalizeClanTags(fwaRows.map((row) => row.tag));
+  const cwlClanTags = normalizeClanTags(cwlRows.map((row) => row.tag));
+
+  const fwaMemberTags = new Set<string>();
+  if (fwaClanTags.size > 0) {
+    const fwaMemberRows = await prisma.fwaClanMemberCurrent.findMany({
+      where: { clanTag: { in: [...fwaClanTags] } },
+      select: {
+        clanTag: true,
+        playerTag: true,
+      },
+    });
+    for (const row of fwaMemberRows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      fwaMemberTags.add(playerTag);
+    }
+  }
+
+  const cwlMemberTags = new Set<string>();
+  let cwlClanFetchCount = 0;
+  const cwlRoundRows = cwlClanTags.size > 0
+    ? await prisma.cwlRoundMemberCurrent.findMany({
+        where: { season: input.season, clanTag: { in: [...cwlClanTags] } },
+        select: {
+          clanTag: true,
+          playerTag: true,
+        },
+      })
+    : [];
+  const cwlClanTagsSeen = new Set<string>();
+  for (const row of cwlRoundRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (playerTag) {
+      cwlMemberTags.add(playerTag);
+    }
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (clanTag) {
+      cwlClanTagsSeen.add(clanTag);
+    }
+  }
+
+  const missingCwlClanTags = [...cwlClanTags].filter((tag) => !cwlClanTagsSeen.has(tag));
+  if (missingCwlClanTags.length > 0 && input.cocService && typeof input.cocService.getClan === "function") {
+    const cocService = input.cocService;
+    const fetchedClans = await Promise.all(
+      missingCwlClanTags.map(async (clanTag) => {
+        const clan = await cocService.getClan(clanTag).catch(() => null);
+        return { clanTag, clan };
+      }),
+    );
+    for (const { clan } of fetchedClans) {
+      cwlClanFetchCount += 1;
+      for (const member of clan?.members ?? []) {
+        const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+        if (playerTag) {
+          cwlMemberTags.add(playerTag);
+        }
+      }
+    }
+  }
+
   return {
-    fwaClanTags: normalizeClanTags(fwaRows.map((row) => row.tag)),
-    cwlClanTags: normalizeClanTags(cwlRows.map((row) => row.tag)),
+    fwaClanTags,
+    cwlClanTags,
+    fwaMemberTags,
+    cwlMemberTags,
+    cwlClanFetchCount,
   };
 }
 
@@ -560,7 +678,13 @@ async function runRefreshPass(input: {
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   trackedClans: AutoRoleNicknameTrackedClanLike[];
   clanMembershipIndex: AutoRoleClanMembershipIndex;
-  trackedClanScope: { fwaClanTags: Set<string>; cwlClanTags: Set<string> };
+  trackedMembershipScope: {
+    fwaClanTags: Set<string>;
+    cwlClanTags: Set<string>;
+    fwaMemberTags: Set<string>;
+    cwlMemberTags: Set<string>;
+    cwlClanFetchCount: number;
+  };
   runId: string;
   now: Date;
 }): Promise<AutoRoleRefreshResult> {
@@ -643,7 +767,7 @@ async function runRefreshPass(input: {
         linkedAccounts,
         playerCurrentByTag: input.playerCurrentByTag,
         clanMembershipByTag: input.clanMembershipIndex,
-        trackedClanScope: input.trackedClanScope,
+        trackedClanScope: input.trackedMembershipScope,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
@@ -803,17 +927,23 @@ export class AutoRoleRefreshService {
       const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
         guildMemberIds: [...membersById.keys()],
       });
+      const nicknameTemplate = normalizeNicknameTemplate(snapshot.config.nicknameTemplate);
+      const playerCurrentRequiredFields = collectPlayerCurrentRequirementFields({
+        snapshot,
+        nicknameEnabled: snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined,
+      });
       const playerCurrentByTag = await loadPlayerCurrentByLinkedAccounts({
         linkedAccountsByUserId,
         cocService: input.cocService ?? null,
+        requireFields: playerCurrentRequiredFields,
       });
-      const nicknameTemplate = normalizeNicknameTemplate(snapshot.config.nicknameTemplate);
       const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
         ? await loadTrackedClansForNickname()
         : [];
       const cwlSeason = resolveCurrentCwlSeasonKey();
-      const trackedClanScope = await loadTrackedClanScope({
+      const trackedMembershipScope = await loadTrackedClanMembershipScope({
         season: cwlSeason,
+        cocService: input.cocService ?? null,
       });
       const clanMembershipIndex = await loadClanMembershipIndex({
         season: cwlSeason,
@@ -821,7 +951,7 @@ export class AutoRoleRefreshService {
       });
 
       dozzleLog.info(
-        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} candidate_members=${membersById.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size}`,
+        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} candidate_members=${membersById.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size} player_current_fields=${playerCurrentRequiredFields.length > 0 ? playerCurrentRequiredFields.join(",") : "none"}`,
       );
 
       return runRefreshPass({
@@ -834,7 +964,7 @@ export class AutoRoleRefreshService {
         playerCurrentByTag,
         trackedClans,
         clanMembershipIndex,
-        trackedClanScope,
+        trackedMembershipScope,
         runId: run.id,
         now: input.now,
       });
