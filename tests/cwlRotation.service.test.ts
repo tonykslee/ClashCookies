@@ -1594,6 +1594,69 @@ describe("CwlRotationService", () => {
     ]);
   });
 
+  it("returns clan-scoped leadership names from persisted current clan members", async () => {
+    vi.spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags").mockResolvedValue({
+      clanCount: 1,
+      rowCount: 3,
+      changedRowCount: 0,
+      failedClans: [],
+    });
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#AAA",
+        playerName: "elle ♡ duck",
+        role: "leader",
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#BBB",
+        playerName: "sim-fill-void-3",
+        role: "coleader",
+      },
+      {
+        clanTag: "#9GLGQCCU",
+        playerTag: "#CCC",
+        playerName: "Other Clan Leader",
+        role: "leader",
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#DDD",
+        playerName: "DuskComet",
+        role: "coleader",
+      },
+    ]);
+
+    const leaderNames = await cwlRotationService.listClanLeadershipNames({
+      clanTag: "#2QG2C08UP",
+      refreshLeadershipMembers: true,
+    });
+
+    expect(leaderNames).toEqual(["elle ♡ duck", "DuskComet", "sim-fill-void-3"]);
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith({
+      where: {
+        clanTag: { in: ["#2QG2C08UP"] },
+        role: { not: null },
+      },
+      select: {
+        clanTag: true,
+        playerTag: true,
+        playerName: true,
+        role: true,
+      },
+      orderBy: [
+        { clanTag: "asc" },
+        { role: "asc" },
+        { playerName: "asc" },
+        { playerTag: "asc" },
+      ],
+    });
+    expect(FwaClanMembersSyncService.prototype.refreshCurrentClanMembersForClanTags).toHaveBeenCalledWith([
+      "#2QG2C08UP",
+    ]);
+  });
+
   it("allows create during overlap, uses the battle lineup as the seed, and locks the battle day", async () => {
     vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
       season: "2026-04",

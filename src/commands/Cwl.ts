@@ -239,33 +239,6 @@ function buildCwlRotationRosterTagSet(plan: CwlRotationPlanExport): Set<string> 
   return new Set(buildCwlRotationOriginalRosterMembers(plan).map((member) => member.playerTag));
 }
 
-function buildCwlRotationLeaderNames(
-  entries: Awaited<ReturnType<typeof cwlStateService.listSeasonRosterForClan>>,
-  clanTag?: string | null,
-): string[] {
-  const selectedClanTag = normalizeClanTag(clanTag ?? "");
-  const leaders = entries
-    .filter((entry) => {
-      if (!selectedClanTag) return true;
-      return normalizeClanTag(entry.clanTag) === selectedClanTag;
-    })
-    .map((entry) => ({
-      name: entry.playerName,
-      tag: entry.playerTag,
-      role: normalizeClanMemberRole(entry.role),
-    }))
-    .filter((entry) => entry.role !== null)
-    .sort((left, right) => {
-      const leftRank = left.role === "leader" ? 0 : 1;
-      const rightRank = right.role === "leader" ? 0 : 1;
-      if (leftRank !== rightRank) return leftRank - rightRank;
-      const byName = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-      if (byName !== 0) return byName;
-      return left.tag.localeCompare(right.tag);
-    });
-  return leaders.map((entry) => entry.name);
-}
-
 function renderTownHallIcon(
   townHall: number | null | undefined,
   townHallEmojiByLevel: Map<number, string>,
@@ -1891,11 +1864,9 @@ async function loadCwlRotationShowClanPayload(input: {
       throughRoundDay: selectedDay.roundDay,
     }),
   ]);
-  const seasonRosterEntries = await cwlStateService.listSeasonRosterForClan({
+  const leaderNames = await cwlRotationService.listClanLeadershipNames({
     clanTag: planView.clanTag,
-    season: planView.season,
   });
-  const leaderNames = buildCwlRotationLeaderNames(seasonRosterEntries, planView.clanTag);
 
   return {
     payload: await buildCwlRotationShowClanPayload({

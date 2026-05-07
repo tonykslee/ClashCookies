@@ -335,6 +335,7 @@ describe("/cwl command", () => {
     vi.spyOn(cwlRotationService, "deleteActivePlan");
     vi.spyOn(cwlRotationService, "listActivePlanExports");
     vi.spyOn(cwlRotationService, "listOverview");
+    vi.spyOn(cwlRotationService, "listClanLeadershipNames").mockResolvedValue([] as any);
     vi.spyOn(cwlRotationService, "getPreferredDisplayDay").mockResolvedValue(null);
     vi.spyOn(cwlRotationService, "validatePlanDay");
     vi.spyOn(cwlStateService, "getBattleDayStartForClanDay").mockResolvedValue(null);
@@ -1583,6 +1584,10 @@ describe("/cwl command", () => {
         ],
       } as any,
     ]);
+    vi.mocked(cwlRotationService.listClanLeadershipNames).mockResolvedValue([
+      "Alpha Leader",
+      "Alpha CoLeader",
+    ]);
     vi.mocked(cwlStateService.listSeasonRosterForClan).mockResolvedValue([
       {
         season: "2026-04",
@@ -1995,6 +2000,7 @@ describe("/cwl command", () => {
     expect(getDescription(interaction)).toContain(":x: Bravo (#QGRJ2222) | War count: 0");
     expect(getDescription(interaction)).toContain(":x: Delta (#CUV02898) | War count: 0");
     expect(getDescription(interaction)).not.toContain(":x: Hotel (#JQJQ2222)");
+    expect(cwlStateService.listSeasonRosterForClan).not.toHaveBeenCalled();
     expect(getDescription(interaction)).not.toContain("Actual:");
     expect(getDescription(interaction)).not.toContain("Status:");
     expect(getComponentButtonCustomIds(interaction)).toHaveLength(4);

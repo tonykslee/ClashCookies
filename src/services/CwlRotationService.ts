@@ -292,6 +292,13 @@ export type CwlRotationOverviewEntry = {
   extraActualPlayerTags: string[];
 };
 
+type CwlClanLeadershipRow = {
+  clanTag: string;
+  playerTag: string;
+  playerName: string | null;
+  role: unknown;
+};
+
 function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
   const normalized = String(input ?? "")
     .trim()
@@ -303,6 +310,41 @@ function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
 }
 
 const fwaClanMembersSyncService = new FwaClanMembersSyncService();
+
+function buildClanLeadershipNamesByClanTag(rows: CwlClanLeadershipRow[]): Map<string, string[]> {
+  const leaderNamesByClanTag = new Map<string, string[]>();
+  const leaderRowsByClanTag = new Map<
+    string,
+    Array<{ roleRank: number; playerName: string; playerTag: string }>
+  >();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const role = normalizeClanMemberRole(row.role);
+    if (!clanTag || !role) continue;
+    const roleRank = role === "leader" ? 0 : 1;
+    const entries = leaderRowsByClanTag.get(clanTag) ?? [];
+    entries.push({
+      roleRank,
+      playerName: String(row.playerName ?? "").trim() || row.playerTag,
+      playerTag: String(row.playerTag ?? "").trim() || "",
+    });
+    leaderRowsByClanTag.set(clanTag, entries);
+  }
+  for (const [clanTag, rowsByClanTag] of leaderRowsByClanTag.entries()) {
+    leaderNamesByClanTag.set(
+      clanTag,
+      rowsByClanTag
+        .sort((a, b) => {
+          if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
+          const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
+          if (byName !== 0) return byName;
+          return a.playerTag.localeCompare(b.playerTag);
+        })
+        .map((row) => row.playerName),
+    );
+  }
+  return leaderNamesByClanTag;
+}
 
 function compareRosterEntries(
   a: CwlRotationSeedRosterEntry,
@@ -1929,29 +1971,17 @@ export class CwlRotationService {
     };
   }
 
-  /** Purpose: summarize current-day plan-vs-actual status across all active CWL rotation plans. */
-  async listOverview(input?: {
-    season?: string;
+  private async loadClanLeadershipNamesByClanTag(input: {
+    clanTags: string[];
     refreshLeadershipMembers?: boolean;
-  }): Promise<CwlRotationOverviewEntry[]> {
-    const season = input?.season ?? resolveCurrentCwlSeasonKey();
-    const activePlans = await prisma.cwlRotationPlan.findMany({
-      where: {
-        season,
-        isActive: true,
-      },
-      orderBy: [{ clanTag: "asc" }, { version: "desc" }],
-    });
-    const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
-    const uniquePlans = new Map<string, typeof activePlans[number]>();
-    for (const plan of activePlans) {
-      if (!uniquePlans.has(plan.clanTag)) {
-        uniquePlans.set(plan.clanTag, plan);
-      }
-    }
+  }): Promise<{
+    leaderNamesByClanTag: Map<string, string[]>;
+    failedLeadershipClanTags: Set<string>;
+  }> {
+    const clanTags = [...new Set(input.clanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean))];
 
     const failedLeadershipClanTags = new Set<string>();
-    if (input?.refreshLeadershipMembers && clanTags.length > 0) {
+    if (input.refreshLeadershipMembers && clanTags.length > 0) {
       try {
         const refreshResult = await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags(
           clanTags,
@@ -1994,46 +2024,62 @@ export class CwlRotationService {
           ],
         })
       : [];
-    const leaderNamesByClanTag = new Map<string, string[]>();
-    const leaderRowsByClanTag = new Map<
-      string,
-      Array<{ roleRank: number; playerName: string; playerTag: string }>
-    >();
-    for (const row of leaderRows) {
-      const clanTag = normalizeClanTag(row.clanTag);
-      const role = normalizeClanMemberRole(row.role);
-      if (!clanTag || !role) continue;
-      const roleRank = role === "leader" ? 0 : 1;
-      const entries = leaderRowsByClanTag.get(clanTag) ?? [];
-      entries.push({
-        roleRank,
-        playerName: String(row.playerName ?? "").trim() || row.playerTag,
-        playerTag: String(row.playerTag ?? "").trim() || "",
-      });
-      leaderRowsByClanTag.set(clanTag, entries);
+
+    return {
+      leaderNamesByClanTag: buildClanLeadershipNamesByClanTag(leaderRows),
+      failedLeadershipClanTags,
+    };
+  }
+
+  async listClanLeadershipNames(input: {
+    clanTag: string;
+    refreshLeadershipMembers?: boolean;
+  }): Promise<string[]> {
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (!clanTag) {
+      return [];
     }
-    for (const [clanTag, rows] of leaderRowsByClanTag.entries()) {
-      leaderNamesByClanTag.set(
-        clanTag,
-        rows
-          .sort((a, b) => {
-            if (a.roleRank !== b.roleRank) return a.roleRank - b.roleRank;
-            const byName = a.playerName.localeCompare(b.playerName, undefined, { sensitivity: "base" });
-            if (byName !== 0) return byName;
-            return a.playerTag.localeCompare(b.playerTag);
-          })
-          .map((row) => row.playerName),
-      );
+
+    const { leaderNamesByClanTag } = await this.loadClanLeadershipNamesByClanTag({
+      clanTags: [clanTag],
+      refreshLeadershipMembers: input.refreshLeadershipMembers,
+    });
+    return leaderNamesByClanTag.get(clanTag) ?? [];
+  }
+
+  /** Purpose: summarize current-day plan-vs-actual status across all active CWL rotation plans. */
+  async listOverview(input?: {
+    season?: string;
+    refreshLeadershipMembers?: boolean;
+  }): Promise<CwlRotationOverviewEntry[]> {
+    const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const activePlans = await prisma.cwlRotationPlan.findMany({
+      where: {
+        season,
+        isActive: true,
+      },
+      orderBy: [{ clanTag: "asc" }, { version: "desc" }],
+    });
+    const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
+    const uniquePlans = new Map<string, typeof activePlans[number]>();
+    for (const plan of activePlans) {
+      if (!uniquePlans.has(plan.clanTag)) {
+        uniquePlans.set(plan.clanTag, plan);
+      }
     }
+
+    const { leaderNamesByClanTag, failedLeadershipClanTags } = await this.loadClanLeadershipNamesByClanTag({
+      clanTags,
+      refreshLeadershipMembers: input?.refreshLeadershipMembers,
+    });
 
     const entries: CwlRotationOverviewEntry[] = [];
     for (const plan of uniquePlans.values()) {
       const refreshFailed = failedLeadershipClanTags.has(plan.clanTag);
-      const leaderRowsForClan = leaderRowsByClanTag.get(plan.clanTag) ?? [];
       const leaderNames = refreshFailed ? [] : leaderNamesByClanTag.get(plan.clanTag) ?? [];
       if (input?.refreshLeadershipMembers) {
         console.info(
-          `[cwl] overview leadership clan=${plan.clanTag} persisted_rows=${leaderRowsForClan.length} refresh_failed=${refreshFailed ? "yes" : "no"}`,
+          `[cwl] overview leadership clan=${plan.clanTag} leaders=${leaderNames.length} refresh_failed=${refreshFailed ? "yes" : "no"}`,
         );
       }
       const [currentRound, preferredDay] = await Promise.all([
