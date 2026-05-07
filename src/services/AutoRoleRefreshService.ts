@@ -562,7 +562,9 @@ async function runRefreshPass(input: {
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   trackedClanScope: { fwaClanTags: Set<string>; cwlClanTags: Set<string> };
   runId: string;
+  now: Date;
 }): Promise<AutoRoleRefreshResult> {
+  const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot);
   const candidateUserIds = collectCandidateUsersForScope({
     scope: input.scope,
@@ -574,7 +576,6 @@ async function runRefreshPass(input: {
   });
   const { excludedUserIds, excludedRoleIds } = buildExclusionIndexes(input.snapshot);
 
-  const now = new Date();
   const memberResults: AutoRoleMemberApplyResult[] = [];
   try {
     for (const userId of normalizeMemberIds(candidateUserIds)) {
@@ -649,13 +650,16 @@ async function runRefreshPass(input: {
       );
 
       const result = await autoRoleApplyService.applyMember({
+        guildId: input.guildId,
         config: input.snapshot.config,
         managedRoleIds,
+        rules: input.snapshot.rules,
         member,
         evaluation,
         linkedAccounts,
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
+        now: input.now,
       });
 
       memberResults.push(result);
@@ -713,12 +717,14 @@ export class AutoRoleRefreshService {
     guild: Guild;
     guildId: string;
     cocService?: CoCService | null;
+    now?: Date;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
       guildId: input.guildId,
       scope: { kind: "guild" },
       cocService: input.cocService ?? null,
+      now: input.now ?? new Date(),
     });
   }
 
@@ -727,12 +733,14 @@ export class AutoRoleRefreshService {
     guildId: string;
     discordUserId: string;
     cocService?: CoCService | null;
+    now?: Date;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
       guildId: input.guildId,
       scope: { kind: "user", discordUserId: input.discordUserId },
       cocService: input.cocService ?? null,
+      now: input.now ?? new Date(),
     });
   }
 
@@ -741,12 +749,14 @@ export class AutoRoleRefreshService {
     guildId: string;
     discordRoleId: string;
     cocService?: CoCService | null;
+    now?: Date;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
       guildId: input.guildId,
       scope: { kind: "role", discordRoleId: input.discordRoleId },
       cocService: input.cocService ?? null,
+      now: input.now ?? new Date(),
     });
   }
 
@@ -755,12 +765,13 @@ export class AutoRoleRefreshService {
     guildId: string;
     scope: AutoRoleRefreshScope;
     cocService?: CoCService | null;
+    now: Date;
   }): Promise<AutoRoleRefreshResult> {
     const run = await prisma.autoRoleSyncRun.create({
       data: {
         guildId: input.guildId,
         status: "RUNNING",
-        startedAt: new Date(),
+        startedAt: input.now,
         evaluatedCount: 0,
         appliedCount: 0,
         removedCount: 0,
@@ -825,6 +836,7 @@ export class AutoRoleRefreshService {
         clanMembershipIndex,
         trackedClanScope,
         runId: run.id,
+        now: input.now,
       });
     } catch (error) {
       await prisma.autoRoleSyncRun.update({
