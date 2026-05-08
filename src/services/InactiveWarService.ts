@@ -67,8 +67,16 @@ function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
 
+function normalizePlayerTagInput(input: string): string {
+  return normalizeClanTagInput(input);
+}
+
 function buildClanTagQueryValues(trackedTags: string[]): string[] {
   return [...new Set(trackedTags.flatMap((tag) => [tag, `#${tag}`]))];
+}
+
+function buildPlayerTagQueryValues(playerTags: string[]): string[] {
+  return [...new Set(playerTags.flatMap((tag) => [tag, `#${tag}`]))];
 }
 
 function normalizeInactiveWarMatchType(
@@ -146,6 +154,39 @@ function buildInactiveWarDiagnosticNote(input: {
 
 function buildInactiveWarFilterMismatchDiagnosticNote(clanTag: string): string {
   return `Diagnostic: clan filter ${clanTag} matched no tracked clan.`;
+}
+
+function compareTownHallFallbackRows(
+  a: {
+    sameClan: boolean;
+    warEndTime: Date | null;
+    warStartTime: Date | null;
+    createdAt: Date | null;
+  },
+  b: {
+    sameClan: boolean;
+    warEndTime: Date | null;
+    warStartTime: Date | null;
+    createdAt: Date | null;
+  },
+): number {
+  if (a.sameClan !== b.sameClan) {
+    return a.sameClan ? 1 : -1;
+  }
+
+  const endA = a.warEndTime?.getTime() ?? 0;
+  const endB = b.warEndTime?.getTime() ?? 0;
+  if (endA !== endB) return endB - endA;
+
+  const startA = a.warStartTime?.getTime() ?? 0;
+  const startB = b.warStartTime?.getTime() ?? 0;
+  if (startA !== startB) return startB - startA;
+
+  const createdA = a.createdAt?.getTime() ?? 0;
+  const createdB = b.createdAt?.getTime() ?? 0;
+  if (createdA !== createdB) return createdB - createdA;
+
+  return 0;
 }
 
 function buildInactiveWarMissedState(row: ClanWarHistoryRow): InactiveWarMissedState {
@@ -365,6 +406,188 @@ function aggregateInactiveWarRows(input: {
     }));
 }
 
+async function loadInactiveWarTownHallFallbacks(input: {
+  guildId: string;
+  trackedClanTags: string[];
+  selectedWarIds: string[];
+  missingRows: Array<{
+    clanTag: string;
+    playerTag: string;
+  }>;
+}): Promise<Map<string, number>> {
+  const fallbackTownHallByPlayerTag = new Map<string, number>();
+  const missingByPlayerTag = new Map<string, Set<string>>();
+  const missingPlayerTags: string[] = [];
+  for (const row of input.missingRows) {
+    const playerTag = normalizePlayerTagInput(row.playerTag);
+    const clanTag = normalizeClanTagInput(row.clanTag);
+    if (!playerTag || !clanTag) continue;
+    const existing = missingByPlayerTag.get(playerTag) ?? new Set<string>();
+    if (!missingByPlayerTag.has(playerTag)) {
+      missingByPlayerTag.set(playerTag, existing);
+      missingPlayerTags.push(playerTag);
+    }
+    existing.add(clanTag);
+  }
+
+  if (missingPlayerTags.length === 0) {
+    return fallbackTownHallByPlayerTag;
+  }
+
+  const playerTagQueryValues = buildPlayerTagQueryValues(missingPlayerTags);
+  const trackedClanTagValues = buildClanTagQueryValues(input.trackedClanTags);
+  const selectedWarIds = [...new Set(input.selectedWarIds.map((warId) => String(warId).trim()).filter(Boolean))];
+
+  if (selectedWarIds.length > 0) {
+    const historicalRows = await prisma.clanWarParticipation.findMany({
+      where: {
+        guildId: input.guildId,
+        playerTag: { in: playerTagQueryValues },
+        clanTag: { in: trackedClanTagValues },
+        warId: { notIn: selectedWarIds },
+        townHall: { not: null },
+      },
+      orderBy: [
+        { playerTag: "asc" },
+        { clanTag: "asc" },
+        { warEndTime: "desc" },
+        { warStartTime: "desc" },
+        { createdAt: "desc" },
+      ],
+      select: {
+        playerTag: true,
+        clanTag: true,
+        townHall: true,
+        warEndTime: true,
+        warStartTime: true,
+        createdAt: true,
+      },
+    });
+
+    const historicalBestByPlayerTag = new Map<
+      string,
+      {
+        townHall: number;
+        sameClan: boolean;
+        warEndTime: Date | null;
+        warStartTime: Date | null;
+        createdAt: Date | null;
+      }
+    >();
+    for (const row of historicalRows as Array<{
+      playerTag: string;
+      clanTag: string;
+      townHall: number | null;
+      warEndTime: Date | null;
+      warStartTime: Date | null;
+      createdAt: Date | null;
+    }>) {
+      const playerTag = normalizePlayerTagInput(row.playerTag);
+      const clanTag = normalizeClanTagInput(row.clanTag);
+      const townHall = row.townHall;
+      if (!playerTag || townHall === null || townHall === undefined) continue;
+      const missingClanTags = missingByPlayerTag.get(playerTag);
+      if (!missingClanTags) continue;
+      const candidate = {
+        townHall,
+        sameClan: missingClanTags.has(clanTag),
+        warEndTime: row.warEndTime ?? null,
+        warStartTime: row.warStartTime ?? null,
+        createdAt: row.createdAt ?? null,
+      };
+      const existing = historicalBestByPlayerTag.get(playerTag) ?? null;
+      if (!existing || compareTownHallFallbackRows(candidate, existing) > 0) {
+        historicalBestByPlayerTag.set(playerTag, candidate);
+      }
+    }
+    for (const [playerTag, candidate] of historicalBestByPlayerTag.entries()) {
+      fallbackTownHallByPlayerTag.set(playerTag, candidate.townHall);
+    }
+  }
+
+  const unresolvedPlayerTags = missingPlayerTags.filter((playerTag) => !fallbackTownHallByPlayerTag.has(playerTag));
+  if (unresolvedPlayerTags.length === 0) {
+    return fallbackTownHallByPlayerTag;
+  }
+
+  const unresolvedPlayerTagQueryValues = buildPlayerTagQueryValues(unresolvedPlayerTags);
+  const playerCurrentRows = await prisma.playerCurrent.findMany({
+    where: {
+      playerTag: { in: unresolvedPlayerTagQueryValues },
+      townHall: { not: null },
+    },
+    select: {
+      playerTag: true,
+      townHall: true,
+    },
+  });
+  for (const row of playerCurrentRows as Array<{ playerTag: string; townHall: number | null }>) {
+    const playerTag = normalizePlayerTagInput(row.playerTag);
+    const townHall = row.townHall;
+    if (!playerTag || townHall === null || townHall === undefined) continue;
+    if (!fallbackTownHallByPlayerTag.has(playerTag)) {
+      fallbackTownHallByPlayerTag.set(playerTag, townHall);
+    }
+  }
+
+  const unresolvedAfterPlayerCurrent = unresolvedPlayerTags.filter(
+    (playerTag) => !fallbackTownHallByPlayerTag.has(playerTag),
+  );
+  if (unresolvedAfterPlayerCurrent.length === 0) {
+    return fallbackTownHallByPlayerTag;
+  }
+
+  const unresolvedAfterPlayerCurrentQueryValues = buildPlayerTagQueryValues(unresolvedAfterPlayerCurrent);
+  const fwaClanMemberRows = await prisma.fwaClanMemberCurrent.findMany({
+    where: {
+      playerTag: { in: unresolvedAfterPlayerCurrentQueryValues },
+      clanTag: { in: trackedClanTagValues },
+      townHall: { not: null },
+    },
+    select: {
+      playerTag: true,
+      townHall: true,
+    },
+  });
+  for (const row of fwaClanMemberRows as Array<{ playerTag: string; townHall: number | null }>) {
+    const playerTag = normalizePlayerTagInput(row.playerTag);
+    const townHall = row.townHall;
+    if (!playerTag || townHall === null || townHall === undefined) continue;
+    if (!fallbackTownHallByPlayerTag.has(playerTag)) {
+      fallbackTownHallByPlayerTag.set(playerTag, townHall);
+    }
+  }
+
+  const unresolvedAfterFwaMembers = unresolvedAfterPlayerCurrent.filter(
+    (playerTag) => !fallbackTownHallByPlayerTag.has(playerTag),
+  );
+  if (unresolvedAfterFwaMembers.length === 0) {
+    return fallbackTownHallByPlayerTag;
+  }
+
+  const unresolvedAfterFwaMembersQueryValues = buildPlayerTagQueryValues(unresolvedAfterFwaMembers);
+  const rosterMemberRows = await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+    where: {
+      playerTag: { in: unresolvedAfterFwaMembersQueryValues },
+      clanTag: { in: trackedClanTagValues },
+    },
+    select: {
+      playerTag: true,
+      townHall: true,
+    },
+  });
+  for (const row of rosterMemberRows as Array<{ playerTag: string; townHall: number | null }>) {
+    const playerTag = normalizePlayerTagInput(row.playerTag);
+    const townHall = row.townHall;
+    if (!playerTag || townHall === null || townHall === undefined) continue;
+    if (!fallbackTownHallByPlayerTag.has(playerTag)) {
+      fallbackTownHallByPlayerTag.set(playerTag, townHall);
+    }
+  }
+
+  return fallbackTownHallByPlayerTag;
+}
+
 export class InactiveWarService {
   async listInactiveWarPlayers(input: {
     guildId: string;
@@ -479,6 +702,24 @@ export class InactiveWarService {
       historyByWarId,
       participationRows,
     });
+    const missingTownHallRows = results
+      .filter((row) => row.townHall === null)
+      .map((row) => ({ clanTag: row.clanTag, playerTag: row.playerTag }));
+    if (missingTownHallRows.length > 0) {
+      const fallbackTownHallByPlayerTag = await loadInactiveWarTownHallFallbacks({
+        guildId: input.guildId,
+        trackedClanTags: trackedTags,
+        selectedWarIds,
+        missingRows: missingTownHallRows,
+      });
+      for (const row of results) {
+        if (row.townHall !== null) continue;
+        const fallbackTownHall = fallbackTownHallByPlayerTag.get(row.playerTag) ?? null;
+        if (fallbackTownHall !== null) {
+          row.townHall = fallbackTownHall;
+        }
+      }
+    }
     const diagnosticNote =
       results.length === 0
         ? buildInactiveWarDiagnosticNote({
