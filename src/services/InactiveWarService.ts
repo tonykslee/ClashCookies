@@ -79,6 +79,13 @@ function buildPlayerTagQueryValues(playerTags: string[]): string[] {
   return [...new Set(playerTags.flatMap((tag) => [tag, `#${tag}`]))];
 }
 
+function normalizePositiveInteger(input: unknown): number | null {
+  const numeric = Number(input);
+  if (!Number.isFinite(numeric)) return null;
+  const normalized = Math.trunc(numeric);
+  return normalized > 0 ? normalized : null;
+}
+
 function normalizeInactiveWarMatchType(
   input: string | null | undefined,
 ): "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null {
@@ -566,9 +573,36 @@ async function loadInactiveWarTownHallFallbacks(input: {
   }
 
   const unresolvedAfterFwaMembersQueryValues = buildPlayerTagQueryValues(unresolvedAfterFwaMembers);
-  const rosterMemberRows = await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+  const fwaPlayerCatalogRows = await prisma.fwaPlayerCatalog.findMany({
     where: {
       playerTag: { in: unresolvedAfterFwaMembersQueryValues },
+      latestTownHall: { not: null },
+    },
+    select: {
+      playerTag: true,
+      latestTownHall: true,
+    },
+  });
+  for (const row of fwaPlayerCatalogRows as Array<{ playerTag: string; latestTownHall: number | null }>) {
+    const playerTag = normalizePlayerTagInput(row.playerTag);
+    const townHall = normalizePositiveInteger(row.latestTownHall);
+    if (!playerTag || townHall === null) continue;
+    if (!fallbackTownHallByPlayerTag.has(playerTag)) {
+      fallbackTownHallByPlayerTag.set(playerTag, townHall);
+    }
+  }
+
+  const unresolvedAfterCatalog = unresolvedAfterFwaMembers.filter(
+    (playerTag) => !fallbackTownHallByPlayerTag.has(playerTag),
+  );
+  if (unresolvedAfterCatalog.length === 0) {
+    return fallbackTownHallByPlayerTag;
+  }
+
+  const unresolvedAfterCatalogQueryValues = buildPlayerTagQueryValues(unresolvedAfterCatalog);
+  const rosterMemberRows = await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+    where: {
+      playerTag: { in: unresolvedAfterCatalogQueryValues },
       clanTag: { in: trackedClanTagValues },
     },
     select: {
