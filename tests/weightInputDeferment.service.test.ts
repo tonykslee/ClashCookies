@@ -15,6 +15,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  playerCurrent: {
+    upsert: vi.fn(),
+  },
   weightInputDeferment: {
     findUnique: vi.fn(),
     upsert: vi.fn(),
@@ -29,6 +32,7 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import {
+  addWeightInputDefermentWithPlayerProfile,
   getDueDefermentStagesForTest,
   normalizePlayerTag,
   parseDeferWeightInput,
@@ -151,6 +155,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.upsert.mockResolvedValue({});
     prismaMock.clanNotifyConfig.findFirst.mockResolvedValue({
       guildId: "guild-1",
       clanTag: "#AAA111",
@@ -167,6 +172,163 @@ describe("WeightInputDefermentService lifecycle processing", () => {
       logChannelId: null,
       mailChannelId: null,
     });
+  });
+
+  it("logs and creates a deferment when the live profile and writes succeed", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = await addWeightInputDefermentWithPlayerProfile({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      playerTag: "#220PUR9JG",
+      deferredWeight: 145000,
+      cocService: {
+        getPlayerRaw: vi.fn().mockResolvedValue({
+          tag: "#220PUR9JG",
+          name: "Live Player",
+          townHallLevel: 15,
+          clan: {
+            tag: "#AAA111",
+            name: "Alpha",
+          },
+        }),
+      },
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      infoSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=scope_resolve") &&
+        String(call[0]).includes("status=started"),
+      ),
+    ).toBe(true);
+    expect(
+      infoSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=deferment_write") &&
+        String(call[0]).includes("status=ok"),
+      ),
+    ).toBe(true);
+    expect(errorSpy).not.toHaveBeenCalled();
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("returns player_profile_not_found when the live profile is missing", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = await addWeightInputDefermentWithPlayerProfile({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      playerTag: "#220PUR9JG",
+      deferredWeight: 145000,
+      cocService: {
+        getPlayerRaw: vi.fn().mockResolvedValue(null),
+      },
+    });
+
+    expect(result.outcome).toBe("player_profile_not_found");
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(
+      infoSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=profile_lookup") &&
+        String(call[0]).includes("status=not_found"),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("returns player_profile_lookup_failed when the live profile fetch throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const result = await addWeightInputDefermentWithPlayerProfile({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      playerTag: "#220PUR9JG",
+      deferredWeight: 145000,
+      cocService: {
+        getPlayerRaw: vi.fn().mockRejectedValue(new Error("cooc timeout")),
+      },
+    });
+
+    expect(result.outcome).toBe("player_profile_lookup_failed");
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=profile_lookup") &&
+        String(call[0]).includes("error_category=player_profile_lookup_failed"),
+      ),
+    ).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it("returns player_current_upsert_failed when playerCurrent upsert throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.playerCurrent.upsert.mockRejectedValueOnce(new Error("player_current_failed"));
+    const result = await addWeightInputDefermentWithPlayerProfile({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      playerTag: "#220PUR9JG",
+      deferredWeight: 145000,
+      cocService: {
+        getPlayerRaw: vi.fn().mockResolvedValue({
+          tag: "#220PUR9JG",
+          name: "Live Player",
+          townHallLevel: 15,
+          clan: {
+            tag: "#AAA111",
+            name: "Alpha",
+          },
+        }),
+      },
+    });
+
+    expect(result.outcome).toBe("player_current_upsert_failed");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=player_current_upsert") &&
+        String(call[0]).includes("error_category=player_current_upsert_failed"),
+      ),
+    ).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it("returns deferment_write_failed when the deferment insert throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.weightInputDeferment.upsert.mockRejectedValueOnce(new Error("deferment_failed"));
+    const result = await addWeightInputDefermentWithPlayerProfile({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      playerTag: "#220PUR9JG",
+      deferredWeight: 145000,
+      cocService: {
+        getPlayerRaw: vi.fn().mockResolvedValue({
+          tag: "#220PUR9JG",
+          name: "Live Player",
+          townHallLevel: 15,
+          clan: {
+            tag: "#AAA111",
+            name: "Alpha",
+          },
+        }),
+      },
+    });
+
+    expect(result.outcome).toBe("deferment_write_failed");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("stage=deferment_write") &&
+        String(call[0]).includes("error_category=deferment_write_failed"),
+      ),
+    ).toBe(true);
+    errorSpy.mockRestore();
   });
 
   it("reroutes reminders to the player's current tracked clan log channel and pings guild-wide fwa leader role", async () => {

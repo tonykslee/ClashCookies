@@ -14,6 +14,7 @@ import {
   parseDeferWeightInput,
   removeOpenWeightInputDeferment,
 } from "../services/WeightInputDefermentService";
+import { formatError } from "../helper/formatError";
 
 function renderScopeLabel(scope: { clanTag: string | null; scopeKey: string }): string {
   if (scope.clanTag) return scope.clanTag;
@@ -112,25 +113,40 @@ export const Defer: Command = {
           deferredWeight,
           cocService,
         });
-        if (result.outcome === "player_profile_not_found") {
-          await interaction.editReply(
-            `not_found: player profile for ${playerTag} could not be resolved before writing the deferment.`
-          );
-          return;
+        switch (result.outcome) {
+          case "player_profile_not_found":
+            await interaction.editReply(
+              `not_found: player profile for ${playerTag} could not be resolved.`
+            );
+            return;
+          case "player_profile_lookup_failed":
+            await interaction.editReply(
+              `failed: player profile lookup failed for ${playerTag}. Check bot logs.`
+            );
+            return;
+          case "player_current_upsert_failed":
+          case "deferment_write_failed":
+            await interaction.editReply(
+              `failed: unable to save deferment for ${playerTag}. Check bot logs.`
+            );
+            return;
+          case "already_exists":
+            await interaction.editReply(
+              `already_exists: ${playerTag} is already open in ${renderScopeLabel(result.record)}.`
+            );
+            return;
+          case "created":
+            await interaction.editReply(
+              `created: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
+            );
+            return;
         }
-        if (result.outcome === "already_exists") {
-          await interaction.editReply(
-            `already_exists: ${playerTag} is already open in ${renderScopeLabel(result.record)}.`
-          );
-          return;
-        }
-        await interaction.editReply(
-          `created: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
+      } catch (error) {
+        console.error(
+          `[defer] command=/defer add stage=run guild=${guildId} channel=${channelId ?? "none"} player=${playerTag} deferredWeight=${deferredWeight} error=${formatError(error)}`,
         );
-        return;
-      } catch {
         await interaction.editReply(
-          `failed: unable to resolve player profile for ${playerTag} before writing the deferment.`
+          `failed: unexpected deferment error for ${playerTag}. Check bot logs.`
         );
         return;
       }
