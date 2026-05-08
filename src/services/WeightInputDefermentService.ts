@@ -35,6 +35,18 @@ export type AddWeightInputDefermentWithPlayerProfileResult =
   | {
       outcome: "player_profile_not_found";
       playerTag: string;
+    }
+  | {
+      outcome: "player_profile_lookup_failed";
+      playerTag: string;
+    }
+  | {
+      outcome: "player_current_upsert_failed";
+      playerTag: string;
+    }
+  | {
+      outcome: "deferment_write_failed";
+      playerTag: string;
     };
 
 const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
@@ -83,6 +95,30 @@ export function formatPendingAge(createdAt: Date, now: Date = new Date()): strin
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
   return `${days}d ${hours}h`;
+}
+
+function logDeferStage(input: {
+  stage: string;
+  status: "started" | "ok" | "not_found" | "failed";
+  guildId: string;
+  channelId: string | null;
+  playerTag: string;
+  deferredWeight: number;
+  scope?: DefermentScopeContext | null;
+  errorCategory?: string | null;
+  error?: unknown;
+}): void {
+  const scope = input.scope ?? null;
+  const channelText = input.channelId ?? "none";
+  const scopeText = scope ? ` scopeKey=${scope.scopeKey} clanTag=${scope.clanTag ?? "none"}` : "";
+  const base = `[defer] source=slash:defer:add stage=${input.stage} status=${input.status} guild=${input.guildId} channel=${channelText} player=${input.playerTag} deferredWeight=${input.deferredWeight}${scopeText}`;
+  if (input.error) {
+    console.error(
+      `${base} error_category=${input.errorCategory ?? "unknown"} error=${formatError(input.error)}`,
+    );
+    return;
+  }
+  console.info(base);
 }
 
 function parseStatus(input: string): DefermentStatus | null {
@@ -192,11 +228,14 @@ export async function addWeightInputDeferment(input: {
   channelId: string | null;
   playerTag: string;
   deferredWeight: number;
+  resolvedScope?: DefermentScopeContext | null;
 }): Promise<AddDefermentResult> {
-  const scope = await resolveDefermentScopeContext({
-    guildId: input.guildId,
-    channelId: input.channelId,
-  });
+  const scope =
+    input.resolvedScope ??
+    (await resolveDefermentScopeContext({
+      guildId: input.guildId,
+      channelId: input.channelId,
+    }));
   const existing = await findOpenWeightInputDeferment({
     scopeKey: scope.scopeKey,
     playerTag: input.playerTag,
@@ -253,10 +292,43 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
     };
   }
 
-  const scope = await resolveDefermentScopeContext({
-    guildId: input.guildId,
-    channelId: input.channelId,
-  });
+  let scope: DefermentScopeContext;
+  try {
+    logDeferStage({
+      stage: "scope_resolve",
+      status: "started",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+    });
+    scope = await resolveDefermentScopeContext({
+      guildId: input.guildId,
+      channelId: input.channelId,
+    });
+    logDeferStage({
+      stage: "scope_resolve",
+      status: "ok",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      scope,
+    });
+  } catch (error) {
+    logDeferStage({
+      stage: "scope_resolve",
+      status: "failed",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      errorCategory: "scope_resolution_failed",
+      error,
+    });
+    throw error;
+  }
+
   const existing = await findOpenWeightInputDeferment({
     scopeKey: scope.scopeKey,
     playerTag,
@@ -268,25 +340,131 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
     };
   }
 
-  const livePlayer = await input.cocService.getPlayerRaw(playerTag);
+  logDeferStage({
+    stage: "profile_lookup",
+    status: "started",
+    guildId: input.guildId,
+    channelId: input.channelId,
+    playerTag,
+    deferredWeight: input.deferredWeight,
+    scope,
+  });
+
+  let livePlayer: unknown;
+  try {
+    livePlayer = await input.cocService.getPlayerRaw(playerTag);
+  } catch (error) {
+    logDeferStage({
+      stage: "profile_lookup",
+      status: "failed",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      scope,
+      errorCategory: "player_profile_lookup_failed",
+      error,
+    });
+    return {
+      outcome: "player_profile_lookup_failed",
+      playerTag,
+    };
+  }
   if (!livePlayer) {
+    logDeferStage({
+      stage: "profile_lookup",
+      status: "not_found",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      scope,
+    });
     return {
       outcome: "player_profile_not_found",
       playerTag,
     };
   }
 
-  await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
-    playerTag,
-    livePlayer,
-    currentWeight: input.deferredWeight,
-  });
-
-  const result = await addWeightInputDeferment({
+  logDeferStage({
+    stage: "player_current_upsert",
+    status: "started",
     guildId: input.guildId,
     channelId: input.channelId,
     playerTag,
     deferredWeight: input.deferredWeight,
+    scope,
+  });
+
+  try {
+    await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+      playerTag,
+      livePlayer,
+      currentWeight: input.deferredWeight,
+    });
+  } catch (error) {
+    logDeferStage({
+      stage: "player_current_upsert",
+      status: "failed",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      scope,
+      errorCategory: "player_current_upsert_failed",
+      error,
+    });
+    return {
+      outcome: "player_current_upsert_failed",
+      playerTag,
+    };
+  }
+
+  logDeferStage({
+    stage: "deferment_write",
+    status: "started",
+    guildId: input.guildId,
+    channelId: input.channelId,
+    playerTag,
+    deferredWeight: input.deferredWeight,
+    scope,
+  });
+
+  let result: AddDefermentResult;
+  try {
+    result = await addWeightInputDeferment({
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      resolvedScope: scope,
+    });
+  } catch (error) {
+    logDeferStage({
+      stage: "deferment_write",
+      status: "failed",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      playerTag,
+      deferredWeight: input.deferredWeight,
+      scope,
+      errorCategory: "deferment_write_failed",
+      error,
+    });
+    return {
+      outcome: "deferment_write_failed",
+      playerTag,
+    };
+  }
+
+  logDeferStage({
+    stage: "deferment_write",
+    status: "ok",
+    guildId: input.guildId,
+    channelId: input.channelId,
+    playerTag,
+    deferredWeight: input.deferredWeight,
+    scope,
   });
 
   return result;
