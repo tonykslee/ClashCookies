@@ -8,6 +8,10 @@ const playerLinkServiceMock = vi.hoisted(() => ({
   listPlayerLinksForClanMembers: vi.fn(),
 }));
 
+const emojiResolverServiceMock = vi.hoisted(() => ({
+  fetchApplicationEmojiInventory: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
@@ -43,6 +47,16 @@ vi.mock("../src/services/PlayerLinkService", async () => {
   };
 });
 
+vi.mock("../src/services/emoji/EmojiResolverService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/emoji/EmojiResolverService")>(
+    "../src/services/emoji/EmojiResolverService",
+  );
+  return {
+    ...actual,
+    emojiResolverService: emojiResolverServiceMock,
+  };
+});
+
 import { Inactive } from "../src/commands/Inactive";
 
 function makeInteraction(values: {
@@ -73,6 +87,21 @@ function makeInteraction(values: {
 describe("/inactive command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    emojiResolverServiceMock.fetchApplicationEmojiInventory.mockResolvedValue({
+      ok: true,
+      snapshot: {
+        exactByName: new Map([
+          ["th16", { rendered: "<:th16:116>" }],
+          ["th17", { rendered: "<:th17:117>" }],
+          ["th18", { rendered: "<:th18:118>" }],
+        ]),
+        lowercaseByName: new Map([
+          ["th16", { rendered: "<:th16:116>" }],
+          ["th17", { rendered: "<:th17:117>" }],
+          ["th18", { rendered: "<:th18:118>" }],
+        ]),
+      },
+    });
   });
 
   it("passes clanTag to the inactive war service for wars mode", async () => {
@@ -80,6 +109,7 @@ describe("/inactive command", () => {
       results: [],
       trackedTags: ["AAA111"],
       trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
       warnings: [],
       diagnosticNote: null,
     });
@@ -101,13 +131,15 @@ describe("/inactive command", () => {
       if (tag === "#AAA111") {
         return {
           name: "Alpha",
-          members: [{ tag: "#A1" }, { tag: "#A2" }],
+          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
         };
       }
       throw new Error(`unexpected clan fetch: ${tag}`);
     });
 
-    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
       _count: { tag: 2 },
@@ -142,9 +174,10 @@ describe("/inactive command", () => {
     expect(getClan).toHaveBeenCalledWith("#AAA111");
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
-    expect(embed.description).toContain("Alpha (2)");
-    expect(embed.description).toContain("**Alpha One** (`#A1`) <@111111111111111111> - 8d");
-    expect(embed.description).toContain("**Alpha Two** (`#A2`) — - 9d");
+    expect(embed.description).toContain("<:badge:1> Alpha (2)");
+    expect(embed.description).toContain("- <:th17:117> Alpha One `#A1` <@111111111111111111> - 8d");
+    expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
+    expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
     expect(embed.description).not.toContain("Beta");
   });
 
@@ -153,13 +186,15 @@ describe("/inactive command", () => {
       if (tag === "#AAA111") {
         return {
           name: "Alpha",
-          members: [{ tag: "#A1" }, { tag: "#A2" }],
+          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
         };
       }
       throw new Error(`unexpected clan fetch: ${tag}`);
     });
 
-    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
       _count: { tag: 2 },
@@ -188,6 +223,7 @@ describe("/inactive command", () => {
           clanTag: "AAA111",
           playerTag: "A1",
           playerName: "Alpha One",
+          townHall: 18,
           missedWars: 3,
           participationWars: 3,
           totalTrueStars: 0,
@@ -203,6 +239,7 @@ describe("/inactive command", () => {
       ],
       trackedTags: ["AAA111"],
       trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
       warnings: [],
       diagnosticNote: null,
     });
@@ -237,6 +274,7 @@ describe("/inactive command", () => {
           clanTag: "AAA111",
           playerTag: "A1",
           playerName: "Alpha One",
+          townHall: 18,
           missedWars: 3,
           participationWars: 3,
           totalTrueStars: 0,
@@ -253,6 +291,7 @@ describe("/inactive command", () => {
           clanTag: "AAA111",
           playerTag: "A2",
           playerName: "Alpha Two",
+          townHall: 17,
           missedWars: 2,
           participationWars: 3,
           totalTrueStars: 0,
@@ -268,6 +307,7 @@ describe("/inactive command", () => {
           clanTag: "BBB222",
           playerTag: "B1",
           playerName: "Beta One",
+          townHall: 16,
           missedWars: 1,
           participationWars: 2,
           totalTrueStars: 0,
@@ -283,6 +323,10 @@ describe("/inactive command", () => {
       trackedNameByTag: new Map([
         ["AAA111", "Alpha"],
         ["BBB222", "Beta"],
+      ]),
+      trackedBadgeByTag: new Map([
+        ["AAA111", "<:badge:1>"],
+        ["BBB222", "<:badge:2>"],
       ]),
       warnings: [],
       diagnosticNote: null,
@@ -309,31 +353,36 @@ describe("/inactive command", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
     expect(embed.title).toContain("Missed Both Attacks - Last 3 War(s) (3)");
-    expect(embed.description).toContain("Alpha (2)");
-    expect(embed.description).toContain("- 3 wars missed");
-    expect(embed.description).toContain("  - Alpha One `#A1` <@111111111111111111> - 🟢 🔴 ⚫");
+    expect(embed.description).toContain("<:badge:1> Alpha (2)");
+    expect(embed.description).toContain("<:th18:118> Alpha One `#A1` <@111111111111111111>");
+    expect(embed.description).toContain("\u{1F7E2} \u{1F534} \u26AB");
     expect(embed.description).toContain("- 2 wars missed");
-    expect(embed.description).toContain("  - Alpha Two `#A2` — - 2/3 wars missed - ⚪ 🔘");
+    expect(embed.description).toContain("<:th17:117> Alpha Two `#A2`");
+    expect(embed.description).toContain("2/3 wars missed");
+    expect(embed.description).toContain("\u26AA \u{1F518}");
     expect(embed.description).toContain("Beta (1)");
-    expect(embed.description).toContain("  - Beta One `#B1` <@222222222222222222> - 1/2 wars missed - ⚪");
+    expect(embed.description).toContain("Beta One `#B1` <@222222222222222222>");
+    expect(embed.description).toContain("1/2 wars missed");
+    expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
     expect(embed.description).not.toContain("true stars");
     expect(embed.description).not.toContain("avg delay");
     expect(embed.description).not.toContain("late attacks");
     expect(embed.description).not.toContain("3/3 wars missed");
   });
-
   it("renders days mode rows with backticked tags and Discord mentions", async () => {
     const getClan = vi.fn(async (tag: string) => {
       if (tag === "#AAA111") {
         return {
           name: "Alpha",
-          members: [{ tag: "#A1" }, { tag: "#A2" }],
+          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
         };
       }
       throw new Error(`unexpected clan fetch: ${tag}`);
     });
 
-    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
       _count: { tag: 2 },
@@ -363,11 +412,72 @@ describe("/inactive command", () => {
     const cocService = { getClan } as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("- <:th17:117> Alpha One `#A1` <@111111111111111111> - 8d");
+    expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
+    expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders days mode rows from alternate live member town hall fields", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [
+            { tag: "#A1", townHallLevel: 17 },
+            { tag: "#A2", townhallLevel: 16 },
+            { tag: "#A3" },
+          ],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 3 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(3);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A3",
+        name: "Alpha Three",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7 });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
 
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
-    expect(embed.description).toContain("**Alpha One** (`#A1`) <@111111111111111111> - 8d");
-    expect(embed.description).toContain("**Alpha Two** (`#A2`) — - 9d");
+    expect(embed.description).toContain("- <:th17:117> Alpha One `#A1`");
+    expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
+    expect(embed.description).toContain("\u2754 Alpha Three `#A3`");
+    expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
   });
 
   it("shows ratios for other missed-war count combinations", async () => {
@@ -419,6 +529,7 @@ describe("/inactive command", () => {
       ],
       trackedTags: ["AAA111"],
       trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
       warnings: [],
       diagnosticNote: null,
     });
@@ -441,6 +552,7 @@ describe("/inactive command", () => {
       results: [],
       trackedTags: ["AAA111"],
       trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
       warnings: [],
       diagnosticNote: "Diagnostic: ended wars found yes (3), participation rows found yes (6).",
     });
@@ -460,3 +572,4 @@ describe("/inactive command", () => {
     );
   });
 });
+

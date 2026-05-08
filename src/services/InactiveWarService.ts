@@ -4,6 +4,7 @@ import { resolveFwaMatchStateEmoji } from "../commands/fwa/matchStateEmoji";
 type TrackedClanRow = {
   tag: string;
   name: string | null;
+  clanBadge: string | null;
 };
 
 type ClanWarHistoryRow = {
@@ -19,6 +20,7 @@ type ClanWarHistoryRow = {
 type ClanWarParticipationRow = {
   clanTag: string;
   playerTag: string;
+  townHall: number | null;
   playerName: string | null;
   warId: string;
   missedBoth: boolean;
@@ -42,6 +44,7 @@ export type InactiveWarRow = {
   clanTag: string;
   playerTag: string;
   playerName: string;
+  townHall: number | null;
   missedWars: number;
   participationWars: number;
   totalTrueStars: number;
@@ -55,6 +58,7 @@ export type InactiveWarSummary = {
   results: InactiveWarRow[];
   trackedTags: string[];
   trackedNameByTag: Map<string, string>;
+  trackedBadgeByTag: Map<string, string | null>;
   warnings: string[];
   diagnosticNote: string | null;
 };
@@ -107,6 +111,18 @@ function buildTrackedNameMap(trackedClans: TrackedClanRow[]): Map<string, string
     trackedNameByTag.set(`#${clanTag}`, clanName);
   }
   return trackedNameByTag;
+}
+
+function buildTrackedBadgeMap(trackedClans: TrackedClanRow[]): Map<string, string | null> {
+  const trackedBadgeByTag = new Map<string, string | null>();
+  for (const clan of trackedClans) {
+    const clanTag = normalizeClanTagInput(clan.tag);
+    if (!clanTag) continue;
+    const clanBadge = String(clan.clanBadge ?? "").trim();
+    trackedBadgeByTag.set(clanTag, clanBadge.length > 0 ? clanBadge : null);
+    trackedBadgeByTag.set(`#${clanTag}`, clanBadge.length > 0 ? clanBadge : null);
+  }
+  return trackedBadgeByTag;
 }
 
 function buildTrackedTagList(trackedClans: TrackedClanRow[]): string[] {
@@ -252,6 +268,7 @@ function aggregateInactiveWarRows(input: {
       clanTag: string;
       playerTag: string;
       playerName: string;
+      townHall: number | null;
       missedWars: number;
       participationWars: number;
       totalTrueStars: number;
@@ -276,6 +293,7 @@ function aggregateInactiveWarRows(input: {
       clanTag,
       playerTag,
       playerName: normalizePlayerName(row.playerName, playerTag),
+      townHall: row.townHall ?? null,
       missedWars: 0,
       participationWars: 0,
       totalTrueStars: 0,
@@ -283,7 +301,7 @@ function aggregateInactiveWarRows(input: {
       avgAttackDelayCount: 0,
       lateAttacks: 0,
       warsAvailable: clanSelection.warsAvailable,
-      missedWarStates: [],
+      missedWarStates: [] as InactiveWarMissedState[],
     };
 
     if (!rowsByKey.has(key)) {
@@ -293,6 +311,9 @@ function aggregateInactiveWarRows(input: {
     if (existing.playerName === existing.playerTag) {
       const resolvedPlayerName = normalizePlayerName(row.playerName, playerTag);
       if (resolvedPlayerName) existing.playerName = resolvedPlayerName;
+    }
+    if (existing.townHall === null && row.townHall !== null && row.townHall !== undefined) {
+      existing.townHall = row.townHall;
     }
 
     existing.participationWars += 1;
@@ -332,6 +353,7 @@ function aggregateInactiveWarRows(input: {
       clanTag: row.clanTag,
       playerTag: row.playerTag,
       playerName: row.playerName,
+      townHall: row.townHall,
       missedWars: row.missedWars,
       participationWars: row.participationWars,
       totalTrueStars: row.totalTrueStars,
@@ -351,7 +373,7 @@ export class InactiveWarService {
   }): Promise<InactiveWarSummary> {
     const trackedClans = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
+      select: { tag: true, name: true, clanBadge: true },
     });
     const normalizedClanFilter = normalizeClanTagInput(input.clanTag ?? "");
     const selectedTrackedClans = normalizedClanFilter
@@ -361,11 +383,13 @@ export class InactiveWarService {
       : trackedClans;
     const trackedTags = buildTrackedTagList(selectedTrackedClans);
     const trackedNameByTag = buildTrackedNameMap(selectedTrackedClans);
+    const trackedBadgeByTag = buildTrackedBadgeMap(selectedTrackedClans);
     if (normalizedClanFilter && trackedTags.length === 0) {
       return {
         results: [],
         trackedTags,
         trackedNameByTag,
+        trackedBadgeByTag,
         warnings: [
           buildInactiveWarFilterMismatchDiagnosticNote(
             `#${normalizedClanFilter}`,
@@ -377,7 +401,14 @@ export class InactiveWarService {
       };
     }
     if (trackedTags.length === 0) {
-      return { results: [], trackedTags, trackedNameByTag, warnings: [], diagnosticNote: null };
+      return {
+        results: [],
+        trackedTags,
+        trackedNameByTag,
+        trackedBadgeByTag,
+        warnings: [],
+        diagnosticNote: null,
+      };
     }
     const trackedClanTagValues = buildClanTagQueryValues(trackedTags);
 
@@ -431,6 +462,7 @@ export class InactiveWarService {
             clanTag: true,
             playerTag: true,
             playerName: true,
+            townHall: true,
             warId: true,
             missedBoth: true,
             trueStars: true,
@@ -464,7 +496,7 @@ export class InactiveWarService {
       })
       .filter((value): value is string => value !== null);
 
-    return { results, trackedTags, trackedNameByTag, warnings, diagnosticNote };
+    return { results, trackedTags, trackedNameByTag, trackedBadgeByTag, warnings, diagnosticNote };
   }
 }
 
