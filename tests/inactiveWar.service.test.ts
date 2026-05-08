@@ -16,6 +16,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -95,6 +98,16 @@ function makeFwaClanMemberCurrentRow(input: {
   };
 }
 
+function makeFwaPlayerCatalogRow(input: {
+  playerTag: string;
+  latestTownHall: number | null;
+}) {
+  return {
+    playerTag: input.playerTag,
+    latestTownHall: input.latestTownHall,
+  };
+}
+
 function makeFwaTrackedClanWarRosterMemberCurrentRow(input: {
   clanTag: string;
   playerTag: string;
@@ -145,6 +158,7 @@ describe("InactiveWarService", () => {
     vi.clearAllMocks();
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
   });
 
@@ -812,6 +826,128 @@ describe("InactiveWarService", () => {
     expect(summary.results[0]?.townHall).toBe(19);
     expect(prismaMock.playerCurrent.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.fwaPlayerCatalog.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany).not.toHaveBeenCalled();
+  });
+
+  it("falls back to FwaPlayerCatalog latestTownHall when earlier sources are missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      makeHistoryRow({
+        warId: 401,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-05T00:00:00.000Z",
+        matchType: "FWA",
+        actualOutcome: "WIN",
+      }),
+    ]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "9Q8R0VRJ",
+        playerName: "Alpha",
+        warId: "401",
+        missedBoth: true,
+        townHall: null,
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeFwaPlayerCatalogRow({ playerTag: "9Q8R0VRJ", latestTownHall: 15 }),
+    ]);
+
+    const service = new InactiveWarService();
+    const summary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 1,
+    });
+
+    expect(summary.results[0]?.playerTag).toBe("9Q8R0VRJ");
+    expect(summary.results[0]?.townHall).toBe(15);
+    expect(prismaMock.playerCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany).not.toHaveBeenCalled();
+  });
+
+  it("prefers PlayerCurrent town hall over catalog town hall", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      makeHistoryRow({
+        warId: 401,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-05T00:00:00.000Z",
+        matchType: "FWA",
+        actualOutcome: "WIN",
+      }),
+    ]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "9Q8R0VRJ",
+        playerName: "Alpha",
+        warId: "401",
+        missedBoth: true,
+        townHall: null,
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({ playerTag: "9Q8R0VRJ", townHall: 18 }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeFwaPlayerCatalogRow({ playerTag: "9Q8R0VRJ", latestTownHall: 15 }),
+    ]);
+
+    const service = new InactiveWarService();
+    const summary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 1,
+    });
+
+    expect(summary.results[0]?.townHall).toBe(18);
+    expect(prismaMock.fwaPlayerCatalog.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany).not.toHaveBeenCalled();
+  });
+
+  it("prefers FWA clan member current town hall over catalog town hall", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      makeHistoryRow({
+        warId: 401,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-05T00:00:00.000Z",
+        matchType: "FWA",
+        actualOutcome: "WIN",
+      }),
+    ]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "9Q8R0VRJ",
+        playerName: "Alpha",
+        warId: "401",
+        missedBoth: true,
+        townHall: null,
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeFwaClanMemberCurrentRow({ clanTag: "#AAA111", playerTag: "9Q8R0VRJ", townHall: 19 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeFwaPlayerCatalogRow({ playerTag: "9Q8R0VRJ", latestTownHall: 15 }),
+    ]);
+
+    const service = new InactiveWarService();
+    const summary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 1,
+    });
+
+    expect(summary.results[0]?.townHall).toBe(19);
+    expect(prismaMock.fwaPlayerCatalog.findMany).not.toHaveBeenCalled();
     expect(prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany).not.toHaveBeenCalled();
   });
 
