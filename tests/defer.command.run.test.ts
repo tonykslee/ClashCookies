@@ -151,9 +151,9 @@ describe("/defer add", () => {
     );
   });
 
-  it("fails before writing the deferment when the player profile cannot be fetched", async () => {
+  it("returns not_found when the player profile cannot be fetched", async () => {
     const interaction = makeInteraction({
-      playerTag: "#pylq0289",
+      playerTag: "#220PUR9JG",
       weight: "145k",
     });
     const cocService = {
@@ -162,22 +162,41 @@ describe("/defer add", () => {
 
     await Defer.run({} as any, interaction as any, cocService as any);
 
-    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289");
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#220PUR9JG");
     expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
     expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "not_found: player profile for #PYLQ0289 could not be resolved before writing the deferment.",
+      "not_found: player profile for #220PUR9JG could not be resolved.",
+    );
+  });
+
+  it("returns a lookup failure message when getPlayerRaw throws", async () => {
+    const interaction = makeInteraction({
+      playerTag: "#220PUR9JG",
+      weight: "145k",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn().mockRejectedValue(new Error("cooc timeout")),
+    };
+
+    await Defer.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#220PUR9JG");
+    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "failed: player profile lookup failed for #220PUR9JG. Check bot logs.",
     );
   });
 
   it("does not write the deferment row when playerCurrent upsert fails", async () => {
     const interaction = makeInteraction({
-      playerTag: "#pylq0289",
+      playerTag: "#220PUR9JG",
       weight: "145k",
     });
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue({
-        tag: "#PYLQ0289",
+        tag: "#220PUR9JG",
         name: "Live Player",
         townHallLevel: 16,
         clan: {
@@ -192,11 +211,41 @@ describe("/defer add", () => {
 
     await Defer.run({} as any, interaction as any, cocService as any);
 
-    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289");
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#220PUR9JG");
     expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
     expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "failed: unable to resolve player profile for #PYLQ0289 before writing the deferment.",
+      "failed: unable to save deferment for #220PUR9JG. Check bot logs.",
+    );
+  });
+
+  it("does not write the deferment row when the deferment insert fails", async () => {
+    const interaction = makeInteraction({
+      playerTag: "#220PUR9JG",
+      weight: "145k",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#220PUR9JG",
+        name: "Live Player",
+        townHallLevel: 16,
+        clan: {
+          tag: "#PQL0289",
+          name: "Alpha Clan",
+        },
+      }),
+    };
+    prismaMock.weightInputDeferment.upsert.mockRejectedValueOnce(
+      new Error("deferment_failed"),
+    );
+
+    await Defer.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#220PUR9JG");
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "failed: unable to save deferment for #220PUR9JG. Check bot logs.",
     );
   });
 });
