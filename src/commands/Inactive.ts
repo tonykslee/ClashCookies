@@ -14,6 +14,13 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { InactiveWarService, type InactiveWarSummary } from "../services/InactiveWarService";
 import { formatError } from "../helper/formatError";
+import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
+import {
+  normalizeTownHallLevel,
+  renderTownHallIcon,
+  resolveTownHallEmojiMap,
+  type TownHallEmojiMap,
+} from "../helper/townHallEmoji";
 import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 
@@ -31,9 +38,23 @@ function formatInactiveClanTag(tag: string): string {
   return normalized ? `#${normalized}` : tag.trim();
 }
 
+function formatInactiveClanBadge(badge: string | null | undefined): string | null {
+  return formatClanBadgeEmoji(badge);
+}
+
 function formatInactivePlayerTag(tag: string): string {
   const normalized = normalizeClanTagInput(tag);
   return normalized ? `#${normalized}` : tag.trim();
+}
+
+function formatInactivePlayerIdentity(input: {
+  townHallIcon: string;
+  playerName: string;
+  playerTag: string;
+  discordText: string;
+}): string {
+  const normalizedName = String(input.playerName ?? "").trim() || input.playerTag;
+  return `${input.townHallIcon} ${normalizedName} \`${formatInactivePlayerTag(input.playerTag)}\` ${input.discordText}`;
 }
 
 function buildInactiveWarRatioText(input: {
@@ -94,7 +115,7 @@ function buildInactivePlayerDiscordText(
   playerTag: string,
 ): string {
   const discordUserId = discordUserIdByPlayerTag.get(normalizeClanTagInput(playerTag)) ?? null;
-  return discordUserId ? `<@${discordUserId}>` : "—";
+  return discordUserId ? `<@${discordUserId}>` : "\u2014";
 }
 
 async function loadInactiveWarDiscordLinks(
@@ -160,7 +181,9 @@ function buildInactiveWarGroupedPages(input: {
   rows: InactiveWarSummary["results"];
   trackedTags: string[];
   trackedNameByTag: Map<string, string>;
+  trackedBadgeByTag: Map<string, string | null>;
   discordUserIdByPlayerTag: Map<string, string>;
+  townHallEmojiByLevel: TownHallEmojiMap;
   requestedWars: number;
 }): string[] {
   const rowsByClan = new Map<string, InactiveWarSummary["results"]>();
@@ -178,7 +201,10 @@ function buildInactiveWarGroupedPages(input: {
     if (clanRows.length === 0) continue;
 
     const clanName = input.trackedNameByTag.get(trackedTag) ?? input.trackedNameByTag.get(clanTag) ?? clanTag;
-    lines.push(`${clanName} (${clanRows.length})`);
+    const clanBadge = formatInactiveClanBadge(
+      input.trackedBadgeByTag.get(clanTag) ?? input.trackedBadgeByTag.get(trackedTag) ?? null,
+    );
+    lines.push(`${clanBadge ? `${clanBadge} ` : ""}${clanName} (${clanRows.length})`);
 
     const byMissedCount = new Map<number, InactiveWarSummary["results"]>();
     for (const row of clanRows) {
@@ -210,9 +236,20 @@ function buildInactiveWarGroupedPages(input: {
         );
         const emojiSequence = buildInactiveWarEmojiSequence(row.missedWarStates);
         const playerTag = formatInactivePlayerTag(row.playerTag);
+        const townHallIcon = renderTownHallIcon(row.townHall, input.townHallEmojiByLevel);
         const rowText = ratioText
-          ? `  - ${row.playerName} \`${playerTag}\` ${discordText} - ${ratioText} - ${emojiSequence}`
-          : `  - ${row.playerName} \`${playerTag}\` ${discordText} - ${emojiSequence}`;
+          ? `  - ${formatInactivePlayerIdentity({
+              townHallIcon,
+              playerName: row.playerName,
+              playerTag,
+              discordText,
+            })} - ${ratioText} - ${emojiSequence}`
+          : `  - ${formatInactivePlayerIdentity({
+              townHallIcon,
+              playerName: row.playerName,
+              playerTag,
+              discordText,
+            })} - ${emojiSequence}`;
         lines.push(rowText);
       }
     }
@@ -242,10 +279,12 @@ function buildInactiveWarGroupedPages(input: {
 type RosterSnapshot = {
   trackedTags: string[];
   trackedNameByTag: Map<string, string>;
+  trackedBadgeByTag: Map<string, string | null>;
   liveMemberTags: Set<string>;
   liveMembersByClan: Map<string, Set<string>>;
   liveMemberClanByTag: Map<string, string>;
   liveMemberTrackedClanByTag: Map<string, string>;
+  liveMemberTownHallByTag: Map<string, number | null>;
 };
 
 function buildPaginationRow(customIdPrefix: string, page: number, totalPages: number) {
@@ -269,7 +308,7 @@ async function getRosterSnapshot(
 ): Promise<RosterSnapshot> {
   const dbTracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true },
+    select: { tag: true, name: true, clanBadge: true },
   });
   const normalizedClanFilter = normalizeClanTagInput(clanTag ?? "");
   const scopedTracked = normalizedClanFilter
@@ -277,11 +316,15 @@ async function getRosterSnapshot(
     : dbTracked;
   const trackedTags = scopedTracked.map((c) => c.tag);
   const trackedNameByTag = new Map(scopedTracked.map((c) => [c.tag, c.name?.trim() || c.tag]));
+  const trackedBadgeByTag = new Map(
+    scopedTracked.map((c) => [c.tag, formatInactiveClanBadge(c.clanBadge)] as const),
+  );
 
   const liveMemberTags = new Set<string>();
   const liveMembersByClan = new Map<string, Set<string>>();
   const liveMemberClanByTag = new Map<string, string>();
   const liveMemberTrackedClanByTag = new Map<string, string>();
+  const liveMemberTownHallByTag = new Map<string, number | null>();
   for (const trackedTag of trackedTags) {
     try {
       const clan = await cocService.getClan(trackedTag);
@@ -295,6 +338,10 @@ async function getRosterSnapshot(
         liveMemberTags.add(memberTag);
         liveMemberClanByTag.set(memberTag, clanName);
         liveMemberTrackedClanByTag.set(memberTag, trackedTag);
+        const townHall = normalizeTownHallLevel(
+          member?.townHall ?? member?.townHallLevel ?? member?.townhallLevel,
+        );
+        liveMemberTownHallByTag.set(memberTag, townHall);
       }
       liveMembersByClan.set(trackedTag, memberSet);
     } catch (err) {
@@ -305,18 +352,22 @@ async function getRosterSnapshot(
   return {
     trackedTags,
     trackedNameByTag,
+    trackedBadgeByTag,
     liveMemberTags,
     liveMembersByClan,
     liveMemberClanByTag,
     liveMemberTrackedClanByTag,
+    liveMemberTownHallByTag,
   };
 }
 
 type InactiveDaysEntry = {
   clanTag: string;
   clanName: string;
+  clanBadge: string | null;
   playerTag: string;
   playerName: string;
+  townHall: number | null;
   daysAgo: number;
 };
 
@@ -478,8 +529,10 @@ async function fetchInactiveDaysEntries(
         roster.liveMemberClanByTag.get(p.tag) ??
         p.clanTag ??
         "Unknown Clan",
+      clanBadge: roster.trackedBadgeByTag.get(normalizedClanTag) ?? null,
       playerTag: p.tag,
       playerName: p.name,
+      townHall: roster.liveMemberTownHallByTag.get(p.tag) ?? null,
       daysAgo: Math.floor((Date.now() - p.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)),
     };
   });
@@ -567,13 +620,17 @@ async function renderEmbedsWithPager(
 
 function buildGroupedPages<T>(
   entries: T[],
+  getClanKey: (entry: T) => string,
   getClanName: (entry: T) => string,
-  renderLine: (entry: T) => string
+  getClanBadge: (entry: T) => string | null,
+  renderLine: (entry: T) => string,
 ): string[] {
   const clanCounts = new Map<string, number>();
+  const clanFirstEntry = new Map<string, T>();
   for (const entry of entries) {
-    const clanName = getClanName(entry);
-    clanCounts.set(clanName, (clanCounts.get(clanName) ?? 0) + 1);
+    const clanKey = normalizeClanTagInput(getClanKey(entry));
+    clanCounts.set(clanKey, (clanCounts.get(clanKey) ?? 0) + 1);
+    if (!clanFirstEntry.has(clanKey)) clanFirstEntry.set(clanKey, entry);
   }
 
   const pages: string[] = [];
@@ -582,14 +639,16 @@ function buildGroupedPages<T>(
   const clanPageCounts = new Map<string, number>();
 
   for (const entry of entries) {
+    const clanKey = normalizeClanTagInput(getClanKey(entry));
     const clanName = getClanName(entry);
-    const isNewClan = currentClan !== clanName;
+    const isNewClan = currentClan !== clanKey;
     if (isNewClan) {
-      const continuationCount = clanPageCounts.get(clanName) ?? 0;
+      const continuationCount = clanPageCounts.get(clanKey) ?? 0;
+      const clanBadge = getClanBadge(clanFirstEntry.get(clanKey) ?? entry);
       const header =
         continuationCount === 0
-          ? `**${clanName} (${clanCounts.get(clanName) ?? 0})**`
-          : `**${clanName} (${clanCounts.get(clanName) ?? 0}) (cont.)**`;
+          ? `**${clanBadge ? `${clanBadge} ` : ""}${clanName} (${clanCounts.get(clanKey) ?? 0})**`
+          : `**${clanBadge ? `${clanBadge} ` : ""}${clanName} (${clanCounts.get(clanKey) ?? 0}) (cont.)**`;
 
       const projectedLines = currentLines.length + (currentLines.length > 0 ? 2 : 1);
       if (projectedLines > MAX_LINES_PER_PAGE) {
@@ -599,19 +658,19 @@ function buildGroupedPages<T>(
 
       if (currentLines.length > 0) currentLines.push("");
       currentLines.push(header);
-      currentClan = clanName;
-      clanPageCounts.set(clanName, continuationCount + 1);
+      currentClan = clanKey;
+      clanPageCounts.set(clanKey, continuationCount + 1);
     }
 
     const line = renderLine(entry);
     if (currentLines.length + 1 > MAX_LINES_PER_PAGE) {
       pages.push(currentLines.join("\n"));
       currentLines = [
-        `**${clanName} (${clanCounts.get(clanName) ?? 0}) (cont.)**`,
+        `**${getClanBadge(entry) ? `${getClanBadge(entry)} ` : ""}${clanName} (${clanCounts.get(clanKey) ?? 0}) (cont.)**`,
         line,
       ];
-      currentClan = clanName;
-      clanPageCounts.set(clanName, (clanPageCounts.get(clanName) ?? 0) + 1);
+      currentClan = clanKey;
+      clanPageCounts.set(clanKey, (clanPageCounts.get(clanKey) ?? 0) + 1);
     } else {
       currentLines.push(line);
     }
@@ -626,6 +685,7 @@ function buildGroupedPages<T>(
 async function runDaysMode(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
+  townHallEmojiByLevel: TownHallEmojiMap,
   days: number,
   clanTag?: string | null,
 ): Promise<void> {
@@ -749,6 +809,11 @@ async function runDaysMode(
   const inactiveWithClan = inactivePlayers.map((p) => ({
     player: p,
     clan: roster.liveMemberClanByTag.get(p.tag) ?? p.clanTag ?? "Unknown Clan",
+    clanTag: roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? ""),
+    clanBadge: roster.trackedBadgeByTag.get(
+      roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? ""),
+    ) ?? null,
+    townHall: roster.liveMemberTownHallByTag.get(p.tag) ?? null,
   }));
   inactiveWithClan.sort((a, b) => {
     const orderA = clanOrder.get(a.clan) ?? Number.MAX_SAFE_INTEGER;
@@ -763,20 +828,26 @@ async function runDaysMode(
   );
   const pages = buildGroupedPages(
     inactiveWithClan,
+    (e) => e.clanTag,
     (e) => e.clan,
+    (e) => e.clanBadge,
     (e) => {
       const daysAgo = Math.floor((Date.now() - e.player.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000));
       const discordText = buildInactivePlayerDiscordText(
         daysDiscordUserIdByPlayerTag,
         e.player.tag
       );
-      return `- **${e.player.name}** (\`${formatInactivePlayerTag(e.player.tag)}\`) ${discordText} - ${daysAgo}d`;
+      const townHallIcon = renderTownHallIcon(e.townHall, townHallEmojiByLevel);
+      return `- ${formatInactivePlayerIdentity({
+        townHallIcon,
+        playerName: e.player.name,
+        playerTag: e.player.tag,
+        discordText,
+      })} - ${daysAgo}d`;
     }
   );
 
-  const summary =
-    ` • Scope: ${roster.trackedTags.length} tracked clan(s), ${roster.liveMemberTags.size} live member(s), ` +
-    `${activitySnapshot._count.tag} observed record(s), ${freshObservedCount} fresh in last ${staleHours}h`;
+  const summary = ` • Scope: ${roster.trackedTags.length} tracked clan(s), ${roster.liveMemberTags.size} live member(s), ${activitySnapshot._count.tag} observed record(s), ${freshObservedCount} fresh in last ${staleHours}h`;
   await renderEmbedsWithPager(
     interaction,
     `Inactive for ${days}+ days (${inactivePlayers.length})`,
@@ -787,10 +858,11 @@ async function runDaysMode(
 
 async function runWarsMode(
   interaction: ChatInputCommandInteraction,
+  townHallEmojiByLevel: TownHallEmojiMap,
   wars: number,
   clanTag?: string | null,
 ): Promise<void> {
-  const { results, trackedTags, trackedNameByTag, warnings, diagnosticNote } =
+  const { results, trackedTags, trackedNameByTag, trackedBadgeByTag, warnings, diagnosticNote } =
     await fetchInactiveWarEntries(interaction, wars, clanTag);
 
   if (trackedTags.length === 0) {
@@ -828,11 +900,13 @@ async function runWarsMode(
     rows: sortedResults,
     trackedTags,
     trackedNameByTag,
+    trackedBadgeByTag,
     discordUserIdByPlayerTag,
+    townHallEmojiByLevel,
     requestedWars: wars,
   });
 
-  const footerSuffix = warnings.length > 0 ? ` • Partial data: ${warnings.length} clan(s)` : "";
+  const footerSuffix = warnings.length > 0 ? ` � Partial data: ${warnings.length} clan(s)` : "";
   await renderEmbedsWithPager(
     interaction,
     `Missed Both Attacks - Last ${wars} War(s) (${results.length})`,
@@ -844,6 +918,7 @@ async function runWarsMode(
 async function runCombinedMode(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
+  townHallEmojiByLevel: TownHallEmojiMap,
   days: number,
   wars: number,
   clanTag?: string | null,
@@ -869,8 +944,10 @@ async function runCombinedMode(
     {
       clanTag: string;
       clanName: string;
+      clanBadge: string | null;
       playerTag: string;
       playerName: string;
+      townHall: number | null;
       daysAgo: number | null;
       missedWars: number | null;
       participationWars: number | null;
@@ -885,8 +962,10 @@ async function runCombinedMode(
     combined.set(entry.playerTag, {
       clanTag: entry.clanTag,
       clanName: entry.clanName,
+      clanBadge: entry.clanBadge,
       playerTag: entry.playerTag,
       playerName: entry.playerName,
+      townHall: entry.townHall,
       daysAgo: entry.daysAgo,
       missedWars: null,
       participationWars: null,
@@ -903,8 +982,10 @@ async function runCombinedMode(
     combined.set(entry.playerTag, {
       clanTag: entry.clanTag,
       clanName,
+      clanBadge: warsResult.trackedBadgeByTag.get(entry.clanTag) ?? null,
       playerTag: entry.playerTag,
       playerName: existing?.playerName ?? entry.playerName,
+      townHall: entry.townHall ?? existing?.townHall ?? null,
       daysAgo: existing?.daysAgo ?? null,
       missedWars: entry.missedWars,
       participationWars: entry.participationWars,
@@ -929,10 +1010,10 @@ async function runCombinedMode(
   }
 
   const clanOrder = new Map<string, number>();
-  daysResult.roster.trackedTags.forEach((tag, i) => clanOrder.set(tag, i));
+  daysResult.roster.trackedTags.forEach((tag, i) => clanOrder.set(normalizeClanTagInput(tag), i));
   rows.sort((a, b) => {
-    const orderA = clanOrder.get(a.clanTag) ?? Number.MAX_SAFE_INTEGER;
-    const orderB = clanOrder.get(b.clanTag) ?? Number.MAX_SAFE_INTEGER;
+    const orderA = clanOrder.get(normalizeClanTagInput(a.clanTag)) ?? Number.MAX_SAFE_INTEGER;
+    const orderB = clanOrder.get(normalizeClanTagInput(b.clanTag)) ?? Number.MAX_SAFE_INTEGER;
     if (orderA !== orderB) return orderA - orderB;
     const daysA = a.daysAgo ?? -1;
     const daysB = b.daysAgo ?? -1;
@@ -953,7 +1034,9 @@ async function runCombinedMode(
   );
   const pages = buildGroupedPages(
     rows,
+    (e) => e.clanTag,
     (e) => e.clanName,
+    (e) => e.clanBadge,
     (e) => {
       const reasons: string[] = [];
       if (e.daysAgo !== null) reasons.push(`${e.daysAgo}d inactive`);
@@ -968,15 +1051,19 @@ async function runCombinedMode(
         e.playerTag
       );
       const emojiSequence = warsRow ? buildInactiveWarEmojiSequence(warsRow.missedWarStates) : "";
-      const playerTag = formatInactivePlayerTag(e.playerTag);
+      const townHallIcon = renderTownHallIcon(e.townHall, townHallEmojiByLevel);
       const reasonText = reasons.length > 0 ? ` - ${reasons.join(" | ")}` : "";
       const emojiText = warsRow ? ` - ${emojiSequence}` : "";
-      return `- ${e.playerName} \`${playerTag}\` ${discordText}${reasonText}${emojiText}`;
+      return `- ${formatInactivePlayerIdentity({
+        townHallIcon,
+        playerName: e.playerName,
+        playerTag: e.playerTag,
+        discordText,
+      })}${reasonText}${emojiText}`;
     }
   );
 
-  const footerSuffix =
-    warsResult.warnings.length > 0 ? ` • Partial war data: ${warsResult.warnings.length} clan(s)` : "";
+  const footerSuffix = warsResult.warnings.length > 0 ? ` • Partial war data: ${warsResult.warnings.length} clan(s)` : "";
   await renderEmbedsWithPager(
     interaction,
     `Inactive Players - Days ${days} + Wars ${wars} (${rows.length})`,
@@ -1011,11 +1098,12 @@ export const Inactive: Command = {
   ],
 
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
+    const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
 
     const daysValue = interaction.options.getInteger("days", false) ?? undefined;
     const warsValue = interaction.options.getInteger("wars", false) ?? undefined;
@@ -1036,14 +1124,21 @@ export const Inactive: Command = {
     }
 
     if (daysValue && warsValue) {
-      await runCombinedMode(interaction, cocService, daysValue, warsValue, clanValue);
+      await runCombinedMode(
+        interaction,
+        cocService,
+        townHallEmojiByLevel,
+        daysValue,
+        warsValue,
+        clanValue,
+      );
       return;
     }
     if (daysValue) {
-      await runDaysMode(interaction, cocService, daysValue, clanValue);
+      await runDaysMode(interaction, cocService, townHallEmojiByLevel, daysValue, clanValue);
       return;
     }
-    await runWarsMode(interaction, warsValue!, clanValue);
+    await runWarsMode(interaction, townHallEmojiByLevel, warsValue!, clanValue);
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
@@ -1057,5 +1152,4 @@ export const Inactive: Command = {
     await interaction.respond(choices);
   },
 };
-
 
