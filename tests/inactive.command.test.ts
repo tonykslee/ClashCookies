@@ -419,6 +419,67 @@ describe("/inactive command", () => {
     expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
   });
 
+  it("renders days mode rows from alternate live member town hall fields", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [
+            { tag: "#A1", townHallLevel: 17 },
+            { tag: "#A2", townhallLevel: 16 },
+            { tag: "#A3" },
+          ],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 3 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(3);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A3",
+        name: "Alpha Three",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7 });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("- <:th17:117> Alpha One `#A1`");
+    expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
+    expect(embed.description).toContain("\u2754 Alpha Three `#A3`");
+    expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
+  });
+
   it("shows ratios for other missed-war count combinations", async () => {
     inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
       results: [
@@ -511,5 +572,4 @@ describe("/inactive command", () => {
     );
   });
 });
-
 

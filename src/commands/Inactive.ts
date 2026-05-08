@@ -15,7 +15,12 @@ import { CoCService } from "../services/CoCService";
 import { InactiveWarService, type InactiveWarSummary } from "../services/InactiveWarService";
 import { formatError } from "../helper/formatError";
 import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
-import { renderTownHallIcon, resolveTownHallEmojiMap, type TownHallEmojiMap } from "../helper/townHallEmoji";
+import {
+  normalizeTownHallLevel,
+  renderTownHallIcon,
+  resolveTownHallEmojiMap,
+  type TownHallEmojiMap,
+} from "../helper/townHallEmoji";
 import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 
@@ -333,11 +338,10 @@ async function getRosterSnapshot(
         liveMemberTags.add(memberTag);
         liveMemberClanByTag.set(memberTag, clanName);
         liveMemberTrackedClanByTag.set(memberTag, trackedTag);
-        const townHall = Number(member?.townHall);
-        liveMemberTownHallByTag.set(
-          memberTag,
-          Number.isFinite(townHall) && townHall > 0 ? Math.trunc(townHall) : null,
+        const townHall = normalizeTownHallLevel(
+          member?.townHall ?? member?.townHallLevel ?? member?.townhallLevel,
         );
+        liveMemberTownHallByTag.set(memberTag, townHall);
       }
       liveMembersByClan.set(trackedTag, memberSet);
     } catch (err) {
@@ -1148,5 +1152,4 @@ export const Inactive: Command = {
     await interaction.respond(choices);
   },
 };
-
 

@@ -3,6 +3,14 @@ import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 
 export type TownHallEmojiMap = Map<number, string>;
 
+/** Purpose: normalize any likely Town Hall field to a positive integer or null. */
+export function normalizeTownHallLevel(input: unknown): number | null {
+  const numeric = Number(input);
+  if (!Number.isFinite(numeric)) return null;
+  const normalized = Math.trunc(numeric);
+  return normalized > 0 ? normalized : null;
+}
+
 /** Purpose: load rendered Town Hall application emojis once for display-only command rendering. */
 export async function resolveTownHallEmojiMap(client: Client): Promise<TownHallEmojiMap> {
   const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
@@ -26,7 +34,7 @@ export function renderTownHallIcon(
   townHall: number | null | undefined,
   townHallEmojiByLevel: TownHallEmojiMap,
 ): string {
-  const normalized = Number.isFinite(Number(townHall)) ? Math.trunc(Number(townHall)) : null;
-  if (normalized === null || normalized <= 0) return "\u2754";
+  const normalized = normalizeTownHallLevel(townHall);
+  if (normalized === null) return "\u2754";
   return townHallEmojiByLevel.get(normalized) ?? "\u2754";
 }
