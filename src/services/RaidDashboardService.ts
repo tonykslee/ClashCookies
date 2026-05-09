@@ -48,6 +48,23 @@ export type RaidDashboardSeasonDetail = {
   raidsCompleted: number | null;
 };
 
+export type RaidIntelDistrict = {
+  name: string;
+  districtHallLevel: number | null;
+  grade: "Unmarked";
+};
+
+export type RaidIntelDefender = {
+  defenderName: string | null;
+  defenderTag: string | null;
+  districts: RaidIntelDistrict[];
+};
+
+export type RaidIntelSeasonDetail = {
+  activeSeason: ClanCapitalRaidSeason | null;
+  defenders: RaidIntelDefender[];
+};
+
 type RaidDetailLine = {
   text: string;
   item: boolean;
@@ -248,6 +265,32 @@ function buildRaidDetailDescription(input: {
   return rendered.join("\n");
 }
 
+function buildRaidIntelDistrictLabel(row: RaidIntelDistrict): string {
+  const hallLevel = row.districtHallLevel === null ? "" : ` DH${row.districtHallLevel}`;
+  return `${row.name}${hallLevel} — Grade: ${row.grade}`;
+}
+
+function buildRaidIntelSectionLines(section: RaidIntelDefender): RaidDetailLine[] {
+  const defenderTag = section.defenderTag ? formatRaidTrackedClanTag(section.defenderTag) : null;
+  const title = buildClanProfileMarkdownLink(section.defenderName, section.defenderTag);
+  const header = defenderTag ? `### ${title} \`${defenderTag}\`` : `### ${title}`;
+
+  if (section.districts.length <= 0) {
+    return [
+      { text: header, item: false },
+      { text: "No defender intel available yet.", item: false },
+    ];
+  }
+
+  return [
+    { text: header, item: false },
+    ...section.districts.map((district) => ({
+      text: `- ${buildRaidIntelDistrictLabel(district)}`,
+      item: true,
+    })),
+  ];
+}
+
 function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidDetailLine[] {
   const defenderTag = section.defenderTag ? formatRaidTrackedClanTag(section.defenderTag) : null;
   const title = buildClanProfileMarkdownLink(section.defenderName, section.defenderTag);
@@ -357,6 +400,18 @@ function normalizeAttackSections(season: ClanCapitalRaidSeason): RaidDashboardAt
       };
     })
     .filter((section): section is RaidDashboardAttackSection => Boolean(section));
+}
+
+function normalizeRaidIntelDefenders(season: ClanCapitalRaidSeason): RaidIntelDefender[] {
+  return normalizeAttackSections(season).map((section) => ({
+    defenderName: section.defenderName,
+    defenderTag: section.defenderTag,
+    districts: section.districts.map((district) => ({
+      name: district.name,
+      districtHallLevel: district.districtHallLevel,
+      grade: "Unmarked",
+    })),
+  }));
 }
 
 function normalizeDefenseSections(
@@ -545,6 +600,51 @@ export async function loadRaidDashboardSeasonDetailWithQueueContext(input: {
   );
 }
 
+async function loadRaidIntelSeasonDetail(input: {
+  cocService: CoCService | null;
+  clanTag: string;
+}): Promise<RaidIntelSeasonDetail> {
+  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
+    return {
+      activeSeason: null,
+      defenders: [],
+    };
+  }
+
+  const seasons = await input.cocService
+    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), 2)
+    .catch(() => []);
+  const activeSeason = selectCurrentRaidSeason({
+    seasons,
+    nowMs: Date.now(),
+  });
+  if (!activeSeason) {
+    return {
+      activeSeason: null,
+      defenders: [],
+    };
+  }
+
+  return {
+    activeSeason,
+    defenders: normalizeRaidIntelDefenders(activeSeason),
+  };
+}
+
+export async function loadRaidIntelSeasonDetailWithQueueContext(input: {
+  cocService: CoCService | null;
+  clanTag: string;
+  source: string;
+}): Promise<RaidIntelSeasonDetail> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source: input.source,
+    },
+    () => loadRaidIntelSeasonDetail(input),
+  );
+}
+
 async function resolveClanRaidCounts(input: {
   cocService: CoCService | null;
   clanTag: string;
@@ -584,6 +684,48 @@ async function resolveClanRaidCounts(input: {
     attacksMax,
     raidsCompleted,
   };
+}
+
+export function buildRaidIntelDescription(input: {
+  trackedClan: RaidTrackedClanDisplayRow;
+  upgrades: number | null;
+  detail: RaidIntelSeasonDetail;
+}): string {
+  if (!input.detail.activeSeason) {
+    return "No active raid weekend data available.";
+  }
+
+  const clanTag = formatRaidTrackedClanTag(input.trackedClan.clanTag);
+  const lines: RaidDetailLine[] = [
+    { text: "## Raid Intel", item: false },
+    { text: "", item: false },
+    {
+      text: `Tracked clan: ${buildClanProfileMarkdownLink(input.trackedClan.clanName, input.trackedClan.clanTag)} \`${clanTag}\``,
+      item: false,
+    },
+    {
+      text: `Upgrades: ${input.upgrades === null ? "—" : input.upgrades}`,
+      item: false,
+    },
+    { text: "Raid weekend: Active", item: false },
+    { text: `Updated: ${formatRelativeTimestamp(input.trackedClan.updatedAt)}`, item: false },
+  ];
+
+  if (input.detail.defenders.length <= 0) {
+    lines.push({ text: "", item: false });
+    lines.push({ text: "No defender intel available yet.", item: false });
+    return buildRaidDetailDescription({ lines });
+  }
+
+  lines.push({ text: "", item: false });
+  for (const defender of input.detail.defenders) {
+    lines.push(...buildRaidIntelSectionLines(defender));
+    lines.push({ text: "", item: false });
+  }
+  if (lines.length > 0 && lines[lines.length - 1]?.text === "") {
+    lines.pop();
+  }
+  return buildRaidDetailDescription({ lines });
 }
 
 export async function listRaidDashboardRows(input: {
