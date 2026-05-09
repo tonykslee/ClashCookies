@@ -62,6 +62,31 @@ model RaidTrackedClan {
   @@index([clanTag])
 }
 
+enum RaidIntelLayoutGrade {
+  DEFAULT
+  CUSTOM_HARD
+  CUSTOM_MEDIUM
+  CUSTOM_EASY
+}
+
+model RaidIntelDistrictLayoutMark {
+  id                   Int                  @id @default(autoincrement())
+  guildId              String
+  sourceClanTag        String               @db.VarChar(16)
+  raidSeasonStartTime   DateTime
+  defenderTag          String               @db.VarChar(16)
+  districtName         String
+  districtHallLevel    Int?
+  layoutGrade          RaidIntelLayoutGrade
+  markedByDiscordUserId String
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@unique([guildId, sourceClanTag, raidSeasonStartTime, defenderTag, districtName])
+  @@index([guildId, sourceClanTag, raidSeasonStartTime])
+  @@index([guildId, defenderTag])
+}
+
 model BotSetting {
   key       String   @id
   value     String

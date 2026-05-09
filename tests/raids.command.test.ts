@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const refreshHelperMock = vi.hoisted(() => ({
+  refreshRaidTrackedClanListWithQueueContext: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
   },
-}));
-
-const refreshHelperMock = vi.hoisted(() => ({
-  refreshRaidTrackedClanListWithQueueContext: vi.fn(),
+  raidIntelDistrictLayoutMark: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
 }));
 
 const cocQueueMock = vi.hoisted(() => {
@@ -41,7 +45,9 @@ vi.mock("../src/services/CoCQueueContext", () => ({
 
 import {
   handleRaidsButtonInteraction,
+  handleRaidsIntelButtonInteraction,
   handleRaidsSelectMenuInteraction,
+  handleRaidsIntelSelectMenuInteraction,
   Raids,
 } from "../src/commands/Raids";
 
@@ -123,10 +129,12 @@ function makeEmptySeason() {
   return [];
 }
 
-function makeChatInteraction(options?: { clan?: string | null; focused?: string }) {
+function makeChatInteraction(options?: { clan?: string | null; focused?: string; subcommand?: string; upgrades?: number | null }) {
   const clan = options?.clan ?? null;
   const focused = options?.focused ?? "";
-  return {
+  const subcommand = options?.subcommand ?? "overview";
+  const upgrades = options?.upgrades ?? null;
+  const interaction: any = {
     id: "raids-itx-1",
     commandName: "raids",
     guildId: "guild-1",
@@ -134,46 +142,58 @@ function makeChatInteraction(options?: { clan?: string | null; focused?: string 
     user: { id: "user-1" },
     deferred: false,
     replied: false,
-    deferReply: vi.fn().mockResolvedValue(undefined),
+    deferReply: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
-      getSubcommand: vi.fn(() => "overview"),
+      getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => (name === "clan" ? clan : null)),
+      getInteger: vi.fn((name: string) => (name === "upgrades" ? upgrades : null)),
       getFocused: vi.fn().mockReturnValue({ name: "clan", value: focused }),
     },
     respond: vi.fn().mockResolvedValue(undefined),
   };
+  return interaction;
 }
 
 function makeButtonInteraction(customId: string) {
-  return {
+  const interaction: any = {
     customId,
     user: { id: "user-1" },
     replied: false,
     deferred: false,
-    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     reply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     message: {
       edit: vi.fn().mockResolvedValue(undefined),
     },
   };
+  return interaction;
 }
 
 function makeSelectInteraction(customId: string, value: string) {
-  return {
+  const interaction: any = {
     customId,
     values: [value],
     user: { id: "user-1" },
     replied: false,
     deferred: false,
-    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     reply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     message: {
       edit: vi.fn().mockResolvedValue(undefined),
     },
   };
+  return interaction;
 }
 
 describe("/raids command", () => {
@@ -187,6 +207,20 @@ describe("/raids command", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     prismaMock.raidTrackedClan.findMany.mockResolvedValue(makeTrackedClanRows());
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
+    prismaMock.raidIntelDistrictLayoutMark.upsert.mockResolvedValue({
+      id: 1,
+      guildId: "guild-1",
+      sourceClanTag: "2RVGJYLC0",
+      raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+      defenderTag: "2QG2C08UQ",
+      districtName: "Capital Hall",
+      districtHallLevel: 5,
+      layoutGrade: "CUSTOM_HARD",
+      markedByDiscordUserId: "user-1",
+      createdAt: new Date("2026-05-08T01:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+    });
     refreshHelperMock.refreshRaidTrackedClanListWithQueueContext.mockResolvedValue({
       refreshed: ["#AAA111"],
       joinTypeRefreshFailures: [],
@@ -238,6 +272,287 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("renders a read-only intel view for a tracked clan", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        expect(tag).toBe("#2QG2C08UP");
+        return [makeActiveSeason()];
+      }),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      upgrades: 2299,
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("## Raid Intel");
+    expect(description).toContain("Tracked clan: [Alpha Raid]");
+    expect(description).toContain("`#2QG2C08UP`");
+    expect(description).toContain("Upgrades: 2299");
+    expect(description).toContain("Raid weekend: Active");
+    expect(description).toContain("Select a district below, then choose a layout grade.");
+    expect(description).toContain("### [Defender One]");
+    expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
+    expect(description).toContain("Wizard Valley DH4 \u2014 Grade: Unmarked");
+    expect(payload.components).toHaveLength(2);
+    const selectRow = payload.components[0]?.toJSON?.().components[0];
+    expect(selectRow?.custom_id).toBe("raids:intel:raids-itx-1:select");
+    expect(selectRow?.options?.[0]?.label).toContain("Defender One / Capital Hall");
+    expect(selectRow?.options?.[0]?.description).toContain("Current: Unmarked");
+    const refreshButton = payload.components[1]?.toJSON?.().components[0];
+    expect(refreshButton?.custom_id).toBe("raids:intel:raids-itx-1:refresh");
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:intel",
+      }),
+      expect.any(Function),
+    );
+    expect(cocService.getClan).not.toHaveBeenCalled();
+  });
+
+  it("shows district controls and reveals the selected district grade buttons", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeActiveSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const initialPayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const firstDistrictKey = initialPayload.components[0]?.toJSON?.().components[0]?.options?.[0]?.value as string;
+    expect(firstDistrictKey).toBeTruthy();
+
+    const selectInteraction = makeSelectInteraction(
+      "raids:intel:raids-itx-1:select",
+      firstDistrictKey,
+    );
+    await handleRaidsIntelSelectMenuInteraction(selectInteraction as any, cocService as any);
+
+    expect(selectInteraction.deferUpdate).toHaveBeenCalled();
+    expect(selectInteraction.editReply).toHaveBeenCalled();
+    expect(selectInteraction.message.edit).not.toHaveBeenCalled();
+    const selectedPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    const selectedDescription = selectedPayload.embeds[0].toJSON().description as string;
+    expect(selectedDescription).toContain("Selected: [Defender One]");
+    expect(selectedDescription).toContain("Select a district below, then choose a layout grade.");
+    expect(selectedPayload.components).toHaveLength(3);
+    const gradeButtons = selectedPayload.components[1]?.toJSON?.().components.map((component: any) =>
+      String(component.custom_id ?? ""),
+    );
+    expect(gradeButtons).toEqual([
+      "raids:intel:raids-itx-1:grade:DEFAULT",
+      "raids:intel:raids-itx-1:grade:CUSTOM_HARD",
+      "raids:intel:raids-itx-1:grade:CUSTOM_MEDIUM",
+      "raids:intel:raids-itx-1:grade:CUSTOM_EASY",
+    ]);
+  });
+
+  it("saves a selected district grade and rerenders the updated label", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 1,
+          guildId: "guild-1",
+          sourceClanTag: "2QG2C08UP",
+          raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+          defenderTag: "2QG2C08UQ",
+          districtName: "Capital Hall",
+          districtHallLevel: 5,
+          layoutGrade: "CUSTOM_HARD",
+          markedByDiscordUserId: "user-1",
+          createdAt: new Date("2026-05-08T01:00:00.000Z"),
+          updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+        },
+      ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeActiveSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const initialPayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const firstDistrictKey = initialPayload.components[0]?.toJSON?.().components[0]?.options?.[0]?.value as string;
+
+    const selectInteraction = makeSelectInteraction(
+      "raids:intel:raids-itx-1:select",
+      firstDistrictKey,
+    );
+    await handleRaidsIntelSelectMenuInteraction(selectInteraction as any, cocService as any);
+
+    const gradeInteraction = makeButtonInteraction("raids:intel:raids-itx-1:grade:CUSTOM_HARD");
+    const selectPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    const selectedButtons = selectPayload.components[1]?.toJSON?.().components.map((component: any) =>
+      String(component.custom_id ?? ""),
+    );
+    expect(selectedButtons).toContain("raids:intel:raids-itx-1:grade:CUSTOM_HARD");
+
+    await handleRaidsIntelButtonInteraction(gradeInteraction as any, cocService as any);
+
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId_sourceClanTag_raidSeasonStartTime_defenderTag_districtName: expect.objectContaining({
+            guildId: "guild-1",
+            sourceClanTag: "2QG2C08UP",
+            defenderTag: "2QG2C08UQ",
+            districtName: "Capital Hall",
+          }),
+        }),
+        create: expect.objectContaining({
+          layoutGrade: "CUSTOM_HARD",
+        }),
+        update: expect.objectContaining({
+          layoutGrade: "CUSTOM_HARD",
+        }),
+      }),
+    );
+    expect(gradeInteraction.deferUpdate).toHaveBeenCalled();
+    expect(gradeInteraction.editReply).toHaveBeenCalled();
+    expect(gradeInteraction.message.edit).not.toHaveBeenCalled();
+    const gradePayload = gradeInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    const gradeDescription = gradePayload.embeds[0].toJSON().description as string;
+    expect(gradeDescription).toContain("Grade: Custom - Hard");
+  });
+
+  it("refreshes the raid intel view in place with queue-backed live detail loading", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([
+      {
+        id: 1,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Capital Hall",
+        districtHallLevel: 5,
+        layoutGrade: "CUSTOM_MEDIUM",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        expect(tag).toBe("#2QG2C08UP");
+        return [makeActiveSeason()];
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const refreshInteraction = makeButtonInteraction("raids:intel:raids-itx-1:refresh");
+    await handleRaidsIntelButtonInteraction(refreshInteraction as any, cocService as any);
+
+    expect(refreshInteraction.deferUpdate).toHaveBeenCalled();
+    expect(refreshInteraction.editReply).toHaveBeenCalled();
+    expect(refreshInteraction.message.edit).not.toHaveBeenCalled();
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:intel:refresh",
+      }),
+      expect.any(Function),
+    );
+    const refreshedPayload = refreshInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    const refreshedDescription = refreshedPayload.embeds[0].toJSON().description as string;
+    expect(refreshedDescription).toContain("Grade: Custom - Medium");
+  });
+
+  it("rejects intel controls from another user and expires missing sessions safely", async () => {
+    const strangerSelect = makeSelectInteraction("raids:intel:missing-session:select", "district-1");
+    await handleRaidsIntelSelectMenuInteraction(strangerSelect as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+    expect(strangerSelect.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "This raid intel view expired. Run /raids intel again.",
+    });
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeActiveSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const button = makeButtonInteraction("raids:intel:raids-itx-1:grade:CUSTOM_EASY");
+    button.user.id = "someone-else";
+    await handleRaidsIntelButtonInteraction(button as any, cocService as any);
+    expect(button.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command user can control this raid intel view.",
+    });
+  });
+
+  it("renders the clean no-active-season intel message", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        expect(tag).toBe("#2QG2C08UP");
+        return [];
+      }),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toBe("No active raid weekend data available.");
+  });
+
+  it("renders the no-defender-intel message when the active season has no attack log", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          ...makeActiveSeason(),
+          attackLog: [],
+        },
+      ]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Raid weekend: Active");
+    expect(description).toContain("No defender intel available yet.");
   });
 
   it("renders a single clan view with raid detail sections and back/refresh buttons", async () => {
@@ -306,6 +621,51 @@ describe("/raids command", () => {
     expect(description).toBe("No active raid weekend data available.");
   });
 
+  it("shows the no-tracked-clans message when intel has no configured raid clans", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([]);
+    const interaction = makeChatInteraction({ subcommand: "intel" });
+
+    await Raids.run({} as any, interaction as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+    });
+  });
+
+  it("prompts for a tracked clan when intel is missing the clan argument", async () => {
+    const interaction = makeChatInteraction({ subcommand: "intel" });
+
+    await Raids.run({} as any, interaction as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.options.getSubcommand).toHaveBeenCalledWith(false);
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Choose a tracked RAID clan with `/raids intel clan:<tag>`.",
+    });
+  });
+
+  it("returns a safe not-found message for an unknown intel clan", async () => {
+    const interaction = makeChatInteraction({ subcommand: "intel", clan: "2PYLQGRJ" });
+
+    await Raids.run({} as any, interaction as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No tracked RAID clan matched #2PYLQGRJ.",
+    });
+  });
+
   it("supports raid clan autocomplete", async () => {
     const interaction = makeChatInteraction({ focused: "alp" });
 
@@ -335,8 +695,9 @@ describe("/raids command", () => {
     await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
 
     expect(selectInteraction.deferUpdate).toHaveBeenCalled();
-    expect(selectInteraction.message.edit).toHaveBeenCalled();
-    const selectedPayload = selectInteraction.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(selectInteraction.editReply).toHaveBeenCalled();
+    expect(selectInteraction.message.edit).not.toHaveBeenCalled();
+    const selectedPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
     const selectedDescription = selectedPayload.embeds[0].toJSON().description as string;
     expect(selectedDescription).toContain("## Raid Clan");
     expect(selectedDescription).toContain("## Attacking");
@@ -353,8 +714,9 @@ describe("/raids command", () => {
     await handleRaidsButtonInteraction(backButton as any, cocService as any);
 
     expect(backButton.deferUpdate).toHaveBeenCalled();
-    expect(backButton.message.edit).toHaveBeenCalled();
-    const backPayload = backButton.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(backButton.editReply).toHaveBeenCalled();
+    expect(backButton.message.edit).not.toHaveBeenCalled();
+    const backPayload = backButton.editReply.mock.calls.at(-1)?.[0] as any;
     const backDescription = backPayload.embeds[0].toJSON().description as string;
     expect(backDescription).toContain("## Raid Clans");
   });
@@ -382,8 +744,9 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
-    expect(refreshInteraction.message.edit).toHaveBeenCalled();
-    const refreshedPayload = refreshInteraction.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(refreshInteraction.editReply).toHaveBeenCalled();
+    expect(refreshInteraction.message.edit).not.toHaveBeenCalled();
+    const refreshedPayload = refreshInteraction.editReply.mock.calls.at(-1)?.[0] as any;
     const refreshedDescription = refreshedPayload.embeds[0].toJSON().description as string;
     expect(refreshedDescription).toContain("## Attacking");
     expect(refreshedDescription).toContain("## Defending");
