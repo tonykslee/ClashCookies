@@ -23,6 +23,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaPlayerCatalog: {
     findMany: vi.fn(),
   },
+  externalPlayerWeightCurrent: {
+    findMany: vi.fn(),
+  },
+  weightInputDeferment: {
+    findMany: vi.fn(),
+  },
 }));
 
 const cocQueueMock = vi.hoisted(() => {
@@ -167,6 +173,8 @@ describe("/accounts command", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("registers discord-id as a native User option without autocomplete", () => {
@@ -484,6 +492,144 @@ describe("/accounts command", () => {
         latestTownHall: true,
         playerTag: true,
       },
+    });
+  });
+
+  it("falls back to PlayerCurrent, external manual weights, and open deferments in order", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "Alpha One", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", playerName: "Alpha Two", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#LQ9P8R2", playerName: "Alpha Three", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#JQ00020", playerName: "Alpha Four", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha One",
+        townHall: 15,
+        currentClanTag: "#FREE0289",
+        currentClanName: "Free Clan",
+        currentWeight: 155000,
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Alpha Two",
+        townHall: 15,
+        currentClanTag: "#FREE0289",
+        currentClanName: "Free Clan",
+        currentWeight: 156000,
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#LQ9P8R2",
+        playerName: "Alpha Three",
+        townHall: 15,
+        currentClanTag: "#FREE0289",
+        currentClanName: "Free Clan",
+        currentWeight: null,
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#JQ00020",
+        playerName: "Alpha Four",
+        townHall: 15,
+        currentClanTag: null,
+        currentClanName: null,
+        currentWeight: null,
+        lastSource: "accounts-refresh",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        weight: 165000,
+        measuredAt: new Date("2026-04-01T00:00:00.000Z"),
+        source: "manual",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 166000,
+        measuredAt: new Date("2026-04-01T00:00:00.000Z"),
+        source: "manual",
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        weight: 167000,
+        measuredAt: new Date("2026-04-01T00:00:00.000Z"),
+        source: "manual",
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 175000,
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        playerTag: "#QGRJ2222",
+        deferredWeight: 176000,
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        playerTag: "#LQ9P8R2",
+        deferredWeight: 177000,
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:123456789012345678",
+        playerTag: "#LQ9P8R2",
+        deferredWeight: 178000,
+        createdAt: new Date("2026-04-03T00:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:123456789012345678",
+        playerTag: "#JQ00020",
+        deferredWeight: 179000,
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("TH15 Alpha One :crown: `#PYLQ0289` - 155k");
+    expect(description).toContain("TH15 Alpha Two :crown: `#QGRJ2222` - 156k");
+    expect(description).toContain("TH15 Alpha Three :crown: `#LQ9P8R2` - 167k");
+    expect(description).toContain("TH15 Alpha Four :crown: `#JQ00020` - 179k");
+    expect(prismaMock.externalPlayerWeightCurrent.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2", "#JQ00020"] } },
+      select: {
+        measuredAt: true,
+        playerTag: true,
+        source: true,
+        weight: true,
+      },
+    });
+    expect(prismaMock.weightInputDeferment.findMany).toHaveBeenCalledWith({
+      where: {
+        guildId: "123456789012345678",
+        playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2", "#JQ00020"] },
+        scopeKey: {
+          in: [
+            "guild:123456789012345678|clan:FREE0289",
+            "guild:123456789012345678",
+          ],
+        },
+        status: "open",
+      },
+      select: {
+        createdAt: true,
+        deferredWeight: true,
+        playerTag: true,
+        scopeKey: true,
+      },
+      orderBy: [{ createdAt: "desc" }],
     });
   });
 
