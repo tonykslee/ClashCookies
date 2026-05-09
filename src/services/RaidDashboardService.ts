@@ -423,6 +423,10 @@ function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine
         lines.push({ text: "", item: false });
       }
     });
+  } else {
+    lines.push({ text: "## Attacking", item: false });
+    lines.push({ text: "", item: false });
+    lines.push({ text: "No attack log available yet.", item: false });
   }
 
   if (detail.defenseSections.length > 0) {
@@ -437,6 +441,13 @@ function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine
         lines.push({ text: "", item: false });
       }
     });
+  } else {
+    if (lines.length > 0) {
+      lines.push({ text: "", item: false });
+    }
+    lines.push({ text: "## Defending", item: false });
+    lines.push({ text: "", item: false });
+    lines.push({ text: "No defense log available yet.", item: false });
   }
 
   return lines;

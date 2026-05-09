@@ -835,6 +835,75 @@ describe("RaidDashboardService", () => {
     expect(description).toBe("No active raid weekend data available.");
   });
 
+  it("renders a no-attack-log section when the active raid season has no attack sections", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 11,
+      attacksMax: 12,
+      raidsCompleted: 1,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, {
+      activeSeason: { state: "ongoing" } as any,
+      attackSections: [],
+      defenseSections: [
+        {
+          attackerName: "Enemy Clan",
+          attackerTag: "#ENEMY",
+          joinType: "open",
+          districtsRemaining: 3,
+        },
+      ],
+      raidsCompleted: 1,
+    });
+
+    expect(description).toContain("## Attacking");
+    expect(description).toContain("No attack log available yet.");
+  });
+
+  it("renders a no-defense-log section when the active raid season has no defense sections", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 11,
+      attacksMax: 12,
+      raidsCompleted: 1,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, {
+      activeSeason: { state: "ongoing" } as any,
+      attackSections: [
+        {
+          defenderName: "Defender One",
+          defenderTag: "#DEF1",
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseSections: [],
+      raidsCompleted: 1,
+    });
+
+    expect(description).toContain("## Defending");
+    expect(description).toContain("No defense log available yet.");
+  });
+
   it("truncates long raid detail descriptions gracefully", () => {
     const row = {
       clanTag: "2QG2C08UP",
