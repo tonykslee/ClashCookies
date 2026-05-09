@@ -34,6 +34,7 @@ import { Roster } from "./commands/Roster";
 import { Cwl } from "./commands/Cwl";
 import { CopyChannel } from "./commands/CopyChannel";
 import { Autorole } from "./commands/Autorole";
+import { Raids } from "./commands/Raids";
 
 // ...existing code...
 export const Commands = [
@@ -72,5 +73,6 @@ export const Commands = [
   Roster,
   Cwl,
   CopyChannel,
+  Raids,
   CommandRole,
 ];
