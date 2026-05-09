@@ -321,14 +321,14 @@ export async function handleRaidsSelectMenuInteraction(
       detailSource: selectedClanTag ? "raids:overview:detail" : null,
     });
     if (payload.rows.length <= 0) {
-      await interaction.message.edit({
+      await interaction.editReply({
         content: "No RAIDS tracked clans in the database.",
         embeds: [],
         components: [],
       });
       return;
     }
-    await interaction.message.edit({
+    await interaction.editReply({
       embeds: payload.embeds,
       components: payload.components,
     });
@@ -399,14 +399,14 @@ export async function handleRaidsButtonInteraction(
             : null,
     });
     if (payload.rows.length <= 0) {
-      await interaction.message.edit({
+      await interaction.editReply({
         content: "No RAIDS tracked clans in the database.",
         embeds: [],
         components: [],
       });
       return;
     }
-    await interaction.message.edit({
+    await interaction.editReply({
       embeds: payload.embeds,
       components: payload.components,
     });
