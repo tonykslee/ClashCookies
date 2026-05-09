@@ -22,6 +22,7 @@ import {
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
   findRaidDashboardClanRow,
+  loadRaidDashboardSeasonDetailWithQueueContext,
   listRaidDashboardRowsWithQueueContext,
   type RaidDashboardClanRow,
 } from "../services/RaidDashboardService";
@@ -37,6 +38,7 @@ type RaidsDashboardSession = {
   guildId: string | null;
   userId: string;
   selectedClanTag: string | null;
+  rows: RaidDashboardClanRow[];
   refreshing: boolean;
 };
 
@@ -73,10 +75,14 @@ function formatClanTag(tag: string): string {
   return normalized ? `#${normalized}` : tag.trim();
 }
 
-function buildRaidDashboardEmbed(rows: RaidDashboardClanRow[], selectedRow: RaidDashboardClanRow | null) {
-  const title = selectedRow ? "Raid Clans" : "Raid Clans";
+function buildRaidDashboardEmbed(
+  rows: RaidDashboardClanRow[],
+  selectedRow: RaidDashboardClanRow | null,
+  detail: Awaited<ReturnType<typeof loadRaidDashboardSeasonDetailWithQueueContext>> | null,
+) {
+  const title = selectedRow ? "Raid Clan" : "Raid Clans";
   const description = selectedRow
-    ? buildRaidDashboardSingleClanDescription(selectedRow)
+    ? buildRaidDashboardSingleClanDescription(selectedRow, detail)
     : buildRaidDashboardOverviewDescription(rows);
   return new EmbedBuilder()
     .setTitle(title)
@@ -147,6 +153,7 @@ async function buildRaidDashboardPayload(input: {
   refreshing: boolean;
   source: string;
   rows?: RaidDashboardClanRow[];
+  detailSource?: string | null;
 }): Promise<{
   embeds: EmbedBuilder[];
   components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
@@ -160,7 +167,15 @@ async function buildRaidDashboardPayload(input: {
     }));
   const selectedRow = input.selectedClanTag ? findRaidDashboardClanRow(rows, input.selectedClanTag) : null;
   const effectiveSelectedTag = selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null;
-  const embed = buildRaidDashboardEmbed(rows, selectedRow);
+  const detail =
+    selectedRow && input.detailSource
+      ? await loadRaidDashboardSeasonDetailWithQueueContext({
+          cocService: input.cocService,
+          clanTag: selectedRow.clanTag,
+          source: input.detailSource,
+        })
+      : null;
+  const embed = buildRaidDashboardEmbed(rows, selectedRow, detail);
   const components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> = [];
   if (rows.length > 0) {
     components.push(
@@ -236,13 +251,13 @@ export async function handleRaidsSelectMenuInteraction(
   if (!parsed || parsed.action !== "select") return;
 
   const session = getSession(parsed.sessionId);
-    if (!session) {
-      await interaction.reply({
-        ephemeral: true,
-        content: "This raids view expired. Run `/raids overview` again.",
-      });
-      return;
-    }
+  if (!session) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This raids view expired. Run `/raids overview` again.",
+    });
+    return;
+  }
   if (session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
@@ -262,6 +277,8 @@ export async function handleRaidsSelectMenuInteraction(
       cocService,
       refreshing: false,
       source: "raids:overview:select",
+      rows: session.rows,
+      detailSource: selectedClanTag ? "raids:overview:detail" : null,
     });
     if (payload.rows.length <= 0) {
       await interaction.message.edit({
@@ -275,6 +292,7 @@ export async function handleRaidsSelectMenuInteraction(
       embeds: payload.embeds,
       components: payload.components,
     });
+    session.rows = payload.rows;
   } catch (err) {
     console.error(`[raids] select interaction failed: ${formatError(err)}`);
     await interaction.followUp({
@@ -292,13 +310,13 @@ export async function handleRaidsButtonInteraction(
   if (!parsed || parsed.action === "select") return;
 
   const session = getSession(parsed.sessionId);
-    if (!session) {
-      await interaction.reply({
-        ephemeral: true,
-        content: "This raids view expired. Run `/raids overview` again.",
-      });
-      return;
-    }
+  if (!session) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This raids view expired. Run `/raids overview` again.",
+    });
+    return;
+  }
   if (session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
@@ -332,6 +350,13 @@ export async function handleRaidsButtonInteraction(
       cocService,
       refreshing: false,
       source: parsed.action === "refresh" ? "raids:overview:refresh" : "raids:overview:back",
+      rows: parsed.action === "refresh" ? undefined : session.rows,
+      detailSource:
+        nextSelectedClanTag && parsed.action === "refresh"
+          ? "raids:overview:detail:refresh"
+          : nextSelectedClanTag
+            ? "raids:overview:detail"
+            : null,
     });
     if (payload.rows.length <= 0) {
       await interaction.message.edit({
@@ -345,6 +370,7 @@ export async function handleRaidsButtonInteraction(
       embeds: payload.embeds,
       components: payload.components,
     });
+    session.rows = payload.rows;
   } catch (err) {
     console.error(`[raids] button interaction failed: ${formatError(err)}`);
     await interaction.followUp({
@@ -438,6 +464,7 @@ export const Raids: Command = {
       guildId: interaction.guildId ?? null,
       userId: interaction.user.id,
       selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
+      rows,
       refreshing: false,
     });
     createSessionTimer(sessionId);
@@ -449,6 +476,7 @@ export const Raids: Command = {
       refreshing: false,
       source: "raids:overview",
       rows,
+      detailSource: selectedRow ? "raids:overview:detail" : null,
     });
     await interaction.editReply({
       embeds: payload.embeds,

@@ -511,6 +511,47 @@ export class CoCService {
   }
 }
 
+export type ClanCapitalRaidSeasonClan = {
+  tag?: string | null;
+  name?: string | null;
+  level?: number | null;
+  badgeUrls?: {
+    small?: string | null;
+    medium?: string | null;
+    large?: string | null;
+  } | null;
+};
+
+export type ClanCapitalRaidSeasonDistrict = {
+  name?: string | null;
+  districtHallLevel?: number | null;
+  districtHall?: number | null;
+  hallLevel?: number | null;
+  attackCount?: number | null;
+  attacks?: number | null;
+  destructionPercentage?: number | null;
+  destructionPercent?: number | null;
+  stars?: number | null;
+  looted?: number | null;
+  id?: number | null;
+};
+
+export type ClanCapitalRaidSeasonAttackLog = {
+  defender?: ClanCapitalRaidSeasonClan | null;
+  attackCount?: number | null;
+  districtCount?: number | null;
+  districtsDestroyed?: number | null;
+  districts?: ClanCapitalRaidSeasonDistrict[] | null;
+};
+
+export type ClanCapitalRaidSeasonDefenseLog = {
+  attacker?: ClanCapitalRaidSeasonClan | null;
+  attackCount?: number | null;
+  districtCount?: number | null;
+  districtsDestroyed?: number | null;
+  districts?: ClanCapitalRaidSeasonDistrict[] | null;
+};
+
 export type ClanCapitalRaidSeasonMember = {
   tag?: string | null;
   attacks?: number | null;
@@ -521,4 +562,12 @@ export type ClanCapitalRaidSeason = {
   startTime?: string | null;
   endTime?: string | null;
   members?: ClanCapitalRaidSeasonMember[];
+  attackLog?: ClanCapitalRaidSeasonAttackLog[] | null;
+  defenseLog?: ClanCapitalRaidSeasonDefenseLog[] | null;
+  raidsCompleted?: number | null;
+  totalAttacks?: number | null;
+  enemyDistrictsDestroyed?: number | null;
+  capitalTotalLoot?: number | null;
+  offensiveReward?: number | null;
+  defensiveReward?: number | null;
 };
