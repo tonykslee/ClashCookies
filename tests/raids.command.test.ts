@@ -252,8 +252,11 @@ describe("/raids command", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clans");
     expect(description).toContain("🔓 [Alpha Raid]");
-    expect(description).toContain("Attacks: 11/12");
+    expect(description).toContain("Attacks: 11");
     expect(description).toContain("Raids completed: 1");
+    expect(description).not.toContain("Upgrades:");
+    expect(description).not.toContain("Updated:");
+    expect(payload.embeds[0].toJSON().title).toBeUndefined();
     expect(cocService.getClan).not.toHaveBeenCalled();
 
     const selectRow = payload.components[0]?.toJSON?.().components[0];
@@ -577,6 +580,9 @@ describe("/raids command", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clan");
     expect(description).toContain("Join type: Closed");
+    expect(description).not.toContain("Updated:");
+    expect(description).toContain("Upgrades: —");
+    expect(payload.embeds[0].toJSON().title).toBeUndefined();
     expect(description).toContain("Bravo Raid");
     expect(description).toContain("## Attacking");
     expect(description).toContain("### [Defender One]");

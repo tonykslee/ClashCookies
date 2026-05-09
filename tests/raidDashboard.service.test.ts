@@ -40,6 +40,7 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
+  formatRaidDistrictHallLabel,
   parseRaidSeasonTimeMs,
 } from "../src/services/RaidDashboardService";
 
@@ -128,15 +129,16 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
     expect(overview).toContain("🔓 [Alpha Raid]");
-    expect(overview).toContain("Attacks: 11/12");
+    expect(overview).toContain("Attacks: 11");
     expect(overview).toContain("Raids completed: 1");
-    expect(overview).toContain("Updated:");
+    expect(overview).not.toContain("Updated:");
+    expect(overview).not.toContain("Upgrades:");
 
     const single = buildRaidDashboardSingleClanDescription(rows[0]!);
     expect(single).toContain("## Raid Clan");
     expect(single).toContain("Join type: Open");
     expect(single).toContain("Upgrades: 2210");
-    expect(single).toContain("Attacks: 11/12");
+    expect(single).toContain("Attacks: 11");
   });
 
   it("parses compact Clash raid timestamps and selects the active season", async () => {
@@ -168,7 +170,7 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.attacksCompleted).toBe(11);
     expect(rows[0]?.attacksMax).toBe(12);
     expect(rows[0]?.raidsCompleted).toBeNull();
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 11/12");
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 11");
   });
 
   it("parses compact raid timestamps without milliseconds and still selects the active season", async () => {
@@ -215,7 +217,214 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.attacksCompleted).toBe(13);
     expect(rows[0]?.attacksMax).toBe(18);
     expect(rows[0]?.raidsCompleted).toBe(1);
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 13/18");
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 13");
+  });
+
+  it("treats started aggregate raid logs as not completed", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 1 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#DEF1" },
+              districtCount: 9,
+              districtsDestroyed: 0,
+              districts: [
+                {
+                  name: "Capital Hall",
+                  districtHallLevel: 10,
+                  attackCount: 3,
+                  destructionPercent: 50,
+                  stars: 1,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.raidsCompleted).toBe(0);
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 0");
+  });
+
+  it("treats incomplete per-district raid logs as not completed", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 6 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#DEF1" },
+              districts: [
+                {
+                  name: "Capital Hall",
+                  districtHallLevel: 10,
+                  attackCount: 3,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+                {
+                  name: "Wizard Valley",
+                  districtHallLevel: 5,
+                  attackCount: 2,
+                  destructionPercent: 50,
+                  stars: 1,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.raidsCompleted).toBe(0);
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 0");
+  });
+
+  it("treats fully destroyed per-district raid logs as completed", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 6 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#DEF1" },
+              districts: [
+                {
+                  name: "Capital Hall",
+                  districtHallLevel: 10,
+                  attackCount: 3,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+                {
+                  name: "Barbarian Camp",
+                  districtHallLevel: 5,
+                  attackCount: 2,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.raidsCompleted).toBe(1);
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 1");
+  });
+
+  it("renders MAX for maxed raid district hall levels and falls back to DH labels otherwise", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 13,
+      attacksMax: 18,
+      raidsCompleted: 1,
+    } as any;
+
+    const detail = {
+      activeSeason: { state: "ongoing" },
+      attackSections: [
+        {
+          defenderName: "Defender One",
+          defenderTag: "#DEF1",
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 10,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Barbarian Camp",
+              districtHallLevel: 5,
+              attackCount: 2,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Skeleton Park",
+              districtHallLevel: 3,
+              attackCount: 4,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Unknown District",
+              districtHallLevel: 7,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseSections: [],
+      raidsCompleted: 1,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, detail);
+    expect(description).toContain("Capital Hall MAX — 3 attacks");
+    expect(description).toContain("Barbarian Camp MAX — 2 attacks");
+    expect(description).toContain("Skeleton Park DH3 — 4 attacks");
+    expect(description).toContain("Unknown District DH7 — 1 attacks");
   });
 
   it("treats invalid raid timestamps as missing", async () => {
@@ -624,6 +833,77 @@ describe("RaidDashboardService", () => {
     });
 
     expect(description).toBe("No active raid weekend data available.");
+    expect(description).not.toContain("No attack log available yet.");
+    expect(description).not.toContain("No defense log available yet.");
+  });
+
+  it("renders a no-attack-log section when the active raid season has no attack sections", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 11,
+      attacksMax: 12,
+      raidsCompleted: 1,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, {
+      activeSeason: { state: "ongoing" } as any,
+      attackSections: [],
+      defenseSections: [
+        {
+          attackerName: "Enemy Clan",
+          attackerTag: "#ENEMY",
+          joinType: "open",
+          districtsRemaining: 3,
+        },
+      ],
+      raidsCompleted: 1,
+    });
+
+    expect(description).toContain("## Attacking");
+    expect(description).toContain("No attack log available yet.");
+  });
+
+  it("renders a no-defense-log section when the active raid season has no defense sections", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 11,
+      attacksMax: 12,
+      raidsCompleted: 1,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, {
+      activeSeason: { state: "ongoing" } as any,
+      attackSections: [
+        {
+          defenderName: "Defender One",
+          defenderTag: "#DEF1",
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseSections: [],
+      raidsCompleted: 1,
+    });
+
+    expect(description).toContain("## Defending");
+    expect(description).toContain("No defense log available yet.");
   });
 
   it("truncates long raid detail descriptions gracefully", () => {
