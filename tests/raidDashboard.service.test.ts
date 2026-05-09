@@ -36,6 +36,7 @@ import {
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
+  normalizeRaidClanJoinRequirements,
   loadRaidDashboardSeasonDetailWithQueueContext,
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
@@ -571,7 +572,7 @@ describe("RaidDashboardService", () => {
         return {
           type: "open",
           requiredTownhallLevel: 16,
-          requiredBuilderBaseTrophies: 2600,
+          requiredVersusTrophies: 2600,
           requiredTrophies: 5000,
         };
       }),
@@ -620,6 +621,132 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("1 districts remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
     expect(buildRaidDashboardOverviewDescription(rows)).toContain("  - 🔓 [Enemy Clan]");
+  });
+
+  it("maps versus trophies to builder base requirements without mixing ranked trophies", async () => {
+    const metadata = normalizeRaidClanJoinRequirements({
+      requiredVersusTrophies: 2600,
+    } as any);
+    expect(metadata).toEqual({
+      requiredTownHall: null,
+      requiredTrophies: null,
+      requiredBuilderBaseTrophies: 2600,
+    });
+
+    const section = {
+      joinType: "open",
+      joinRequirements: metadata,
+      attackerName: "Enemy Clan",
+      attackerTag: "#2C0",
+      districtsRemaining: 1,
+      districts: [],
+    } as any;
+
+    const text = buildRaidDashboardSingleClanDescription(
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 13,
+        attacksMax: 18,
+        raidsCompleted: 1,
+      } as any,
+      {
+        activeSeason: { state: "ongoing" },
+        attackSections: [],
+        defenseSections: [section],
+        raidsCompleted: 1,
+      } as any,
+    );
+
+    expect(text).toContain("Requirements: Builder Base: 2600+ trophies");
+    expect(text).not.toContain("Ranked: 2600+ trophies");
+  });
+
+  it("renders ranked trophy requirements separately from builder base requirements", async () => {
+    const metadata = normalizeRaidClanJoinRequirements({
+      requiredTrophies: 5000,
+    } as any);
+    expect(metadata).toEqual({
+      requiredTownHall: null,
+      requiredTrophies: 5000,
+      requiredBuilderBaseTrophies: null,
+    });
+
+    const text = buildRaidDashboardSingleClanDescription(
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 13,
+        attacksMax: 18,
+        raidsCompleted: 1,
+      } as any,
+      {
+        activeSeason: { state: "ongoing" },
+        attackSections: [],
+        defenseSections: [
+          {
+            attackerName: "Enemy Clan",
+            attackerTag: "#2C1",
+            joinType: "open",
+            joinRequirements: metadata,
+            districtsRemaining: 1,
+            districts: [],
+          },
+        ],
+        raidsCompleted: 1,
+      } as any,
+    );
+
+    expect(text).toContain("Requirements: Ranked: 5000+ trophies");
+    expect(text).not.toContain("Builder Base: 5000+ trophies");
+  });
+
+  it("renders no requirements text when open attacker metadata has no usable fields", async () => {
+    const metadata = normalizeRaidClanJoinRequirements({} as any);
+    expect(metadata).toEqual({
+      requiredTownHall: null,
+      requiredTrophies: null,
+      requiredBuilderBaseTrophies: null,
+    });
+
+    const text = buildRaidDashboardSingleClanDescription(
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 13,
+        attacksMax: 18,
+        raidsCompleted: 1,
+      } as any,
+      {
+        activeSeason: { state: "ongoing" },
+        attackSections: [],
+        defenseSections: [
+          {
+            attackerName: "Enemy Clan",
+            attackerTag: "#2C2",
+            joinType: "open",
+            joinRequirements: metadata,
+            districtsRemaining: 1,
+            districts: [],
+          },
+        ],
+        raidsCompleted: 1,
+      } as any,
+    );
+
+    expect(text).toContain("Requirements: —");
   });
 
   it("omits open attacker metadata when the live clan lookup fails", async () => {

@@ -232,15 +232,18 @@ function normalizeRaidJoinType(
   return null;
 }
 
-function normalizeRaidClanJoinRequirements(input: Record<string, unknown>): RaidClanJoinRequirements {
+export function normalizeRaidClanJoinRequirements(input: Record<string, unknown>): RaidClanJoinRequirements {
   const requiredTownHall = normalizePositiveInt(
     input.requiredTownhallLevel ?? input.requiredTownHallLevel ?? input.requiredTownHall,
   );
-  const requiredTrophies = normalizePositiveInt(
-    input.requiredTrophies ?? input.requiredVersusTrophies ?? input.requiredHomeTrophies,
-  );
   const requiredBuilderBaseTrophies = normalizePositiveInt(
-    input.requiredBuilderBaseTrophies ?? input.requiredBuilderBaseTrophy ?? input.requiredBuilderBase,
+    input.requiredBuilderBaseTrophies ??
+      input.requiredBuilderBaseTrophy ??
+      input.requiredBuilderBase ??
+      input.requiredVersusTrophies,
+  );
+  const requiredTrophies = normalizePositiveInt(
+    input.requiredTrophies ?? input.requiredHomeTrophies,
   );
   return {
     requiredTownHall,
