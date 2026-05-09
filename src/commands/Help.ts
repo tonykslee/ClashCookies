@@ -1,4 +1,4 @@
-import {
+﻿import {
   ActionRowBuilder,
   type APIEmbed,
   ApplicationCommandOptionType,
@@ -208,7 +208,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, clan role, clan badge emoji, short name).",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
       "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, stores the clan name from the clan profile API on write, and caches the clan join status from the clan profile API on write.",
-      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view. RAIDS list rows use the stored clan name, show join status with 🔒/🔓, and include an inline refresh button to re-sync missing names or join status.",
+      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view. RAIDS list rows use the stored clan name, show join status with ðŸ”’/ðŸ”“, and include an inline refresh button to re-sync missing names or join status.",
       "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
       "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],
@@ -230,10 +230,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "View tracked RAID clans with live raid-season counts when available.",
     details: [
       "Shows an overview of tracked RAIDS clans with join-status emoji, clickable clan names, upgrades, live current attacks when the active raid season is available, and a freshness note from the stored RAIDS registry row.",
-      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place. `/raids intel` is a read-only raid-intel view for one tracked clan with defender/district details and `Unmarked` layout placeholders.",
+      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place. `/raids intel` opens a raid-intel view for one tracked clan with defender/district details, saved layout grades, and interactive district controls.",
       "Counts fall back to `—` when the live raid-season source cannot resolve them yet.",
     ],
-    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0"],
+    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0 upgrades:2299"],
   },
   sheet: {
     summary: "Link and manage Google Sheet settings.",
@@ -344,7 +344,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`config show` displays the current guild autorole policy snapshot, including nickname sync status and template.",
       "`config set` updates guild config fields such as `enabled`, `kill_switch_enabled`, stale-role removal, link trust policy, sync policy, `apply_nicknames`, and `nickname_template`.",
       "`config set` can also set/clear the generic CWL clan role used for users with an eligible linked account in a tracked current-season CWL clan, and it can configure a stale CLAN-role removal delay in minutes.",
-      "Enable nickname sync with `apply_nicknames:true` and set a template such as `{player} | {trackedClans}` for ClashPerk-style names like `Elrond ♣️ | RR | GB | RD`.",
+      "Enable nickname sync with `apply_nicknames:true` and set a template such as `{player} | {trackedClans}` for ClashPerk-style names like `Elrond â™£ï¸ | RR | GB | RD`.",
       "Nickname template tokens: `{player}`, `{tag}`, `{th}`, `{clan}`, `{clanTag}`, `{clanShort}`, `{trackedClans}`, `{discord}`, `{username}`, and `{role}`.",
       "`{trackedClans}` lists distinct permanent FWA tracked-clan short names across the member's eligible linked accounts, de-dupes duplicate clans, puts the primary account clan first, and joins labels with ` | `.",
       "The primary account for `{player}`, `{th}`, `{clan}`, and related tokens prefers eligible linked accounts in permanent FWA tracked clans, then highest Town Hall, then trust tier, then oldest link, then player tag.",
@@ -435,7 +435,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts and shows `Linked Discord: <@id>` under the title.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
-      "Account display uses persisted local data only, with TH badges, crowns for leaders/co-leaders, and compact FWA weights when available. Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, then `ExternalPlayerWeightCurrent.weight`, then open `WeightInputDeferment.deferredWeight`, with `—` when no resolved positive weight exists.",
+      "Account display uses persisted local data only, with TH badges, crowns for leaders/co-leaders, and compact FWA weights when available. Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, then `ExternalPlayerWeightCurrent.weight`, then open `WeightInputDeferment.deferredWeight`, with `â€”` when no resolved positive weight exists.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
     examples: [
@@ -462,7 +462,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "RAIDS page uses one shared top timer line and then lists per-player progress rows.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
       "GAMES has three snapshot-backed views: active earning (time remaining), reward collection through the full in-game claim window (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
-      "GAMES rows use progress indicators: `🟡` (>0), `✅` (>=4000), and `🏆` (>=10000).",
+      "GAMES rows use progress indicators: `ðŸŸ¡` (>0), `âœ…` (>=4000), and `ðŸ†` (>=10000).",
       "When a page has no active context, it renders explicit inactive text instead of a blank list.",
       "Linked players outside active contexts are still shown as neutral rows when active groups exist.",
       "If you have no linked tags, the command returns a clear private error and suggests `/link create`.",
@@ -529,7 +529,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`verify` checks ownership with the player's API token and marks the link verified when the token matches.",
       "`status` shows the persisted trust state for one or more of your linked player tags, including source, verification status, verification method, and verified timestamps.",
       "`list` renders non-zero linked/unlinked count buckets with padded inline rows: linked rows start with a resolved `yes` status emoji and show `TH ServerDisplayName Player Wt`, unlinked rows start with a resolved `no` status emoji and show `TH #PLAYER_TAG Player Wt`.",
-      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, and is shown as compact lowercase `k` text (for example `145k`), with `—` when no resolved positive weight exists.",
+      "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, and is shown as compact lowercase `k` text (for example `145k`), with `â€”` when no resolved positive weight exists.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
       "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
       "`list` shows active sort mode in the embed footer.",
@@ -850,7 +850,7 @@ const HELP_DETAIL_FOOTER_RESERVE = 240;
 function truncateForDiscord(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   if (maxLength <= 1) return text.slice(0, maxLength);
-  return `${text.slice(0, maxLength - 1)}…`;
+  return `${text.slice(0, maxLength - 1)}â€¦`;
 }
 
 function splitTextByLength(text: string, maxLength: number): string[] {
@@ -1600,3 +1600,5 @@ export const Help: Command = {
     );
   },
 };
+
+
