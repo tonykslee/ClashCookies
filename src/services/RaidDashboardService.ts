@@ -704,7 +704,7 @@ export function buildRaidIntelDescription(input: {
       item: false,
     },
     {
-      text: `Upgrades: ${input.upgrades === null ? "â€”" : input.upgrades}`,
+      text: `Upgrades: ${input.upgrades === null ? "—" : input.upgrades}`,
       item: false,
     },
     { text: "Raid weekend: Active", item: false },

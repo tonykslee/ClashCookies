@@ -406,14 +406,14 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-01T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       } as any,
-      upgrades: 2299,
+      upgrades: null,
       detail,
     });
 
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("Upgrades: 2299");
+    expect(description).toContain("Upgrades: —");
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("### [Defender One]");
     expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
