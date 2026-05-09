@@ -241,7 +241,15 @@ describe("/raids command", () => {
         }
         return makeEmptySeason();
       }),
-      getClan: vi.fn(),
+      getClan: vi.fn(async (tag: string) => {
+        expect(tag).toBe("#2QG2C08UR");
+        return {
+          type: "open",
+          requiredTownhallLevel: 16,
+          requiredBuilderBaseTrophies: 2600,
+          requiredTrophies: 5000,
+        };
+      }),
     };
     const interaction = makeChatInteraction();
 
@@ -252,9 +260,11 @@ describe("/raids command", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clans");
     expect(description).toContain("🔓 [Alpha Raid]");
-    expect(description).toContain("Attacks: 11/12");
+    expect(description).toContain("Attacks: 11");
     expect(description).toContain("Raids completed: 1");
-    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(description).toContain("  - 🔓 [Enemy Clan]");
+    expect(description).not.toContain("Requirements:");
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
 
     const selectRow = payload.components[0]?.toJSON?.().components[0];
     expect(selectRow?.custom_id).toBe("raids:raids-itx-1:select");
@@ -566,6 +576,9 @@ describe("/raids command", () => {
         expect(tag).toBe("#2QG2C08UR");
         return {
           type: "open",
+          requiredTownhallLevel: 16,
+          requiredBuilderBaseTrophies: 2600,
+          requiredTrophies: 5000,
         };
       }),
     };
@@ -577,6 +590,9 @@ describe("/raids command", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clan");
     expect(description).toContain("Join type: Closed");
+    expect(description).not.toContain("Updated:");
+    expect(description).toContain("Upgrades: —");
+    expect(payload.embeds[0].toJSON().title).toBeUndefined();
     expect(description).toContain("Bravo Raid");
     expect(description).toContain("## Attacking");
     expect(description).toContain("### [Defender One]");
@@ -585,6 +601,7 @@ describe("/raids command", () => {
     expect(description).toContain("🔓 [Enemy Clan]");
     expect(description).toContain("`#2QG2C08UR`");
     expect(description).toContain("1 districts remaining");
+    expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
     expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
       expect.objectContaining({
         priority: "interactive",
