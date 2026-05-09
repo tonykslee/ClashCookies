@@ -133,6 +133,26 @@ function formatAttacksLabel(input: { attacksCompleted: number | null; attacksMax
   return `${input.attacksCompleted}/${input.attacksMax}`;
 }
 
+export function parseRaidSeasonTimeMs(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const compactMatch = raw.match(
+    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.(\d{1,3}))?Z$/,
+  );
+  if (compactMatch) {
+    const [, year, month, day, hour, minute, second, fraction = "0"] = compactMatch;
+    const millis = fraction.padEnd(3, "0").slice(0, 3);
+    const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}.${millis}Z`;
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function selectCurrentRaidSeason(input: {
   seasons: ClanCapitalRaidSeason[];
   nowMs: number;
@@ -142,12 +162,12 @@ function selectCurrentRaidSeason(input: {
   }
 
   const candidates = input.seasons.map((season) => {
-    const startMs = Date.parse(String(season.startTime ?? ""));
-    const endMs = Date.parse(String(season.endTime ?? ""));
+    const startMs = parseRaidSeasonTimeMs(season.startTime);
+    const endMs = parseRaidSeasonTimeMs(season.endTime);
     return {
       season,
-      startMs: Number.isFinite(startMs) ? startMs : null,
-      endMs: Number.isFinite(endMs) ? endMs : null,
+      startMs,
+      endMs,
     };
   });
 
