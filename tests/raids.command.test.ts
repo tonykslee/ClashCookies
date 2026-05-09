@@ -152,34 +152,42 @@ function makeChatInteraction(options?: { clan?: string | null; focused?: string;
 }
 
 function makeButtonInteraction(customId: string) {
-  return {
+  const interaction: any = {
     customId,
     user: { id: "user-1" },
     replied: false,
     deferred: false,
-    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     reply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     message: {
       edit: vi.fn().mockResolvedValue(undefined),
     },
   };
+  return interaction;
 }
 
 function makeSelectInteraction(customId: string, value: string) {
-  return {
+  const interaction: any = {
     customId,
     values: [value],
     user: { id: "user-1" },
     replied: false,
     deferred: false,
-    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     reply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     message: {
       edit: vi.fn().mockResolvedValue(undefined),
     },
   };
+  return interaction;
 }
 
 describe("/raids command", () => {
@@ -468,8 +476,9 @@ describe("/raids command", () => {
     await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
 
     expect(selectInteraction.deferUpdate).toHaveBeenCalled();
-    expect(selectInteraction.message.edit).toHaveBeenCalled();
-    const selectedPayload = selectInteraction.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(selectInteraction.editReply).toHaveBeenCalled();
+    expect(selectInteraction.message.edit).not.toHaveBeenCalled();
+    const selectedPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
     const selectedDescription = selectedPayload.embeds[0].toJSON().description as string;
     expect(selectedDescription).toContain("## Raid Clan");
     expect(selectedDescription).toContain("## Attacking");
@@ -486,8 +495,9 @@ describe("/raids command", () => {
     await handleRaidsButtonInteraction(backButton as any, cocService as any);
 
     expect(backButton.deferUpdate).toHaveBeenCalled();
-    expect(backButton.message.edit).toHaveBeenCalled();
-    const backPayload = backButton.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(backButton.editReply).toHaveBeenCalled();
+    expect(backButton.message.edit).not.toHaveBeenCalled();
+    const backPayload = backButton.editReply.mock.calls.at(-1)?.[0] as any;
     const backDescription = backPayload.embeds[0].toJSON().description as string;
     expect(backDescription).toContain("## Raid Clans");
   });
@@ -515,8 +525,9 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
-    expect(refreshInteraction.message.edit).toHaveBeenCalled();
-    const refreshedPayload = refreshInteraction.message.edit.mock.calls.at(-1)?.[0] as any;
+    expect(refreshInteraction.editReply).toHaveBeenCalled();
+    expect(refreshInteraction.message.edit).not.toHaveBeenCalled();
+    const refreshedPayload = refreshInteraction.editReply.mock.calls.at(-1)?.[0] as any;
     const refreshedDescription = refreshedPayload.embeds[0].toJSON().description as string;
     expect(refreshedDescription).toContain("## Attacking");
     expect(refreshedDescription).toContain("## Defending");
