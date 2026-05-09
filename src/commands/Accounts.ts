@@ -14,6 +14,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
+import { listOpenDeferredWeightsByClanAndPlayerTags } from "../services/WeightInputDefermentService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
@@ -23,7 +24,13 @@ type AccountRow = {
   name: string;
   townHall: number | null;
   weight: number | null;
-  weightSource: "FwaClanMemberCurrent" | "FwaPlayerCatalog" | null;
+  weightSource:
+    | "FwaClanMemberCurrent"
+    | "FwaPlayerCatalog"
+    | "PlayerCurrent"
+    | "ExternalPlayerWeightCurrent"
+    | "WeightInputDeferment"
+    | null;
   clanTag: string | null;
   clanName: string | null;
   clanRole: "leader" | "coleader" | null;
@@ -71,6 +78,30 @@ type FwaPlayerCatalogRow = {
   playerTag: string;
   latestTownHall: number | null;
   latestKnownWeight: number | null;
+};
+
+type ExternalPlayerWeightCurrentRow = {
+  playerTag: string;
+  weight: number | null;
+  measuredAt: Date;
+  source: string;
+};
+
+type AccountWeightContext = {
+  tag: string;
+  playerCurrent: PlayerCurrentSnapshot | null;
+  fallback: { clanTag: string | null; clanName: string | null; name: string | null } | null;
+  linkedName: string | null;
+  clanTag: string | null;
+  clanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
+  preferredMemberRow: FwaClanMemberCurrentRow | null;
+  fwaCatalogRow: FwaPlayerCatalogRow | null;
+  playerCurrentWeight: number | null;
+  externalWeight: number | null;
+  deferredWeight: number | null;
+  isTrackedFwaClan: boolean;
+  trackedClanSortOrder: number | null;
 };
 
 type AccountDisplayEmojiMap = Map<number, string>;
@@ -331,6 +362,26 @@ async function buildAccountsRows(input: {
       latestKnownWeight: normalizePositiveInteger(row.latestKnownWeight),
     });
   }
+  const externalWeightRows = await prisma.externalPlayerWeightCurrent.findMany({
+    where: { playerTag: { in: input.tags } },
+    select: {
+      playerTag: true,
+      weight: true,
+      measuredAt: true,
+      source: true,
+    },
+  });
+  const externalWeightByTag = new Map<string, ExternalPlayerWeightCurrentRow>();
+  for (const row of externalWeightRows as ExternalPlayerWeightCurrentRow[]) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag) continue;
+    externalWeightByTag.set(playerTag, {
+      playerTag,
+      weight: normalizePositiveInteger(row.weight),
+      measuredAt: row.measuredAt,
+      source: sanitizeDisplayText(row.source) ?? "",
+    });
+  }
   const candidateClanTags = [...new Set([
     ...input.tags
       .map((tag) => {
@@ -360,7 +411,7 @@ async function buildAccountsRows(input: {
     trackedClanRows.map((row, index) => [normalizeTag(row.tag), index] as const),
   );
 
-  return input.tags.map((tag) => {
+  const contexts: AccountWeightContext[] = input.tags.map((tag) => {
     const playerCurrent = playerCurrentByTag.get(tag) ?? null;
     const fallback = activityByTag.get(tag) ?? null;
     const linkedName = input.linkedNameByTag.get(tag) ?? null;
@@ -381,46 +432,95 @@ async function buildAccountsRows(input: {
         ? {
             clanTag: fallback.clanTag ?? null,
             clanName: fallback.clanName ?? null,
-          }
+        }
         : null,
     });
     const memberRows = fwaMemberRowsByTag.get(tag) ?? [];
     const preferredMemberRow = pickPreferredFwaMemberRow(memberRows, clanTag);
     const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
-    const townHall =
-      normalizePositiveInteger(playerCurrent?.townHall) ??
-      preferredMemberRow?.townHall ??
-      fwaCatalogRow?.latestTownHall ??
-      null;
-    const weight =
-      preferredMemberRow?.weight ??
-      fwaCatalogRow?.latestKnownWeight ??
-      null;
-    const weightSource =
-      preferredMemberRow?.weight !== null && preferredMemberRow?.weight !== undefined
-        ? "FwaClanMemberCurrent"
-        : fwaCatalogRow?.latestKnownWeight !== null && fwaCatalogRow?.latestKnownWeight !== undefined
-          ? "FwaPlayerCatalog"
-          : null;
     const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
     const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
 
     return {
       tag,
+      playerCurrent,
+      fallback: fallback
+        ? {
+            clanTag: fallback.clanTag ?? null,
+            clanName: fallback.clanName ?? null,
+            name: sanitizeDisplayText(fallback.name),
+          }
+        : null,
+      linkedName,
+      clanTag: clanState === "known" ? clanTag : null,
+      clanName: clanState === "known" ? clanName : null,
+      clanState,
+      preferredMemberRow,
+      fwaCatalogRow,
+      playerCurrentWeight: normalizePositiveInteger(playerCurrent?.currentWeight),
+      externalWeight: externalWeightByTag.get(tag)?.weight ?? null,
+      deferredWeight: null,
+      isTrackedFwaClan,
+      trackedClanSortOrder,
+    };
+  });
+
+  const deferredWeightByClanAndPlayerTag = await listOpenDeferredWeightsByClanAndPlayerTags({
+    guildId: input.guildId,
+    clanPlayerTags: contexts.map((context) => ({
+      clanTag: context.clanTag,
+      playerTags: [context.tag],
+    })),
+  });
+
+  return contexts.map((context) => {
+    const clanKey = context.clanTag ?? "";
+    const deferredWeight = normalizePositiveInteger(
+      deferredWeightByClanAndPlayerTag.get(clanKey)?.get(context.tag) ?? null,
+    );
+    const townHall =
+      normalizePositiveInteger(context.playerCurrent?.townHall) ??
+      context.preferredMemberRow?.townHall ??
+      context.fwaCatalogRow?.latestTownHall ??
+      null;
+    const weight =
+      context.preferredMemberRow?.weight ??
+      context.fwaCatalogRow?.latestKnownWeight ??
+      context.playerCurrentWeight ??
+      context.externalWeight ??
+      deferredWeight ??
+      null;
+    const weightSource =
+      context.preferredMemberRow?.weight !== null &&
+      context.preferredMemberRow?.weight !== undefined
+        ? "FwaClanMemberCurrent"
+        : context.fwaCatalogRow?.latestKnownWeight !== null &&
+            context.fwaCatalogRow?.latestKnownWeight !== undefined
+          ? "FwaPlayerCatalog"
+          : context.playerCurrentWeight !== null
+            ? "PlayerCurrent"
+            : context.externalWeight !== null
+              ? "ExternalPlayerWeightCurrent"
+              : deferredWeight !== null
+                ? "WeightInputDeferment"
+                : null;
+
+    return {
+      tag: context.tag,
       name:
-        sanitizeDisplayText(playerCurrent?.playerName) ??
-        linkedName ??
-        sanitizeDisplayText(fallback?.name) ??
-        tag,
+        sanitizeDisplayText(context.playerCurrent?.playerName) ??
+        context.linkedName ??
+        context.fallback?.name ??
+        context.tag,
       townHall,
       weight,
       weightSource,
-      clanTag: clanState === "known" ? clanTag : null,
-      clanName: clanState === "known" ? clanName : null,
-      clanRole: normalizeClanMemberRole(playerCurrent?.role),
-      clanState,
-      isTrackedFwaClan,
-      trackedClanSortOrder,
+      clanTag: context.clanState === "known" ? context.clanTag : null,
+      clanName: context.clanState === "known" ? context.clanName : null,
+      clanRole: normalizeClanMemberRole(context.playerCurrent?.role),
+      clanState: context.clanState,
+      isTrackedFwaClan: context.isTrackedFwaClan,
+      trackedClanSortOrder: context.trackedClanSortOrder,
     };
   });
 }
