@@ -1,4 +1,5 @@
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
 import {
   getRaidTrackedClanJoinTypeEmoji,
@@ -148,6 +149,19 @@ export async function listRaidDashboardRows(input: {
       raidsCompleted: counts.raidsCompleted,
     };
   });
+}
+
+export async function listRaidDashboardRowsWithQueueContext(input: {
+  cocService: CoCService | null;
+  source: string;
+}): Promise<RaidDashboardClanRow[]> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source: input.source,
+    },
+    () => listRaidDashboardRows({ cocService: input.cocService }),
+  );
 }
 
 export function buildRaidDashboardClanTitle(input: {

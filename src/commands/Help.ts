@@ -230,10 +230,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "View tracked RAID clans with live raid-season counts when available.",
     details: [
       "Shows an overview of tracked RAIDS clans with join-status emoji, clickable clan names, upgrades, live current attacks when the active raid season is available, and a freshness note from the stored RAIDS registry row.",
-      "`clan` opens a single-clan view, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place.",
+      "`/raids overview` shows the dashboard; `clan` opens a single-clan view, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place.",
       "Counts fall back to `—` when the live raid-season source cannot resolve them yet.",
     ],
-    examples: ["/raids", "/raids clan:#2RVGJYLC0"],
+    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0"],
   },
   sheet: {
     summary: "Link and manage Google Sheet settings.",

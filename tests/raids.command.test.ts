@@ -10,12 +10,33 @@ const refreshHelperMock = vi.hoisted(() => ({
   refreshRaidTrackedClanListWithQueueContext: vi.fn(),
 }));
 
+const cocQueueMock = vi.hoisted(() => {
+  const state = { active: false };
+  const defaultImpl = async (_context: unknown, run: () => Promise<unknown>) => {
+    state.active = true;
+    try {
+      return await run();
+    } finally {
+      state.active = false;
+    }
+  };
+  return {
+    state,
+    defaultImpl,
+    runWithCoCQueueContext: vi.fn(defaultImpl),
+  };
+});
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
 vi.mock("../src/commands/TrackedClan", () => ({
   refreshRaidTrackedClanListWithQueueContext: refreshHelperMock.refreshRaidTrackedClanListWithQueueContext,
+}));
+
+vi.mock("../src/services/CoCQueueContext", () => ({
+  runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
 import {
@@ -59,6 +80,7 @@ function makeChatInteraction(options?: { clan?: string | null; focused?: string 
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
+      getSubcommand: vi.fn(() => "overview"),
       getString: vi.fn((name: string) => (name === "clan" ? clan : null)),
       getFocused: vi.fn().mockReturnValue({ name: "clan", value: focused }),
     },
@@ -100,6 +122,8 @@ function makeSelectInteraction(customId: string, value: string) {
 describe("/raids command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cocQueueMock.state.active = false;
+    cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-08T12:00:00.000Z"));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -120,6 +144,7 @@ describe("/raids command", () => {
   it("renders the overview shell with dropdown and refresh button", async () => {
     const cocService = {
       getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
         if (tag === "#2QG2C08UP") {
           return [
             {
@@ -153,6 +178,13 @@ describe("/raids command", () => {
       String(component.custom_id ?? ""),
     );
     expect(buttonIds).toEqual(["raids:raids-itx-1:refresh"]);
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:overview",
+      }),
+      expect.any(Function),
+    );
   });
 
   it("renders a single clan view with back and refresh buttons", async () => {
@@ -226,6 +258,13 @@ describe("/raids command", () => {
     expect(selectedDescription).toContain("## Raid Clan");
     expect(selectedDescription).toContain("Join type: Closed");
     expect(selectedDescription).toContain("Bravo Raid");
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:overview:select",
+      }),
+      expect.any(Function),
+    );
 
     const backButton = makeButtonInteraction("raids:raids-itx-1:back");
     await handleRaidsButtonInteraction(backButton as any, cocService as any);
@@ -235,11 +274,19 @@ describe("/raids command", () => {
     const backPayload = backButton.message.edit.mock.calls.at(-1)?.[0] as any;
     const backDescription = backPayload.embeds[0].toJSON().description as string;
     expect(backDescription).toContain("## Raid Clans");
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:overview:back",
+      }),
+      expect.any(Function),
+    );
   });
 
   it("refreshes the current raids view in place", async () => {
     const cocService = {
       getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
         if (tag === "#2QG2C08UP") {
           return [
             {
@@ -259,6 +306,13 @@ describe("/raids command", () => {
     await handleRaidsButtonInteraction(refreshInteraction as any, cocService as any);
 
     expect(refreshHelperMock.refreshRaidTrackedClanListWithQueueContext).toHaveBeenCalled();
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:overview:refresh",
+      }),
+      expect.any(Function),
+    );
     expect(refreshInteraction.message.edit).toHaveBeenCalled();
     const refreshedPayload = refreshInteraction.message.edit.mock.calls.at(-1)?.[0] as any;
     const refreshedDescription = refreshedPayload.embeds[0].toJSON().description as string;

@@ -22,7 +22,7 @@ import {
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
   findRaidDashboardClanRow,
-  listRaidDashboardRows,
+  listRaidDashboardRowsWithQueueContext,
   type RaidDashboardClanRow,
 } from "../services/RaidDashboardService";
 import {
@@ -145,12 +145,19 @@ async function buildRaidDashboardPayload(input: {
   selectedClanTag: string | null;
   cocService: CoCService;
   refreshing: boolean;
+  source: string;
+  rows?: RaidDashboardClanRow[];
 }): Promise<{
   embeds: EmbedBuilder[];
   components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
   rows: RaidDashboardClanRow[];
 }> {
-  const rows = await listRaidDashboardRows({ cocService: input.cocService });
+  const rows =
+    input.rows ??
+    (await listRaidDashboardRowsWithQueueContext({
+      cocService: input.cocService,
+      source: input.source,
+    }));
   const selectedRow = input.selectedClanTag ? findRaidDashboardClanRow(rows, input.selectedClanTag) : null;
   const effectiveSelectedTag = selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null;
   const embed = buildRaidDashboardEmbed(rows, selectedRow);
@@ -229,13 +236,13 @@ export async function handleRaidsSelectMenuInteraction(
   if (!parsed || parsed.action !== "select") return;
 
   const session = getSession(parsed.sessionId);
-  if (!session) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "This raids view expired. Run `/raids` again.",
-    });
-    return;
-  }
+    if (!session) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "This raids view expired. Run `/raids overview` again.",
+      });
+      return;
+    }
   if (session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
@@ -254,6 +261,7 @@ export async function handleRaidsSelectMenuInteraction(
       selectedClanTag,
       cocService,
       refreshing: false,
+      source: "raids:overview:select",
     });
     if (payload.rows.length <= 0) {
       await interaction.message.edit({
@@ -284,13 +292,13 @@ export async function handleRaidsButtonInteraction(
   if (!parsed || parsed.action === "select") return;
 
   const session = getSession(parsed.sessionId);
-  if (!session) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "This raids view expired. Run `/raids` again.",
-    });
-    return;
-  }
+    if (!session) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "This raids view expired. Run `/raids overview` again.",
+      });
+      return;
+    }
   if (session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
@@ -323,6 +331,7 @@ export async function handleRaidsButtonInteraction(
       selectedClanTag: nextSelectedClanTag,
       cocService,
       refreshing: false,
+      source: parsed.action === "refresh" ? "raids:overview:refresh" : "raids:overview:back",
     });
     if (payload.rows.length <= 0) {
       await interaction.message.edit({
@@ -362,11 +371,18 @@ export const Raids: Command = {
   description: "Raid-focused dashboard for tracked RAID clans",
   options: [
     {
-      name: "clan",
-      description: "Tracked RAID clan to show",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      autocomplete: true,
+      name: "overview",
+      description: "View tracked RAID clans",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked RAID clan to show",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
     },
   ],
   autocomplete: async (interaction: AutocompleteInteraction) => {
@@ -381,8 +397,25 @@ export const Raids: Command = {
   },
   run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
     await interaction.deferReply({ ephemeral: true });
+    let subcommand: string | null = null;
+    try {
+      subcommand = interaction.options.getSubcommand(false);
+    } catch {
+      subcommand = null;
+    }
+    if (subcommand !== "overview") {
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: "Unsupported raids subcommand. Use `/raids overview`.",
+      });
+      return;
+    }
+
     const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
-    const rows = await listRaidDashboardRows({ cocService });
+    const rows = await listRaidDashboardRowsWithQueueContext({
+      cocService,
+      source: "raids:overview",
+    });
     if (rows.length <= 0) {
       await safeReply(interaction, {
         ephemeral: true,
@@ -414,6 +447,8 @@ export const Raids: Command = {
       selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
       cocService,
       refreshing: false,
+      source: "raids:overview",
+      rows,
     });
     await interaction.editReply({
       embeds: payload.embeds,

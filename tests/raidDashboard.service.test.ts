@@ -6,8 +6,29 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const cocQueueMock = vi.hoisted(() => {
+  const state = { active: false };
+  const defaultImpl = async (_context: unknown, run: () => Promise<unknown>) => {
+    state.active = true;
+    try {
+      return await run();
+    } finally {
+      state.active = false;
+    }
+  };
+  return {
+    state,
+    defaultImpl,
+    runWithCoCQueueContext: vi.fn(defaultImpl),
+  };
+});
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+}));
+
+vi.mock("../src/services/CoCQueueContext", () => ({
+  runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
 import {
@@ -15,11 +36,14 @@ import {
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
   listRaidDashboardRows,
+  listRaidDashboardRowsWithQueueContext,
 } from "../src/services/RaidDashboardService";
 
 describe("RaidDashboardService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cocQueueMock.state.active = false;
+    cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-08T12:00:00.000Z"));
   });
@@ -83,6 +107,40 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Join type: Open");
     expect(single).toContain("Upgrades: 2210");
     expect(single).toContain("Attacks: 11/12");
+  });
+
+  it("loads raid rows through a queue context wrapper for dashboard refreshes", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => {
+        expect(cocQueueMock.state.active).toBe(true);
+        return [];
+      }),
+    };
+
+    const rows = await listRaidDashboardRowsWithQueueContext({
+      cocService: cocService as any,
+      source: "raids:overview",
+    });
+
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:overview",
+      }),
+      expect.any(Function),
+    );
+    expect(rows[0]?.attacksCompleted).toBeNull();
   });
 
   it("falls back to dash counts when no active raid season is available", async () => {
