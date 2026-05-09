@@ -19,7 +19,20 @@ export type RaidDashboardCountRow = {
   raidsCompleted: number | null;
 };
 
-export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow;
+export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
+  openDefenseSections?: RaidDashboardDefenseSection[];
+};
+
+export type RaidClanJoinRequirements = {
+  requiredTownHall: number | null;
+  requiredTrophies: number | null;
+  requiredBuilderBaseTrophies: number | null;
+};
+
+export type RaidAttackerClanMetadata = {
+  joinType: RaidTrackedClanJoinType | null;
+  joinRequirements: RaidClanJoinRequirements | null;
+};
 
 export type RaidDashboardDistrictRow = {
   name: string;
@@ -39,6 +52,7 @@ export type RaidDashboardDefenseSection = {
   attackerName: string | null;
   attackerTag: string | null;
   joinType: RaidTrackedClanJoinType | null;
+  joinRequirements: RaidClanJoinRequirements | null;
   districtsRemaining: number | null;
 };
 
@@ -216,6 +230,38 @@ function normalizeRaidJoinType(
     return raw;
   }
   return null;
+}
+
+export function normalizeRaidClanJoinRequirements(input: Record<string, unknown>): RaidClanJoinRequirements {
+  const requiredTownHall = normalizePositiveInt(
+    input.requiredTownhallLevel ?? input.requiredTownHallLevel ?? input.requiredTownHall,
+  );
+  const requiredBuilderBaseTrophies = normalizePositiveInt(
+    input.requiredBuilderBaseTrophies ??
+      input.requiredBuilderBaseTrophy ??
+      input.requiredBuilderBase ??
+      input.requiredVersusTrophies,
+  );
+  const requiredTrophies = normalizePositiveInt(
+    input.requiredTrophies ?? input.requiredHomeTrophies,
+  );
+  return {
+    requiredTownHall,
+    requiredTrophies,
+    requiredBuilderBaseTrophies,
+  };
+}
+
+function normalizeRaidAttackerClanMetadata(input: unknown): RaidAttackerClanMetadata | null {
+  if (!input || typeof input !== "object") return null;
+  const value = input as Record<string, unknown>;
+  const joinType = normalizeRaidJoinType(value.type);
+  if (joinType === null) return null;
+  const joinRequirements = normalizeRaidClanJoinRequirements(value);
+  return {
+    joinType,
+    joinRequirements,
+  };
 }
 
 function normalizeDistrictName(name: unknown): string | null {
@@ -396,19 +442,111 @@ function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidD
   ];
 }
 
-function buildRaidDefenseSectionLines(section: RaidDashboardDefenseSection): RaidDetailLine[] {
+function buildRaidDefenseSectionSummaryText(section: RaidDashboardDefenseSection): string {
   const attackerTag = section.attackerTag ? formatRaidTrackedClanTag(section.attackerTag) : null;
   const title = buildClanProfileMarkdownLink(section.attackerName, section.attackerTag);
   const joinEmoji = getRaidTrackedClanJoinTypeEmoji(section.joinType);
-  const header = `${joinEmoji} ${title}${attackerTag ? ` \`${attackerTag}\`` : ""} — ${
+  return `${joinEmoji} ${title}${attackerTag ? ` \`${attackerTag}\`` : ""} — ${
     section.districtsRemaining === null
       ? "— districts remaining"
       : `${section.districtsRemaining} districts remaining`
   }`;
+}
 
+function buildRaidDefenseRequirementsText(requirements: RaidClanJoinRequirements | null): string {
+  const pieces: string[] = [];
+  if (requirements?.requiredTownHall !== null && requirements?.requiredTownHall !== undefined) {
+    pieces.push(`TH${requirements.requiredTownHall}`);
+  }
+  if (
+    requirements?.requiredBuilderBaseTrophies !== null &&
+    requirements?.requiredBuilderBaseTrophies !== undefined
+  ) {
+    pieces.push(`Builder Base: ${requirements.requiredBuilderBaseTrophies}+ trophies`);
+  }
+  if (requirements?.requiredTrophies !== null && requirements?.requiredTrophies !== undefined) {
+    pieces.push(`Ranked: ${requirements.requiredTrophies}+ trophies`);
+  }
+  return pieces.length > 0 ? `Requirements: ${pieces.join(", ")}` : "Requirements: —";
+}
+
+function buildRaidDefenseSectionLines(
+  section: RaidDashboardDefenseSection,
+  options?: { includeRequirements?: boolean },
+): RaidDetailLine[] {
+  const lines: RaidDetailLine[] = [{ text: buildRaidDefenseSectionSummaryText(section), item: true }];
+  if (options?.includeRequirements && section.joinType === "open") {
+    lines.push({ text: `  - ${buildRaidDefenseRequirementsText(section.joinRequirements)}`, item: false });
+  }
   return [
-    { text: header, item: true },
+    ...lines,
   ];
+}
+
+type RaidDashboardSeasonSnapshot = {
+  activeSeason: ClanCapitalRaidSeason | null;
+  attackSections: RaidDashboardAttackSection[];
+  defenseSections: RaidDashboardDefenseSection[];
+  counts: RaidDashboardCountRow;
+};
+
+async function loadRaidDashboardSeasonSnapshot(input: {
+  cocService: CoCService | null;
+  clanTag: string;
+  nowMs: number;
+}): Promise<RaidDashboardSeasonSnapshot> {
+  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
+    return {
+      activeSeason: null,
+      attackSections: [],
+      defenseSections: [],
+      counts: {
+        attacksCompleted: null,
+        attacksMax: null,
+        raidsCompleted: null,
+      },
+    };
+  }
+
+  const seasons = await input.cocService
+    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), 2)
+    .catch(() => []);
+  const activeSeason = selectCurrentRaidSeason({
+    seasons,
+    nowMs: input.nowMs,
+  });
+  if (!activeSeason) {
+    return {
+      activeSeason: null,
+      attackSections: [],
+      defenseSections: [],
+      counts: {
+        attacksCompleted: null,
+        attacksMax: null,
+        raidsCompleted: null,
+      },
+    };
+  }
+
+  const attackSections = normalizeAttackSections(activeSeason);
+  const defenseSections = normalizeDefenseSections(activeSeason, new Map());
+  const counts: RaidDashboardCountRow = {
+    attacksCompleted:
+      Array.isArray(activeSeason.members) && activeSeason.members.length > 0
+        ? activeSeason.members.reduce((sum, member) => sum + clampInt(member?.attacks, 0, 6), 0)
+        : null,
+    attacksMax: Array.isArray(activeSeason.members) && activeSeason.members.length > 0
+      ? activeSeason.members.length * 6
+      : null,
+    raidsCompleted: calculateCompletedRaidsFromSeason(activeSeason, attackSections),
+  };
+
+  return {
+    activeSeason,
+    attackSections,
+    defenseSections,
+    counts,
+  };
 }
 
 function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine[] {
@@ -435,12 +573,13 @@ function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine
     }
     lines.push({ text: "## Defending", item: false });
     lines.push({ text: "", item: false });
-    detail.defenseSections.forEach((section, index) => {
-      lines.push(...buildRaidDefenseSectionLines(section));
-      if (index < detail.defenseSections.length - 1) {
-        lines.push({ text: "", item: false });
-      }
-    });
+    for (const section of detail.defenseSections) {
+      lines.push(...buildRaidDefenseSectionLines(section, { includeRequirements: true }));
+      lines.push({ text: "", item: false });
+    }
+    if (lines.length > 0 && lines[lines.length - 1]?.text === "") {
+      lines.pop();
+    }
   } else {
     if (lines.length > 0) {
       lines.push({ text: "", item: false });
@@ -495,7 +634,7 @@ function normalizeRaidIntelDefenders(season: ClanCapitalRaidSeason): RaidIntelDe
 
 function normalizeDefenseSections(
   season: ClanCapitalRaidSeason,
-  joinTypeByTag: Map<string, RaidTrackedClanJoinType | null>,
+  metadataByTag: Map<string, RaidAttackerClanMetadata | null>,
 ): RaidDashboardDefenseSection[] {
   if (!Array.isArray(season.defenseLog) || season.defenseLog.length <= 0) return [];
   const sections: RaidDashboardDefenseSection[] = [];
@@ -520,10 +659,12 @@ function normalizeDefenseSections(
       districtCount !== null && districtsDestroyed !== null
         ? Math.max(0, districtCount - districtsDestroyed)
         : calculateDistrictsRemaining(districts);
+    const metadata = metadataByTag.get(attackerTag) ?? null;
     sections.push({
       attackerName,
       attackerTag,
-      joinType: joinTypeByTag.get(attackerTag) ?? null,
+      joinType: metadata?.joinType ?? null,
+      joinRequirements: metadata?.joinRequirements ?? null,
       districtsRemaining,
     });
   }
@@ -547,12 +688,12 @@ function calculateDistrictsRemaining(districts: RaidDashboardDistrictRow[]): num
   return sawKnownState ? remaining : null;
 }
 
-async function loadAttackClanJoinTypes(input: {
+async function loadRaidAttackerClanMetadata(input: {
   cocService: CoCService | null;
-  defenseSections: RaidDashboardDefenseSection[];
+  defenseSections: Array<{ attackerTag: string | null }>;
   source: string;
-}): Promise<Map<string, RaidTrackedClanJoinType | null>> {
-  const result = new Map<string, RaidTrackedClanJoinType | null>();
+}): Promise<Map<string, RaidAttackerClanMetadata | null>> {
+  const result = new Map<string, RaidAttackerClanMetadata | null>();
   if (!input.cocService || typeof input.cocService.getClan !== "function") {
     return result;
   }
@@ -562,30 +703,16 @@ async function loadAttackClanJoinTypes(input: {
     if (!tag) continue;
     try {
       const clan = await input.cocService.getClan(formatRaidTrackedClanTag(tag));
-      result.set(tag, normalizeRaidJoinType((clan as { type?: unknown } | null)?.type));
+      result.set(tag, normalizeRaidAttackerClanMetadata(clan));
     } catch (err) {
       console.error(
-        `[raids] stage=detail_join_type_fetch_failed source=${input.source} tag=${formatRaidTrackedClanTag(tag)} error=${String(err instanceof Error ? err.message : err)}`,
+        `[raids] stage=detail_attacker_metadata_fetch_failed source=${input.source} tag=${formatRaidTrackedClanTag(tag)} error=${String(err instanceof Error ? err.message : err)}`,
       );
       result.set(tag, null);
     }
   }
 
   return result;
-}
-
-function createSelectedClanDetailFromSeason(
-  season: ClanCapitalRaidSeason,
-  joinTypeByTag: Map<string, RaidTrackedClanJoinType | null>,
-): RaidDashboardSeasonDetail {
-  const attackSections = normalizeAttackSections(season);
-  const defenseSections = normalizeDefenseSections(season, joinTypeByTag);
-  return {
-    activeSeason: season,
-    attackSections,
-    defenseSections,
-    raidsCompleted: calculateCompletedRaidsFromSeason(season, attackSections),
-  };
 }
 
 function calculateCompletedRaidsFromSeason(
@@ -632,17 +759,12 @@ async function loadSelectedClanDetail(input: {
   clanTag: string;
   source: string;
 }): Promise<RaidDashboardSeasonDetail | null> {
-  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
-    return null;
-  }
-
-  const seasons = await input.cocService
-    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), 2)
-    .catch(() => []);
-  const activeSeason = selectCurrentRaidSeason({
-    seasons,
+  const snapshot = await loadRaidDashboardSeasonSnapshot({
+    cocService: input.cocService,
+    clanTag: input.clanTag,
     nowMs: Date.now(),
   });
+  const activeSeason = snapshot.activeSeason;
   if (!activeSeason) {
     return {
       activeSeason: null,
@@ -652,13 +774,17 @@ async function loadSelectedClanDetail(input: {
     };
   }
 
-  const defenseSectionsBase = normalizeDefenseSections(activeSeason, new Map());
-  const joinTypeByTag = await loadAttackClanJoinTypes({
+  const metadataByTag = await loadRaidAttackerClanMetadata({
     cocService: input.cocService,
-    defenseSections: defenseSectionsBase,
+    defenseSections: snapshot.defenseSections,
     source: input.source,
   });
-  return createSelectedClanDetailFromSeason(activeSeason, joinTypeByTag);
+  return {
+    activeSeason,
+    attackSections: snapshot.attackSections,
+    defenseSections: normalizeDefenseSections(activeSeason, metadataByTag),
+    raidsCompleted: snapshot.counts.raidsCompleted,
+  };
 }
 
 export async function loadRaidDashboardSeasonDetailWithQueueContext(input: {
@@ -725,40 +851,8 @@ async function resolveClanRaidCounts(input: {
   clanTag: string;
   nowMs: number;
 }): Promise<RaidDashboardCountRow> {
-  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
-    return {
-      attacksCompleted: null,
-      attacksMax: null,
-      raidsCompleted: null,
-    };
-  }
-
-  const seasons = await input.cocService
-    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), 2)
-    .catch(() => []);
-  const activeSeason = selectCurrentRaidSeason({
-    seasons,
-    nowMs: input.nowMs,
-  });
-  if (!activeSeason || !Array.isArray(activeSeason.members) || activeSeason.members.length <= 0) {
-    return {
-      attacksCompleted: null,
-      attacksMax: null,
-      raidsCompleted: activeSeason ? calculateCompletedRaidsFromSeason(activeSeason, normalizeAttackSections(activeSeason)) : null,
-    };
-  }
-
-  const attacksCompleted = activeSeason.members.reduce(
-    (sum, member) => sum + clampInt(member?.attacks, 0, 6),
-    0,
-  );
-  const attacksMax = activeSeason.members.length * 6;
-  const raidsCompleted = calculateCompletedRaidsFromSeason(activeSeason, normalizeAttackSections(activeSeason));
-  return {
-    attacksCompleted,
-    attacksMax,
-    raidsCompleted,
-  };
+  const snapshot = await loadRaidDashboardSeasonSnapshot(input);
+  return snapshot.counts;
 }
 
 export function buildRaidIntelDescription(input: {
@@ -910,30 +1004,46 @@ export async function listRaidDashboardRows(input: {
   }
 
   const nowMs = Date.now();
-  const countRows = await Promise.all(
+  const snapshots = await Promise.all(
     tracked.map(async (row) => {
-      const counts = await resolveClanRaidCounts({
+      const snapshot = await loadRaidDashboardSeasonSnapshot({
         cocService: input.cocService,
         clanTag: row.clanTag,
         nowMs,
       });
-      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, counts] as const;
+      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, snapshot] as const;
     }),
   );
-  const countByTag = new Map(countRows);
+  const allDefenseSections = snapshots.flatMap(([, snapshot]) => snapshot.defenseSections);
+  const metadataByTag = await loadRaidAttackerClanMetadata({
+    cocService: input.cocService,
+    defenseSections: allDefenseSections,
+    source: "raids:overview",
+  });
 
-  return tracked.map((row) => {
+  return tracked.map((row, index) => {
     const tag = normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag;
-    const counts = countByTag.get(tag) ?? {
-      attacksCompleted: null,
-      attacksMax: null,
-      raidsCompleted: null,
+    const snapshot = snapshots[index]?.[1] ?? {
+      activeSeason: null,
+      attackSections: [],
+      defenseSections: [],
+      counts: {
+        attacksCompleted: null,
+        attacksMax: null,
+        raidsCompleted: null,
+      },
     };
+    const openDefenseSections = snapshot.activeSeason
+      ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
+          (section) => section.joinType === "open",
+        )
+      : [];
     return {
       ...row,
-      attacksCompleted: counts.attacksCompleted,
-      attacksMax: counts.attacksMax,
-      raidsCompleted: counts.raidsCompleted,
+      attacksCompleted: snapshot.counts.attacksCompleted,
+      attacksMax: snapshot.counts.attacksMax,
+      raidsCompleted: snapshot.counts.raidsCompleted,
+      openDefenseSections,
     };
   });
 }
@@ -973,6 +1083,9 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
     lines.push(buildRaidDashboardClanTitle(row));
     lines.push(`Attacks: ${formatCompletedAttacksLabel(row.attacksCompleted)}`);
     lines.push(`Raids completed: ${row.raidsCompleted === null ? "—" : row.raidsCompleted}`);
+    for (const section of row.openDefenseSections ?? []) {
+      lines.push(`  - ${buildRaidDefenseSectionSummaryText(section)}`);
+    }
     lines.push("");
   }
 
