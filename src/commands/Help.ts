@@ -226,6 +226,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/tracked-clan remove tag:#2RVGJYLC0 type:RAIDS",
     ],
   },
+  raids: {
+    summary: "View tracked RAID clans with live raid-season counts when available.",
+    details: [
+      "Shows an overview of tracked RAIDS clans with join-status emoji, clickable clan names, upgrades, live current attacks when the active raid season is available, and a freshness note from the stored RAIDS registry row.",
+      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place.",
+      "Counts fall back to `—` when the live raid-season source cannot resolve them yet.",
+    ],
+    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0"],
+  },
   sheet: {
     summary: "Link and manage Google Sheet settings.",
     details: [

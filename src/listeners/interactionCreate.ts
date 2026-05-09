@@ -167,6 +167,12 @@ import {
   isTodoPageButtonCustomId,
   isTodoRefreshButtonCustomId,
 } from "../commands/Todo";
+import {
+  handleRaidsButtonInteraction,
+  handleRaidsSelectMenuInteraction,
+  isRaidsButtonCustomId,
+  isRaidsSelectMenuCustomId,
+} from "../commands/Raids";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
 const commandPermissionService = new CommandPermissionService();
@@ -584,6 +590,20 @@ const handleSelectMenuInteraction = async (
     return;
   }
 
+  if (isRaidsSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRaidsSelectMenuInteraction(interaction, cocService);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Raids dashboard select menu",
+        "Failed to update the raids dashboard.",
+        err,
+      );
+    }
+    return;
+  }
+
   if (isLinkListSelectCustomId(interaction.customId)) {
     try {
       await handleLinkListSelectMenu(interaction, cocService);
@@ -657,6 +677,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh todo data.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRaidsButtonCustomId(interaction.customId)) {
+    try {
+      await handleRaidsButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Raids dashboard button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the raids dashboard.",
         });
       }
     }
