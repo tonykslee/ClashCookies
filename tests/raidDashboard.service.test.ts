@@ -40,6 +40,7 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
+  parseRaidSeasonTimeMs,
 } from "../src/services/RaidDashboardService";
 
 describe("RaidDashboardService", () => {
@@ -136,6 +137,124 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Join type: Open");
     expect(single).toContain("Upgrades: 2210");
     expect(single).toContain("Attacks: 11/12");
+  });
+
+  it("parses compact Clash raid timestamps and selects the active season", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "20260508T070000.000Z",
+          endTime: "20260511T070000.000Z",
+          members: [{ attacks: 6 }, { attacks: 5 }],
+          attackLog: [],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.attacksCompleted).toBe(11);
+    expect(rows[0]?.attacksMax).toBe(12);
+    expect(rows[0]?.raidsCompleted).toBeNull();
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 11/12");
+  });
+
+  it("parses compact raid timestamps without milliseconds and still selects the active season", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "20RLGVJPP",
+        name: "Bravo Raid",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "20260508T070000Z",
+          endTime: "20260511T070000Z",
+          members: [{ attacks: 6 }, { attacks: 6 }, { attacks: 1 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#DEF1" },
+              districtCount: 9,
+              districtsDestroyed: 9,
+              districts: [
+                {
+                  name: "Capital Hall",
+                  districtHallLevel: 5,
+                  attackCount: 3,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.attacksCompleted).toBe(13);
+    expect(rows[0]?.attacksMax).toBe(18);
+    expect(rows[0]?.raidsCompleted).toBe(1);
+    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 13/18");
+  });
+
+  it("treats invalid raid timestamps as missing", async () => {
+    expect(parseRaidSeasonTimeMs(null)).toBeNull();
+    expect(parseRaidSeasonTimeMs("")).toBeNull();
+    expect(parseRaidSeasonTimeMs("not-a-timestamp")).toBeNull();
+    expect(parseRaidSeasonTimeMs("20260508T070000.000Z")).toBe(Date.parse("2026-05-08T07:00:00.000Z"));
+  });
+
+  it("returns no active season when raid timestamps are invalid", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "not-a-time",
+          endTime: "also-not-a-time",
+          state: "ongoing",
+          members: [{ attacks: 6 }, { attacks: 5 }],
+          attackLog: [],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.attacksCompleted).toBeNull();
+    expect(rows[0]?.attacksMax).toBeNull();
+    expect(rows[0]?.raidsCompleted).toBeNull();
   });
 
   it("loads raid rows through a queue context wrapper for dashboard refreshes", async () => {
