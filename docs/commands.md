@@ -1,4 +1,4 @@
-﻿# Commands Reference
+# Commands Reference
 
 - `/help [command:<name>] [visibility:private|public]` - List command docs/examples. Default visibility is private.
 - `/emoji [name:<emoji_name>] [react:<message-id>] [emoji:<emoji-token-or-url>] [short-code:<name>]` - Resolve one bot application emoji by name, react to a message in the current channel when `react` is provided, add a new bot application emoji when `emoji` + `short-code` are provided (admin-only by default), or browse a paginated list of all bot application emojis when `name` is omitted. React successes confirm privately to the invoker and are logged to `/bot-logs` when configured. No-arg list pages are capped to ~2500 characters of emoji-entry content and rendered in compact row-wise 3 columns sorted by shortcode length. For name-only resolves, `visibility:public` returns only the rendered emoji token while private keeps the detailed shortcode/raw-token output.
