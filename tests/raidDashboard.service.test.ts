@@ -833,6 +833,8 @@ describe("RaidDashboardService", () => {
     });
 
     expect(description).toBe("No active raid weekend data available.");
+    expect(description).not.toContain("No attack log available yet.");
+    expect(description).not.toContain("No defense log available yet.");
   });
 
   it("renders a no-attack-log section when the active raid season has no attack sections", () => {
