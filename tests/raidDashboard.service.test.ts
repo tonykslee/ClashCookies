@@ -280,6 +280,64 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("1 districts remaining");
   });
 
+  it("derives defense districts remaining from aggregate fields when available", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 5 }],
+      attackLog: [],
+      defenseLog: [
+        {
+          attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+          districtCount: 7,
+          districtsDestroyed: 4,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Wizard Valley",
+              districtHallLevel: 4,
+              destructionPercent: null,
+              stars: null,
+            },
+          ],
+        },
+      ],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    const detail = await loadRaidDashboardSeasonDetailWithQueueContext({
+      cocService: cocService as any,
+      clanTag: "2QG2C08UP",
+      source: "raids:overview:detail",
+    });
+
+    expect(detail?.defenseSections[0]?.districtsRemaining).toBe(3);
+    const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
+    expect(description).toContain("3 districts remaining");
+  });
+
   it("renders a clean empty message when no active raid weekend data is available", async () => {
     const row = {
       clanTag: "2QG2C08UP",

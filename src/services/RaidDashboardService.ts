@@ -380,11 +380,17 @@ function normalizeDefenseSections(
           .map((district) => normalizeRaidDistrictRow(district))
           .filter((district): district is RaidDashboardDistrictRow => district !== null)
       : [];
+    const districtCount = normalizePositiveInt(value.districtCount);
+    const districtsDestroyed = normalizeNonNegativeInt(value.districtsDestroyed);
+    const districtsRemaining =
+      districtCount !== null && districtsDestroyed !== null
+        ? Math.max(0, districtCount - districtsDestroyed)
+        : calculateDistrictsRemaining(districts);
     sections.push({
       attackerName,
       attackerTag,
       joinType: joinTypeByTag.get(attackerTag) ?? null,
-      districtsRemaining: calculateDistrictsRemaining(districts),
+      districtsRemaining,
     });
   }
   return sections;
