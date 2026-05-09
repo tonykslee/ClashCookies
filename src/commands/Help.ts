@@ -230,10 +230,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "View tracked RAID clans with live raid-season counts when available.",
     details: [
       "Shows an overview of tracked RAIDS clans with join-status emoji, clickable clan names, upgrades, live current attacks when the active raid season is available, and a freshness note from the stored RAIDS registry row.",
-      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place. `/raids intel` is a read-only raid-intel view for one tracked clan with defender/district details and `Unmarked` layout placeholders.",
+      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place. `/raids intel` opens a raid-intel view for one tracked clan with defender/district details, saved layout grades, and interactive district controls.",
       "Counts fall back to `—` when the live raid-season source cannot resolve them yet.",
     ],
-    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0"],
+    examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0 upgrades:2299"],
   },
   sheet: {
     summary: "Link and manage Google Sheet settings.",
@@ -848,9 +848,11 @@ const HELP_DETAIL_HARD_PAGE_LIMIT = 4000;
 const HELP_DETAIL_FOOTER_RESERVE = 240;
 
 function truncateForDiscord(text: string, maxLength: number): string {
+  const suffix = "…";
+  if (maxLength <= 0) return "";
   if (text.length <= maxLength) return text;
-  if (maxLength <= 1) return text.slice(0, maxLength);
-  return `${text.slice(0, maxLength - 1)}…`;
+  if (maxLength <= suffix.length) return text.slice(0, maxLength);
+  return `${text.slice(0, maxLength - suffix.length)}${suffix}`;
 }
 
 function splitTextByLength(text: string, maxLength: number): string[] {
@@ -1600,3 +1602,5 @@ export const Help: Command = {
     );
   },
 };
+
+

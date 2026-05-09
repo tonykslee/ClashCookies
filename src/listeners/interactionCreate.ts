@@ -169,9 +169,13 @@ import {
 } from "../commands/Todo";
 import {
   handleRaidsButtonInteraction,
+  handleRaidsIntelButtonInteraction,
   handleRaidsSelectMenuInteraction,
+  handleRaidsIntelSelectMenuInteraction,
   isRaidsButtonCustomId,
+  isRaidsIntelButtonCustomId,
   isRaidsSelectMenuCustomId,
+  isRaidsIntelSelectMenuCustomId,
 } from "../commands/Raids";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 
@@ -604,6 +608,20 @@ const handleSelectMenuInteraction = async (
     return;
   }
 
+  if (isRaidsIntelSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleRaidsIntelSelectMenuInteraction(interaction, cocService);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Raids intel select menu",
+        "Failed to update the raids intel view.",
+        err,
+      );
+    }
+    return;
+  }
+
   if (isLinkListSelectCustomId(interaction.customId)) {
     try {
       await handleLinkListSelectMenu(interaction, cocService);
@@ -692,6 +710,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update the raids dashboard.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRaidsIntelButtonCustomId(interaction.customId)) {
+    try {
+      await handleRaidsIntelButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Raids intel button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the raids intel view.",
         });
       }
     }
