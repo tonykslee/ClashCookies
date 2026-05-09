@@ -32,10 +32,12 @@ vi.mock("../src/services/CoCQueueContext", () => ({
 }));
 
 import {
+  buildRaidIntelDescription,
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
   loadRaidDashboardSeasonDetailWithQueueContext,
+  loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
 } from "../src/services/RaidDashboardService";
@@ -336,6 +338,150 @@ describe("RaidDashboardService", () => {
     expect(detail?.defenseSections[0]?.districtsRemaining).toBe(3);
     const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
     expect(description).toContain("3 districts remaining");
+  });
+
+  it("loads raid intel details through a queue context wrapper and renders defender districts", async () => {
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 5 }],
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UQ" },
+          districtCount: 2,
+          districtsDestroyed: 2,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Wizard Valley",
+              districtHallLevel: 4,
+              attackCount: 2,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        expect(tag).toBe("#2QG2C08UP");
+        return [activeSeason];
+      }),
+    };
+
+    const detail = await loadRaidIntelSeasonDetailWithQueueContext({
+      cocService: cocService as any,
+      clanTag: "2QG2C08UP",
+      source: "raids:intel",
+    });
+
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "raids:intel",
+      }),
+      expect.any(Function),
+    );
+    expect(detail.activeSeason).not.toBeNull();
+    expect(detail.defenders).toHaveLength(1);
+    expect(detail.defenders[0]?.districts).toHaveLength(2);
+
+    const description = buildRaidIntelDescription({
+      trackedClan: {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      } as any,
+      upgrades: 2299,
+      detail,
+    });
+
+    expect(description).toContain("## Raid Intel");
+    expect(description).toContain("Tracked clan: [Alpha Raid]");
+    expect(description).toContain("`#2QG2C08UP`");
+    expect(description).toContain("Upgrades: 2299");
+    expect(description).toContain("Raid weekend: Active");
+    expect(description).toContain("### [Defender One]");
+    expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
+    expect(description).toContain("Wizard Valley DH4 \u2014 Grade: Unmarked");
+  });
+
+  it("renders a clean empty intel message when no active raid weekend data is available", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => []),
+    };
+
+    const detail = await loadRaidIntelSeasonDetailWithQueueContext({
+      cocService: cocService as any,
+      clanTag: "2QG2C08UP",
+      source: "raids:intel",
+    });
+
+    expect(detail.activeSeason).toBeNull();
+    const description = buildRaidIntelDescription({
+      trackedClan: {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      } as any,
+      upgrades: null,
+      detail,
+    });
+    expect(description).toBe("No active raid weekend data available.");
+  });
+
+  it("renders a clean no-defender message when the active raid season has no attack log", async () => {
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 5 }],
+      attackLog: [],
+      defenseLog: [],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+    };
+
+    const detail = await loadRaidIntelSeasonDetailWithQueueContext({
+      cocService: cocService as any,
+      clanTag: "2QG2C08UP",
+      source: "raids:intel",
+    });
+
+    const description = buildRaidIntelDescription({
+      trackedClan: {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      } as any,
+      upgrades: null,
+      detail,
+    });
+
+    expect(description).toContain("Raid weekend: Active");
+    expect(description).toContain("No defender intel available yet.");
   });
 
   it("renders a clean empty message when no active raid weekend data is available", async () => {

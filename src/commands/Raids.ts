@@ -18,16 +18,19 @@ import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import {
+  buildRaidIntelDescription,
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
   findRaidDashboardClanRow,
+  loadRaidIntelSeasonDetailWithQueueContext,
   loadRaidDashboardSeasonDetailWithQueueContext,
   listRaidDashboardRowsWithQueueContext,
   type RaidDashboardClanRow,
 } from "../services/RaidDashboardService";
 import {
   normalizeRaidTrackedClanTag,
+  type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
 import { refreshRaidTrackedClanListWithQueueContext } from "./TrackedClan";
 
@@ -41,6 +44,8 @@ type RaidsDashboardSession = {
   rows: RaidDashboardClanRow[];
   refreshing: boolean;
 };
+
+type RaidIntelTrackedClanRow = RaidTrackedClanDisplayRow;
 
 const raidsDashboardSessions = new Map<string, RaidsDashboardSession>();
 
@@ -75,6 +80,24 @@ function formatClanTag(tag: string): string {
   return normalized ? `#${normalized}` : tag.trim();
 }
 
+function toRaidIntelTrackedClanRow(row: {
+  clanTag: string;
+  name: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  upgrades: number | null;
+  joinType: string | null;
+}): RaidIntelTrackedClanRow {
+  return {
+    clanTag: row.clanTag,
+    clanName: row.name ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    upgrades: row.upgrades,
+    joinType: row.joinType as RaidIntelTrackedClanRow["joinType"],
+  };
+}
+
 function buildRaidDashboardEmbed(
   rows: RaidDashboardClanRow[],
   selectedRow: RaidDashboardClanRow | null,
@@ -87,6 +110,23 @@ function buildRaidDashboardEmbed(
   return new EmbedBuilder()
     .setTitle(title)
     .setDescription(description)
+    .setColor(0x5865f2);
+}
+
+function buildRaidIntelEmbed(input: {
+  trackedClan: RaidIntelTrackedClanRow;
+  upgrades: number | null;
+  detail: Awaited<ReturnType<typeof loadRaidIntelSeasonDetailWithQueueContext>>;
+}) {
+  return new EmbedBuilder()
+    .setTitle("Raid Intel")
+    .setDescription(
+      buildRaidIntelDescription({
+        trackedClan: input.trackedClan,
+        upgrades: input.upgrades,
+        detail: input.detail,
+      }),
+    )
     .setColor(0x5865f2);
 }
 
@@ -410,6 +450,28 @@ export const Raids: Command = {
         },
       ],
     },
+    {
+      name: "intel",
+      description: "View raid intel for one tracked RAID clan",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked RAID clan to inspect",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "upgrades",
+          description: "Manual upgrades value to display",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+          minValue: 1000,
+          maxValue: 3331,
+        },
+      ],
+    },
   ],
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const query = interaction.options.getFocused(true);
@@ -429,58 +491,119 @@ export const Raids: Command = {
     } catch {
       subcommand = null;
     }
+    if (subcommand === "overview") {
+      const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
+      const rows = await listRaidDashboardRowsWithQueueContext({
+        cocService,
+        source: "raids:overview",
+      });
+      if (rows.length <= 0) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+        });
+        return;
+      }
+
+      const selectedRow = requestedClan ? findRaidDashboardClanRow(rows, requestedClan) : null;
+      if (requestedClan && !selectedRow) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
+        });
+        return;
+      }
+
+      const sessionId = interaction.id;
+      raidsDashboardSessions.set(sessionId, {
+        guildId: interaction.guildId ?? null,
+        userId: interaction.user.id,
+        selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
+        rows,
+        refreshing: false,
+      });
+      createSessionTimer(sessionId);
+
+      const payload = await buildRaidDashboardPayload({
+        sessionId,
+        selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
+        cocService,
+        refreshing: false,
+        source: "raids:overview",
+        rows,
+        detailSource: selectedRow ? "raids:overview:detail" : null,
+      });
+      await interaction.editReply({
+        embeds: payload.embeds,
+        components: payload.components,
+      });
+      return;
+    }
+
+    if (subcommand === "intel") {
+      const trackedClans = await prisma.raidTrackedClan.findMany({
+        orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+        select: {
+          clanTag: true,
+          name: true,
+          upgrades: true,
+          joinType: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      if (trackedClans.length <= 0) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+        });
+        return;
+      }
+
+      const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
+      if (!requestedClan) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Choose a tracked RAID clan with `/raids intel clan:<tag>`.",
+        });
+        return;
+      }
+
+      const trackedClan =
+        trackedClans.find((row) => (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) === requestedClan) ??
+        null;
+      if (!trackedClan) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
+        });
+        return;
+      }
+
+      const upgradesArg = interaction.options.getInteger("upgrades", false);
+      const detail = await loadRaidIntelSeasonDetailWithQueueContext({
+        cocService,
+        clanTag: trackedClan.clanTag,
+        source: "raids:intel",
+      });
+      const embed = buildRaidIntelEmbed({
+        trackedClan: toRaidIntelTrackedClanRow(trackedClan),
+        upgrades: upgradesArg ?? trackedClan.upgrades,
+        detail,
+      });
+      await interaction.editReply({
+        embeds: [embed],
+        components: [],
+      });
+      return;
+    }
+
     if (subcommand !== "overview") {
       await safeReply(interaction, {
         ephemeral: true,
-        content: "Unsupported raids subcommand. Use `/raids overview`.",
+        content: "Unsupported raids subcommand. Use `/raids overview` or `/raids intel`.",
       });
       return;
     }
-
-    const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
-    const rows = await listRaidDashboardRowsWithQueueContext({
-      cocService,
-      source: "raids:overview",
-    });
-    if (rows.length <= 0) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
-      });
-      return;
-    }
-
-    const selectedRow = requestedClan ? findRaidDashboardClanRow(rows, requestedClan) : null;
-    if (requestedClan && !selectedRow) {
-      await safeReply(interaction, {
-        ephemeral: true,
-        content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
-      });
-      return;
-    }
-
-    const sessionId = interaction.id;
-    raidsDashboardSessions.set(sessionId, {
-      guildId: interaction.guildId ?? null,
-      userId: interaction.user.id,
-      selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
-      rows,
-      refreshing: false,
-    });
-    createSessionTimer(sessionId);
-
-    const payload = await buildRaidDashboardPayload({
-      sessionId,
-      selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
-      cocService,
-      refreshing: false,
-      source: "raids:overview",
-      rows,
-      detailSource: selectedRow ? "raids:overview:detail" : null,
-    });
-    await interaction.editReply({
-      embeds: payload.embeds,
-      components: payload.components,
-    });
   },
 };

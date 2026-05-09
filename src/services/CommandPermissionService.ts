@@ -50,6 +50,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "tracked-clan:list",
   "raids",
   "raids:overview",
+  "raids:intel",
   "sheet:link",
   "sheet:unlink",
   "sheet:show",
