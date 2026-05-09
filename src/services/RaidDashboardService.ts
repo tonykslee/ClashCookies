@@ -126,11 +126,38 @@ function formatJoinTypeLabel(joinType: RaidTrackedClanJoinType | null): string {
   return "Unknown";
 }
 
-function formatAttacksLabel(input: { attacksCompleted: number | null; attacksMax: number | null }): string {
-  if (input.attacksCompleted === null || input.attacksMax === null) {
-    return "—";
+function formatCompletedAttacksLabel(attacksCompleted: number | null): string {
+  return attacksCompleted === null ? "—" : String(attacksCompleted);
+}
+
+const RAID_DISTRICT_MAX_HALL_LEVELS = new Map<string, number>([
+  ["capital hall", 10],
+  ["capital peak", 10],
+  ["barbarian camp", 5],
+  ["wizard valley", 5],
+  ["balloon lagoon", 5],
+  ["builder's workshop", 5],
+  ["builders workshop", 5],
+  ["dragon cliffs", 5],
+  ["golem quarry", 5],
+  ["skeleton park", 4],
+  ["goblin mines", 4],
+]);
+
+function normalizeRaidDistrictName(name: string): string {
+  return String(name ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function formatRaidDistrictHallLabel(
+  districtName: string,
+  hallLevel: number | null,
+): string | null {
+  if (hallLevel === null) return null;
+  const maxHallLevel = RAID_DISTRICT_MAX_HALL_LEVELS.get(normalizeRaidDistrictName(districtName));
+  if (maxHallLevel !== undefined && hallLevel >= maxHallLevel) {
+    return "MAX";
   }
-  return `${input.attacksCompleted}/${input.attacksMax}`;
+  return `DH${hallLevel}`;
 }
 
 export function parseRaidSeasonTimeMs(value: unknown): number | null {
@@ -282,9 +309,10 @@ function calculateCompletedRaidsFromAttackLog(
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
-  const hallLevel = row.districtHallLevel === null ? "" : ` DH${row.districtHallLevel}`;
+  const hallLabel = formatRaidDistrictHallLabel(row.name, row.districtHallLevel);
+  const hallSuffix = hallLabel === null ? "" : ` ${hallLabel}`;
   const attackCount = row.attackCount === null ? "— attacks" : `${row.attackCount} attacks`;
-  return `${row.name}${hallLevel} — ${attackCount}`;
+  return `${row.name}${hallSuffix} — ${attackCount}`;
 }
 
 function buildRaidDetailDescription(input: {
@@ -384,25 +412,17 @@ function buildRaidDefenseSectionLines(section: RaidDashboardDefenseSection): Rai
 }
 
 function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine[] {
-  if (!detail.activeSeason) {
-    return [{ text: "No active raid weekend data available.", item: false }];
-  }
-
   const lines: RaidDetailLine[] = [];
+
   if (detail.attackSections.length > 0) {
     lines.push({ text: "## Attacking", item: false });
     lines.push({ text: "", item: false });
-    for (const section of detail.attackSections) {
+    detail.attackSections.forEach((section, index) => {
       lines.push(...buildRaidAttackSectionLines(section));
-      lines.push({ text: "", item: false });
-    }
-    if (lines.length > 0 && lines[lines.length - 1]?.text === "") {
-      lines.pop();
-    }
-  } else {
-    lines.push({ text: "## Attacking", item: false });
-    lines.push({ text: "", item: false });
-    lines.push({ text: "No attack log available yet.", item: false });
+      if (index < detail.attackSections.length - 1) {
+        lines.push({ text: "", item: false });
+      }
+    });
   }
 
   if (detail.defenseSections.length > 0) {
@@ -411,29 +431,15 @@ function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine
     }
     lines.push({ text: "## Defending", item: false });
     lines.push({ text: "", item: false });
-    for (const section of detail.defenseSections) {
+    detail.defenseSections.forEach((section, index) => {
       lines.push(...buildRaidDefenseSectionLines(section));
-      lines.push({ text: "", item: false });
-    }
-    if (lines.length > 0 && lines[lines.length - 1]?.text === "") {
-      lines.pop();
-    }
-  } else {
-    if (lines.length > 0) {
-      lines.push({ text: "", item: false });
-    }
-    lines.push({ text: "## Defending", item: false });
-    lines.push({ text: "", item: false });
-    lines.push({ text: "No defense log available yet.", item: false });
+      if (index < detail.defenseSections.length - 1) {
+        lines.push({ text: "", item: false });
+      }
+    });
   }
 
   return lines;
-}
-
-function buildRaidDetailSections(detail: RaidDashboardSeasonDetail): string {
-  return buildRaidDetailDescription({
-    lines: buildRaidDetailLines(detail),
-  });
 }
 
 function normalizeAttackSections(season: ClanCapitalRaidSeason): RaidDashboardAttackSection[] {
@@ -575,10 +581,6 @@ function calculateCompletedRaidsFromSeason(
   season: ClanCapitalRaidSeason,
   attackSections: RaidDashboardAttackSection[],
 ): number | null {
-  const explicit = normalizeNonNegativeInt(season.raidsCompleted);
-  if (explicit !== null) {
-    return explicit;
-  }
   if (attackSections.length <= 0) {
     return calculateCompletedRaidsFromAttackLog(season.attackLog);
   }
@@ -958,15 +960,8 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
   const lines: string[] = ["## Raid Clans", ""];
   for (const row of rows) {
     lines.push(buildRaidDashboardClanTitle(row));
-    lines.push(`Upgrades: ${row.upgrades === null ? "—" : row.upgrades}`);
-    lines.push(
-      `Attacks: ${formatAttacksLabel({
-        attacksCompleted: row.attacksCompleted,
-        attacksMax: row.attacksMax,
-      })}`,
-    );
+    lines.push(`Attacks: ${formatCompletedAttacksLabel(row.attacksCompleted)}`);
     lines.push(`Raids completed: ${row.raidsCompleted === null ? "—" : row.raidsCompleted}`);
-    lines.push(`Updated: ${formatRelativeTimestamp(row.updatedAt)}`);
     lines.push("");
   }
 
@@ -997,18 +992,11 @@ export function buildRaidDashboardSingleClanDescription(
       item: false,
     },
     {
-      text: `Attacks: ${formatAttacksLabel({
-        attacksCompleted: row.attacksCompleted,
-        attacksMax: row.attacksMax,
-      })}`,
+      text: `Attacks: ${formatCompletedAttacksLabel(row.attacksCompleted)}`,
       item: false,
     },
     {
       text: `Raids completed: ${raidsCompleted === null ? "—" : raidsCompleted}`,
-      item: false,
-    },
-    {
-      text: `Updated: ${formatRelativeTimestamp(row.updatedAt)}`,
       item: false,
     },
   ];
@@ -1041,15 +1029,10 @@ export function buildRaidDashboardSelectChoices(
   return orderedRows.slice(0, 25).map((row) => {
     const clanTag = formatRaidTrackedClanTag(row.clanTag);
     const label = row.clanName?.trim() || clanTag;
-    const descriptionParts = [`${clanTag}`];
-    if (row.upgrades !== null) {
-      descriptionParts.push(`Upgrades ${row.upgrades}`);
-    }
-    const description = descriptionParts.join(" • ").slice(0, 100);
     return {
       label: label.slice(0, 100),
       value: normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag,
-      description,
+      description: clanTag.slice(0, 100),
       emoji: getRaidTrackedClanJoinTypeEmoji(row.joinType),
     };
   });

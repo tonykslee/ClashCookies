@@ -179,14 +179,10 @@ function buildRaidDashboardEmbed(
   selectedRow: RaidDashboardClanRow | null,
   detail: Awaited<ReturnType<typeof loadRaidDashboardSeasonDetailWithQueueContext>> | null,
 ) {
-  const title = selectedRow ? "Raid Clan" : "Raid Clans";
   const description = selectedRow
     ? buildRaidDashboardSingleClanDescription(selectedRow, detail)
     : buildRaidDashboardOverviewDescription(rows);
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
-    .setColor(0x5865f2);
+  return new EmbedBuilder().setDescription(description).setColor(0x5865f2);
 }
 
 function buildRaidIntelEmbed(input: {
