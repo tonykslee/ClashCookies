@@ -55,6 +55,9 @@ describe("RaidIntelLayoutMarkService", () => {
       defenderTag: "2QG2C08UQ",
       districtName: "Capital Hall",
     });
+    expect(key).toMatch(/^d_[A-Za-z0-9_-]{10}$/);
+    expect(key).not.toContain("2QG2C08UQ");
+    expect(key).not.toContain("Capital Hall");
     expect(lookup.get(key)).toBe("Custom - Hard");
     expect(prismaMock.raidIntelDistrictLayoutMark.findMany).toHaveBeenCalledWith({
       where: {
@@ -182,6 +185,32 @@ describe("RaidIntelLayoutMarkService", () => {
         layoutGrade: true,
       },
     });
+  });
+
+  it("keeps raid intel district keys stable and hashed for the same inputs", () => {
+    const base = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UQ",
+      districtName: "Capital Hall",
+    });
+    const same = buildRaidIntelDistrictKey({
+      defenderTag: "2QG2C08UQ",
+      districtName: "Capital Hall",
+    });
+    const differentDefender = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UR",
+      districtName: "Capital Hall",
+    });
+    const differentDistrict = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UQ",
+      districtName: "Wizard Valley",
+    });
+
+    expect(base).toMatch(/^d_[A-Za-z0-9_-]{10}$/);
+    expect(base).not.toContain("2QG2C08UQ");
+    expect(base).not.toContain("Capital Hall");
+    expect(same).toBe(base);
+    expect(differentDefender).not.toBe(base);
+    expect(differentDistrict).not.toBe(base);
   });
 
   it("maps persisted enum values to display labels", () => {

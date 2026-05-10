@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { normalizeRaidTrackedClanTag } from "../services/RaidTrackedClanService";
 
 export type RaidIntelLayoutGrade = "DEFAULT" | "CUSTOM_HARD" | "CUSTOM_MEDIUM" | "CUSTOM_EASY";
@@ -72,7 +73,9 @@ export function buildRaidIntelDistrictKey(input: {
 }): string {
   const defenderTag = normalizeRaidTrackedClanTag(input.defenderTag ?? "");
   const districtName = normalizeRaidIntelDistrictName(input.districtName);
-  return `${defenderTag ?? ""}|${districtName ?? ""}`;
+  const raw = `${defenderTag ?? ""}|${districtName ?? ""}`;
+  const digest = createHash("sha1").update(raw).digest("base64url").slice(0, 10);
+  return `d_${digest}`;
 }
 
 export function buildRaidIntelLayoutScoreKey(input: {
