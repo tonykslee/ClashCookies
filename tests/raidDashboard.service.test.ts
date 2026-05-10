@@ -41,7 +41,6 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
-  formatRaidDistrictHallLabel,
   parseRaidSeasonTimeMs,
 } from "../src/services/RaidDashboardService";
 
@@ -655,7 +654,7 @@ describe("RaidDashboardService", () => {
     expect(enemyLine).toContain("`#2QG2C08UR`");
     expect(enemyLine).toContain("— 1 districts remaining");
     expect(enemyLine).not.toContain("🔓");
-    expect(enemyLine).not.toMatch(/^  -/);
+    expect(enemyLine?.startsWith("  -")).toBe(false);
   });
 
   it("omits completed open-attacker rows and hides missing counts in overview", () => {
@@ -693,11 +692,11 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("[Alpha Raid]");
     const pendingLine = overview.split("\n").find((line) => line.includes("[Pending Clan]"));
     expect(pendingLine).toBeDefined();
-    expect(pendingLine).toMatch(/^- 🛡️ \[Pending Clan\]/);
+    expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
     expect(pendingLine).toContain("`#2PQQQ`");
     expect(pendingLine).not.toContain("districts remaining");
     expect(pendingLine).not.toContain("🔓");
-    expect(pendingLine).not.toMatch(/^  -/);
+    expect(pendingLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Completed Clan");
     expect(overview).not.toContain("#DONE");

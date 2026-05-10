@@ -846,15 +846,6 @@ export async function loadRaidIntelSeasonDetailWithQueueContext(input: {
   );
 }
 
-async function resolveClanRaidCounts(input: {
-  cocService: CoCService | null;
-  clanTag: string;
-  nowMs: number;
-}): Promise<RaidDashboardCountRow> {
-  const snapshot = await loadRaidDashboardSeasonSnapshot(input);
-  return snapshot.counts;
-}
-
 export function buildRaidIntelDescription(input: {
   trackedClan: RaidTrackedClanDisplayRow;
   upgrades: number | null;
@@ -1022,7 +1013,6 @@ export async function listRaidDashboardRows(input: {
   });
 
   return tracked.map((row, index) => {
-    const tag = normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag;
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
       attackSections: [],
