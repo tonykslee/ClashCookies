@@ -8,6 +8,7 @@
 - `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/unlinked` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/autorole refresh` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/link create` self-links are public; selecting another Discord user uses the same FWA leader-role + Administrator override policy when no explicit whitelist is set.
 - `/cwl members` and `/cwl rotations show` are public by default; `/cwl rotations create`, `/cwl rotations import`, and `/cwl rotations export` default to Administrator.
 - `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
@@ -21,7 +22,7 @@
 - `/sync time post`
 - `/bot-logs`
 - `/notify war`
-- `/autorole`, `/autorole config`, `/autorole rules`, `/autorole exclusions`, `/autorole refresh`
+- `/autorole`, `/autorole config`, `/autorole rules`, `/autorole exclusions`, `/autorole refresh user`, `/autorole refresh role`
 - `/cwl rotations create`
 - `/cwl rotations import`
 - `/cwl rotations export`

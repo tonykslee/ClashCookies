@@ -259,10 +259,19 @@ describe("/raids command", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clans");
-    expect(description).toContain("🔓 [Alpha Raid]");
-    expect(description).toContain("Attacks: 11");
-    expect(description).toContain("Raids completed: 1");
-    expect(description).toContain("  - 🔓 [Enemy Clan]");
+    expect(description).toContain("[Alpha Raid]");
+    expect(description).toContain("`#2QG2C08UP`");
+    const enemyLine = description.split("\n").find((line: string) => line.includes("[Enemy Clan]"));
+    expect(enemyLine).toBeDefined();
+    expect(enemyLine?.startsWith("- 🛡️ [Enemy Clan]")).toBe(true);
+    expect(enemyLine).toContain("`#2QG2C08UR`");
+    expect(enemyLine).toContain("— 1 districts remaining");
+    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine?.startsWith("  -")).toBe(false);
+    expect(description).not.toContain("  -");
+    expect(description).not.toContain("🔓 [Alpha Raid]");
+    expect(description).not.toContain("Attacks:");
+    expect(description).not.toContain("Raids completed:");
     expect(description).not.toContain("Requirements:");
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
 
