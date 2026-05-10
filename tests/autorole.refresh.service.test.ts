@@ -209,6 +209,20 @@ function makePlayerCurrent(input: {
   };
 }
 
+function filterPlayerLinkRows(rows: any[], where: any): any[] {
+  const playerTagFilter = where?.playerTag?.in ? new Set(where.playerTag.in) : null;
+  const discordUserIdFilter = where?.discordUserId?.in ? new Set(where.discordUserId.in) : null;
+  return rows.filter((row) => {
+    if (playerTagFilter && !playerTagFilter.has(row.playerTag)) {
+      return false;
+    }
+    if (discordUserIdFilter && !discordUserIdFilter.has(row.discordUserId)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 describe("AutoRoleRefreshService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -247,15 +261,14 @@ describe("AutoRoleRefreshService", () => {
     const guild = makeGuild(new Map([[userId, member]]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      const wanted = new Set(where.discordUserId.in);
-      return [
+      return filterPlayerLinkRows([
         makeLinkedAccount({
           playerTag: "#2QG2C08UP",
           discordUserId: userId,
           playerName: "Alpha",
           verified: true,
         }),
-      ].filter((row) => wanted.has(row.discordUserId));
+      ], where);
     });
     vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockImplementationOnce(async ({ playerTags }) => {
       const map = new Map<string, any>();
@@ -335,6 +348,126 @@ describe("AutoRoleRefreshService", () => {
     expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes tracked FWA clans from clan member lists without player lookups", async () => {
+    const clanRoleId = "222222222222222222";
+    const townHallRoleId = "333333333333333333";
+    const leagueRoleId = "444444444444444444";
+    const clanRankRoleId = "555555555555555555";
+    const staleHolderId = "111111111111111111";
+    const qualifyingUserId = "666666666666666666";
+    const staleHolder = makeMember(staleHolderId, [
+      clanRoleId,
+      townHallRoleId,
+      leagueRoleId,
+      clanRankRoleId,
+    ]);
+    const qualifyingMember = makeMember(qualifyingUserId);
+    const guild = makeGuild(new Map([
+      [staleHolderId, staleHolder],
+      [qualifyingUserId, qualifyingMember],
+    ]));
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => {
+        if (tag === "#2QG2C08UP") {
+          return {
+            tag: "#2QG2C08UP",
+            name: "Tracked FWA",
+            members: [
+              {
+                tag: "#PYLQ0289",
+                name: "Pending Clan",
+                townHallLevel: 16,
+                role: "member",
+                league: { name: "Legend League" },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected clan lookup ${tag}`);
+      }),
+      getPlayer: vi.fn(async () => {
+        throw new Error("getPlayer should not be called during no-arg refresh");
+      }),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#QGRJ2222",
+          discordUserId: staleHolderId,
+          playerName: "Stale Holder",
+        }),
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: qualifyingUserId,
+          playerName: "Pending Clan",
+        }),
+      ], where);
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Tracked FWA", shortName: "TF" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: "#2QG2C08UP",
+          discordRoleId: clanRoleId,
+        }),
+        makeRule({
+          id: "rule-th",
+          type: AutoRoleRuleType.TOWN_HALL,
+          targetValue: "16",
+          discordRoleId: townHallRoleId,
+        }),
+        makeRule({
+          id: "rule-league",
+          type: AutoRoleRuleType.LEAGUE,
+          targetValue: "Legend League",
+          discordRoleId: leagueRoleId,
+        }),
+        makeRule({
+          id: "rule-rank",
+          type: AutoRoleRuleType.CLAN_ROLE,
+          targetValue: "member",
+          discordRoleId: clanRankRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+      cocService: cocService as any,
+    });
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(cocService.getPlayer).not.toHaveBeenCalled();
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(clanRoleId);
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(townHallRoleId);
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(leagueRoleId);
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(clanRankRoleId);
+    expect(qualifyingMember.roles.add).toHaveBeenCalledWith(clanRoleId);
+    expect(qualifyingMember.roles.add).toHaveBeenCalledWith(townHallRoleId);
+    expect(qualifyingMember.roles.add).toHaveBeenCalledWith(leagueRoleId);
+    expect(qualifyingMember.roles.add).toHaveBeenCalledWith(clanRankRoleId);
+    expect(result).toMatchObject({
+      evaluatedCount: 2,
+      addedCount: 4,
+      removedCount: 4,
+      skippedCount: 0,
+      failedCount: 0,
+    });
+  });
+
   it("rejects an unmanaged role scope and records a failed run", async () => {
     const guild = makeGuild(new Map());
 
@@ -371,8 +504,7 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      const wanted = new Set(where.discordUserId.in);
-      return [
+      return filterPlayerLinkRows([
         makeLinkedAccount({
           playerTag: "#2QG2C08UP",
           discordUserId: currentHolderId,
@@ -383,7 +515,7 @@ describe("AutoRoleRefreshService", () => {
           discordUserId: qualifyingUserId,
           playerName: "Qualifier",
         }),
-      ].filter((row) => wanted.has(row.discordUserId));
+      ], where);
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
@@ -450,8 +582,7 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      const wanted = new Set(where.discordUserId.in);
-      return [
+      return filterPlayerLinkRows([
         makeLinkedAccount({
           playerTag: "#2QG2C08UP",
           discordUserId: fwaMemberId,
@@ -467,7 +598,7 @@ describe("AutoRoleRefreshService", () => {
           discordUserId: outsiderId,
           playerName: "Outsider",
         }),
-      ].filter((row) => wanted.has(row.discordUserId));
+      ], where);
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
@@ -545,42 +676,23 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      if (where.playerTag?.in) {
-        const wanted = new Set(where.playerTag.in);
-        return [
-          makeLinkedAccount({
-            playerTag: "#2QG2C08UP",
-            discordUserId: fwaCandidateId,
-            playerName: "FWA Candidate",
-          }),
-          makeLinkedAccount({
-            playerTag: "#PYLQ0289",
-            discordUserId: cwlCandidateId,
-            playerName: "CWL Candidate",
-          }),
-        ].filter((row) => wanted.has(row.playerTag));
-      }
-      if (where.discordUserId?.in) {
-        const wanted = new Set(where.discordUserId.in);
-        return [
-          makeLinkedAccount({
-            playerTag: "#QGRJ2222",
-            discordUserId: staleHolderId,
-            playerName: "Stale Holder",
-          }),
-          makeLinkedAccount({
-            playerTag: "#2QG2C08UP",
-            discordUserId: fwaCandidateId,
-            playerName: "FWA Candidate",
-          }),
-          makeLinkedAccount({
-            playerTag: "#PYLQ0289",
-            discordUserId: cwlCandidateId,
-            playerName: "CWL Candidate",
-          }),
-        ].filter((row) => wanted.has(row.discordUserId));
-      }
-      return [];
+      return filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#QGRJ2222",
+          discordUserId: staleHolderId,
+          playerName: "Stale Holder",
+        }),
+        makeLinkedAccount({
+          playerTag: "#2QG2C08UP",
+          discordUserId: fwaCandidateId,
+          playerName: "FWA Candidate",
+        }),
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: cwlCandidateId,
+          playerName: "CWL Candidate",
+        }),
+      ], where);
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
@@ -642,32 +754,18 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      if (where.playerTag?.in) {
-        const wanted = new Set(where.playerTag.in);
-        return [
-          makeLinkedAccount({
-            playerTag: "#PYLQ0289",
-            discordUserId: cwlCandidateId,
-            playerName: "CWL Candidate",
-          }),
-        ].filter((row) => wanted.has(row.playerTag));
-      }
-      if (where.discordUserId?.in) {
-        const wanted = new Set(where.discordUserId.in);
-        return [
-          makeLinkedAccount({
-            playerTag: "#QGRJ2222",
-            discordUserId: staleHolderId,
-            playerName: "Stale Holder",
-          }),
-          makeLinkedAccount({
-            playerTag: "#PYLQ0289",
-            discordUserId: cwlCandidateId,
-            playerName: "CWL Candidate",
-          }),
-        ].filter((row) => wanted.has(row.discordUserId));
-      }
-      return [];
+      return filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#QGRJ2222",
+          discordUserId: staleHolderId,
+          playerName: "Stale Holder",
+        }),
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: cwlCandidateId,
+          playerName: "CWL Candidate",
+        }),
+      ], where);
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289" }]);
@@ -759,8 +857,7 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      const wanted = new Set(where.discordUserId.in);
-      return [
+      return filterPlayerLinkRows([
         makeLinkedAccount({
           playerTag: "#2QG2C08UP",
           discordUserId: currentHolderId,
@@ -771,7 +868,7 @@ describe("AutoRoleRefreshService", () => {
           discordUserId: qualifyingUserId,
           playerName: "Qualifier",
         }),
-      ].filter((row) => wanted.has(row.discordUserId));
+      ], where);
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
@@ -832,8 +929,7 @@ describe("AutoRoleRefreshService", () => {
     ]));
 
     prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
-      const wanted = new Set(where.discordUserId.in);
-      return [
+      return filterPlayerLinkRows([
         makeLinkedAccount({
           playerTag: "#2QG2C08UP",
           discordUserId: excludedUserId,
@@ -849,7 +945,7 @@ describe("AutoRoleRefreshService", () => {
           discordUserId: normalUserId,
           playerName: "Normal User",
         }),
-      ].filter((row) => wanted.has(row.discordUserId));
+      ], where);
     });
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({ removeStaleManagedRoles: true }),

@@ -44,7 +44,6 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
-  "autorole:refresh",
   "sync:time:post",
   "bot-logs",
   "notify:war",
@@ -69,6 +68,11 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
+  "autorole:refresh:user",
+  "autorole:refresh:role",
+]);
+
+const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "autorole:refresh",
 ]);
 
@@ -339,7 +343,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   autorole: {
     summary: "Manage durable autorole config, rules, exclusions, manual refresh, and nickname templates.",
     details: [
-      "`refresh` manually evaluates the guild, one user, or one managed role and applies autorole role and nickname changes immediately.",
+      "`refresh` manually evaluates the guild, one user, or one managed role and applies autorole role and nickname changes immediately; the no-arg guild refresh uses tracked FWA clan member data for its guild-wide evaluation, so FWA Leaders can run it without admin access, while the `user` and `role` scoped refreshes stay admin-only.",
       "`config show` displays the current guild autorole policy snapshot, including nickname sync status and template.",
       "`config set` updates guild config fields such as `enabled`, `kill_switch_enabled`, stale-role removal, link trust policy, sync policy, `apply_nicknames`, and `nickname_template`.",
       "`config set` can also set/clear the generic CWL clan role used for users with an eligible linked account in a tracked current-season CWL clan, and it can configure a stale CLAN-role removal delay in minutes.",
@@ -354,7 +358,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`config set` can also set/clear the generic CWL clan role used for users with an eligible linked account in a tracked current-season CWL clan.",
       "`config set` can also set/clear a stale CLAN-role removal delay in minutes.",
       "`exclusions list/add-user/remove-user/add-role/remove-role` manage guild-level user and role exclusions.",
-      "All autorole management commands, including manual refresh, are admin-only by default.",
+      "`config`, `rules`, and `exclusions` stay admin-only by default; `refresh` is FWA Leader role + Administrator by default.",
     ],
     examples: [
       "/autorole refresh",
@@ -1049,6 +1053,7 @@ export function buildHelpDetailEmbeds(
   const usageLines = buildUsageLines(command as Command);
   const doc = docOverride ?? COMMAND_DOCS[command.name];
   const adminDefaults = getAdminDefaultTargetsForCommand(command.name);
+  const fwaLeaderDefaults = getFwaLeaderDefaultTargetsForCommand(command.name);
 
   const detailLines = doc?.details ?? [
     "Use this command to run the described operation.",
@@ -1059,10 +1064,21 @@ export function buildHelpDetailEmbeds(
     ? doc.examples
     : [usageLines[0] ?? `/${command.name}`];
 
+  const accessTextLines: string[] = [];
+  if (fwaLeaderDefaults.length > 0) {
+    accessTextLines.push(
+      `FWA Leader role + Administrator by default: ${fwaLeaderDefaults.map((t) => `\`${t}\``).join(", ")}`,
+    );
+  }
+  if (adminDefaults.length > 0) {
+    accessTextLines.push(
+      `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`,
+    );
+  }
   const accessText =
-    adminDefaults.length === 0
-      ? "Default access: everyone (unless restricted with `/permission`)."
-      : `Admin-only by default: ${adminDefaults.map((t) => `\`${t}\``).join(", ")}`;
+    accessTextLines.length > 0
+      ? accessTextLines.join("\n")
+      : "Default access: everyone (unless restricted with `/permission`).";
 
   const allFields = [
     ...buildSectionFields("What It Does", detailLines, (line) => `- ${line}`),
@@ -1129,6 +1145,15 @@ function getAllCommands(): Command[] {
 
 function getAdminDefaultTargetsForCommand(commandName: string): string[] {
   return [...ADMIN_DEFAULT_TARGETS]
+    .filter(
+      (target) =>
+        target === commandName || target.startsWith(`${commandName}:`),
+    )
+    .map((target) => `/${target.replaceAll(":", " ")}`);
+}
+
+function getFwaLeaderDefaultTargetsForCommand(commandName: string): string[] {
+  return [...FWA_LEADER_DEFAULT_TARGETS]
     .filter(
       (target) =>
         target === commandName || target.startsWith(`${commandName}:`),

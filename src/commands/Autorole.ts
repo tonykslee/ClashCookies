@@ -451,7 +451,7 @@ function formatRefreshSummary(result: AutoRoleRefreshResult): string {
 
 export const Autorole: Command = {
   name: "autorole",
-  description: "Manage autorole config, rules, exclusions, and read-only admin state",
+  description: "Manage autorole refresh, config, rules, exclusions, and nickname templates",
   options: [
     {
       name: "refresh",
@@ -703,7 +703,14 @@ export const Autorole: Command = {
       return;
     }
 
-    if (!hasAdministratorPermission(interaction)) {
+    const group = interaction.options.getSubcommandGroup(false);
+    const subcommand = interaction.options.getSubcommand(true);
+
+    const refreshUser = interaction.options.getUser("user", false);
+    const refreshRole = interaction.options.getRole("role", false);
+    const isNoArgRefresh = subcommand === "refresh" && group === null && !refreshUser && !refreshRole;
+
+    if (!isNoArgRefresh && !hasAdministratorPermission(interaction)) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "You do not have permission to use /autorole.",
@@ -713,14 +720,12 @@ export const Autorole: Command = {
 
     await interaction.deferReply({ ephemeral: true });
 
-    const group = interaction.options.getSubcommandGroup(false);
-    const subcommand = interaction.options.getSubcommand(true);
     const guildId = interaction.guildId;
 
     try {
       if (subcommand === "refresh" && group === null) {
-        const user = interaction.options.getUser("user", false);
-        const role = interaction.options.getRole("role", false);
+        const user = refreshUser;
+        const role = refreshRole;
         if (user && role) {
           await interaction.editReply({
             content: "Please choose either user or role for /autorole refresh, not both.",
