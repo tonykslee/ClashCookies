@@ -16,6 +16,7 @@ const RAID_DETAIL_TRUNCATION_RESERVE = 96;
 export type RaidDashboardCountRow = {
   attacksCompleted: number | null;
   attacksMax: number | null;
+  hasOngoingRaid: boolean;
   raidsCompleted: number | null;
 };
 
@@ -142,6 +143,92 @@ function formatJoinTypeLabel(joinType: RaidTrackedClanJoinType | null): string {
 
 function formatCompletedAttacksLabel(attacksCompleted: number | null): string {
   return attacksCompleted === null ? "—" : String(attacksCompleted);
+}
+
+function readBoolean(value: unknown): boolean | null {
+  if (value === true) return true;
+  if (value === false) return false;
+  return null;
+}
+
+type RaidAttackLogEntryState = {
+  started: boolean;
+  complete: boolean | null;
+  usable: boolean;
+};
+
+function normalizeRaidAttackLogEntryState(entry: unknown): RaidAttackLogEntryState {
+  if (!entry || typeof entry !== "object") {
+    return {
+      started: false,
+      complete: null,
+      usable: false,
+    };
+  }
+
+  const value = entry as Record<string, unknown>;
+  const explicitStarted = readBoolean(value.started);
+  const explicitComplete = readBoolean(value.complete);
+  const aggregateAttackCount = normalizeNonNegativeInt(value.attackCount ?? value.attacks);
+  const districtCount = normalizePositiveInt(value.districtCount);
+  const districtsDestroyed = normalizeNonNegativeInt(value.districtsDestroyed);
+  const districts = Array.isArray(value.districts)
+    ? value.districts
+        .map((district) => normalizeRaidDistrictRow(district))
+        .filter((district): district is RaidDashboardDistrictRow => district !== null)
+    : [];
+
+  const started =
+    explicitStarted ??
+    (aggregateAttackCount !== null
+      ? aggregateAttackCount > 0
+      : districts.some((district) => (district.attackCount ?? 0) > 0));
+
+  let complete = explicitComplete;
+  if (complete === null) {
+    if (districtCount !== null && districtsDestroyed !== null) {
+      complete = districtCount > 0 && districtsDestroyed >= districtCount;
+    } else if (districts.length > 0) {
+      complete = districts.every((district) => isDistrictFullyDestroyed(district) === true);
+    }
+  }
+
+  return {
+    started,
+    complete,
+    usable:
+      explicitComplete !== null ||
+      districtCount !== null ||
+      districtsDestroyed !== null ||
+      districts.length > 0,
+  };
+}
+
+function isRaidAttackLogEntryStarted(entry: unknown): boolean {
+  return normalizeRaidAttackLogEntryState(entry).started;
+}
+
+function isRaidAttackLogEntryComplete(entry: unknown): boolean | null {
+  return normalizeRaidAttackLogEntryState(entry).complete;
+}
+
+function calculateHasOngoingRaidFromAttackLog(
+  attackLog: ClanCapitalRaidSeason["attackLog"],
+): boolean {
+  if (!Array.isArray(attackLog) || attackLog.length <= 0) {
+    return false;
+  }
+
+  for (const entry of attackLog) {
+    if (!isRaidAttackLogEntryStarted(entry)) {
+      continue;
+    }
+    if (isRaidAttackLogEntryComplete(entry) === false) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 const RAID_DISTRICT_MAX_HALL_LEVELS = new Map<string, number>([
@@ -326,28 +413,11 @@ function calculateCompletedRaidsFromAttackLog(
   let completed = 0;
   let sawUsableLog = false;
   for (const entry of attackLog) {
-    if (!entry || typeof entry !== "object") continue;
-    const value = entry as Record<string, unknown>;
-    const districtCount = normalizePositiveInt(value.districtCount);
-    const districtsDestroyed = normalizeNonNegativeInt(value.districtsDestroyed);
-    if (districtCount !== null && districtsDestroyed !== null) {
-      sawUsableLog = true;
-      if (districtCount > 0 && districtsDestroyed >= districtCount) {
-        completed += 1;
-      }
-      continue;
-    }
-
-    const districts = Array.isArray(value.districts)
-      ? value.districts
-          .map((district) => normalizeRaidDistrictRow(district))
-          .filter((district): district is RaidDashboardDistrictRow => district !== null)
-      : [];
-    if (districts.length > 0) {
-      sawUsableLog = true;
-      if (districts.every((district) => isDistrictFullyDestroyed(district) === true)) {
-        completed += 1;
-      }
+    const state = normalizeRaidAttackLogEntryState(entry);
+    if (!state.usable) continue;
+    sawUsableLog = true;
+    if (state.complete === true) {
+      completed += 1;
     }
   }
 
@@ -503,6 +573,7 @@ async function loadRaidDashboardSeasonSnapshot(input: {
       counts: {
         attacksCompleted: null,
         attacksMax: null,
+        hasOngoingRaid: false,
         raidsCompleted: null,
       },
     };
@@ -523,6 +594,7 @@ async function loadRaidDashboardSeasonSnapshot(input: {
       counts: {
         attacksCompleted: null,
         attacksMax: null,
+        hasOngoingRaid: false,
         raidsCompleted: null,
       },
     };
@@ -538,6 +610,7 @@ async function loadRaidDashboardSeasonSnapshot(input: {
     attacksMax: Array.isArray(activeSeason.members) && activeSeason.members.length > 0
       ? activeSeason.members.length * 6
       : null,
+    hasOngoingRaid: calculateHasOngoingRaidFromAttackLog(activeSeason.attackLog),
     raidsCompleted: calculateCompletedRaidsFromSeason(activeSeason, attackSections),
   };
 
@@ -726,28 +799,11 @@ function calculateCompletedRaidsFromSeason(
   let completed = 0;
   let sawUsableSection = false;
   for (const entry of season.attackLog ?? []) {
-    if (!entry || typeof entry !== "object") continue;
-    const value = entry as Record<string, unknown>;
-    const districtCount = normalizePositiveInt(value.districtCount);
-    const districtsDestroyed = normalizeNonNegativeInt(value.districtsDestroyed);
-    if (districtCount !== null && districtsDestroyed !== null) {
-      sawUsableSection = true;
-      if (districtCount > 0 && districtsDestroyed >= districtCount) {
-        completed += 1;
-      }
-      continue;
-    }
-
-    const districts = Array.isArray(value.districts)
-      ? value.districts
-          .map((district) => normalizeRaidDistrictRow(district))
-          .filter((district): district is RaidDashboardDistrictRow => district !== null)
-      : [];
-    if (districts.length > 0) {
-      sawUsableSection = true;
-      if (districts.every((district) => isDistrictFullyDestroyed(district) === true)) {
-        completed += 1;
-      }
+    const state = normalizeRaidAttackLogEntryState(entry);
+    if (!state.usable) continue;
+    sawUsableSection = true;
+    if (state.complete === true) {
+      completed += 1;
     }
   }
 
@@ -1012,7 +1068,7 @@ export async function listRaidDashboardRows(input: {
     source: "raids:overview",
   });
 
-  return tracked.map((row, index) => {
+  const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
       attackSections: [],
@@ -1020,6 +1076,7 @@ export async function listRaidDashboardRows(input: {
       counts: {
         attacksCompleted: null,
         attacksMax: null,
+        hasOngoingRaid: false,
         raidsCompleted: null,
       },
     };
@@ -1032,10 +1089,13 @@ export async function listRaidDashboardRows(input: {
       ...row,
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
+      hasOngoingRaid: snapshot.counts.hasOngoingRaid,
       raidsCompleted: snapshot.counts.raidsCompleted,
       openDefenseSections,
     };
   });
+
+  return sortRaidDashboardRows(rows);
 }
 
 export async function listRaidDashboardRowsWithQueueContext(input: {
@@ -1066,11 +1126,14 @@ export function buildRaidDashboardClanTitle(input: {
 function buildRaidDashboardOverviewClanTitle(input: {
   clanTag: string;
   clanName: string | null;
+  hasOngoingRaid: boolean;
+  raidsCompleted: number | null;
 }): string {
   const clanTag = formatRaidTrackedClanTag(input.clanTag);
   const clanName = input.clanName?.trim() || clanTag;
   const link = buildClanProfileMarkdownLink(clanName, clanTag);
-  return `${link} \`${clanTag}\``;
+  const prefix = input.hasOngoingRaid ? "⚔️ " : (input.raidsCompleted ?? 0) > 0 ? "🌄 " : "";
+  return `${prefix}${link} \`${clanTag}\``;
 }
 
 function buildRaidDashboardOverviewOpenDefenseSectionText(
@@ -1096,7 +1159,7 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
   }
 
   const lines: string[] = ["## Raid Clans", ""];
-  for (const row of rows) {
+  for (const row of sortRaidDashboardRows(rows)) {
     lines.push(buildRaidDashboardOverviewClanTitle(row));
     for (const section of row.openDefenseSections ?? []) {
       const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
@@ -1159,16 +1222,12 @@ export function buildRaidDashboardSelectChoices(
   value: string;
   description: string | null;
   emoji: string | null;
+  selected: boolean;
 }> {
   const normalizedSelected = normalizeRaidTrackedClanTag(selectedClanTag ?? "");
-  const orderedRows = normalizedSelected
-    ? [
-        ...rows.filter((row) => (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) === normalizedSelected),
-        ...rows.filter((row) => (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) !== normalizedSelected),
-      ]
-    : rows;
-
-  return orderedRows.slice(0, 25).map((row) => {
+  return sortRaidDashboardRows(rows)
+    .slice(0, 25)
+    .map((row) => {
     const clanTag = formatRaidTrackedClanTag(row.clanTag);
     const label = row.clanName?.trim() || clanTag;
     return {
@@ -1176,6 +1235,9 @@ export function buildRaidDashboardSelectChoices(
       value: normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag,
       description: clanTag.slice(0, 100),
       emoji: getRaidTrackedClanJoinTypeEmoji(row.joinType),
+      selected:
+        normalizedSelected !== null &&
+        (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) === normalizedSelected,
     };
   });
 }
@@ -1190,4 +1252,29 @@ export function findRaidDashboardClanRow(
     rows.find((row) => (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) === normalized) ??
     null
   );
+}
+
+function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanRow[] {
+  return rows
+    .map((row, index) => ({
+      ...row,
+      overviewSortIndex: index,
+    }))
+    .sort((left, right) => {
+      const leftOngoing = left.hasOngoingRaid ? 1 : 0;
+      const rightOngoing = right.hasOngoingRaid ? 1 : 0;
+      if (leftOngoing !== rightOngoing) {
+        return rightOngoing - leftOngoing;
+      }
+
+      const leftCompleted = left.raidsCompleted ?? 0;
+      const rightCompleted = right.raidsCompleted ?? 0;
+      if (leftCompleted !== rightCompleted) {
+        return rightCompleted - leftCompleted;
+      }
+
+      return (left as { overviewSortIndex: number }).overviewSortIndex -
+        (right as { overviewSortIndex: number }).overviewSortIndex;
+    })
+    .map(({ overviewSortIndex: _overviewSortIndex, ...row }) => row);
 }

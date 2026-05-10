@@ -69,6 +69,14 @@ function makeTrackedClanRows() {
       createdAt: new Date("2026-05-02T00:00:00.000Z"),
       updatedAt: new Date("2026-05-08T11:30:00.000Z"),
     },
+    {
+      clanTag: "2XYZ12345",
+      name: "Charlie Raid",
+      upgrades: 400,
+      joinType: "open",
+      createdAt: new Date("2026-05-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+    },
   ];
 }
 
@@ -96,6 +104,60 @@ function makeActiveSeason() {
             attackCount: 2,
             destructionPercent: 100,
             stars: 3,
+          },
+        ],
+      },
+    ],
+    defenseLog: [
+      {
+        attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+        districtCount: 2,
+        districtsDestroyed: 1,
+        districts: [
+          {
+            name: "Capital Hall",
+            districtHallLevel: 5,
+            destructionPercent: 100,
+            stars: 3,
+          },
+          {
+            name: "Barbarian Camp",
+            districtHallLevel: 4,
+            destructionPercent: 50,
+            stars: 1,
+          },
+        ],
+      },
+    ],
+    raidsCompleted: null,
+  };
+}
+
+function makeOngoingSeason() {
+  return {
+    startTime: "2026-05-08T00:00:00.000Z",
+    endTime: "2026-05-11T00:00:00.000Z",
+    members: [{ attacks: 6 }, { attacks: 5 }],
+    attackLog: [
+      {
+        defender: { name: "Defender One", tag: "#2QG2C08UQ" },
+        attackCount: 1,
+        districtCount: 2,
+        districtsDestroyed: 1,
+        districts: [
+          {
+            name: "Capital Hall",
+            districtHallLevel: 5,
+            attackCount: 3,
+            destructionPercent: 100,
+            stars: 3,
+          },
+          {
+            name: "Wizard Valley",
+            districtHallLevel: 4,
+            attackCount: 0,
+            destructionPercent: 0,
+            stars: 0,
           },
         ],
       },
@@ -237,6 +299,9 @@ describe("/raids command", () => {
       getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
         expect(cocQueueMock.state.active).toBe(true);
         if (tag === "#2QG2C08UP") {
+          return [makeOngoingSeason()];
+        }
+        if (tag === "#2RVGJYLC0") {
           return [makeActiveSeason()];
         }
         return makeEmptySeason();
@@ -259,17 +324,21 @@ describe("/raids command", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("## Raid Clans");
-    expect(description).toContain("[Alpha Raid]");
-    expect(description).toContain("`#2QG2C08UP`");
+    expect(description).toContain("\u2694\ufe0f [Alpha Raid]");
+    expect(description).toContain("\ud83c\udf04 [Bravo Raid]");
+    expect(description).toContain(`#2QG2C08UP`);
+    expect(description).not.toContain("\ud83d\udd13 [Alpha Raid]");
+    const alphaIndex = description.indexOf("\u2694\ufe0f [Alpha Raid]");
+    const bravoIndex = description.indexOf("\ud83c\udf04 [Bravo Raid]");
+    expect(alphaIndex).toBeGreaterThanOrEqual(0);
+    expect(bravoIndex).toBeGreaterThan(alphaIndex);
     const enemyLine = description.split("\n").find((line: string) => line.includes("[Enemy Clan]"));
     expect(enemyLine).toBeDefined();
-    expect(enemyLine?.startsWith("- 🛡️ [Enemy Clan]")).toBe(true);
-    expect(enemyLine).toContain("`#2QG2C08UR`");
-    expect(enemyLine).toContain("— 1 districts remaining");
-    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine?.startsWith("- \ud83d\udee1\ufe0f [Enemy Clan]")).toBe(true);
+    expect(enemyLine).toContain(`#2QG2C08UR`);
+    expect(enemyLine).toContain("\u2014 1 districts remaining");
     expect(enemyLine?.startsWith("  -")).toBe(false);
     expect(description).not.toContain("  -");
-    expect(description).not.toContain("🔓 [Alpha Raid]");
     expect(description).not.toContain("Attacks:");
     expect(description).not.toContain("Raids completed:");
     expect(description).not.toContain("Requirements:");
@@ -279,6 +348,10 @@ describe("/raids command", () => {
     expect(selectRow?.custom_id).toBe("raids:raids-itx-1:select");
     expect(selectRow?.options?.[0]?.label).toContain("Alpha Raid");
     expect(selectRow?.options?.[0]?.value).toBe("2QG2C08UP");
+    expect(selectRow?.options?.[1]?.label).toContain("Bravo Raid");
+    expect(selectRow?.options?.[1]?.value).toBe("2RVGJYLC0");
+    expect(selectRow?.options?.[2]?.label).toContain("Charlie Raid");
+    expect(selectRow?.options?.[2]?.value).toBe("2XYZ12345");
 
     const buttonIds = payload.components[1]?.toJSON?.().components.map((component: any) =>
       String(component.custom_id ?? ""),

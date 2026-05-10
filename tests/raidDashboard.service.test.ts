@@ -75,6 +75,14 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-02T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:30:00.000Z"),
       },
+      {
+        clanTag: "2XYZ12345",
+        name: "Charlie Raid",
+        upgrades: 400,
+        joinType: "open",
+        createdAt: new Date("2026-05-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+      },
     ]);
 
     const cocService = {
@@ -88,6 +96,61 @@ describe("RaidDashboardService", () => {
               attackLog: [
                 {
                   defender: { name: "Defender One", tag: "#DEF1" },
+                  attackCount: 1,
+                  districtCount: 2,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      attackCount: 3,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                    {
+                      name: "Wizard Valley",
+                      districtHallLevel: 4,
+                      attackCount: 0,
+                      destructionPercent: 0,
+                      stars: 0,
+                    },
+                  ],
+                },
+              ],
+              defenseLog: [
+                {
+                  attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+                  districtCount: 2,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                    {
+                      name: "Barbarian Camp",
+                      districtHallLevel: 4,
+                      destructionPercent: 50,
+                      stars: 1,
+                    },
+                  ],
+                },
+              ],
+              raidsCompleted: null,
+            },
+          ];
+        }
+        if (tag === "#2RVGJYLC0") {
+          return [
+            {
+              startTime: "2026-05-08T00:00:00.000Z",
+              endTime: "2026-05-11T00:00:00.000Z",
+              members: [{ attacks: 6 }, { attacks: 5 }],
+              attackLog: [
+                {
+                  defender: { name: "Defender One", tag: "#2QG2C08UQ" },
                   districtCount: 2,
                   districtsDestroyed: 2,
                   districts: [
@@ -135,22 +198,48 @@ describe("RaidDashboardService", () => {
         }
         return [];
       }),
+      getClan: vi.fn(async (tag: string) => {
+        expect(tag).toBe("#2QG2C08UR");
+        return {
+          type: "open",
+          requiredTownhallLevel: 16,
+          requiredBuilderBaseTrophies: 2600,
+          requiredTrophies: 5000,
+        };
+      }),
     };
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
-    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledTimes(2);
-    expect(rows).toHaveLength(2);
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledTimes(3);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.clanTag).toBe("2QG2C08UP");
+    expect(rows[0]?.hasOngoingRaid).toBe(true);
     expect(rows[0]?.attacksCompleted).toBe(11);
     expect(rows[0]?.attacksMax).toBe(12);
-    expect(rows[0]?.raidsCompleted).toBe(1);
-    expect(rows[1]?.attacksCompleted).toBeNull();
-    expect(rows[1]?.raidsCompleted).toBeNull();
+    expect(rows[0]?.raidsCompleted).toBe(0);
+    expect(rows[1]?.clanTag).toBe("2RVGJYLC0");
+    expect(rows[1]?.hasOngoingRaid).toBe(false);
+    expect(rows[1]?.raidsCompleted).toBe(1);
+    expect(rows[2]?.clanTag).toBe("2XYZ12345");
+    expect(rows[2]?.hasOngoingRaid).toBe(false);
+    expect(rows[2]?.raidsCompleted).toBeNull();
 
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
-    expect(overview).toContain("[Alpha Raid]");
-    expect(overview).toContain("`#2QG2C08UP`");
-    expect(overview).not.toContain("🔓 [Alpha Raid]");
+    expect(overview).toContain("\u2694\ufe0f [Alpha Raid]");
+    expect(overview).toContain("\ud83c\udf04 [Bravo Raid]");
+    expect(overview).toContain(`#2QG2C08UP`);
+    expect(overview).not.toContain("\ud83d\udd13 [Alpha Raid]");
+    const alphaIndex = overview.indexOf("\u2694\ufe0f [Alpha Raid]");
+    const bravoIndex = overview.indexOf("\ud83c\udf04 [Bravo Raid]");
+    expect(alphaIndex).toBeGreaterThanOrEqual(0);
+    expect(bravoIndex).toBeGreaterThan(alphaIndex);
+    const enemyLine = overview.split("\n").find((line) => line.includes("[Enemy Clan]"));
+    expect(enemyLine).toBeDefined();
+    expect(enemyLine?.startsWith("- \ud83d\udee1\ufe0f [Enemy Clan]")).toBe(true);
+    expect(enemyLine).toContain(`#2QG2C08UR`);
+    expect(enemyLine).toContain("\u2014 1 districts remaining");
+    expect(enemyLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Attacks:");
     expect(overview).not.toContain("Raids completed:");
@@ -162,6 +251,27 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Join type: Open");
     expect(single).toContain("Upgrades: 2210");
     expect(single).toContain("Attacks: 11");
+  });
+
+  it("renders no status emoji when a tracked clan has no ongoing or completed raid", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2XYZ12345",
+        clanName: "Charlie Raid",
+        upgrades: 400,
+        joinType: "open",
+        createdAt: new Date("2026-05-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: null,
+      } as any,
+    ]);
+
+    expect(overview).toContain("Charlie Raid");
+    expect(overview).not.toContain("⚔️");
+    expect(overview).not.toContain("🌄");
   });
 
   it("parses compact Clash raid timestamps and selects the active season", async () => {
@@ -241,6 +351,7 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.attacksCompleted).toBe(13);
     expect(rows[0]?.attacksMax).toBe(18);
     expect(rows[0]?.raidsCompleted).toBe(1);
+    expect(rows[0]?.hasOngoingRaid).toBe(false);
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
@@ -266,6 +377,7 @@ describe("RaidDashboardService", () => {
           attackLog: [
             {
               defender: { name: "Defender One", tag: "#DEF1" },
+              attackCount: 3,
               districtCount: 9,
               districtsDestroyed: 0,
               districts: [
@@ -287,8 +399,48 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(0);
+    expect(rows[0]?.hasOngoingRaid).toBe(true);
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
+  });
+
+  it("treats aggregate attackCount zero and unusable logs as not ongoing", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 1 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#DEF1" },
+              attackCount: 0,
+            },
+            {
+              defender: { name: "Defender Two", tag: "#DEF2" },
+              attackCount: 0,
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any });
+    expect(rows[0]?.hasOngoingRaid).toBe(false);
+    expect(rows[0]?.raidsCompleted).toBeNull();
   });
 
   it("treats incomplete per-district raid logs as not completed", async () => {
@@ -323,7 +475,7 @@ describe("RaidDashboardService", () => {
                 {
                   name: "Wizard Valley",
                   districtHallLevel: 5,
-                  attackCount: 2,
+                  attacks: 2,
                   destructionPercent: 50,
                   stars: 1,
                 },
@@ -338,6 +490,7 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(0);
+    expect(rows[0]?.hasOngoingRaid).toBe(true);
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
@@ -389,6 +542,7 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(1);
+    expect(rows[0]?.hasOngoingRaid).toBe(false);
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
@@ -1256,7 +1410,7 @@ describe("RaidDashboardService", () => {
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
-  it("prioritizes the selected clan in the dropdown and caps options at 25", () => {
+  it("keeps dropdown order aligned with the sorted overview and caps options at 25", () => {
     const validSuffixes = "PYLQGRJCUV0289";
     const rows = Array.from({ length: 27 }, (_, index) => ({
       clanTag: `2QG2C08U${validSuffixes[index % validSuffixes.length]}${
@@ -1274,8 +1428,11 @@ describe("RaidDashboardService", () => {
 
     const choices = buildRaidDashboardSelectChoices(rows, rows[9]?.clanTag ?? null);
     expect(choices).toHaveLength(25);
-    expect(choices[0]?.value).toBe(rows[9]?.clanTag);
-    expect(choices[0]?.label).toBe("Clan 10");
-    expect(choices[0]?.description).toContain(`#${rows[9]?.clanTag}`);
+    expect(choices[0]?.value).toBe(rows[0]?.clanTag);
+    expect(choices[0]?.label).toBe("Clan 1");
+    expect(choices[9]?.value).toBe(rows[9]?.clanTag);
+    expect(choices[9]?.label).toBe("Clan 10");
+    expect(choices[9]?.selected).toBe(true);
+    expect(choices[9]?.description).toContain(`#${rows[9]?.clanTag}`);
   });
 });
