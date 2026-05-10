@@ -111,6 +111,7 @@ function makeActiveSeason() {
     defenseLog: [
       {
         attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+        attackCount: 30,
         districtCount: 2,
         districtsDestroyed: 1,
         districts: [
@@ -430,6 +431,7 @@ describe("/raids command", () => {
     expect(enemyLine?.startsWith("  -")).toBe(false);
     expect(description).not.toContain("  -");
     expect(description).not.toContain("Attacks:");
+    expect(description).not.toContain("attacks used");
     expect(description).not.toContain("Raids completed:");
     expect(description).not.toContain("Requirements:");
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
@@ -1040,7 +1042,8 @@ describe("/raids command", () => {
     expect(description).toContain("## Defending");
     expect(description).toContain("🔓 [Enemy Clan]");
     expect(description).toContain("`#2QG2C08UR`");
-    expect(description).toContain("1 districts remaining");
+    expect(description).toContain("30 attacks used");
+    expect(description).toContain("1 district remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
     expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
       expect.objectContaining({

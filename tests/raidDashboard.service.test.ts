@@ -246,6 +246,7 @@ describe("RaidDashboardService", () => {
     expect(enemyLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Attacks:");
+    expect(overview).not.toContain("attacks used");
     expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
     expect(overview).not.toContain("Upgrades:");
@@ -817,6 +818,7 @@ describe("RaidDashboardService", () => {
       defenseLog: [
         {
           attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+          attackCount: 30,
           districtCount: 2,
           districtsDestroyed: 1,
           districts: [
@@ -894,7 +896,8 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("## Defending");
     expect(description).toContain("🔓 [Enemy Clan]");
     expect(description).toContain("`#2QG2C08UR`");
-    expect(description).toContain("1 districts remaining");
+    expect(description).toContain("30 attacks used");
+    expect(description).toContain("1 district remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
     const overview = buildRaidDashboardOverviewDescription(rows);
     const enemyLine = overview.split("\n").find((line) => line.includes("[Enemy Clan]"));
@@ -952,6 +955,7 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("0 districts remaining");
     expect(overview).not.toContain("districts remaining");
     expect(overview).not.toContain("Attacks:");
+    expect(overview).not.toContain("attacks used");
     expect(overview).not.toContain("Raids completed:");
   });
 
@@ -1140,9 +1144,239 @@ describe("RaidDashboardService", () => {
 
     expect(detail?.defenseSections[0]?.joinType).toBeNull();
     const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
-    expect(description).toContain("⚪ [Enemy Clan]");
+    expect(description).toContain("🔒 [Enemy Clan]");
+    expect(description).toContain("attacks used: —");
+    expect(description).toContain("1 district remaining");
     expect(description).not.toContain("Requirements:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Enemy Clan");
+  });
+
+  it("renders defense attack counts and binary join emojis in drilldown without changing overview shields", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 5 }],
+      attackLog: [],
+      defenseLog: [
+        {
+          attacker: { name: "Open Clan", tag: "#OPEN" },
+          attackCount: 30,
+          districtCount: 5,
+          districtsDestroyed: 5,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 30,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+        {
+          attacker: { name: "Closed Clan", tag: "#CLOSED" },
+          attacks: 1,
+          districtCount: 1,
+          districtsDestroyed: 0,
+          districts: [
+            {
+              name: "Wizard Valley",
+              districtHallLevel: 4,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+        {
+          attacker: { name: "Invite Clan", tag: "#INVITE" },
+          attacksUsed: 2,
+          districtCount: 4,
+          districtsDestroyed: 2,
+          districts: [
+            {
+              name: "Barbarian Camp",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Goblin Mines",
+              districtHallLevel: 4,
+              attacks: 2,
+              destructionPercent: 50,
+              stars: 1,
+            },
+          ],
+        },
+        {
+          attacker: { name: "District Sum Clan", tag: "#SUM" },
+          districtCount: 3,
+          districtsDestroyed: 2,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Skeleton Park",
+              districtHallLevel: 4,
+              attacks: 2,
+              destructionPercent: 50,
+              stars: 1,
+            },
+          ],
+        },
+        {
+          attacker: { name: "Zero Clan", tag: "#ZERO" },
+          attackCount: 0,
+          districtCount: 0,
+          districtsDestroyed: 0,
+          districts: [],
+        },
+        {
+          attacker: { name: "Unknown Name", tag: "#TAG4" },
+          districtCount: null,
+          districtsDestroyed: null,
+          districts: [
+            {
+              name: "Dragon Cliffs",
+              districtHallLevel: 5,
+              destructionPercent: null,
+              stars: null,
+            },
+          ],
+        },
+      ],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(async (tag: string) => {
+        if (tag === "#OPEN") {
+          return {
+            type: "open",
+            requiredTownhallLevel: 16,
+            requiredBuilderBaseTrophies: 2600,
+            requiredTrophies: 5000,
+          };
+        }
+        if (tag === "#CLOSED") {
+          return { type: "closed" };
+        }
+        if (tag === "#INVITE") {
+          return { type: "inviteOnly" };
+        }
+        return { type: "mystery" };
+      }),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any, guildId: "guild-1" });
+    const detail = {
+      activeSeason: { state: "ongoing" } as any,
+      attackSections: [],
+      defenseSections: [
+        {
+          attackerName: "Open Clan",
+          attackerTag: "#OPEN",
+          joinType: "open",
+          joinRequirements: {
+            requiredTownHall: 16,
+            requiredTrophies: 5000,
+            requiredBuilderBaseTrophies: 2600,
+          },
+          attacksUsed: 30,
+          districtsRemaining: 0,
+        },
+        {
+          attackerName: "Closed Clan",
+          attackerTag: "#CLOSED",
+          joinType: null,
+          joinRequirements: null,
+          attacksUsed: 1,
+          districtsRemaining: 1,
+        },
+        {
+          attackerName: "Invite Clan",
+          attackerTag: "#INVITE",
+          joinType: null,
+          joinRequirements: null,
+          attacksUsed: 2,
+          districtsRemaining: 2,
+        },
+        {
+          attackerName: "District Sum Clan",
+          attackerTag: "#SUM",
+          joinType: null,
+          joinRequirements: null,
+          attacksUsed: 3,
+          districtsRemaining: 1,
+        },
+        {
+          attackerName: "Zero Clan",
+          attackerTag: "#ZERO",
+          joinType: null,
+          joinRequirements: null,
+          attacksUsed: 0,
+          districtsRemaining: 0,
+        },
+        {
+          attackerName: "Unknown Name",
+          attackerTag: "#TAG4",
+          joinType: null,
+          joinRequirements: null,
+          attacksUsed: null,
+          districtsRemaining: null,
+        },
+      ],
+      raidsCompleted: null,
+    } as any;
+    const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
+
+    expect(description).toContain("Open Clan");
+    expect(description).toContain("30 attacks used");
+    expect(description).toContain("0 districts remaining");
+    expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
+    expect(description).toContain("Closed Clan");
+    expect(description).toContain("1 attack used");
+    expect(description).toContain("1 district remaining");
+    expect(description).toContain("Invite Clan");
+    expect(description).toContain("2 attacks used");
+    expect(description).toContain("2 districts remaining");
+    expect(description).toContain("District Sum Clan");
+    expect(description).toContain("3 attacks used");
+    expect(description).toContain("1 district remaining");
+    expect(description).toContain("Zero Clan");
+    expect(description).toContain("0 attacks used");
+    expect(description).toContain("0 districts remaining");
+    expect(description).toContain("Unknown Name");
+    expect(description).toContain("attacks used: —");
+    expect(description).toContain("districts remaining: —");
+    const reqIndex = description.indexOf("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
+    const summaryIndex = description.indexOf("30 attacks used");
+    expect(reqIndex).toBeGreaterThan(summaryIndex);
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    expect(overview).not.toContain("Open Clan");
+    expect(overview).not.toContain("attacks used");
+    expect(overview).not.toContain("Zero Clan");
+    expect(overview).not.toContain("0 districts remaining");
   });
 
   it("derives defense districts remaining from aggregate fields when available", async () => {
