@@ -355,6 +355,7 @@ describe("AutoRoleRefreshService", () => {
     const clanRankRoleId = "555555555555555555";
     const staleHolderId = "111111111111111111";
     const qualifyingUserId = "666666666666666666";
+    const outsiderId = "777777777777777777";
     const staleHolder = makeMember(staleHolderId, [
       clanRoleId,
       townHallRoleId,
@@ -362,9 +363,11 @@ describe("AutoRoleRefreshService", () => {
       clanRankRoleId,
     ]);
     const qualifyingMember = makeMember(qualifyingUserId);
+    const outsider = makeMember(outsiderId);
     const guild = makeGuild(new Map([
       [staleHolderId, staleHolder],
       [qualifyingUserId, qualifyingMember],
+      [outsiderId, outsider],
     ]));
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
@@ -401,6 +404,11 @@ describe("AutoRoleRefreshService", () => {
           playerTag: "#PYLQ0289",
           discordUserId: qualifyingUserId,
           playerName: "Pending Clan",
+        }),
+        makeLinkedAccount({
+          playerTag: "#QGRJ2222",
+          discordUserId: outsiderId,
+          playerName: "Outsider",
         }),
       ], where);
     });
@@ -459,6 +467,8 @@ describe("AutoRoleRefreshService", () => {
     expect(qualifyingMember.roles.add).toHaveBeenCalledWith(townHallRoleId);
     expect(qualifyingMember.roles.add).toHaveBeenCalledWith(leagueRoleId);
     expect(qualifyingMember.roles.add).toHaveBeenCalledWith(clanRankRoleId);
+    expect(outsider.roles.add).not.toHaveBeenCalled();
+    expect(outsider.roles.remove).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       evaluatedCount: 2,
       addedCount: 4,
@@ -655,7 +665,7 @@ describe("AutoRoleRefreshService", () => {
     expect(cwlMember.roles.add).toHaveBeenCalledWith(cwlClanRoleId);
     expect(outsider.roles.add).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      evaluatedCount: 3,
+      evaluatedCount: 2,
       addedCount: 3,
       removedCount: 0,
     });
@@ -947,6 +957,17 @@ describe("AutoRoleRefreshService", () => {
         }),
       ], where);
     });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#2QG2C08UP",
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+      },
+    ]);
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({ removeStaleManagedRoles: true }),
       rules: [
@@ -969,10 +990,10 @@ describe("AutoRoleRefreshService", () => {
 
     expect(excludedUser.roles.add).not.toHaveBeenCalled();
     expect(excludedRoleUser.roles.add).not.toHaveBeenCalled();
-    expect(normalUser.roles.add).toHaveBeenCalledWith(verifiedRoleId);
+    expect(normalUser.roles.add).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      evaluatedCount: 3,
-      addedCount: 1,
+      evaluatedCount: 2,
+      addedCount: 0,
       skippedCount: 2,
       failedCount: 0,
     });

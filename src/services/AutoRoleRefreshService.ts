@@ -1197,12 +1197,13 @@ export class AutoRoleRefreshService {
         const trackedCandidateUserIds = await collectGuildCandidateUsersForTrackedMembership({
           membersById,
           managedRoleIds,
-          trackedMemberPlayerTags: [...trackedFwaRefresh.fwaMemberTags, ...trackedMembershipScope.cwlMemberTags],
+          trackedMemberPlayerTags: [
+            ...trackedMembershipScope.fwaMemberTags,
+            ...trackedFwaRefresh.fwaMemberTags,
+            ...trackedMembershipScope.cwlMemberTags,
+          ],
         });
-        const candidateUserIds = new Set<string>(membersById.keys());
-        for (const userId of trackedCandidateUserIds) {
-          candidateUserIds.add(userId);
-        }
+        const candidateUserIds = new Set<string>(trackedCandidateUserIds);
         const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
           guildMemberIds: [...candidateUserIds],
         });
