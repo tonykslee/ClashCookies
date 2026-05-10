@@ -1,12 +1,17 @@
 import { prisma } from "../prisma";
-import { normalizeRaidTrackedClanTag } from "./RaidTrackedClanService";
 import {
   buildRaidIntelDistrictKey,
   buildRaidIntelLayoutGradeLabel,
+  buildRaidIntelLayoutScoreKey,
+  calculateRaidIntelLayoutGradeScore,
+  normalizeRaidIntelLayoutGrade,
   parseRaidSeasonTimeMs,
   type RaidIntelLayoutGrade,
   type RaidIntelLayoutGradeLabel,
-} from "./RaidDashboardService";
+} from "../helper/raidIntelLayout";
+import { normalizeRaidTrackedClanTag } from "./RaidTrackedClanService";
+
+export { buildRaidIntelLayoutScoreKey, normalizeRaidIntelLayoutGrade };
 
 export type RaidIntelDistrictLayoutMarkRecord = {
   id: number;
@@ -20,13 +25,6 @@ export type RaidIntelDistrictLayoutMarkRecord = {
   markedByDiscordUserId: string;
   createdAt: Date;
   updatedAt: Date;
-};
-
-const RAID_INTEL_LAYOUT_GRADE_SCORES: Record<RaidIntelLayoutGrade, number> = {
-  DEFAULT: 0,
-  CUSTOM_HARD: 3,
-  CUSTOM_MEDIUM: 2,
-  CUSTOM_EASY: 1,
 };
 
 function normalizeRaidIntelDistrictName(name: unknown): string | null {
@@ -44,34 +42,6 @@ function normalizeRaidIntelSeasonStartTime(value: unknown): Date | null {
           return parsed === null ? new Date(String(value)) : new Date(parsed);
         })();
   return Number.isNaN(date.getTime()) ? null : date;
-}
-
-export function buildRaidIntelLayoutScoreKey(input: {
-  sourceClanTag: string;
-  raidSeasonStartTime: Date;
-}): string {
-  const sourceClanTag = normalizeRaidTrackedClanTag(input.sourceClanTag);
-  return `${sourceClanTag ?? ""}|${input.raidSeasonStartTime.getTime()}`;
-}
-
-function calculateRaidIntelLayoutGradeScore(value: unknown): number {
-  const grade = normalizeRaidIntelLayoutGrade(value);
-  return grade ? RAID_INTEL_LAYOUT_GRADE_SCORES[grade] : 0;
-}
-
-export function normalizeRaidIntelLayoutGrade(
-  value: unknown,
-): RaidIntelLayoutGrade | null {
-  const raw = String(value ?? "").trim();
-  if (
-    raw === "DEFAULT" ||
-    raw === "CUSTOM_HARD" ||
-    raw === "CUSTOM_MEDIUM" ||
-    raw === "CUSTOM_EASY"
-  ) {
-    return raw;
-  }
-  return null;
 }
 
 export function buildRaidIntelLayoutGradeLookup(

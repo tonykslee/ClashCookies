@@ -1,11 +1,15 @@
-import { createHash } from "node:crypto";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import {
+  buildRaidIntelDistrictKey,
+  buildRaidIntelLayoutGradeLabel,
+  buildRaidIntelLayoutScoreKey,
+  parseRaidSeasonTimeMs,
+  type RaidIntelLayoutGrade,
+  type RaidIntelLayoutGradeLabel,
+} from "../helper/raidIntelLayout";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
-import {
-  buildRaidIntelLayoutScoreKey,
-  loadRaidIntelLayoutGradeScoresForSeasons,
-} from "./RaidIntelLayoutMarkService";
+import { loadRaidIntelLayoutGradeScoresForSeasons } from "./RaidIntelLayoutMarkService";
 import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
@@ -16,6 +20,14 @@ import {
 
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const RAID_DETAIL_TRUNCATION_RESERVE = 96;
+
+export {
+  buildRaidIntelDistrictKey,
+  buildRaidIntelLayoutGradeLabel,
+  parseRaidSeasonTimeMs,
+  type RaidIntelLayoutGrade,
+  type RaidIntelLayoutGradeLabel,
+};
 
 export type RaidDashboardCountRow = {
   attacksCompleted: number | null;
@@ -84,10 +96,6 @@ export type RaidIntelDefender = {
   districts: RaidIntelDistrict[];
 };
 
-export type RaidIntelLayoutGrade = "DEFAULT" | "CUSTOM_HARD" | "CUSTOM_MEDIUM" | "CUSTOM_EASY";
-
-export type RaidIntelLayoutGradeLabel = "Unmarked" | "Default" | "Custom - Hard" | "Custom - Medium" | "Custom - Easy";
-
 export type RaidIntelSeasonDetail = {
   activeSeason: ClanCapitalRaidSeason | null;
   defenders: RaidIntelDefender[];
@@ -148,6 +156,11 @@ function formatJoinTypeLabel(joinType: RaidTrackedClanJoinType | null): string {
 
 function formatCompletedAttacksLabel(attacksCompleted: number | null): string {
   return attacksCompleted === null ? "—" : String(attacksCompleted);
+}
+
+function normalizeDistrictName(name: unknown): string | null {
+  const trimmed = String(name ?? "").replace(/\s+/g, " ").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function readBoolean(value: unknown): boolean | null {
@@ -266,26 +279,6 @@ export function formatRaidDistrictHallLabel(
   return `DH${hallLevel}`;
 }
 
-export function parseRaidSeasonTimeMs(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-
-  const compactMatch = raw.match(
-    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.(\d{1,3}))?Z$/,
-  );
-  if (compactMatch) {
-    const [, year, month, day, hour, minute, second, fraction = "0"] = compactMatch;
-    const millis = fraction.padEnd(3, "0").slice(0, 3);
-    const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}.${millis}Z`;
-    const parsed = Date.parse(iso);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function selectCurrentRaidSeason(input: {
   seasons: ClanCapitalRaidSeason[];
   nowMs: number;
@@ -354,32 +347,6 @@ function normalizeRaidAttackerClanMetadata(input: unknown): RaidAttackerClanMeta
     joinType,
     joinRequirements,
   };
-}
-
-function normalizeDistrictName(name: unknown): string | null {
-  const trimmed = String(name ?? "").replace(/\s+/g, " ").trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export function buildRaidIntelDistrictKey(input: {
-  defenderTag: string | null;
-  districtName: string;
-}): string {
-  const defenderTag = normalizeRaidTrackedClanTag(input.defenderTag ?? "") ?? "";
-  const districtName = normalizeDistrictName(input.districtName) ?? "";
-  const raw = `${defenderTag}|${districtName}`;
-  const digest = createHash("sha1").update(raw).digest("base64url").slice(0, 10);
-  return `d_${digest}`;
-}
-
-export function buildRaidIntelLayoutGradeLabel(
-  grade: RaidIntelLayoutGrade | null | undefined,
-): RaidIntelLayoutGradeLabel {
-  if (grade === "DEFAULT") return "Default";
-  if (grade === "CUSTOM_HARD") return "Custom - Hard";
-  if (grade === "CUSTOM_MEDIUM") return "Custom - Medium";
-  if (grade === "CUSTOM_EASY") return "Custom - Easy";
-  return "Unmarked";
 }
 
 function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null {
