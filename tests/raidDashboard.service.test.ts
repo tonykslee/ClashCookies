@@ -4,6 +4,9 @@ const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
   },
+  raidIntelDistrictLayoutMark: {
+    findMany: vi.fn(),
+  },
 }));
 
 const cocQueueMock = vi.hoisted(() => {
@@ -51,6 +54,7 @@ describe("RaidDashboardService", () => {
     cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-08T12:00:00.000Z"));
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -251,6 +255,97 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Join type: Open");
     expect(single).toContain("Upgrades: 2210");
     expect(single).toContain("Attacks: 11");
+  });
+
+  it("sorts overview rows by ongoing status, raids completed, and intel grade score", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+      },
+      {
+        clanTag: "2QG2C08UR",
+        name: "Charlie Raid",
+        upgrades: 400,
+        joinType: "open",
+        createdAt: new Date("2026-05-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        sourceClanTag: "2RVGJYLC0",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        layoutGrade: "CUSTOM_HARD",
+      },
+      {
+        sourceClanTag: "2QG2C08UR",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        layoutGrade: "CUSTOM_MEDIUM",
+      },
+    ]);
+
+    const completedSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#DEF1" },
+          districtCount: 1,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [completedSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    expect(rows.map((row) => row.clanTag)).toEqual(["2RVGJYLC0", "2QG2C08UR", "2QG2C08UP"]);
+    expect(rows.map((row) => row.intelGradeScore)).toEqual([3, 2, 0]);
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const bravoIndex = overview.indexOf("\ud83c\udf04 [Bravo Raid]");
+    const charlieIndex = overview.indexOf("\ud83c\udf04 [Charlie Raid]");
+    const alphaIndex = overview.indexOf("\ud83c\udf04 [Alpha Raid]");
+    expect(bravoIndex).toBeGreaterThanOrEqual(0);
+    expect(charlieIndex).toBeGreaterThan(bravoIndex);
+    expect(alphaIndex).toBeGreaterThan(charlieIndex);
+
+    const choices = buildRaidDashboardSelectChoices(rows, null);
+    expect(choices).toHaveLength(3);
+    expect(choices.map((choice) => choice.value)).toEqual(["2RVGJYLC0", "2QG2C08UR", "2QG2C08UP"]);
+    expect(choices.every((choice) => choice.selected === false)).toBe(true);
   });
 
   it("renders no status emoji when a tracked clan has no ongoing or completed raid", () => {

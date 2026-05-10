@@ -31,6 +31,7 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   loadRaidDashboardSeasonDetailWithQueueContext,
   listRaidDashboardRowsWithQueueContext,
+  parseRaidSeasonTimeMs,
   type RaidDashboardClanRow,
   type RaidIntelDistrict,
   type RaidIntelLayoutGrade,
@@ -333,7 +334,10 @@ async function buildRaidIntelPayload(input: {
     source: input.source,
   });
 
-  const seasonStart = detail.activeSeason?.startTime ? new Date(String(detail.activeSeason.startTime)) : null;
+  const seasonStartMs = detail.activeSeason?.startTime
+    ? parseRaidSeasonTimeMs(detail.activeSeason.startTime)
+    : null;
+  const seasonStart = seasonStartMs === null ? null : new Date(seasonStartMs);
   const gradeLookup =
     detail.activeSeason && input.guildId
       ? await loadRaidIntelLayoutGradeLookupForSeason({
@@ -612,6 +616,7 @@ async function buildRaidDashboardPayload(input: {
   cocService: CoCService;
   refreshing: boolean;
   source: string;
+  guildId?: string | null;
   rows?: RaidDashboardClanRow[];
   detailSource?: string | null;
 }): Promise<{
@@ -624,6 +629,7 @@ async function buildRaidDashboardPayload(input: {
     (await listRaidDashboardRowsWithQueueContext({
       cocService: input.cocService,
       source: input.source,
+      guildId: input.guildId ?? null,
     }));
   const selectedRow = input.selectedClanTag ? findRaidDashboardClanRow(rows, input.selectedClanTag) : null;
   const effectiveSelectedTag = selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null;
@@ -737,6 +743,7 @@ export async function handleRaidsSelectMenuInteraction(
       cocService,
       refreshing: false,
       source: "raids:overview:select",
+      guildId: session.guildId,
       rows: session.rows,
       detailSource: selectedClanTag ? "raids:overview:detail" : null,
     });
@@ -810,6 +817,7 @@ export async function handleRaidsButtonInteraction(
       cocService,
       refreshing: false,
       source: parsed.action === "refresh" ? "raids:overview:refresh" : "raids:overview:back",
+      guildId: session.guildId,
       rows: parsed.action === "refresh" ? undefined : session.rows,
       detailSource:
         nextSelectedClanTag && parsed.action === "refresh"
@@ -926,6 +934,7 @@ export const Raids: Command = {
       const rows = await listRaidDashboardRowsWithQueueContext({
         cocService,
         source: "raids:overview",
+        guildId: interaction.guildId ?? null,
       });
       if (rows.length <= 0) {
         await safeReply(interaction, {
@@ -960,6 +969,7 @@ export const Raids: Command = {
         cocService,
         refreshing: false,
         source: "raids:overview",
+        guildId: interaction.guildId ?? null,
         rows,
         detailSource: selectedRow ? "raids:overview:detail" : null,
       });
