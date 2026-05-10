@@ -1170,7 +1170,7 @@ describe("RaidDashboardService", () => {
       attackLog: [],
       defenseLog: [
         {
-          attacker: { name: "Open Clan", tag: "#OPEN" },
+          attacker: { name: "QAZAQ TITANS", tag: "#OPEN" },
           attackCount: 30,
           districtCount: 5,
           districtsDestroyed: 5,
@@ -1185,7 +1185,7 @@ describe("RaidDashboardService", () => {
           ],
         },
         {
-          attacker: { name: "Closed Clan", tag: "#CLOSED" },
+          attacker: { name: "Moon Wolves", tag: "#CLOSED" },
           attacks: 1,
           districtCount: 1,
           districtsDestroyed: 0,
@@ -1200,7 +1200,7 @@ describe("RaidDashboardService", () => {
           ],
         },
         {
-          attacker: { name: "Invite Clan", tag: "#INVITE" },
+          attacker: { name: "River Raiders", tag: "#INVITE" },
           attacksUsed: 2,
           districtCount: 4,
           districtsDestroyed: 2,
@@ -1222,7 +1222,7 @@ describe("RaidDashboardService", () => {
           ],
         },
         {
-          attacker: { name: "District Sum Clan", tag: "#SUM" },
+          attacker: { name: "District Sum", tag: "#SUM" },
           districtCount: 3,
           districtsDestroyed: 2,
           districts: [
@@ -1243,7 +1243,7 @@ describe("RaidDashboardService", () => {
           ],
         },
         {
-          attacker: { name: "Zero Clan", tag: "#ZERO" },
+          attacker: { name: "Zero Districts", tag: "#ZERO" },
           attackCount: 0,
           districtCount: 0,
           districtsDestroyed: 0,
@@ -1293,7 +1293,7 @@ describe("RaidDashboardService", () => {
       attackSections: [],
       defenseSections: [
         {
-          attackerName: "Open Clan",
+          attackerName: "QAZAQ TITANS",
           attackerTag: "#OPEN",
           joinType: "open",
           joinRequirements: {
@@ -1305,7 +1305,7 @@ describe("RaidDashboardService", () => {
           districtsRemaining: 0,
         },
         {
-          attackerName: "Closed Clan",
+          attackerName: "Moon Wolves",
           attackerTag: "#CLOSED",
           joinType: null,
           joinRequirements: null,
@@ -1313,7 +1313,7 @@ describe("RaidDashboardService", () => {
           districtsRemaining: 1,
         },
         {
-          attackerName: "Invite Clan",
+          attackerName: "River Raiders",
           attackerTag: "#INVITE",
           joinType: null,
           joinRequirements: null,
@@ -1321,7 +1321,7 @@ describe("RaidDashboardService", () => {
           districtsRemaining: 2,
         },
         {
-          attackerName: "District Sum Clan",
+          attackerName: "District Sum",
           attackerTag: "#SUM",
           joinType: null,
           joinRequirements: null,
@@ -1329,7 +1329,7 @@ describe("RaidDashboardService", () => {
           districtsRemaining: 1,
         },
         {
-          attackerName: "Zero Clan",
+          attackerName: "Zero Districts",
           attackerTag: "#ZERO",
           joinType: null,
           joinRequirements: null,
@@ -1349,23 +1349,23 @@ describe("RaidDashboardService", () => {
     } as any;
     const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
 
-    expect(description).toContain("Open Clan");
+    expect(description).toContain("🔓 QAZAQ TITANS");
     expect(description).toContain("30 attacks used");
     expect(description).toContain("0 districts remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
-    expect(description).toContain("Closed Clan");
+    expect(description).toContain("🔒 Moon Wolves");
     expect(description).toContain("1 attack used");
     expect(description).toContain("1 district remaining");
-    expect(description).toContain("Invite Clan");
+    expect(description).toContain("🔒 River Raiders");
     expect(description).toContain("2 attacks used");
     expect(description).toContain("2 districts remaining");
-    expect(description).toContain("District Sum Clan");
+    expect(description).toContain("🔒 District Sum");
     expect(description).toContain("3 attacks used");
     expect(description).toContain("1 district remaining");
-    expect(description).toContain("Zero Clan");
+    expect(description).toContain("🔒 Zero Districts");
     expect(description).toContain("0 attacks used");
     expect(description).toContain("0 districts remaining");
-    expect(description).toContain("Unknown Name");
+    expect(description).toContain("🔒 Unknown Name");
     expect(description).toContain("attacks used: —");
     expect(description).toContain("districts remaining: —");
     const reqIndex = description.indexOf("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
@@ -1373,9 +1373,9 @@ describe("RaidDashboardService", () => {
     expect(reqIndex).toBeGreaterThan(summaryIndex);
 
     const overview = buildRaidDashboardOverviewDescription(rows);
-    expect(overview).not.toContain("Open Clan");
+    expect(overview).not.toContain("QAZAQ TITANS");
     expect(overview).not.toContain("attacks used");
-    expect(overview).not.toContain("Zero Clan");
+    expect(overview).not.toContain("Zero Districts");
     expect(overview).not.toContain("0 districts remaining");
   });
 
