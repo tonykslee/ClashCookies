@@ -36,6 +36,7 @@ import { Autorole } from "../src/commands/Autorole";
 type InteractionInput = {
   group: string | null;
   subcommand: string;
+  isAdmin?: boolean;
   strings?: Record<string, string | null | undefined>;
   booleans?: Record<string, boolean | null | undefined>;
   integers?: Record<string, number | null | undefined>;
@@ -62,7 +63,7 @@ function createInteraction(input: InteractionInput) {
         },
       } as any),
     memberPermissions: {
-      has: vi.fn(() => true),
+      has: vi.fn(() => input.isAdmin ?? true),
     },
     options: {
       getSubcommandGroup: vi.fn(() => input.group),
@@ -74,6 +75,7 @@ function createInteraction(input: InteractionInput) {
       getUser: vi.fn((name: string) => users[name] ?? null),
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn().mockResolvedValue({
       createMessageComponentCollector: vi.fn(() => ({
@@ -270,7 +272,7 @@ describe("/autorole command", () => {
     ]);
   });
 
-  it("routes /autorole refresh through the shared refresh service", async () => {
+  it("allows no-arg /autorole refresh for non-admin FWA leaders", async () => {
     const guild = {
       members: {
         fetch: vi.fn(),
@@ -279,6 +281,7 @@ describe("/autorole command", () => {
     const interaction = createInteraction({
       group: null,
       subcommand: "refresh",
+      isAdmin: false,
       guild,
     });
 
@@ -290,6 +293,33 @@ describe("/autorole command", () => {
       cocService: {},
     });
     expect(getEditReplyPayload(interaction).content).toContain("Autorole refresh completed for guild.");
+  });
+
+  it("keeps scoped /autorole refresh admin-only", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const interaction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+      users: {
+        user: { id: "333333333333333333" },
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(autoRoleRefreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshUser).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshRole).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "You do not have permission to use /autorole.",
+    });
   });
 
   it("routes scoped /autorole refresh calls to the matching refresh service", async () => {

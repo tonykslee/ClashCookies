@@ -118,6 +118,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "autorole:exclusions:remove-user",
   "autorole:exclusions:add-role",
   "autorole:exclusions:remove-role",
+  "autorole:refresh:user",
+  "autorole:refresh:role",
   "autorole:refresh",
   "sync",
   "sync:time:post",
@@ -195,7 +197,8 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
-  "autorole:refresh",
+  "autorole:refresh:user",
+  "autorole:refresh:role",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
@@ -231,6 +234,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "kick-list:add",
   "kick-list:remove",
   "kick-list:show",
+  "autorole:refresh",
   "sync:time:post",
   "sync:post:status",
   "inactive",
@@ -347,6 +351,21 @@ export function getCommandTargetsFromInteraction(
   const sub = interaction.options.getSubcommand(false);
 
   const raw: string[] = [];
+  if (command === "autorole" && sub === "refresh" && group === null) {
+    const user = interaction.options.getUser("user", false);
+    const role = interaction.options.getRole("role", false);
+    if (user) {
+      raw.push("autorole:refresh:user");
+    }
+    if (role) {
+      raw.push("autorole:refresh:role");
+    }
+    if (!user && !role) {
+      raw.push("autorole:refresh");
+    }
+    raw.push(command);
+    return raw.filter((target) => isKnownTarget(target));
+  }
   if (command === "post" && group === "sync" && sub === "time") {
     raw.push("sync:time:post");
   } else if (command === "post" && group === "sync" && sub === "status") {
