@@ -1,7 +1,15 @@
-import { createHash } from "node:crypto";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import {
+  buildRaidIntelDistrictKey,
+  buildRaidIntelLayoutGradeLabel,
+  buildRaidIntelLayoutScoreKey,
+  parseRaidSeasonTimeMs,
+  type RaidIntelLayoutGrade,
+  type RaidIntelLayoutGradeLabel,
+} from "../helper/raidIntelLayout";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
+import { loadRaidIntelLayoutGradeScoresForSeasons } from "./RaidIntelLayoutMarkService";
 import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
@@ -13,6 +21,14 @@ import {
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const RAID_DETAIL_TRUNCATION_RESERVE = 96;
 
+export {
+  buildRaidIntelDistrictKey,
+  buildRaidIntelLayoutGradeLabel,
+  parseRaidSeasonTimeMs,
+  type RaidIntelLayoutGrade,
+  type RaidIntelLayoutGradeLabel,
+};
+
 export type RaidDashboardCountRow = {
   attacksCompleted: number | null;
   attacksMax: number | null;
@@ -21,6 +37,7 @@ export type RaidDashboardCountRow = {
 };
 
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
+  intelGradeScore: number;
   openDefenseSections?: RaidDashboardDefenseSection[];
 };
 
@@ -78,10 +95,6 @@ export type RaidIntelDefender = {
   defenderTag: string | null;
   districts: RaidIntelDistrict[];
 };
-
-export type RaidIntelLayoutGrade = "DEFAULT" | "CUSTOM_HARD" | "CUSTOM_MEDIUM" | "CUSTOM_EASY";
-
-export type RaidIntelLayoutGradeLabel = "Unmarked" | "Default" | "Custom - Hard" | "Custom - Medium" | "Custom - Easy";
 
 export type RaidIntelSeasonDetail = {
   activeSeason: ClanCapitalRaidSeason | null;
@@ -143,6 +156,11 @@ function formatJoinTypeLabel(joinType: RaidTrackedClanJoinType | null): string {
 
 function formatCompletedAttacksLabel(attacksCompleted: number | null): string {
   return attacksCompleted === null ? "—" : String(attacksCompleted);
+}
+
+function normalizeDistrictName(name: unknown): string | null {
+  const trimmed = String(name ?? "").replace(/\s+/g, " ").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function readBoolean(value: unknown): boolean | null {
@@ -261,26 +279,6 @@ export function formatRaidDistrictHallLabel(
   return `DH${hallLevel}`;
 }
 
-export function parseRaidSeasonTimeMs(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-
-  const compactMatch = raw.match(
-    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.(\d{1,3}))?Z$/,
-  );
-  if (compactMatch) {
-    const [, year, month, day, hour, minute, second, fraction = "0"] = compactMatch;
-    const millis = fraction.padEnd(3, "0").slice(0, 3);
-    const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}.${millis}Z`;
-    const parsed = Date.parse(iso);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function selectCurrentRaidSeason(input: {
   seasons: ClanCapitalRaidSeason[];
   nowMs: number;
@@ -349,32 +347,6 @@ function normalizeRaidAttackerClanMetadata(input: unknown): RaidAttackerClanMeta
     joinType,
     joinRequirements,
   };
-}
-
-function normalizeDistrictName(name: unknown): string | null {
-  const trimmed = String(name ?? "").replace(/\s+/g, " ").trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export function buildRaidIntelDistrictKey(input: {
-  defenderTag: string | null;
-  districtName: string;
-}): string {
-  const defenderTag = normalizeRaidTrackedClanTag(input.defenderTag ?? "") ?? "";
-  const districtName = normalizeDistrictName(input.districtName) ?? "";
-  const raw = `${defenderTag}|${districtName}`;
-  const digest = createHash("sha1").update(raw).digest("base64url").slice(0, 10);
-  return `d_${digest}`;
-}
-
-export function buildRaidIntelLayoutGradeLabel(
-  grade: RaidIntelLayoutGrade | null | undefined,
-): RaidIntelLayoutGradeLabel {
-  if (grade === "DEFAULT") return "Default";
-  if (grade === "CUSTOM_HARD") return "Custom - Hard";
-  if (grade === "CUSTOM_MEDIUM") return "Custom - Medium";
-  if (grade === "CUSTOM_EASY") return "Custom - Easy";
-  return "Unmarked";
 }
 
 function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null {
@@ -1044,6 +1016,7 @@ export function buildRaidIntelSelectedDistrictLabel(district: RaidIntelDistrict)
 
 export async function listRaidDashboardRows(input: {
   cocService: CoCService | null;
+  guildId?: string | null;
 }): Promise<RaidDashboardClanRow[]> {
   const tracked = await listRaidTrackedClansForDisplay();
   if (tracked.length <= 0) {
@@ -1062,11 +1035,30 @@ export async function listRaidDashboardRows(input: {
     }),
   );
   const allDefenseSections = snapshots.flatMap(([, snapshot]) => snapshot.defenseSections);
-  const metadataByTag = await loadRaidAttackerClanMetadata({
-    cocService: input.cocService,
-    defenseSections: allDefenseSections,
-    source: "raids:overview",
+  const gradeScoreInputs = tracked.flatMap((row, index) => {
+    const activeSeason = snapshots[index]?.[1]?.activeSeason ?? null;
+    const startMs = activeSeason?.startTime ? parseRaidSeasonTimeMs(activeSeason.startTime) : null;
+    return startMs === null
+      ? []
+      : [
+          {
+            sourceClanTag: row.clanTag,
+            raidSeasonStartTime: new Date(startMs),
+          },
+        ];
   });
+
+  const [metadataByTag, intelGradeScoreBySeason] = await Promise.all([
+    loadRaidAttackerClanMetadata({
+      cocService: input.cocService,
+      defenseSections: allDefenseSections,
+      source: "raids:overview",
+    }),
+    loadRaidIntelLayoutGradeScoresForSeasons({
+      guildId: input.guildId ?? null,
+      seasons: gradeScoreInputs,
+    }),
+  ]);
 
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
@@ -1080,6 +1072,18 @@ export async function listRaidDashboardRows(input: {
         raidsCompleted: null,
       },
     };
+    const activeSeasonStartMs = snapshot.activeSeason?.startTime
+      ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
+      : null;
+    const intelGradeScore =
+      activeSeasonStartMs === null
+        ? 0
+        : intelGradeScoreBySeason.get(
+            buildRaidIntelLayoutScoreKey({
+              sourceClanTag: row.clanTag,
+              raidSeasonStartTime: new Date(activeSeasonStartMs),
+            }),
+          ) ?? 0;
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1089,6 +1093,7 @@ export async function listRaidDashboardRows(input: {
       ...row,
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
+      intelGradeScore,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
       raidsCompleted: snapshot.counts.raidsCompleted,
       openDefenseSections,
@@ -1101,13 +1106,14 @@ export async function listRaidDashboardRows(input: {
 export async function listRaidDashboardRowsWithQueueContext(input: {
   cocService: CoCService | null;
   source: string;
+  guildId?: string | null;
 }): Promise<RaidDashboardClanRow[]> {
   return runWithCoCQueueContext(
     {
       priority: "interactive",
       source: input.source,
     },
-    () => listRaidDashboardRows({ cocService: input.cocService }),
+    () => listRaidDashboardRows({ cocService: input.cocService, guildId: input.guildId ?? null }),
   );
 }
 
@@ -1281,6 +1287,12 @@ function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanR
       const rightCompleted = right.raidsCompleted ?? 0;
       if (leftCompleted !== rightCompleted) {
         return rightCompleted - leftCompleted;
+      }
+
+      const leftGradeScore = left.intelGradeScore ?? 0;
+      const rightGradeScore = right.intelGradeScore ?? 0;
+      if (leftGradeScore !== rightGradeScore) {
+        return rightGradeScore - leftGradeScore;
       }
 
       return (left as { overviewSortIndex: number }).overviewSortIndex -

@@ -16,6 +16,8 @@ import {
   buildRaidIntelLayoutGradeLabel,
 } from "../src/services/RaidDashboardService";
 import {
+  buildRaidIntelLayoutScoreKey,
+  loadRaidIntelLayoutGradeScoresForSeasons,
   loadRaidIntelLayoutGradeLookupForSeason,
   normalizeRaidIntelLayoutGrade,
   upsertRaidIntelDistrictLayoutMark,
@@ -53,6 +55,9 @@ describe("RaidIntelLayoutMarkService", () => {
       defenderTag: "2QG2C08UQ",
       districtName: "Capital Hall",
     });
+    expect(key).toMatch(/^d_[A-Za-z0-9_-]{10}$/);
+    expect(key).not.toContain("2QG2C08UQ");
+    expect(key).not.toContain("Capital Hall");
     expect(lookup.get(key)).toBe("Custom - Hard");
     expect(prismaMock.raidIntelDistrictLayoutMark.findMany).toHaveBeenCalledWith({
       where: {
@@ -107,6 +112,105 @@ describe("RaidIntelLayoutMarkService", () => {
       raidSeasonStartTime: new Date("2026-05-15T00:00:00.000Z"),
     });
     expect(otherSeasonLookup.size).toBe(0);
+  });
+
+  it("loads batched intel grade scores for the selected guild and raid season", async () => {
+    const raidSeasonStartTime = new Date("2026-05-08T00:00:00.000Z");
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime,
+        layoutGrade: "CUSTOM_HARD",
+      },
+      {
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime,
+        layoutGrade: "CUSTOM_EASY",
+      },
+      {
+        sourceClanTag: "2RVGJYLC0",
+        raidSeasonStartTime,
+        layoutGrade: "DEFAULT",
+      },
+      {
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-15T00:00:00.000Z"),
+        layoutGrade: "CUSTOM_HARD",
+      },
+      {
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime,
+        layoutGrade: "NOT_A_REAL_GRADE" as any,
+      },
+    ] as any);
+
+    const scores = await loadRaidIntelLayoutGradeScoresForSeasons({
+      guildId: "guild-1",
+      seasons: [
+        {
+          sourceClanTag: "2QG2C08UP",
+          raidSeasonStartTime,
+        },
+        {
+          sourceClanTag: "2RVGJYLC0",
+          raidSeasonStartTime,
+        },
+      ],
+    });
+
+    const alphaKey = buildRaidIntelLayoutScoreKey({
+      sourceClanTag: "2QG2C08UP",
+      raidSeasonStartTime,
+    });
+    const bravoKey = buildRaidIntelLayoutScoreKey({
+      sourceClanTag: "2RVGJYLC0",
+      raidSeasonStartTime,
+    });
+
+    expect(scores.get(alphaKey)).toBe(4);
+    expect(scores.get(bravoKey)).toBe(0);
+    expect(prismaMock.raidIntelDistrictLayoutMark.findMany).toHaveBeenCalledWith({
+      where: {
+        guildId: "guild-1",
+        sourceClanTag: {
+          in: ["2QG2C08UP", "2RVGJYLC0"],
+        },
+        raidSeasonStartTime: {
+          in: [raidSeasonStartTime],
+        },
+      },
+      select: {
+        sourceClanTag: true,
+        raidSeasonStartTime: true,
+        layoutGrade: true,
+      },
+    });
+  });
+
+  it("keeps raid intel district keys stable and hashed for the same inputs", () => {
+    const base = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UQ",
+      districtName: "Capital Hall",
+    });
+    const same = buildRaidIntelDistrictKey({
+      defenderTag: "2QG2C08UQ",
+      districtName: "Capital Hall",
+    });
+    const differentDefender = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UR",
+      districtName: "Capital Hall",
+    });
+    const differentDistrict = buildRaidIntelDistrictKey({
+      defenderTag: "#2QG2C08UQ",
+      districtName: "Wizard Valley",
+    });
+
+    expect(base).toMatch(/^d_[A-Za-z0-9_-]{10}$/);
+    expect(base).not.toContain("2QG2C08UQ");
+    expect(base).not.toContain("Capital Hall");
+    expect(same).toBe(base);
+    expect(differentDefender).not.toBe(base);
+    expect(differentDistrict).not.toBe(base);
   });
 
   it("maps persisted enum values to display labels", () => {
