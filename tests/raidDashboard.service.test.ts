@@ -109,7 +109,27 @@ describe("RaidDashboardService", () => {
                   ],
                 },
               ],
-              defenseLog: [],
+              defenseLog: [
+                {
+                  attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+                  districtCount: 2,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                    {
+                      name: "Barbarian Camp",
+                      districtHallLevel: 4,
+                      destructionPercent: 50,
+                      stars: 1,
+                    },
+                  ],
+                },
+              ],
               raidsCompleted: null,
             },
           ];
@@ -132,6 +152,7 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("[Alpha Raid]");
     expect(overview).toContain("`#2QG2C08UP`");
     expect(overview).not.toContain("🔓 [Alpha Raid]");
+    expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Attacks:");
     expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
@@ -627,7 +648,14 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("`#2QG2C08UR`");
     expect(description).toContain("1 districts remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("🛡️ [");
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const enemyLine = overview.split("\n").find((line) => line.includes("[Enemy Clan]"));
+    expect(enemyLine).toBeDefined();
+    expect(enemyLine).toMatch(/^- 🛡️ \[Enemy Clan\]/);
+    expect(enemyLine).toContain("`#2QG2C08UR`");
+    expect(enemyLine).toContain("— 1 districts remaining");
+    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine).not.toMatch(/^  -/);
   });
 
   it("omits completed open-attacker rows and hides missing counts in overview", () => {
@@ -652,7 +680,7 @@ describe("RaidDashboardService", () => {
           },
           {
             attackerName: "Pending Clan",
-            attackerTag: "#PEND",
+            attackerTag: "#2PQQQ",
             joinType: "open",
             joinRequirements: null,
             districtsRemaining: null,
@@ -663,9 +691,16 @@ describe("RaidDashboardService", () => {
 
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("[Alpha Raid]");
-    expect(overview).toContain("🛡️ Pending Clan");
-    expect(overview).toContain("`#PEND`");
+    const pendingLine = overview.split("\n").find((line) => line.includes("[Pending Clan]"));
+    expect(pendingLine).toBeDefined();
+    expect(pendingLine).toMatch(/^- 🛡️ \[Pending Clan\]/);
+    expect(pendingLine).toContain("`#2PQQQ`");
+    expect(pendingLine).not.toContain("districts remaining");
+    expect(pendingLine).not.toContain("🔓");
+    expect(pendingLine).not.toMatch(/^  -/);
+    expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Completed Clan");
+    expect(overview).not.toContain("#DONE");
     expect(overview).not.toContain("0 districts remaining");
     expect(overview).not.toContain("districts remaining");
     expect(overview).not.toContain("Attacks:");

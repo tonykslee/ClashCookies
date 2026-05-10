@@ -261,7 +261,14 @@ describe("/raids command", () => {
     expect(description).toContain("## Raid Clans");
     expect(description).toContain("[Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("- 🛡️ [Enemy Clan]");
+    const enemyLine = description.split("\n").find((line: string) => line.includes("[Enemy Clan]"));
+    expect(enemyLine).toBeDefined();
+    expect(enemyLine).toMatch(/^- 🛡️ \[Enemy Clan\]/);
+    expect(enemyLine).toContain("`#2QG2C08UR`");
+    expect(enemyLine).toContain("— 1 districts remaining");
+    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine).not.toMatch(/^  -/);
+    expect(description).not.toContain("  -");
     expect(description).not.toContain("🔓 [Alpha Raid]");
     expect(description).not.toContain("Attacks:");
     expect(description).not.toContain("Raids completed:");
