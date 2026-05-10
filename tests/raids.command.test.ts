@@ -110,7 +110,8 @@ function makeActiveSeason() {
     ],
     defenseLog: [
       {
-        attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+        attacker: { name: "QAZAQ TITANS", tag: "#2QG2C08UR" },
+        attackCount: 30,
         districtCount: 2,
         districtsDestroyed: 1,
         districts: [
@@ -422,14 +423,17 @@ describe("/raids command", () => {
     const bravoIndex = description.indexOf("\ud83c\udf04 [Bravo Raid]");
     expect(alphaIndex).toBeGreaterThanOrEqual(0);
     expect(bravoIndex).toBeGreaterThan(alphaIndex);
-    const enemyLine = description.split("\n").find((line: string) => line.includes("[Enemy Clan]"));
+    const enemyLine = description
+      .split("\n")
+      .find((line: string) => line.includes("[QAZAQ TITANS]"));
     expect(enemyLine).toBeDefined();
-    expect(enemyLine?.startsWith("- \ud83d\udee1\ufe0f [Enemy Clan]")).toBe(true);
+    expect(enemyLine?.startsWith("- 🛡️ [QAZAQ TITANS]")).toBe(true);
     expect(enemyLine).toContain(`#2QG2C08UR`);
     expect(enemyLine).toContain("\u2014 1 districts remaining");
     expect(enemyLine?.startsWith("  -")).toBe(false);
     expect(description).not.toContain("  -");
     expect(description).not.toContain("Attacks:");
+    expect(description).not.toContain("attacks used");
     expect(description).not.toContain("Raids completed:");
     expect(description).not.toContain("Requirements:");
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
@@ -1038,9 +1042,10 @@ describe("/raids command", () => {
     expect(description).toContain("### [Defender One]");
     expect(description).toContain("Capital Hall DH5 — 3 attacks");
     expect(description).toContain("## Defending");
-    expect(description).toContain("🔓 [Enemy Clan]");
+    expect(description).toContain("🔓 [QAZAQ TITANS]");
     expect(description).toContain("`#2QG2C08UR`");
-    expect(description).toContain("1 districts remaining");
+    expect(description).toContain("30 attacks used");
+    expect(description).toContain("1 district remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
     expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -71,6 +71,7 @@ export type RaidDashboardDefenseSection = {
   attackerTag: string | null;
   joinType: RaidTrackedClanJoinType | null;
   joinRequirements: RaidClanJoinRequirements | null;
+  attacksUsed: number | null;
   districtsRemaining: number | null;
 };
 
@@ -487,12 +488,30 @@ function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidD
 function buildRaidDefenseSectionSummaryText(section: RaidDashboardDefenseSection): string {
   const attackerTag = section.attackerTag ? formatRaidTrackedClanTag(section.attackerTag) : null;
   const title = buildClanProfileMarkdownLink(section.attackerName, section.attackerTag);
-  const joinEmoji = getRaidTrackedClanJoinTypeEmoji(section.joinType);
-  return `${joinEmoji} ${title}${attackerTag ? ` \`${attackerTag}\`` : ""} — ${
-    section.districtsRemaining === null
-      ? "— districts remaining"
-      : `${section.districtsRemaining} districts remaining`
-  }`;
+  const joinEmoji = formatRaidDefenseJoinEmoji(section.joinType);
+  return `${joinEmoji} ${title}${attackerTag ? ` \`${attackerTag}\`` : ""} — ${formatRaidDefenseAttacksUsed(
+    section.attacksUsed,
+  )} — ${formatRaidDefenseDistrictsRemaining(section.districtsRemaining)}`;
+}
+
+function formatRaidDefenseJoinEmoji(joinType: RaidTrackedClanJoinType | null): string {
+  return joinType === "open" ? "🔓" : "🔒";
+}
+
+function formatRaidDefenseAttacksUsed(attacksUsed: number | null): string {
+  if (attacksUsed === null) {
+    return "attacks used: —";
+  }
+  return attacksUsed === 1 ? "1 attack used" : `${attacksUsed} attacks used`;
+}
+
+function formatRaidDefenseDistrictsRemaining(districtsRemaining: number | null): string {
+  if (districtsRemaining === null) {
+    return "districts remaining: —";
+  }
+  return districtsRemaining === 1
+    ? "1 district remaining"
+    : `${districtsRemaining} districts remaining`;
 }
 
 function buildRaidDefenseRequirementsText(requirements: RaidClanJoinRequirements | null): string {
@@ -698,6 +717,7 @@ function normalizeDefenseSections(
           .map((district) => normalizeRaidDistrictRow(district))
           .filter((district): district is RaidDashboardDistrictRow => district !== null)
       : [];
+    const attacksUsed = calculateDefenseAttacksUsed(value, districts);
     const districtCount = normalizePositiveInt(value.districtCount);
     const districtsDestroyed = normalizeNonNegativeInt(value.districtsDestroyed);
     const districtsRemaining =
@@ -710,10 +730,32 @@ function normalizeDefenseSections(
       attackerTag,
       joinType: metadata?.joinType ?? null,
       joinRequirements: metadata?.joinRequirements ?? null,
+      attacksUsed,
       districtsRemaining,
     });
   }
   return sections;
+}
+
+function calculateDefenseAttacksUsed(
+  entry: Record<string, unknown>,
+  districts: RaidDashboardDistrictRow[],
+): number | null {
+  const aggregateAttackCount = normalizeNonNegativeInt(
+    entry.attackCount ?? entry.attacks ?? entry.attacksUsed,
+  );
+  if (aggregateAttackCount !== null) {
+    return aggregateAttackCount;
+  }
+
+  const districtAttackCounts = districts
+    .map((district) => district.attackCount)
+    .filter((attackCount): attackCount is number => attackCount !== null);
+  if (districtAttackCounts.length > 0) {
+    return districtAttackCounts.reduce((sum, attackCount) => sum + attackCount, 0);
+  }
+
+  return null;
 }
 
 function calculateDistrictsRemaining(districts: RaidDashboardDistrictRow[]): number | null {
