@@ -20,6 +20,34 @@ describe("/raids command shape", () => {
     expect(intelClan?.type).toBe(ApplicationCommandOptionType.String);
     expect(intelClan?.required).toBe(false);
     expect(intelClan?.autocomplete).toBe(true);
+    const districtOptionNames = [
+      "capital_peak",
+      "barbarian_camp",
+      "wizard_valley",
+      "balloon_lagoon",
+      "builders_workshop",
+      "dragon_cliffs",
+      "golem_quarry",
+      "skeleton_park",
+      "goblin_mines",
+    ];
+    expect(intel?.options?.map((option) => option.name)).toEqual([
+      "clan",
+      ...districtOptionNames,
+      "upgrades",
+    ]);
+    for (const optionName of districtOptionNames) {
+      const option = intel?.options?.find((entry) => entry.name === optionName);
+      expect(option?.type).toBe(ApplicationCommandOptionType.String);
+      expect(option?.required).toBe(false);
+      expect(option?.autocomplete).toBeUndefined();
+      expect(option?.choices).toEqual([
+        { name: "Default", value: "DEFAULT" },
+        { name: "Custom - Hard", value: "CUSTOM_HARD" },
+        { name: "Custom - Medium", value: "CUSTOM_MEDIUM" },
+        { name: "Custom - Easy", value: "CUSTOM_EASY" },
+      ]);
+    }
     const upgrades = intel?.options?.find((option) => option.name === "upgrades");
     expect(upgrades?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(upgrades?.minValue).toBe(1000);

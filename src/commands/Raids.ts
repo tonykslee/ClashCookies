@@ -37,6 +37,7 @@ import {
   type RaidIntelLayoutGrade,
   type RaidIntelLayoutGradeLabel,
 } from "../services/RaidDashboardService";
+import { normalizeRaidIntelLayoutGrade } from "../helper/raidIntelLayout";
 import {
   normalizeRaidTrackedClanTag,
   listRaidTrackedClansForDisplay,
@@ -72,6 +73,70 @@ type RaidIntelSession = {
   refreshing: boolean;
 };
 
+type RaidIntelDistrictGradeArg = {
+  optionName: string;
+  districtDisplayName: string;
+  districtMatchNames: string[];
+  layoutGrade: RaidIntelLayoutGrade;
+};
+
+const RAID_INTEL_LAYOUT_GRADE_CHOICES = [
+  { name: "Default", value: "DEFAULT" },
+  { name: "Custom - Hard", value: "CUSTOM_HARD" },
+  { name: "Custom - Medium", value: "CUSTOM_MEDIUM" },
+  { name: "Custom - Easy", value: "CUSTOM_EASY" },
+] as const;
+
+const RAID_INTEL_DISTRICT_GRADE_OPTIONS = [
+  {
+    name: "capital_peak",
+    displayName: "Capital Peak",
+    matchNames: ["Capital Peak", "Capital Hall"],
+  },
+  {
+    name: "barbarian_camp",
+    displayName: "Barbarian Camp",
+    matchNames: ["Barbarian Camp"],
+  },
+  {
+    name: "wizard_valley",
+    displayName: "Wizard Valley",
+    matchNames: ["Wizard Valley"],
+  },
+  {
+    name: "balloon_lagoon",
+    displayName: "Balloon Lagoon",
+    matchNames: ["Balloon Lagoon"],
+  },
+  {
+    name: "builders_workshop",
+    displayName: "Builder's Workshop",
+    matchNames: ["Builder's Workshop", "Builders Workshop"],
+  },
+  {
+    name: "dragon_cliffs",
+    displayName: "Dragon Cliffs",
+    matchNames: ["Dragon Cliffs"],
+  },
+  {
+    name: "golem_quarry",
+    displayName: "Golem Quarry",
+    matchNames: ["Golem Quarry"],
+  },
+  {
+    name: "skeleton_park",
+    displayName: "Skeleton Park",
+    matchNames: ["Skeleton Park"],
+  },
+  {
+    name: "goblin_mines",
+    displayName: "Goblin Mines",
+    matchNames: ["Goblin Mines"],
+  },
+] as const;
+
+const RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE = "Failed to save raid intel layout marks.";
+
 const raidsDashboardSessions = new Map<string, RaidsDashboardSession>();
 const raidsIntelSessions = new Map<string, RaidIntelSession>();
 
@@ -106,6 +171,15 @@ function createRaidIntelSessionTimer(sessionId: string): void {
     raidsIntelSessions.delete(sessionId);
   }, RAID_DASHBOARD_TIMEOUT_MS);
   (timer as NodeJS.Timeout & { unref?: () => void }).unref?.();
+}
+
+function normalizeRaidIntelDistrictMatchName(value: string): string {
+  return String(value ?? "")
+    .replace(/['’]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function formatClanTag(tag: string): string {
@@ -175,6 +249,114 @@ function buildRaidIntelGradeButtonRow(input: {
   );
 }
 
+function buildRaidIntelDistrictGradeArgs(interaction: ChatInputCommandInteraction): RaidIntelDistrictGradeArg[] {
+  return RAID_INTEL_DISTRICT_GRADE_OPTIONS.flatMap((option) => {
+    const rawGrade = interaction.options.getString(option.name, false);
+    const layoutGrade = normalizeRaidIntelLayoutGrade(rawGrade);
+    if (!layoutGrade) return [];
+    return [
+      {
+        optionName: option.name,
+        districtDisplayName: option.displayName,
+        districtMatchNames: [...option.matchNames],
+        layoutGrade,
+      },
+    ];
+  });
+}
+
+async function applyRaidIntelDistrictGradeArgs(input: {
+  guildId: string | null;
+  sourceClanTag: string;
+  raidSeasonStartTime: Date | null;
+  detail: Awaited<ReturnType<typeof loadRaidIntelSeasonDetailWithQueueContext>>;
+  districtGradeArgs: RaidIntelDistrictGradeArg[];
+  markedByDiscordUserId: string;
+}): Promise<string | null> {
+  if (!input.guildId || !input.raidSeasonStartTime || input.districtGradeArgs.length <= 0) {
+    return null;
+  }
+  if (!input.detail.activeSeason || input.detail.defenders.length <= 0) {
+    return null;
+  }
+
+  const districtsByName = new Map<
+    string,
+    Array<{
+      defenderTag: string | null;
+      districtName: string;
+      districtHallLevel: number | null;
+    }>
+  >();
+  for (const defender of input.detail.defenders) {
+    for (const district of defender.districts) {
+      const normalizedName = normalizeRaidIntelDistrictMatchName(district.name);
+      if (!normalizedName) continue;
+      const current = districtsByName.get(normalizedName) ?? [];
+      current.push({
+        defenderTag: defender.defenderTag,
+        districtName: district.name,
+        districtHallLevel: district.districtHallLevel,
+      });
+      districtsByName.set(normalizedName, current);
+    }
+  }
+
+  const skippedDistricts: string[] = [];
+  for (const districtArg of input.districtGradeArgs) {
+    const matchedDistricts = new Map<
+      string,
+      {
+        defenderTag: string | null;
+        districtName: string;
+        districtHallLevel: number | null;
+      }
+    >();
+    for (const matchName of districtArg.districtMatchNames) {
+      const normalizedName = normalizeRaidIntelDistrictMatchName(matchName);
+      const candidates = districtsByName.get(normalizedName) ?? [];
+      for (const candidate of candidates) {
+        const candidateKey = `${candidate.defenderTag ?? ""}|${candidate.districtName}`;
+        matchedDistricts.set(candidateKey, candidate);
+      }
+    }
+
+    if (matchedDistricts.size <= 0) {
+      skippedDistricts.push(districtArg.districtDisplayName);
+      continue;
+    }
+
+    for (const district of matchedDistricts.values()) {
+      try {
+        const mark = await upsertRaidIntelDistrictLayoutMark({
+          guildId: input.guildId,
+          sourceClanTag: input.sourceClanTag,
+          raidSeasonStartTime: input.raidSeasonStartTime,
+          defenderTag: district.defenderTag ?? "",
+          districtName: district.districtName,
+          districtHallLevel: district.districtHallLevel,
+          layoutGrade: districtArg.layoutGrade,
+          markedByDiscordUserId: input.markedByDiscordUserId,
+        });
+        if (!mark) {
+          throw new Error(RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE);
+        }
+      } catch (err) {
+        console.error(
+          `[raids] intel slash-arg save failed | clan=${input.sourceClanTag} | season=${
+            input.raidSeasonStartTime?.toISOString() ?? "unknown"
+          } | arg=${districtArg.optionName} | district=${district.districtName} | ${formatError(err)}`,
+        );
+        throw new Error(RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE);
+      }
+    }
+  }
+
+  return skippedDistricts.length > 0
+    ? skippedDistricts.map((districtName) => `Skipped: ${districtName} was not found in current intel data.`).join("\n")
+    : null;
+}
+
 function buildRaidDashboardEmbed(
   rows: RaidDashboardClanRow[],
   selectedRow: RaidDashboardClanRow | null,
@@ -192,6 +374,7 @@ function buildRaidIntelEmbed(input: {
   detail: Awaited<ReturnType<typeof loadRaidIntelSeasonDetailWithQueueContext>>;
   selectedDistrictLabel?: string | null;
   controlsHint?: string | null;
+  districtArgsNote?: string | null;
   districtControlsNote?: string | null;
 }) {
   return new EmbedBuilder()
@@ -203,6 +386,7 @@ function buildRaidIntelEmbed(input: {
         detail: input.detail,
         selectedDistrictLabel: input.selectedDistrictLabel,
         controlsHint: input.controlsHint,
+        districtArgsNote: input.districtArgsNote,
         districtControlsNote: input.districtControlsNote,
       }),
     )
@@ -317,6 +501,7 @@ async function buildRaidIntelPayload(input: {
   trackedClan: RaidIntelTrackedClanRow;
   upgradesOverride: number | null;
   selectedDistrictKey: string | null;
+  districtGradeArgs: RaidIntelDistrictGradeArg[];
   cocService: CoCService;
   refreshing: boolean;
   source: string;
@@ -338,6 +523,14 @@ async function buildRaidIntelPayload(input: {
     ? parseRaidSeasonTimeMs(detail.activeSeason.startTime)
     : null;
   const seasonStart = seasonStartMs === null ? null : new Date(seasonStartMs);
+  const districtArgsNote = await applyRaidIntelDistrictGradeArgs({
+    guildId: input.guildId,
+    sourceClanTag: input.trackedClan.clanTag,
+    raidSeasonStartTime: seasonStart,
+    detail,
+    districtGradeArgs: input.districtGradeArgs,
+    markedByDiscordUserId: input.userId,
+  });
   const gradeLookup =
     detail.activeSeason && input.guildId
       ? await loadRaidIntelLayoutGradeLookupForSeason({
@@ -368,6 +561,7 @@ async function buildRaidIntelPayload(input: {
     detail: markedDetail,
     selectedDistrictLabel,
     controlsHint,
+    districtArgsNote,
     districtControlsNote,
   });
 
@@ -454,6 +648,7 @@ export async function handleRaidsIntelSelectMenuInteraction(
       trackedClan,
       upgradesOverride: session.upgradesOverride,
       selectedDistrictKey: session.selectedDistrictKey,
+      districtGradeArgs: [],
       cocService,
       refreshing: false,
       source: "raids:intel:select",
@@ -536,6 +731,7 @@ export async function handleRaidsIntelButtonInteraction(
       trackedClan,
       upgradesOverride: session.upgradesOverride,
       selectedDistrictKey: session.selectedDistrictKey,
+      districtGradeArgs: [],
       cocService,
       refreshing: false,
       source: parsed.action === "refresh" ? "raids:intel:refresh" : "raids:intel:grade",
@@ -581,6 +777,7 @@ export async function handleRaidsIntelButtonInteraction(
         trackedClan,
         upgradesOverride: session.upgradesOverride,
         selectedDistrictKey: session.selectedDistrictKey,
+        districtGradeArgs: [],
         cocService,
         refreshing: false,
         source: "raids:intel:grade",
@@ -900,6 +1097,16 @@ export const Raids: Command = {
           required: false,
           autocomplete: true,
         },
+        ...RAID_INTEL_DISTRICT_GRADE_OPTIONS.map((option) => ({
+          name: option.name,
+          description: `Pre-mark the ${option.displayName} layout grade`,
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: RAID_INTEL_LAYOUT_GRADE_CHOICES.map((choice) => ({
+            name: choice.name,
+            value: choice.value,
+          })),
+        })),
         {
           name: "upgrades",
           description: "Manual upgrades value to display",
@@ -1012,39 +1219,57 @@ export const Raids: Command = {
 
       const upgradesArg = interaction.options.getInteger("upgrades", false);
       const sessionId = interaction.id;
-      raidsIntelSessions.set(sessionId, {
-        guildId: interaction.guildId ?? null,
-        userId: interaction.user.id,
-        trackedClanTag: requestedClan,
-        upgradesOverride: upgradesArg ?? null,
-        raidSeasonStartTime: null,
-        selectedDistrictKey: null,
-        districtKeyMap: new Map<string, RaidIntelDistrict>(),
-        refreshing: false,
-      });
-      createRaidIntelSessionTimer(sessionId);
 
-      const payload = await buildRaidIntelPayload({
-        sessionId,
-        guildId: interaction.guildId ?? null,
-        userId: interaction.user.id,
-        trackedClan,
-        upgradesOverride: upgradesArg ?? null,
-        selectedDistrictKey: null,
-        cocService,
-        refreshing: false,
-        source: "raids:intel",
-      });
-      const session = getRaidIntelSession(sessionId);
-      if (session) {
-        session.raidSeasonStartTime = payload.raidSeasonStartTime;
-        session.selectedDistrictKey = payload.selectedDistrictKey;
-        session.districtKeyMap = payload.districtKeyMap;
+      try {
+        const payload = await buildRaidIntelPayload({
+          sessionId,
+          guildId: interaction.guildId ?? null,
+          userId: interaction.user.id,
+          trackedClan,
+          upgradesOverride: upgradesArg ?? null,
+          selectedDistrictKey: null,
+          districtGradeArgs: buildRaidIntelDistrictGradeArgs(interaction),
+          cocService,
+          refreshing: false,
+          source: "raids:intel",
+        });
+        const session = getRaidIntelSession(sessionId);
+        if (session) {
+          session.raidSeasonStartTime = payload.raidSeasonStartTime;
+          session.selectedDistrictKey = payload.selectedDistrictKey;
+          session.districtKeyMap = payload.districtKeyMap;
+        } else {
+          raidsIntelSessions.set(sessionId, {
+            guildId: interaction.guildId ?? null,
+            userId: interaction.user.id,
+            trackedClanTag: requestedClan,
+            upgradesOverride: upgradesArg ?? null,
+            raidSeasonStartTime: payload.raidSeasonStartTime,
+            selectedDistrictKey: payload.selectedDistrictKey,
+            districtKeyMap: payload.districtKeyMap,
+            refreshing: false,
+          });
+          createRaidIntelSessionTimer(sessionId);
+        }
+        await interaction.editReply({
+          embeds: payload.embeds,
+          components: payload.components,
+        });
+      } catch (err) {
+        const errorMessage = formatError(err);
+        if (errorMessage.includes(RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE)) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE,
+          });
+          return;
+        }
+        console.error(`[raids] intel command failed: ${errorMessage}`);
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Failed to update the raid intel view.",
+        });
       }
-      await interaction.editReply({
-        embeds: payload.embeds,
-        components: payload.components,
-      });
       return;
     }
 

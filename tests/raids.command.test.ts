@@ -217,11 +217,72 @@ function makeEmptySeason() {
   return [];
 }
 
-function makeChatInteraction(options?: { clan?: string | null; focused?: string; subcommand?: string; upgrades?: number | null }) {
+function makeIntelDistrictSeason() {
+  return {
+    startTime: "2026-05-08T00:00:00.000Z",
+    endTime: "2026-05-11T00:00:00.000Z",
+    members: [{ attacks: 6 }, { attacks: 5 }],
+    attackLog: [
+      {
+        defender: { name: "Defender One", tag: "#2QG2C08UQ" },
+        districtCount: 2,
+        districtsDestroyed: 1,
+        districts: [
+          {
+            name: "Capital Peak",
+            districtHallLevel: 10,
+            attackCount: 2,
+            destructionPercent: 100,
+            stars: 3,
+          },
+          {
+            name: "Barbarian Camp",
+            districtHallLevel: 5,
+            attackCount: 0,
+            destructionPercent: 0,
+            stars: 0,
+          },
+        ],
+      },
+      {
+        defender: { name: "Defender Two", tag: "#2QG2C08UR" },
+        districtCount: 2,
+        districtsDestroyed: 1,
+        districts: [
+          {
+            name: "Capital Hall",
+            districtHallLevel: 10,
+            attackCount: 1,
+            destructionPercent: 100,
+            stars: 3,
+          },
+          {
+            name: "Skeleton Park",
+            districtHallLevel: 4,
+            attackCount: 0,
+            destructionPercent: 0,
+            stars: 0,
+          },
+        ],
+      },
+    ],
+    defenseLog: [],
+    raidsCompleted: null,
+  };
+}
+
+function makeChatInteraction(options?: {
+  clan?: string | null;
+  focused?: string;
+  subcommand?: string;
+  upgrades?: number | null;
+  districtArgs?: Record<string, string | null | undefined>;
+}) {
   const clan = options?.clan ?? null;
   const focused = options?.focused ?? "";
   const subcommand = options?.subcommand ?? "overview";
   const upgrades = options?.upgrades ?? null;
+  const districtArgs = options?.districtArgs ?? {};
   const interaction: any = {
     id: "raids-itx-1",
     commandName: "raids",
@@ -236,7 +297,10 @@ function makeChatInteraction(options?: { clan?: string | null; focused?: string;
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
       getSubcommand: vi.fn(() => subcommand),
-      getString: vi.fn((name: string) => (name === "clan" ? clan : null)),
+      getString: vi.fn((name: string) => {
+        if (name === "clan") return clan;
+        return Object.prototype.hasOwnProperty.call(districtArgs, name) ? districtArgs[name] ?? null : null;
+      }),
       getInteger: vi.fn((name: string) => (name === "upgrades" ? upgrades : null)),
       getFocused: vi.fn().mockReturnValue({ name: "clan", value: focused }),
     },
@@ -499,6 +563,183 @@ describe("/raids command", () => {
       expect.any(Function),
     );
     expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
+  });
+
+  it("loads saved intel marks on the initial embed", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        id: 1,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Capital Peak",
+        districtHallLevel: 10,
+        layoutGrade: "CUSTOM_MEDIUM",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+      {
+        id: 2,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UR",
+        districtName: "Capital Hall",
+        districtHallLevel: 10,
+        layoutGrade: "CUSTOM_MEDIUM",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+      {
+        id: 3,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Barbarian Camp",
+        districtHallLevel: 5,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeIntelDistrictSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Capital Peak DH10 — Grade: Custom - Medium");
+    expect(description).toContain("Capital Hall DH10 — Grade: Custom - Medium");
+    expect(description).toContain("Barbarian Camp DH5 — Grade: Default");
+  });
+
+  it("pre-marks district grades from slash args before rendering", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        id: 1,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Capital Peak",
+        districtHallLevel: 10,
+        layoutGrade: "CUSTOM_HARD",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+      {
+        id: 2,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UR",
+        districtName: "Capital Hall",
+        districtHallLevel: 10,
+        layoutGrade: "CUSTOM_HARD",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+      {
+        id: 3,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Barbarian Camp",
+        districtHallLevel: 5,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeIntelDistrictSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      districtArgs: {
+        capital_peak: "CUSTOM_HARD",
+        barbarian_camp: "DEFAULT",
+      },
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const upsertDistrictNames = prismaMock.raidIntelDistrictLayoutMark.upsert.mock.calls
+      .map(([input]: any[]) => input.create.districtName)
+      .sort();
+    expect(upsertDistrictNames).toEqual(["Barbarian Camp", "Capital Hall", "Capital Peak"]);
+
+    const upsertGrades = prismaMock.raidIntelDistrictLayoutMark.upsert.mock.calls
+      .map(([input]: any[]) => input.create.layoutGrade)
+      .sort();
+    expect(upsertGrades).toEqual(["CUSTOM_HARD", "CUSTOM_HARD", "DEFAULT"]);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Capital Peak DH10 — Grade: Custom - Hard");
+    expect(description).toContain("Capital Hall DH10 — Grade: Custom - Hard");
+    expect(description).toContain("Barbarian Camp DH5 — Grade: Default");
+  });
+
+  it("shows a skipped note when a slash arg district is missing from the current intel data", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeIntelDistrictSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      districtArgs: {
+        dragon_cliffs: "CUSTOM_EASY",
+      },
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Skipped: Dragon Cliffs was not found in current intel data.");
+  });
+
+  it("does not attempt slash-arg writes when there is no active raid weekend", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => []),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      districtArgs: {
+        capital_peak: "CUSTOM_HARD",
+      },
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toBe("No active raid weekend data available.");
   });
 
   it("shows district controls and reveals the selected district grade buttons", async () => {
