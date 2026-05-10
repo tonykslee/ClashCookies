@@ -880,6 +880,7 @@ export function buildRaidIntelDescription(input: {
   detail: RaidIntelSeasonDetail;
   selectedDistrictLabel?: string | null;
   controlsHint?: string | null;
+  districtArgsNote?: string | null;
   districtControlsNote?: string | null;
 }): string {
   if (!input.detail.activeSeason) {
@@ -907,6 +908,9 @@ export function buildRaidIntelDescription(input: {
   }
   if (input.controlsHint) {
     lines.push({ text: input.controlsHint, item: false });
+  }
+  if (input.districtArgsNote) {
+    lines.push({ text: input.districtArgsNote, item: false });
   }
   if (input.districtControlsNote) {
     lines.push({ text: input.districtControlsNote, item: false });
