@@ -700,6 +700,33 @@ describe("/raids command", () => {
     expect(description).toContain("Barbarian Camp DH5 — Grade: Default");
   });
 
+  it("returns a clear failure message when a slash-arg district mark save fails", async () => {
+    prismaMock.raidIntelDistrictLayoutMark.upsert.mockResolvedValueOnce(null);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [makeIntelDistrictSeason()]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      districtArgs: {
+        capital_peak: "CUSTOM_HARD",
+      },
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to save raid intel layout marks.",
+    });
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).toHaveBeenCalled();
+    const responsePayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(responsePayload.embeds).toBeUndefined();
+    expect(responsePayload.components).toBeUndefined();
+  });
+
   it("shows a skipped note when a slash arg district is missing from the current intel data", async () => {
     const cocService = {
       getClanCapitalRaidSeasons: vi.fn(async () => [makeIntelDistrictSeason()]),
