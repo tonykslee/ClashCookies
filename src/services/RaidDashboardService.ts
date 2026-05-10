@@ -846,15 +846,6 @@ export async function loadRaidIntelSeasonDetailWithQueueContext(input: {
   );
 }
 
-async function resolveClanRaidCounts(input: {
-  cocService: CoCService | null;
-  clanTag: string;
-  nowMs: number;
-}): Promise<RaidDashboardCountRow> {
-  const snapshot = await loadRaidDashboardSeasonSnapshot(input);
-  return snapshot.counts;
-}
-
 export function buildRaidIntelDescription(input: {
   trackedClan: RaidTrackedClanDisplayRow;
   upgrades: number | null;
@@ -1022,7 +1013,6 @@ export async function listRaidDashboardRows(input: {
   });
 
   return tracked.map((row, index) => {
-    const tag = normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag;
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
       attackSections: [],
@@ -1073,6 +1063,33 @@ export function buildRaidDashboardClanTitle(input: {
   return `${emoji} ${link} \`${clanTag}\``;
 }
 
+function buildRaidDashboardOverviewClanTitle(input: {
+  clanTag: string;
+  clanName: string | null;
+}): string {
+  const clanTag = formatRaidTrackedClanTag(input.clanTag);
+  const clanName = input.clanName?.trim() || clanTag;
+  const link = buildClanProfileMarkdownLink(clanName, clanTag);
+  return `${link} \`${clanTag}\``;
+}
+
+function buildRaidDashboardOverviewOpenDefenseSectionText(
+  section: RaidDashboardDefenseSection,
+): string | null {
+  if (section.districtsRemaining === 0) {
+    return null;
+  }
+
+  const attackerTag = section.attackerTag ? formatRaidTrackedClanTag(section.attackerTag) : null;
+  const title = buildClanProfileMarkdownLink(section.attackerName, section.attackerTag);
+  const suffix =
+    section.districtsRemaining === null
+      ? ""
+      : ` — ${section.districtsRemaining} districts remaining`;
+
+  return `- 🛡️ ${title}${attackerTag ? ` \`${attackerTag}\`` : ""}${suffix}`;
+}
+
 export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow[]): string {
   if (rows.length <= 0) {
     return "No RAIDS tracked clans configured.";
@@ -1080,11 +1097,12 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
 
   const lines: string[] = ["## Raid Clans", ""];
   for (const row of rows) {
-    lines.push(buildRaidDashboardClanTitle(row));
-    lines.push(`Attacks: ${formatCompletedAttacksLabel(row.attacksCompleted)}`);
-    lines.push(`Raids completed: ${row.raidsCompleted === null ? "—" : row.raidsCompleted}`);
+    lines.push(buildRaidDashboardOverviewClanTitle(row));
     for (const section of row.openDefenseSections ?? []) {
-      lines.push(`  - ${buildRaidDefenseSectionSummaryText(section)}`);
+      const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
+      if (text) {
+        lines.push(text);
+      }
     }
     lines.push("");
   }

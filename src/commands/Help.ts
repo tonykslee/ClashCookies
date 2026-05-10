@@ -227,11 +227,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   raids: {
-    summary: "View tracked RAID clans with live raid-season counts and open-attacker metadata when available.",
+    summary: "View tracked RAID clans with live open-attacker metadata when available.",
     details: [
-      "Shows an overview of tracked RAIDS clans with join-status emoji, clickable clan names, live current attacks when the active raid season is available, and open defending-clan rows when the live defense log can resolve them. The single-clan view adds attack and defense detail sections, and open attacking clans include a requirements sub-line when their live clan metadata is available.",
-      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown, and both views keep the same refresh button so the message updates in place. `/raids intel` opens a raid-intel view for one tracked clan with defender/district details, saved layout grades, and interactive district controls.",
-      "Counts fall back to `—` when the live raid-season source cannot resolve them yet.",
+      "Shows an overview of tracked RAIDS clans with clickable clan names and open defending-clan rows when the live defense log can resolve them. The single-clan view adds attack and defense detail sections, and open attacking clans include a requirements sub-line when their live clan metadata is available.",
+      "`/raids overview` shows the dashboard; `clan` opens a single-clan view with attack and defense detail sections when the live raid-season source can resolve them, the overview includes a tracked-clan dropdown and refresh button, and both views keep the same refresh button so the message updates in place. `/raids intel` opens a raid-intel view for one tracked clan with defender/district details, saved layout grades, and interactive district controls.",
     ],
     examples: ["/raids overview", "/raids overview clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0", "/raids intel clan:#2RVGJYLC0 upgrades:2299"],
   },

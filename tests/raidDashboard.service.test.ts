@@ -41,7 +41,6 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
-  formatRaidDistrictHallLabel,
   parseRaidSeasonTimeMs,
 } from "../src/services/RaidDashboardService";
 
@@ -109,7 +108,27 @@ describe("RaidDashboardService", () => {
                   ],
                 },
               ],
-              defenseLog: [],
+              defenseLog: [
+                {
+                  attacker: { name: "Enemy Clan", tag: "#2QG2C08UR" },
+                  districtCount: 2,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                    {
+                      name: "Barbarian Camp",
+                      districtHallLevel: 4,
+                      destructionPercent: 50,
+                      stars: 1,
+                    },
+                  ],
+                },
+              ],
               raidsCompleted: null,
             },
           ];
@@ -129,9 +148,12 @@ describe("RaidDashboardService", () => {
 
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
-    expect(overview).toContain("🔓 [Alpha Raid]");
-    expect(overview).toContain("Attacks: 11");
-    expect(overview).toContain("Raids completed: 1");
+    expect(overview).toContain("[Alpha Raid]");
+    expect(overview).toContain("`#2QG2C08UP`");
+    expect(overview).not.toContain("🔓 [Alpha Raid]");
+    expect(overview).not.toContain("  -");
+    expect(overview).not.toContain("Attacks:");
+    expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
     expect(overview).not.toContain("Upgrades:");
 
@@ -171,7 +193,8 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.attacksCompleted).toBe(11);
     expect(rows[0]?.attacksMax).toBe(12);
     expect(rows[0]?.raidsCompleted).toBeNull();
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 11");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("parses compact raid timestamps without milliseconds and still selects the active season", async () => {
@@ -218,7 +241,8 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.attacksCompleted).toBe(13);
     expect(rows[0]?.attacksMax).toBe(18);
     expect(rows[0]?.raidsCompleted).toBe(1);
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: 13");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("treats started aggregate raid logs as not completed", async () => {
@@ -263,7 +287,8 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(0);
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 0");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("treats incomplete per-district raid logs as not completed", async () => {
@@ -313,7 +338,8 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(0);
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 0");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("treats fully destroyed per-district raid logs as completed", async () => {
@@ -363,7 +389,8 @@ describe("RaidDashboardService", () => {
 
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.raidsCompleted).toBe(1);
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: 1");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("renders MAX for maxed raid district hall levels and falls back to DH labels otherwise", () => {
@@ -620,7 +647,63 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("`#2QG2C08UR`");
     expect(description).toContain("1 districts remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("  - 🔓 [Enemy Clan]");
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const enemyLine = overview.split("\n").find((line) => line.includes("[Enemy Clan]"));
+    expect(enemyLine).toBeDefined();
+    expect(enemyLine).toMatch(/^- 🛡️ \[Enemy Clan\]/);
+    expect(enemyLine).toContain("`#2QG2C08UR`");
+    expect(enemyLine).toContain("— 1 districts remaining");
+    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine?.startsWith("  -")).toBe(false);
+  });
+
+  it("omits completed open-attacker rows and hides missing counts in overview", () => {
+    const rows = [
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        raidsCompleted: null,
+        openDefenseSections: [
+          {
+            attackerName: "Completed Clan",
+            attackerTag: "#DONE",
+            joinType: "open",
+            joinRequirements: null,
+            districtsRemaining: 0,
+          },
+          {
+            attackerName: "Pending Clan",
+            attackerTag: "#2PQQQ",
+            joinType: "open",
+            joinRequirements: null,
+            districtsRemaining: null,
+          },
+        ],
+      },
+    ] as any;
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    expect(overview).toContain("[Alpha Raid]");
+    const pendingLine = overview.split("\n").find((line) => line.includes("[Pending Clan]"));
+    expect(pendingLine).toBeDefined();
+    expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
+    expect(pendingLine).toContain("`#2PQQQ`");
+    expect(pendingLine).not.toContain("districts remaining");
+    expect(pendingLine).not.toContain("🔓");
+    expect(pendingLine?.startsWith("  -")).toBe(false);
+    expect(overview).not.toContain("  -");
+    expect(overview).not.toContain("Completed Clan");
+    expect(overview).not.toContain("#DONE");
+    expect(overview).not.toContain("0 districts remaining");
+    expect(overview).not.toContain("districts remaining");
+    expect(overview).not.toContain("Attacks:");
+    expect(overview).not.toContain("Raids completed:");
   });
 
   it("maps versus trophies to builder base requirements without mixing ranked trophies", async () => {
@@ -1169,8 +1252,8 @@ describe("RaidDashboardService", () => {
     const rows = await listRaidDashboardRows({ cocService: cocService as any });
     expect(rows[0]?.attacksCompleted).toBeNull();
     expect(rows[0]?.attacksMax).toBeNull();
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Attacks: —");
-    expect(buildRaidDashboardOverviewDescription(rows)).toContain("Raids completed: —");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
+    expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
   it("prioritizes the selected clan in the dropdown and caps options at 25", () => {
