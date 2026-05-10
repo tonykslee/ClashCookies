@@ -3,6 +3,10 @@ import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
 import {
+  buildRaidIntelLayoutScoreKey,
+  loadRaidIntelLayoutGradeScoresForSeasons,
+} from "./RaidIntelLayoutMarkService";
+import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
   normalizeRaidTrackedClanTag,
@@ -21,6 +25,7 @@ export type RaidDashboardCountRow = {
 };
 
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
+  intelGradeScore: number;
   openDefenseSections?: RaidDashboardDefenseSection[];
 };
 
@@ -1044,6 +1049,7 @@ export function buildRaidIntelSelectedDistrictLabel(district: RaidIntelDistrict)
 
 export async function listRaidDashboardRows(input: {
   cocService: CoCService | null;
+  guildId?: string | null;
 }): Promise<RaidDashboardClanRow[]> {
   const tracked = await listRaidTrackedClansForDisplay();
   if (tracked.length <= 0) {
@@ -1062,11 +1068,30 @@ export async function listRaidDashboardRows(input: {
     }),
   );
   const allDefenseSections = snapshots.flatMap(([, snapshot]) => snapshot.defenseSections);
-  const metadataByTag = await loadRaidAttackerClanMetadata({
-    cocService: input.cocService,
-    defenseSections: allDefenseSections,
-    source: "raids:overview",
+  const gradeScoreInputs = tracked.flatMap((row, index) => {
+    const activeSeason = snapshots[index]?.[1]?.activeSeason ?? null;
+    const startMs = activeSeason?.startTime ? parseRaidSeasonTimeMs(activeSeason.startTime) : null;
+    return startMs === null
+      ? []
+      : [
+          {
+            sourceClanTag: row.clanTag,
+            raidSeasonStartTime: new Date(startMs),
+          },
+        ];
   });
+
+  const [metadataByTag, intelGradeScoreBySeason] = await Promise.all([
+    loadRaidAttackerClanMetadata({
+      cocService: input.cocService,
+      defenseSections: allDefenseSections,
+      source: "raids:overview",
+    }),
+    loadRaidIntelLayoutGradeScoresForSeasons({
+      guildId: input.guildId ?? null,
+      seasons: gradeScoreInputs,
+    }),
+  ]);
 
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
@@ -1080,6 +1105,18 @@ export async function listRaidDashboardRows(input: {
         raidsCompleted: null,
       },
     };
+    const activeSeasonStartMs = snapshot.activeSeason?.startTime
+      ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
+      : null;
+    const intelGradeScore =
+      activeSeasonStartMs === null
+        ? 0
+        : intelGradeScoreBySeason.get(
+            buildRaidIntelLayoutScoreKey({
+              sourceClanTag: row.clanTag,
+              raidSeasonStartTime: new Date(activeSeasonStartMs),
+            }),
+          ) ?? 0;
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1089,6 +1126,7 @@ export async function listRaidDashboardRows(input: {
       ...row,
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
+      intelGradeScore,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
       raidsCompleted: snapshot.counts.raidsCompleted,
       openDefenseSections,
@@ -1101,13 +1139,14 @@ export async function listRaidDashboardRows(input: {
 export async function listRaidDashboardRowsWithQueueContext(input: {
   cocService: CoCService | null;
   source: string;
+  guildId?: string | null;
 }): Promise<RaidDashboardClanRow[]> {
   return runWithCoCQueueContext(
     {
       priority: "interactive",
       source: input.source,
     },
-    () => listRaidDashboardRows({ cocService: input.cocService }),
+    () => listRaidDashboardRows({ cocService: input.cocService, guildId: input.guildId ?? null }),
   );
 }
 
@@ -1281,6 +1320,12 @@ function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanR
       const rightCompleted = right.raidsCompleted ?? 0;
       if (leftCompleted !== rightCompleted) {
         return rightCompleted - leftCompleted;
+      }
+
+      const leftGradeScore = left.intelGradeScore ?? 0;
+      const rightGradeScore = right.intelGradeScore ?? 0;
+      if (leftGradeScore !== rightGradeScore) {
+        return rightGradeScore - leftGradeScore;
       }
 
       return (left as { overviewSortIndex: number }).overviewSortIndex -
