@@ -1410,7 +1410,7 @@ describe("RaidDashboardService", () => {
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
-  it("keeps dropdown order aligned with the sorted overview and caps options at 25", () => {
+  it("keeps dropdown order aligned with the sorted overview when no clan is selected", () => {
     const validSuffixes = "PYLQGRJCUV0289";
     const rows = Array.from({ length: 27 }, (_, index) => ({
       clanTag: `2QG2C08U${validSuffixes[index % validSuffixes.length]}${
@@ -1423,16 +1423,68 @@ describe("RaidDashboardService", () => {
       updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       attacksCompleted: null,
       attacksMax: null,
+      hasOngoingRaid: false,
       raidsCompleted: null,
     })) as any;
 
-    const choices = buildRaidDashboardSelectChoices(rows, rows[9]?.clanTag ?? null);
+    const choices = buildRaidDashboardSelectChoices(rows, null);
     expect(choices).toHaveLength(25);
-    expect(choices[0]?.value).toBe(rows[0]?.clanTag);
-    expect(choices[0]?.label).toBe("Clan 1");
-    expect(choices[9]?.value).toBe(rows[9]?.clanTag);
-    expect(choices[9]?.label).toBe("Clan 10");
+    expect(choices.map((choice) => choice.value)).toEqual(rows.slice(0, 25).map((row) => row.clanTag));
+    expect(choices.every((choice) => choice.selected === false)).toBe(true);
+  });
+
+  it("keeps the selected clan marked as default when it is already within the first 25", () => {
+    const validSuffixes = "PYLQGRJCUV0289";
+    const rows = Array.from({ length: 27 }, (_, index) => ({
+      clanTag: `2QG2C08U${validSuffixes[index % validSuffixes.length]}${
+        validSuffixes[Math.floor(index / validSuffixes.length)] ?? ""
+      }`,
+      clanName: `Clan ${index + 1}`,
+      upgrades: index + 100,
+      joinType: index % 2 === 0 ? "open" : "closed",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: null,
+      attacksMax: null,
+      hasOngoingRaid: false,
+      raidsCompleted: null,
+    })) as any;
+
+    const selectedClanTag = rows[9]?.clanTag ?? null;
+    const choices = buildRaidDashboardSelectChoices(rows, selectedClanTag);
+    expect(choices).toHaveLength(25);
+    expect(choices.map((choice) => choice.value)).toEqual(rows.slice(0, 25).map((row) => row.clanTag));
+    expect(choices[9]?.value).toBe(selectedClanTag);
     expect(choices[9]?.selected).toBe(true);
-    expect(choices[9]?.description).toContain(`#${rows[9]?.clanTag}`);
+    expect(choices.filter((choice) => choice.value === selectedClanTag)).toHaveLength(1);
+  });
+
+  it("includes the selected clan when it would otherwise fall outside the first 25", () => {
+    const validSuffixes = "PYLQGRJCUV0289";
+    const rows = Array.from({ length: 27 }, (_, index) => ({
+      clanTag: `2QG2C08U${validSuffixes[index % validSuffixes.length]}${
+        validSuffixes[Math.floor(index / validSuffixes.length)] ?? ""
+      }`,
+      clanName: `Clan ${index + 1}`,
+      upgrades: index + 100,
+      joinType: index % 2 === 0 ? "open" : "closed",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: null,
+      attacksMax: null,
+      hasOngoingRaid: false,
+      raidsCompleted: null,
+    })) as any;
+
+    const selectedClanTag = rows[26]?.clanTag ?? null;
+    const choices = buildRaidDashboardSelectChoices(rows, selectedClanTag);
+    expect(choices).toHaveLength(25);
+    expect(choices[0]?.value).toBe(selectedClanTag);
+    expect(choices[0]?.selected).toBe(true);
+    expect(choices.map((choice) => choice.value)).toEqual([
+      selectedClanTag,
+      ...rows.slice(0, 24).map((row) => row.clanTag),
+    ]);
+    expect(choices.filter((choice) => choice.value === selectedClanTag)).toHaveLength(1);
   });
 });

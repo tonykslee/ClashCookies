@@ -1225,9 +1225,19 @@ export function buildRaidDashboardSelectChoices(
   selected: boolean;
 }> {
   const normalizedSelected = normalizeRaidTrackedClanTag(selectedClanTag ?? "");
-  return sortRaidDashboardRows(rows)
-    .slice(0, 25)
-    .map((row) => {
+  const sortedRows = sortRaidDashboardRows(rows);
+  const selectedRow =
+    normalizedSelected !== null
+      ? sortedRows.find(
+          (row) => (normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag) === normalizedSelected,
+        ) ?? null
+      : null;
+  const rowsForDropdown =
+    selectedRow && sortedRows.indexOf(selectedRow) >= 25
+      ? [selectedRow, ...sortedRows.filter((row) => row !== selectedRow).slice(0, 24)]
+      : sortedRows.slice(0, 25);
+
+  return rowsForDropdown.map((row) => {
     const clanTag = formatRaidTrackedClanTag(row.clanTag);
     const label = row.clanName?.trim() || clanTag;
     return {
