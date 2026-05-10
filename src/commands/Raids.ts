@@ -230,6 +230,7 @@ function buildRaidsSelectRow(input: {
         if (option.emoji) {
           menuOption.setEmoji(option.emoji);
         }
+        menuOption.setDefault(option.selected);
         return menuOption;
       }),
     )
