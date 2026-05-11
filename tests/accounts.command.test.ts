@@ -1,5 +1,6 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as PlayerLinkService from "../src/services/PlayerLinkService";
 
 const prismaMock = vi.hoisted(() => ({
   playerCurrent: {
@@ -151,11 +152,85 @@ function makePlayerCurrentRow(overrides: Record<string, any> = {}) {
   };
 }
 
+function makeBulkAccountRows(input: {
+  tagPrefix: string;
+  namePrefix: string;
+  clanTag: string;
+  clanName: string;
+  count: number;
+  discordUserId?: string | null;
+  startIndex?: number;
+}) {
+  const links: Array<{
+    playerTag: string;
+    playerName: string;
+    discordUserId: string | null;
+    discordUsername: string | null;
+    linkSource: string;
+    verificationStatus: string;
+    verificationMethod: string | null;
+    verifiedAt: Date | null;
+    verifiedByDiscordUserId: string | null;
+    lastVerifiedAt: Date | null;
+    verificationFailureReason: string | null;
+    importBatchKey: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }> = [];
+  const playerCurrents: Array<Record<string, any>> = [];
+  const startIndex = input.startIndex ?? 1;
+  for (let index = 0; index < input.count; index += 1) {
+    const value = startIndex + index;
+    const suffix = String(value).padStart(3, "0");
+    const playerTag = `#${input.tagPrefix}${suffix}`;
+    const playerName = `${input.namePrefix} ${suffix}`;
+    links.push({
+      playerTag,
+      playerName,
+      discordUserId: input.discordUserId ?? null,
+      discordUsername: `${input.namePrefix.replace(/\s+/g, "")}User`,
+      linkSource: "ADMIN_CREATE",
+      verificationStatus: "VERIFIED",
+      verificationMethod: "ADMIN_OVERRIDE",
+      verifiedAt: new Date("2026-03-01T00:00:00.000Z"),
+      verifiedByDiscordUserId: null,
+      lastVerifiedAt: new Date("2026-03-02T00:00:00.000Z"),
+      verificationFailureReason: null,
+      importBatchKey: null,
+      createdAt: new Date(`2026-03-${String((value % 27) + 1).padStart(2, "0")}T00:00:00.000Z`),
+      updatedAt: new Date(`2026-03-${String((value % 27) + 1).padStart(2, "0")}T00:00:00.000Z`),
+    });
+    playerCurrents.push(
+      makePlayerCurrentRow({
+        playerTag,
+        playerName,
+        townHall: 15,
+        currentClanTag: input.clanTag,
+        currentClanName: input.clanName,
+        role: "member",
+        currentWeight: null,
+        lastSource: "accounts-refresh",
+      }),
+    );
+  }
+
+  return { links, playerCurrents };
+}
+
 function getEmbedDescription(interaction: any): string {
   const payload = [...interaction.editReply.mock.calls].reverse().find(
     (call: unknown[]) => call[0] && typeof call[0] === "object" && Array.isArray(call[0].embeds)
   )?.[0] as any;
-  return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+  return readEmbedDescription(payload?.embeds?.[0]);
+}
+
+function readEmbedDescription(embed: any): string {
+  return String(
+    embed?.description ??
+      embed?.data?.description ??
+      embed?.toJSON?.().description ??
+      "",
+  );
 }
 
 describe("/accounts command", () => {
@@ -223,7 +298,9 @@ describe("/accounts command", () => {
     expect(description).toContain(
       "**[Stored Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=PQL0289)**",
     );
-    expect(description).toContain("TH16 Linked Alpha `#PYLQ0289` - —");
+    expect(description).toContain(
+      "TH16 [Linked Alpha](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) `#PYLQ0289` - —",
+    );
   });
 
   it("falls back to playerActivity.name when playerName is missing", async () => {
@@ -253,7 +330,9 @@ describe("/accounts command", () => {
 
     await Accounts.run({} as any, interaction as any, cocService as any);
 
-    expect(getEmbedDescription(interaction)).toContain("TH? Activity Bravo `#QGRJ2222` - —");
+    expect(getEmbedDescription(interaction)).toContain(
+      "TH? [Activity Bravo](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) `#QGRJ2222` - —",
+    );
   });
 
   it("renders Unknown Clan when neither PlayerCurrent nor PlayerActivity has clan data", async () => {
@@ -274,7 +353,9 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, cocService as any);
 
     expect(getEmbedDescription(interaction)).toContain("**Unknown Clan**");
-    expect(getEmbedDescription(interaction)).toContain("TH? #CUV9082 `#CUV9082` - —");
+    expect(getEmbedDescription(interaction)).toContain(
+      "TH? [#CUV9082](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=CUV9082>) `#CUV9082` - —",
+    );
   });
 
   it("renders Unknown Clan when PlayerCurrent only has catalog hydration data", async () => {
@@ -371,8 +452,12 @@ describe("/accounts command", () => {
     expect(description).toContain(
       "**[Untracked Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=UNTRK1)**",
     );
-    expect(description).toContain("TH16 Alpha :crown: `#PYLQ0289` - —");
-    expect(description).toContain("TH16 Bravo :crown: `#QGRJ2222` - —");
+    expect(description).toContain(
+      "TH16 [Alpha](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - —",
+    );
+    expect(description).toContain(
+      "TH16 [Bravo](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - —",
+    );
   });
 
   it("shows tracked FWA clans before non-tracked clans and uses FWA weight precedence", async () => {
@@ -472,9 +557,15 @@ describe("/accounts command", () => {
     const freeHeadingIndex = description.indexOf("Free Clan");
     expect(trackedHeadingIndex).toBeGreaterThanOrEqual(0);
     expect(freeHeadingIndex).toBeGreaterThan(trackedHeadingIndex);
-    expect(description).toContain("TH17 Tracked One :crown: `#PYLQ0289` - 210k");
-    expect(description).toContain("TH18 Free One `#QGRJ2222` - 145k");
-    expect(description).toContain("TH16 Weight Missing `#LQ9P8R2` - —");
+    expect(description).toContain(
+      "TH17 [Tracked One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 210k",
+    );
+    expect(description).toContain(
+      "TH18 [Free One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) `#QGRJ2222` - 145k",
+    );
+    expect(description).toContain(
+      "TH16 [Weight Missing](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) `#LQ9P8R2` - —",
+    );
     expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith({
       where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2"] } },
       select: {
@@ -598,10 +689,18 @@ describe("/accounts command", () => {
     await Accounts.run({} as any, interaction as any, makeCocService() as any);
 
     const description = getEmbedDescription(interaction);
-    expect(description).toContain("TH15 Alpha One :crown: `#PYLQ0289` - 155k");
-    expect(description).toContain("TH15 Alpha Two :crown: `#QGRJ2222` - 156k");
-    expect(description).toContain("TH15 Alpha Three :crown: `#LQ9P8R2` - 167k");
-    expect(description).toContain("TH15 Alpha Four :crown: `#JQ00020` - 179k");
+    expect(description).toContain(
+      "TH15 [Alpha One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 155k",
+    );
+    expect(description).toContain(
+      "TH15 [Alpha Two](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - 156k",
+    );
+    expect(description).toContain(
+      "TH15 [Alpha Three](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) :crown: `#LQ9P8R2` - 167k",
+    );
+    expect(description).toContain(
+      "TH15 [Alpha Four](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=JQ00020>) :crown: `#JQ00020` - 179k",
+    );
     expect(prismaMock.externalPlayerWeightCurrent.findMany).toHaveBeenCalledWith({
       where: { playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2", "#JQ00020"] } },
       select: {
@@ -631,6 +730,127 @@ describe("/accounts command", () => {
       },
       orderBy: [{ createdAt: "desc" }],
     });
+  });
+
+  it("renders more than 18 accounts on one page when the description fits", async () => {
+    const { links, playerCurrents } = makeBulkAccountRows({
+      tagPrefix: "FIT",
+      namePrefix: "Fit Player",
+      clanTag: "#FIT001",
+      clanName: "Fit Clan",
+      count: 20,
+      discordUserId: "111111111111111111",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(links);
+    prismaMock.playerCurrent.findMany.mockResolvedValue(playerCurrents);
+    prismaMock.playerActivity.findMany.mockResolvedValue(
+      links.map((link) => ({
+        tag: link.playerTag,
+        name: link.playerName,
+        clanTag: "#FIT001",
+        clanName: "Fit Clan",
+      })),
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#FIT001", name: "Fit Clan", shortName: "FIT" },
+    ]);
+    const listPlayerLinksSpy = vi.spyOn(PlayerLinkService, "listPlayerLinksForDiscordUser").mockResolvedValue(
+      links.map((link) => ({
+        playerTag: link.playerTag,
+        linkedAt: link.createdAt,
+        linkedName: link.playerName,
+      })),
+    );
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("Fit Clan");
+    expect((description.match(/OpenPlayerProfile/g) ?? []).length).toBe(20);
+    expect(description.length).toBeLessThanOrEqual(4096);
+    listPlayerLinksSpy.mockRestore();
+  });
+
+  it("keeps clan blocks together across description-length pages and preserves the active page on refresh", async () => {
+    const firstClan = makeBulkAccountRows({
+      tagPrefix: "AAA",
+      namePrefix: "Alpha",
+      clanTag: "#AAA001",
+      clanName: "Alpha Clan",
+      count: 100,
+      discordUserId: "222222222222222222",
+    });
+    const secondClan = makeBulkAccountRows({
+      tagPrefix: "BBB",
+      namePrefix: "Bravo",
+      clanTag: "#BBB001",
+      clanName: "Bravo Clan",
+      count: 100,
+      discordUserId: "222222222222222222",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([...firstClan.links, ...secondClan.links]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      ...firstClan.playerCurrents,
+      ...secondClan.playerCurrents,
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      ...firstClan.links.map((link) => ({
+        tag: link.playerTag,
+        name: link.playerName,
+        clanTag: "#AAA001",
+        clanName: "Alpha Clan",
+      })),
+      ...secondClan.links.map((link) => ({
+        tag: link.playerTag,
+        name: link.playerName,
+        clanTag: "#BBB001",
+        clanName: "Bravo Clan",
+      })),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA001", name: "Alpha Clan", shortName: "ALPHA" },
+      { tag: "#BBB001", name: "Bravo Clan", shortName: "BRAVO" },
+    ]);
+    const listPlayerLinksSpy = vi.spyOn(PlayerLinkService, "listPlayerLinksForDiscordUser").mockResolvedValue(
+      [...firstClan.links, ...secondClan.links].map((link) => ({
+        playerTag: link.playerTag,
+        linkedAt: link.createdAt,
+        linkedName: link.playerName,
+      })),
+    );
+    const interaction = makeInteraction({
+      discordUserId: "222222222222222222",
+    });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const firstPageDescription = getEmbedDescription(interaction);
+    expect(firstPageDescription.startsWith("Linked Discord: <@222222222222222222>\n\n")).toBe(true);
+    expect(firstPageDescription).toContain("Alpha Clan");
+    expect(firstPageDescription).not.toContain("Bravo Clan");
+    expect((firstPageDescription.match(/OpenPlayerProfile/g) ?? []).length).toBeGreaterThan(18);
+    expect(firstPageDescription.length).toBeLessThanOrEqual(4096);
+
+    const collect = interaction.__collectorHandlers.collect;
+    expect(collect).toBeTypeOf("function");
+    const nextButton = makeButtonInteraction("accounts:777777777777777777:next");
+    await collect(nextButton);
+    const nextPayload = nextButton.update.mock.calls[0][0] as any;
+    const nextDescription = readEmbedDescription(nextPayload.embeds[0]);
+    expect(nextDescription).toContain("Bravo Clan");
+    expect(nextDescription).not.toContain("Alpha Clan");
+    expect(nextDescription.length).toBeLessThanOrEqual(4096);
+
+    const refreshButton = makeButtonInteraction("accounts:777777777777777777:refresh");
+    await collect(refreshButton);
+    const refreshPayload = refreshButton.update.mock.calls[0][0] as any;
+    const refreshDescription = readEmbedDescription(refreshPayload.embeds[0]);
+    expect(refreshDescription).toContain("Bravo Clan");
+    expect(refreshDescription).not.toContain("Alpha Clan");
+    expect(refreshDescription.length).toBeLessThanOrEqual(4096);
+    expect(getEmbedDescription(interaction)).toContain("Bravo Clan");
+    listPlayerLinksSpy.mockRestore();
   });
 
   it("adds a refresh button that reruns clan resolution and disables itself while refreshing", async () => {
