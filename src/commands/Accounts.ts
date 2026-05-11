@@ -106,7 +106,10 @@ type AccountWeightContext = {
 
 type AccountDisplayEmojiMap = Map<number, string>;
 
-const MAX_ACCOUNTS_PER_PAGE = 18;
+const ACCOUNTS_DESCRIPTION_LIMIT = 4096;
+const ACCOUNTS_DESCRIPTION_RESERVE = 100;
+const ACCOUNTS_USABLE_DESCRIPTION_LIMIT = ACCOUNTS_DESCRIPTION_LIMIT - ACCOUNTS_DESCRIPTION_RESERVE;
+const ACCOUNTS_TRUNCATION_LINE = "…and more accounts not shown.";
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
 
 function normalizeTag(input: string): string {
@@ -203,6 +206,14 @@ function buildClanProfileMarkdownLink(
   return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
 }
 
+function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: string): string {
+  const normalizedPlayerTag = normalizeTag(playerTag);
+  const label = sanitizeDisplayText(playerName) || normalizedPlayerTag || "Unknown Player";
+  if (!normalizedPlayerTag) return label;
+  const encodedTag = normalizedPlayerTag.replace(/^#/, "");
+  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
+}
+
 function buildClanHeadingLabel(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
   const fallbackTag = sanitizeDisplayText(group.clanTag) ?? "Unknown Clan";
   return sanitizeDisplayText(group.clanName) ?? fallbackTag;
@@ -212,6 +223,85 @@ function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">
   const label = buildClanHeadingLabel(group);
   const clanTag = normalizeTag(group.clanTag ?? "");
   return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
+}
+
+function buildAccountRowText(
+  entry: AccountRow,
+  townHallEmojiByLevel: AccountDisplayEmojiMap,
+): string {
+  const crown = entry.clanRole ? " :crown:" : "";
+  const playerLink = buildPlayerProfileMarkdownLink(entry.name, entry.tag);
+  return `${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${playerLink}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}`;
+}
+
+function buildAccountGroupBlockLines(
+  group: ClanGroup,
+  townHallEmojiByLevel: AccountDisplayEmojiMap,
+): string[] {
+  const lines: string[] = [
+    `**${
+      group.clanState === "known" && group.clanTag
+        ? buildClanHeadingMarkdown(group)
+        : group.clanState === "unknown"
+          ? "Unknown Clan"
+          : "No Clan"
+    }**`,
+  ];
+
+  for (const entry of group.entries) {
+    lines.push(buildAccountRowText(entry, townHallEmojiByLevel));
+  }
+
+  return lines;
+}
+
+function renderAccountPageText(lines: string[], linkedDiscordLine: string | null): string {
+  const body = lines.join("\n").trim();
+  if (!body) return linkedDiscordLine ? linkedDiscordLine : "";
+  return linkedDiscordLine ? `${linkedDiscordLine}\n\n${body}` : body;
+}
+
+function appendBlockIfFits(
+  currentLines: string[],
+  blockLines: string[],
+  linkedDiscordLine: string | null,
+): string[] | null {
+  const nextLines = currentLines.length > 0 ? [...currentLines, "", ...blockLines] : [...blockLines];
+  return renderAccountPageText(nextLines, linkedDiscordLine).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT
+    ? nextLines
+    : null;
+}
+
+function truncateGroupBlockToFit(
+  blockLines: string[],
+  linkedDiscordLine: string | null,
+): string[] {
+  const truncated: string[] = [];
+  for (const line of blockLines) {
+    const nextLines = [...truncated, line];
+    if (renderAccountPageText(nextLines, linkedDiscordLine).length > ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
+      break;
+    }
+    truncated.push(line);
+  }
+
+  if (truncated.length < blockLines.length) {
+    while (
+      truncated.length > 0 &&
+      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine).length >
+        ACCOUNTS_USABLE_DESCRIPTION_LIMIT
+    ) {
+      truncated.pop();
+    }
+    if (
+      renderAccountPageText([...truncated, ACCOUNTS_TRUNCATION_LINE], linkedDiscordLine).length <=
+      ACCOUNTS_USABLE_DESCRIPTION_LIMIT
+    ) {
+      truncated.push(ACCOUNTS_TRUNCATION_LINE);
+    }
+  }
+
+  return truncated;
 }
 
 function isConfirmedClanlessSource(source: string | null | undefined): boolean {
@@ -644,55 +734,47 @@ function buildGroups(rows: AccountRow[]): ClanGroup[] {
   return groups;
 }
 
-function buildPages(
-  groups: ClanGroup[],
-  townHallEmojiByLevel: AccountDisplayEmojiMap,
-): string[] {
+function buildPages(input: {
+  groups: ClanGroup[];
+  townHallEmojiByLevel: AccountDisplayEmojiMap;
+  linkedDiscordLine: string | null;
+}): string[] {
+  const { groups, townHallEmojiByLevel, linkedDiscordLine } = input;
   const pages: string[] = [];
   let lines: string[] = [];
-  let accountCount = 0;
 
   for (const group of groups) {
-    const groupLines: string[] = [];
-    groupLines.push(
-      `**${
-        group.clanState === "known" && group.clanTag
-          ? buildClanHeadingMarkdown(group)
-          : group.clanState === "unknown"
-            ? "Unknown Clan"
-            : "No Clan"
-      }**`,
-    );
-    for (const entry of group.entries) {
-      const crown = entry.clanRole ? " :crown:" : "";
-      groupLines.push(
-        `${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${entry.name}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}`,
-      );
+    const groupLines = buildAccountGroupBlockLines(group, townHallEmojiByLevel);
+    const appended = appendBlockIfFits(lines, groupLines, linkedDiscordLine);
+    if (appended !== null) {
+      lines = appended;
+      continue;
     }
 
-    const groupAccountCount = group.entries.length;
-    const wouldOverflow = accountCount + groupAccountCount > MAX_ACCOUNTS_PER_PAGE;
-    if (wouldOverflow && lines.length > 0) {
-      pages.push(lines.join("\n"));
+    if (lines.length > 0) {
+      pages.push(renderAccountPageText(lines, linkedDiscordLine));
       lines = [];
-      accountCount = 0;
     }
 
-    lines.push(...groupLines, "");
-    accountCount += groupAccountCount;
+    if (renderAccountPageText(groupLines, linkedDiscordLine).length <= ACCOUNTS_USABLE_DESCRIPTION_LIMIT) {
+      lines = groupLines;
+      continue;
+    }
 
-    if (accountCount >= MAX_ACCOUNTS_PER_PAGE) {
-      pages.push(lines.join("\n").trim());
-      lines = [];
-      accountCount = 0;
+    const truncatedLines = truncateGroupBlockToFit(groupLines, linkedDiscordLine);
+    if (truncatedLines.length > 0) {
+      lines = truncatedLines;
     }
   }
 
   if (lines.length > 0) {
-    pages.push(lines.join("\n").trim());
+    pages.push(renderAccountPageText(lines, linkedDiscordLine));
   }
 
-  return pages.length > 0 ? pages : ["No accounts found."];
+  if (pages.length > 0) return pages;
+  return linkedDiscordLine
+    ? [renderAccountPageText(["No accounts found."], linkedDiscordLine)]
+    : ["No accounts found."];
 }
 
 function buildAccountsControlsRow(
@@ -732,16 +814,14 @@ function buildEmbeds(
   linkedDiscordUserId?: string | null,
 ): EmbedBuilder[] {
   const groups = buildGroups(rows);
-  const pages = buildPages(groups, townHallEmojiByLevel);
   const linkedDiscordLine = linkedDiscordUserId
     ? `Linked Discord: <@${linkedDiscordUserId}>`
-    : "";
+    : null;
+  const pages = buildPages({ groups, townHallEmojiByLevel, linkedDiscordLine });
   return pages.map((description, index) =>
     new EmbedBuilder()
       .setTitle(`My Accounts by Clan (${rows.length})`)
-      .setDescription(
-        linkedDiscordLine ? `${linkedDiscordLine}\n\n${description}` : description,
-      )
+      .setDescription(description)
       .setFooter({ text: `Page ${index + 1}/${pages.length}` })
   );
 }
