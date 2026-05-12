@@ -122,32 +122,71 @@ describe("/defer add", () => {
     );
   });
 
-  it("returns already_exists without calling cocService.getPlayerRaw when an open deferment already exists", async () => {
-    prismaMock.weightInputDeferment.findUnique.mockResolvedValue({
-      id: "defer-open-1",
-      guildId: "guild-1",
-      clanTag: "#PQL0289",
-      scopeKey: "guild:guild-1|clan:PQL0289",
-      playerTag: "#PYLQ0289",
-      deferredWeight: 145000,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      status: "open",
-    });
-    const interaction = makeInteraction({
+  it("updates the same deferment row on a second add instead of creating a duplicate", async () => {
+    const firstInteraction = makeInteraction({
       playerTag: "#pylq0289",
       weight: "145k",
     });
+    const secondInteraction = makeInteraction({
+      playerTag: "#pylq0289",
+      weight: "150k",
+    });
     const cocService = {
-      getPlayerRaw: vi.fn(),
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        name: "Live Player",
+        townHallLevel: 16,
+        clan: {
+          tag: "#PQL0289",
+          name: "Alpha Clan",
+        },
+      }),
     };
+    prismaMock.weightInputDeferment.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "defer-1",
+        guildId: "guild-1",
+        clanTag: "#PQL0289",
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        status: "open",
+      });
+    prismaMock.weightInputDeferment.upsert
+      .mockResolvedValueOnce({
+        id: "defer-1",
+        guildId: "guild-1",
+        clanTag: "#PQL0289",
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        status: "open",
+      })
+      .mockResolvedValueOnce({
+        id: "defer-1",
+        guildId: "guild-1",
+        clanTag: "#PQL0289",
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 150000,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        status: "open",
+      });
 
-    await Defer.run({} as any, interaction as any, cocService as any);
+    await Defer.run({} as any, firstInteraction as any, cocService as any);
+    await Defer.run({} as any, secondInteraction as any, cocService as any);
 
-    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
-    expect(prismaMock.playerCurrent.upsert).not.toHaveBeenCalled();
-    expect(prismaMock.weightInputDeferment.upsert).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith(
-      "already_exists: #PYLQ0289 is already open in #PQL0289.",
+    expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(2);
+    expect(prismaMock.weightInputDeferment.findUnique).toHaveBeenCalledTimes(2);
+    expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(2);
+    expect(firstInteraction.editReply).toHaveBeenCalledWith(
+      "created: #PYLQ0289 queued at 145000 in #PQL0289.",
+    );
+    expect(secondInteraction.editReply).toHaveBeenCalledWith(
+      "updated: #PYLQ0289 queued at 150000 in #PQL0289.",
     );
   });
 
