@@ -158,6 +158,52 @@ function cleanNicknameOutput(input: string): string {
   return output;
 }
 
+function templateUsesDiscordTrackedClans(template: string): boolean {
+  return /\{discord\}/i.test(template) && /\{trackedclans\}/i.test(template);
+}
+
+function normalizeTrackedClanLabel(input: string): string {
+  return normalizeText(input)?.toLowerCase() ?? "";
+}
+
+function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string[]): string {
+  const normalized = normalizeText(input) ?? "";
+  if (!normalized || trackedClanLabels.length === 0) {
+    return normalized;
+  }
+
+  const trackedLabelSet = new Set(
+    trackedClanLabels.map((label) => normalizeTrackedClanLabel(label)).filter(Boolean),
+  );
+  if (trackedLabelSet.size === 0) {
+    return normalized;
+  }
+
+  const segments = normalized
+    .split(/\s+[|/-]\s+/)
+    .map((segment) => normalizeText(segment))
+    .filter((segment): segment is string => Boolean(segment));
+
+  if (segments.length === 0) {
+    return normalized;
+  }
+
+  let endIndex = segments.length;
+  while (endIndex > 0) {
+    const trailingLabel = normalizeTrackedClanLabel(segments[endIndex - 1]);
+    if (!trackedLabelSet.has(trailingLabel)) {
+      break;
+    }
+    endIndex -= 1;
+  }
+
+  if (endIndex === segments.length) {
+    return normalized;
+  }
+
+  return segments.slice(0, endIndex).join(" | ");
+}
+
 function isMeaningfulNicknameOutput(input: string): boolean {
   return String(input ?? "")
     .replace(/[\p{P}\p{Z}]+/gu, "")
@@ -216,6 +262,11 @@ export class AutoRoleNicknameService {
       normalizeText(primaryPlayerCurrent?.currentClanName) ??
       null;
     const primaryClanShort = normalizeText(primaryClan?.shortName) ?? null;
+    const template = normalizeNicknameTemplate(input.template) ?? "";
+    const discordDisplayName = normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "";
+    const discordToken = templateUsesDiscordTrackedClans(template)
+      ? stripTrailingTrackedClanLabels(discordDisplayName, trackedClanLabels)
+      : discordDisplayName;
 
     const tokens: AutoRoleNicknameTokens = {
       player: primaryPlayerName ?? "",
@@ -227,7 +278,7 @@ export class AutoRoleNicknameService {
       clanTag: primaryClanTag ?? "",
       clanShort: primaryClanShort ?? primaryClanName ?? primaryClanTag ?? "",
       trackedClans: trackedClanLabels.join(" | "),
-      discord: normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "",
+      discord: discordToken,
       username: normalizeText(input.member.user?.username ?? input.member.user?.globalName ?? null) ?? "",
       role: normalizeText(primaryPlayerCurrent?.role ?? null) ?? "",
     };
@@ -244,7 +295,6 @@ export class AutoRoleNicknameService {
       role: tokens.role,
     };
 
-    const template = normalizeNicknameTemplate(input.template) ?? "";
     const rendered = template ? this.renderTemplate(template, tokenLookup) : "";
     const cleaned = cleanNicknameOutput(rendered);
     if (!cleaned || !isMeaningfulNicknameOutput(cleaned)) {

@@ -348,6 +348,94 @@ describe("AutoRoleRefreshService", () => {
     expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps nickname refresh idempotent when discord display names already carry tracked clan labels", async () => {
+    const userId = "111111111111111111";
+    const member = makeMember(userId);
+    member.displayName = "Tilonius | EB | AK";
+    const guild = makeGuild(new Map([[userId, member]]));
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows([
+        {
+          ...makeLinkedAccount({
+            playerTag: "#PQLQ",
+            discordUserId: userId,
+            playerName: "EB Player",
+            verified: true,
+          }),
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+        {
+          ...makeLinkedAccount({
+            playerTag: "#GRJV",
+            discordUserId: userId,
+            playerName: "AK Player",
+            verified: true,
+          }),
+          createdAt: new Date("2026-04-02T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+        },
+      ], where);
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQLQ", name: "EB", shortName: "EB" },
+      { tag: "#GRJV", name: "AK", shortName: "AK" },
+    ]);
+    vi.spyOn(playerCurrentService, "resolveCurrentPlayersForTags").mockResolvedValue(
+      new Map<string, any>([
+        [
+          "#PQLQ",
+          makePlayerCurrent({
+            playerTag: "#PQLQ",
+            playerName: "EB Player",
+            currentClanTag: "#PQLQ",
+            currentClanName: "EB",
+          }),
+        ],
+        [
+          "#GRJV",
+          makePlayerCurrent({
+            playerTag: "#GRJV",
+            playerName: "AK Player",
+            currentClanTag: "#GRJV",
+            currentClanName: "AK",
+          }),
+        ],
+      ]),
+    );
+
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: true,
+        nicknameTemplate: "{discord} | {trackedClans}",
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const first = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+    });
+    const second = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+    });
+
+    expect(first.memberResults[0]).toMatchObject({
+      nicknameStatus: "unchanged",
+      nicknameReason: null,
+    });
+    expect(second.memberResults[0]).toMatchObject({
+      nicknameStatus: "unchanged",
+      nicknameReason: null,
+    });
+    expect(member.setNickname).not.toHaveBeenCalled();
+  });
+
   it("refreshes tracked FWA clans from clan member lists without player lookups", async () => {
     const clanRoleId = "222222222222222222";
     const townHallRoleId = "333333333333333333";

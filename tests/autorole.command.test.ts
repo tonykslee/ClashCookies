@@ -21,6 +21,10 @@ const autoRoleRefreshServiceMock = vi.hoisted(() => ({
   refreshRole: vi.fn(),
 }));
 
+const commandPermissionServiceMock = vi.hoisted(() => ({
+  canUseCommand: vi.fn(),
+}));
+
 vi.mock("../src/services/AutoRoleService", () => ({
   autoRoleService: autoRoleServiceMock,
   formatAutoRoleRuleTarget: (rule: any) => String(rule.targetValue ?? ""),
@@ -29,6 +33,10 @@ vi.mock("../src/services/AutoRoleService", () => ({
 
 vi.mock("../src/services/AutoRoleRefreshService", () => ({
   autoRoleRefreshService: autoRoleRefreshServiceMock,
+}));
+
+vi.mock("../src/services/CommandPermissionService", () => ({
+  CommandPermissionService: vi.fn().mockImplementation(() => commandPermissionServiceMock),
 }));
 
 import { Autorole } from "../src/commands/Autorole";
@@ -97,6 +105,7 @@ function getDescription(interaction: any): string {
 describe("/autorole command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commandPermissionServiceMock.canUseCommand.mockResolvedValue(true);
     autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValue({
       id: "config-1",
       guildId: "111111111111111111",
@@ -272,7 +281,7 @@ describe("/autorole command", () => {
     ]);
   });
 
-  it("allows no-arg /autorole refresh for non-admin FWA leaders", async () => {
+  it("allows no-arg /autorole refresh when command permissions allow it", async () => {
     const guild = {
       members: {
         fetch: vi.fn(),
@@ -287,6 +296,10 @@ describe("/autorole command", () => {
 
     await Autorole.run({} as any, interaction as any, {} as any);
 
+    expect(commandPermissionServiceMock.canUseCommand).toHaveBeenCalledWith(
+      "autorole:refresh",
+      interaction,
+    );
     expect(autoRoleRefreshServiceMock.refreshGuild).toHaveBeenCalledWith({
       guild,
       guildId: "111111111111111111",
@@ -295,34 +308,7 @@ describe("/autorole command", () => {
     expect(getEditReplyPayload(interaction).content).toContain("Autorole refresh completed for guild.");
   });
 
-  it("keeps scoped /autorole refresh admin-only", async () => {
-    const guild = {
-      members: {
-        fetch: vi.fn(),
-      },
-    } as any;
-    const interaction = createInteraction({
-      group: null,
-      subcommand: "refresh",
-      isAdmin: false,
-      guild,
-      users: {
-        user: { id: "333333333333333333" },
-      },
-    });
-
-    await Autorole.run({} as any, interaction as any, {} as any);
-
-    expect(autoRoleRefreshServiceMock.refreshGuild).not.toHaveBeenCalled();
-    expect(autoRoleRefreshServiceMock.refreshUser).not.toHaveBeenCalled();
-    expect(autoRoleRefreshServiceMock.refreshRole).not.toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalledWith({
-      ephemeral: true,
-      content: "You do not have permission to use /autorole.",
-    });
-  });
-
-  it("routes scoped /autorole refresh calls to the matching refresh service", async () => {
+  it("allows scoped /autorole refresh variants when command permissions allow it", async () => {
     const guild = {
       members: {
         fetch: vi.fn(),
@@ -332,12 +318,17 @@ describe("/autorole command", () => {
     const userInteraction = createInteraction({
       group: null,
       subcommand: "refresh",
+      isAdmin: false,
       guild,
       users: {
         user: { id: "333333333333333333" },
       },
     });
     await Autorole.run({} as any, userInteraction as any, {} as any);
+    expect(commandPermissionServiceMock.canUseCommand).toHaveBeenCalledWith(
+      "autorole:refresh",
+      userInteraction,
+    );
     expect(autoRoleRefreshServiceMock.refreshUser).toHaveBeenCalledWith({
       guild,
       guildId: "111111111111111111",
@@ -348,18 +339,88 @@ describe("/autorole command", () => {
     const roleInteraction = createInteraction({
       group: null,
       subcommand: "refresh",
+      isAdmin: false,
       guild,
       roles: {
         role: { id: "444444444444444444" },
       },
     });
     await Autorole.run({} as any, roleInteraction as any, {} as any);
+    expect(commandPermissionServiceMock.canUseCommand).toHaveBeenCalledWith(
+      "autorole:refresh",
+      roleInteraction,
+    );
     expect(autoRoleRefreshServiceMock.refreshRole).toHaveBeenCalledWith({
       guild,
       guildId: "111111111111111111",
       discordRoleId: "444444444444444444",
       cocService: {},
     });
+  });
+
+  it("denies every /autorole refresh variant when command permissions deny it", async () => {
+    commandPermissionServiceMock.canUseCommand.mockResolvedValue(false);
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+
+    const noArgInteraction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+    });
+    await Autorole.run({} as any, noArgInteraction as any, {} as any);
+
+    const userInteraction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+      users: {
+        user: { id: "333333333333333333" },
+      },
+    });
+    await Autorole.run({} as any, userInteraction as any, {} as any);
+
+    const roleInteraction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+      roles: {
+        role: { id: "444444444444444444" },
+      },
+    });
+    await Autorole.run({} as any, roleInteraction as any, {} as any);
+
+    for (const interaction of [noArgInteraction, userInteraction, roleInteraction]) {
+      expect(interaction.reply).toHaveBeenCalledWith({
+        ephemeral: true,
+        content: "You do not have permission to use /autorole.",
+      });
+    }
+    expect(autoRoleRefreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshUser).not.toHaveBeenCalled();
+    expect(autoRoleRefreshServiceMock.refreshRole).not.toHaveBeenCalled();
+  });
+
+  it("keeps non-refresh /autorole subcommands admin-only", async () => {
+    const interaction = createInteraction({
+      group: "config",
+      subcommand: "show",
+      isAdmin: false,
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "You do not have permission to use /autorole.",
+    });
+    expect(autoRoleServiceMock.getOrCreateGuildConfig).not.toHaveBeenCalled();
   });
 
   it("rejects /autorole refresh when both user and role are provided", async () => {
