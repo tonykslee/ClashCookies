@@ -21,6 +21,10 @@ const autoRoleRefreshServiceMock = vi.hoisted(() => ({
   refreshRole: vi.fn(),
 }));
 
+const commandPermissionServiceMock = vi.hoisted(() => ({
+  canUseCommand: vi.fn(),
+}));
+
 vi.mock("../src/services/AutoRoleService", () => ({
   autoRoleService: autoRoleServiceMock,
   formatAutoRoleRuleTarget: (rule: any) => String(rule.targetValue ?? ""),
@@ -29,6 +33,10 @@ vi.mock("../src/services/AutoRoleService", () => ({
 
 vi.mock("../src/services/AutoRoleRefreshService", () => ({
   autoRoleRefreshService: autoRoleRefreshServiceMock,
+}));
+
+vi.mock("../src/services/CommandPermissionService", () => ({
+  CommandPermissionService: vi.fn().mockImplementation(() => commandPermissionServiceMock),
 }));
 
 import { Autorole } from "../src/commands/Autorole";
@@ -97,6 +105,7 @@ function getDescription(interaction: any): string {
 describe("/autorole command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commandPermissionServiceMock.canUseCommand.mockResolvedValue(true);
     autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValue({
       id: "config-1",
       guildId: "111111111111111111",
@@ -272,7 +281,7 @@ describe("/autorole command", () => {
     ]);
   });
 
-  it("allows no-arg /autorole refresh for non-admin FWA leaders", async () => {
+  it("allows no-arg /autorole refresh when command permissions allow it", async () => {
     const guild = {
       members: {
         fetch: vi.fn(),
@@ -287,6 +296,10 @@ describe("/autorole command", () => {
 
     await Autorole.run({} as any, interaction as any, {} as any);
 
+    expect(commandPermissionServiceMock.canUseCommand).toHaveBeenCalledWith(
+      "autorole:refresh",
+      interaction,
+    );
     expect(autoRoleRefreshServiceMock.refreshGuild).toHaveBeenCalledWith({
       guild,
       guildId: "111111111111111111",

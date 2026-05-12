@@ -14,6 +14,7 @@ import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
 import {
   autoRoleRefreshService,
   type AutoRoleRefreshResult,
@@ -705,12 +706,25 @@ export const Autorole: Command = {
 
     const group = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
+    const permissionService = new CommandPermissionService();
 
     const refreshUser = interaction.options.getUser("user", false);
     const refreshRole = interaction.options.getRole("role", false);
-    const isNoArgRefresh = subcommand === "refresh" && group === null && !refreshUser && !refreshRole;
+    const isRefresh = subcommand === "refresh" && group === null;
 
-    if (!isNoArgRefresh && !hasAdministratorPermission(interaction)) {
+    if (isRefresh) {
+      const canRunRefresh = !refreshUser && !refreshRole
+        ? await permissionService.canUseCommand("autorole:refresh", interaction)
+        : hasAdministratorPermission(interaction);
+
+      if (!canRunRefresh) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "You do not have permission to use /autorole.",
+        });
+        return;
+      }
+    } else if (!hasAdministratorPermission(interaction)) {
       await safeReply(interaction, {
         ephemeral: true,
         content: "You do not have permission to use /autorole.",
