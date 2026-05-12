@@ -713,10 +713,7 @@ export const Autorole: Command = {
     const isRefresh = subcommand === "refresh" && group === null;
 
     if (isRefresh) {
-      const canRunRefresh = !refreshUser && !refreshRole
-        ? await permissionService.canUseCommand("autorole:refresh", interaction)
-        : hasAdministratorPermission(interaction);
-
+      const canRunRefresh = await permissionService.canUseCommand("autorole:refresh", interaction);
       if (!canRunRefresh) {
         await safeReply(interaction, {
           ephemeral: true,
