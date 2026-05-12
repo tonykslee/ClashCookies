@@ -130,14 +130,14 @@ export const Defer: Command = {
               `failed: unable to save deferment for ${playerTag}. Check bot logs.`
             );
             return;
-          case "already_exists":
-            await interaction.editReply(
-              `already_exists: ${playerTag} is already open in ${renderScopeLabel(result.record)}.`
-            );
-            return;
           case "created":
             await interaction.editReply(
               `created: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
+            );
+            return;
+          case "updated":
+            await interaction.editReply(
+              `updated: ${playerTag} queued at ${deferredWeight} in ${renderScopeLabel(result.record)}.`
             );
             return;
         }
