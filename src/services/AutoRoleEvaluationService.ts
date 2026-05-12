@@ -155,6 +155,10 @@ function isLinkedAccountInTrackedMembershipTags(
   return playerTag.length > 0 && trackedMemberTags.has(playerTag);
 }
 
+function isLeaderRankTarget(targetValue: string): boolean {
+  return targetValue === "leader" || targetValue === "coLeader";
+}
+
 function isLinkedAccountInClanTarget(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
@@ -246,7 +250,7 @@ export class AutoRoleEvaluationService {
       if (!rule.enabled) continue;
       if (!input.managedRoleIds.has(rule.discordRoleId)) continue;
 
-      if (this.isRuleMatched(rule, linkedAccounts, input.clanMembershipByTag)) {
+      if (this.isRuleMatched(rule, linkedAccounts, input.clanMembershipByTag, input.trackedClanScope)) {
         desiredManagedRoleIds.add(rule.discordRoleId);
         matchedRuleIds.add(rule.id);
       }
@@ -310,6 +314,7 @@ export class AutoRoleEvaluationService {
     rule: AutoRoleRule,
     linkedAccounts: RankedLinkedAccount[],
     clanMembershipByTag: AutoRoleClanMembershipIndex,
+    trackedClanScope: AutoRoleTrackedClanScope,
   ): boolean {
     switch (rule.type) {
       case AutoRoleRuleType.VERIFIED:
@@ -326,8 +331,20 @@ export class AutoRoleEvaluationService {
         );
       case AutoRoleRuleType.CLAN_ROLE:
         return linkedAccounts.some((account) => {
+          const targetRole = String(rule.targetValue ?? "").trim();
           const currentRole = String(account.playerCurrent?.role ?? "").trim();
-          return currentRole.length > 0 && currentRole === String(rule.targetValue ?? "").trim();
+          if (targetRole.length === 0 || currentRole.length === 0 || currentRole !== targetRole) {
+            return false;
+          }
+
+          if (!isLeaderRankTarget(targetRole)) {
+            return true;
+          }
+
+          return isLinkedAccountCurrentlyInTrackedClan(
+            account,
+            trackedClanScope.fwaClanTags,
+          );
         });
       case AutoRoleRuleType.TOWN_HALL: {
         const targetTownHall = Math.trunc(Number(rule.targetValue));
