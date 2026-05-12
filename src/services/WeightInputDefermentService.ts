@@ -17,7 +17,7 @@ export type DefermentScopeContext = {
 };
 
 export type AddDefermentResult = {
-  outcome: "created" | "already_exists";
+  outcome: "created" | "updated";
   record: {
     id: string;
     guildId: string;
@@ -128,7 +128,7 @@ function parseStatus(input: string): DefermentStatus | null {
   return null;
 }
 
-async function findOpenWeightInputDeferment(input: {
+async function findWeightInputDeferment(input: {
   scopeKey: string;
   playerTag: string;
 }) {
@@ -140,10 +140,7 @@ async function findOpenWeightInputDeferment(input: {
       },
     },
   });
-  if (existing && parseStatus(existing.status) === "open") {
-    return existing;
-  }
-  return null;
+  return existing && parseStatus(existing.status) ? existing : null;
 }
 
 async function resolveClanScopeFromChannel(
@@ -236,13 +233,10 @@ export async function addWeightInputDeferment(input: {
       guildId: input.guildId,
       channelId: input.channelId,
     }));
-  const existing = await findOpenWeightInputDeferment({
+  const existing = await findWeightInputDeferment({
     scopeKey: scope.scopeKey,
     playerTag: input.playerTag,
   });
-  if (existing) {
-    return { outcome: "already_exists", record: existing };
-  }
 
   const next = await prisma.weightInputDeferment.upsert({
     where: {
@@ -255,7 +249,6 @@ export async function addWeightInputDeferment(input: {
       clanTag: scope.clanTag,
       deferredWeight: input.deferredWeight,
       status: "open",
-      createdAt: new Date(),
       resolvedAt: null,
       clearedAt: null,
       reminded48At: null,
@@ -273,7 +266,7 @@ export async function addWeightInputDeferment(input: {
       status: "open",
     },
   });
-  return { outcome: "created", record: next };
+  return { outcome: existing ? "updated" : "created", record: next };
 }
 
 /** Purpose: add one deferment row after resolving the live player profile and upserting deferred fallback weight. */
@@ -327,17 +320,6 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
       error,
     });
     throw error;
-  }
-
-  const existing = await findOpenWeightInputDeferment({
-    scopeKey: scope.scopeKey,
-    playerTag,
-  });
-  if (existing) {
-    return {
-      outcome: "already_exists",
-      record: existing,
-    };
   }
 
   logDeferStage({
