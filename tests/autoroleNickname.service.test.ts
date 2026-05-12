@@ -133,6 +133,70 @@ describe("AutoRoleNicknameService", () => {
     };
   }
 
+  function makeDiscordTrackedClanRenderInput(displayName: string): AutoRoleNicknameRenderInput {
+    return {
+      config: makeConfig(),
+      template: "{discord} | {trackedClans}",
+      member: makeMember({ displayName }),
+      linkedAccounts: [
+        makeLink({
+          playerTag: "#PQLQ",
+          playerName: "EB Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+        makeLink({
+          playerTag: "#GRJV",
+          playerName: "AK Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+      ],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          "#PQLQ",
+          makePlayerCurrent({
+            playerTag: "#PQLQ",
+            playerName: "EB Player",
+            currentClanTag: "#PQLQ",
+            currentClanName: "EB",
+            townHall: 16,
+            role: "member",
+          }),
+        ],
+        [
+          "#GRJV",
+          makePlayerCurrent({
+            playerTag: "#GRJV",
+            playerName: "AK Player",
+            currentClanTag: "#GRJV",
+            currentClanName: "AK",
+            townHall: 15,
+            role: "member",
+          }),
+        ],
+      ]),
+      trackedClans: [
+        {
+          tag: "#PQLQ",
+          name: "EB",
+          shortName: "EB",
+        },
+        {
+          tag: "#GRJV",
+          name: "AK",
+          shortName: "AK",
+        },
+      ],
+    };
+  }
+
   it("renders the basic template from the selected linked account", () => {
     const result = service.renderNickname({
       config: makeConfig(),
@@ -254,6 +318,31 @@ describe("AutoRoleNicknameService", () => {
 
     expect(result.trackedClans).toEqual(["Charlie", "Alpha"]);
     expect(result.renderedNickname).toBe("Charlie | Alpha");
+  });
+
+  it("strips a full tracked-clan suffix before appending tracked clans", () => {
+    const result = service.renderNickname(makeDiscordTrackedClanRenderInput("Tilonius | EB | AK"));
+
+    expect(result.trackedClans).toEqual(["EB", "AK"]);
+    expect(result.renderedNickname).toBe("Tilonius | EB | AK");
+  });
+
+  it("keeps unrelated trailing text while stripping only overlapping tracked-clan labels", () => {
+    const result = service.renderNickname(makeDiscordTrackedClanRenderInput("Tilonius | Dad | EB"));
+
+    expect(result.renderedNickname).toBe("Tilonius | Dad | EB | AK");
+  });
+
+  it("strips reordered tracked-clan suffixes without changing the tracked-clan order", () => {
+    const result = service.renderNickname(makeDiscordTrackedClanRenderInput("Tilonius | AK | EB"));
+
+    expect(result.renderedNickname).toBe("Tilonius | EB | AK");
+  });
+
+  it("preserves unrelated text when there is no tracked-clan overlap", () => {
+    const result = service.renderNickname(makeDiscordTrackedClanRenderInput("Tilonius | Dad"));
+
+    expect(result.renderedNickname).toBe("Tilonius | Dad | EB | AK");
   });
 
   it.each([

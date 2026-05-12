@@ -35,6 +35,9 @@ describe("autorole permission defaults", () => {
     });
 
     await expect(
+      service.canUseCommand("autorole:refresh", interaction),
+    ).resolves.toBe(true);
+    await expect(
       service.canUseAnyTarget(["autorole:refresh"], interaction),
     ).resolves.toBe(true);
     await expect(
