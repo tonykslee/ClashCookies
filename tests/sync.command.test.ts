@@ -10,13 +10,19 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const syncBadgeEmojis = vi.hoisted(() => [
+  { code: "RR", label: "Rocky Road", name: "rr", id: "111" },
+  { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "222" },
+  { code: "GB", label: "Gabbar", name: "gb", id: "333" },
+]);
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
 vi.mock("../src/helper/syncBadgeEmoji", () => ({
   findSyncBadgeEmojiForClan: vi.fn(() => null),
-  getSyncBadgeEmojis: vi.fn(() => []),
+  getSyncBadgeEmojis: vi.fn(() => syncBadgeEmojis),
 }));
 
 import { Post, handlePostModalSubmit } from "../src/commands/Post";
@@ -97,6 +103,83 @@ function makeSubmitInteraction(input: { timezone: string; role: string }) {
   };
 }
 
+function makeStatusMember(input: {
+  admin?: boolean;
+  roleIds?: string[];
+}) {
+  const roleIds = input.roleIds ?? [];
+  return {
+    permissions: {
+      has: vi.fn().mockReturnValue(Boolean(input.admin)),
+    },
+    roles: {
+      cache: {
+        has: (roleId: string) => roleIds.includes(roleId),
+      },
+    },
+  } as any;
+}
+
+function makeStatusReaction(
+  emoji: { id: string | null; name: string | null },
+  userIds: string[],
+) {
+  return {
+    emoji,
+    users: {
+      fetch: vi.fn().mockResolvedValue(
+        new Map(
+          userIds.map((userId) => [
+            userId,
+            { id: userId, bot: false, username: `User-${userId}` },
+          ]),
+        ),
+      ),
+    },
+  } as any;
+}
+
+function makeStatusInteraction(input: {
+  group: "post" | "spin";
+  messageId: string;
+  message: any;
+  membersById: Record<string, any>;
+}) {
+  const channel = {
+    isTextBased: () => true,
+    messages: {
+      fetch: vi.fn().mockResolvedValue(input.message),
+    },
+  };
+  const channelCache = new Map([["channel-1", channel]]) as any;
+  channelCache.filter = (fn: (value: any) => boolean) =>
+    new Map([...channelCache.entries()].filter(([, value]) => fn(value)));
+
+  return {
+    inGuild: () => true,
+    guildId: "guild-1",
+    guild: {
+      id: "guild-1",
+      channels: {
+        cache: channelCache,
+      },
+      members: {
+        fetch: vi.fn(async (userId: string) => input.membersById[userId] ?? null),
+      },
+    },
+    client: { user: { id: "bot-1" } },
+    user: { id: "user-1" },
+    options: {
+      getSubcommandGroup: vi.fn().mockReturnValue(input.group),
+      getSubcommand: vi.fn().mockReturnValue("status"),
+      getString: vi.fn((name: string) => (name === "message-id" ? input.messageId : null)),
+    },
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 describe("/sync time post command shape", () => {
   it("registers optional timezone autocomplete on the post subcommand", () => {
     const timeGroup = Post.options?.find(
@@ -147,6 +230,100 @@ describe("/sync time post autocomplete", () => {
         (choice: { value: string }) => choice.value.includes("/") && !choice.value.startsWith("Etc/"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("/sync post status reaction scan", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key === "fwa_leader_role:guild-1") return "123456789012345678";
+      if (key === "command_roles:post") return null;
+      if (key === "command_roles:post:sync:time") return null;
+      return null;
+    });
+    vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
+  });
+
+  it("scans live reactions without tracked metadata and classifies claimed, unclaimed, and unavailable users", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            makeStatusReaction({ id: "111", name: "rr" }, ["admin-user", "nonleader-user"]),
+          ],
+          ["twc", makeStatusReaction({ id: "222", name: "twc" }, ["leader-user"])],
+          ["gb", makeStatusReaction({ id: "333", name: "gb" }, ["only-nonleader-user"])],
+          ["zzz", makeStatusReaction({ id: null, name: "💤" }, ["unavailable-user"])],
+        ]),
+      },
+    };
+    const membersById = {
+      "admin-user": makeStatusMember({ admin: true }),
+      "leader-user": makeStatusMember({ roleIds: ["123456789012345678"] }),
+      "nonleader-user": makeStatusMember({}),
+      "only-nonleader-user": makeStatusMember({}),
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: message.id,
+      message,
+      membersById,
+    });
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.fetchSyncTrackedMessageWithClaims).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls
+      .map((call) => call[0])
+      .find((value) => value && typeof value === "object" && "embeds" in value) as any;
+    expect(payload).toBeTruthy();
+    const embed = payload.embeds[0].toJSON() as any;
+    expect(embed.title).toBe("Sync Claim Status");
+    expect(embed.description).toContain("Claimed: **2/3**");
+    expect(embed.description).toContain("Unavailable (\u{1F4A4}): **1**");
+    expect(embed.description).toContain("\u{1F4A4} <@unavailable-user>");
+    expect(embed.description).toContain("- <:rr:111> **RR** (Rocky Road) - <@admin-user> | non-leader: <@nonleader-user>");
+    expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys) - <@leader-user>");
+    expect(embed.description).toContain(
+      "- <:gb:333> **GB** (Gabbar) (only non-leader: <@only-nonleader-user>)",
+    );
+    expect(embed.description).toContain("**Claimed Clans**");
+    expect(embed.description).toContain("**Unclaimed Clans**");
+    expect(embed.footer.text).toContain("Leader eligibility:");
+  });
+});
+
+describe("/sync status command shape", () => {
+  it("registers post and spin status subcommands with message-id options", () => {
+    const postGroup = Post.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "post",
+    );
+    const spinGroup = Post.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "spin",
+    );
+    const postStatusSubcommand = postGroup?.options?.find(
+      (option: { name: string }) => option.name === "status",
+    );
+    const spinStatusSubcommand = spinGroup?.options?.find(
+      (option: { name: string }) => option.name === "status",
+    );
+
+    expect(postStatusSubcommand?.options?.find((option: { name: string }) => option.name === "message-id")?.required).toBe(false);
+    expect(spinStatusSubcommand?.options?.find((option: { name: string }) => option.name === "message-id")?.required).toBe(false);
   });
 });
 
@@ -223,7 +400,7 @@ describe("/sync time post modal submit", () => {
     );
   });
 
-  it("renders sync post status with the shared spin-status renderer", async () => {
+  it("renders sync spin status with the shared spin-status renderer", async () => {
     const syncMessage = {
       id: "123456789012345678",
       channelId: "channel-1",
@@ -287,7 +464,7 @@ describe("/sync time post modal submit", () => {
         },
       },
       options: {
-        getSubcommandGroup: vi.fn().mockReturnValue("post"),
+        getSubcommandGroup: vi.fn().mockReturnValue("spin"),
         getSubcommand: vi.fn().mockReturnValue("status"),
         getString: vi.fn((name: string) => (name === "message-id" ? syncMessage.id : null)),
       },
