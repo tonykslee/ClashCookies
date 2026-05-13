@@ -5,6 +5,7 @@ import {
   buildFwaMatchCompactCopyLineForTest,
   buildFwaMatchCompactCopyStateEmojiForTest,
   buildFwaMatchViewRenderPayload,
+  resolveFwaMatchChecklistEnabledForTest,
 } from "../src/commands/Fwa";
 
 function makeView(copyText: string, title: string) {
@@ -155,6 +156,47 @@ describe("fwa match compact copy view", () => {
     expect(line.includes("\n")).toBe(false);
   });
 
+  it("omits the checklist column unless requested", () => {
+    const uncheckedLine = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      matchType: "FWA",
+      outcome: "WIN",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      checklist: false,
+    });
+    const checkedLine = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      matchType: "FWA",
+      outcome: "WIN",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      checklist: true,
+    });
+
+    expect(uncheckedLine).toBe("📬 | 🟢 | RR vs `Bravo` (`#B1`)");
+    expect(checkedLine).toBe("📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)");
+  });
+
+  it("ignores checklist unless copy_paste is enabled", () => {
+    expect(
+      resolveFwaMatchChecklistEnabledForTest({
+        copyPaste: false,
+        checklist: true,
+      }),
+    ).toBe(false);
+    expect(
+      resolveFwaMatchChecklistEnabledForTest({
+        copyPaste: true,
+        checklist: true,
+      }),
+    ).toBe(true);
+  });
+
   it("prefers tracked clan short names in compact copy rows", () => {
     const line = buildFwaMatchCompactCopyLineForTest({
       mailStatusEmoji: "📬",
@@ -206,6 +248,25 @@ describe("fwa match compact copy view", () => {
       showMode: "copy",
       includeComponents: false,
     });
+    expect(copyResponse.content).toBe(payload.allianceView.copyText);
+    expect(copyResponse.embeds).toHaveLength(0);
+    expect(copyResponse.components).toHaveLength(0);
+  });
+
+  it("renders direct checklist copy output without buttons or components", () => {
+    const payload = makePayload(
+      "📬 | 🟢 | ☐ | Alliance vs `Bravo` (`#B1`)",
+      "📭 | 🔴 | ☐ | Single vs `Delta` (`#D2`)",
+    );
+
+    const copyResponse = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-checklist",
+      view: payload.allianceView as any,
+      showMode: "copy",
+      includeComponents: false,
+    });
+
     expect(copyResponse.content).toBe(payload.allianceView.copyText);
     expect(copyResponse.embeds).toHaveLength(0);
     expect(copyResponse.components).toHaveLength(0);

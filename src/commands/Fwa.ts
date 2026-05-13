@@ -2013,6 +2013,16 @@ function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
   return String(input ?? "").replace(/`/g, "'");
 }
 
+const FWA_MATCH_CHECKLIST_UNCHECKED = "☐";
+
+/** Purpose: determine whether `/fwa match` should render the checklist column in compact copy output. */
+function resolveFwaMatchChecklistEnabled(params: {
+  copyPaste: boolean;
+  checklist: boolean | null | undefined;
+}): boolean {
+  return params.copyPaste ? Boolean(params.checklist) : false;
+}
+
 /** Purpose: choose the compact copy label for a tracked clan, preferring the configured short name. */
 function resolveFwaMatchCompactClanLabel(params: {
   shortName: string | null | undefined;
@@ -2030,6 +2040,7 @@ function resolveFwaMatchCompactClanLabel(params: {
 /** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
 function buildFwaMatchCompactCopyLine(params: {
   mailStatusEmoji?: string;
+  checklist?: boolean;
   clanShortName?: string | null | undefined;
   clanName: string | null | undefined;
   opponentName: string | null | undefined;
@@ -2051,8 +2062,9 @@ function buildFwaMatchCompactCopyLine(params: {
     matchType: params.matchType,
     outcome: params.outcome,
   });
+  const checklistColumn = params.checklist ? ` | ${FWA_MATCH_CHECKLIST_UNCHECKED}` : "";
 
-  return `${mailStatusEmoji} | ${matchStateEmoji} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
+  return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
 }
 
 const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
@@ -9072,6 +9084,8 @@ export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
 export const buildFwaMatchCompactCopyStateEmojiForTest =
   resolveFwaMatchStateEmoji;
+export const resolveFwaMatchChecklistEnabledForTest =
+  resolveFwaMatchChecklistEnabled;
 export const buildFwaMatchCompactCopyLineForTest =
   buildFwaMatchCompactCopyLine;
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
@@ -10306,6 +10320,7 @@ async function buildTrackedMatchOverview(
     includeActualSheet?: boolean;
     mailStatusDebugEnabled?: boolean;
     revisionDraftByTag?: Record<string, MatchRevisionFields>;
+    compactChecklist?: boolean;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -10316,6 +10331,7 @@ async function buildTrackedMatchOverview(
   const includeActualSheet = options?.includeActualSheet ?? true;
   const mailStatusDebugEnabled = options?.mailStatusDebugEnabled ?? false;
   const revisionDraftByTag = options?.revisionDraftByTag ?? {};
+  const compactChecklist = options?.compactChecklist ?? false;
   const scopedTagSet =
     options?.onlyClanTags && options.onlyClanTags.length > 0
       ? new Set(options.onlyClanTags.map((tag) => normalizeTag(tag)))
@@ -10575,12 +10591,13 @@ async function buildTrackedMatchOverview(
         nonActiveMailProjection.mailStatusLine,
         ...preWarMailDebugLines,
       ];
-        const preWarCopyLine = buildFwaMatchCompactCopyLine({
-          mailStatusEmoji,
-          clanShortName: clan.shortName,
-          clanName,
-          opponentName: "unknown",
-          opponentTag: null,
+      const preWarCopyLine = buildFwaMatchCompactCopyLine({
+        mailStatusEmoji,
+        checklist: compactChecklist,
+        clanShortName: clan.shortName,
+        clanName,
+        opponentName: "unknown",
+        opponentTag: null,
           matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
           outcome: null,
       });
@@ -10671,6 +10688,7 @@ async function buildTrackedMatchOverview(
       ];
       const noOpponentCopyLine = buildFwaMatchCompactCopyLine({
         mailStatusEmoji,
+        checklist: compactChecklist,
         clanShortName: clan.shortName,
         clanName,
         opponentName: "unknown",
@@ -12533,6 +12551,13 @@ export const Fwa: Command = {
           required: false,
         },
         {
+          name: "checklist",
+          description:
+            "Add an unchecked checklist column to direct copy/paste output",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
           name: "debug-mail-status",
           description:
             "Show admin-only mail status diagnostics for tracked Discord post state",
@@ -14033,6 +14058,12 @@ export const Fwa: Command = {
 
     if (subcommand === "match") {
       const copyPaste = interaction.options.getBoolean?.("copy_paste", false) ?? false;
+      const checklist = resolveFwaMatchChecklistEnabled({
+        copyPaste,
+        checklist: copyPaste
+          ? interaction.options.getBoolean?.("checklist", false) ?? false
+          : false,
+      });
       if (tag) {
         const trackedClan = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
@@ -14092,6 +14123,7 @@ export const Fwa: Command = {
         {
           onlyClanTags: tag ? [tag] : undefined,
           mailStatusDebugEnabled: matchMailStatusDebugEnabled,
+          compactChecklist: checklist,
         },
       );
       const key = interaction.id;
@@ -14962,6 +14994,7 @@ export const Fwa: Command = {
           );
         const compactCopyLine = buildFwaMatchCompactCopyLine({
           mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+          checklist,
           clanShortName: trackedPrimaryClan?.shortName ?? null,
           clanName: leftName,
           opponentName: rightName,

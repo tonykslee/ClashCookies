@@ -58,6 +58,21 @@ describe("/fwa base-swap command shape", () => {
     expect(copyPaste?.required).toBe(false);
   });
 
+  it("registers checklist on /fwa match as an optional boolean", () => {
+    const match = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "match",
+    );
+    expect(match).toBeTruthy();
+
+    const checklist = match?.options?.find(
+      (option: { name: string }) => option.name === "checklist",
+    );
+    expect(checklist?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(checklist?.required).toBe(false);
+  });
+
   it("does not register a standalone mail send subcommand group", () => {
     const mail = Fwa.options?.find(
       (option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "mail",
