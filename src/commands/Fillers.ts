@@ -526,7 +526,6 @@ async function renderEditorReply(input: {
   };
 
   await input.interaction.editReply(renderPayload());
-  if (totalPages <= 1 && sortedRows.length <= FILLERS_PAGE_SIZE) return;
 
   const message = await input.interaction.fetchReply();
   const collector = message.createMessageComponentCollector({

@@ -374,6 +374,49 @@ describe("/fillers command", () => {
     });
   });
 
+  it("keeps the select collector active for a single-page editor and persists filler state", async () => {
+    for (let index = 0; index < 2; index += 1) {
+      const tag = makeValidPlayerTag(index);
+      seedAccount({
+        playerTag: tag,
+        discordUserId: "222222222222222222",
+        playerName: `Player ${String(index + 1).padStart(3, "0")}`,
+        townHall: index === 0 ? 18 : 17,
+        clanTag: "#PQL0289",
+        clanName: "Alpha Clan",
+        weight: index === 0 ? 9200 : 8400,
+      });
+    }
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const components = getComponentJson(payload);
+    expect(components).toHaveLength(1);
+    expect(interaction.__collectorHandlers.collect).toEqual(expect.any(Function));
+
+    const firstMenu = components[0].components[0];
+    const select = makeSelectInteraction({
+      customId: firstMenu.custom_id ?? firstMenu.customId,
+      values: [makeValidPlayerTag(0)],
+    });
+
+    await interaction.__collectorHandlers.collect(select);
+
+    expect(prismaMock.fillerAccount.upsert).toHaveBeenCalledTimes(1);
+    expect(fillerState.has(makeValidPlayerTag(0))).toBe(true);
+
+    const rerenderPayload = select.update.mock.calls.at(-1)?.[0];
+    const rerenderComponents = getComponentJson(rerenderPayload);
+    const rerenderMenu = rerenderComponents[0].components[0];
+    expect(rerenderMenu.options[0].default).toBe(true);
+  });
+
   it("renders a sorted, paginated editor with filler markers and dropdown groups", async () => {
     for (let index = 0; index < 126; index += 1) {
       const tag = makeValidPlayerTag(index);
@@ -454,7 +497,8 @@ describe("/fillers command", () => {
     expect(fillerState.has(makeValidPlayerTag(1))).toBe(false);
     const selectAlphaPayload = selectAlpha.update.mock.calls.at(-1)?.[0];
     const selectAlphaEmbed = getEmbedJson(selectAlphaPayload);
-    expect(String(selectAlphaEmbed.description)).toContain("🧍‍♂️");
+    expect(String(selectAlphaEmbed.description)).toContain("Alpha");
+    expect(String(selectAlphaEmbed.footer?.text)).toContain("1/26 filler accounts selected");
 
     const selectBeta = makeSelectInteraction({
       customId: selectCustomId,
