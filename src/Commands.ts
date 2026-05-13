@@ -13,6 +13,7 @@ import { Fwa } from "./commands/Fwa";
 import { KickList } from "./commands/KickList";
 import { Recruitment } from "./commands/Recruitment";
 import { Accounts } from "./commands/Accounts";
+import { Fillers } from "./commands/Fillers";
 import { Notify } from "./commands/Notify";
 import { War } from "./commands/War";
 import { Force } from "./commands/Force";
@@ -61,6 +62,7 @@ export const Commands = [
   Recruitment,
   KickList,
   Telemetry,
+  Fillers,
   ClanHealth,
   Defer,
   Force,

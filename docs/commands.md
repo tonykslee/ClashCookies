@@ -111,6 +111,7 @@
 - `/defer list` - Show active open deferred weight-input tasks in oldest-first order for the active scope.
 - `/defer remove player-tag:<playerTag>` - Mark one open deferred task as resolved after FWAStats weight entry is complete.
 - `/defer clear` - Mark all open deferred tasks in scope as cleared.
+- `/fillers list [user:<discordUser>] [clan:<trackedClan>]` and `/fillers set user:<discordUser>` - Manage guild-scoped filler accounts keyed by player tag. `list` shows all filler accounts in the guild, or filters to one linked Discord user or one currently tracked clan. `set` opens an interactive editor for one user's linked accounts with multi-select pages and persists filler selections.
 - `/kick-list build [days:<number>]` - Auto-build kick-list candidates from tracked-clan members who are inactive (`days` threshold, default `3`), unlinked, or linked to users not in this server. Players matching both inactivity and link issues are shown first.
 - `/kick-list add tag:<playerTag> reason:<text>` - Manually add a kick-list candidate with reason.
 - `/kick-list remove tag:<playerTag>` - Remove a player from kick list.
