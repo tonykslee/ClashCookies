@@ -149,7 +149,7 @@ function formatTownHallFallback(townHall: number | null | undefined): string {
   return normalized === null ? "TH?" : `TH${normalized}`;
 }
 
-async function resolveTownHallEmojiMap(client: Client): Promise<AccountDisplayEmojiMap> {
+export async function resolveTownHallEmojiMap(client: Client): Promise<AccountDisplayEmojiMap> {
   const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
   if (!inventory?.ok) return new Map();
 
@@ -397,7 +397,7 @@ function buildAccountsTagAutocompleteChoices(
   }));
 }
 
-async function buildAccountsRows(input: {
+export async function buildAccountsRows(input: {
   guildId: string;
   linkedNameByTag: Map<string, string>;
   tags: string[];

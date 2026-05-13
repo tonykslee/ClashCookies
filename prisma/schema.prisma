@@ -118,6 +118,19 @@ model PlayerLink {
   @@index([discordUserId, verificationStatus])
 }
 
+model FillerAccount {
+  id                     String   @id @default(cuid())
+  guildId                String
+  playerTag              String
+  createdByDiscordUserId String
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([guildId, playerTag])
+  @@index([guildId])
+  @@index([playerTag])
+}
+
 model PlayerCurrent {
   playerTag               String   @id
   playerName              String?

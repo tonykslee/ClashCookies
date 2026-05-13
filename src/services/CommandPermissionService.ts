@@ -121,6 +121,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "autorole:refresh:user",
   "autorole:refresh:role",
   "autorole:refresh",
+  "fillers",
+  "fillers:list",
+  "fillers:set",
   "sync",
   "sync:time:post",
   "sync:post:status",
@@ -199,6 +202,9 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:exclusions",
   "autorole:refresh:user",
   "autorole:refresh:role",
+  "fillers",
+  "fillers:list",
+  "fillers:set",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);
@@ -235,6 +241,9 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "kick-list:remove",
   "kick-list:show",
   "autorole:refresh",
+  "fillers",
+  "fillers:list",
+  "fillers:set",
   "sync:time:post",
   "sync:post:status",
   "inactive",
@@ -362,6 +371,15 @@ export function getCommandTargetsFromInteraction(
     }
     if (!user && !role) {
       raw.push("autorole:refresh");
+    }
+    raw.push(command);
+    return raw.filter((target) => isKnownTarget(target));
+  }
+  if (command === "fillers" && group === null && sub) {
+    if (sub === "list") {
+      raw.push("fillers:list");
+    } else if (sub === "set") {
+      raw.push("fillers:set");
     }
     raw.push(command);
     return raw.filter((target) => isKnownTarget(target));
