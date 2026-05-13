@@ -3020,11 +3020,12 @@ async function prepareMailGateResumeMatchPayloadForTag(params: {
   return { key, payload: scoped.payload, view: scoped.view };
 }
 
-function buildFwaMatchViewRenderPayload(params: {
+export function buildFwaMatchViewRenderPayload(params: {
   payload: FwaMatchCopyPayload;
   key: string;
   view: MatchView;
   showMode: "embed" | "copy";
+  includeComponents?: boolean;
 }): {
   content: string | undefined;
   embeds: EmbedBuilder[];
@@ -3038,12 +3039,14 @@ function buildFwaMatchViewRenderPayload(params: {
         ? limitDiscordContent(params.view.copyText)
         : undefined,
     embeds: params.showMode === "embed" ? [params.view.embed] : [],
-    components: buildFwaMatchCopyComponents(
-      params.payload,
-      params.payload.userId,
-      params.key,
-      params.showMode,
-    ),
+    components: params.includeComponents === false
+      ? []
+      : buildFwaMatchCopyComponents(
+          params.payload,
+          params.payload.userId,
+          params.key,
+          params.showMode,
+        ),
   };
 }
 
@@ -12504,6 +12507,12 @@ export const Fwa: Command = {
           ],
         },
         {
+          name: "copy_paste",
+          description: "Render the compact copy/paste view directly",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
           name: "debug-mail-status",
           description:
             "Show admin-only mail status diagnostics for tracked Discord post state",
@@ -12801,6 +12810,7 @@ export const Fwa: Command = {
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
+    const copyPaste = interaction.options.getBoolean("copy_paste", false) ?? false;
     const defaultComponents = !isPublic
       ? [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -14069,7 +14079,7 @@ export const Fwa: Command = {
         console.info(
           `[fwa-match-payload] stage=command_build scope=full guild=${interaction.guildId ?? "none"} source=alliance`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14083,16 +14093,23 @@ export const Fwa: Command = {
           currentScope: "alliance",
           currentTag: null,
           revisionDraftByTag: {},
-        });
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: payload.allianceView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [overview.embed],
-          buildFwaMatchCopyComponents(
-            fwaMatchCopyPayloads.get(key)!,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       }
@@ -14102,7 +14119,7 @@ export const Fwa: Command = {
         console.info(
           `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag tag=#${tag}`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14116,17 +14133,23 @@ export const Fwa: Command = {
           currentScope: "single",
           currentTag: tag,
           revisionDraftByTag: {},
-        });
-        const stored = fwaMatchCopyPayloads.get(key)!;
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: trackedSingleView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [trackedSingleView.embed],
-          buildFwaMatchCopyComponents(
-            stored,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       }
@@ -14403,10 +14426,7 @@ export const Fwa: Command = {
                 subscription?.matchType === "SKIP" ? { tag } : null,
             };
           }
-          console.info(
-            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${nonActiveMode === "no_opponent" ? "single_tag_no_opponent" : "single_tag_prewar"} tag=#${tag}`,
-          );
-          fwaMatchCopyPayloads.set(key, {
+          const payload = {
             userId: interaction.user.id,
             guildId: interaction.guildId ?? null,
             includePostButton: !isPublic,
@@ -14423,17 +14443,26 @@ export const Fwa: Command = {
             currentScope: "single",
             currentTag: tag,
             revisionDraftByTag: {},
-          });
-          const stored = fwaMatchCopyPayloads.get(key)!;
+          } satisfies FwaMatchCopyPayload;
+          if (copyPaste) {
+            const response = buildFwaMatchViewRenderPayload({
+              payload,
+              key,
+              view: singleView,
+              showMode: "copy",
+              includeComponents: false,
+            });
+            await editReplySafe(response.content ?? "", response.embeds, response.components);
+            return;
+          }
+          console.info(
+            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${nonActiveMode === "no_opponent" ? "single_tag_no_opponent" : "single_tag_prewar"} tag=#${tag}`,
+          );
+          fwaMatchCopyPayloads.set(key, payload);
           await editReplySafe(
             "",
             [singleView.embed],
-            buildFwaMatchCopyComponents(
-              stored,
-              interaction.user.id,
-              key,
-              "embed",
-            ),
+            buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
           );
           return;
         }
@@ -14970,7 +14999,7 @@ export const Fwa: Command = {
         console.info(
           `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag_live tag=#${tag}`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14984,17 +15013,23 @@ export const Fwa: Command = {
           currentScope: "single",
           currentTag: tag,
           revisionDraftByTag: {},
-        });
-        const stored = fwaMatchCopyPayloads.get(key)!;
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: singleView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [embed],
-          buildFwaMatchCopyComponents(
-            stored,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       } catch (err) {
