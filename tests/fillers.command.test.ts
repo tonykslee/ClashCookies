@@ -196,6 +196,28 @@ function seedAccount(input: {
   );
 }
 
+function buildEmojiInventory(renderedPrefix = "<:th"): any {
+  const exactByName = new Map<string, { rendered: string }>();
+  const lowercaseByName = new Map<string, { rendered: string }>();
+  for (let townHall = 1; townHall <= 18; townHall += 1) {
+    const rendered = `${renderedPrefix}${townHall}:12345678901234567>`;
+    const entry = { rendered };
+    exactByName.set(`th${townHall}`, entry);
+    lowercaseByName.set(`th${townHall}`, entry);
+  }
+  return {
+    ok: true,
+    snapshot: {
+      exactByName,
+      lowercaseByName,
+      entries: [],
+    },
+    diagnostics: {
+      emojiFetchSucceeded: true,
+    },
+  };
+}
+
 function setMockImplementations(): void {
   prismaMock.playerLink.findMany.mockImplementation(async (query: any) => {
     const where = query?.where ?? {};
@@ -459,6 +481,44 @@ describe("/fillers command", () => {
     expect(firstMenu.options[2].value).toBe(makeValidPlayerTag(2));
     expect(firstMenu.options[0].default).toBe(false);
     expect(String(embed.description)).not.toContain("No linked accounts found.");
+  });
+
+  it("keeps the editor description under Discord limits for long 59-account pages", async () => {
+    emojiResolverMock.fetchApplicationEmojiInventory.mockResolvedValueOnce(
+      buildEmojiInventory("<:town_hall_custom_"),
+    );
+
+    for (let index = 0; index < 59; index += 1) {
+      const tag = makeValidPlayerTag(index);
+      const clanName = `The Extremely Long And Verbose Clan Name For Production Diagnostics ${String(index + 1).padStart(2, "0")} [FWA]`;
+      seedAccount({
+        playerTag: tag,
+        discordUserId: "222222222222222222",
+        playerName: `Teewizz Candidate ${String(index + 1).padStart(2, "0")} With An Exceptionally Long Display Name For Markdown Rendering`,
+        townHall: index % 2 === 0 ? 18 : 17,
+        clanTag: "#PQL0289",
+        clanName,
+        weight: 12000 - index * 17,
+      });
+    }
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const embed = getEmbedJson(payload);
+    const components = getComponentJson(payload);
+    const firstMenu = components[0].components[0];
+
+    expect(String(embed.description)).toContain("more account(s) on this page are not shown in the preview");
+    expect(String(embed.description)).toContain("remain selectable in the dropdown below");
+    expect(String(embed.description).length).toBeLessThanOrEqual(4096);
+    expect(firstMenu.options).toHaveLength(25);
+    expect(String(embed.description)).toContain("<:town_hall_custom_18:12345678901234567>");
   });
 
   it("creates, updates, and removes filler state through the select interaction", async () => {

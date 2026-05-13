@@ -30,7 +30,9 @@ import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkServ
 const FILLERS_TIMEOUT_MS = 10 * 60 * 1000;
 const FILLERS_PAGE_SIZE = 25;
 const FILLERS_MENU_SIZE = 25;
-const FILLERS_LIST_DESCRIPTION_LIMIT = 3900;
+const FILLERS_EMBED_DESCRIPTION_LIMIT = 4096;
+const FILLERS_SAFE_DESCRIPTION_LIMIT = 3900;
+const FILLERS_LIST_DESCRIPTION_LIMIT = FILLERS_SAFE_DESCRIPTION_LIMIT;
 
 type FillerListScope = "all" | "user" | "clan";
 
@@ -201,6 +203,65 @@ function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: st
   if (!normalizedPlayerTag) return label;
   const encodedTag = normalizedPlayerTag.replace(/^#/, "");
   return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
+}
+
+function isEditorPreviewAccountLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("**")) return false;
+  if (trimmed.startsWith("... ")) return false;
+  return true;
+}
+
+function countEditorPreviewAccountLines(lines: string[]): number {
+  return lines.reduce((count, line) => count + (isEditorPreviewAccountLine(line) ? 1 : 0), 0);
+}
+
+function getSafeEditorPreviewLineCount(lines: string[]): number {
+  let current: string[] = [];
+  for (const line of lines) {
+    const next = current.length > 0 ? [...current, line] : [line];
+    const text = next.join("\n");
+    if (text.length > FILLERS_SAFE_DESCRIPTION_LIMIT && current.length > 0) {
+      break;
+    }
+    current = next;
+  }
+  return current.length;
+}
+
+function buildSafeEditorDescription(lines: string[], omittedAccountCount: number): string {
+  const note =
+    omittedAccountCount > 0
+      ? `... ${omittedAccountCount} more account(s) on this page are not shown in the preview, but remain selectable in the dropdown below.`
+      : "";
+  let current: string[] = [];
+  for (const line of lines) {
+    const next = current.length > 0 ? [...current, line] : [line];
+    const candidate = next.join("\n");
+    if (candidate.length > FILLERS_SAFE_DESCRIPTION_LIMIT && current.length > 0) {
+      break;
+    }
+    current = next;
+  }
+
+  let description = current.join("\n");
+  if (!note) {
+    return description;
+  }
+
+  let finalDescription = description.length > 0 ? `${description}\n${note}` : note;
+  while (finalDescription.length > FILLERS_EMBED_DESCRIPTION_LIMIT && current.length > 0) {
+    current.pop();
+    description = current.join("\n");
+    finalDescription = description.length > 0 ? `${description}\n${note}` : note;
+  }
+
+  if (finalDescription.length > FILLERS_EMBED_DESCRIPTION_LIMIT) {
+    return note.slice(0, FILLERS_EMBED_DESCRIPTION_LIMIT);
+  }
+
+  return finalDescription;
 }
 
 function renderTownHallIcon(
@@ -558,11 +619,16 @@ function buildEditorEmbed(input: {
   if (lines.length === 0) {
     lines.push("No linked accounts found.");
   }
-  const description = lines.join("\n");
+  const safeLineCount = getSafeEditorPreviewLineCount(lines);
+  const previewLines = lines.slice(0, safeLineCount);
+  const omittedAccountCount = countEditorPreviewAccountLines(lines.slice(safeLineCount));
+  const description = buildSafeEditorDescription(previewLines, omittedAccountCount);
   const embedMetrics = {
     titleLength: input.title.length,
     descriptionLength: description.length,
     lineCount: lines.length,
+    previewLineCount: previewLines.length,
+    omittedAccountCount,
     selectedCount: input.selectedCount,
     totalCount: input.totalCount,
     page: input.page,
