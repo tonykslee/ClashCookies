@@ -4,6 +4,8 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
+  GuildMember,
   ModalBuilder,
   ModalSubmitInteraction,
   PermissionFlagsBits,
@@ -47,7 +49,7 @@ const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
-const SYNC_UNAVAILABLE_EMOJI = "💤";
+const SYNC_UNAVAILABLE_EMOJI = "\u{1F4A4}";
 
 type SyncBadge = {
   clanTag: string;
@@ -321,7 +323,7 @@ async function resolveSyncStatusMessage(
   return null;
 }
 
-async function handleSyncStatusSubcommand(
+async function handleSyncSpinStatusSubcommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
@@ -366,6 +368,147 @@ async function handleSyncStatusSubcommand(
     claimedClanTags: tracked.claims.map((claim) => claim.clanTag),
     title: "Sync Spin Status",
   });
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleSyncClaimStatusSubcommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const settings = new SettingsService();
+  const explicitMessageIdRaw = interaction.options.getString("message-id", false)?.trim() ?? null;
+  const explicitMessageId =
+    explicitMessageIdRaw && /^\d{17,22}$/.test(explicitMessageIdRaw) ? explicitMessageIdRaw : null;
+  if (explicitMessageIdRaw && !explicitMessageId) {
+    await interaction.editReply("Invalid `message-id`. Use a Discord message ID.");
+    return;
+  }
+
+  const message = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
+  if (!message) {
+    await interaction.editReply(
+      explicitMessageId
+        ? "Could not find that message ID in this channel."
+        : "Could not find an active sync-time message. Post one with `/sync time post` first."
+    );
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
+  if (badges.length === 0) {
+    await interaction.editReply("No badge emoji configuration found for this bot ID.");
+    return;
+  }
+
+  const leaderRoleIds = await getLeaderRoleIds(settings, guild.id);
+  const memberCache = new Map<string, GuildMember | null>();
+  const getMember = async (userId: string): Promise<GuildMember | null> => {
+    if (memberCache.has(userId)) return memberCache.get(userId) ?? null;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    memberCache.set(userId, member);
+    return member;
+  };
+
+  const claimedLines: string[] = [];
+  const unclaimedLines: string[] = [];
+  const unavailableUsers: string[] = [];
+
+  for (const badge of badges) {
+    const reaction = [...message.reactions.cache.values()].find((r) => reactionMatchesBadge(r, badge));
+    const claimedBy: string[] = [];
+    const nonLeader: string[] = [];
+
+    if (reaction) {
+      const users = await reaction.users.fetch().catch(() => null);
+      if (users) {
+        for (const user of users.values()) {
+          if (user.bot) continue;
+          const member = await getMember(user.id);
+          if (!member) continue;
+
+          const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
+          const hasLeaderRole =
+            leaderRoleIds.length > 0 &&
+            leaderRoleIds.some((roleId) => member.roles.cache.has(roleId));
+          if (isAdmin || hasLeaderRole) {
+            claimedBy.push(`<@${user.id}>`);
+          } else {
+            nonLeader.push(`<@${user.id}>`);
+          }
+        }
+      }
+    }
+
+    const emojiInline = badge.emojiInline;
+    if (claimedBy.length > 0) {
+      const extra =
+        nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
+      claimedLines.push(
+        `- ${emojiInline} **${badge.code}** (${badge.label}) - ${[...new Set(claimedBy)].join(", ")}${extra}`
+      );
+    } else {
+      const extra =
+        nonLeader.length > 0 ? ` (only non-leader: ${[...new Set(nonLeader)].join(", ")})` : "";
+      unclaimedLines.push(`- ${emojiInline} **${badge.code}** (${badge.label})${extra}`);
+    }
+  }
+
+  const unavailableReaction = [...message.reactions.cache.values()].find(
+    (reaction) => !reaction.emoji.id && reaction.emoji.name === SYNC_UNAVAILABLE_EMOJI
+  );
+  if (unavailableReaction) {
+    const users = await unavailableReaction.users.fetch().catch(() => null);
+    if (users) {
+      for (const user of users.values()) {
+        if (user.bot) continue;
+        unavailableUsers.push(`<@${user.id}>`);
+      }
+    }
+  }
+
+  const uniqueUnavailableUsers = [...new Set(unavailableUsers)];
+  const embed = new EmbedBuilder()
+    .setTitle("Sync Claim Status")
+    .setDescription(
+      [
+        `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
+        (() => {
+          const epoch = extractSyncEpochSeconds(message.content);
+          return epoch
+            ? `Sync time: <t:${epoch}:F> (<t:${epoch}:R>)`
+            : "Sync time: not detected from message content";
+        })(),
+        "",
+        `Claimed: **${claimedLines.length}/${badges.length}**`,
+        `Unavailable (${SYNC_UNAVAILABLE_EMOJI}): **${uniqueUnavailableUsers.length}**`,
+        ...(uniqueUnavailableUsers.length > 0
+          ? [`${SYNC_UNAVAILABLE_EMOJI} ${uniqueUnavailableUsers.join(", ")}`]
+          : []),
+        "",
+        "**Claimed Clans**",
+        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
+        "",
+        "**Unclaimed Clans**",
+        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
+      ].join("\n")
+    )
+    .setFooter({
+      text:
+        leaderRoleIds.length > 0
+          ? "Leader eligibility: Administrator or role allowed for /sync time post"
+          : "Leader eligibility: Administrator only (no /sync time post role whitelist configured)",
+    });
 
   await interaction.editReply({ embeds: [embed] });
 }
@@ -522,6 +665,29 @@ function extractSyncEpochSeconds(content: string): number | null {
   const epoch = Number(match[1]);
   if (!Number.isFinite(epoch) || epoch <= 0) return null;
   return epoch;
+}
+
+function reactionMatchesBadge(
+  reaction: { emoji: { id: string | null; name: string | null } },
+  badge: SyncBadge
+): boolean {
+  if (reaction.emoji.id && badge.matchEmojiIds.includes(reaction.emoji.id)) return true;
+  return Boolean(reaction.emoji.name && badge.matchEmojiNames.includes(reaction.emoji.name));
+}
+
+function parseAllowedRoleIds(raw: string | null): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)))];
+}
+
+async function getLeaderRoleIds(settings: SettingsService, guildId: string): Promise<string[]> {
+  const preferredRole = await settings.get(`${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`);
+  if (preferredRole && /^\d+$/.test(preferredRole.trim())) {
+    return [preferredRole.trim()];
+  }
+  const syncRoles = parseAllowedRoleIds(await settings.get("command_roles:post:sync:time"));
+  if (syncRoles.length > 0) return syncRoles;
+  return parseAllowedRoleIds(await settings.get("command_roles:post"));
 }
 
 function buildModalCustomId(userId: string): string {
@@ -911,6 +1077,27 @@ export const Post: Command = {
         },
       ],
     },
+    {
+      name: "spin",
+      description: "Sync spin status commands",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "status",
+          description: "Show the tracked sync spin status",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "message-id",
+              description:
+                "Sync-time message ID (optional; defaults to active sync post)",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+          ],
+        },
+      ],
+    },
   ],
   run: async (
     _client: Client,
@@ -936,7 +1123,12 @@ export const Post: Command = {
     }
 
     if (subcommandGroup === "post" && subcommand === "status") {
-      await handleSyncStatusSubcommand(interaction);
+      await handleSyncClaimStatusSubcommand(interaction);
+      return;
+    }
+
+    if (subcommandGroup === "spin" && subcommand === "status") {
+      await handleSyncSpinStatusSubcommand(interaction);
       return;
     }
 

@@ -370,6 +370,8 @@ export function getCommandTargetsFromInteraction(
     raw.push("sync:time:post");
   } else if (command === "post" && group === "sync" && sub === "status") {
     raw.push("sync:post:status");
+  } else if ((command === "sync" || command === "post") && group === "spin" && sub === "status") {
+    raw.push("sync:post:status");
   } else if (group && sub) {
     raw.push(`${command}:${group}:${sub}`);
   }
