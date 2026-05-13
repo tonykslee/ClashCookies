@@ -44,6 +44,9 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "autorole:config",
   "autorole:rules",
   "autorole:exclusions",
+  "fillers",
+  "fillers:list",
+  "fillers:set",
   "sync:time:post",
   "bot-logs",
   "notify:war",
@@ -74,6 +77,9 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
 
 const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "autorole:refresh",
+  "fillers",
+  "fillers:list",
+  "fillers:set",
 ]);
 
 type CommandDoc = {
@@ -452,6 +458,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/accounts discord-id:@user",
       "/accounts tag:G2RG9JCRL",
       "/accounts visibility:public",
+    ],
+  },
+  fillers: {
+    summary: "Mark linked player accounts as filler accounts and list them by guild, user, or current clan.",
+    details: [
+      "Use `/fillers set user:<discordUser>` to open an ephemeral interactive editor for one Discord user's linked accounts.",
+      "The editor shows linked accounts with TH, player name, tag, current clan, and weight, and lets you toggle filler status with multi-select dropdowns.",
+      "Use `/fillers list` to show every filler account in the guild, `/fillers list user:<discordUser>` to scope to one linked Discord user, or `/fillers list clan:<trackedClan>` to scope to one current clan.",
+      "Filler status is account-level and is stored per guild + player tag; linked Discord users are resolved at render time from PlayerLink.",
+    ],
+    examples: [
+      "/fillers list",
+      "/fillers list user:@user",
+      "/fillers list clan:#2QG2C08UP",
+      "/fillers set user:@user",
     ],
   },
   todo: {

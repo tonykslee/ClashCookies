@@ -46,6 +46,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 ### Clan management tooling
 - Manages tracked clan configuration, mail channels/roles, and war plans.
 - Supports player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands.
+- Includes `/fillers` for marking linked player accounts as filler accounts and listing filler accounts by guild, linked user, or current clan.
 - Provides FWA-focused tooling for points, match handling, layouts, and related workflows.
 - Adds persisted CWL round tracking plus `/cwl members`, `/cwl rotations`, and CWL sheet import/export planner flows on top of seasonal CWL clan tracking.
 
