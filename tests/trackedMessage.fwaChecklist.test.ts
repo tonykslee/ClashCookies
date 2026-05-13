@@ -13,15 +13,28 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import messageReactionAdd from "../src/listeners/messageReactionAdd";
+import messageReactionRemove from "../src/listeners/messageReactionRemove";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
   buildFwaMatchChecklistContent,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
-import { addFwaMatchChecklistReactionsForTest } from "../src/commands/Fwa";
+import {
+  addFwaMatchChecklistReactionsForTest,
+  buildFwaMatchChecklistRowsFromCopyView,
+} from "../src/commands/Fwa";
 
 function makeTrackedChecklistRow() {
+  const rows = buildFwaMatchChecklistRowsFromCopyView({
+    orderedTags: ["RR", "TWC"],
+    copyText:
+      "📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)\n📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)",
+    badgeByTag: new Map([
+      ["RR", "<:rr:111>"],
+      ["TWC", "<:twc:222>"],
+    ]),
+  });
   return {
     id: "tracked-1",
     guildId: "guild-1",
@@ -35,22 +48,7 @@ function makeTrackedChecklistRow() {
     metadata: {
       createdByUserId: "user-1",
       createdAtIso: "2026-05-13T00:00:00.000Z",
-      rows: [
-        {
-          clanTag: "#RR",
-          compactCopyLine: "📬 | 🟢 | RR vs `Bravo` (`#B1`)",
-          badgeEmojiId: "111",
-          badgeEmojiName: "rr",
-          badgeEmojiInline: "<:rr:111>",
-        },
-        {
-          clanTag: "#TWC",
-          compactCopyLine: "📭 | 🔴 | TWC vs `Delta` (`#D2`)",
-          badgeEmojiId: "222",
-          badgeEmojiName: "twc",
-          badgeEmojiInline: "<:twc:222>",
-        },
-      ],
+      rows,
     },
   };
 }
@@ -67,26 +65,47 @@ describe("fwa checklist tracked messages", () => {
     const react = vi.fn().mockResolvedValue(undefined);
     await addFwaMatchChecklistReactionsForTest(
       { id: "message-1", react },
-      [
-        {
-          clanTag: "#RR",
-          compactCopyLine: "📬 | 🟢 | RR vs `Bravo` (`#B1`)",
-          badgeEmojiId: "111",
-          badgeEmojiName: "rr",
-          badgeEmojiInline: "<:rr:111>",
-        },
-        {
-          clanTag: "#TWC",
-          compactCopyLine: "📭 | 🔴 | TWC vs `Delta` (`#D2`)",
-          badgeEmojiId: "222",
-          badgeEmojiName: "twc",
-          badgeEmojiInline: "<:twc:222>",
-        },
-      ],
+      makeTrackedChecklistRow().metadata.rows,
     );
 
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(react).toHaveBeenCalledWith("<:twc:222>");
+  });
+
+  it("builds checklist rows from compact copy text without duplicating the checklist column", () => {
+    const rows = makeTrackedChecklistRow().metadata.rows;
+
+    expect(rows[0]).toMatchObject({
+      clanTag: "RR",
+      compactCopyLine: "📬 | 🟢 | RR vs `Bravo` (`#B1`)",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+    });
+    expect(rows[1]).toMatchObject({
+      clanTag: "TWC",
+      compactCopyLine: "📭 | 🔴 | TWC vs `Delta` (`#D2`)",
+      badgeEmojiId: "222",
+      badgeEmojiName: "twc",
+      badgeEmojiInline: "<:twc:222>",
+    });
+
+    expect(
+      buildFwaMatchChecklistContent({
+        rows,
+        checkedClanTags: [],
+      }),
+    ).toBe(
+      "📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)\n📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)",
+    );
+    expect(
+      buildFwaMatchChecklistContent({
+        rows,
+        checkedClanTags: ["#RR"],
+      }),
+    ).toBe(
+      "📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)\n📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)",
+    );
   });
 
   it("reacting with one clan badge checks only that clan", async () => {
@@ -129,6 +148,45 @@ describe("fwa checklist tracked messages", () => {
     );
     expect(payload.content).toContain("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)");
     expect(payload.content).toContain("📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)");
+  });
+
+  it("wires checklist reaction removals to checklist refresh without touching sync tracking", async () => {
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionRemove(client);
+
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionRemove")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    const refreshChecklist = vi
+      .spyOn(trackedMessageService, "refreshFwaMatchChecklistMessage")
+      .mockResolvedValue(true);
+    const recordSync = vi
+      .spyOn(trackedMessageService, "removeSyncClaim")
+      .mockResolvedValue(true);
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "checklist-message-1" },
+        emoji: { id: "111", name: "rr" },
+        count: 1,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: false,
+        id: "user-1",
+      },
+    );
+
+    expect(refreshChecklist).toHaveBeenCalled();
+    expect(recordSync).not.toHaveBeenCalled();
   });
 
   it("wires checklist reactions to checklist refresh without touching sync tracking", async () => {

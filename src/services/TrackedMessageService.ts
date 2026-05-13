@@ -100,6 +100,7 @@ export type FwaMatchChecklistTrackedMetadata = {
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
+const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
 
 /** Purpose: sanitize copy text so inline-code formatting stays intact in compact match rows. */
 export function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
@@ -178,7 +179,7 @@ export function buildFwaMatchChecklistContent(input: {
 }
 
 function insertFwaMatchChecklistColumn(line: string, checked: boolean): string {
-  const normalized = String(line ?? "").trim();
+  const normalized = stripFwaMatchChecklistColumn(String(line ?? "").trim());
   if (!normalized) return normalized;
   const firstSeparator = normalized.indexOf(" | ");
   if (firstSeparator < 0) return normalized;
@@ -186,6 +187,22 @@ function insertFwaMatchChecklistColumn(line: string, checked: boolean): string {
   if (secondSeparator < 0) return normalized;
   const mark = checked ? FWA_MATCH_CHECKLIST_CHECKED_EMOJI : FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI;
   return `${normalized.slice(0, secondSeparator + 3)}${mark} | ${normalized.slice(secondSeparator + 3)}`;
+}
+
+function stripFwaMatchChecklistColumn(line: string): string {
+  const normalized = String(line ?? "").trim();
+  if (!normalized) return normalized;
+  const firstSeparator = normalized.indexOf(" | ");
+  if (firstSeparator < 0) return normalized;
+  const secondSeparator = normalized.indexOf(" | ", firstSeparator + 3);
+  if (secondSeparator < 0) return normalized;
+  const thirdSeparator = normalized.indexOf(" | ", secondSeparator + 3);
+  if (thirdSeparator < 0) return normalized;
+  const checklistValue = normalized.slice(secondSeparator + 3, thirdSeparator).trim();
+  if (checklistValue !== FWA_MATCH_CHECKLIST_CHECKED_EMOJI && checklistValue !== FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI) {
+    return normalized;
+  }
+  return `${normalized.slice(0, secondSeparator + 3)}${normalized.slice(thirdSeparator + 3)}`;
 }
 
 function activeWhere(featureType?: TrackedMessageFeatureType) {
@@ -205,6 +222,34 @@ function normalizeTagBare(tag: string): string {
 function normalizeChecklistClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return normalized || normalizeTagBare(tag);
+}
+
+export function parseFwaMatchChecklistBadgeInline(input: string | null | undefined): {
+  badgeEmojiId: string | null;
+  badgeEmojiName: string | null;
+  badgeEmojiInline: string;
+} {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) {
+    return {
+      badgeEmojiId: null,
+      badgeEmojiName: null,
+      badgeEmojiInline: "",
+    };
+  }
+  const custom = trimmed.match(CUSTOM_EMOJI_INLINE_PATTERN);
+  if (custom) {
+    return {
+      badgeEmojiId: custom[3],
+      badgeEmojiName: custom[2],
+      badgeEmojiInline: `<${custom[1] ? "a" : ""}:${custom[2]}:${custom[3]}>`,
+    };
+  }
+  return {
+    badgeEmojiId: null,
+    badgeEmojiName: trimmed,
+    badgeEmojiInline: trimmed,
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

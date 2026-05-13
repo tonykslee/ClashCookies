@@ -42,6 +42,7 @@ import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import {
   buildFwaMatchChecklistContent,
+  parseFwaMatchChecklistBadgeInline,
   trackedMessageService,
   type FwaMatchChecklistTrackedRow,
 } from "../services/TrackedMessageService";
@@ -2071,7 +2072,7 @@ function buildFwaMatchCompactCopyLine(params: {
   return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
 }
 
-function buildFwaMatchChecklistRowsFromCopyView(params: {
+export function buildFwaMatchChecklistRowsFromCopyView(params: {
   orderedTags: string[];
   copyText: string;
   badgeByTag: Map<string, string | null>;
@@ -2081,19 +2082,34 @@ function buildFwaMatchChecklistRowsFromCopyView(params: {
     .map((line) => line.trim())
     .filter((line) => Boolean(line));
   return params.orderedTags.flatMap((tag, index) => {
-    const compactCopyLine = lines[index] ?? "";
+    const compactCopyLine = stripFwaMatchChecklistColumn(lines[index] ?? "");
     const badgeEmojiInline = params.badgeByTag.get(normalizeTag(tag))?.trim() ?? "";
     if (!compactCopyLine) return [];
+    const parsedBadge = parseFwaMatchChecklistBadgeInline(badgeEmojiInline);
     return [
       {
         clanTag: normalizeTag(tag),
         compactCopyLine,
-        badgeEmojiId: null,
-        badgeEmojiName: null,
-        badgeEmojiInline,
+        badgeEmojiId: parsedBadge.badgeEmojiId,
+        badgeEmojiName: parsedBadge.badgeEmojiName,
+        badgeEmojiInline: parsedBadge.badgeEmojiInline,
       },
     ];
   });
+}
+
+function stripFwaMatchChecklistColumn(line: string): string {
+  const normalized = String(line ?? "").trim();
+  if (!normalized) return normalized;
+  const firstSeparator = normalized.indexOf(" | ");
+  if (firstSeparator < 0) return normalized;
+  const secondSeparator = normalized.indexOf(" | ", firstSeparator + 3);
+  if (secondSeparator < 0) return normalized;
+  const thirdSeparator = normalized.indexOf(" | ", secondSeparator + 3);
+  if (thirdSeparator < 0) return normalized;
+  const checklistValue = normalized.slice(secondSeparator + 3, thirdSeparator).trim();
+  if (checklistValue !== "☐" && checklistValue !== "✅") return normalized;
+  return `${normalized.slice(0, secondSeparator + 3)}${normalized.slice(thirdSeparator + 3)}`;
 }
 
 async function addFwaMatchChecklistReactions(
@@ -12934,7 +12950,12 @@ export const Fwa: Command = {
       fallbackContent: string,
       rows: FwaMatchChecklistTrackedRow[],
       clanTag: string | null,
+      checklist: boolean,
     ): Promise<void> => {
+      if (checklist && !isPublic) {
+        await editReplySafe("Checklist reactions require visibility:public.", [], []);
+        return;
+      }
       if (rows.length === 0 || !isPublic) {
         await editReplySafe(fallbackContent, [], []);
         return;
@@ -14252,6 +14273,7 @@ export const Fwa: Command = {
               payload.allianceView.copyText,
               checklistRows,
               null,
+              checklist,
             );
             return;
           }
@@ -14309,6 +14331,7 @@ export const Fwa: Command = {
               trackedSingleView.copyText,
               checklistRows,
               tag,
+              checklist,
             );
             return;
           }
@@ -15213,6 +15236,7 @@ export const Fwa: Command = {
               singleView.copyText,
               checklistRows,
               tag,
+              checklist,
             );
             return;
           }
