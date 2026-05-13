@@ -44,6 +44,16 @@ type ClanGroup = {
   entries: FillerAccountViewRow[];
 };
 
+type FillersEditorStage =
+  | "fillers_set_fetch_rows"
+  | "fillers_set_build_embed"
+  | "fillers_set_build_components"
+  | "fillers_set_render_payload"
+  | "fillers_set_edit_reply";
+
+const FILLERS_EDITOR_FAILURE_MESSAGE =
+  "Could not render the filler editor. The failure was logged with diagnostic details.";
+
 function normalizeText(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
@@ -52,6 +62,130 @@ function normalizeText(input: unknown): string | null {
 function normalizePositiveInteger(input: unknown): number | null {
   const parsed = Math.trunc(Number(input));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function truncateDiagnosticText(input: string, maxLength = 220): string {
+  if (input.length <= maxLength) return input;
+  return `${input.slice(0, maxLength)}…[len=${input.length}]`;
+}
+
+function safeDiagnosticJson(value: unknown, maxLength = 3000): string {
+  try {
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(
+      value,
+      (_key, current) => {
+        if (typeof current === "string") {
+          return truncateDiagnosticText(current, 220);
+        }
+        if (typeof current === "number" || typeof current === "boolean" || current === null) {
+          return current;
+        }
+        if (typeof current === "bigint") {
+          return current.toString();
+        }
+        if (typeof current === "undefined") {
+          return "[undefined]";
+        }
+        if (current instanceof Error) {
+          return {
+            name: current.name,
+            message: truncateDiagnosticText(current.message, 220),
+            stack: current.stack ? truncateDiagnosticText(current.stack, 800) : null,
+          };
+        }
+        if (typeof current === "object" && current !== null) {
+          if (seen.has(current as object)) return "[Circular]";
+          seen.add(current as object);
+        }
+        return current;
+      },
+      2,
+    );
+    if (!text) return "null";
+    return text.length <= maxLength
+      ? text
+      : `${text.slice(0, maxLength)}…[len=${text.length}]`;
+  } catch (error) {
+    return truncateDiagnosticText(`"<unstringifiable:${formatError(error)}>"`, maxLength);
+  }
+}
+
+function summarizeFillerRowForDiagnostics(row: FillerAccountViewRow): Record<string, unknown> {
+  return {
+    tag: row.tag,
+    nameLength: normalizeText(row.name)?.length ?? 0,
+    clanNameLength: normalizeText(row.clanName)?.length ?? 0,
+    townHall: row.townHall,
+    weight: row.weight,
+    isFiller: row.isFiller,
+  };
+}
+
+function summarizeErrorForDiagnostics(error: unknown): Record<string, unknown> {
+  const raw = error as {
+    name?: unknown;
+    message?: unknown;
+    stack?: unknown;
+    errors?: unknown;
+    cause?: unknown;
+  };
+  return {
+    formatError: formatError(error),
+    rawName: typeof raw?.name === "string" ? raw.name : typeof error,
+    rawMessage: truncateDiagnosticText(
+      typeof raw?.message === "string" ? raw.message : String(error ?? ""),
+      300,
+    ),
+    stack: typeof raw?.stack === "string" ? truncateDiagnosticText(raw.stack, 1200) : null,
+    errors: raw?.errors !== undefined ? safeDiagnosticJson(raw.errors, 2000) : null,
+    cause: raw?.cause !== undefined ? safeDiagnosticJson(raw.cause, 2000) : null,
+  };
+}
+
+function logFillersEditorDiagnostic(
+  stage: FillersEditorStage,
+  details: Record<string, unknown>,
+  error?: unknown,
+): void {
+  const payload = {
+    stage,
+    ...details,
+    ...(error ? { error: summarizeErrorForDiagnostics(error) } : {}),
+  };
+  console.error(`[fillers:set] ${safeDiagnosticJson(payload, 6000)}`);
+}
+
+function summarizeSelectMenuDiagnostics(menu: {
+  customId?: string;
+  placeholder?: string | null;
+  minValues?: number;
+  maxValues?: number;
+  options?: Array<{
+    label?: string;
+    value?: string;
+    description?: string | null;
+  }>;
+}): Record<string, unknown> {
+  const options = menu.options ?? [];
+  const labelLengths = options.map((option) => String(option.label ?? "").length);
+  const descriptionLengths = options.map((option) => String(option.description ?? "").length);
+  const valueLengths = options.map((option) => String(option.value ?? "").length);
+  return {
+    customIdLength: String(menu.customId ?? "").length,
+    placeholderLength: String(menu.placeholder ?? "").length,
+    optionCount: options.length,
+    minValues: menu.minValues ?? null,
+    maxValues: menu.maxValues ?? null,
+    longestOptionLabelLength: labelLengths.length > 0 ? Math.max(...labelLengths) : 0,
+    longestOptionDescriptionLength:
+      descriptionLengths.length > 0 ? Math.max(...descriptionLengths) : 0,
+    anyOptionLabelEmpty: options.some((option) => String(option.label ?? "").length === 0),
+    anyOptionValueEmpty: options.some((option) => String(option.value ?? "").length === 0),
+    anyOptionValueLengthOver100: valueLengths.some((length) => length > 100),
+    anyOptionLabelLengthOver100: labelLengths.some((length) => length > 100),
+    anyOptionDescriptionLengthOver100: descriptionLengths.some((length) => length > 100),
+  };
 }
 
 function formatCompactWeightK(weight: number | null | undefined): string {
@@ -360,22 +494,44 @@ function buildEditorRows(
     const bucket = buckets[bucketIndex] ?? [];
     const start = pageIndex * rowsPerPage + bucketIndex * FILLERS_MENU_SIZE + 1;
     const end = start + bucket.length - 1;
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId(`fillers:editor:${sessionId}:page:${pageIndex}:bucket:${bucketIndex}`)
-      .setPlaceholder(`${start}-${end}`)
-      .setMinValues(0)
-      .setMaxValues(Math.max(1, bucket.length))
-      .addOptions(
-        bucket.map((row) => ({
-          label: `${renderTownHallIcon(row.townHall, townHallEmojiByLevel)} ${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
-          value: row.tag,
-          default: selectedTags.has(row.tag),
-          description: normalizeText(
-            [row.tag, row.clanName ? `clan: ${row.clanName}` : null].filter(Boolean).join(" | "),
-          )?.slice(0, 100),
-        })),
+    const optionEntries = bucket.map((row) => ({
+      label: `${renderTownHallIcon(row.townHall, townHallEmojiByLevel)} ${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
+      value: row.tag,
+      default: selectedTags.has(row.tag),
+      description: normalizeText(
+        [row.tag, row.clanName ? `clan: ${row.clanName}` : null].filter(Boolean).join(" | "),
+      )?.slice(0, 100),
+    }));
+    const menuPreview = {
+      customId: `fillers:editor:${sessionId}:page:${pageIndex}:bucket:${bucketIndex}`,
+      placeholder: `${start}-${end}`,
+      minValues: 0,
+      maxValues: Math.max(1, bucket.length),
+      options: optionEntries,
+    };
+
+    try {
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(menuPreview.customId)
+        .setPlaceholder(menuPreview.placeholder)
+        .setMinValues(menuPreview.minValues)
+        .setMaxValues(menuPreview.maxValues)
+        .addOptions(optionEntries);
+      components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+    } catch (error) {
+      logFillersEditorDiagnostic(
+        "fillers_set_build_components",
+        {
+          phase: "menu_build_failed",
+          pageIndex,
+          bucketIndex,
+          rowCount: bucket.length,
+          menu: summarizeSelectMenuDiagnostics(menuPreview),
+        },
+        error,
       );
-    components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+      throw error;
+    }
   }
 
   return components;
@@ -402,14 +558,41 @@ function buildEditorEmbed(input: {
   if (lines.length === 0) {
     lines.push("No linked accounts found.");
   }
+  const description = lines.join("\n");
+  const embedMetrics = {
+    titleLength: input.title.length,
+    descriptionLength: description.length,
+    lineCount: lines.length,
+    selectedCount: input.selectedCount,
+    totalCount: input.totalCount,
+    page: input.page,
+    totalPages: input.totalPages,
+  };
 
-  return new EmbedBuilder()
-    .setTitle(input.title)
-    .setColor(0x5865f2)
-    .setDescription(lines.join("\n"))
-    .setFooter({
-      text: `${input.selectedCount}/${input.totalCount} filler accounts selected | Page ${input.page + 1}/${input.totalPages}`,
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle(input.title)
+      .setColor(0x5865f2)
+      .setDescription(description)
+      .setFooter({
+        text: `${input.selectedCount}/${input.totalCount} filler accounts selected | Page ${input.page + 1}/${input.totalPages}`,
+      });
+    logFillersEditorDiagnostic("fillers_set_build_embed", {
+      phase: "embed_built",
+      ...embedMetrics,
     });
+    return embed;
+  } catch (error) {
+    logFillersEditorDiagnostic(
+      "fillers_set_build_embed",
+      {
+        phase: "embed_build_failed",
+        ...embedMetrics,
+      },
+      error,
+    );
+    throw error;
+  }
 }
 
 function buildEditorTitle(targetLabel: string, totalCount: number): string {
@@ -498,34 +681,184 @@ async function renderEditorReply(input: {
   const title = buildEditorTitle(`<@${input.targetUserId}>`, sortedRows.length);
   const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
 
-  const renderPayload = () => {
+  const buildRenderPayload = () => {
     const renderRows = sortedRows.map((row) => ({
       ...row,
       isFiller: selectedTags.has(row.tag),
     }));
     const pageRows = renderRows.slice(page * FILLERS_PAGE_SIZE, (page + 1) * FILLERS_PAGE_SIZE);
-    return {
-      embeds: [
-        buildEditorEmbed({
-          title,
-          rows: pageRows,
-          selectedCount: selectedTags.size,
-          totalCount: sortedRows.length,
-          townHallEmojiByLevel,
-          page,
+    logFillersEditorDiagnostic("fillers_set_render_payload", {
+      phase: "pre_build",
+      guildId: input.interaction.guildId ?? "",
+      targetUserId: input.targetUserId,
+      actorUserId: input.interaction.user.id,
+      sortedRowsLength: sortedRows.length,
+      totalPages,
+      page,
+      selectedTagsSize: selectedTags.size,
+      renderRowsLength: renderRows.length,
+      pageRowsLength: pageRows.length,
+    });
+
+    let embed: EmbedBuilder;
+    try {
+      embed = buildEditorEmbed({
+        title,
+        rows: pageRows,
+        selectedCount: selectedTags.size,
+        totalCount: sortedRows.length,
+        townHallEmojiByLevel,
+        page,
+        totalPages,
+      });
+    } catch (error) {
+      logFillersEditorDiagnostic(
+        "fillers_set_render_payload",
+        {
+          phase: "build_embed_failed",
+          guildId: input.interaction.guildId ?? "",
+          targetUserId: input.targetUserId,
+          actorUserId: input.interaction.user.id,
+          sortedRowsLength: sortedRows.length,
           totalPages,
+          page,
+          selectedTagsSize: selectedTags.size,
+          renderRowsLength: renderRows.length,
+          pageRowsLength: pageRows.length,
+        },
+        error,
+      );
+      throw error;
+    }
+
+    let editorRows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[];
+    try {
+      editorRows = buildEditorRows(sessionId, page, renderRows, selectedTags, townHallEmojiByLevel);
+    } catch (error) {
+      logFillersEditorDiagnostic(
+        "fillers_set_render_payload",
+        {
+          phase: "build_components_failed",
+          guildId: input.interaction.guildId ?? "",
+          targetUserId: input.targetUserId,
+          actorUserId: input.interaction.user.id,
+          sortedRowsLength: sortedRows.length,
+          totalPages,
+          page,
+          selectedTagsSize: selectedTags.size,
+          renderRowsLength: renderRows.length,
+          pageRowsLength: pageRows.length,
+        },
+        error,
+      );
+      throw error;
+    }
+
+    const pagerRow = buildPagerRow(`fillers:editor:${sessionId}`, page, totalPages);
+    const components = [...editorRows, ...(pagerRow ? [pagerRow] : [])];
+    const embedJson = embed.toJSON() as { title?: string; description?: string | null };
+    const componentJson = components.map((component) => component.toJSON() as {
+      components?: Array<{
+        options?: Array<{ label?: string; value?: string; description?: string | null }>;
+        custom_id?: string;
+        placeholder?: string | null;
+        min_values?: number;
+        max_values?: number;
+      }>;
+    });
+    const flatComponents = componentJson.flatMap((row) => row.components ?? []);
+    const selectMenus = flatComponents.filter((component) => Array.isArray(component.options));
+    const buttonCount = flatComponents.length - selectMenus.length;
+    const payloadMetrics = {
+      embedTitleLength: String(embedJson.title ?? "").length,
+      embedDescriptionLength: String(embedJson.description ?? "").length,
+      componentRowCount: componentJson.length,
+      selectMenuCount: selectMenus.length,
+      buttonCount,
+      selectMenus: selectMenus.map((menu) =>
+        summarizeSelectMenuDiagnostics({
+          customId: menu.custom_id,
+          placeholder: menu.placeholder,
+          minValues: menu.min_values,
+          maxValues: menu.max_values,
+          options: menu.options,
         }),
-      ],
-      components: [
-        ...buildEditorRows(sessionId, page, renderRows, selectedTags, townHallEmojiByLevel),
-        ...(buildPagerRow(`fillers:editor:${sessionId}`, page, totalPages)
-          ? [buildPagerRow(`fillers:editor:${sessionId}`, page, totalPages)!]
-          : []),
-      ],
+      ),
+    };
+    logFillersEditorDiagnostic("fillers_set_render_payload", {
+      phase: "payload_metrics",
+      guildId: input.interaction.guildId ?? "",
+      targetUserId: input.targetUserId,
+      actorUserId: input.interaction.user.id,
+      sortedRowsLength: sortedRows.length,
+      totalPages,
+      page,
+      selectedTagsSize: selectedTags.size,
+      renderRowsLength: renderRows.length,
+      pageRowsLength: pageRows.length,
+      ...payloadMetrics,
+    });
+
+    return {
+      embeds: [embed],
+      components,
     };
   };
 
-  await input.interaction.editReply(renderPayload());
+  let renderPayload;
+  try {
+    renderPayload = buildRenderPayload();
+  } catch (error) {
+    logFillersEditorDiagnostic(
+      "fillers_set_render_payload",
+      {
+        phase: "render_payload_failed",
+        guildId: input.interaction.guildId ?? "",
+        targetUserId: input.targetUserId,
+        actorUserId: input.interaction.user.id,
+        sortedRowsLength: sortedRows.length,
+        totalPages,
+        page,
+        selectedTagsSize: selectedTags.size,
+      },
+      error,
+    );
+    throw error;
+  }
+
+  try {
+    await input.interaction.editReply(renderPayload);
+  } catch (error) {
+    const embedJson = renderPayload.embeds[0]?.toJSON() as {
+      title?: string;
+      description?: string | null;
+    };
+    const componentJson = renderPayload.components.map((component) => component.toJSON() as {
+      components?: Array<{
+        options?: Array<{ label?: string; value?: string; description?: string | null }>;
+        custom_id?: string;
+        placeholder?: string | null;
+        min_values?: number;
+        max_values?: number;
+      }>;
+    });
+    const flatComponents = componentJson.flatMap((row) => row.components ?? []);
+    logFillersEditorDiagnostic(
+      "fillers_set_edit_reply",
+      {
+        guildId: input.interaction.guildId ?? "",
+        targetUserId: input.targetUserId,
+        actorUserId: input.interaction.user.id,
+        embedTitleLength: String(embedJson?.title ?? "").length,
+        embedDescriptionLength: String(embedJson?.description ?? "").length,
+        componentRowCount: componentJson.length,
+        selectMenuCount: flatComponents.filter((component) => Array.isArray(component.options)).length,
+        buttonCount: flatComponents.filter((component) => !Array.isArray(component.options)).length,
+      },
+      error,
+    );
+    throw error;
+  }
 
   const message = await input.interaction.fetchReply();
   const collector = message.createMessageComponentCollector({
@@ -545,7 +878,7 @@ async function renderEditorReply(input: {
         } else if (component.customId.endsWith(":next")) {
           page = Math.min(totalPages - 1, page + 1);
         }
-        await component.update(renderPayload());
+        await component.update(buildRenderPayload());
         return;
       }
 
@@ -570,13 +903,13 @@ async function renderEditorReply(input: {
         linkedPlayerTags: sortedRows.map((row) => row.tag),
         selectedPlayerTags: [...selectedTags],
       });
-      await component.update(renderPayload());
+      await component.update(buildRenderPayload());
     } catch (error) {
       console.error(`fillers editor collector failed: ${formatError(error)}`);
       if (!component.replied && !component.deferred) {
         await component.reply({
           ephemeral: true,
-          content: "Failed to update filler selections.",
+          content: FILLERS_EDITOR_FAILURE_MESSAGE,
         });
       }
     }
@@ -659,9 +992,33 @@ export const Fillers: Command = {
 
     if (subcommand === "set") {
       const targetUser = interaction.options.getUser("user", true);
-      const rows = await listFillerEditorAccountsForDiscordUser({
+      let rows: FillerAccountViewRow[];
+      try {
+        rows = await listFillerEditorAccountsForDiscordUser({
+          guildId: interaction.guildId,
+          discordUserId: targetUser.id,
+        });
+      } catch (error) {
+        logFillersEditorDiagnostic(
+          "fillers_set_fetch_rows",
+          {
+            guildId: interaction.guildId,
+            targetUserId: targetUser.id,
+            actorUserId: interaction.user.id,
+          },
+          error,
+        );
+        await interaction.editReply({
+          content: FILLERS_EDITOR_FAILURE_MESSAGE,
+        });
+        return;
+      }
+      logFillersEditorDiagnostic("fillers_set_fetch_rows", {
         guildId: interaction.guildId,
-        discordUserId: targetUser.id,
+        targetUserId: targetUser.id,
+        actorUserId: interaction.user.id,
+        linkedRowCount: rows.length,
+        firstRows: rows.slice(0, 5).map(summarizeFillerRowForDiagnostics),
       });
       if (rows.length === 0) {
         await interaction.editReply({
@@ -670,11 +1027,28 @@ export const Fillers: Command = {
         return;
       }
 
-      await renderEditorReply({
-        interaction,
-        targetUserId: targetUser.id,
-        rows,
-      });
+      try {
+        await renderEditorReply({
+          interaction,
+          targetUserId: targetUser.id,
+          rows,
+        });
+      } catch (error) {
+        logFillersEditorDiagnostic(
+          "fillers_set_render_payload",
+          {
+            phase: "command_failed",
+            guildId: interaction.guildId,
+            targetUserId: targetUser.id,
+            actorUserId: interaction.user.id,
+            linkedRowCount: rows.length,
+          },
+          error,
+        );
+        await interaction.editReply({
+          content: FILLERS_EDITOR_FAILURE_MESSAGE,
+        });
+      }
       return;
     }
 
