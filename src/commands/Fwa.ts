@@ -12810,7 +12810,6 @@ export const Fwa: Command = {
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
-    const copyPaste = interaction.options.getBoolean("copy_paste", false) ?? false;
     const defaultComponents = !isPublic
       ? [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -14013,6 +14012,7 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "match") {
+      const copyPaste = interaction.options.getBoolean?.("copy_paste", false) ?? false;
       if (tag) {
         const trackedClan = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
