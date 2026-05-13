@@ -155,6 +155,34 @@ describe("fwa match compact copy view", () => {
     expect(line.includes("\n")).toBe(false);
   });
 
+  it("prefers tracked clan short names in compact copy rows", () => {
+    const line = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      matchType: "FWA",
+      outcome: "WIN",
+    });
+
+    expect(line).toBe("📬 | 🟢 | RR vs `Bravo` (`#B1`)");
+  });
+
+  it("falls back to the full clan name when short name is missing", () => {
+    const line = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      clanShortName: "   ",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      matchType: "FWA",
+      outcome: "WIN",
+    });
+
+    expect(line).toBe("📬 | 🟢 | Red Ridge vs `Bravo` (`#B1`)");
+  });
+
   it("renders normal match embed by default and direct copy_paste without components", () => {
     const payload = makePayload(
       "📬 | 🟢 | Alliance vs `Bravo` (`#B1`)",

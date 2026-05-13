@@ -2013,9 +2013,24 @@ function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
   return String(input ?? "").replace(/`/g, "'");
 }
 
+/** Purpose: choose the compact copy label for a tracked clan, preferring the configured short name. */
+function resolveFwaMatchCompactClanLabel(params: {
+  shortName: string | null | undefined;
+  clanName: string | null | undefined;
+  fallbackLabel?: string | null | undefined;
+}): string {
+  const shortName = sanitizeFwaMatchCopyText(params.shortName?.trim() || null);
+  if (shortName) return shortName;
+  const clanName = sanitizeFwaMatchCopyText(params.clanName);
+  if (clanName.trim()) return clanName;
+  const fallbackLabel = sanitizeFwaMatchCopyText(params.fallbackLabel);
+  return fallbackLabel.trim() || "unknown";
+}
+
 /** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
 function buildFwaMatchCompactCopyLine(params: {
   mailStatusEmoji?: string;
+  clanShortName?: string | null | undefined;
   clanName: string | null | undefined;
   opponentName: string | null | undefined;
   opponentTag: string | null | undefined;
@@ -2023,7 +2038,10 @@ function buildFwaMatchCompactCopyLine(params: {
   outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
 }): string {
   const mailStatusEmoji = params.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
-  const clanName = sanitizeFwaMatchCopyText(params.clanName) || "unknown";
+  const clanName = resolveFwaMatchCompactClanLabel({
+    shortName: params.clanShortName,
+    clanName: params.clanName,
+  });
   const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
   const opponentTagRaw = normalizeTag(String(params.opponentTag ?? ""));
   const opponentTag = opponentTagRaw
@@ -10309,7 +10327,7 @@ async function buildTrackedMatchOverview(
     : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, mailChannelId: true },
+    select: { tag: true, name: true, shortName: true, mailChannelId: true },
   });
   const scopedTracked = scopedTagSet
     ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
@@ -10557,13 +10575,14 @@ async function buildTrackedMatchOverview(
         nonActiveMailProjection.mailStatusLine,
         ...preWarMailDebugLines,
       ];
-      const preWarCopyLine = buildFwaMatchCompactCopyLine({
-        mailStatusEmoji,
-        clanName,
-        opponentName: "unknown",
-        opponentTag: null,
-        matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
-        outcome: null,
+        const preWarCopyLine = buildFwaMatchCompactCopyLine({
+          mailStatusEmoji,
+          clanShortName: clan.shortName,
+          clanName,
+          opponentName: "unknown",
+          opponentTag: null,
+          matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
+          outcome: null,
       });
       if (includeInOverview) {
         embed.addFields({
@@ -10652,6 +10671,7 @@ async function buildTrackedMatchOverview(
       ];
       const noOpponentCopyLine = buildFwaMatchCompactCopyLine({
         mailStatusEmoji,
+        clanShortName: clan.shortName,
         clanName,
         opponentName: "unknown",
         opponentTag: null,
@@ -14528,12 +14548,15 @@ export const Fwa: Command = {
           existingInferredMatchType: subscription?.inferredMatchType ?? null,
         });
         const trackedPair = await prisma.trackedClan.findMany({
-          select: { name: true, tag: true },
+          select: { name: true, shortName: true, tag: true },
         });
-        const trackedNameByTag = new Map(
+        const trackedClanByTag = new Map(
           trackedPair.map((c) => [
             normalizeTag(c.tag),
-            sanitizeClanName(c.name),
+            {
+              name: sanitizeClanName(c.name),
+              shortName: sanitizeFwaMatchCopyText(c.shortName?.trim() || null),
+            },
           ]),
         );
 
@@ -14689,12 +14712,14 @@ export const Fwa: Command = {
           detail: `tag=${tag} opponent=${opponentTag}`,
         });
 
+        const trackedPrimaryClan = trackedClanByTag.get(tag) ?? null;
+        const trackedOpponentClan = trackedClanByTag.get(opponentTag) ?? null;
         const resolvedPrimaryName =
-          trackedNameByTag.get(tag) ??
+          trackedPrimaryClan?.name ??
           sanitizeClanName(String(war?.clan?.name ?? "")) ??
           sanitizeClanName(primary.clanName);
         const resolvedOpponentName =
-          trackedNameByTag.get(opponentTag) ??
+          trackedOpponentClan?.name ??
           sanitizeClanName(String(war?.opponent?.name ?? "")) ??
           sanitizeClanName(opponent.clanName);
         const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
@@ -14937,6 +14962,7 @@ export const Fwa: Command = {
           );
         const compactCopyLine = buildFwaMatchCompactCopyLine({
           mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+          clanShortName: trackedPrimaryClan?.shortName ?? null,
           clanName: leftName,
           opponentName: rightName,
           opponentTag: opponentTag || null,
