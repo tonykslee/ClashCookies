@@ -1244,6 +1244,7 @@ async function buildCompoAdviceEmbed(input: {
             ? "resolved roster"
             : "projected 50-player roster"
         }`,
+        `Deferred: ${summary.currentProjection.deferredWeightCount}`,
         `Current Deviation Score: **${formatAdviceScore(summary.currentScore)}**`,
         `Matchrate: ${formatMatchratePercent(summary.currentMatchrate)}`,
       ].join("\n"),
