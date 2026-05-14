@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   trackedClan: {
+    findFirst: vi.fn(),
     findMany: vi.fn(),
   },
   currentWar: {
@@ -18,6 +19,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
     upsert: vi.fn(),
+    updateMany: vi.fn(),
   },
   playerCurrent: {
     upsert: vi.fn(),
@@ -28,17 +30,23 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-function makeInteraction(input: { playerTag: string; weight: string }) {
+function makeInteraction(input: {
+  playerTag?: string;
+  weight?: string;
+  subcommand?: "add" | "list" | "remove" | "check" | "clear";
+  clan?: string | null;
+}) {
   return {
     guildId: "guild-1",
     channelId: "channel-1",
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
-      getSubcommand: vi.fn().mockReturnValue("add"),
+      getSubcommand: vi.fn().mockReturnValue(input.subcommand ?? "add"),
       getString: vi.fn((name: string) => {
-        if (name === "player-tag") return input.playerTag;
-        if (name === "weight") return input.weight;
+        if (name === "player-tag") return input.playerTag ?? null;
+        if (name === "weight") return input.weight ?? null;
+        if (name === "clan") return input.clan ?? null;
         return null;
       }),
     },
@@ -49,6 +57,9 @@ describe("/defer add", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#PQL0289",
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
         tag: "#PQL0289",
@@ -285,6 +296,143 @@ describe("/defer add", () => {
     expect(prismaMock.weightInputDeferment.upsert).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith(
       "failed: unable to save deferment for #220PUR9JG. Check bot logs.",
+    );
+  });
+
+  it("lists clan-filtered deferments using current clan membership and guild-scoped rows", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-02T12:00:00.000Z"));
+    try {
+      prismaMock.trackedClan.findFirst.mockResolvedValue({
+        tag: "#AAA111",
+      });
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+        {
+          clanTag: "#AAA111",
+          playerTag: "#PYLQ0289",
+        },
+        {
+          clanTag: "#AAA111",
+          playerTag: "#QGRJ2222",
+        },
+      ]);
+      prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+        {
+          id: "row-1",
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          scopeKey: "guild:guild-1|clan:AAA111",
+          playerTag: "#PYLQ0289",
+          deferredWeight: 145000,
+          createdAt: new Date("2026-04-02T11:00:00.000Z"),
+          status: "open",
+        },
+        {
+          id: "row-2",
+          guildId: "guild-1",
+          clanTag: null,
+          scopeKey: "guild:guild-1",
+          playerTag: "#QGRJ2222",
+          deferredWeight: 150000,
+          createdAt: new Date("2026-04-02T10:00:00.000Z"),
+          status: "open",
+        },
+        {
+          id: "row-3",
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          scopeKey: "guild:guild-1|clan:AAA111",
+          playerTag: "#ZZZZ9999",
+          deferredWeight: 155000,
+          createdAt: new Date("2026-04-03T00:00:00.000Z"),
+          status: "open",
+        },
+      ]);
+
+      const interaction = makeInteraction({
+        subcommand: "list",
+        clan: "#AAA111",
+      });
+
+      await Defer.run({} as any, interaction as any, {} as any);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        [
+          "open_deferments: 2 in #AAA111",
+          "- #PYLQ0289 | weight 145000 | age 0d 1h | scope clan",
+          "- #QGRJ2222 | weight 150000 | age 0d 2h | scope guild",
+        ].join("\n"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("checks clan-filtered deferments and reports resolved vs still-open counts", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#AAA111",
+    });
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+      {
+        clanTag: "#AAA111",
+        playerTag: "#QGRJ2222",
+        weight: null,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        id: "row-1",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-02T10:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-2",
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: "guild:guild-1",
+        playerTag: "#PYLQ0289",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-02T09:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-3",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#QGRJ2222",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-02T08:00:00.000Z"),
+        status: "open",
+      },
+    ]);
+    prismaMock.weightInputDeferment.updateMany.mockResolvedValue({ count: 1 });
+
+    const interaction = makeInteraction({
+      subcommand: "check",
+      clan: "#AAA111",
+    });
+
+    await Defer.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "checked_deferments: 3 in #AAA111",
+        "resolved_deferments: 2",
+        "still_open_missing_weight: 1",
+      ].join("\n"),
     );
   });
 });

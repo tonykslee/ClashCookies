@@ -1,19 +1,24 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
 } from "discord.js";
 import { Command } from "../Command";
+import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
   addWeightInputDefermentWithPlayerProfile,
+  buildDeferScopeKey,
   clearOpenWeightInputDeferments,
+  checkOpenWeightInputDefermentsForClan,
   formatPendingAge,
   listOpenWeightInputDeferments,
   normalizePlayerTag,
   parseDeferWeightInput,
   removeOpenWeightInputDeferment,
 } from "../services/WeightInputDefermentService";
+import { normalizeTag } from "../services/war-events/core";
 import { formatError } from "../helper/formatError";
 
 function renderScopeLabel(scope: { clanTag: string | null; scopeKey: string }): string {
@@ -25,6 +30,13 @@ function parseRequiredPlayerTag(raw: string): string | null {
   const normalized = normalizePlayerTag(raw);
   if (!normalized) return null;
   return normalized;
+}
+
+function renderDeferListScopeMarker(scopeKey: string, guildId: string): string | null {
+  if (scopeKey === buildDeferScopeKey(guildId, null)) return "scope guild";
+  const prefix = `guild:${guildId}|clan:`;
+  if (scopeKey.startsWith(prefix)) return "scope clan";
+  return null;
 }
 
 export const Defer: Command = {
@@ -54,6 +66,15 @@ export const Defer: Command = {
       name: "list",
       description: "List open deferred weight-input tasks",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked clan to scope the list by current membership",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+      ],
     },
     {
       name: "remove",
@@ -65,6 +86,20 @@ export const Defer: Command = {
           description: "Player tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
+        },
+      ],
+    },
+    {
+      name: "check",
+      description: "Check open deferred tasks against current FWAStats clan weights",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked clan to check current membership against FWAStats weights",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
         },
       ],
     },
@@ -153,20 +188,55 @@ export const Defer: Command = {
     }
 
     if (subcommand === "list") {
-      const listed = await listOpenWeightInputDeferments({ guildId, channelId });
+      const requestedClan = interaction.options.getString("clan", false);
+      let resolvedClanTag: string | null = null;
+      if (requestedClan) {
+        const normalizedClanTag = normalizeTag(requestedClan);
+        if (!normalizedClanTag) {
+          await interaction.editReply("invalid_clan: use a tracked clan tag with or without #.");
+          return;
+        }
+        const trackedClan = await prisma.trackedClan.findFirst({
+          where: {
+            OR: [
+              { tag: { equals: normalizedClanTag, mode: "insensitive" } },
+              { tag: { equals: normalizedClanTag.replace(/^#/, ""), mode: "insensitive" } },
+            ],
+          },
+          select: { tag: true },
+        });
+        if (!trackedClan) {
+          await interaction.editReply(`Clan ${normalizedClanTag} is not in tracked clans.`);
+          return;
+        }
+        resolvedClanTag = normalizeTag(trackedClan.tag);
+      }
+
+      const listed = await listOpenWeightInputDeferments({
+        guildId,
+        channelId,
+        clanTag: resolvedClanTag,
+      });
       if (listed.rows.length === 0) {
         await interaction.editReply(
-          `empty_list: no open deferments in ${renderScopeLabel(listed.scope)}.`
+          resolvedClanTag
+            ? `empty_list: no open deferments in ${resolvedClanTag}.`
+            : `empty_list: no open deferments in ${renderScopeLabel(listed.scope)}.`
         );
         return;
       }
       const lines = listed.rows.map((row) => {
         const age = formatPendingAge(row.createdAt);
+        if (resolvedClanTag) {
+          const scopeMarker = renderDeferListScopeMarker(row.scopeKey, guildId);
+          const scopeSuffix = scopeMarker ? ` | ${scopeMarker}` : "";
+          return `- ${row.playerTag} | weight ${row.deferredWeight} | age ${age}${scopeSuffix}`;
+        }
         return `- ${row.playerTag} | weight ${row.deferredWeight} | age ${age}`;
       });
       await interaction.editReply(
         [
-          `open_deferments: ${listed.rows.length} in ${renderScopeLabel(listed.scope)}`,
+          `open_deferments: ${listed.rows.length} in ${resolvedClanTag ?? renderScopeLabel(listed.scope)}`,
           ...lines,
         ].join("\n")
       );
@@ -199,9 +269,75 @@ export const Defer: Command = {
       return;
     }
 
+    if (subcommand === "check") {
+      const requestedClan = interaction.options.getString("clan", true);
+      const normalizedClanTag = normalizeTag(requestedClan);
+      if (!normalizedClanTag) {
+        await interaction.editReply("invalid_clan: use a tracked clan tag with or without #.");
+        return;
+      }
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: normalizedClanTag, mode: "insensitive" } },
+            { tag: { equals: normalizedClanTag.replace(/^#/, ""), mode: "insensitive" } },
+          ],
+        },
+        select: { tag: true },
+      });
+      if (!trackedClan) {
+        await interaction.editReply(`Clan ${normalizedClanTag} is not in tracked clans.`);
+        return;
+      }
+      const resolvedClanTag = normalizeTag(trackedClan.tag);
+      const result = await checkOpenWeightInputDefermentsForClan({
+        guildId,
+        clanTag: resolvedClanTag,
+      });
+      await interaction.editReply(
+        [
+          `checked_deferments: ${result.checkedCount} in ${resolvedClanTag}`,
+          `resolved_deferments: ${result.resolvedCount}`,
+          `still_open_missing_weight: ${result.stillOpenMissingWeightCount}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
     const cleared = await clearOpenWeightInputDeferments({ guildId, channelId });
     await interaction.editReply(
       `cleared_count: ${cleared.clearedCount} in ${renderScopeLabel(cleared.scope)}.`
     );
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    const tracked = await prisma.trackedClan.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { tag: true, name: true },
+    });
+    const choices = tracked
+      .map((clan) => {
+        const tag = normalizeTag(clan.tag);
+        if (!tag) return null;
+        const label = clan.name?.trim() ? `${clan.name.trim()} (${tag})` : tag;
+        return {
+          name: label.slice(0, 100),
+          value: tag,
+        };
+      })
+      .filter(
+        (choice): choice is { name: string; value: string } =>
+          choice !== null &&
+          (choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)),
+      )
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };
