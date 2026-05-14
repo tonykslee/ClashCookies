@@ -98,6 +98,17 @@ function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) 
   };
 }
 
+function makeValidPlayerTag(index: number) {
+  const alphabet = "PYLQGRJCUV0289";
+  let value = index + 1;
+  let encoded = "";
+  do {
+    encoded = alphabet[value % alphabet.length] + encoded;
+    value = Math.floor(value / alphabet.length) - 1;
+  } while (value >= 0);
+  return `#${encoded}`;
+}
+
 function makeWarFallback(input: {
   clanTag: string;
   playerTag: string;
@@ -329,7 +340,7 @@ describe("CompoActualStateService", () => {
     );
   });
 
-  it("shows projected totals separately in ACTUAL auto view and labels projected deltas", async () => {
+  it("shows projected totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan"),
     ]);
@@ -411,7 +422,53 @@ describe("CompoActualStateService", () => {
       "Resolved roster weight is shown separately from the projected 50-player total.",
     );
     expect(result.contentLines).toContain("Selected band source: projected total.");
-    expect(result.contentLines).toContain("Deltas: projected vs HeatMapRef.");
+    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
+  });
+
+  it("keeps auto-detect projected band selection but shows resolved-count deltas against the selected band", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 47 }, (_, index) =>
+        makeMember({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 135000,
+        }),
+      ),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 10_000_000,
+        th18Count: 3,
+        th14Count: 47,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "6,345,000",
+      "6,870,000",
+      "3",
+      "47",
+      "-3",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {

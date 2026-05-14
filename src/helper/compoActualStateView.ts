@@ -300,10 +300,7 @@ function buildEstimatedProjectionForBand(input: {
     input.displayCounts,
     fillPlan.fillCounts,
   );
-  const deltaByBucket = getCompoActualStateDeltaByBucket(
-    estimatedDisplayCounts,
-    input.heatMapRef,
-  );
+  const deltaByBucket = getCompoActualStateDeltaByBucket(input.displayCounts, input.heatMapRef);
   const deviationScore = calculateCompoDeviationScore({
     displayCounts: estimatedDisplayCounts,
     heatMapRef: input.heatMapRef,
