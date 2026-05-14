@@ -2029,6 +2029,42 @@ function resolveFwaMatchChecklistEnabled(params: {
   return params.copyPaste ? Boolean(params.checklist) : false;
 }
 
+/** Purpose: normalize `/fwa match` response visibility and copy-paste flags before any reply is chosen. */
+function normalizeFwaMatchResponseMode(params: {
+  visibility: string | null | undefined;
+  copyPaste: boolean | null | undefined;
+  checklist: boolean | null | undefined;
+}): {
+  normalizedChecklist: boolean;
+  normalizedCopyPaste: boolean;
+  normalizedVisibility: "private" | "public";
+  isPublic: boolean;
+} {
+  const normalizedChecklist = Boolean(params.checklist);
+  const normalizedCopyPaste = Boolean(params.copyPaste) || normalizedChecklist;
+  const requestedVisibility = params.visibility === "public" ? "public" : "private";
+  const normalizedVisibility = normalizedCopyPaste ? "public" : requestedVisibility;
+  return {
+    normalizedChecklist,
+    normalizedCopyPaste,
+    normalizedVisibility,
+    isPublic: normalizedVisibility === "public",
+  };
+}
+
+export function normalizeFwaMatchResponseModeForTest(params: {
+  visibility: string | null | undefined;
+  copyPaste: boolean | null | undefined;
+  checklist: boolean | null | undefined;
+}): {
+  normalizedChecklist: boolean;
+  normalizedCopyPaste: boolean;
+  normalizedVisibility: "private" | "public";
+  isPublic: boolean;
+} {
+  return normalizeFwaMatchResponseMode(params);
+}
+
 /** Purpose: choose the compact copy label for a tracked clan, preferring the configured short name. */
 function resolveFwaMatchCompactClanLabel(params: {
   shortName: string | null | undefined;
@@ -12943,9 +12979,25 @@ export const Fwa: Command = {
   ) => {
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
-    const visibility =
+    const requestedVisibility =
       interaction.options.getString("visibility", false) ?? "private";
-    const isPublic = visibility === "public";
+    let visibility = requestedVisibility;
+    let isPublic = visibility === "public";
+    let copyPaste = false;
+    let checklist = false;
+    if (subcommand === "match") {
+      const normalizedMatchResponseMode = normalizeFwaMatchResponseMode({
+        visibility: requestedVisibility,
+        copyPaste: interaction.options.getBoolean?.("copy_paste", false) ?? false,
+        checklist: interaction.options.getBoolean?.("checklist", false) ?? false,
+      });
+      ({
+        normalizedChecklist: checklist,
+        normalizedCopyPaste: copyPaste,
+        normalizedVisibility: visibility,
+        isPublic,
+      } = normalizedMatchResponseMode);
+    }
     const defaultComponents = !isPublic
       ? [
           new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -14183,13 +14235,6 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "match") {
-      const copyPaste = interaction.options.getBoolean?.("copy_paste", false) ?? false;
-      const checklist = resolveFwaMatchChecklistEnabled({
-        copyPaste,
-        checklist: copyPaste
-          ? interaction.options.getBoolean?.("checklist", false) ?? false
-          : false,
-      });
       if (tag) {
         const trackedClan = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
