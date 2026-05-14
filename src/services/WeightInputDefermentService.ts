@@ -72,6 +72,13 @@ export type OpenWeightInputDefermentListResult = {
   filterClanTag: string | null;
 };
 
+export type DeferCheckClanResult = {
+  clanTag: string;
+  checkedCount: number;
+  resolvedCount: number;
+  stillOpenMissingWeightCount: number;
+};
+
 /** Purpose: normalize player tags to an uppercase #TAG shape. */
 export function normalizePlayerTag(input: string): string {
   const raw = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
@@ -540,6 +547,108 @@ async function listOpenWeightInputDefermentsForClan(input: {
     },
     rows: filteredRows,
     filterClanTag: normalizedClanTag,
+  };
+}
+
+/** Purpose: resolve current open deferments for one tracked clan when FWAStats now has a positive current weight. */
+export async function checkOpenWeightInputDefermentsForClan(input: {
+  guildId: string;
+  clanTag: string;
+}): Promise<DeferCheckClanResult> {
+  const normalizedClanTag = normalizeTag(input.clanTag);
+  if (!normalizedClanTag) {
+    return {
+      clanTag: "",
+      checkedCount: 0,
+      resolvedCount: 0,
+      stillOpenMissingWeightCount: 0,
+    };
+  }
+
+  const guildScopeKey = buildDeferScopeKey(input.guildId, null);
+  const clanScopeKey = buildDeferScopeKey(input.guildId, normalizedClanTag);
+  const [currentMembers, openRows] = await Promise.all([
+    prisma.fwaClanMemberCurrent.findMany({
+      where: {
+        OR: [
+          { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+          { clanTag: { equals: normalizeTagBare(normalizedClanTag), mode: "insensitive" } },
+        ],
+      },
+      select: {
+        playerTag: true,
+        weight: true,
+        sourceSyncedAt: true,
+      },
+      orderBy: [{ sourceSyncedAt: "desc" }],
+    }),
+    prisma.weightInputDeferment.findMany({
+      where: {
+        guildId: input.guildId,
+        status: "open",
+        scopeKey: { in: [clanScopeKey, guildScopeKey] },
+      },
+      select: {
+        id: true,
+        playerTag: true,
+        scopeKey: true,
+      },
+      orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    }),
+  ]);
+
+  const currentWeightByPlayerTag = new Map<string, number | null>();
+  for (const member of currentMembers) {
+    const playerTag = normalizePlayerTag(member.playerTag);
+    if (!playerTag || currentWeightByPlayerTag.has(playerTag)) continue;
+    const weight =
+      member.weight !== null &&
+      member.weight !== undefined &&
+      Number.isFinite(member.weight) &&
+      Math.trunc(member.weight) > 0
+        ? Math.trunc(member.weight)
+        : null;
+    currentWeightByPlayerTag.set(playerTag, weight);
+  }
+
+  const currentMemberTags = new Set(currentWeightByPlayerTag.keys());
+  let checkedCount = 0;
+  let resolvedCount = 0;
+  let stillOpenMissingWeightCount = 0;
+
+  for (const row of openRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag || !currentMemberTags.has(playerTag)) continue;
+    checkedCount += 1;
+    const currentWeight = currentWeightByPlayerTag.get(playerTag) ?? null;
+    if (currentWeight !== null && currentWeight > 0) {
+      const updated = await prisma.weightInputDeferment.updateMany({
+        where: {
+          id: row.id,
+          status: "open",
+          scopeKey: row.scopeKey,
+          playerTag: row.playerTag,
+        },
+        data: {
+          status: "resolved",
+          resolvedAt: new Date(),
+          processingLockToken: null,
+          processingLockExpiresAt: null,
+        },
+      });
+      if (updated.count > 0) {
+        resolvedCount += 1;
+      }
+    } else {
+      stillOpenMissingWeightCount += 1;
+    }
+  }
+
+  return {
+    clanTag: normalizedClanTag,
+    checkedCount,
+    resolvedCount,
+    stillOpenMissingWeightCount,
   };
 }
 

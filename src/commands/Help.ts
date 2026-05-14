@@ -672,6 +672,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`add` queues a player tag + known weight when FWAStats roster entry is not yet possible and upserts the same deferred weight into `PlayerCurrent.currentWeight` after fetching the live player profile.",
       "`list` shows only open deferments in oldest-first order for the active scope.",
+      "`list clan:<trackedClan>` filters by the clan's current members and includes matching guild-scoped rows.",
+      "`check clan:<trackedClan>` checks open clan-scoped and guild-scoped rows against current FWAStats weight; only positive current weights resolve rows.",
       "`remove` resolves one open deferment after weight entry is completed in FWAStats.",
       "`clear` marks all open deferments in scope as cleared.",
       "Open deferments run reminder lifecycle stages at 48h, 5d, and 7d.",
