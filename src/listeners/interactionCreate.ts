@@ -168,6 +168,10 @@ import {
   isTodoRefreshButtonCustomId,
 } from "../commands/Todo";
 import {
+  handleDeferConfigResetChannelButtonInteraction,
+  isDeferConfigResetChannelButtonCustomId,
+} from "../commands/Defer";
+import {
   handleRaidsButtonInteraction,
   handleRaidsIntelButtonInteraction,
   handleRaidsSelectMenuInteraction,
@@ -1067,6 +1071,21 @@ const handleButtonInteraction = async (
         ephemeral: true,
         content: "Failed to post to channel. Check bot permissions and try again.",
       });
+    }
+    return;
+  }
+
+  if (isDeferConfigResetChannelButtonCustomId(interaction.customId)) {
+    try {
+      await handleDeferConfigResetChannelButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Defer config reset-channel button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to reset the defer channel override.",
+        });
+      }
     }
     return;
   }
