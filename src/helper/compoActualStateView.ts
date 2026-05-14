@@ -326,6 +326,71 @@ function buildEstimatedProjectionForBand(input: {
   };
 }
 
+function compareHeatMapRefResolvedFit(
+  left: HeatMapRef,
+  right: HeatMapRef,
+  input: {
+    displayCounts: CompoWarDisplayBucketCounts;
+    resolvedTotalWeight: number;
+  },
+): number {
+  const leftScore = calculateCompoDeviationScore({
+    displayCounts: input.displayCounts,
+    heatMapRef: left,
+  });
+  const rightScore = calculateCompoDeviationScore({
+    displayCounts: input.displayCounts,
+    heatMapRef: right,
+  });
+  const leftNormalizedScore = leftScore ?? Number.POSITIVE_INFINITY;
+  const rightNormalizedScore = rightScore ?? Number.POSITIVE_INFINITY;
+  if (leftNormalizedScore !== rightNormalizedScore) {
+    return leftNormalizedScore - rightNormalizedScore;
+  }
+
+  const leftContainsWeight =
+    input.resolvedTotalWeight >= left.weightMinInclusive &&
+    input.resolvedTotalWeight <= left.weightMaxInclusive;
+  const rightContainsWeight =
+    input.resolvedTotalWeight >= right.weightMinInclusive &&
+    input.resolvedTotalWeight <= right.weightMaxInclusive;
+  if (leftContainsWeight !== rightContainsWeight) {
+    return leftContainsWeight ? -1 : 1;
+  }
+
+  const leftMidpointDistance = Math.abs(
+    getHeatMapRefBandMidpoint(left) - input.resolvedTotalWeight,
+  );
+  const rightMidpointDistance = Math.abs(
+    getHeatMapRefBandMidpoint(right) - input.resolvedTotalWeight,
+  );
+  if (leftMidpointDistance !== rightMidpointDistance) {
+    return leftMidpointDistance - rightMidpointDistance;
+  }
+
+  if (left.weightMaxInclusive !== right.weightMaxInclusive) {
+    return left.weightMaxInclusive - right.weightMaxInclusive;
+  }
+  if (left.weightMinInclusive !== right.weightMinInclusive) {
+    return left.weightMinInclusive - right.weightMinInclusive;
+  }
+  return getHeatMapRefBandKey(left).localeCompare(getHeatMapRefBandKey(right));
+}
+
+function selectBestFitHeatMapRefForResolvedCounts(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  displayCounts: CompoWarDisplayBucketCounts;
+  resolvedTotalWeight: number;
+}): HeatMapRef | null {
+  if (input.heatMapRefs.length === 0) {
+    return null;
+  }
+
+  return [...input.heatMapRefs].sort((left, right) =>
+    compareHeatMapRefResolvedFit(left, right, input),
+  )[0] ?? null;
+}
+
 function compareProjectionByBandFit(
   left: CompoActualStateProjection,
   right: CompoActualStateProjection,
@@ -388,26 +453,34 @@ function buildAutoProjection(input: {
     };
   }
 
-  const initialProjection = buildEstimatedProjectionForBand({
-    view: "auto",
-    base: input.base,
+  const selectedHeatMapRef =
+    selectBestFitHeatMapRefForResolvedCounts({
+      heatMapRefs: input.heatMapRefs,
+      displayCounts: input.displayCounts,
+      resolvedTotalWeight: rawProjection.totalWeight,
+    }) ?? rawProjection.selectedHeatMapRef;
+  const fillPlan = buildFillPlan({
     displayCounts: input.displayCounts,
-    heatMapRef: rawProjection.selectedHeatMapRef,
+    nMissing: rawProjection.nMissing,
+    heatMapRef: selectedHeatMapRef,
   });
-  const finalRef =
-    findHeatMapRefForWeight(input.heatMapRefs, initialProjection.totalWeight) ??
-    rawProjection.selectedHeatMapRef;
-  if (getHeatMapRefBandKey(finalRef) === getHeatMapRefBandKey(rawProjection.selectedHeatMapRef)) {
-    return initialProjection;
-  }
 
   return {
-    ...initialProjection,
-    selectedHeatMapRef: finalRef,
-    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, finalRef),
+    view: "auto",
+    totalWeight: rawProjection.totalWeight + fillPlan.addedWeight,
+    resolvedRosterWeight: rawProjection.resolvedRosterWeight,
+    missingWeights: rawProjection.nMissing,
+    memberCount: rawProjection.memberCount,
+    missingTo50Count: rawProjection.missingTo50Count,
+    unresolvedWeightCount: rawProjection.unresolvedWeightCount,
+    deferredWeightCount: rawProjection.deferredWeightCount,
+    nMissing: rawProjection.nMissing,
+    displayCounts: input.displayCounts,
+    selectedHeatMapRef,
+    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, selectedHeatMapRef),
     deviationScore: calculateCompoDeviationScore({
-      displayCounts: initialProjection.displayCounts,
-      heatMapRef: finalRef,
+      displayCounts: input.displayCounts,
+      heatMapRef: selectedHeatMapRef,
     }),
   };
 }
