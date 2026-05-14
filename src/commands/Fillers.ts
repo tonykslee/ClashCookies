@@ -539,24 +539,113 @@ function chunkRows(rows: FillerAccountViewRow[], chunkSize: number): FillerAccou
   return chunks.length > 0 ? chunks : [[]];
 }
 
+function buildEditorPageRows(
+  rows: FillerAccountViewRow[],
+  introLines: string[],
+  townHallEmojiByLevel: Map<number, string>,
+): FillerAccountViewRow[][] {
+  const pages: FillerAccountViewRow[][] = [];
+  const groups = groupRowsByClan(rows);
+  const limit = FILLERS_SAFE_DESCRIPTION_LIMIT;
+  let currentRows: FillerAccountViewRow[] = [];
+  let currentLines = [...introLines];
+
+  const flushCurrentPage = (): void => {
+    if (currentRows.length > 0) {
+      pages.push([...currentRows]);
+    }
+    currentRows = [];
+    currentLines = [...introLines];
+  };
+
+  const canAppendBlock = (blockLines: string[]): boolean => {
+    const candidate = [...currentLines, ...(currentRows.length > 0 ? [""] : []), ...blockLines];
+    return candidate.join("\n").length <= limit;
+  };
+
+  const appendGroupToCurrentPage = (group: ClanGroup): boolean => {
+    const blockLines = buildClanGroupLines(group, townHallEmojiByLevel);
+    if (!canAppendBlock(blockLines)) {
+      return false;
+    }
+    const hadRows = currentRows.length > 0;
+    currentRows.push(...group.entries);
+    currentLines = [
+      ...currentLines,
+      ...(hadRows ? [""] : []),
+      ...blockLines,
+    ];
+    return true;
+  };
+
+  const packSplitGroup = (group: ClanGroup): void => {
+    const groupRows = group.entries;
+    let index = 0;
+    while (index < groupRows.length) {
+      const pageRows: FillerAccountViewRow[] = [];
+      const pageLines = [...introLines, buildClanHeadingMarkdown(group)];
+      while (index < groupRows.length) {
+        const row = groupRows[index]!;
+        const rowLine = renderFillerRow(row, townHallEmojiByLevel);
+        const candidateLines = [...pageLines, rowLine];
+        if (candidateLines.join("\n").length > limit && pageRows.length > 0) {
+          break;
+        }
+        pageLines.push(rowLine);
+        pageRows.push(row);
+        index += 1;
+        if (candidateLines.join("\n").length > limit) {
+          break;
+        }
+      }
+      if (pageRows.length === 0) {
+        const row = groupRows[index];
+        if (!row) {
+          break;
+        }
+        pageRows.push(row);
+        index += 1;
+      }
+      pages.push(pageRows);
+    }
+  };
+
+  for (const group of groups) {
+    if (appendGroupToCurrentPage(group)) {
+      continue;
+    }
+
+    if (currentRows.length > 0) {
+      flushCurrentPage();
+      if (appendGroupToCurrentPage(group)) {
+        continue;
+      }
+    }
+
+    packSplitGroup(group);
+    currentRows = [];
+    currentLines = [...introLines];
+  }
+
+  flushCurrentPage();
+  return pages.length > 0 ? pages : [[]];
+}
+
 function buildEditorRows(
   sessionId: string,
   pageIndex: number,
   rows: FillerAccountViewRow[],
   selectedTags: Set<string>,
-  townHallEmojiByLevel: Map<number, string>,
 ): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
-  const rowsPerPage = FILLERS_PAGE_SIZE;
-  const pageRows = rows.slice(pageIndex * rowsPerPage, (pageIndex + 1) * rowsPerPage);
-  const buckets = chunkRows(pageRows, FILLERS_MENU_SIZE);
+  const buckets = chunkRows(rows, FILLERS_MENU_SIZE);
   const components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [];
 
   for (let bucketIndex = 0; bucketIndex < buckets.length; bucketIndex += 1) {
     const bucket = buckets[bucketIndex] ?? [];
-    const start = pageIndex * rowsPerPage + bucketIndex * FILLERS_MENU_SIZE + 1;
+    const start = bucketIndex * FILLERS_MENU_SIZE + 1;
     const end = start + bucket.length - 1;
     const optionEntries = bucket.map((row) => ({
-      label: `${renderTownHallIcon(row.townHall, townHallEmojiByLevel)} ${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
+      label: `${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
       value: row.tag,
       default: selectedTags.has(row.tag),
       description: normalizeText(
@@ -600,6 +689,7 @@ function buildEditorRows(
 
 function buildEditorEmbed(input: {
   title: string;
+  introLines?: string[];
   rows: FillerAccountViewRow[];
   selectedCount: number;
   totalCount: number;
@@ -608,17 +698,19 @@ function buildEditorEmbed(input: {
   totalPages: number;
 }): EmbedBuilder {
   const groups = groupRowsByClan(input.rows);
-  const lines: string[] = [];
+  const accountLines: string[] = [];
   for (const group of groups) {
-    lines.push(...buildClanGroupLines(group, input.townHallEmojiByLevel));
-    lines.push("");
+    accountLines.push(...buildClanGroupLines(group, input.townHallEmojiByLevel));
+    accountLines.push("");
   }
-  if (lines.at(-1) === "") {
-    lines.pop();
+  if (accountLines.at(-1) === "") {
+    accountLines.pop();
   }
-  if (lines.length === 0) {
-    lines.push("No linked accounts found.");
+  if (accountLines.length === 0) {
+    accountLines.push("No linked accounts found.");
   }
+  const introLines = input.introLines ?? [];
+  const lines = [...introLines, ...accountLines];
   const safeLineCount = getSafeEditorPreviewLineCount(lines);
   const previewLines = lines.slice(0, safeLineCount);
   const omittedAccountCount = countEditorPreviewAccountLines(lines.slice(safeLineCount));
@@ -661,8 +753,12 @@ function buildEditorEmbed(input: {
   }
 }
 
-function buildEditorTitle(targetLabel: string, totalCount: number): string {
-  return `Filler Accounts for ${targetLabel} (${totalCount})`;
+function buildTargetUserLine(userId: string): string {
+  return `User: <@${userId}>`;
+}
+
+function buildEditorTitle(totalCount: number): string {
+  return `Filler Accounts (${totalCount})`;
 }
 
 async function renderListReply(input: {
@@ -682,8 +778,16 @@ async function renderListReply(input: {
   const totalPages = pages.length;
   let page = 0;
   const prefix = `fillers:list:${input.interaction.id}`;
+  const descriptionParts = input.targetUserId
+    ? [buildTargetUserLine(input.targetUserId), pages[page] ?? ""]
+    : [pages[page] ?? ""];
 
-  const embed = buildListEmbed(input.title, pages[page] ?? "", page, totalPages);
+  const embed = buildListEmbed(
+    input.title,
+    descriptionParts.filter((part) => part.length > 0).join("\n\n"),
+    page,
+    totalPages,
+  );
   const components = buildPagerRow(prefix, page, totalPages);
   await input.interaction.editReply({
     embeds: [embed],
@@ -709,7 +813,19 @@ async function renderListReply(input: {
         page = Math.min(totalPages - 1, page + 1);
       }
       await button.update({
-        embeds: [buildListEmbed(input.title, pages[page] ?? "", page, totalPages)],
+        embeds: [
+          buildListEmbed(
+            input.title,
+            [
+              ...(input.targetUserId ? [buildTargetUserLine(input.targetUserId)] : []),
+              pages[page] ?? "",
+            ]
+              .filter((part) => part.length > 0)
+              .join("\n\n"),
+            page,
+            totalPages,
+          ),
+        ],
         components: [buildPagerRow(prefix, page, totalPages)!],
       });
     } catch (error) {
@@ -741,18 +857,24 @@ async function renderEditorReply(input: {
   const selectedTags = new Set(
     sortedRows.filter((row) => row.isFiller).map((row) => row.tag),
   );
-  const totalPages = Math.max(1, Math.ceil(sortedRows.length / FILLERS_PAGE_SIZE));
-  let page = 0;
   const sessionId = input.interaction.id;
-  const title = buildEditorTitle(`<@${input.targetUserId}>`, sortedRows.length);
+  const title = buildEditorTitle(sortedRows.length);
   const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
+  const introLines = [buildTargetUserLine(input.targetUserId), ""];
+  const pages = buildEditorPageRows(sortedRows, introLines, townHallEmojiByLevel);
+  const totalPages = Math.max(1, pages.length);
+  let page = 0;
 
   const buildRenderPayload = () => {
     const renderRows = sortedRows.map((row) => ({
       ...row,
       isFiller: selectedTags.has(row.tag),
     }));
-    const pageRows = renderRows.slice(page * FILLERS_PAGE_SIZE, (page + 1) * FILLERS_PAGE_SIZE);
+    const visiblePageRows = pages[page] ?? [];
+    const pageRows = visiblePageRows.map((row) => ({
+      ...row,
+      isFiller: selectedTags.has(row.tag),
+    }));
     logFillersEditorDiagnostic("fillers_set_render_payload", {
       phase: "pre_build",
       guildId: input.interaction.guildId ?? "",
@@ -770,6 +892,7 @@ async function renderEditorReply(input: {
     try {
       embed = buildEditorEmbed({
         title,
+        introLines,
         rows: pageRows,
         selectedCount: selectedTags.size,
         totalCount: sortedRows.length,
@@ -799,7 +922,7 @@ async function renderEditorReply(input: {
 
     let editorRows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[];
     try {
-      editorRows = buildEditorRows(sessionId, page, renderRows, selectedTags, townHallEmojiByLevel);
+      editorRows = buildEditorRows(sessionId, page, pageRows, selectedTags);
     } catch (error) {
       logFillersEditorDiagnostic(
         "fillers_set_render_payload",
@@ -999,8 +1122,8 @@ function buildClanRowsTitle(clanName: string | null, clanTag: string, count: num
   return `Filler Accounts in ${label} (${count})`;
 }
 
-function buildUserRowsTitle(userId: string, count: number): string {
-  return `Filler Accounts for <@${userId}> (${count})`;
+function buildUserRowsTitle(count: number): string {
+  return `Filler Accounts (${count})`;
 }
 
 export const Fillers: Command = {
@@ -1142,7 +1265,7 @@ export const Fillers: Command = {
       await renderListReply({
         interaction,
         rows,
-        title: buildUserRowsTitle(user.id, rows.length),
+        title: buildUserRowsTitle(rows.length),
         scope: "user",
         targetUserId: user.id,
       });
