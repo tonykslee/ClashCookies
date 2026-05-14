@@ -28,6 +28,7 @@ export const COMPO_ACTUAL_STATE_VIEW_LABELS: Record<
 export type CompoActualStateBaseMetrics = {
   resolvedTotalWeight: number;
   unresolvedWeightCount: number;
+  deferredWeightCount?: number;
   memberCount: number;
   bucketCounts: CompoWarBucketCounts;
 };
@@ -40,6 +41,7 @@ export type CompoActualStateProjection = {
   memberCount: number;
   missingTo50Count: number;
   unresolvedWeightCount: number;
+  deferredWeightCount: number;
   nMissing: number;
   displayCounts: CompoWarDisplayBucketCounts;
   selectedHeatMapRef: HeatMapRef | null;
@@ -291,6 +293,7 @@ function buildEstimatedProjectionForBand(input: {
 }): CompoActualStateProjection {
   const missingTo50Count = Math.max(0, 50 - input.base.memberCount);
   const nMissing = missingTo50Count + input.base.unresolvedWeightCount;
+  const deferredWeightCount = input.base.deferredWeightCount ?? 0;
   const fillPlan = buildFillPlan({
     displayCounts: input.displayCounts,
     nMissing,
@@ -300,10 +303,7 @@ function buildEstimatedProjectionForBand(input: {
     input.displayCounts,
     fillPlan.fillCounts,
   );
-  const deltaByBucket = getCompoActualStateDeltaByBucket(
-    estimatedDisplayCounts,
-    input.heatMapRef,
-  );
+  const deltaByBucket = getCompoActualStateDeltaByBucket(input.displayCounts, input.heatMapRef);
   const deviationScore = calculateCompoDeviationScore({
     displayCounts: estimatedDisplayCounts,
     heatMapRef: input.heatMapRef,
@@ -317,6 +317,7 @@ function buildEstimatedProjectionForBand(input: {
     memberCount: input.base.memberCount,
     missingTo50Count,
     unresolvedWeightCount: input.base.unresolvedWeightCount,
+    deferredWeightCount,
     nMissing,
     displayCounts: estimatedDisplayCounts,
     selectedHeatMapRef: input.heatMapRef,
@@ -354,6 +355,7 @@ function buildRawProjection(input: {
     input.heatMapRefs,
     input.base.resolvedTotalWeight,
   );
+  const deferredWeightCount = input.base.deferredWeightCount ?? 0;
   return {
     view: "raw",
     totalWeight: input.base.resolvedTotalWeight,
@@ -362,6 +364,7 @@ function buildRawProjection(input: {
     memberCount: input.base.memberCount,
     missingTo50Count: Math.max(0, 50 - input.base.memberCount),
     unresolvedWeightCount: input.base.unresolvedWeightCount,
+    deferredWeightCount,
     nMissing:
       Math.max(0, 50 - input.base.memberCount) + input.base.unresolvedWeightCount,
     displayCounts: input.displayCounts,

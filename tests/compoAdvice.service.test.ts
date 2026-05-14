@@ -116,6 +116,17 @@ function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) 
   };
 }
 
+function makeValidPlayerTag(index: number) {
+  const alphabet = "PYLQGRJCUV0289";
+  let value = index + 1;
+  let encoded = "";
+  do {
+    encoded = alphabet[value % alphabet.length] + encoded;
+    value = Math.floor(value / alphabet.length) - 1;
+  } while (value >= 0);
+  return `#${encoded}`;
+}
+
 function makeWarParent(input: {
   clanTag: string;
   clanName: string;
@@ -286,7 +297,9 @@ describe("CompoAdviceService", () => {
     expect(result.summary.resolvedRosterWeight).toBe(798000);
     expect(result.summary.currentWeight).toBe(798000);
     expect(result.summary.currentProjection.totalWeight).toBe(798000);
-    expect(result.summary.currentProjection.missingWeights).toBe(1);
+    expect(result.summary.currentProjection.deferredWeightCount).toBe(1);
+    // missingWeights includes unresolved weights plus WAR fallback-only resolved members.
+    expect(result.summary.currentProjection.missingWeights).toBe(2);
   });
 
   it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
@@ -351,6 +364,54 @@ describe("CompoAdviceService", () => {
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
+  });
+
+  it("keeps ACTUAL auto advice projected band selection while showing resolved-count deltas", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 47 }, (_, index) =>
+        makeCurrentMember({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          playerName: `Player ${index + 1}`,
+          townHall: 14,
+          weight: 135000,
+        }),
+      ),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 10_000_000,
+        th18Count: 3,
+        th14Count: 47,
+      }),
+    ]);
+    const readHeatMapRefBandMatchRatesSpy = vi
+      .spyOn(
+        HeatMapRefDisplayService.prototype,
+        "readHeatMapRefBandMatchRates",
+      )
+      .mockResolvedValue(new Map());
+
+    const result = await new CompoAdviceService().readAdvice({
+      guildId: "guild-1",
+      targetTag: "#AAA111",
+      mode: "actual",
+    });
+
+    expect(result.kind).toBe("ready");
+    expect(result.selectedView).toBe("auto");
+    expect(result.summary.currentProjection.totalWeight).toBe(6870000);
+    expect(result.summary.currentProjection.deltaByBucket.TH18).toBe(-3);
+    expect(result.summary.currentProjection.deltaByBucket.TH14).toBe(0);
+    expect(readHeatMapRefBandMatchRatesSpy).toHaveBeenCalledTimes(1);
   });
 
   it("logs a narrow Rocky Road ACTUAL diagnostics line for advice when the selected HeatMapRef band is missing", async () => {

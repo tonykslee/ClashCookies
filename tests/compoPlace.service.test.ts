@@ -12,6 +12,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   heatMapRef: {
     findMany: vi.fn(),
   },
@@ -177,8 +183,12 @@ describe("CompoPlaceService", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
   });
 
   it("reads ACTUAL placement suggestions from persisted tracked clans, current members, and HeatMapRef without sheet services", async () => {
@@ -220,6 +230,8 @@ describe("CompoPlaceService", () => {
     expect(result.compositionCount).toBe(2);
 
     const embed = result.embeds[0]?.toJSON();
+    expect(embed?.description).toContain("Mode: **ACTUAL Auto-Detect**");
+    expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
     expect(embed?.description).toContain("Weight: **145,000**");
     expect(embed?.description).toContain("Bucket: **TH15**");
     expect(embed?.description).toContain("RAW Data last refreshed:");
@@ -235,6 +247,48 @@ describe("CompoPlaceService", () => {
     expect(compositionValue).toContain("Bravo Clan - -1");
     expect(compositionValue.indexOf("Alpha Clan - -2")).toBeLessThan(
       compositionValue.indexOf("Bravo Clan - -1"),
+    );
+  });
+
+  it("uses ACTUAL Auto-Detect projection totals and resolved-count deltas for placement recommendations", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      ...makeCurrentMembers({
+        clanTag: "#AAA111",
+        counts: { TH18: 1, TH14: 47 },
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 6_600_000,
+        th18Count: 1,
+        th14Count: 47,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 6_600_001,
+        weightMaxInclusive: 7_500_000,
+        th18Count: 3,
+        th14Count: 47,
+      }),
+    ]);
+
+    const result = await new CompoPlaceService().readPlace(175000, "TH18", "guild-1");
+
+    expect(result.candidateCount).toBe(1);
+    expect(result.recommendedCount).toBe(1);
+    const embed = result.embeds[0]?.toJSON();
+    expect(embed?.description).toContain("Mode: **ACTUAL Auto-Detect**");
+    expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
+    expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toContain(
+      "Alpha Clan - -2",
+    );
+    expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toContain(
+      "Alpha Clan - needs 2 TH18",
     );
   });
 

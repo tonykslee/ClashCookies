@@ -313,6 +313,7 @@ describe("CompoAdviceEngine", () => {
       modeLabel: "ACTUAL",
       refreshLine: null,
       summary: {
+        mode: "actual",
         viewLabel: "Raw Data",
         currentScore: null,
         currentBandLabel: "(no band)",
@@ -322,6 +323,7 @@ describe("CompoAdviceEngine", () => {
           totalWeight: NaN,
           missingWeights: 0,
           unresolvedWeightCount: 0,
+          deferredWeightCount: 0,
           missingTo50Count: 0,
           selectedHeatMapRef: null,
         } as any,
@@ -345,6 +347,7 @@ describe("CompoAdviceEngine", () => {
     expect(lines).toContain("Resolved roster weight: unknown");
     expect(lines).toContain("Scoring basis: resolved roster");
     expect(lines).toContain("Unresolved weights: 0");
+    expect(lines).toContain("Deferred: 0");
     expect(lines).toContain("Missing-to-50 fills: 0");
     expect(lines).toContain("Displayed missing weights: 0");
     expect(lines).toContain("Band midpoint: unknown");
@@ -369,6 +372,7 @@ describe("CompoAdviceEngine", () => {
           totalWeight: 2_439_000,
           missingWeights: 16,
           unresolvedWeightCount: 16,
+          deferredWeightCount: 0,
           missingTo50Count: 17,
           memberCount: 33,
           selectedHeatMapRef: makeHeatMapRef({
@@ -488,6 +492,7 @@ describe("CompoAdviceEngine", () => {
       refreshLine: null,
       clanTag: "#AAA111",
       summary: {
+        mode: "actual",
         viewLabel: "Auto-Detect Band",
         currentScore: 32.5,
         currentBandLabel: "1,000,000 - 2,000,000",
@@ -497,6 +502,7 @@ describe("CompoAdviceEngine", () => {
           totalWeight: 1_500_000,
           missingWeights: 2,
           unresolvedWeightCount: 1,
+          deferredWeightCount: 0,
           missingTo50Count: 1,
           selectedHeatMapRef: refs[1],
         } as any,
@@ -529,6 +535,7 @@ describe("CompoAdviceEngine", () => {
     expect(lines).toContain("Projected 50-player weight: 1,500,000");
     expect(lines).toContain("Scoring basis: projected 50-player roster");
     expect(lines).toContain("Unresolved weights: 1");
+    expect(lines).toContain("Deferred: 0");
     expect(lines).toContain("Missing-to-50 fills: 1");
     expect(lines).toContain("Matchrate: 66.29%");
     expect(lines).toContain("Band matchrate: 72.14%");
@@ -558,6 +565,7 @@ describe("CompoAdviceEngine", () => {
           totalWeight: 1_500_000,
           missingWeights: 1,
           unresolvedWeightCount: 1,
+          deferredWeightCount: 0,
           missingTo50Count: 0,
           selectedHeatMapRef: makeHeatMapRef({
             weightMinInclusive: 1_000_000,

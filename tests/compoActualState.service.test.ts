@@ -30,7 +30,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { CompoActualStateService } from "../src/services/CompoActualStateService";
+import {
+  CompoActualStateService,
+  loadCompoActualStateContext,
+} from "../src/services/CompoActualStateService";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -96,6 +99,17 @@ function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) 
     playerTag: input.playerTag,
     currentWeight: input.currentWeight,
   };
+}
+
+function makeValidPlayerTag(index: number) {
+  const alphabet = "PYLQGRJCUV0289";
+  let value = index + 1;
+  let encoded = "";
+  do {
+    encoded = alphabet[value % alphabet.length] + encoded;
+    value = Math.floor(value / alphabet.length) - 1;
+  } while (value >= 0);
+  return `#${encoded}`;
 }
 
 function makeWarFallback(input: {
@@ -198,6 +212,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -209,6 +224,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "798,000",
+      "2",
       "1",
       "6",
       "2",
@@ -227,6 +243,67 @@ describe("CompoActualStateService", () => {
     expect(result.contentLines).toContain(
       "Missing-to-50 roster fill info: 44",
     );
+  });
+
+  it("selects ACTUAL sources by explicit precedence and only counts war fallback rows as missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000008", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000009", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000020", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000028", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000088", weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 166000 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000008", currentWeight: 177000 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000009",
+        deferredWeight: 146000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      makeWarFallback({
+        clanTag: "#AAA111",
+        playerTag: "#P000020",
+        effectiveWeight: 174000,
+      }),
+      makeWarFallback({
+        clanTag: "#BBB222",
+        playerTag: "#P000028",
+        effectiveWeight: 175000,
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 2,
+        th17Count: 1,
+        th16Count: 1,
+        th15Count: 1,
+      }),
+    ]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const clan = context.clans[0];
+
+    expect(clan?.base.resolvedTotalWeight).toBe(806000);
+    expect(clan?.base.unresolvedWeightCount).toBe(3);
+    expect(clan?.members.find((member) => member.playerTag === "#P000002")?.resolvedWeightSource).toBe("member");
+    expect(clan?.members.find((member) => member.playerTag === "#P000008")?.resolvedWeightSource).toBe("catalog");
+    expect(clan?.members.find((member) => member.playerTag === "#P000009")?.resolvedWeightSource).toBe("defer");
+    expect(clan?.members.find((member) => member.playerTag === "#P000020")?.resolvedWeightSource).toBe("war");
+    expect(clan?.members.find((member) => member.playerTag === "#P000028")?.resolvedWeightSource).toBe("war");
+    expect(clan?.members.find((member) => member.playerTag === "#P000088")?.resolvedWeightSource).toBeNull();
   });
 
   it("renders ACTUAL state from persisted current-member data without sheet reads and still counts unresolved missing weights", async () => {
@@ -289,6 +366,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -300,6 +378,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "466,000",
+      "2",
       "1",
       "4",
       "0",
@@ -320,6 +399,7 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
       "0",
+      "0",
     ]);
     expect(result.contentLines).toContain(
       "Raw Data: current resolved roster composition.",
@@ -329,7 +409,7 @@ describe("CompoActualStateService", () => {
     );
   });
 
-  it("shows projected totals separately in ACTUAL auto view and labels projected deltas", async () => {
+  it("shows projected totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan"),
     ]);
@@ -388,6 +468,7 @@ describe("CompoActualStateService", () => {
       "Resolved Total",
       "Projected Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -399,19 +480,67 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
     expect(result.stateRows?.[1]?.[1]).toBe("798,000");
     expect(result.stateRows?.[1]?.[2]).toEqual(expect.any(String));
-    expect(result.stateRows?.[1]?.[3]).toBe("45");
-    expect(result.stateRows?.[1]?.[4]).toBe("6");
-    expect(result.stateRows?.[1]?.[5]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[3]).toBe("46");
+    expect(result.stateRows?.[1]?.[4]).toBe("1");
+    expect(result.stateRows?.[1]?.[5]).toBe("6");
     expect(result.stateRows?.[1]?.[6]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[7]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[8]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[9]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[10]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[11]).toEqual(expect.any(String));
     expect(result.contentLines).toContain(
       "Resolved roster weight is shown separately from the projected 50-player total.",
     );
     expect(result.contentLines).toContain("Selected band source: projected total.");
-    expect(result.contentLines).toContain("Deltas: projected vs HeatMapRef.");
+    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
+  });
+
+  it("keeps auto-detect projected band selection but shows resolved-count deltas against the selected band", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 47 }, (_, index) =>
+        makeMember({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 135000,
+        }),
+      ),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 10_000_000,
+        th18Count: 3,
+        th14Count: 47,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "6,345,000",
+      "6,870,000",
+      "3",
+      "0",
+      "47",
+      "-3",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {
@@ -453,6 +582,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -464,6 +594,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "439,000",
+      "0",
       "0",
       "4",
       "1",
