@@ -445,100 +445,77 @@ describe("FWA base-swap layout links", () => {
     expect(content).not.toContain("TH17:");
   });
 
-  it("parses valid fwa-bases selections and builds blacklist-war swap entries", () => {
-    const parsed = parseFwaBaseSwapPositionSelectionsForTest({
-      selections: [
-        {
-          label: "fwa-bases",
-          section: "fwa_bases",
-          raw: "1, 2, 3",
-        },
-      ],
-    });
+  it("parses comma-separated, space-separated, and mixed-separated position lists for all base-swap args", () => {
+    const cases = [
+      { label: "war-bases", section: "war_bases" as const },
+      { label: "base-errors", section: "base_errors" as const },
+      { label: "fwa-bases", section: "fwa_bases" as const },
+    ];
+    const raws = ["1,2,3", "1 2 3", "1, 2 3"];
 
-    expect(parsed).toEqual({
-      ok: true,
-      selections: [
-        {
-          label: "fwa-bases",
-          section: "fwa_bases",
-          positions: [1, 2, 3],
-        },
-      ],
-    });
-    if (!parsed.ok) return;
+    for (const { label, section } of cases) {
+      for (const raw of raws) {
+        const parsed = parseFwaBaseSwapPositionSelectionsForTest({
+          selections: [
+            {
+              label,
+              section,
+              raw,
+            },
+          ],
+        });
 
-    const entries = buildFwaBaseSwapAnnouncementEntriesForTest({
-      clanTag: "2QG2C08UP",
-      roster: [
-        buildRosterMember({
-          position: 1,
-          playerTag: "#AAA111",
-          playerName: "Alpha",
-          section: "fwa_bases",
-          townhallLevel: 18,
-          discordUserId: "100",
-        }),
-        buildRosterMember({
-          position: 2,
-          playerTag: "#BBB222",
-          playerName: "Bravo",
-          section: "fwa_bases",
-          townhallLevel: 17,
-          discordUserId: null,
-        }),
-        buildRosterMember({
-          position: 3,
-          playerTag: "#CCC333",
-          playerName: "Charlie",
-          section: "fwa_bases",
-          townhallLevel: 16,
-          discordUserId: "300",
-        }),
-      ],
-      selections: parsed.selections,
-    });
-
-    expect(entries.ok).toBe(true);
-    if (!entries.ok) return;
-    expect(entries.entries).toHaveLength(3);
-    expect(entries.entries.map((entry) => entry.section)).toEqual([
-      "fwa_bases",
-      "fwa_bases",
-      "fwa_bases",
-    ]);
-    expect(entries.entries.map((entry) => entry.position)).toEqual([1, 2, 3]);
+        expect(parsed).toEqual({
+          ok: true,
+          selections: [
+            {
+              label,
+              section,
+              positions: [1, 2, 3],
+            },
+          ],
+        });
+      }
+    }
   });
 
-  it("rejects invalid fwa-bases positions and duplicate inputs", () => {
-    const invalid = parseFwaBaseSwapPositionSelectionsForTest({
-      selections: [
-        {
-          label: "fwa-bases",
-          section: "fwa_bases",
-          raw: "1,abc",
-        },
-      ],
-    });
-    expect(invalid).toEqual({
-      ok: false,
-      error:
-        "Invalid positions in `fwa-bases`: abc. Use comma-separated positive roster positions like `1,4,7`.",
-    });
+  it("rejects invalid tokens and duplicate inputs for all base-swap args", () => {
+    const cases = [
+      { label: "war-bases", section: "war_bases" as const },
+      { label: "base-errors", section: "base_errors" as const },
+      { label: "fwa-bases", section: "fwa_bases" as const },
+    ];
 
-    const duplicate = parseFwaBaseSwapPositionSelectionsForTest({
-      selections: [
-        {
-          label: "fwa-bases",
-          section: "fwa_bases",
-          raw: "1,1",
-        },
-      ],
-    });
-    expect(duplicate).toEqual({
-      ok: false,
-      error: "Duplicate positions in `fwa-bases`: #1.",
-    });
+    for (const { label, section } of cases) {
+      const invalid = parseFwaBaseSwapPositionSelectionsForTest({
+        selections: [
+          {
+            label,
+            section,
+            raw: "1,abc",
+          },
+        ],
+      });
+      expect(invalid).toEqual({
+        ok: false,
+        error:
+          `Invalid positions in \`${label}\`: abc. Use comma-separated or space-separated positive roster positions like \`1, 4, 7\`.`,
+      });
+
+      const duplicate = parseFwaBaseSwapPositionSelectionsForTest({
+        selections: [
+          {
+            label,
+            section,
+            raw: "1,1",
+          },
+        ],
+      });
+      expect(duplicate).toEqual({
+        ok: false,
+        error: `Duplicate positions in \`${label}\`: #1.`,
+      });
+    }
   });
 
   it("allows war-bases and base-errors to share a position", () => {

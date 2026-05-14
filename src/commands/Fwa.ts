@@ -611,7 +611,7 @@ function parseBaseSwapPositionList(input: string | null | undefined): {
   const invalidTokens: string[] = [];
   const duplicatePositions: number[] = [];
   for (const part of String(input)
-    .split(",")
+    .split(/[\s,]+/)
     .map((value) => value.trim())
     .filter(Boolean)) {
     if (!/^\d+$/.test(part)) {
@@ -654,7 +654,7 @@ function buildBaseSwapPositionSelectionErrorMessage(input: {
   if (input.result.invalidTokens.length > 0) {
     return [
       `Invalid positions in \`${input.label}\`: ${input.result.invalidTokens.join(", ")}.`,
-      "Use comma-separated positive roster positions like `1,4,7`.",
+      "Use comma-separated or space-separated positive roster positions like `1, 4, 7`.",
     ].join(" ");
   }
   if (input.result.duplicatePositions.length > 0) {

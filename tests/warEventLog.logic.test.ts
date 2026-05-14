@@ -958,19 +958,19 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanRoleId: "123456789",
       }),
     ).toBe(
-      "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!\n\n<@&123456789>",
+      "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
     );
     expect(
       buildFwaBaseSwapBattleDayReminderContentForTest({ clanRoleId: null }),
     ).toBe(
-      "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!",
+      "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
     );
   });
 
-  it("sends the reminder to the original base-swap channel and writes a bot-log entry", async () => {
+  it("sends the clan-wide reminder to the tracked clan log channel with a role ping", async () => {
     const reminderSend = vi.fn().mockResolvedValue({
       id: "reminder-1",
-      url: "https://discord.com/channels/guild-1/base-channel/reminder-1",
+      url: "https://discord.com/channels/guild-1/clan-log-1/reminder-1",
     });
     const botLogSend = vi.fn().mockResolvedValue(undefined);
 
@@ -980,6 +980,106 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       channelId: "base-channel",
       messageId: "base-message-1",
       referenceId: "fwa-base-swap:split-key",
+      clanTag: "2QG2C08UP",
+      createdAt: new Date("2026-03-20T00:05:00.000Z"),
+      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+      metadata: {
+        clanName: "Test Clan",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-03-20T00:05:00.000Z",
+        swapReminder: true,
+        entries: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            discordUserId: "100",
+            townhallLevel: 18,
+            section: "fwa_bases",
+            acknowledged: true,
+          },
+        ],
+        layoutLinks: [],
+      },
+    });
+    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder").mockResolvedValue(true);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: botLogSend,
+            };
+          }
+          if (channelId === "clan-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: reminderSend,
+            };
+          }
+          throw new Error(`unexpected channel lookup: ${channelId}`);
+        }),
+      },
+    } as any;
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: "clan-log-1",
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(true);
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(reminderSend).toHaveBeenCalledWith({
+      content:
+        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+      allowedMentions: { roles: ["123456789"] },
+    });
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    const botLogContent = String(botLogSend.mock.calls[0]?.[0]?.content ?? "");
+    expect(botLogContent).toBe(
+      buildFwaBaseSwapBattleDayReminderLogContentForTest({
+        clanName: "Test Clan",
+        clanTag: "2QG2C08UP",
+        targetChannelId: "clan-log-1",
+        reminderMessageUrl:
+          "https://discord.com/channels/guild-1/clan-log-1/reminder-1",
+        referenceId: "fwa-base-swap:split-key",
+        clanRoleMentionIncluded: true,
+      }),
+    );
+  });
+
+  it("sends the clan-wide reminder without a role ping when no clan role is configured", async () => {
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-2",
+      url: "https://discord.com/channels/guild-1/clan-log-1/reminder-2",
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "base-channel",
+      messageId: "base-message-1",
+      referenceId: null,
       clanTag: "2QG2C08UP",
       createdAt: new Date("2026-03-20T00:05:00.000Z"),
       expiresAt: new Date("2026-03-22T00:00:00.000Z"),
@@ -1017,11 +1117,14 @@ describe("WarEventLogService FWA battle-day reminder", () => {
               send: botLogSend,
             };
           }
-          return {
-            guildId: "guild-1",
-            isTextBased: () => true,
-            send: reminderSend,
-          };
+          if (channelId === "clan-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: reminderSend,
+            };
+          }
+          throw new Error(`unexpected channel lookup: ${channelId}`);
         }),
       },
     } as any;
@@ -1032,7 +1135,8 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         guildId: "guild-1",
         clanTag: "2QG2C08UP",
         clanName: "Test Clan",
-        clanRoleId: "123456789",
+        clanRoleId: null,
+        channelId: "clan-log-1",
       },
       payload: {
         eventType: "battle_day",
@@ -1044,19 +1148,23 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(reminderSend).toHaveBeenCalledTimes(1);
     expect(reminderSend).toHaveBeenCalledWith({
       content:
-        "Battle day has started! Thank you for your help swapping to war bases, please swap back to FWA bases asap!\n\n<@&123456789>",
+        "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+      allowedMentions: { parse: [] },
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("battle-day reminder role missing"),
+    );
     expect(botLogSend).toHaveBeenCalledTimes(1);
     const botLogContent = String(botLogSend.mock.calls[0]?.[0]?.content ?? "");
     expect(botLogContent).toBe(
       buildFwaBaseSwapBattleDayReminderLogContentForTest({
         clanName: "Test Clan",
         clanTag: "2QG2C08UP",
-        targetChannelId: "base-channel",
+        targetChannelId: "clan-log-1",
         reminderMessageUrl:
-          "https://discord.com/channels/guild-1/base-channel/reminder-1",
-        referenceId: "fwa-base-swap:split-key",
-        clanRoleMentionIncluded: true,
+          "https://discord.com/channels/guild-1/clan-log-1/reminder-2",
+        referenceId: "base-message-1",
+        clanRoleMentionIncluded: false,
       }),
     );
   });
@@ -1064,7 +1172,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
   it("sends only once when the same reference is claimed twice", async () => {
     const reminderSend = vi.fn().mockResolvedValue({
       id: "reminder-1",
-      url: "https://discord.com/channels/guild-1/base-channel/reminder-1",
+      url: "https://discord.com/channels/guild-1/clan-log-1/reminder-1",
     });
     const botLogSend = vi.fn().mockResolvedValue(undefined);
 
@@ -1090,7 +1198,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
             discordUserId: "100",
             townhallLevel: 18,
             section: "fwa_bases",
-            acknowledged: false,
+            acknowledged: true,
           },
         ],
         layoutLinks: [],
@@ -1113,11 +1221,14 @@ describe("WarEventLogService FWA battle-day reminder", () => {
               send: botLogSend,
             };
           }
-          return {
-            guildId: "guild-1",
-            isTextBased: () => true,
-            send: reminderSend,
-          };
+          if (channelId === "clan-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: reminderSend,
+            };
+          }
+          throw new Error(`unexpected channel lookup: ${channelId}`);
         }),
       },
     } as any;
@@ -1134,6 +1245,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanTag: "2QG2C08UP",
         clanName: "Test Clan",
         clanRoleId: "123456789",
+        channelId: "clan-log-1",
       },
       payload,
     });
@@ -1143,6 +1255,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanTag: "2QG2C08UP",
         clanName: "Test Clan",
         clanRoleId: "123456789",
+        channelId: "clan-log-1",
       },
       payload,
     });
@@ -1177,6 +1290,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanTag: "2QG2C08UP",
         clanName: "Test Clan",
         clanRoleId: "123456789",
+        channelId: "clan-log-1",
       },
       payload: {
         eventType: "battle_day",
@@ -1213,6 +1327,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanTag: "2QG2C08UP",
         clanName: "Test Clan",
         clanRoleId: "123456789",
+        channelId: "clan-log-1",
       },
       payload: {
         eventType: "battle_day",
