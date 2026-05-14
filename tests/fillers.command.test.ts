@@ -297,6 +297,7 @@ function makeInteraction(input: {
     }),
   };
   const message = {
+    edit: vi.fn().mockResolvedValue(undefined),
     createMessageComponentCollector: vi.fn(() => collector),
   };
 
@@ -322,6 +323,7 @@ function makeInteraction(input: {
       }),
     },
     __collectorHandlers: collectorHandlers,
+    __message: message,
   };
 }
 
@@ -336,6 +338,7 @@ function makeSelectInteraction(input: {
     isButton: () => false,
     update: vi.fn().mockResolvedValue(undefined),
     deferUpdate: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
     replied: false,
     deferred: false,
     reply: vi.fn().mockResolvedValue(undefined),
@@ -351,6 +354,7 @@ function makeButtonInteraction(input: {
     isButton: () => true,
     update: vi.fn().mockResolvedValue(undefined),
     deferUpdate: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
     replied: false,
     deferred: false,
     reply: vi.fn().mockResolvedValue(undefined),
@@ -359,6 +363,10 @@ function makeButtonInteraction(input: {
 
 function getLastEditPayload(interaction: any): any {
   return interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
+}
+
+function getLastMessageEditPayload(interaction: any): any {
+  return interaction.__message.edit.mock.calls.at(-1)?.[0] ?? {};
 }
 
 function getEmbedJson(payload: any): any {
@@ -509,10 +517,46 @@ describe("/fillers command", () => {
     expect(prismaMock.fillerAccount.upsert).toHaveBeenCalledTimes(1);
     expect(fillerState.has(makeValidPlayerTag(0))).toBe(true);
 
-    const rerenderPayload = select.update.mock.calls.at(-1)?.[0];
+    const rerenderPayload = getLastMessageEditPayload(interaction);
     const rerenderComponents = getComponentJson(rerenderPayload);
     const rerenderMenu = rerenderComponents[0].components[0];
     expect(rerenderMenu.options[0].default).toBe(true);
+  });
+
+  it("suppresses stale collector interactions without crashing the process", async () => {
+    for (let index = 0; index < 2; index += 1) {
+      seedAccount({
+        playerTag: makeValidPlayerTag(index),
+        discordUserId: "222222222222222222",
+        playerName: `Player ${String(index + 1).padStart(3, "0")}`,
+        townHall: 18,
+        clanTag: "#PQL0289",
+        clanName: "Alpha Clan",
+        weight: index === 0 ? 9200 : 8400,
+      });
+    }
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const firstMenu = getComponentJson(payload)[0].components[0];
+    const select = makeSelectInteraction({
+      customId: firstMenu.custom_id ?? firstMenu.customId,
+      values: [makeValidPlayerTag(0)],
+    });
+    select.deferUpdate.mockRejectedValueOnce(Object.assign(new Error("Unknown interaction"), { code: 10062 }));
+
+    await expect(interaction.__collectorHandlers.collect(select)).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("fillers editor collector ignored interaction error"),
+    );
+    expect(prismaMock.fillerAccount.upsert).not.toHaveBeenCalled();
   });
 
   it("renders a sorted, paginated editor with filler markers and dropdown groups", async () => {
@@ -614,7 +658,7 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(nextInteraction);
 
-    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextPayload = getLastMessageEditPayload(interaction);
     const nextEmbed = getEmbedJson(nextPayload);
     const nextVisibleTags = extractVisibleTags(String(nextEmbed.description));
     expect(nextVisibleTags[0]).toBe(seededOrder[visibleTags.length]);
@@ -699,7 +743,7 @@ describe("/fillers command", () => {
     expect(prismaMock.fillerAccount.upsert).toHaveBeenCalledTimes(1);
     expect(fillerState.has(makeValidPlayerTag(0))).toBe(true);
     expect(fillerState.has(makeValidPlayerTag(1))).toBe(false);
-    const selectAlphaPayload = selectAlpha.update.mock.calls.at(-1)?.[0];
+    const selectAlphaPayload = getLastMessageEditPayload(interaction);
     const selectAlphaEmbed = getEmbedJson(selectAlphaPayload);
     expect(String(selectAlphaEmbed.description)).toContain("Alpha");
     expect(String(selectAlphaEmbed.footer?.text)).toContain("1/26 filler accounts selected");
@@ -798,7 +842,7 @@ describe("/fillers command", () => {
     });
     await secondSession.__collectorHandlers.collect(nextInteraction);
 
-    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextPayload = getLastMessageEditPayload(secondSession);
     const nextComponents = getComponentJson(nextPayload);
     const nextMenu = nextComponents[0].components[0];
     const secondSelection = [
@@ -935,7 +979,7 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(nextInteraction);
 
-    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0] ?? {};
     const nextEmbed = getEmbedJson(nextPayload);
     expect(String(nextEmbed.description)).toContain(
       "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
@@ -952,7 +996,7 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(prevInteraction);
 
-    const prevPayload = prevInteraction.update.mock.calls.at(-1)?.[0];
+    const prevPayload = prevInteraction.update.mock.calls.at(-1)?.[0] ?? {};
     const prevEmbed = getEmbedJson(prevPayload);
     expect(String(prevEmbed.description)).toContain(
       "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",

@@ -66,6 +66,22 @@ function normalizePositiveInteger(input: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function getDiscordErrorCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const maybeError = error as { code?: unknown };
+  const code = maybeError.code;
+  if (typeof code === "number" && Number.isFinite(code)) return code;
+  if (typeof code === "string" && /^[0-9]+$/.test(code)) {
+    return Number(code);
+  }
+  return null;
+}
+
+function isIgnorableCollectorInteractionError(error: unknown): boolean {
+  const code = getDiscordErrorCode(error);
+  return code === 10062 || code === 40060;
+}
+
 function truncateDiagnosticText(input: string, maxLength = 220): string {
   if (input.length <= maxLength) return input;
   return `${input.slice(0, maxLength)}…[len=${input.length}]`;
@@ -1083,13 +1099,17 @@ async function renderEditorReply(input: {
 
   collector.on("collect", async (component: ButtonInteraction | StringSelectMenuInteraction) => {
     try {
+      if (!component.deferred && !component.replied) {
+        await component.deferUpdate();
+      }
+
       if (component.isButton()) {
         if (component.customId.endsWith(":prev")) {
           page = Math.max(0, page - 1);
         } else if (component.customId.endsWith(":next")) {
           page = Math.min(totalPages - 1, page + 1);
         }
-        await component.update(buildRenderPayload());
+        await message.edit(buildRenderPayload());
         return;
       }
 
@@ -1114,15 +1134,23 @@ async function renderEditorReply(input: {
         linkedPlayerTags: sortedRows.map((row) => row.tag),
         selectedPlayerTags: [...selectedTags],
       });
-      await component.update(buildRenderPayload());
+      await message.edit(buildRenderPayload());
     } catch (error) {
+      if (isIgnorableCollectorInteractionError(error)) {
+        console.warn(`fillers editor collector ignored interaction error: ${formatError(error)}`);
+        return;
+      }
       console.error(`fillers editor collector failed: ${formatError(error)}`);
-      if (!component.replied && !component.deferred) {
-        await component.reply({
+      await component
+        .followUp({
           ephemeral: true,
           content: FILLERS_EDITOR_FAILURE_MESSAGE,
+        })
+        .catch((followUpError) => {
+          if (!isIgnorableCollectorInteractionError(followUpError)) {
+            console.error(`fillers editor collector follow-up failed: ${formatError(followUpError)}`);
+          }
         });
-      }
     }
   });
 
