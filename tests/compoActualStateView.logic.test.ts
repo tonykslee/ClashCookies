@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CompoWarBucketCounts } from "../src/helper/compoWarBucketCounts";
 import { projectCompoActualStateView } from "../src/helper/compoActualStateView";
+import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 function makeBucketCounts(
   partial?: Partial<CompoWarBucketCounts>,
@@ -144,13 +145,14 @@ describe("projectCompoActualStateView", () => {
 
     expect(result.totalWeight).toBe(525000);
     expect(result.missingWeights).toBe(2);
-    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(500001);
-    expect(result.displayCounts.TH18).toBe(3);
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(0);
+    expect(result.selectedHeatMapRef?.weightMaxInclusive).toBe(500000);
+    expect(result.displayCounts.TH18).toBe(1);
     // Deltas now reflect resolved counts against the selected projected band.
     expect(result.deltaByBucket.TH18).toBe(-2);
   });
 
-  it("keeps the Auto-Detect fill plan fixed when missing slots shift the selected band upward", () => {
+  it("chooses the better resolved-count band even when missing-slot projection would favor a higher band", () => {
     const result = projectCompoActualStateView({
       view: "auto",
       base: {
@@ -191,15 +193,47 @@ describe("projectCompoActualStateView", () => {
     });
 
     expect(result.missingWeights).toBe(6);
-    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_300_000);
-    expect(result.totalWeight).toBeGreaterThan(7_208_000);
-    expect(result.totalWeight).toBeLessThan(8_258_000);
-    expect(result.deltaByBucket.TH18).toBe(-6);
-    expect(result.deltaByBucket.TH17).toBe(3);
-    expect(result.deltaByBucket.TH16).toBe(0);
-    expect(result.deltaByBucket.TH15).toBe(0);
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_000_000);
+    expect(result.selectedHeatMapRef?.weightMaxInclusive).toBe(7_299_999);
+    expect(result.totalWeight).toBe(8_018_000);
+    expect(result.displayCounts.TH18).toBe(6);
+    expect(result.deltaByBucket.TH18).toBe(2);
+    expect(result.deltaByBucket.TH17).toBe(1);
+    expect(result.deltaByBucket.TH16).toBe(1);
+    expect(result.deltaByBucket.TH15).toBe(1);
+    expect(result.deltaByBucket.TH14).toBe(1);
+    expect(result.deltaByBucket["<=TH13"]).toBe(-1);
+  });
+
+  it("selects the best-fit HeatMapRef from resolved counts for the diagnosed 7.208M clan shape", () => {
+    const result = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 7_208_000,
+        unresolvedWeightCount: 6,
+        memberCount: 49,
+        bucketCounts: makeBucketCounts({
+          TH18: 6,
+          TH17: 9,
+          TH16: 6,
+          TH15: 10,
+          TH14: 8,
+          TH13: 10,
+        }),
+      },
+      heatMapRefs: HEAT_MAP_REF_SEED_ROWS.map((row) => makeHeatMapRef(row)),
+    });
+
+    expect(result.missingWeights).toBe(7);
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_300_001);
+    expect(result.selectedHeatMapRef?.weightMaxInclusive).toBe(7_400_000);
+    expect(result.totalWeight).toBe(8_236_944);
+    expect(result.deltaByBucket.TH18).toBe(0);
+    expect(result.deltaByBucket.TH17).toBe(1);
+    expect(result.deltaByBucket.TH16).toBe(-2);
+    expect(result.deltaByBucket.TH15).toBe(1);
     expect(result.deltaByBucket.TH14).toBe(0);
-    expect(result.deltaByBucket["<=TH13"]).toBe(0);
+    expect(result.deltaByBucket["<=TH13"]).toBe(1);
   });
 
   it("uses deterministic low-bucket overflow when Auto-Detect has more missing slots than deficits", () => {
@@ -234,12 +268,12 @@ describe("projectCompoActualStateView", () => {
 
     expect(result.totalWeight).toBe(1800000);
     expect(result.displayCounts).toEqual({
-      TH18: 2,
-      TH17: 2,
-      TH16: 2,
-      TH15: 2,
-      TH14: 2,
-      "<=TH13": 2,
+      TH18: 1,
+      TH17: 1,
+      TH16: 1,
+      TH15: 1,
+      TH14: 1,
+      "<=TH13": 1,
     });
   });
 
@@ -267,8 +301,8 @@ describe("projectCompoActualStateView", () => {
     });
 
     expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(650000);
-    expect(result.totalWeight).toBe(675000);
-    expect(result.displayCounts.TH18).toBe(1);
+    expect(result.totalWeight).toBe(635000);
+    expect(result.displayCounts.TH18).toBe(0);
   });
 
   it("uses weighted deviation scoring to choose the best-fit band", () => {

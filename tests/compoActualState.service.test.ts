@@ -409,7 +409,7 @@ describe("CompoActualStateService", () => {
     );
   });
 
-  it("shows projected totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
+  it("shows planning totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan"),
     ]);
@@ -466,7 +466,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[0]).toEqual([
       "Clan",
       "Resolved Total",
-      "Projected Total",
+      "Planning Total",
       "Missing",
       "DF",
       "Players",
@@ -490,9 +490,9 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[10]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[11]).toEqual(expect.any(String));
     expect(result.contentLines).toContain(
-      "Resolved roster weight is shown separately from the projected 50-player total.",
+      "Resolved roster weight is shown separately from the planning total shown for display.",
     );
-    expect(result.contentLines).toContain("Selected band source: projected total.");
+    expect(result.contentLines).toContain("Selected band source: resolved-count best fit.");
     expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
   });
 
