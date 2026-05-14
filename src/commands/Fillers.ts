@@ -600,6 +600,7 @@ function buildEditorRows(
 
 function buildEditorEmbed(input: {
   title: string;
+  introLines?: string[];
   rows: FillerAccountViewRow[];
   selectedCount: number;
   totalCount: number;
@@ -608,17 +609,19 @@ function buildEditorEmbed(input: {
   totalPages: number;
 }): EmbedBuilder {
   const groups = groupRowsByClan(input.rows);
-  const lines: string[] = [];
+  const accountLines: string[] = [];
   for (const group of groups) {
-    lines.push(...buildClanGroupLines(group, input.townHallEmojiByLevel));
-    lines.push("");
+    accountLines.push(...buildClanGroupLines(group, input.townHallEmojiByLevel));
+    accountLines.push("");
   }
-  if (lines.at(-1) === "") {
-    lines.pop();
+  if (accountLines.at(-1) === "") {
+    accountLines.pop();
   }
-  if (lines.length === 0) {
-    lines.push("No linked accounts found.");
+  if (accountLines.length === 0) {
+    accountLines.push("No linked accounts found.");
   }
+  const introLines = input.introLines ?? [];
+  const lines = [...introLines, ...accountLines];
   const safeLineCount = getSafeEditorPreviewLineCount(lines);
   const previewLines = lines.slice(0, safeLineCount);
   const omittedAccountCount = countEditorPreviewAccountLines(lines.slice(safeLineCount));
@@ -661,8 +664,12 @@ function buildEditorEmbed(input: {
   }
 }
 
-function buildEditorTitle(targetLabel: string, totalCount: number): string {
-  return `Filler Accounts for ${targetLabel} (${totalCount})`;
+function buildTargetUserLine(userId: string): string {
+  return `User: <@${userId}>`;
+}
+
+function buildEditorTitle(totalCount: number): string {
+  return `Filler Accounts (${totalCount})`;
 }
 
 async function renderListReply(input: {
@@ -682,8 +689,16 @@ async function renderListReply(input: {
   const totalPages = pages.length;
   let page = 0;
   const prefix = `fillers:list:${input.interaction.id}`;
+  const descriptionParts = input.targetUserId
+    ? [buildTargetUserLine(input.targetUserId), pages[page] ?? ""]
+    : [pages[page] ?? ""];
 
-  const embed = buildListEmbed(input.title, pages[page] ?? "", page, totalPages);
+  const embed = buildListEmbed(
+    input.title,
+    descriptionParts.filter((part) => part.length > 0).join("\n\n"),
+    page,
+    totalPages,
+  );
   const components = buildPagerRow(prefix, page, totalPages);
   await input.interaction.editReply({
     embeds: [embed],
@@ -709,7 +724,19 @@ async function renderListReply(input: {
         page = Math.min(totalPages - 1, page + 1);
       }
       await button.update({
-        embeds: [buildListEmbed(input.title, pages[page] ?? "", page, totalPages)],
+        embeds: [
+          buildListEmbed(
+            input.title,
+            [
+              ...(input.targetUserId ? [buildTargetUserLine(input.targetUserId)] : []),
+              pages[page] ?? "",
+            ]
+              .filter((part) => part.length > 0)
+              .join("\n\n"),
+            page,
+            totalPages,
+          ),
+        ],
         components: [buildPagerRow(prefix, page, totalPages)!],
       });
     } catch (error) {
@@ -744,8 +771,9 @@ async function renderEditorReply(input: {
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / FILLERS_PAGE_SIZE));
   let page = 0;
   const sessionId = input.interaction.id;
-  const title = buildEditorTitle(`<@${input.targetUserId}>`, sortedRows.length);
+  const title = buildEditorTitle(sortedRows.length);
   const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
+  const introLines = [buildTargetUserLine(input.targetUserId), ""];
 
   const buildRenderPayload = () => {
     const renderRows = sortedRows.map((row) => ({
@@ -770,6 +798,7 @@ async function renderEditorReply(input: {
     try {
       embed = buildEditorEmbed({
         title,
+        introLines,
         rows: pageRows,
         selectedCount: selectedTags.size,
         totalCount: sortedRows.length,
@@ -999,8 +1028,8 @@ function buildClanRowsTitle(clanName: string | null, clanTag: string, count: num
   return `Filler Accounts in ${label} (${count})`;
 }
 
-function buildUserRowsTitle(userId: string, count: number): string {
-  return `Filler Accounts for <@${userId}> (${count})`;
+function buildUserRowsTitle(count: number): string {
+  return `Filler Accounts (${count})`;
 }
 
 export const Fillers: Command = {
@@ -1142,7 +1171,7 @@ export const Fillers: Command = {
       await renderListReply({
         interaction,
         rows,
-        title: buildUserRowsTitle(user.id, rows.length),
+        title: buildUserRowsTitle(rows.length),
         scope: "user",
         targetUserId: user.id,
       });

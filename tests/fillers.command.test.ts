@@ -467,7 +467,7 @@ describe("/fillers command", () => {
     const embed = getEmbedJson(payload);
     const components = getComponentJson(payload);
 
-    expect(String(embed.title)).toContain("Filler Accounts for <@222222222222222222>");
+    expect(String(embed.title)).toBe("Filler Accounts (126)");
     expect(String(embed.footer?.text)).toContain("0/126 filler accounts selected");
     expect(String(embed.footer?.text)).toContain("Page 1/6");
     expect(components).toHaveLength(2);
@@ -626,7 +626,8 @@ describe("/fillers command", () => {
     });
     await runFillers(userInteraction);
     const userEmbed = getEmbedJson(getLastEditPayload(userInteraction));
-    expect(String(userEmbed.title)).toBe("Filler Accounts for <@222222222222222222> (1)");
+    expect(String(userEmbed.title)).toBe("Filler Accounts (1)");
+    expect(String(userEmbed.description)).toContain("User: <@222222222222222222>");
     expect(String(userEmbed.description)).toContain("Alpha");
     expect(String(userEmbed.description)).not.toContain("Gamma");
 
@@ -639,6 +640,33 @@ describe("/fillers command", () => {
     expect(String(clanEmbed.title)).toBe("Filler Accounts in Beta Clan (1)");
     expect(String(clanEmbed.description)).toContain("Gamma");
     expect(String(clanEmbed.description)).not.toContain("Alpha");
+  });
+
+  it("renders the targeted user mention in the filler editor body instead of the title", async () => {
+    seedAccount({
+      playerTag: "#P0000",
+      discordUserId: "222222222222222222",
+      playerName: "Alpha",
+      townHall: 18,
+      clanTag: "#PQL0289",
+      clanName: "Alpha Clan",
+      weight: 9200,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const embed = getEmbedJson(payload);
+
+    expect(String(embed.title)).toBe("Filler Accounts (1)");
+    expect(String(embed.title)).not.toContain("<@222222222222222222>");
+    expect(String(embed.description)).toContain("User: <@222222222222222222>");
+    expect(String(embed.description)).toContain("Alpha");
   });
 
   it("allows configured FWA leader users to use fillers commands and denies others", async () => {
