@@ -388,51 +388,28 @@ function buildAutoProjection(input: {
     };
   }
 
-  let currentRef = rawProjection.selectedHeatMapRef;
-  const visitedBandKeys: string[] = [];
-  let lastProjection = buildEstimatedProjectionForBand({
+  const initialProjection = buildEstimatedProjectionForBand({
     view: "auto",
     base: input.base,
     displayCounts: input.displayCounts,
-    heatMapRef: currentRef,
+    heatMapRef: rawProjection.selectedHeatMapRef,
   });
-
-  for (let index = 0; index < AUTO_DETECT_ITERATION_CAP; index += 1) {
-    const nextRef =
-      findHeatMapRefForWeight(input.heatMapRefs, lastProjection.totalWeight) ??
-      currentRef;
-    const currentBandKey = getHeatMapRefBandKey(currentRef);
-
-    if (getHeatMapRefBandKey(nextRef) === currentBandKey) {
-      return lastProjection;
-    }
-
-    if (
-      visitedBandKeys.length >= 2 &&
-      currentBandKey === visitedBandKeys[visitedBandKeys.length - 2] &&
-      getHeatMapRefBandKey(nextRef) ===
-        visitedBandKeys[visitedBandKeys.length - 1]
-    ) {
-      const nextProjection = buildEstimatedProjectionForBand({
-        view: "auto",
-        base: input.base,
-        displayCounts: input.displayCounts,
-        heatMapRef: nextRef,
-      });
-      return compareProjectionByBandFit(lastProjection, nextProjection);
-    }
-
-    visitedBandKeys.push(currentBandKey);
-    currentRef = nextRef;
-    lastProjection = buildEstimatedProjectionForBand({
-      view: "auto",
-      base: input.base,
-      displayCounts: input.displayCounts,
-      heatMapRef: currentRef,
-    });
+  const finalRef =
+    findHeatMapRefForWeight(input.heatMapRefs, initialProjection.totalWeight) ??
+    rawProjection.selectedHeatMapRef;
+  if (getHeatMapRefBandKey(finalRef) === getHeatMapRefBandKey(rawProjection.selectedHeatMapRef)) {
+    return initialProjection;
   }
 
-  return lastProjection;
+  return {
+    ...initialProjection,
+    selectedHeatMapRef: finalRef,
+    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, finalRef),
+    deviationScore: calculateCompoDeviationScore({
+      displayCounts: initialProjection.displayCounts,
+      heatMapRef: finalRef,
+    }),
+  };
 }
 
 function buildBestFitProjection(input: {
