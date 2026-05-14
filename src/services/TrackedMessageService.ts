@@ -288,7 +288,12 @@ export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
     where: {
       guildId: String(params.guildId ?? "").trim(),
       featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      status: {
+        in: [
+          TRACKED_MESSAGE_STATUS.ACTIVE,
+          TRACKED_MESSAGE_STATUS.REPLACED,
+        ],
+      },
       ...(clanTag
         ? {
             OR: [{ clanTag }, { clanTag: `#${clanTag}` }],
