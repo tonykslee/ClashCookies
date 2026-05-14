@@ -297,7 +297,8 @@ describe("CompoAdviceService", () => {
     expect(result.summary.resolvedRosterWeight).toBe(798000);
     expect(result.summary.currentWeight).toBe(798000);
     expect(result.summary.currentProjection.totalWeight).toBe(798000);
-    expect(result.summary.currentProjection.missingWeights).toBe(1);
+    // missingWeights includes unresolved weights plus WAR fallback-only resolved members.
+    expect(result.summary.currentProjection.missingWeights).toBe(2);
   });
 
   it("loads ACTUAL advice from DB-backed state, defaults to Auto-Detect Band, and computes rushed members without sheet reads", async () => {
