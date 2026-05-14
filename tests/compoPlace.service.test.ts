@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
+import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
+    findMany: vi.fn(),
+  },
+  fillerAccount: {
     findMany: vi.fn(),
   },
   fwaClanMemberCurrent: {
@@ -16,6 +20,12 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   playerCurrent: {
+    findMany: vi.fn(),
+  },
+  playerLink: {
+    findMany: vi.fn(),
+  },
+  playerActivity: {
     findMany: vi.fn(),
   },
   heatMapRef: {
@@ -36,10 +46,11 @@ import {
   resolvePlacementWeightForTest,
 } from "../src/services/CompoPlaceService";
 
-function makeTrackedClan(tag: string, name: string) {
+function makeTrackedClan(tag: string, name: string, shortName: string | null = null) {
   return {
     tag,
     name,
+    shortName,
   };
 }
 
@@ -181,14 +192,28 @@ describe("CompoPlaceService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.playerActivity.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    });
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
   });
 
   it("reads ACTUAL placement suggestions from persisted tracked clans, current members, and HeatMapRef without sheet services", async () => {
@@ -286,6 +311,93 @@ describe("CompoPlaceService", () => {
     expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
     expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toBe("None");
     expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toBe("None");
+  });
+
+  it("adds a Replace section for same-bucket filler candidates with clan short-name prefixes", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-war", "ALP"),
+      makeTrackedClan("#BBB222", "Bravo Clan-war", null),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "Filler Alpha",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
+        townHall: 15,
+      },
+      {
+        clanTag: "#BBB222",
+        playerTag: "#P000010",
+        playerName: "Both Bravo",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
+        townHall: 15,
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([
+      { playerTag: "#P000002" },
+      { playerTag: "#P000010" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000) },
+      { tag: "#P000010", lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000) },
+    ]);
+    prismaMock.playerLink.findMany.mockImplementation(async (query: any) => {
+      const allowed = new Set<string>(query?.where?.playerTag?.in ?? []);
+      return [
+        {
+          playerTag: "#P000002",
+          discordUserId: "111111111111111111",
+          discordUsername: "Alpha One",
+          createdAt: new Date("2026-04-10T16:30:00.000Z"),
+        },
+        {
+          playerTag: "#P000010",
+          discordUserId: "444444444444444444",
+          discordUsername: "Bravo Two",
+          createdAt: new Date("2026-04-10T16:30:00.000Z"),
+        },
+      ].filter((row) => allowed.has(row.playerTag));
+    });
+    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
+      results: [
+        {
+          clanTag: "#BBB222",
+          playerTag: "#P000010",
+          playerName: "Both Bravo",
+          townHall: 15,
+          missedWars: 1,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [],
+        } as any,
+      ],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const result = await new CompoPlaceService().readPlace(
+      145000,
+      "TH15",
+      "guild-1",
+      new Map([[15, "<:th15:12345678901234567>"]]),
+    );
+
+    const embed = result.embeds[0]?.toJSON();
+    const replaceValue = embed?.fields?.find((field) => field.name === "Replace")?.value ?? "";
+
+    expect(replaceValue).toContain("ALP <:th15:12345678901234567> 145,000 :man_standing:");
   });
 
   it("uses member weight, then deferred weight, then WAR effective weight, and ignores unresolved zero-weight rows", async () => {

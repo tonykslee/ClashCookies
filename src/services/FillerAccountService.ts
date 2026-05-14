@@ -114,6 +114,12 @@ async function getGuildFillerTags(guildId: string): Promise<string[]> {
   return normalizeTags(fillerRows.map((row: FillerAccountRecord) => row.playerTag));
 }
 
+export async function listFillerAccountTagsForGuild(input: {
+  guildId: string;
+}): Promise<string[]> {
+  return getGuildFillerTags(input.guildId);
+}
+
 export async function listFillerAccountsForGuild(input: {
   guildId: string;
 }): Promise<FillerAccountViewRow[]> {
