@@ -43,6 +43,36 @@ describe("/fwa base-swap command shape", () => {
     expect(clan?.description).toContain("CWL");
   });
 
+  it("registers copy_paste on /fwa match as an optional boolean", () => {
+    const match = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "match",
+    );
+    expect(match).toBeTruthy();
+
+    const copyPaste = match?.options?.find(
+      (option: { name: string }) => option.name === "copy_paste",
+    );
+    expect(copyPaste?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(copyPaste?.required).toBe(false);
+  });
+
+  it("registers checklist on /fwa match as an optional boolean", () => {
+    const match = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "match",
+    );
+    expect(match).toBeTruthy();
+
+    const checklist = match?.options?.find(
+      (option: { name: string }) => option.name === "checklist",
+    );
+    expect(checklist?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(checklist?.required).toBe(false);
+  });
+
   it("does not register a standalone mail send subcommand group", () => {
     const mail = Fwa.options?.find(
       (option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "mail",

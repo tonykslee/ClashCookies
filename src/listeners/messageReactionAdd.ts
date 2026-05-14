@@ -65,6 +65,11 @@ export default (client: Client): void => {
         if (recorded && tracked.referenceId) {
           await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
         }
+        return;
+      }
+
+      if ((tracked.featureType as string) === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) {
+        await trackedMessageService.refreshFwaMatchChecklistMessage(fullReaction.message);
       }
     } catch (err) {
       console.error(`messageReactionAdd failed: ${formatError(err)}`);

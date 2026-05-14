@@ -187,6 +187,33 @@ describe("/fwa weight command output", () => {
     expect(content).not.toContain("Recovery steps:");
   });
 
+  it("does not require getBoolean on non-match subcommands", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      name: "Alpha",
+    });
+    vi.spyOn(FwaStatsWeightService.prototype, "getWeightAges").mockResolvedValue([
+      {
+        clanTag: "#ABC123",
+        sourceUrl: "https://fwastats.com/Clan/ABC123/Weight",
+        ageText: "1d ago",
+        ageDays: 1,
+        scrapedAt: new Date("2026-03-09T00:00:00.000Z"),
+        status: "ok",
+        httpStatus: 200,
+        fromCache: false,
+        error: null,
+        authErrorCode: null,
+      },
+    ]);
+
+    const { interaction } = makeInteraction({
+      subcommand: "weight-age",
+      tag: "ABC123",
+    });
+
+    await expect(Fwa.run({} as any, interaction as any, {} as any)).resolves.toBeUndefined();
+  });
+
   it("supports /fwa weight-cookie status and save flows without exposing raw secrets", async () => {
     vi.spyOn(FwaStatsWeightCookieService.prototype, "getCookieStatus").mockResolvedValue({
       applicationCookiePresent: true,
