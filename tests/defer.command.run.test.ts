@@ -1,5 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ChannelType } from "discord.js";
 import { Defer } from "../src/commands/Defer";
+import {
+  handleDeferConfigResetChannelButtonInteraction,
+  isDeferConfigResetChannelButtonCustomId,
+} from "../src/commands/Defer";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
+import { SettingsService } from "../src/services/SettingsService";
 
 const prismaMock = vi.hoisted(() => ({
   clanNotifyConfig: {
@@ -30,10 +37,23 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+beforeEach(() => {
+  vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+  vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
+  vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
+  vi.spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId").mockResolvedValue(
+    "123456789012345678",
+  );
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function makeInteraction(input: {
   playerTag?: string;
   weight?: string;
-  subcommand?: "add" | "list" | "remove" | "check" | "clear";
+  subcommand?: "add" | "list" | "config" | "remove" | "check" | "clear";
   clan?: string | null;
 }) {
   return {
@@ -47,6 +67,50 @@ function makeInteraction(input: {
         if (name === "player-tag") return input.playerTag ?? null;
         if (name === "weight") return input.weight ?? null;
         if (name === "clan") return input.clan ?? null;
+        return null;
+      }),
+      getChannel: vi.fn().mockReturnValue(null),
+      getRole: vi.fn().mockReturnValue(null),
+      getBoolean: vi.fn().mockReturnValue(null),
+    },
+  };
+}
+
+function makeConfigInteraction(input: {
+  channelId?: string | null;
+  roleId?: string | null;
+  enablePing?: boolean | null;
+  enabled?: boolean | null;
+}) {
+  return {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: "user-1" },
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    options: {
+      getSubcommand: vi.fn().mockReturnValue("config"),
+      getString: vi.fn().mockReturnValue(null),
+      getChannel: vi.fn((name: string) => {
+        if (name !== "channel") return null;
+        if (!input.channelId) return null;
+        return {
+          id: input.channelId,
+          guildId: "guild-1",
+          type: ChannelType.GuildText,
+        };
+      }),
+      getRole: vi.fn((name: string) => {
+        if (name !== "ping_role") return null;
+        if (!input.roleId) return null;
+        return {
+          id: input.roleId,
+          guildId: "guild-1",
+        };
+      }),
+      getBoolean: vi.fn((name: string) => {
+        if (name === "enable_ping") return input.enablePing ?? null;
+        if (name === "enable") return input.enabled ?? null;
         return null;
       }),
     },
@@ -434,5 +498,72 @@ describe("/defer add", () => {
         "still_open_missing_weight: 1",
       ].join("\n"),
     );
+  });
+
+  it("stores defer routing overrides and renders a reset button", async () => {
+    const settingsStore = new Map<string, string>();
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) => {
+      return settingsStore.get(key) ?? null;
+    });
+    vi.mocked(SettingsService.prototype.set).mockImplementation(async (key: string, value: string) => {
+      settingsStore.set(key, value);
+    });
+    vi.mocked(SettingsService.prototype.delete).mockImplementation(async (key: string) => {
+      settingsStore.delete(key);
+    });
+
+    const interaction = makeConfigInteraction({
+      channelId: "123456789012345679",
+      roleId: "234567890123456789",
+      enablePing: false,
+      enabled: false,
+    });
+
+    await Defer.run({} as any, interaction as any, {} as any);
+
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_channel:guild-1"),
+      "123456789012345679",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_ping_role:guild-1"),
+      "234567890123456789",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_enable_ping:guild-1"),
+      "false",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_enable:guild-1"),
+      "false",
+    );
+
+    const response = interaction.editReply.mock.calls[0]?.[0];
+    const responseEmbed = response?.embeds?.[0];
+    expect(
+      responseEmbed?.toJSON?.().title ?? responseEmbed?.title ?? responseEmbed?.data?.title,
+    ).toBe("Defer Routing Config");
+    expect(JSON.stringify(response?.components ?? [])).toContain(
+      "defer-config:reset-channel:guild-1:user-1",
+    );
+  });
+
+  it("reset-channel button clears only the channel override", async () => {
+    const interaction = {
+      customId: "defer-config:reset-channel:guild-1:user-1",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      inGuild: () => true,
+      reply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleDeferConfigResetChannelButtonInteraction(interaction);
+
+    expect(isDeferConfigResetChannelButtonCustomId(interaction.customId)).toBe(true);
+    expect(SettingsService.prototype.delete).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_channel:guild-1"),
+    );
+    expect(interaction.update).toHaveBeenCalledTimes(1);
   });
 });

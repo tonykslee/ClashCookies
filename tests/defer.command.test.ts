@@ -22,6 +22,10 @@ describe("/defer command shape", () => {
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand && option.name === "list"
     );
+    const config = Defer.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand && option.name === "config"
+    );
     const remove = Defer.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand && option.name === "remove"
@@ -32,7 +36,20 @@ describe("/defer command shape", () => {
     );
 
     expect(list).toBeTruthy();
+    expect(config).toBeTruthy();
     expect(remove).toBeTruthy();
     expect(clear).toBeTruthy();
+    expect(config?.options?.find((option: any) => option.name === "channel")?.type).toBe(
+      ApplicationCommandOptionType.Channel
+    );
+    expect(config?.options?.find((option: any) => option.name === "ping_role")?.type).toBe(
+      ApplicationCommandOptionType.Role
+    );
+    expect(config?.options?.find((option: any) => option.name === "enable_ping")?.type).toBe(
+      ApplicationCommandOptionType.Boolean
+    );
+    expect(config?.options?.find((option: any) => option.name === "enable")?.type).toBe(
+      ApplicationCommandOptionType.Boolean
+    );
   });
 });
