@@ -135,6 +135,7 @@ function buildTrackedClanShortNameMap(rows: Array<{
     const shortName = String(row.shortName ?? "").trim();
     if (shortName) {
       byTag.set(tag, shortName);
+      byTag.set(tag.replace(/^#/, ""), shortName);
     }
   }
   return byTag;
@@ -228,7 +229,10 @@ async function buildReplaceRows(input: {
     prisma.trackedClan.findMany({
       where: {
         tag: {
-          in: input.clans.map((clan) => clan.clanTag),
+          in: input.clans.flatMap((clan) => {
+            const normalized = normalizeTag(clan.clanTag);
+            return normalized ? [normalized, normalized.replace(/^#/, "")] : [];
+          }),
         },
       },
       select: {

@@ -315,8 +315,8 @@ describe("CompoPlaceService", () => {
 
   it("adds a Replace section for same-bucket filler candidates with clan short-name prefixes", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("#AAA111", "Alpha Clan-war", "ALP"),
-      makeTrackedClan("#BBB222", "Bravo Clan-war", null),
+      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
+      makeTrackedClan("BBB222", "Bravo Clan-war", null),
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
