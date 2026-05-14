@@ -342,6 +342,21 @@ function makeSelectInteraction(input: {
   };
 }
 
+function makeButtonInteraction(input: {
+  customId: string;
+}) {
+  return {
+    customId: input.customId,
+    user: { id: "111111111111111111" },
+    isButton: () => true,
+    update: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    replied: false,
+    deferred: false,
+    reply: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function getLastEditPayload(interaction: any): any {
   return interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
 }
@@ -353,6 +368,24 @@ function getEmbedJson(payload: any): any {
 
 function getComponentJson(payload: any): any[] {
   return (payload?.components ?? []).map((component: any) => component.toJSON?.() ?? component);
+}
+
+function extractVisibleTags(description: string): string[] {
+  return String(description)
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/`(#[^`]+)`/);
+      return match?.[1] ?? null;
+    })
+    .filter((tag): tag is string => Boolean(tag));
+}
+
+function collectDropdownValues(components: any[]): string[] {
+  return components.flatMap((row) =>
+    (row.components ?? []).flatMap((component: any) =>
+      Array.isArray(component.options) ? component.options.map((option: any) => String(option.value ?? "")) : [],
+    ),
+  );
 }
 
 async function runFillers(interaction: any): Promise<void> {
@@ -466,16 +499,22 @@ describe("/fillers command", () => {
     const payload = getLastEditPayload(interaction);
     const embed = getEmbedJson(payload);
     const components = getComponentJson(payload);
+    const visibleTags = extractVisibleTags(String(embed.description));
+    const dropdownValues = collectDropdownValues(components);
 
-    expect(String(embed.title)).toContain("Filler Accounts for <@222222222222222222>");
+    expect(String(embed.title)).toBe("Filler Accounts (126)");
     expect(String(embed.footer?.text)).toContain("0/126 filler accounts selected");
-    expect(String(embed.footer?.text)).toContain("Page 1/6");
-    expect(components).toHaveLength(2);
+    expect(String(embed.footer?.text)).toContain("Page 1/");
+    expect(components).toHaveLength(3);
     expect(components[0].components).toHaveLength(1);
-    expect(components[1].components).toHaveLength(2);
+    expect(components[1].components).toHaveLength(1);
+    expect(components[2].components).toHaveLength(2);
 
     const firstMenu = components[0].components[0];
-    expect(firstMenu.options).toHaveLength(25);
+    expect(firstMenu.options).toHaveLength(Math.min(25, visibleTags.length));
+    expect(dropdownValues).toEqual(visibleTags);
+    expect(String(firstMenu.options[0].label)).toBe("9k Player 001");
+    expect(String(firstMenu.options[0].label)).not.toContain("<:");
     expect(firstMenu.options[0].value).toBe(makeValidPlayerTag(0));
     expect(firstMenu.options[1].value).toBe(makeValidPlayerTag(1));
     expect(firstMenu.options[2].value).toBe(makeValidPlayerTag(2));
@@ -488,14 +527,16 @@ describe("/fillers command", () => {
       buildEmojiInventory("<:town_hall_custom_"),
     );
 
+    const seededOrder: string[] = [];
     for (let index = 0; index < 59; index += 1) {
       const tag = makeValidPlayerTag(index);
+      seededOrder.push(tag);
       const clanName = `The Extremely Long And Verbose Clan Name For Production Diagnostics ${String(index + 1).padStart(2, "0")} [FWA]`;
       seedAccount({
         playerTag: tag,
         discordUserId: "222222222222222222",
         playerName: `Teewizz Candidate ${String(index + 1).padStart(2, "0")} With An Exceptionally Long Display Name For Markdown Rendering`,
-        townHall: index % 2 === 0 ? 18 : 17,
+        townHall: 18,
         clanTag: "#PQL0289",
         clanName,
         weight: 12000 - index * 17,
@@ -512,13 +553,73 @@ describe("/fillers command", () => {
     const payload = getLastEditPayload(interaction);
     const embed = getEmbedJson(payload);
     const components = getComponentJson(payload);
-    const firstMenu = components[0].components[0];
+    const visibleTags = extractVisibleTags(String(embed.description));
+    const dropdownValues = collectDropdownValues(components);
 
-    expect(String(embed.description)).toContain("more account(s) on this page are not shown in the preview");
-    expect(String(embed.description)).toContain("remain selectable in the dropdown below");
     expect(String(embed.description).length).toBeLessThanOrEqual(4096);
-    expect(firstMenu.options).toHaveLength(25);
-    expect(String(embed.description)).toContain("<:town_hall_custom_18:12345678901234567>");
+    expect(visibleTags.length).toBeLessThan(25);
+    expect(dropdownValues).toEqual(visibleTags);
+    expect(visibleTags).toEqual(seededOrder.slice(0, visibleTags.length));
+    expect(String(embed.description)).not.toContain("more account(s) on this page are not shown in the preview");
+    expect(String(embed.description)).not.toContain("remain selectable in the dropdown below");
+
+    const pagerRow = components.at(-1);
+    const nextButton = pagerRow?.components?.find((component: any) => String(component.custom_id ?? component.customId ?? "").endsWith(":next"));
+    expect(nextButton).toBeTruthy();
+    const nextInteraction = makeButtonInteraction({
+      customId: nextButton.custom_id ?? nextButton.customId,
+    });
+    await interaction.__collectorHandlers.collect(nextInteraction);
+
+    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextEmbed = getEmbedJson(nextPayload);
+    const nextVisibleTags = extractVisibleTags(String(nextEmbed.description));
+    expect(nextVisibleTags[0]).toBe(seededOrder[visibleTags.length]);
+  });
+
+  it("keeps clan sections together when they fit on the same editor page", async () => {
+    for (let index = 0; index < 8; index += 1) {
+      seedAccount({
+        playerTag: makeValidPlayerTag(index),
+        discordUserId: "222222222222222222",
+        playerName: `Alpha ${String(index + 1).padStart(2, "0")}`,
+        townHall: 18,
+        clanTag: "#PQL0289",
+        clanName: "Alpha Clan",
+        weight: 12000 - index,
+      });
+    }
+    for (let index = 8; index < 17; index += 1) {
+      seedAccount({
+        playerTag: makeValidPlayerTag(index),
+        discordUserId: "222222222222222222",
+        playerName: `Beta ${String(index + 1).padStart(2, "0")}`,
+        townHall: 18,
+        clanTag: "#QGRJ2222",
+        clanName: "Beta Clan",
+        weight: 12000 - index,
+      });
+    }
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const embed = getEmbedJson(payload);
+    const components = getComponentJson(payload);
+    const visibleTags = extractVisibleTags(String(embed.description));
+    const dropdownValues = collectDropdownValues(components);
+
+    expect(String(embed.description)).toContain("Alpha Clan");
+    expect(String(embed.description)).toContain("Beta Clan");
+    expect(String(embed.description).match(/Alpha Clan/g) ?? []).toHaveLength(1);
+    expect(String(embed.description).match(/Beta Clan/g) ?? []).toHaveLength(1);
+    expect(dropdownValues).toEqual(visibleTags);
+    expect(dropdownValues).toHaveLength(17);
   });
 
   it("creates, updates, and removes filler state through the select interaction", async () => {
@@ -626,7 +727,8 @@ describe("/fillers command", () => {
     });
     await runFillers(userInteraction);
     const userEmbed = getEmbedJson(getLastEditPayload(userInteraction));
-    expect(String(userEmbed.title)).toBe("Filler Accounts for <@222222222222222222> (1)");
+    expect(String(userEmbed.title)).toBe("Filler Accounts (1)");
+    expect(String(userEmbed.description)).toContain("User: <@222222222222222222>");
     expect(String(userEmbed.description)).toContain("Alpha");
     expect(String(userEmbed.description)).not.toContain("Gamma");
 
@@ -639,6 +741,33 @@ describe("/fillers command", () => {
     expect(String(clanEmbed.title)).toBe("Filler Accounts in Beta Clan (1)");
     expect(String(clanEmbed.description)).toContain("Gamma");
     expect(String(clanEmbed.description)).not.toContain("Alpha");
+  });
+
+  it("renders the targeted user mention in the filler editor body instead of the title", async () => {
+    seedAccount({
+      playerTag: "#P0000",
+      discordUserId: "222222222222222222",
+      playerName: "Alpha",
+      townHall: 18,
+      clanTag: "#PQL0289",
+      clanName: "Alpha Clan",
+      weight: 9200,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const embed = getEmbedJson(payload);
+
+    expect(String(embed.title)).toBe("Filler Accounts (1)");
+    expect(String(embed.title)).not.toContain("<@222222222222222222>");
+    expect(String(embed.description)).toContain("User: <@222222222222222222>");
+    expect(String(embed.description)).toContain("Alpha");
   });
 
   it("allows configured FWA leader users to use fillers commands and denies others", async () => {
