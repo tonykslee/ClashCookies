@@ -556,7 +556,7 @@ function buildEditorRows(
     const start = pageIndex * rowsPerPage + bucketIndex * FILLERS_MENU_SIZE + 1;
     const end = start + bucket.length - 1;
     const optionEntries = bucket.map((row) => ({
-      label: `${renderTownHallIcon(row.townHall, townHallEmojiByLevel)} ${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
+      label: `${formatCompactWeightK(row.weight)} ${normalizeText(row.name) ?? row.tag}`.slice(0, 100),
       value: row.tag,
       default: selectedTags.has(row.tag),
       description: normalizeText(

@@ -476,6 +476,8 @@ describe("/fillers command", () => {
 
     const firstMenu = components[0].components[0];
     expect(firstMenu.options).toHaveLength(25);
+    expect(String(firstMenu.options[0].label)).toBe("9k Player 001");
+    expect(String(firstMenu.options[0].label)).not.toContain("<:");
     expect(firstMenu.options[0].value).toBe(makeValidPlayerTag(0));
     expect(firstMenu.options[1].value).toBe(makeValidPlayerTag(1));
     expect(firstMenu.options[2].value).toBe(makeValidPlayerTag(2));
