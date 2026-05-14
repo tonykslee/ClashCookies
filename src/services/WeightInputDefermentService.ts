@@ -55,6 +55,23 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESS_LOCK_TTL_MS = 10 * 60 * 1000;
 const commandPermissionService = new CommandPermissionService();
 
+export type OpenWeightInputDefermentRow = {
+  id: string;
+  guildId: string;
+  clanTag: string | null;
+  scopeKey: string;
+  playerTag: string;
+  deferredWeight: number;
+  createdAt: Date;
+  status: string;
+};
+
+export type OpenWeightInputDefermentListResult = {
+  scope: DefermentScopeContext;
+  rows: OpenWeightInputDefermentRow[];
+  filterClanTag: string | null;
+};
+
 /** Purpose: normalize player tags to an uppercase #TAG shape. */
 export function normalizePlayerTag(input: string): string {
   const raw = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
@@ -452,11 +469,92 @@ export async function addWeightInputDefermentWithPlayerProfile(input: {
   return result;
 }
 
+async function listOpenWeightInputDefermentsForClan(input: {
+  guildId: string;
+  clanTag: string;
+}): Promise<OpenWeightInputDefermentListResult> {
+  const normalizedClanTag = normalizeTag(input.clanTag);
+  if (!normalizedClanTag) {
+    return {
+      scope: {
+        guildId: input.guildId,
+        clanTag: null,
+        scopeKey: buildDeferScopeKey(input.guildId, null),
+      },
+      rows: [],
+      filterClanTag: null,
+    };
+  }
+
+  const guildScopeKey = buildDeferScopeKey(input.guildId, null);
+  const clanScopeKey = buildDeferScopeKey(input.guildId, normalizedClanTag);
+  const currentMembers = await prisma.fwaClanMemberCurrent.findMany({
+    where: {
+      OR: [
+        { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+        { clanTag: { equals: normalizeTagBare(normalizedClanTag), mode: "insensitive" } },
+      ],
+    },
+    select: {
+      playerTag: true,
+    },
+    orderBy: [{ playerTag: "asc" }],
+  });
+  const currentMemberTags = new Set(
+    currentMembers.map((row) => normalizePlayerTag(row.playerTag)).filter((tag): tag is string => Boolean(tag)),
+  );
+  if (currentMemberTags.size === 0) {
+    return {
+      scope: {
+        guildId: input.guildId,
+        clanTag: normalizedClanTag,
+        scopeKey: clanScopeKey,
+      },
+      rows: [],
+      filterClanTag: normalizedClanTag,
+    };
+  }
+
+  const rows = await prisma.weightInputDeferment.findMany({
+    where: {
+      guildId: input.guildId,
+      status: "open",
+      scopeKey: { in: [clanScopeKey, guildScopeKey] },
+      playerTag: { in: [...currentMemberTags] },
+    },
+    orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+  });
+
+  const filteredRows = (rows as OpenWeightInputDefermentRow[]).filter((row) => {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) return false;
+    if (!currentMemberTags.has(playerTag)) return false;
+    return row.scopeKey === clanScopeKey || row.scopeKey === guildScopeKey;
+  });
+
+  return {
+    scope: {
+      guildId: input.guildId,
+      clanTag: normalizedClanTag,
+      scopeKey: clanScopeKey,
+    },
+    rows: filteredRows,
+    filterClanTag: normalizedClanTag,
+  };
+}
+
 /** Purpose: list active deferments for the resolved command scope in deterministic oldest-first order. */
 export async function listOpenWeightInputDeferments(input: {
   guildId: string;
   channelId: string | null;
-}) {
+  clanTag?: string | null;
+}): Promise<OpenWeightInputDefermentListResult> {
+  if (input.clanTag) {
+    return listOpenWeightInputDefermentsForClan({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+    });
+  }
   const scope = await resolveDefermentScopeContext({
     guildId: input.guildId,
     channelId: input.channelId,
@@ -468,7 +566,7 @@ export async function listOpenWeightInputDeferments(input: {
     },
     orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
   });
-  return { scope, rows };
+  return { scope, rows: rows as OpenWeightInputDefermentRow[], filterClanTag: null };
 }
 
 /** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */

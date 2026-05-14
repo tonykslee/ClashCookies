@@ -466,6 +466,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Use `/fillers set user:<discordUser>` to open an ephemeral interactive editor for one Discord user's linked accounts.",
       "The editor shows linked accounts with TH, player name, tag, current clan, and weight, and lets you toggle filler status with multi-select dropdowns.",
       "Use `/fillers list` to show every filler account in the guild, `/fillers list user:<discordUser>` to scope to one linked Discord user, or `/fillers list clan:<trackedClan>` to scope to one current clan.",
+      "`clan` autocomplete lists tracked clans, and clan-filtered results are based on the clan's current members rather than deferment row clan tags alone.",
       "Filler status is account-level and is stored per guild + player tag; linked Discord users are resolved at render time from PlayerLink.",
     ],
     examples: [
