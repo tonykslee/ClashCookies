@@ -104,6 +104,8 @@ describe("/compo helpers", () => {
     }).toJSON();
 
     expect(embed.title).toBe("Compo Placement Suggestions");
+    expect(embed.description).toContain("Mode: **ACTUAL Auto-Detect**");
+    expect(embed.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
     expect(embed.description).toContain("Weight: **145,000**");
     expect(embed.description).toContain("Bucket: **TH15**");
     expect(embed.fields?.map((field) => field.name)).toEqual([
