@@ -570,7 +570,10 @@ export async function checkOpenWeightInputDefermentsForClan(input: {
   const [currentMembers, openRows] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
       where: {
-        clanTag: { equals: normalizedClanTag, mode: "insensitive" },
+        OR: [
+          { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+          { clanTag: { equals: normalizeTagBare(normalizedClanTag), mode: "insensitive" } },
+        ],
       },
       select: {
         playerTag: true,

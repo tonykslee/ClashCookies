@@ -391,6 +391,38 @@ describe("WeightInputDefermentService clan check", () => {
     });
     expect(prismaMock.weightInputDeferment.updateMany).not.toHaveBeenCalled();
   });
+
+  it("matches current clan members by normalized or bare clan tag when checking", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "AAA111",
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+
+    await checkOpenWeightInputDefermentsForClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [
+            {
+              clanTag: { equals: "#AAA111", mode: "insensitive" },
+            },
+            {
+              clanTag: { equals: "AAA111", mode: "insensitive" },
+            },
+          ],
+        },
+      }),
+    );
+  });
 });
 
 describe("WeightInputDefermentService lifecycle processing", () => {
