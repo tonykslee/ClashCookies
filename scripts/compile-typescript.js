@@ -1,4 +1,6 @@
 const { spawnSync } = require("node:child_process");
+const { rmSync } = require("node:fs");
+const { resolve } = require("node:path");
 
 function normalizeNodeOptions(input) {
   const tokens = String(input ?? "")
@@ -15,6 +17,7 @@ function main() {
     ...process.env,
     NODE_OPTIONS: normalizeNodeOptions(process.env.NODE_OPTIONS),
   };
+  rmSync(resolve(process.cwd(), "dist"), { recursive: true, force: true });
   const tscPath = require.resolve("typescript/bin/tsc");
   const result = spawnSync(process.execPath, [tscPath], {
     stdio: "inherit",
