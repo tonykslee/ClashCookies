@@ -49,6 +49,8 @@ function makeTrackedChecklistRow() {
     metadata: {
       createdByUserId: "user-1",
       createdAtIso: "2026-05-13T00:00:00.000Z",
+      scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=rr|twc",
+      checkedClanTags: [],
       rows,
     },
   };
@@ -165,6 +167,92 @@ describe("fwa checklist tracked messages", () => {
     );
     expect(payload.content).toContain("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)");
     expect(payload.content).toContain("📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)");
+  });
+
+  it("persists checked state when a clan badge is reacted to", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 2,
+            },
+          ],
+          [
+            "twc",
+            {
+              emoji: { id: "222", name: "twc" },
+              count: 1,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["RR"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("persists unchecked state when no clan badge is checked", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 1,
+            },
+          ],
+          [
+            "twc",
+            {
+              emoji: { id: "222", name: "twc" },
+              count: 1,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: [],
+          }),
+        }),
+      }),
+    );
   });
 
   it("wires checklist reaction removals to checklist refresh without touching sync tracking", async () => {
