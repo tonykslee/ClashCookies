@@ -1,28 +1,22 @@
-import type {
-  FwaClanMemberCurrent,
-  FwaTrackedClanWarRosterMemberCurrent,
-  HeatMapRef,
-  TrackedClan,
-} from "@prisma/client";
+import type { HeatMapRef } from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
-import {
-  resolveActualCompoWeight,
-  toPositiveCompoWeight,
-} from "../helper/compoActualWeight";
+import { resolveActualCompoWeight } from "../helper/compoActualWeight";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import {
-  buildCompoWarBucketCounts,
   collapseCompoWarBucketCountsForDisplay,
 } from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
 import {
-  listOpenDeferredWeightsByClanAndPlayerTags,
-  normalizePlayerTag,
-} from "./WeightInputDefermentService";
+  loadCompoActualStateContext,
+  type CompoActualStateClanContext,
+} from "./CompoActualStateService";
 import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import {
+  projectCompoActualStateView,
+  type CompoActualStateProjection,
+} from "../helper/compoActualStateView";
 
 type PlacementCandidate = {
   clanName: string;
@@ -40,17 +34,6 @@ type PlacementCandidate = {
 type PlacementCandidateWithDelta = PlacementCandidate & {
   delta: number;
 };
-
-type TrackedClanRow = Pick<TrackedClan, "tag" | "name">;
-type CurrentMemberRow = Pick<
-  FwaClanMemberCurrent,
-  "clanTag" | "playerTag" | "weight" | "sourceSyncedAt"
->;
-type WarFallbackRow = Pick<
-  FwaTrackedClanWarRosterMemberCurrent,
-  "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
->;
-
 export type CompoPlaceReadResult = {
   content: string;
   embeds: EmbedBuilder[];
@@ -110,6 +93,8 @@ function formatPlacementRows(lines: string[]): string {
 function buildCompoPlaceEmbed(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
+  modeLabel?: string;
+  deltaLabel?: string;
   recommended: PlacementCandidateWithDelta[];
   vacancyList: PlacementCandidate[];
   compositionList: PlacementCandidateWithDelta[];
@@ -135,6 +120,8 @@ function buildCompoPlaceEmbed(params: {
   return new EmbedBuilder()
     .setTitle("Compo Placement Suggestions")
     .setDescription(
+      `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
+        `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
       `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
         `Bucket: **${params.bucket}**\n` +
         params.refreshLine,
@@ -165,6 +152,14 @@ function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
   return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
 }
 
+function buildCompoPlaceModeLabel(): string {
+  return "ACTUAL Auto-Detect";
+}
+
+function buildCompoPlaceDeltaLabel(): string {
+  return "resolved roster vs HeatMapRef";
+}
+
 function buildBucketDeltaByHeader(
   heatMapRef: HeatMapRef,
   counts: ReturnType<typeof collapseCompoWarBucketCountsForDisplay>,
@@ -184,108 +179,57 @@ function buildBucketDeltaByHeader(
   };
 }
 
-function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
-  return clan.name?.trim() || clan.tag;
+function buildBucketDeltaByHeaderFromProjection(
+  projection: CompoActualStateProjection,
+): Record<string, number> {
+  return {
+    "th18-delta": projection.deltaByBucket.TH18 ?? 0,
+    "th17-delta": projection.deltaByBucket.TH17 ?? 0,
+    "th16-delta": projection.deltaByBucket.TH16 ?? 0,
+    "th15-delta": projection.deltaByBucket.TH15 ?? 0,
+    "th14-delta": projection.deltaByBucket.TH14 ?? 0,
+    "<=th13-delta": projection.deltaByBucket["<=TH13"] ?? 0,
+  };
 }
 
 function buildPlacementCandidates(input: {
-  tracked: TrackedClanRow[];
-  membersByClanTag: Map<string, CurrentMemberRow[]>;
-  deferredByClanTag: Map<string, Map<string, number>>;
-  warFallbackByClanAndPlayerTag: Map<string, number>;
-  warFallbackByPlayerTag: Map<string, number>;
+  clans: CompoActualStateClanContext[];
   heatMapRefs: HeatMapRef[];
 }): {
   candidates: PlacementCandidate[];
   latestSourceSyncedAt: Date | null;
 } {
   const candidates: PlacementCandidate[] = [];
-  let latestSourceSyncedAt: Date | null = null;
-
-  for (const clan of input.tracked) {
-    const clanTag = normalizeTag(clan.tag);
-    if (!clanTag) continue;
-
-    const members = input.membersByClanTag.get(clanTag) ?? [];
-    for (const member of members) {
-      if (
-        !latestSourceSyncedAt ||
-        member.sourceSyncedAt.getTime() > latestSourceSyncedAt.getTime()
-      ) {
-        latestSourceSyncedAt = member.sourceSyncedAt;
-      }
+  for (const clan of input.clans) {
+    if (clan.base.resolvedTotalWeight <= 0) {
+      continue;
     }
-
-    if (members.length === 0) {
+    const projection = projectCompoActualStateView({
+      view: "auto",
+      base: clan.base,
+      heatMapRefs: input.heatMapRefs,
+    });
+    const selectedHeatMapRef = projection.selectedHeatMapRef;
+    if (!selectedHeatMapRef) {
       continue;
     }
 
-    const deferredByPlayerTag = input.deferredByClanTag.get(clanTag) ?? new Map();
-    const weightedMembers = members
-      .map((member) => {
-        const playerTag = normalizePlayerTag(member.playerTag);
-        const sameClanWarWeight = playerTag
-          ? input.warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
-          : null;
-        const anyWarWeight = playerTag
-          ? input.warFallbackByPlayerTag.get(playerTag)
-          : null;
-        const deferredWeight = playerTag
-          ? deferredByPlayerTag.get(playerTag)
-          : null;
-        const effectiveWeight = resolveActualCompoWeight({
-          memberWeight: member.weight,
-          deferredWeight,
-          sameClanWarWeight,
-          anyWarWeight,
-        });
-        return {
-          effectiveWeight,
-        };
-      })
-      .filter(
-        (member): member is { effectiveWeight: number } =>
-          member.effectiveWeight !== null,
-      );
-
-    if (weightedMembers.length === 0) {
-      continue;
-    }
-
-    const totalWeight = weightedMembers.reduce(
-      (sum, member) => sum + member.effectiveWeight,
-      0,
-    );
-    const heatMapRef = findHeatMapRefForWeight(input.heatMapRefs, totalWeight);
-    if (!heatMapRef) {
-      continue;
-    }
-
-    const bucketCounts = buildCompoWarBucketCounts(weightedMembers);
-    if (!bucketCounts) {
-      continue;
-    }
-    const displayCounts = collapseCompoWarBucketCountsForDisplay(bucketCounts);
-    const missingCount = members.filter(
-      (member) => toPositiveCompoWeight(member.weight) === null,
-    ).length;
-    const liveMemberCount = Math.max(0, Math.min(50, Math.trunc(members.length)));
-
+    const liveMemberCount = Math.max(0, Math.min(50, Math.trunc(clan.base.memberCount)));
     candidates.push({
-      clanName: buildTrackedClanDisplayName(clan),
-      clanTag,
-      totalWeight,
-      targetBand: heatMapRef.weightMaxInclusive,
-      missingCount,
-      remainingToTarget: heatMapRef.weightMaxInclusive - totalWeight,
-      bucketDeltaByHeader: buildBucketDeltaByHeader(heatMapRef, displayCounts),
+      clanName: normalizePlaceClanDisplayName(clan.clanName),
+      clanTag: clan.clanTag,
+      totalWeight: projection.totalWeight,
+      targetBand: selectedHeatMapRef.weightMaxInclusive,
+      missingCount: clan.base.unresolvedWeightCount,
+      remainingToTarget: selectedHeatMapRef.weightMaxInclusive - projection.totalWeight,
+      bucketDeltaByHeader: buildBucketDeltaByHeaderFromProjection(projection),
       liveMemberCount,
       vacancySlots: Math.max(0, 50 - liveMemberCount),
       hasVacancy: liveMemberCount < 50,
     });
   }
 
-  return { candidates, latestSourceSyncedAt };
+  return { candidates, latestSourceSyncedAt: null };
 }
 
 /** Purpose: derive `/compo place` suggestions from persisted ACTUAL feed-backed current-member state. */
@@ -298,15 +242,8 @@ export class CompoPlaceService {
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
   ): Promise<CompoPlaceReadResult> {
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { tag: true, name: true },
-    });
-    const trackedClanTags = tracked
-      .map((clan) => normalizeTag(clan.tag))
-      .filter((tag): tag is string => Boolean(tag));
-
-    if (trackedClanTags.length === 0) {
+    const context = await loadCompoActualStateContext(guildId ?? null);
+    if (context.trackedClanTags.length === 0) {
       return {
         content: "No tracked clans are configured for ACTUAL placement suggestions.",
         embeds: [],
@@ -319,92 +256,9 @@ export class CompoPlaceService {
       };
     }
 
-    const [members, heatMapRefs] = await Promise.all([
-      prisma.fwaClanMemberCurrent.findMany({
-        where: { clanTag: { in: trackedClanTags } },
-        select: {
-          clanTag: true,
-          playerTag: true,
-          weight: true,
-          sourceSyncedAt: true,
-        },
-        orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
-      }),
-      prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }),
-    ]);
-
-    const membersByClanTag = new Map<string, CurrentMemberRow[]>();
-    const allPlayerTags = new Set<string>();
-    for (const member of members) {
-      const clanTag = normalizeTag(member.clanTag);
-      const playerTag = normalizePlayerTag(member.playerTag);
-      if (!clanTag || !playerTag) continue;
-      allPlayerTags.add(playerTag);
-      const existing = membersByClanTag.get(clanTag) ?? [];
-      existing.push({
-        ...member,
-        clanTag,
-        playerTag,
-      });
-      membersByClanTag.set(clanTag, existing);
-    }
-
-    const [warFallbackMembers, deferredByClanTag] = await Promise.all([
-      allPlayerTags.size === 0
-        ? Promise.resolve([] as WarFallbackRow[])
-        : prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
-            where: {
-              playerTag: { in: [...allPlayerTags] },
-              effectiveWeight: { not: null },
-            },
-            select: {
-              clanTag: true,
-              playerTag: true,
-              effectiveWeight: true,
-              updatedAt: true,
-            },
-            orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
-          }),
-      guildId
-        ? listOpenDeferredWeightsByClanAndPlayerTags({
-            guildId,
-            clanPlayerTags: trackedClanTags.map((clanTag) => ({
-              clanTag,
-              playerTags: (membersByClanTag.get(clanTag) ?? []).map(
-                (member) => member.playerTag,
-              ),
-            })),
-          })
-        : Promise.resolve(new Map<string, Map<string, number>>()),
-    ]);
-
-    const warFallbackByClanAndPlayerTag = new Map<string, number>();
-    const warFallbackByPlayerTag = new Map<string, number>();
-    for (const row of warFallbackMembers) {
-      const clanTag = normalizeTag(row.clanTag);
-      const playerTag = normalizePlayerTag(row.playerTag);
-      const effectiveWeight = toPositiveCompoWeight(row.effectiveWeight);
-      if (!clanTag || !playerTag || effectiveWeight === null) {
-        continue;
-      }
-      const clanAndPlayerTagKey = `${clanTag}|${playerTag}`;
-      if (!warFallbackByClanAndPlayerTag.has(clanAndPlayerTagKey)) {
-        warFallbackByClanAndPlayerTag.set(clanAndPlayerTagKey, effectiveWeight);
-      }
-      if (!warFallbackByPlayerTag.has(playerTag)) {
-        warFallbackByPlayerTag.set(playerTag, effectiveWeight);
-      }
-    }
-
-    const { candidates, latestSourceSyncedAt } = buildPlacementCandidates({
-      tracked,
-      membersByClanTag,
-      deferredByClanTag,
-      warFallbackByClanAndPlayerTag,
-      warFallbackByPlayerTag,
-      heatMapRefs,
+    const { candidates } = buildPlacementCandidates({
+      clans: context.clans,
+      heatMapRefs: context.heatMapRefs,
     });
 
     if (candidates.length === 0) {
@@ -412,7 +266,7 @@ export class CompoPlaceService {
         content:
           "No eligible placement data found in persisted ACTUAL current-member state.",
         embeds: [],
-        trackedClanTags,
+        trackedClanTags: context.trackedClanTags,
         eligibleClanTags: [],
         candidateCount: 0,
         recommendedCount: 0,
@@ -459,10 +313,12 @@ export class CompoPlaceService {
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
-          refreshLine: buildPersistedRefreshLine(latestSourceSyncedAt),
+          refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
+          modeLabel: buildCompoPlaceModeLabel(),
+          deltaLabel: buildCompoPlaceDeltaLabel(),
         }),
       ],
-      trackedClanTags,
+      trackedClanTags: context.trackedClanTags,
       eligibleClanTags: candidates.map((candidate) => candidate.clanTag),
       candidateCount: candidates.length,
       recommendedCount: recommended.length,
