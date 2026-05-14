@@ -500,6 +500,20 @@ function buildClanListNote(): string {
   return "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.";
 }
 
+function buildListDescription(input: {
+  scope: FillerListScope;
+  targetUserId?: string | null;
+  pageContent: string;
+}): string {
+  const parts = input.targetUserId
+    ? [buildTargetUserLine(input.targetUserId), input.pageContent]
+    : [input.pageContent];
+  if (input.scope === "clan") {
+    parts.push(buildClanListNote());
+  }
+  return parts.filter((part) => part.length > 0).join("\n\n");
+}
+
 function buildPagerRow(
   prefix: string,
   page: number,
@@ -782,16 +796,13 @@ async function renderListReply(input: {
   const totalPages = pages.length;
   let page = 0;
   const prefix = `fillers:list:${input.interaction.id}`;
-  const descriptionParts = input.targetUserId
-    ? [buildTargetUserLine(input.targetUserId), pages[page] ?? ""]
-    : [pages[page] ?? ""];
-  if (input.scope === "clan") {
-    descriptionParts.push(buildClanListNote());
-  }
-
   const embed = buildListEmbed(
     input.title,
-    descriptionParts.filter((part) => part.length > 0).join("\n\n"),
+    buildListDescription({
+      scope: input.scope,
+      targetUserId: input.targetUserId,
+      pageContent: pages[page] ?? "",
+    }),
     page,
     totalPages,
   );
@@ -823,12 +834,11 @@ async function renderListReply(input: {
         embeds: [
           buildListEmbed(
             input.title,
-            [
-              ...(input.targetUserId ? [buildTargetUserLine(input.targetUserId)] : []),
-              pages[page] ?? "",
-            ]
-              .filter((part) => part.length > 0)
-              .join("\n\n"),
+            buildListDescription({
+              scope: input.scope,
+              targetUserId: input.targetUserId,
+              pageContent: pages[page] ?? "",
+            }),
             page,
             totalPages,
           ),
