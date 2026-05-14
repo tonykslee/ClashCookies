@@ -90,11 +90,14 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiId: string | null;
   badgeEmojiName: string | null;
   badgeEmojiInline: string;
+  contextKey?: string | null;
 };
 
 export type FwaMatchChecklistTrackedMetadata = {
   createdByUserId: string;
   createdAtIso: string;
+  scopeKey?: string | null;
+  checkedClanTags?: string[];
   rows: FwaMatchChecklistTrackedRow[];
 };
 
@@ -222,6 +225,85 @@ function normalizeTagBare(tag: string): string {
 function normalizeChecklistClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return normalized || normalizeTagBare(tag);
+}
+
+/** Purpose: build a stable identity fragment for a checklist row when a live match/sync context exists. */
+export function buildFwaMatchChecklistRowContextKey(params: {
+  clanTag: string;
+  warId: string | number | null | undefined;
+  opponentTag: string | null | undefined;
+}): string | null {
+  const clanTag = normalizeChecklistClanTag(params.clanTag);
+  const warIdText =
+    typeof params.warId === "number"
+      ? Number.isFinite(params.warId)
+        ? String(Math.trunc(params.warId))
+        : ""
+      : String(params.warId ?? "").trim();
+  const normalizedWarId =
+    warIdText &&
+    Number.isFinite(Number(warIdText)) &&
+    Math.trunc(Number(warIdText)) > 0
+      ? String(Math.trunc(Number(warIdText)))
+      : "";
+  const opponentTag = normalizeChecklistClanTag(String(params.opponentTag ?? ""));
+  if (!clanTag || !normalizedWarId || !opponentTag) return null;
+  return `clan=${clanTag}|war=${normalizedWarId}|opponent=${opponentTag}`;
+}
+
+/** Purpose: build the stable persistence scope for one checklist render. */
+export function buildFwaMatchChecklistScopeKey(params: {
+  guildId: string;
+  clanTag: string | null;
+  rows: Iterable<FwaMatchChecklistTrackedRow>;
+}): string {
+  const guildId = String(params.guildId ?? "").trim() || "unknown";
+  const clanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+  const rowTokens = [...params.rows]
+    .map((row) =>
+      String(row.contextKey ?? row.compactCopyLine ?? row.clanTag ?? "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter((token) => Boolean(token))
+    .sort();
+  return [
+    "fwa_match_checklist",
+    `guild=${guildId}`,
+    `clan=${clanTag || "all"}`,
+    `rows=${rowTokens.join("|") || "none"}`,
+  ].join("|");
+}
+
+/** Purpose: read the most recent checklist state for a matching guild/clan/scope combination. */
+export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
+  guildId: string;
+  clanTag: string | null;
+  scopeKey: string | null;
+}): Promise<string[]> {
+  const scopeKey = String(params.scopeKey ?? "").trim();
+  if (!scopeKey) return [];
+  const clanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+  const rows = await prisma.trackedMessage.findMany({
+    where: {
+      guildId: String(params.guildId ?? "").trim(),
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      ...(clanTag
+        ? {
+            OR: [{ clanTag }, { clanTag: `#${clanTag}` }],
+          }
+        : {}),
+    },
+    orderBy: [{ createdAt: "desc" }],
+    select: { metadata: true },
+  });
+  for (const row of rows) {
+    const metadata = parseFwaMatchChecklistMetadata(row.metadata);
+    if (!metadata || metadata.scopeKey !== scopeKey) continue;
+    return metadata.checkedClanTags ?? [];
+  }
+  return [];
 }
 
 export function parseFwaMatchChecklistBadgeInline(input: string | null | undefined): {
@@ -416,6 +498,7 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiId: badgeEmojiId || null,
     badgeEmojiName: badgeEmojiName || null,
     badgeEmojiInline: badgeEmojiInline || "",
+    contextKey: String(value.contextKey ?? "").trim() || null,
   };
 }
 
@@ -426,6 +509,16 @@ export function parseFwaMatchChecklistMetadata(
   const createdByUserId = String(value.createdByUserId ?? "").trim();
   const createdAtIso = String(value.createdAtIso ?? "").trim();
   if (!createdByUserId || !createdAtIso) return null;
+  const scopeKey = String(value.scopeKey ?? "").trim();
+  const checkedClanTags = Array.isArray(value.checkedClanTags)
+    ? [
+        ...new Set(
+          value.checkedClanTags
+            .map((clanTag) => normalizeChecklistClanTag(String(clanTag ?? "")))
+            .filter((clanTag): clanTag is string => Boolean(clanTag)),
+        ),
+      ]
+    : [];
   const rows = value.rows
     .map((row) => parseFwaMatchChecklistRow(row))
     .filter(
@@ -436,6 +529,8 @@ export function parseFwaMatchChecklistMetadata(
   return {
     createdByUserId,
     createdAtIso,
+    scopeKey: scopeKey || null,
+    checkedClanTags,
     rows,
   };
 }
@@ -1192,6 +1287,18 @@ export class TrackedMessageService {
     await message.edit({
       content,
       allowedMentions: { parse: [] },
+    });
+    await prisma.trackedMessage.update({
+      where: { messageId: message.id },
+      data: {
+        metadata: {
+          createdByUserId: metadata.createdByUserId,
+          createdAtIso: metadata.createdAtIso,
+          scopeKey: metadata.scopeKey ?? null,
+          checkedClanTags: [...reactedTags],
+          rows: metadata.rows.map((row) => ({ ...row })),
+        } as any,
+      },
     });
     return true;
   }

@@ -1,15 +1,30 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+const prismaMock = vi.hoisted(() => ({
+  trackedMessage: {
+    findMany: vi.fn(),
+  },
+}));
 
 vi.mock("../src/prisma", () => ({
-  prisma: {},
+  prisma: prismaMock,
 }));
 
 import {
+  buildFwaMatchChecklistRowContextKey,
+  buildFwaMatchChecklistScopeKey,
+  findLatestFwaMatchChecklistCheckedClanTags,
   parseFwaBaseSwapMetadata,
+  parseFwaMatchChecklistMetadata,
   parseSyncTimeMetadata,
 } from "../src/services/TrackedMessageService";
 
 describe("tracked message metadata parsing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+  });
+
   it("parses fwa base-swap metadata and normalizes optional fields", () => {
     const parsed = parseFwaBaseSwapMetadata({
       clanName: " Rocky Road ",
@@ -95,6 +110,128 @@ describe("tracked message metadata parsing", () => {
         },
       ],
     });
+  });
+
+  it("parses checklist metadata with persisted scope and checked clan tags", () => {
+    const parsed = parseFwaMatchChecklistMetadata({
+      createdByUserId: " user-1 ",
+      createdAtIso: "2026-05-13T00:00:00.000Z",
+      scopeKey: " scope-1 ",
+      checkedClanTags: ["#RR", " rr ", "#TWC"],
+      rows: [
+        {
+          clanTag: "RR",
+          compactCopyLine: "row-1",
+          badgeEmojiInline: "<:rr:111>",
+          contextKey: "ctx-1",
+        },
+      ],
+    });
+
+    expect(parsed).toEqual({
+      createdByUserId: "user-1",
+      createdAtIso: "2026-05-13T00:00:00.000Z",
+      scopeKey: "scope-1",
+      checkedClanTags: ["RR", "TWC"],
+      rows: [
+        {
+          clanTag: "RR",
+          compactCopyLine: "row-1",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "<:rr:111>",
+          contextKey: "ctx-1",
+        },
+      ],
+    });
+  });
+
+  it("builds scoped checklist keys and loads only matching persisted state", async () => {
+    const contextA = buildFwaMatchChecklistRowContextKey({
+      clanTag: "RR",
+      warId: "1234",
+      opponentTag: "#OPP1",
+    });
+    const contextB = buildFwaMatchChecklistRowContextKey({
+      clanTag: "TWC",
+      warId: "5678",
+      opponentTag: "#OPP2",
+    });
+    const rowsA = [
+      {
+        clanTag: "RR",
+        compactCopyLine: "row-rr",
+        badgeEmojiId: null,
+        badgeEmojiName: null,
+        badgeEmojiInline: "<:rr:111>",
+        contextKey: contextA,
+      },
+      {
+        clanTag: "TWC",
+        compactCopyLine: "row-twc",
+        badgeEmojiId: null,
+        badgeEmojiName: null,
+        badgeEmojiInline: "<:twc:222>",
+        contextKey: contextB,
+      },
+    ];
+    const scopeKey = buildFwaMatchChecklistScopeKey({
+      guildId: "guild-1",
+      clanTag: null,
+      rows: rowsA,
+    });
+
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        metadata: {
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T00:00:00.000Z",
+          scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=other",
+          checkedClanTags: ["RR"],
+          rows: rowsA,
+        },
+      },
+      {
+        metadata: {
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-12T00:00:00.000Z",
+          scopeKey,
+          checkedClanTags: ["RR", "TWC"],
+          rows: rowsA,
+        },
+      },
+      {
+        metadata: {
+          createdByUserId: "user-2",
+          createdAtIso: "2026-05-11T00:00:00.000Z",
+          scopeKey,
+          checkedClanTags: ["TWC"],
+          rows: rowsA,
+        },
+      },
+    ]);
+
+    await expect(
+      findLatestFwaMatchChecklistCheckedClanTags({
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey,
+      }),
+    ).resolves.toEqual(["RR", "TWC"]);
+    await expect(
+      findLatestFwaMatchChecklistCheckedClanTags({
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=missing",
+      }),
+    ).resolves.toEqual([]);
+    expect(prismaMock.trackedMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+        }),
+      }),
+    );
   });
 
   it("defaults fwa entry section to war_bases and nulls blank optional values", () => {
