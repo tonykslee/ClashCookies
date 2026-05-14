@@ -1074,7 +1074,7 @@ async function renderEditorReply(input: {
       const parts = component.customId.split(":");
       const pageIndex = Number(parts[4] ?? "0");
       const bucketIndex = Number(parts[6] ?? "0");
-      const pageRows = sortedRows.slice(pageIndex * FILLERS_PAGE_SIZE, (pageIndex + 1) * FILLERS_PAGE_SIZE);
+      const pageRows = pages[pageIndex] ?? [];
       const bucket = chunkRows(pageRows, FILLERS_MENU_SIZE)[bucketIndex] ?? [];
       const bucketTagSet = new Set(bucket.map((row) => row.tag));
       const selectedValues = new Set(component.values.map((value) => normalizePlayerTag(value)).filter(Boolean));
