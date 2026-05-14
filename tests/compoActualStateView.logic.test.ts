@@ -146,7 +146,8 @@ describe("projectCompoActualStateView", () => {
     expect(result.missingWeights).toBe(2);
     expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(500001);
     expect(result.displayCounts.TH18).toBe(3);
-    expect(result.deltaByBucket.TH18).toBe(0);
+    // Deltas now reflect resolved counts against the selected projected band.
+    expect(result.deltaByBucket.TH18).toBe(-2);
   });
 
   it("uses deterministic low-bucket overflow when Auto-Detect has more missing slots than deficits", () => {
