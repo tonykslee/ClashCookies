@@ -50,6 +50,7 @@ type ReplaceCandidate = {
   playerTag: string;
   playerName: string;
   townHall: number | null;
+  clanRole: "leader" | "coLeader" | null;
   weight: number;
   filler: boolean;
   daysInactive: number | null;
@@ -60,7 +61,7 @@ type ReplaceCandidate = {
 };
 
 const REPLACE_FIELD_VALUE_LIMIT = 1024;
-const REPLACE_EMBED_TEXT_SAFE_LIMIT = 5900;
+const REPLACE_EMBED_TEXT_SAFE_LIMIT = 5200;
 
 export type CompoPlaceReadResult = {
   content: string;
@@ -168,6 +169,16 @@ function buildReplaceClanPrefix(input: {
   const shortName = clanTag ? input.shortNameByClanTag.get(clanTag)?.trim() ?? "" : "";
   const clanName = normalizePlaceClanDisplayName(String(input.clanName ?? ""));
   return shortName || clanName || input.clanTag;
+}
+
+function normalizeClanMemberRole(input: unknown): "leader" | "coLeader" | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .replace(/[\s_-]+/g, "")
+    .toLowerCase();
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader" || normalized === "coleadership") return "coLeader";
+  return null;
 }
 
 function truncateReplaceRow(line: string, limit = REPLACE_FIELD_VALUE_LIMIT): string {
@@ -373,6 +384,7 @@ async function buildReplaceRows(input: {
           normalizeTownHallLevel(member.townHall) ??
           townHallByTag.get(playerTag) ??
           null,
+        clanRole: normalizeClanMemberRole(playerCurrentByTag.get(playerTag)?.role ?? null),
         weight: member.weight,
         filler,
         daysInactive,
@@ -417,13 +429,15 @@ async function buildReplaceRows(input: {
     const mention = candidate.linkedDiscordUserId
       ? ` <@${candidate.linkedDiscordUserId}>`
       : "";
+    const crown =
+      candidate.filler && candidate.clanRole ? ":crown: " : "";
     return `${clanPrefix} ${renderTownHallIcon(
       candidate.townHall,
       input.townHallEmojiByLevel,
     )} ${candidate.weight.toLocaleString("en-US")} ${reason} - ${buildPlayerProfileMarkdownLink(
       candidate.playerName,
       candidate.playerTag,
-    )} \`${candidate.playerTag}\`${mention}`;
+    )} ${crown}\`${candidate.playerTag}\`${mention}`;
   });
 }
 
