@@ -205,8 +205,8 @@ function buildActualViewSummaryLines(
     contentLines.push("Missing = unresolved weights plus WAR fallback-only members.");
     contentLines.push(`Missing-to-50 roster fill info: ${missingTo50Count}`);
   } else if (view === "auto") {
-    contentLines.push("Resolved roster weight is shown separately from the projected 50-player total.");
-    contentLines.push("Selected band source: projected total.");
+    contentLines.push("Resolved roster weight is shown separately from the planning total shown for display.");
+    contentLines.push("Selected band source: resolved-count best fit.");
     contentLines.push("Deltas: resolved roster vs HeatMapRef.");
     contentLines.push("Resolved roster deficits remain available in Raw Data.");
     contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
@@ -646,7 +646,7 @@ export class CompoActualStateService {
           : [
               "Clan",
               "Resolved Total",
-              "Projected Total",
+              "Planning Total",
               "Missing",
               "DF",
               "Players",

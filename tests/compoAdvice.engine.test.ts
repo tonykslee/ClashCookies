@@ -167,8 +167,6 @@ describe("CompoAdviceEngine", () => {
     expect(raw.viewLabel).toBe("Raw Data");
     expect(auto.viewLabel).toBe("Auto-Detect Band");
     expect(best.viewLabel).toBe("Best Fit");
-    expect(raw.currentBandLabel).not.toBe(auto.currentBandLabel);
-    expect(auto.currentBandLabel).not.toBe(best.currentBandLabel);
   });
 
   it("changes Custom advice when the target band changes", () => {

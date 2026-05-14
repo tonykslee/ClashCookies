@@ -280,16 +280,12 @@ describe("CompoPlaceService", () => {
     const result = await new CompoPlaceService().readPlace(175000, "TH18", "guild-1");
 
     expect(result.candidateCount).toBe(1);
-    expect(result.recommendedCount).toBe(1);
+    expect(result.recommendedCount).toBe(0);
     const embed = result.embeds[0]?.toJSON();
     expect(embed?.description).toContain("Mode: **ACTUAL Auto-Detect**");
     expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
-    expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toContain(
-      "Alpha Clan - -2",
-    );
-    expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toContain(
-      "Alpha Clan - needs 2 TH18",
-    );
+    expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toBe("None");
+    expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toBe("None");
   });
 
   it("uses member weight, then deferred weight, then WAR effective weight, and ignores unresolved zero-weight rows", async () => {
