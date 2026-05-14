@@ -56,7 +56,16 @@ export default (client: Client): void => {
       }
 
       if ((tracked.featureType as string) === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) {
-        await trackedMessageService.refreshFwaMatchChecklistMessage(fullReaction.message);
+        await trackedMessageService.refreshFwaMatchChecklistMessage(fullReaction.message, {
+          kind: "remove",
+          reaction: {
+            emoji: {
+              id: fullReaction.emoji.id,
+              name: fullReaction.emoji.name,
+            },
+            count: fullReaction.count ?? null,
+          },
+        });
       }
     } catch (err) {
       console.error(`messageReactionRemove failed: ${formatError(err)}`);
