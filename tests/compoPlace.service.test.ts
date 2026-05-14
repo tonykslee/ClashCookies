@@ -43,6 +43,7 @@ vi.mock("../src/prisma", () => ({
 import {
   buildBucketDeltaByHeaderForTest,
   CompoPlaceService,
+  buildCompoPlaceEmbedsForTest,
   resolvePlacementWeightForTest,
 } from "../src/services/CompoPlaceService";
 
@@ -107,6 +108,20 @@ function validPlayerTag(index: number): string {
     value = Math.floor(value / 4);
   } while (value > 0);
   return `#P${suffix.padStart(6, "0")}`;
+}
+
+function estimateEmbedTextLength(embed: any): number {
+  let total = 0;
+  if (typeof embed?.title === "string") total += embed.title.length;
+  if (typeof embed?.description === "string") total += embed.description.length;
+  if (typeof embed?.footer?.text === "string") total += embed.footer.text.length;
+  if (Array.isArray(embed?.fields)) {
+    for (const field of embed.fields) {
+      total += String(field?.name ?? "").length;
+      total += String(field?.value ?? "").length;
+    }
+  }
+  return total;
 }
 
 function makeCurrentMembers(input: {
@@ -325,7 +340,7 @@ describe("CompoPlaceService", () => {
         playerName: "Filler Alpha",
         weight: 145000,
         sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: 15,
+        townHall: null,
       },
       {
         clanTag: "#BBB222",
@@ -342,6 +357,12 @@ describe("CompoPlaceService", () => {
     prismaMock.fillerAccount.findMany.mockResolvedValue([
       { playerTag: "#P000002" },
       { playerTag: "#P000010" },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#P000002",
+        townHall: 16,
+      },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([
       { tag: "#P000002", lastSeenAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000) },
@@ -391,13 +412,131 @@ describe("CompoPlaceService", () => {
       145000,
       "TH15",
       "guild-1",
+      new Map([
+        [15, "<:th15:12345678901234567>"],
+        [16, "<:th16:12345678901234567>"],
+      ]),
+    );
+
+    const embed = result.embeds[0]?.toJSON();
+    const replaceField = embed?.fields?.find((field) => String(field.name).startsWith("Replace"));
+    expect(replaceField?.name).toBe("Replace 1/1");
+    expect(replaceField?.value).toContain("ALP <:th16:12345678901234567> 145,000 :man_standing:");
+  });
+
+  it("paginates Replace rows without cutting a player line mid-row", async () => {
+    const replaceRows = Array.from({ length: 70 }, (_, index) => {
+      const suffix = String(index + 1).padStart(6, "0");
+      const tag = `#P${suffix}`;
+      return `ALP <:th15:12345678901234567> 145,000 :man_standing: :zzz: 8d | :x: 1 - [Player ${
+        index + 1
+      }](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=%23P${suffix}>) \`${tag}\``;
+    });
+
+    const embeds = buildCompoPlaceEmbedsForTest({
+      inputWeight: 145000,
+      bucket: "TH15",
+      recommended: [],
+      vacancyList: [],
+      compositionList: [],
+      replaceRows,
+      refreshLine: "RAW Data last refreshed: <t:1744302600:F>",
+      modeLabel: "ACTUAL Auto-Detect",
+      deltaLabel: "resolved roster vs HeatMapRef",
+    });
+
+    const replaceFields = embeds.flatMap((embed) => {
+      const json = embed.toJSON();
+      return (json.fields ?? [])
+        .filter((field) => String(field.name).startsWith("Replace"))
+        .map((field) => ({
+          name: String(field.name),
+          value: String(field.value),
+        }));
+    });
+
+    expect(embeds.length).toBeGreaterThan(1);
+    expect(replaceFields.length).toBeGreaterThan(1);
+    expect(replaceFields.length).toBeGreaterThan(embeds.length);
+    expect(
+      embeds[0]?.toJSON().fields?.filter((field) => String(field.name).startsWith("Replace"))?.length ?? 0,
+    ).toBeGreaterThan(1);
+    expect(embeds.slice(1).every((embed) => {
+      const json = embed.toJSON();
+      return (json.fields ?? []).every((field) => String(field.name).startsWith("Replace"));
+    })).toBe(true);
+
+    for (const field of replaceFields) {
+      expect(field.value.length).toBeLessThanOrEqual(1024);
+      for (const line of field.value.split("\n")) {
+        expect(line).toContain("ALP <:th15:12345678901234567> 145,000 ");
+        expect(line).toContain(" - [");
+        expect(line).toContain("](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=");
+        expect(line).toMatch(/`#P[0-9A-Z]+`$/);
+      }
+    }
+
+    for (const embed of embeds) {
+      expect(estimateEmbedTextLength(embed.toJSON())).toBeLessThanOrEqual(6000);
+    }
+  });
+
+  it("falls back to the unknown Town Hall icon when no TH source exists", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "Unknown Town Hall",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
+        townHall: null,
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000002" }]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
+      results: [
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P000002",
+          playerName: "Unknown Town Hall",
+          townHall: null,
+          missedWars: 1,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [],
+        } as any,
+      ],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const result = await new CompoPlaceService().readPlace(
+      145000,
+      "TH15",
+      "guild-1",
       new Map([[15, "<:th15:12345678901234567>"]]),
     );
 
     const embed = result.embeds[0]?.toJSON();
-    const replaceValue = embed?.fields?.find((field) => field.name === "Replace")?.value ?? "";
-
-    expect(replaceValue).toContain("ALP <:th15:12345678901234567> 145,000 :man_standing:");
+    const replaceValue = embed?.fields?.find((field) => String(field.name).startsWith("Replace"))?.value ?? "";
+    expect(replaceValue).toContain("\u2754");
   });
 
   it("uses member weight, then deferred weight, then WAR effective weight, and ignores unresolved zero-weight rows", async () => {
