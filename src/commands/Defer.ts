@@ -11,6 +11,7 @@ import {
   addWeightInputDefermentWithPlayerProfile,
   buildDeferScopeKey,
   clearOpenWeightInputDeferments,
+  checkOpenWeightInputDefermentsForClan,
   formatPendingAge,
   listOpenWeightInputDeferments,
   normalizePlayerTag,
@@ -85,6 +86,20 @@ export const Defer: Command = {
           description: "Player tag (with or without #)",
           type: ApplicationCommandOptionType.String,
           required: true,
+        },
+      ],
+    },
+    {
+      name: "check",
+      description: "Check open deferred tasks against current FWAStats clan weights",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "clan",
+          description: "Tracked clan to check current membership against FWAStats weights",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
         },
       ],
     },
@@ -250,6 +265,41 @@ export const Defer: Command = {
       }
       await interaction.editReply(
         `removed: ${playerTag} resolved in ${renderScopeLabel(result.scope)}.`
+      );
+      return;
+    }
+
+    if (subcommand === "check") {
+      const requestedClan = interaction.options.getString("clan", true);
+      const normalizedClanTag = normalizeTag(requestedClan);
+      if (!normalizedClanTag) {
+        await interaction.editReply("invalid_clan: use a tracked clan tag with or without #.");
+        return;
+      }
+      const trackedClan = await prisma.trackedClan.findFirst({
+        where: {
+          OR: [
+            { tag: { equals: normalizedClanTag, mode: "insensitive" } },
+            { tag: { equals: normalizedClanTag.replace(/^#/, ""), mode: "insensitive" } },
+          ],
+        },
+        select: { tag: true },
+      });
+      if (!trackedClan) {
+        await interaction.editReply(`Clan ${normalizedClanTag} is not in tracked clans.`);
+        return;
+      }
+      const resolvedClanTag = normalizeTag(trackedClan.tag);
+      const result = await checkOpenWeightInputDefermentsForClan({
+        guildId,
+        clanTag: resolvedClanTag,
+      });
+      await interaction.editReply(
+        [
+          `checked_deferments: ${result.checkedCount} in ${resolvedClanTag}`,
+          `resolved_deferments: ${result.resolvedCount}`,
+          `still_open_missing_weight: ${result.stillOpenMissingWeightCount}`,
+        ].join("\n"),
       );
       return;
     }

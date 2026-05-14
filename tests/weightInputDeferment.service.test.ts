@@ -34,6 +34,7 @@ vi.mock("../src/prisma", () => ({
 import {
   addWeightInputDefermentWithPlayerProfile,
   buildDeferScopeKey,
+  checkOpenWeightInputDefermentsForClan,
   getDueDefermentStagesForTest,
   listOpenWeightInputDeferments,
   normalizePlayerTag,
@@ -255,6 +256,140 @@ describe("WeightInputDefermentService list filtering", () => {
     expect(result.rows.map((row) => row.playerTag)).toEqual(["#PYLQ0289", "#QGRJ2222"]);
     expect(result.rows[0].scopeKey).toBe(buildDeferScopeKey("guild-1", "#AAA111"));
     expect(result.rows[1].scopeKey).toBe(buildDeferScopeKey("guild-1", null));
+  });
+});
+
+describe("WeightInputDefermentService clan check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.updateMany.mockResolvedValue({ count: 0 });
+  });
+
+  it("resolves matching clan and guild-scoped deferments when current weight is positive", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#PYLQ0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+      {
+        clanTag: "#AAA111",
+        playerTag: "#QGRJ2222",
+        weight: 0,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        id: "row-1",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#PYLQ0289",
+        deferredWeight: 140000,
+        createdAt: new Date("2026-04-02T10:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-2",
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: buildDeferScopeKey("guild-1", null),
+        playerTag: "#PYLQ0289",
+        deferredWeight: 140000,
+        createdAt: new Date("2026-04-02T09:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-3",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#QGRJ2222",
+        deferredWeight: 140000,
+        createdAt: new Date("2026-04-02T08:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-4",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#ZZZ9999",
+        deferredWeight: 140000,
+        createdAt: new Date("2026-04-02T07:00:00.000Z"),
+        status: "open",
+      },
+    ]);
+    prismaMock.weightInputDeferment.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await checkOpenWeightInputDefermentsForClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(result).toEqual({
+      clanTag: "#AAA111",
+      checkedCount: 3,
+      resolvedCount: 2,
+      stillOpenMissingWeightCount: 1,
+    });
+    expect(prismaMock.weightInputDeferment.updateMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.weightInputDeferment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "row-1",
+          status: "open",
+        }),
+      }),
+    );
+    expect(prismaMock.weightInputDeferment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "row-2",
+          status: "open",
+        }),
+      }),
+    );
+  });
+
+  it("leaves matching deferments open when current weight is missing or zero", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        playerTag: "#PYLQ0289",
+        weight: null,
+        sourceSyncedAt: new Date("2026-04-02T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        id: "row-1",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#PYLQ0289",
+        deferredWeight: 140000,
+        createdAt: new Date("2026-04-02T10:00:00.000Z"),
+        status: "open",
+      },
+    ]);
+
+    const result = await checkOpenWeightInputDefermentsForClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(result).toEqual({
+      clanTag: "#AAA111",
+      checkedCount: 1,
+      resolvedCount: 0,
+      stillOpenMissingWeightCount: 1,
+    });
+    expect(prismaMock.weightInputDeferment.updateMany).not.toHaveBeenCalled();
   });
 });
 
