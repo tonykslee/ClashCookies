@@ -682,6 +682,109 @@ describe("/fillers command", () => {
     expect(fillerState.size).toBe(0);
   });
 
+  it("preserves repeated set selections across later sessions and updates clan lists immediately", async () => {
+    const clanTag = "#PQL0289";
+    const clanName = "Alpha Clan";
+    const playerNameByTag = new Map<string, string>();
+
+    for (let index = 0; index < 59; index += 1) {
+      const tag = makeValidPlayerTag(index);
+      const playerName = `Teewizz Candidate ${String(index + 1).padStart(2, "0")} With An Exceptionally Long Display Name For Markdown Rendering`;
+      playerNameByTag.set(tag, playerName);
+      seedAccount({
+        playerTag: tag,
+        discordUserId: "222222222222222222",
+        playerName,
+        townHall: 18,
+        clanTag,
+        clanName,
+        weight: 12000 - index * 17,
+      });
+    }
+
+    const firstSession = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+    await runFillers(firstSession);
+
+    const firstPayload = getLastEditPayload(firstSession);
+    const firstComponents = getComponentJson(firstPayload);
+    const firstMenu = firstComponents[0].components[0];
+    const firstSelection = [
+      String(firstMenu.options[0].value),
+      String(firstMenu.options[1].value),
+    ];
+
+    await firstSession.__collectorHandlers.collect(
+      makeSelectInteraction({
+        customId: firstMenu.custom_id ?? firstMenu.customId,
+        values: firstSelection,
+      }),
+    );
+
+    const firstClanList = makeInteraction({
+      subcommand: "list",
+      clan: clanTag,
+    });
+    await runFillers(firstClanList);
+    const firstClanEmbed = getEmbedJson(getLastEditPayload(firstClanList));
+    const firstClanDescription = String(firstClanEmbed.description);
+    expect(firstClanDescription).toContain(String(playerNameByTag.get(firstSelection[0]) ?? ""));
+    expect(firstClanDescription).toContain(String(playerNameByTag.get(firstSelection[1]) ?? ""));
+
+    const secondSession = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+    await runFillers(secondSession);
+
+    const secondPayload = getLastEditPayload(secondSession);
+    const secondComponents = getComponentJson(secondPayload);
+    const secondMenu = secondComponents[0].components[0];
+    expect(secondMenu.options[0].default).toBe(true);
+    expect(secondMenu.options[1].default).toBe(true);
+
+    const nextButton = secondComponents.at(-1)?.components?.find((component: any) =>
+      String(component.custom_id ?? component.customId ?? "").endsWith(":next"),
+    );
+    expect(nextButton).toBeTruthy();
+
+    const nextInteraction = makeButtonInteraction({
+      customId: nextButton.custom_id ?? nextButton.customId,
+    });
+    await secondSession.__collectorHandlers.collect(nextInteraction);
+
+    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextComponents = getComponentJson(nextPayload);
+    const nextMenu = nextComponents[0].components[0];
+    const secondSelection = [
+      String(nextMenu.options[0].value),
+      String(nextMenu.options[1].value),
+    ].filter((tag) => !firstSelection.includes(tag));
+
+    expect(secondSelection).toHaveLength(2);
+
+    await secondSession.__collectorHandlers.collect(
+      makeSelectInteraction({
+        customId: nextMenu.custom_id ?? nextMenu.customId,
+        values: secondSelection,
+      }),
+    );
+
+    const secondClanList = makeInteraction({
+      subcommand: "list",
+      clan: clanTag,
+    });
+    await runFillers(secondClanList);
+    const secondClanEmbed = getEmbedJson(getLastEditPayload(secondClanList));
+    const secondClanDescription = String(secondClanEmbed.description);
+    for (const tag of [...firstSelection, ...secondSelection]) {
+      expect(secondClanDescription).toContain(String(playerNameByTag.get(tag) ?? ""));
+    }
+    expect(secondClanDescription).not.toContain("No filler accounts are currently in clan");
+  });
+
   it("lists filler accounts by guild, user, and clan using persisted filler state only", async () => {
     seedAccount({
       playerTag: "#P0000",
