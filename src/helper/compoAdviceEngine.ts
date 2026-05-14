@@ -892,6 +892,9 @@ export function buildCompoAdviceContentLines(input: {
     lines.push("Projected planning basis: projected 50-player roster");
   }
   lines.push(`Unresolved weights: ${input.summary.currentProjection.unresolvedWeightCount}`);
+  if (input.summary.mode === "actual") {
+    lines.push(`Deferred: ${input.summary.currentProjection.deferredWeightCount}`);
+  }
   lines.push(`Missing-to-50 fills: ${input.summary.currentProjection.missingTo50Count}`);
   lines.push(
     `Displayed missing weights: ${input.summary.currentProjection.missingWeights}${

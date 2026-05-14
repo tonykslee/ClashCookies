@@ -144,6 +144,7 @@ function buildActualStateRow(input: {
     row.push(
       input.base.resolvedTotalWeight.toLocaleString("en-US"),
       `${input.projection.unresolvedWeightCount}`,
+      `${input.projection.deferredWeightCount}`,
       `${input.projection.memberCount}`,
       `${input.projection.displayCounts.TH18}`,
       `${input.projection.displayCounts.TH17}`,
@@ -159,6 +160,7 @@ function buildActualStateRow(input: {
   row.push(input.projection.totalWeight.toLocaleString("en-US"));
   row.push(
     `${input.projection.missingWeights}`,
+    `${input.projection.deferredWeightCount}`,
     `${input.projection.memberCount}`,
     input.projection.deltaByBucket.TH18 !== null
       ? `${input.projection.deltaByBucket.TH18}`
@@ -494,6 +496,7 @@ export async function loadCompoActualStateContext(
     };
     let totalResolvedWeight = 0;
     let unresolvedWeightCount = 0;
+    let deferredWeightCount = 0;
     const members: CompoActualStateMemberContext[] = [];
 
     for (const member of clanMembers) {
@@ -519,6 +522,9 @@ export async function loadCompoActualStateContext(
           ? Math.trunc(Number(member.townHall))
           : null;
       const isMissing = resolvedWeightSource === "war" || resolvedWeight === null;
+      if (resolvedWeightSource === "defer") {
+        deferredWeightCount += 1;
+      }
       members.push({
         clanTag,
         playerTag,
@@ -547,6 +553,7 @@ export async function loadCompoActualStateContext(
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
+        deferredWeightCount,
         memberCount: clanMembers.length,
         bucketCounts,
       },
@@ -635,12 +642,13 @@ export class CompoActualStateService {
     return {
       stateRows: [
         view === "raw"
-          ? ["Clan", "Resolved Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"]
+          ? ["Clan", "Resolved Total", "Missing", "DF", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"]
           : [
               "Clan",
               "Resolved Total",
               "Projected Total",
               "Missing",
+              "DF",
               "Players",
               "TH18",
               "TH17",

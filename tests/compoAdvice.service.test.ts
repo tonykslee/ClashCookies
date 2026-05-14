@@ -297,6 +297,7 @@ describe("CompoAdviceService", () => {
     expect(result.summary.resolvedRosterWeight).toBe(798000);
     expect(result.summary.currentWeight).toBe(798000);
     expect(result.summary.currentProjection.totalWeight).toBe(798000);
+    expect(result.summary.currentProjection.deferredWeightCount).toBe(1);
     // missingWeights includes unresolved weights plus WAR fallback-only resolved members.
     expect(result.summary.currentProjection.missingWeights).toBe(2);
   });

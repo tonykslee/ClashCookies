@@ -212,6 +212,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -224,6 +225,7 @@ describe("CompoActualStateService", () => {
       "Alpha Clan",
       "798,000",
       "2",
+      "1",
       "6",
       "2",
       "1",
@@ -364,6 +366,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -376,6 +379,7 @@ describe("CompoActualStateService", () => {
       "Alpha Clan",
       "466,000",
       "2",
+      "1",
       "4",
       "0",
       "1",
@@ -386,6 +390,7 @@ describe("CompoActualStateService", () => {
     ]);
     expect(result.stateRows?.[2]).toEqual([
       "Bravo Clan",
+      "0",
       "0",
       "0",
       "0",
@@ -463,6 +468,7 @@ describe("CompoActualStateService", () => {
       "Resolved Total",
       "Projected Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -475,13 +481,14 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[1]).toBe("798,000");
     expect(result.stateRows?.[1]?.[2]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[3]).toBe("46");
-    expect(result.stateRows?.[1]?.[4]).toBe("6");
-    expect(result.stateRows?.[1]?.[5]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[4]).toBe("1");
+    expect(result.stateRows?.[1]?.[5]).toBe("6");
     expect(result.stateRows?.[1]?.[6]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[7]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[8]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[9]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[10]).toEqual(expect.any(String));
+    expect(result.stateRows?.[1]?.[11]).toEqual(expect.any(String));
     expect(result.contentLines).toContain(
       "Resolved roster weight is shown separately from the projected 50-player total.",
     );
@@ -524,6 +531,7 @@ describe("CompoActualStateService", () => {
       "6,345,000",
       "6,870,000",
       "3",
+      "0",
       "47",
       "-3",
       "0",
@@ -574,6 +582,7 @@ describe("CompoActualStateService", () => {
       "Clan",
       "Resolved Total",
       "Missing",
+      "DF",
       "Players",
       "TH18",
       "TH17",
@@ -585,6 +594,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "439,000",
+      "0",
       "0",
       "4",
       "1",
