@@ -220,7 +220,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "798,000",
-      "1",
+      "2",
       "6",
       "2",
       "1",
@@ -311,7 +311,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "466,000",
-      "1",
+      "2",
       "4",
       "0",
       "1",
@@ -410,7 +410,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
     expect(result.stateRows?.[1]?.[1]).toBe("798,000");
     expect(result.stateRows?.[1]?.[2]).toEqual(expect.any(String));
-    expect(result.stateRows?.[1]?.[3]).toBe("45");
+    expect(result.stateRows?.[1]?.[3]).toBe("46");
     expect(result.stateRows?.[1]?.[4]).toBe("6");
     expect(result.stateRows?.[1]?.[5]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[6]).toEqual(expect.any(String));
