@@ -60,6 +60,7 @@ type ReplaceCandidate = {
 };
 
 const REPLACE_FIELD_VALUE_LIMIT = 1024;
+const REPLACE_EMBED_TEXT_SAFE_LIMIT = 5900;
 
 export type CompoPlaceReadResult = {
   content: string;
@@ -207,6 +208,25 @@ function paginateReplaceRows(lines: string[]): string[] {
   }
 
   return pages;
+}
+
+function estimateEmbedTextLength(embed: EmbedBuilder): number {
+  const json = embed.toJSON();
+  let total = 0;
+  if (typeof json.title === "string") total += json.title.length;
+  if (typeof json.description === "string") total += json.description.length;
+  if (json.footer && typeof json.footer.text === "string") total += json.footer.text.length;
+  if (Array.isArray(json.fields)) {
+    for (const field of json.fields) {
+      total += String(field.name ?? "").length;
+      total += String(field.value ?? "").length;
+    }
+  }
+  return total;
+}
+
+function estimateEmbedFieldTextLength(field: { name: string; value: string }): number {
+  return field.name.length + field.value.length;
 }
 
 async function buildReplaceRows(input: {
@@ -499,7 +519,14 @@ function buildCompoPlaceEmbeds(params: {
     ];
   }
 
-  const baseEmbed = buildCompoPlaceBaseEmbed({
+  const replaceFields = replacePages.map((value, index) => ({
+    name: `Replace ${index + 1}/${replacePages.length}`,
+    value,
+    inline: false,
+  }));
+
+  const embeds: EmbedBuilder[] = [];
+  let currentEmbed = buildCompoPlaceBaseEmbed({
     inputWeight: params.inputWeight,
     bucket: params.bucket,
     modeLabel: params.modeLabel,
@@ -510,16 +537,16 @@ function buildCompoPlaceEmbeds(params: {
     refreshLine: params.refreshLine,
     includeCoreSections: true,
   });
-  baseEmbed.addFields({
-    name: `Replace 1/${replacePages.length}`,
-    value: replacePages[0] ?? "None",
-    inline: false,
-  });
+  let currentEstimate = estimateEmbedTextLength(currentEmbed);
 
-  const embeds = [baseEmbed];
-  for (let index = 1; index < replacePages.length; index += 1) {
-    embeds.push(
-      buildCompoPlaceBaseEmbed({
+  for (const field of replaceFields) {
+    const fieldEstimate = estimateEmbedFieldTextLength(field);
+    if (
+      currentEstimate + fieldEstimate > REPLACE_EMBED_TEXT_SAFE_LIMIT &&
+      currentEmbed.toJSON().fields?.length
+    ) {
+      embeds.push(currentEmbed);
+      currentEmbed = buildCompoPlaceBaseEmbed({
         inputWeight: params.inputWeight,
         bucket: params.bucket,
         modeLabel: params.modeLabel,
@@ -529,12 +556,16 @@ function buildCompoPlaceEmbeds(params: {
         compositionList: [],
         refreshLine: params.refreshLine,
         includeCoreSections: false,
-      }).addFields({
-        name: `Replace ${index + 1}/${replacePages.length}`,
-        value: replacePages[index] ?? "None",
-        inline: false,
-      }),
-    );
+      });
+      currentEstimate = estimateEmbedTextLength(currentEmbed);
+    }
+
+    currentEmbed.addFields(field);
+    currentEstimate += fieldEstimate;
+  }
+
+  if (currentEmbed.toJSON().fields?.length) {
+    embeds.push(currentEmbed);
   }
 
   return embeds;
@@ -756,5 +787,6 @@ export class CompoPlaceService {
 }
 
 export const buildCompoPlaceEmbedForTest = buildCompoPlaceBaseEmbed;
+export const buildCompoPlaceEmbedsForTest = buildCompoPlaceEmbeds;
 export const buildBucketDeltaByHeaderForTest = buildBucketDeltaByHeader;
 export const resolvePlacementWeightForTest = resolveActualCompoWeight;

@@ -43,6 +43,7 @@ vi.mock("../src/prisma", () => ({
 import {
   buildBucketDeltaByHeaderForTest,
   CompoPlaceService,
+  buildCompoPlaceEmbedsForTest,
   resolvePlacementWeightForTest,
 } from "../src/services/CompoPlaceService";
 
@@ -107,6 +108,20 @@ function validPlayerTag(index: number): string {
     value = Math.floor(value / 4);
   } while (value > 0);
   return `#P${suffix.padStart(6, "0")}`;
+}
+
+function estimateEmbedTextLength(embed: any): number {
+  let total = 0;
+  if (typeof embed?.title === "string") total += embed.title.length;
+  if (typeof embed?.description === "string") total += embed.description.length;
+  if (typeof embed?.footer?.text === "string") total += embed.footer.text.length;
+  if (Array.isArray(embed?.fields)) {
+    for (const field of embed.fields) {
+      total += String(field?.name ?? "").length;
+      total += String(field?.value ?? "").length;
+    }
+  }
+  return total;
 }
 
 function makeCurrentMembers(input: {
@@ -410,63 +425,27 @@ describe("CompoPlaceService", () => {
   });
 
   it("paginates Replace rows without cutting a player line mid-row", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    const members = makeCurrentMembers({
-      clanTag: "#AAA111",
-      counts: { TH15: 12 },
-      townHall: 15,
-    }).map((row, index) => ({
-      ...row,
-      playerName: `Player ${index + 1}`,
-    }));
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(members as any);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue(
-      members.map((row) => ({ playerTag: row.playerTag })),
-    );
-    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.playerActivity.findMany.mockResolvedValue(
-      members.map((row, index) => ({
-        tag: row.playerTag,
-        lastSeenAt: new Date(Date.now() - (8 + index) * 24 * 60 * 60 * 1000),
-      })),
-    );
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: members.map((row, index) => ({
-        clanTag: "#AAA111",
-        playerTag: row.playerTag,
-        playerName: row.playerName,
-        townHall: 15,
-        missedWars: 1,
-        participationWars: 3,
-        totalTrueStars: 0,
-        avgAttackDelay: null,
-        lateAttacks: 0,
-        warsAvailable: 3,
-        missedWarStates: [],
-      })) as any,
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
+    const replaceRows = Array.from({ length: 70 }, (_, index) => {
+      const suffix = String(index + 1).padStart(6, "0");
+      const tag = `#P${suffix}`;
+      return `ALP <:th15:12345678901234567> 145,000 :man_standing: :zzz: 8d | :x: 1 - [Player ${
+        index + 1
+      }](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=%23P${suffix}>) \`${tag}\``;
     });
 
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[15, "<:th15:12345678901234567>"]]),
-    );
+    const embeds = buildCompoPlaceEmbedsForTest({
+      inputWeight: 145000,
+      bucket: "TH15",
+      recommended: [],
+      vacancyList: [],
+      compositionList: [],
+      replaceRows,
+      refreshLine: "RAW Data last refreshed: <t:1744302600:F>",
+      modeLabel: "ACTUAL Auto-Detect",
+      deltaLabel: "resolved roster vs HeatMapRef",
+    });
 
-    expect(result.embeds.length).toBeGreaterThan(1);
-
-    const replaceFields = result.embeds.flatMap((embed) => {
+    const replaceFields = embeds.flatMap((embed) => {
       const json = embed.toJSON();
       return (json.fields ?? [])
         .filter((field) => String(field.name).startsWith("Replace"))
@@ -476,13 +455,16 @@ describe("CompoPlaceService", () => {
         }));
     });
 
+    expect(embeds.length).toBeGreaterThan(1);
     expect(replaceFields.length).toBeGreaterThan(1);
-    expect(replaceFields[0]?.name).toMatch(/^Replace 1\/\d+$/);
-    expect(replaceFields[1]?.name).toMatch(/^Replace 2\/\d+$/);
-
-    const secondEmbed = result.embeds[1]?.toJSON();
-    expect(secondEmbed?.fields).toHaveLength(1);
-    expect(String(secondEmbed?.fields?.[0]?.name ?? "")).toMatch(/^Replace 2\/\d+$/);
+    expect(replaceFields.length).toBeGreaterThan(embeds.length);
+    expect(
+      embeds[0]?.toJSON().fields?.filter((field) => String(field.name).startsWith("Replace"))?.length ?? 0,
+    ).toBeGreaterThan(1);
+    expect(embeds.slice(1).every((embed) => {
+      const json = embed.toJSON();
+      return (json.fields ?? []).every((field) => String(field.name).startsWith("Replace"));
+    })).toBe(true);
 
     for (const field of replaceFields) {
       expect(field.value.length).toBeLessThanOrEqual(1024);
@@ -492,6 +474,10 @@ describe("CompoPlaceService", () => {
         expect(line).toContain("](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=");
         expect(line).toMatch(/`#P[0-9A-Z]+`$/);
       }
+    }
+
+    for (const embed of embeds) {
+      expect(estimateEmbedTextLength(embed.toJSON())).toBeLessThanOrEqual(6000);
     }
   });
 
