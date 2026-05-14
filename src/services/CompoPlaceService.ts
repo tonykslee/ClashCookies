@@ -2,17 +2,25 @@ import type { HeatMapRef } from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
 import { resolveActualCompoWeight } from "../helper/compoActualWeight";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { truncateDiscordContent } from "../helper/discordContent";
 import {
   collapseCompoWarBucketCountsForDisplay,
 } from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
+import {
+  renderTownHallIcon,
+  type TownHallEmojiMap,
+} from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
 import {
   loadCompoActualStateContext,
   type CompoActualStateClanContext,
 } from "./CompoActualStateService";
-import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import { listFillerAccountTagsForGuild } from "./FillerAccountService";
+import { InactiveWarService, type InactiveWarSummary } from "./InactiveWarService";
+import { listPlayerLinksForClanMembers, normalizePlayerTag } from "./PlayerLinkService";
+import { normalizeTag } from "./war-events/core";
 import {
   projectCompoActualStateView,
   type CompoActualStateProjection,
@@ -34,6 +42,22 @@ type PlacementCandidate = {
 type PlacementCandidateWithDelta = PlacementCandidate & {
   delta: number;
 };
+
+type ReplaceCandidate = {
+  clanName: string;
+  clanTag: string;
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  weight: number;
+  filler: boolean;
+  daysInactive: number | null;
+  warsMissed: number | null;
+  inactiveByDays: boolean;
+  inactiveByWars: boolean;
+  linkedDiscordUserId: string | null;
+};
+
 export type CompoPlaceReadResult = {
   content: string;
   embeds: EmbedBuilder[];
@@ -89,6 +113,239 @@ function formatPlacementRows(lines: string[]): string {
   return lines.length > 0 ? lines.join("\n") : "None";
 }
 
+function buildPlayerProfileMarkdownLink(
+  playerName: string | null,
+  playerTag: string,
+): string {
+  const normalizedTag = normalizePlayerTag(playerTag);
+  const label = String(playerName ?? "").trim() || normalizedTag || "Unknown Player";
+  if (!normalizedTag) return label;
+  const encodedTag = normalizedTag.replace(/^#/, "");
+  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
+}
+
+function buildTrackedClanShortNameMap(rows: Array<{
+  tag: string;
+  shortName: string | null;
+}>): Map<string, string> {
+  const byTag = new Map<string, string>();
+  for (const row of rows) {
+    const tag = normalizeTag(row.tag);
+    if (!tag) continue;
+    const shortName = String(row.shortName ?? "").trim();
+    if (shortName) {
+      byTag.set(tag, shortName);
+      byTag.set(tag.replace(/^#/, ""), shortName);
+    }
+  }
+  return byTag;
+}
+
+function buildReplaceReasonText(candidate: ReplaceCandidate): string {
+  const parts: string[] = [];
+  if (candidate.filler) parts.push(":man_standing:");
+  if (candidate.daysInactive !== null || candidate.warsMissed !== null) {
+    parts.push(
+      `:zzz: ${Math.max(0, Math.trunc(candidate.daysInactive ?? 0))}d | :x: ${Math.max(
+        0,
+        Math.trunc(candidate.warsMissed ?? 0),
+      )}`,
+    );
+  }
+  return parts.join(" ").trim();
+}
+
+function buildReplaceClanPrefix(input: {
+  clanName: string;
+  clanTag: string;
+  shortNameByClanTag: Map<string, string>;
+}): string {
+  const clanTag = normalizeTag(input.clanTag);
+  const shortName = clanTag ? input.shortNameByClanTag.get(clanTag)?.trim() ?? "" : "";
+  const clanName = normalizePlaceClanDisplayName(String(input.clanName ?? ""));
+  return shortName || clanName || input.clanTag;
+}
+
+function formatReplaceRows(lines: string[]): string | null {
+  if (lines.length === 0) return null;
+  return truncateDiscordContent(lines.join("\n"), 1024);
+}
+
+async function buildReplaceRows(input: {
+  guildId: string | null | undefined;
+  bucket: CompoWarDisplayBucket;
+  clans: CompoActualStateClanContext[];
+  townHallEmojiByLevel: TownHallEmojiMap;
+}): Promise<string[]> {
+  const sameBucketMembers = input.clans.flatMap((clan) =>
+    clan.members
+      .filter(
+        (member) =>
+          member.resolvedBucket === input.bucket &&
+          member.resolvedWeight !== null &&
+          member.resolvedWeight > 0,
+      )
+      .map((member) => ({
+        clanName: clan.clanName,
+        clanTag: clan.clanTag,
+        playerTag: member.playerTag,
+        playerName: member.playerName,
+        townHall: member.townHall,
+        weight: member.resolvedWeight ?? 0,
+      })),
+  );
+  if (sameBucketMembers.length === 0) {
+    return [];
+  }
+
+  const uniquePlayerTags = [...new Set(
+    sameBucketMembers
+      .map((member) => normalizePlayerTag(member.playerTag))
+      .filter((tag): tag is string => Boolean(tag)),
+  )];
+
+  const [fillerTags, activityRows, inactiveWarSummary, linkedRows, trackedClanRows] = await Promise.all([
+    input.guildId ? listFillerAccountTagsForGuild({ guildId: input.guildId }) : Promise.resolve([]),
+    input.guildId
+      ? prisma.playerActivity.findMany({
+          where: {
+            guildId: input.guildId,
+            tag: { in: uniquePlayerTags },
+          },
+          select: {
+            tag: true,
+            lastSeenAt: true,
+          },
+          orderBy: [{ tag: "asc" }, { lastSeenAt: "desc" }],
+        })
+      : Promise.resolve([] as Array<{ tag: string; lastSeenAt: Date }>),
+    input.guildId
+      ? new InactiveWarService().listInactiveWarPlayers({
+          guildId: input.guildId,
+          wars: 3,
+        })
+      : Promise.resolve(null as InactiveWarSummary | null),
+    listPlayerLinksForClanMembers({ memberTagsInOrder: uniquePlayerTags }),
+    prisma.trackedClan.findMany({
+      where: {
+        tag: {
+          in: input.clans.flatMap((clan) => {
+            const normalized = normalizeTag(clan.clanTag);
+            return normalized ? [normalized, normalized.replace(/^#/, "")] : [];
+          }),
+        },
+      },
+      select: {
+        tag: true,
+        shortName: true,
+      },
+    }),
+  ]);
+
+  const fillerTagSet = new Set(
+    fillerTags.map((tag) => normalizePlayerTag(tag)).filter((tag): tag is string => Boolean(tag)),
+  );
+  const lastSeenByTag = new Map<string, Date>();
+  for (const row of activityRows as Array<{ tag: string; lastSeenAt: Date }>) {
+    const tag = normalizePlayerTag(row.tag);
+    if (!tag || lastSeenByTag.has(tag)) continue;
+    lastSeenByTag.set(tag, row.lastSeenAt);
+  }
+  const warsMissedByTag = new Map<string, number>();
+  const warRows = inactiveWarSummary?.results ?? [];
+  for (const row of warRows) {
+    const tag = normalizePlayerTag(row.playerTag);
+    const missedWars = Math.trunc(Number(row.missedWars));
+    if (!tag || !Number.isFinite(missedWars) || missedWars <= 0) continue;
+    warsMissedByTag.set(tag, missedWars);
+  }
+  const linkedDiscordUserIdByTag = new Map<string, string>();
+  for (const row of linkedRows) {
+    const tag = normalizePlayerTag(row.playerTag);
+    const discordUserId = String(row.discordUserId ?? "").trim();
+    if (!tag || !discordUserId) continue;
+    linkedDiscordUserIdByTag.set(tag, discordUserId);
+  }
+  const shortNameByClanTag = buildTrackedClanShortNameMap(
+    trackedClanRows as Array<{ tag: string; shortName: string | null }>,
+  );
+
+  const candidates = sameBucketMembers
+    .map((member) => {
+      const playerTag = normalizePlayerTag(member.playerTag);
+      if (!playerTag) return null;
+      const filler = fillerTagSet.has(playerTag);
+      const lastSeenAt = lastSeenByTag.get(playerTag) ?? null;
+      const daysInactive =
+        lastSeenAt !== null
+          ? Math.max(0, Math.floor((Date.now() - lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)))
+          : null;
+      const inactiveByDays = daysInactive !== null && daysInactive >= 7;
+      const warsMissed = warsMissedByTag.get(playerTag) ?? null;
+      const inactiveByWars = warsMissed !== null && warsMissed > 0;
+      if (!filler && !inactiveByDays && !inactiveByWars) {
+        return null;
+      }
+      return {
+        clanName: member.clanName,
+        clanTag: member.clanTag,
+        playerTag,
+        playerName: member.playerName,
+        townHall: member.townHall,
+        weight: member.weight,
+        filler,
+        daysInactive,
+        warsMissed,
+        inactiveByDays,
+        inactiveByWars,
+        linkedDiscordUserId: linkedDiscordUserIdByTag.get(playerTag) ?? null,
+      } satisfies ReplaceCandidate;
+    })
+    .filter((candidate): candidate is ReplaceCandidate => candidate !== null)
+    .sort((a, b) => {
+      const aScore =
+        (a.filler ? 1 : 0) +
+        (a.inactiveByDays ? 1 : 0) +
+        (a.inactiveByWars ? 1 : 0);
+      const bScore =
+        (b.filler ? 1 : 0) +
+        (b.inactiveByDays ? 1 : 0) +
+        (b.inactiveByWars ? 1 : 0);
+      if (bScore !== aScore) return bScore - aScore;
+      if ((b.daysInactive ?? -1) !== (a.daysInactive ?? -1)) {
+        return (b.daysInactive ?? -1) - (a.daysInactive ?? -1);
+      }
+      if ((b.warsMissed ?? -1) !== (a.warsMissed ?? -1)) {
+        return (b.warsMissed ?? -1) - (a.warsMissed ?? -1);
+      }
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      const clanCompare = a.clanName.localeCompare(b.clanName);
+      if (clanCompare !== 0) return clanCompare;
+      const nameCompare = a.playerName.localeCompare(b.playerName);
+      if (nameCompare !== 0) return nameCompare;
+      return a.playerTag.localeCompare(b.playerTag);
+    });
+
+  return candidates.map((candidate) => {
+    const clanPrefix = buildReplaceClanPrefix({
+      clanName: candidate.clanName,
+      clanTag: candidate.clanTag,
+      shortNameByClanTag,
+    });
+    const reason = buildReplaceReasonText(candidate);
+    const mention = candidate.linkedDiscordUserId
+      ? ` <@${candidate.linkedDiscordUserId}>`
+      : "";
+    return `${clanPrefix} ${renderTownHallIcon(
+      candidate.townHall,
+      input.townHallEmojiByLevel,
+    )} ${candidate.weight.toLocaleString("en-US")} ${reason} - ${buildPlayerProfileMarkdownLink(
+      candidate.playerName,
+      candidate.playerTag,
+    )} \`${candidate.playerTag}\`${mention}`;
+  });
+}
+
 /** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
 function buildCompoPlaceEmbed(params: {
   inputWeight: number;
@@ -98,6 +355,7 @@ function buildCompoPlaceEmbed(params: {
   recommended: PlacementCandidateWithDelta[];
   vacancyList: PlacementCandidate[];
   compositionList: PlacementCandidateWithDelta[];
+  replaceRows?: string[];
   refreshLine: string;
 }): EmbedBuilder {
   const recommendedRows = params.recommended.map(
@@ -116,6 +374,33 @@ function buildCompoPlaceEmbed(params: {
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
   );
+  const fields = [
+    {
+      name: "Recommended",
+      value: formatPlacementRows(recommendedRows),
+      inline: false,
+    },
+    {
+      name: "Vacancy",
+      value: formatPlacementRows(vacancyRows),
+      inline: false,
+    },
+    {
+      name: "Composition",
+      value: formatPlacementRows(compositionRows),
+      inline: false,
+    },
+  ];
+  if (params.replaceRows && params.replaceRows.length > 0) {
+    const replaceRows = formatReplaceRows(params.replaceRows);
+    if (replaceRows) {
+      fields.push({
+        name: "Replace",
+        value: replaceRows,
+        inline: false,
+      });
+    }
+  }
 
   return new EmbedBuilder()
     .setTitle("Compo Placement Suggestions")
@@ -123,26 +408,10 @@ function buildCompoPlaceEmbed(params: {
       `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
         `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
       `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
-        `Bucket: **${params.bucket}**\n` +
+      `Bucket: **${params.bucket}**\n` +
         params.refreshLine,
     )
-    .addFields(
-      {
-        name: "Recommended",
-        value: formatPlacementRows(recommendedRows),
-        inline: false,
-      },
-      {
-        name: "Vacancy",
-        value: formatPlacementRows(vacancyRows),
-        inline: false,
-      },
-      {
-        name: "Composition",
-        value: formatPlacementRows(compositionRows),
-        inline: false,
-      },
-    );
+    .addFields(...fields);
 }
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
@@ -241,6 +510,7 @@ export class CompoPlaceService {
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
+    townHallEmojiByLevel: TownHallEmojiMap = new Map(),
   ): Promise<CompoPlaceReadResult> {
     const context = await loadCompoActualStateContext(guildId ?? null);
     if (context.trackedClanTags.length === 0) {
@@ -303,6 +573,12 @@ export class CompoPlaceService {
       });
 
     const recommended = compositionNeeds.filter((candidate) => candidate.hasVacancy);
+    const replaceRows = await buildReplaceRows({
+      guildId,
+      bucket,
+      clans: context.clans,
+      townHallEmojiByLevel,
+    });
 
     return {
       content: "",
@@ -313,6 +589,7 @@ export class CompoPlaceService {
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
+          replaceRows,
           refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
           modeLabel: buildCompoPlaceModeLabel(),
           deltaLabel: buildCompoPlaceDeltaLabel(),
@@ -332,6 +609,7 @@ export class CompoPlaceService {
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
+    townHallEmojiByLevel: TownHallEmojiMap = new Map(),
   ): Promise<CompoPlaceReadResult> {
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
@@ -349,7 +627,7 @@ export class CompoPlaceService {
         trackedClanTags,
       );
     }
-    return this.readPlace(inputWeight, bucket, guildId);
+    return this.readPlace(inputWeight, bucket, guildId, townHallEmojiByLevel);
   }
 }
 

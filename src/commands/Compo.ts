@@ -36,6 +36,7 @@ import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compo
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
@@ -1994,6 +1995,7 @@ export async function handleCompoRefreshButton(
         parsed.weight,
         bucket,
         interaction.guildId ?? null,
+        await resolveTownHallEmojiMap(interaction.client),
       );
       await interaction.editReply({
         content: placeResult.content,
@@ -2462,6 +2464,7 @@ export const Compo: Command = {
           inputWeight,
           bucket,
           interaction.guildId ?? null,
+          await resolveTownHallEmojiMap(interaction.client),
         );
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
