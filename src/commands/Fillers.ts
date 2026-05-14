@@ -155,7 +155,12 @@ function logFillersEditorDiagnostic(
     ...details,
     ...(error ? { error: summarizeErrorForDiagnostics(error) } : {}),
   };
-  console.error(`[fillers:set] ${safeDiagnosticJson(payload, 6000)}`);
+  const line = `[fillers:set] ${safeDiagnosticJson(payload, 6000)}`;
+  if (error) {
+    console.error(line);
+    return;
+  }
+  console.debug(line);
 }
 
 function summarizeSelectMenuDiagnostics(menu: {
