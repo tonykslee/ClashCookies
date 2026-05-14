@@ -2,16 +2,17 @@ import type { HeatMapRef } from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
 import { resolveActualCompoWeight } from "../helper/compoActualWeight";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { truncateDiscordContent } from "../helper/discordContent";
 import {
   collapseCompoWarBucketCountsForDisplay,
 } from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import {
+  normalizeTownHallLevel,
   renderTownHallIcon,
   type TownHallEmojiMap,
 } from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
+import { playerCurrentService } from "./PlayerCurrentService";
 import {
   loadCompoActualStateContext,
   type CompoActualStateClanContext,
@@ -57,6 +58,8 @@ type ReplaceCandidate = {
   inactiveByWars: boolean;
   linkedDiscordUserId: string | null;
 };
+
+const REPLACE_FIELD_VALUE_LIMIT = 1024;
 
 export type CompoPlaceReadResult = {
   content: string;
@@ -166,9 +169,44 @@ function buildReplaceClanPrefix(input: {
   return shortName || clanName || input.clanTag;
 }
 
-function formatReplaceRows(lines: string[]): string | null {
-  if (lines.length === 0) return null;
-  return truncateDiscordContent(lines.join("\n"), 1024);
+function truncateReplaceRow(line: string, limit = REPLACE_FIELD_VALUE_LIMIT): string {
+  if (line.length <= limit) return line;
+  if (limit <= 1) return "\u2026";
+  return `${line.slice(0, limit - 1).trimEnd()}\u2026`;
+}
+
+function paginateReplaceRows(lines: string[]): string[] {
+  const pages: string[] = [];
+  let current = "";
+
+  for (const rawLine of lines) {
+    const line = String(rawLine ?? "").trim();
+    if (!line) continue;
+
+    const next = current.length > 0 ? `${current}\n${line}` : line;
+    if (next.length <= REPLACE_FIELD_VALUE_LIMIT) {
+      current = next;
+      continue;
+    }
+
+    if (current.length > 0) {
+      pages.push(current);
+      current = "";
+    }
+
+    if (line.length <= REPLACE_FIELD_VALUE_LIMIT) {
+      current = line;
+      continue;
+    }
+
+    pages.push(truncateReplaceRow(line));
+  }
+
+  if (current.length > 0) {
+    pages.push(current);
+  }
+
+  return pages;
 }
 
 async function buildReplaceRows(input: {
@@ -204,7 +242,7 @@ async function buildReplaceRows(input: {
       .filter((tag): tag is string => Boolean(tag)),
   )];
 
-  const [fillerTags, activityRows, inactiveWarSummary, linkedRows, trackedClanRows] = await Promise.all([
+  const [fillerTags, activityRows, inactiveWarSummary, linkedRows, trackedClanRows, playerCurrentByTag, fwaCatalogRows] = await Promise.all([
     input.guildId ? listFillerAccountTagsForGuild({ guildId: input.guildId }) : Promise.resolve([]),
     input.guildId
       ? prisma.playerActivity.findMany({
@@ -240,6 +278,14 @@ async function buildReplaceRows(input: {
         shortName: true,
       },
     }),
+    playerCurrentService.listPlayerCurrentByTags(uniquePlayerTags),
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: uniquePlayerTags } },
+      select: {
+        playerTag: true,
+        latestTownHall: true,
+      },
+    }),
   ]);
 
   const fillerTagSet = new Set(
@@ -269,6 +315,18 @@ async function buildReplaceRows(input: {
   const shortNameByClanTag = buildTrackedClanShortNameMap(
     trackedClanRows as Array<{ tag: string; shortName: string | null }>,
   );
+  const townHallByTag = new Map<string, number | null>();
+  for (const [playerTag, playerCurrent] of playerCurrentByTag.entries()) {
+    const playerCurrentTownHall = normalizeTownHallLevel(playerCurrent.townHall);
+    if (playerCurrentTownHall !== null) {
+      townHallByTag.set(playerTag, playerCurrentTownHall);
+    }
+  }
+  for (const row of fwaCatalogRows as Array<{ playerTag: string; latestTownHall: unknown }>) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag || townHallByTag.get(playerTag) !== undefined) continue;
+    townHallByTag.set(playerTag, normalizeTownHallLevel(row.latestTownHall));
+  }
 
   const candidates = sameBucketMembers
     .map((member) => {
@@ -291,7 +349,10 @@ async function buildReplaceRows(input: {
         clanTag: member.clanTag,
         playerTag,
         playerName: member.playerName,
-        townHall: member.townHall,
+        townHall:
+          normalizeTownHallLevel(member.townHall) ??
+          townHallByTag.get(playerTag) ??
+          null,
         weight: member.weight,
         filler,
         daysInactive,
@@ -347,7 +408,7 @@ async function buildReplaceRows(input: {
 }
 
 /** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
-function buildCompoPlaceEmbed(params: {
+function buildCompoPlaceBaseEmbed(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
   modeLabel?: string;
@@ -355,9 +416,10 @@ function buildCompoPlaceEmbed(params: {
   recommended: PlacementCandidateWithDelta[];
   vacancyList: PlacementCandidate[];
   compositionList: PlacementCandidateWithDelta[];
-  replaceRows?: string[];
   refreshLine: string;
+  includeCoreSections?: boolean;
 }): EmbedBuilder {
+  const includeCoreSections = params.includeCoreSections ?? true;
   const recommendedRows = params.recommended.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
@@ -391,27 +453,91 @@ function buildCompoPlaceEmbed(params: {
       inline: false,
     },
   ];
-  if (params.replaceRows && params.replaceRows.length > 0) {
-    const replaceRows = formatReplaceRows(params.replaceRows);
-    if (replaceRows) {
-      fields.push({
-        name: "Replace",
-        value: replaceRows,
-        inline: false,
-      });
-    }
-  }
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle("Compo Placement Suggestions")
     .setDescription(
       `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
         `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
       `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
-      `Bucket: **${params.bucket}**\n` +
+        `Bucket: **${params.bucket}**\n` +
         params.refreshLine,
-    )
-    .addFields(...fields);
+    );
+
+  if (includeCoreSections) {
+    embed.addFields(...fields);
+  }
+
+  return embed;
+}
+
+function buildCompoPlaceEmbeds(params: {
+  inputWeight: number;
+  bucket: CompoWarDisplayBucket;
+  modeLabel?: string;
+  deltaLabel?: string;
+  recommended: PlacementCandidateWithDelta[];
+  vacancyList: PlacementCandidate[];
+  compositionList: PlacementCandidateWithDelta[];
+  replaceRows?: string[];
+  refreshLine: string;
+}): EmbedBuilder[] {
+  const replacePages = paginateReplaceRows(params.replaceRows ?? []);
+  if (replacePages.length === 0) {
+    return [
+      buildCompoPlaceBaseEmbed({
+        inputWeight: params.inputWeight,
+        bucket: params.bucket,
+        modeLabel: params.modeLabel,
+        deltaLabel: params.deltaLabel,
+        recommended: params.recommended,
+        vacancyList: params.vacancyList,
+        compositionList: params.compositionList,
+        refreshLine: params.refreshLine,
+        includeCoreSections: true,
+      }),
+    ];
+  }
+
+  const baseEmbed = buildCompoPlaceBaseEmbed({
+    inputWeight: params.inputWeight,
+    bucket: params.bucket,
+    modeLabel: params.modeLabel,
+    deltaLabel: params.deltaLabel,
+    recommended: params.recommended,
+    vacancyList: params.vacancyList,
+    compositionList: params.compositionList,
+    refreshLine: params.refreshLine,
+    includeCoreSections: true,
+  });
+  baseEmbed.addFields({
+    name: `Replace 1/${replacePages.length}`,
+    value: replacePages[0] ?? "None",
+    inline: false,
+  });
+
+  const embeds = [baseEmbed];
+  for (let index = 1; index < replacePages.length; index += 1) {
+    embeds.push(
+      buildCompoPlaceBaseEmbed({
+        inputWeight: params.inputWeight,
+        bucket: params.bucket,
+        modeLabel: params.modeLabel,
+        deltaLabel: params.deltaLabel,
+        recommended: [],
+        vacancyList: [],
+        compositionList: [],
+        refreshLine: params.refreshLine,
+        includeCoreSections: false,
+      }).addFields({
+        name: `Replace ${index + 1}/${replacePages.length}`,
+        value: replacePages[index] ?? "None",
+        inline: false,
+      }),
+    );
+  }
+
+  return embeds;
 }
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
@@ -582,8 +708,7 @@ export class CompoPlaceService {
 
     return {
       content: "",
-      embeds: [
-        buildCompoPlaceEmbed({
+      embeds: buildCompoPlaceEmbeds({
           inputWeight,
           bucket,
           recommended,
@@ -594,7 +719,6 @@ export class CompoPlaceService {
           modeLabel: buildCompoPlaceModeLabel(),
           deltaLabel: buildCompoPlaceDeltaLabel(),
         }),
-      ],
       trackedClanTags: context.trackedClanTags,
       eligibleClanTags: candidates.map((candidate) => candidate.clanTag),
       candidateCount: candidates.length,
@@ -631,6 +755,6 @@ export class CompoPlaceService {
   }
 }
 
-export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
+export const buildCompoPlaceEmbedForTest = buildCompoPlaceBaseEmbed;
 export const buildBucketDeltaByHeaderForTest = buildBucketDeltaByHeader;
 export const resolvePlacementWeightForTest = resolveActualCompoWeight;
