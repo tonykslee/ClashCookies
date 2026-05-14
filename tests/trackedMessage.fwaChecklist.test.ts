@@ -56,6 +56,17 @@ function makeTrackedChecklistRow() {
   };
 }
 
+function makeTrackedChecklistRowWithState(checkedClanTags: string[]) {
+  const row = makeTrackedChecklistRow();
+  return {
+    ...row,
+    metadata: {
+      ...row.metadata,
+      checkedClanTags,
+    },
+  };
+}
+
 describe("fwa checklist tracked messages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -200,6 +211,174 @@ describe("fwa checklist tracked messages", () => {
       trackedMessageService.refreshFwaMatchChecklistMessage(message as any),
     ).resolves.toBe(true);
 
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["RR"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("merges persisted checked clans with a later reaction add on a different clan", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(
+      makeTrackedChecklistRowWithState(["RR"]),
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 1,
+            },
+          ],
+          [
+            "twc",
+            {
+              emoji: { id: "222", name: "twc" },
+              count: 2,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+        kind: "add",
+        reaction: {
+          emoji: { id: "222", name: "twc" },
+          count: 2,
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const payload = edit.mock.calls[0]?.[0] as any;
+    expect(payload.content).toBe(
+      buildFwaMatchChecklistContent({
+        rows: makeTrackedChecklistRow().metadata.rows,
+        checkedClanTags: ["RR", "TWC"],
+      }),
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["RR", "TWC"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("removes only the reacted clan from persisted checked state on reaction remove", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(
+      makeTrackedChecklistRowWithState(["RR", "TWC"]),
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 1,
+            },
+          ],
+          [
+            "twc",
+            {
+              emoji: { id: "222", name: "twc" },
+              count: 2,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+        kind: "remove",
+        reaction: {
+          emoji: { id: "111", name: "rr" },
+          count: 1,
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const payload = edit.mock.calls[0]?.[0] as any;
+    expect(payload.content).toBe(
+      buildFwaMatchChecklistContent({
+        rows: makeTrackedChecklistRow().metadata.rows,
+        checkedClanTags: ["TWC"],
+      }),
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["TWC"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("keeps persisted checked clans when a refresh sees only bot-seeded reactions", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(
+      makeTrackedChecklistRowWithState(["RR"]),
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 1,
+            },
+          ],
+          [
+            "twc",
+            {
+              emoji: { id: "222", name: "twc" },
+              count: 1,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any),
+    ).resolves.toBe(true);
+
+    const payload = edit.mock.calls[0]?.[0] as any;
+    expect(payload.content).toBe(
+      buildFwaMatchChecklistContent({
+        rows: makeTrackedChecklistRow().metadata.rows,
+        checkedClanTags: ["RR"],
+      }),
+    );
     expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { messageId: "checklist-message-1" },
