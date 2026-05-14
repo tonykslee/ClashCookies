@@ -124,7 +124,7 @@ The bot needs Discord **Manage Nicknames** and must be above the target member i
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
 FWA command internals are split under `src/commands/fwa/` helper modules to keep `Fwa.ts` orchestration-focused and unit-testable.
 Run `npm run seed:fwa-layouts` after migrations when you want to upsert the canonical layout seed rows.
-Droplet deploys use cached Yarn dependency volumes and only rerun locked installs when `package.json` or `yarn.lock` changes. The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard, builds, and then starts the app.
+Droplet deploys use cached Yarn dependency volumes and only rerun locked installs when `package.json` or `yarn.lock` changes. The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard and then starts the app, while `yarn start` rebuilds from `src` before launching the compiled app.
 
 ## FWAStats Feed Ingestion (Phase 1)
 Endpoints wired:
