@@ -844,6 +844,9 @@ describe("/fillers command", () => {
     expect(String(clanEmbed.title)).toBe("Filler Accounts in Beta Clan (1)");
     expect(String(clanEmbed.description)).toContain("Gamma");
     expect(String(clanEmbed.description)).not.toContain("Alpha");
+    expect(String(clanEmbed.description)).toContain(
+      "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
+    );
   });
 
   it("renders the targeted user mention in the filler editor body instead of the title", async () => {

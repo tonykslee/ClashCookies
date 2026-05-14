@@ -496,6 +496,10 @@ function buildListEmbed(title: string, description: string, page: number, totalP
     .setFooter({ text: `Page ${page + 1}/${totalPages}` });
 }
 
+function buildClanListNote(): string {
+  return "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.";
+}
+
 function buildPagerRow(
   prefix: string,
   page: number,
@@ -781,6 +785,9 @@ async function renderListReply(input: {
   const descriptionParts = input.targetUserId
     ? [buildTargetUserLine(input.targetUserId), pages[page] ?? ""]
     : [pages[page] ?? ""];
+  if (input.scope === "clan") {
+    descriptionParts.push(buildClanListNote());
+  }
 
   const embed = buildListEmbed(
     input.title,
