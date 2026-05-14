@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   clanNotifyConfig: {
@@ -31,17 +31,34 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+beforeEach(() => {
+  vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+  vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
+  vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
+  vi.spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId").mockResolvedValue(
+    "123456789012345678",
+  );
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 import {
   addWeightInputDefermentWithPlayerProfile,
   buildDeferScopeKey,
+  clearDeferRoutingChannelOverride,
   checkOpenWeightInputDefermentsForClan,
   getDueDefermentStagesForTest,
+  getDeferRoutingConfig,
   listOpenWeightInputDeferments,
   normalizePlayerTag,
   parseDeferWeightInput,
   processWeightInputDefermentStages,
+  updateDeferRoutingConfig,
 } from "../src/services/WeightInputDefermentService";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
+import { SettingsService } from "../src/services/SettingsService";
 
 type MutableRecord = {
   id: string;
@@ -259,6 +276,64 @@ describe("WeightInputDefermentService list filtering", () => {
   });
 });
 
+describe("WeightInputDefermentService routing config", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi
+      .spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId")
+      .mockResolvedValue("123456789012345678");
+  });
+
+  it("reads effective defaults when no overrides are stored", async () => {
+    const config = await getDeferRoutingConfig("guild-1");
+
+    expect(config).toEqual(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelOverrideId: null,
+        pingRoleOverrideId: null,
+        enablePing: true,
+        enabled: true,
+        enablePingOverride: null,
+        enabledOverride: null,
+        defaultPingRoleId: "123456789012345678",
+      }),
+    );
+  });
+
+  it("persists routing overrides and clears only the channel override", async () => {
+    await updateDeferRoutingConfig("guild-1", {
+      channelOverrideId: "123456789012345678",
+      pingRoleOverrideId: "234567890123456789",
+      enablePing: false,
+      enabled: false,
+    });
+
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_channel:guild-1"),
+      "123456789012345678",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_ping_role:guild-1"),
+      "234567890123456789",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_enable_ping:guild-1"),
+      "false",
+    );
+    expect(SettingsService.prototype.set).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_enable:guild-1"),
+      "false",
+    );
+
+    await clearDeferRoutingChannelOverride("guild-1");
+
+    expect(SettingsService.prototype.delete).toHaveBeenCalledWith(
+      expect.stringContaining("defer_config_channel:guild-1"),
+    );
+  });
+});
+
 describe("WeightInputDefermentService clan check", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -430,7 +505,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     vi.clearAllMocks();
     vi
       .spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId")
-      .mockResolvedValue("role-global-leader");
+      .mockResolvedValue("123456789012345678");
     prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
@@ -660,7 +735,7 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     expect(send).toHaveBeenCalledTimes(3);
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("48h");
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain(
-      "<@&role-global-leader>",
+      "<@&123456789012345678>",
     );
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain("Current clan: Bravo (#BBB222)");
     expect(String(send.mock.calls[0]?.[0]?.content)).toContain(
@@ -675,6 +750,117 @@ describe("WeightInputDefermentService lifecycle processing", () => {
     expect(record.reminded48At).toBeTruthy();
     expect(record.escalated5dAt).toBeTruthy();
     expect(record.summarized7dAt).toBeTruthy();
+  });
+
+  it("uses a configured defer channel override and respects ping disablement", async () => {
+    const record: MutableRecord = {
+      id: "row-channel-override",
+      guildId: "guild-1",
+      scopeKey: "guild:guild-1|clan:AAA111",
+      clanTag: "#AAA111",
+      playerTag: "#ABC0289",
+      deferredWeight: 145000,
+      status: "open",
+      createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+      reminded48At: null,
+      escalated5dAt: null,
+      summarized7dAt: null,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
+    };
+    setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        weight: 144000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#AAA111",
+        name: "Alpha",
+        logChannelId: "channel-1",
+        clanRoleId: "role-lead-1",
+      },
+    ]);
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) => {
+      if (key.startsWith("defer_config_channel:")) return "123456789012345679";
+      if (key.startsWith("defer_config_enable_ping:")) return "false";
+      if (key.startsWith("defer_config_enable:")) return "true";
+      return null;
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      send,
+    });
+    const client = {
+      channels: {
+        fetch,
+      },
+    } as any;
+
+    await processWeightInputDefermentStages(client, "guild-1");
+
+    expect(fetch).toHaveBeenCalledWith("123456789012345679");
+    expect(send).toHaveBeenCalledTimes(3);
+    const firstContent = String(send.mock.calls[0]?.[0]?.content ?? "");
+    expect(firstContent).not.toContain("<@&123456789012345678>");
+  });
+
+  it("skips reminder delivery entirely when defer routing is disabled", async () => {
+    const record: MutableRecord = {
+      id: "row-routing-disabled",
+      guildId: "guild-1",
+      scopeKey: "guild:guild-1|clan:AAA111",
+      clanTag: "#AAA111",
+      playerTag: "#ABC0289",
+      deferredWeight: 145000,
+      status: "open",
+      createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+      reminded48At: null,
+      escalated5dAt: null,
+      summarized7dAt: null,
+      processingLockToken: null,
+      processingLockExpiresAt: null,
+    };
+    setupStatefulDefermentMocks(record);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#AAA111",
+        weight: 144000,
+        sourceSyncedAt: new Date("2026-03-22T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#AAA111",
+        name: "Alpha",
+        logChannelId: "channel-1",
+        clanRoleId: "role-lead-1",
+      },
+    ]);
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) => {
+      if (key.startsWith("defer_config_enable:")) return "false";
+      return null;
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      send,
+    });
+    const client = {
+      channels: {
+        fetch,
+      },
+    } as any;
+
+    await processWeightInputDefermentStages(client, "guild-1");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(record.status).toBe("open");
   });
 
   it("auto-resolves open deferments when current weight already matches deferredWeight", async () => {

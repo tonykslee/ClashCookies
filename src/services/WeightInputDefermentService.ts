@@ -2,6 +2,7 @@ import { Client } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CommandPermissionService } from "./CommandPermissionService";
+import { SettingsService } from "./SettingsService";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { buildFwaWeightPageUrl } from "./FwaStatsWeightService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
@@ -54,6 +55,12 @@ const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESS_LOCK_TTL_MS = 10 * 60 * 1000;
 const commandPermissionService = new CommandPermissionService();
+const settingsService = new SettingsService();
+
+const DEFER_CONFIG_CHANNEL_KEY_PREFIX = "defer_config_channel";
+const DEFER_CONFIG_PING_ROLE_KEY_PREFIX = "defer_config_ping_role";
+const DEFER_CONFIG_ENABLE_PING_KEY_PREFIX = "defer_config_enable_ping";
+const DEFER_CONFIG_ENABLE_KEY_PREFIX = "defer_config_enable";
 
 export type OpenWeightInputDefermentRow = {
   id: string;
@@ -77,6 +84,24 @@ export type DeferCheckClanResult = {
   checkedCount: number;
   resolvedCount: number;
   stillOpenMissingWeightCount: number;
+};
+
+export type DeferRoutingConfig = {
+  guildId: string;
+  channelOverrideId: string | null;
+  pingRoleOverrideId: string | null;
+  enablePing: boolean;
+  enabled: boolean;
+  enablePingOverride: boolean | null;
+  enabledOverride: boolean | null;
+  defaultPingRoleId: string | null;
+};
+
+export type DeferRoutingConfigUpdate = {
+  channelOverrideId?: string | null;
+  pingRoleOverrideId?: string | null;
+  enablePing?: boolean | null;
+  enabled?: boolean | null;
 };
 
 /** Purpose: normalize player tags to an uppercase #TAG shape. */
@@ -110,6 +135,43 @@ export function buildDeferScopeKey(guildId: string, clanTag: string | null): str
   const bareClan = normalizeTagBare(clanTag);
   if (!bareClan) return `guild:${guildId}`;
   return `guild:${guildId}|clan:${bareClan}`;
+}
+
+function deferRoutingChannelKey(guildId: string): string {
+  return `${DEFER_CONFIG_CHANNEL_KEY_PREFIX}:${guildId}`;
+}
+
+function deferRoutingPingRoleKey(guildId: string): string {
+  return `${DEFER_CONFIG_PING_ROLE_KEY_PREFIX}:${guildId}`;
+}
+
+function deferRoutingEnablePingKey(guildId: string): string {
+  return `${DEFER_CONFIG_ENABLE_PING_KEY_PREFIX}:${guildId}`;
+}
+
+function deferRoutingEnableKey(guildId: string): string {
+  return `${DEFER_CONFIG_ENABLE_KEY_PREFIX}:${guildId}`;
+}
+
+function normalizeDiscordId(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim();
+  return /^\d+$/.test(normalized) ? normalized : null;
+}
+
+function parseStoredBoolean(value: string | null, defaultValue: boolean): boolean {
+  if (value === null) return defaultValue;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  return defaultValue;
+}
+
+function parseStoredBooleanOverride(value: string | null): boolean | null {
+  if (value === null) return null;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  return null;
 }
 
 /** Purpose: render deterministic pending-age text for reminders and list output. */
@@ -678,6 +740,81 @@ export async function listOpenWeightInputDeferments(input: {
   return { scope, rows: rows as OpenWeightInputDefermentRow[], filterClanTag: null };
 }
 
+/** Purpose: read defer-routing config with command defaults and guild overrides. */
+export async function getDeferRoutingConfig(
+  guildId: string,
+): Promise<DeferRoutingConfig> {
+  const [
+    channelOverrideRaw,
+    pingRoleOverrideRaw,
+    enablePingRaw,
+    enabledRaw,
+    defaultPingRoleId,
+  ] = await Promise.all([
+    settingsService.get(deferRoutingChannelKey(guildId)),
+    settingsService.get(deferRoutingPingRoleKey(guildId)),
+    settingsService.get(deferRoutingEnablePingKey(guildId)),
+    settingsService.get(deferRoutingEnableKey(guildId)),
+    commandPermissionService.getFwaLeaderRoleId(guildId),
+  ]);
+
+  return {
+    guildId,
+    channelOverrideId: normalizeDiscordId(channelOverrideRaw),
+    pingRoleOverrideId: normalizeDiscordId(pingRoleOverrideRaw),
+    enablePing: parseStoredBoolean(enablePingRaw, true),
+    enabled: parseStoredBoolean(enabledRaw, true),
+    enablePingOverride: parseStoredBooleanOverride(enablePingRaw),
+    enabledOverride: parseStoredBooleanOverride(enabledRaw),
+    defaultPingRoleId: normalizeDiscordId(defaultPingRoleId),
+  };
+}
+
+/** Purpose: persist defer-routing config overrides without mutating unrelated keys. */
+export async function updateDeferRoutingConfig(
+  guildId: string,
+  input: DeferRoutingConfigUpdate,
+): Promise<void> {
+  if (input.channelOverrideId !== undefined) {
+    const normalized = normalizeDiscordId(input.channelOverrideId);
+    if (normalized) {
+      await settingsService.set(deferRoutingChannelKey(guildId), normalized);
+    } else {
+      await settingsService.delete(deferRoutingChannelKey(guildId));
+    }
+  }
+
+  if (input.pingRoleOverrideId !== undefined) {
+    const normalized = normalizeDiscordId(input.pingRoleOverrideId);
+    if (normalized) {
+      await settingsService.set(deferRoutingPingRoleKey(guildId), normalized);
+    } else {
+      await settingsService.delete(deferRoutingPingRoleKey(guildId));
+    }
+  }
+
+  if (input.enablePing !== undefined && input.enablePing !== null) {
+    await settingsService.set(
+      deferRoutingEnablePingKey(guildId),
+      input.enablePing ? "true" : "false",
+    );
+  }
+
+  if (input.enabled !== undefined && input.enabled !== null) {
+    await settingsService.set(
+      deferRoutingEnableKey(guildId),
+      input.enabled ? "true" : "false",
+    );
+  }
+}
+
+/** Purpose: clear only the defer-routing channel override. */
+export async function clearDeferRoutingChannelOverride(
+  guildId: string,
+): Promise<void> {
+  await settingsService.delete(deferRoutingChannelKey(guildId));
+}
+
 /** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
 export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
   guildId: string | null | undefined;
@@ -1112,6 +1249,7 @@ export async function processWeightInputDefermentStages(
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
+  const routingConfigByGuildId = new Map<string, DeferRoutingConfig>();
   for (const row of rows) {
     const lock = await acquireProcessingLock(row.id, now);
     if (!lock) continue;
@@ -1146,9 +1284,24 @@ export async function processWeightInputDefermentStages(
         }
         continue;
       }
-      const leaderRoleId = await commandPermissionService.getFwaLeaderRoleId(
-        locked.guildId,
-      );
+      let routingConfig = routingConfigByGuildId.get(locked.guildId);
+      if (!routingConfig) {
+        routingConfig = await getDeferRoutingConfig(locked.guildId);
+        routingConfigByGuildId.set(locked.guildId, routingConfig);
+      }
+      if (!routingConfig.enabled) {
+        console.log(
+          `[defer] guild=${locked.guildId} player=${locked.playerTag} status=skipped_routing_disabled`
+        );
+        continue;
+      }
+      const leaderRoleId = routingConfig.enablePing
+        ? routingConfig.pingRoleOverrideId ?? routingConfig.defaultPingRoleId
+        : null;
+      const deliveryDestination = {
+        ...destination,
+        channelId: routingConfig.channelOverrideId ?? destination.channelId,
+      };
       for (const stage of dueStages) {
         try {
           const sent = await deliverStageMessage({
@@ -1158,7 +1311,7 @@ export async function processWeightInputDefermentStages(
             playerTag: locked.playerTag,
             deferredWeight: locked.deferredWeight,
             createdAt: locked.createdAt,
-            destination,
+            destination: deliveryDestination,
             leaderRoleId,
           });
           if (!sent) {

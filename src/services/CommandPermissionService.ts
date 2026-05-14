@@ -73,6 +73,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "defer",
   "defer:add",
   "defer:list",
+  "defer:config",
   "defer:remove",
   "defer:clear",
   "fwa:leader-role",
@@ -227,6 +228,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "defer",
   "defer:add",
   "defer:list",
+  "defer:config",
   "defer:remove",
   "defer:clear",
   "fwa:mail:send",
@@ -382,6 +384,10 @@ export function getCommandTargetsFromInteraction(
       raw.push("fillers:set");
     }
     raw.push(command);
+    return raw.filter((target) => isKnownTarget(target));
+  }
+  if (command === "defer" && group === null && sub === "config") {
+    raw.push("defer:config");
     return raw.filter((target) => isKnownTarget(target));
   }
   if (command === "post" && group === "sync" && sub === "time") {
