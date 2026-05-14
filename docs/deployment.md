@@ -79,7 +79,8 @@ From the droplet host, use:
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.
 - Observability is documented separately in `docs/observability.md` and stays localhost-only by default on the droplet.
 - Droplet deploys use the Yarn path (`yarn.lock`) for deterministic installs.
-- The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard, builds, and then starts the app.
+- The current container path uses `ops/deploy/container-start.sh`, which runs the dependency guard and then starts the app.
+- `yarn start` rebuilds from `src` before launching the compiled `dist` app, and the build step cleans `dist` first so stale artifacts do not survive between deploys.
 
 ## Install Links
 

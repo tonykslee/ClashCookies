@@ -1,4 +1,5 @@
 import "./bootstrap/installDozzleConsole";
+import { execSync } from "node:child_process";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import ready from "./listeners/ready";
 import interactionCreate from "./listeners/interactionCreate";
@@ -21,8 +22,27 @@ import { prisma } from "./prisma";
 import "dotenv/config";
 import { dozzleLog } from "./helper/dozzleLogger";
 
+function resolveRuntimeBuildSha(): string {
+  const envSha = String(
+    process.env.BUILD_SHA ?? process.env.GITHUB_SHA ?? process.env.GIT_SHA ?? "",
+  ).trim();
+  if (envSha) return envSha;
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .trim()
+      .replace(/\s+/g, "") || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 const discordRestTimeoutMs = getDiscordRestTimeoutMsFromEnv(process.env);
+const runtimeBuildSha = resolveRuntimeBuildSha();
 dozzleLog.info(`[startup:discord-rest] timeout_ms=${discordRestTimeoutMs}`);
+dozzleLog.info(`[startup:build] git_sha=${runtimeBuildSha} build_sha=${runtimeBuildSha}`);
 
 const client = new Client({
   intents: [
