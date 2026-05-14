@@ -5,7 +5,6 @@ import type {
   TrackedClan,
 } from "@prisma/client";
 import {
-  resolveActualCompoWeight,
   toPositiveCompoWeight,
 } from "../helper/compoActualWeight";
 import {
@@ -90,6 +89,44 @@ function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
     return "RAW Data last refreshed: (not available)";
   }
   return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
+}
+
+function resolveActualWeightWithSource(input: {
+  memberWeight: number | null | undefined;
+  linkFallbackWeight: number | null | undefined;
+  deferredWeight: number | null | undefined;
+  sameClanWarWeight: number | null | undefined;
+  anyWarWeight: number | null | undefined;
+}): {
+  resolvedWeight: number | null;
+  resolvedWeightSource: CompoActualStateMemberContext["resolvedWeightSource"];
+} {
+  const memberWeight = toPositiveCompoWeight(input.memberWeight);
+  if (memberWeight !== null) {
+    return { resolvedWeight: memberWeight, resolvedWeightSource: "member" };
+  }
+
+  const linkFallbackWeight = toPositiveCompoWeight(input.linkFallbackWeight);
+  if (linkFallbackWeight !== null) {
+    return { resolvedWeight: linkFallbackWeight, resolvedWeightSource: "catalog" };
+  }
+
+  const deferredWeight = toPositiveCompoWeight(input.deferredWeight);
+  if (deferredWeight !== null) {
+    return { resolvedWeight: deferredWeight, resolvedWeightSource: "defer" };
+  }
+
+  const sameClanWarWeight = toPositiveCompoWeight(input.sameClanWarWeight);
+  if (sameClanWarWeight !== null) {
+    return { resolvedWeight: sameClanWarWeight, resolvedWeightSource: "war" };
+  }
+
+  const anyWarWeight = toPositiveCompoWeight(input.anyWarWeight);
+  if (anyWarWeight !== null) {
+    return { resolvedWeight: anyWarWeight, resolvedWeightSource: "war" };
+  }
+
+  return { resolvedWeight: null, resolvedWeightSource: null };
 }
 
 function normalizeActualStateClanDisplayName(value: string): string {
@@ -465,47 +502,23 @@ export async function loadCompoActualStateContext(
         ? linkFallbackWeightByPlayerTag.get(playerTag) ?? null
         : null;
       const sameClanWarWeight = playerTag
-        ? warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`)
+        ? warFallbackByClanAndPlayerTag.get(`${clanTag}|${playerTag}`) ?? null
         : null;
-      const anyWarWeight = playerTag ? warFallbackByPlayerTag.get(playerTag) : null;
-      const deferredWeight = playerTag ? deferredByPlayerTag.get(playerTag) : null;
-      const memberWeight = toPositiveCompoWeight(member.weight);
-      let resolvedWeightSource: CompoActualStateMemberContext["resolvedWeightSource"] =
-        null;
-      let resolvedWeight: number | null = null;
-      if (memberWeight !== null) {
-        resolvedWeight = memberWeight;
-        resolvedWeightSource = "member";
-      } else if (linkFallbackWeight !== null) {
-        resolvedWeight = linkFallbackWeight;
-        resolvedWeightSource = "catalog";
-      } else {
-        const warResolvedWeight = resolveActualCompoWeight({
-          memberWeight: null,
-          deferredWeight,
-          sameClanWarWeight,
-          anyWarWeight,
-        });
-        if (deferredWeight !== null && warResolvedWeight === deferredWeight) {
-          resolvedWeight = warResolvedWeight;
-          resolvedWeightSource = "defer";
-        } else if (
-          sameClanWarWeight !== null &&
-          warResolvedWeight === sameClanWarWeight
-        ) {
-          resolvedWeight = warResolvedWeight;
-          resolvedWeightSource = "war";
-        } else if (anyWarWeight !== null && warResolvedWeight === anyWarWeight) {
-          resolvedWeight = warResolvedWeight;
-          resolvedWeightSource = "war";
-        }
-      }
+      const anyWarWeight = playerTag ? warFallbackByPlayerTag.get(playerTag) ?? null : null;
+      const deferredWeight = playerTag ? deferredByPlayerTag.get(playerTag) ?? null : null;
+      const { resolvedWeight, resolvedWeightSource } = resolveActualWeightWithSource({
+        memberWeight: member.weight,
+        linkFallbackWeight,
+        deferredWeight,
+        sameClanWarWeight,
+        anyWarWeight,
+      });
       const bucket = getCompoWarWeightBucket(resolvedWeight);
       const normalizedTownHall =
         Number.isFinite(Number(member.townHall)) && Number(member.townHall) > 0
           ? Math.trunc(Number(member.townHall))
           : null;
-      const isMissing = resolvedWeight === null || resolvedWeightSource === "war";
+      const isMissing = resolvedWeightSource === "war" || resolvedWeight === null;
       members.push({
         clanTag,
         playerTag,
@@ -516,7 +529,9 @@ export async function loadCompoActualStateContext(
         resolvedWeightSource,
       });
       if (resolvedWeight === null || !bucket) {
-        unresolvedWeightCount += 1;
+        if (isMissing) {
+          unresolvedWeightCount += 1;
+        }
         continue;
       }
       totalResolvedWeight += resolvedWeight;
