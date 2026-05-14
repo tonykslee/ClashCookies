@@ -101,6 +101,14 @@ export type FwaMatchChecklistTrackedMetadata = {
   rows: FwaMatchChecklistTrackedRow[];
 };
 
+export type FwaMatchChecklistReactionChange = {
+  kind: "add" | "remove";
+  reaction: {
+    emoji: { id: string | null; name: string | null };
+    count?: number | null;
+  };
+};
+
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
@@ -581,6 +589,19 @@ function emojiMatches(
 ): boolean {
   if (reaction.emoji.id && target.emojiId && reaction.emoji.id === target.emojiId) return true;
   return Boolean(reaction.emoji.name && target.emojiName && reaction.emoji.name === target.emojiName);
+}
+
+function findChecklistRowTagForReaction(
+  rows: FwaMatchChecklistTrackedRow[],
+  reaction: { emoji: { id: string | null; name: string | null } },
+): string | null {
+  const matched = rows.find((row) =>
+    emojiMatches(reaction, {
+      emojiId: row.badgeEmojiId,
+      emojiName: row.badgeEmojiName,
+    }),
+  );
+  return matched ? normalizeChecklistClanTag(matched.clanTag) : null;
 }
 
 export class TrackedMessageService {
@@ -1255,7 +1276,9 @@ export class TrackedMessageService {
       content: string;
       allowedMentions?: { parse: [] };
     }) => Promise<unknown>;
-  }): Promise<boolean> {
+  },
+  change?: FwaMatchChecklistReactionChange | null,
+  ): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({
       where: { messageId: message.id },
     });
@@ -1271,7 +1294,12 @@ export class TrackedMessageService {
       return false;
     }
 
-    const reactedTags = new Set<string>();
+    const persistedCheckedTags = new Set(
+      (metadata.checkedClanTags ?? [])
+        .map((clanTag) => normalizeChecklistClanTag(clanTag))
+        .filter((clanTag): clanTag is string => Boolean(clanTag)),
+    );
+    const reactedTags = new Set<string>(persistedCheckedTags);
     for (const row of metadata.rows) {
       const reaction = [...message.reactions.cache.values()].find((candidate) =>
         emojiMatches(candidate, {
@@ -1282,6 +1310,17 @@ export class TrackedMessageService {
       if (!reaction) continue;
       if ((reaction.count ?? 0) > 1) {
         reactedTags.add(normalizeChecklistClanTag(row.clanTag));
+      }
+    }
+    if (change) {
+      const changedRowTag = findChecklistRowTagForReaction(metadata.rows, change.reaction);
+      if (changedRowTag) {
+        const changeCount = Math.trunc(Number(change.reaction.count ?? 0));
+        if (change.kind === "add") {
+          reactedTags.add(changedRowTag);
+        } else if (change.kind === "remove" && changeCount <= 1) {
+          reactedTags.delete(changedRowTag);
+        }
       }
     }
 

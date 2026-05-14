@@ -429,6 +429,49 @@ describe("/fillers command", () => {
     });
   });
 
+  it("logs normal /fillers set diagnostics at debug level instead of error", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    seedAccount({
+      playerTag: makeValidPlayerTag(0),
+      discordUserId: "222222222222222222",
+      playerName: "Player 001",
+      townHall: 18,
+      clanTag: "#PQL0289",
+      clanName: "Alpha Clan",
+      weight: 9000,
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalled();
+  });
+
+  it("still logs real /fillers set failures at error level", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.playerLink.findMany.mockRejectedValueOnce(new Error("boom"));
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(debugSpy).not.toHaveBeenCalledWith(expect.stringContaining("stage=fillers_set_fetch_rows"));
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: expect.stringContaining("Could not render the filler editor"),
+    });
+  });
+
   it("keeps the select collector active for a single-page editor and persists filler state", async () => {
     for (let index = 0; index < 2; index += 1) {
       const tag = makeValidPlayerTag(index);
