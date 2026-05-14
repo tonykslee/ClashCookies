@@ -822,6 +822,7 @@ enum FwaTrackedClanWarRosterEffectiveWeightStatus {
 enum TrackedMessageFeatureType {
   FWA_BASE_SWAP
   SYNC_TIME_POST
+  FWA_MATCH_CHECKLIST
 }
 
 enum TrackedMessageStatus {

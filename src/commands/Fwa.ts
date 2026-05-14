@@ -40,7 +40,12 @@ import {
 } from "../services/BaseSwapRosterService";
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
-import { trackedMessageService } from "../services/TrackedMessageService";
+import {
+  buildFwaMatchChecklistContent,
+  parseFwaMatchChecklistBadgeInline,
+  trackedMessageService,
+  type FwaMatchChecklistTrackedRow,
+} from "../services/TrackedMessageService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -2013,9 +2018,36 @@ function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
   return String(input ?? "").replace(/`/g, "'");
 }
 
+const FWA_MATCH_CHECKLIST_UNCHECKED = "☐";
+const FWA_MATCH_CHECKLIST_TTL_MS = 48 * 60 * 60 * 1000;
+
+/** Purpose: determine whether `/fwa match` should render the checklist column in compact copy output. */
+function resolveFwaMatchChecklistEnabled(params: {
+  copyPaste: boolean;
+  checklist: boolean | null | undefined;
+}): boolean {
+  return params.copyPaste ? Boolean(params.checklist) : false;
+}
+
+/** Purpose: choose the compact copy label for a tracked clan, preferring the configured short name. */
+function resolveFwaMatchCompactClanLabel(params: {
+  shortName: string | null | undefined;
+  clanName: string | null | undefined;
+  fallbackLabel?: string | null | undefined;
+}): string {
+  const shortName = sanitizeFwaMatchCopyText(params.shortName?.trim() || null);
+  if (shortName) return shortName;
+  const clanName = sanitizeFwaMatchCopyText(params.clanName);
+  if (clanName.trim()) return clanName;
+  const fallbackLabel = sanitizeFwaMatchCopyText(params.fallbackLabel);
+  return fallbackLabel.trim() || "unknown";
+}
+
 /** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
 function buildFwaMatchCompactCopyLine(params: {
   mailStatusEmoji?: string;
+  checklist?: boolean;
+  clanShortName?: string | null | undefined;
   clanName: string | null | undefined;
   opponentName: string | null | undefined;
   opponentTag: string | null | undefined;
@@ -2023,7 +2055,10 @@ function buildFwaMatchCompactCopyLine(params: {
   outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
 }): string {
   const mailStatusEmoji = params.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
-  const clanName = sanitizeFwaMatchCopyText(params.clanName) || "unknown";
+  const clanName = resolveFwaMatchCompactClanLabel({
+    shortName: params.clanShortName,
+    clanName: params.clanName,
+  });
   const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
   const opponentTagRaw = normalizeTag(String(params.opponentTag ?? ""));
   const opponentTag = opponentTagRaw
@@ -2033,8 +2068,92 @@ function buildFwaMatchCompactCopyLine(params: {
     matchType: params.matchType,
     outcome: params.outcome,
   });
+  const checklistColumn = params.checklist ? ` | ${FWA_MATCH_CHECKLIST_UNCHECKED}` : "";
 
-  return `${mailStatusEmoji} | ${matchStateEmoji} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
+  return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
+}
+
+export function buildFwaMatchChecklistRowsFromCopyView(params: {
+  orderedTags: string[];
+  copyText: string;
+  badgeByTag: Map<string, string | null>;
+}): FwaMatchChecklistTrackedRow[] {
+  const lines = params.copyText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => Boolean(line));
+  return params.orderedTags.flatMap((tag, index) => {
+    const compactCopyLine = stripFwaMatchChecklistColumn(lines[index] ?? "");
+    const badgeEmojiInline = params.badgeByTag.get(normalizeTag(tag))?.trim() ?? "";
+    if (!compactCopyLine) return [];
+    const parsedBadge = parseFwaMatchChecklistBadgeInline(badgeEmojiInline);
+    return [
+      {
+        clanTag: normalizeTag(tag),
+        compactCopyLine,
+        badgeEmojiId: parsedBadge.badgeEmojiId,
+        badgeEmojiName: parsedBadge.badgeEmojiName,
+        badgeEmojiInline: parsedBadge.badgeEmojiInline,
+      },
+    ];
+  });
+}
+
+export function buildFwaMatchChecklistExpiresAt(nowMs: number = Date.now()): Date {
+  return new Date(nowMs + FWA_MATCH_CHECKLIST_TTL_MS);
+}
+
+export function buildFwaMatchChecklistTrackedMessageInput(params: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  clanTag: string | null;
+  createdByUserId: string;
+  rows: FwaMatchChecklistTrackedRow[];
+  createdAtIso?: string;
+}): Parameters<typeof trackedMessageService.createFwaMatchChecklistTrackedMessage>[0] {
+  return {
+    guildId: params.guildId,
+    channelId: params.channelId,
+    messageId: params.messageId,
+    clanTag: params.clanTag,
+    expiresAt: buildFwaMatchChecklistExpiresAt(),
+    metadata: {
+      createdByUserId: params.createdByUserId,
+      createdAtIso: params.createdAtIso ?? new Date().toISOString(),
+      rows: params.rows,
+    },
+  };
+}
+
+function stripFwaMatchChecklistColumn(line: string): string {
+  const normalized = String(line ?? "").trim();
+  if (!normalized) return normalized;
+  const firstSeparator = normalized.indexOf(" | ");
+  if (firstSeparator < 0) return normalized;
+  const secondSeparator = normalized.indexOf(" | ", firstSeparator + 3);
+  if (secondSeparator < 0) return normalized;
+  const thirdSeparator = normalized.indexOf(" | ", secondSeparator + 3);
+  if (thirdSeparator < 0) return normalized;
+  const checklistValue = normalized.slice(secondSeparator + 3, thirdSeparator).trim();
+  if (checklistValue !== "☐" && checklistValue !== "✅") return normalized;
+  return `${normalized.slice(0, secondSeparator + 3)}${normalized.slice(thirdSeparator + 3)}`;
+}
+
+async function addFwaMatchChecklistReactions(
+  message: { id: string; react: (emoji: string) => Promise<unknown> },
+  rows: FwaMatchChecklistTrackedRow[],
+): Promise<void> {
+  for (const row of rows) {
+    if (!row.badgeEmojiInline) continue;
+    try {
+      await message.react(row.badgeEmojiInline);
+    } catch (err) {
+      console.error(
+        `[fwa match checklist] react failed message=${message.id} clan=${row.clanTag} emoji=${row.badgeEmojiInline} error=${formatError(err)}`,
+      );
+    }
+  }
 }
 
 const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
@@ -3020,11 +3139,12 @@ async function prepareMailGateResumeMatchPayloadForTag(params: {
   return { key, payload: scoped.payload, view: scoped.view };
 }
 
-function buildFwaMatchViewRenderPayload(params: {
+export function buildFwaMatchViewRenderPayload(params: {
   payload: FwaMatchCopyPayload;
   key: string;
   view: MatchView;
   showMode: "embed" | "copy";
+  includeComponents?: boolean;
 }): {
   content: string | undefined;
   embeds: EmbedBuilder[];
@@ -3038,12 +3158,14 @@ function buildFwaMatchViewRenderPayload(params: {
         ? limitDiscordContent(params.view.copyText)
         : undefined,
     embeds: params.showMode === "embed" ? [params.view.embed] : [],
-    components: buildFwaMatchCopyComponents(
-      params.payload,
-      params.payload.userId,
-      params.key,
-      params.showMode,
-    ),
+    components: params.includeComponents === false
+      ? []
+      : buildFwaMatchCopyComponents(
+          params.payload,
+          params.payload.userId,
+          params.key,
+          params.showMode,
+        ),
   };
 }
 
@@ -9051,8 +9173,12 @@ export const resolveSingleClanMatchEmbedColorForTest =
   resolveSingleClanMatchEmbedColor;
 export const buildFwaMatchCompactCopyStateEmojiForTest =
   resolveFwaMatchStateEmoji;
+export const resolveFwaMatchChecklistEnabledForTest =
+  resolveFwaMatchChecklistEnabled;
 export const buildFwaMatchCompactCopyLineForTest =
   buildFwaMatchCompactCopyLine;
+export const addFwaMatchChecklistReactionsForTest =
+  addFwaMatchChecklistReactions;
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
 export const resolveAllianceDropdownMatchStateEmojiForTest =
   resolveAllianceDropdownMatchStateEmoji;
@@ -10285,6 +10411,7 @@ async function buildTrackedMatchOverview(
     includeActualSheet?: boolean;
     mailStatusDebugEnabled?: boolean;
     revisionDraftByTag?: Record<string, MatchRevisionFields>;
+    compactChecklist?: boolean;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -10295,6 +10422,7 @@ async function buildTrackedMatchOverview(
   const includeActualSheet = options?.includeActualSheet ?? true;
   const mailStatusDebugEnabled = options?.mailStatusDebugEnabled ?? false;
   const revisionDraftByTag = options?.revisionDraftByTag ?? {};
+  const compactChecklist = options?.compactChecklist ?? false;
   const scopedTagSet =
     options?.onlyClanTags && options.onlyClanTags.length > 0
       ? new Set(options.onlyClanTags.map((tag) => normalizeTag(tag)))
@@ -10306,7 +10434,7 @@ async function buildTrackedMatchOverview(
     : new Map<string, ActualSheetClanSnapshot>();
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, mailChannelId: true },
+    select: { tag: true, name: true, shortName: true, mailChannelId: true },
   });
   const scopedTracked = scopedTagSet
     ? tracked.filter((clan) => scopedTagSet.has(normalizeTag(clan.tag)))
@@ -10556,11 +10684,13 @@ async function buildTrackedMatchOverview(
       ];
       const preWarCopyLine = buildFwaMatchCompactCopyLine({
         mailStatusEmoji,
+        checklist: compactChecklist,
+        clanShortName: clan.shortName,
         clanName,
         opponentName: "unknown",
         opponentTag: null,
-        matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
-        outcome: null,
+          matchType: (sub?.matchType as "FWA" | "BL" | "MM" | "SKIP" | null | undefined) ?? "UNKNOWN",
+          outcome: null,
       });
       if (includeInOverview) {
         embed.addFields({
@@ -10649,6 +10779,8 @@ async function buildTrackedMatchOverview(
       ];
       const noOpponentCopyLine = buildFwaMatchCompactCopyLine({
         mailStatusEmoji,
+        checklist: compactChecklist,
+        clanShortName: clan.shortName,
         clanName,
         opponentName: "unknown",
         opponentTag: null,
@@ -12504,6 +12636,19 @@ export const Fwa: Command = {
           ],
         },
         {
+          name: "copy_paste",
+          description: "Render the compact copy/paste view directly",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
+          name: "checklist",
+          description:
+            "Add an unchecked checklist column to direct copy/paste output",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
           name: "debug-mail-status",
           description:
             "Show admin-only mail status diagnostics for tracked Discord post state",
@@ -12826,6 +12971,41 @@ export const Fwa: Command = {
         embeds,
         components: componentsOverride ?? defaultComponents,
       });
+    };
+
+    const postChecklistMessage = async (
+      content: string,
+      fallbackContent: string,
+      rows: FwaMatchChecklistTrackedRow[],
+      clanTag: string | null,
+      checklist: boolean,
+    ): Promise<void> => {
+      if (checklist && !isPublic) {
+        await editReplySafe("Checklist reactions require visibility:public.", [], []);
+        return;
+      }
+      if (rows.length === 0 || !isPublic) {
+        await editReplySafe(fallbackContent, [], []);
+        return;
+      }
+
+      await interaction.editReply({
+        content: truncateDiscordContent(content),
+        embeds: [],
+        components: [],
+      });
+      const postedMessage = await interaction.fetchReply();
+      await trackedMessageService.createFwaMatchChecklistTrackedMessage(
+        buildFwaMatchChecklistTrackedMessageInput({
+          guildId: interaction.guildId ?? "",
+          channelId: interaction.channelId,
+          messageId: postedMessage.id,
+          clanTag,
+          createdByUserId: interaction.user.id,
+          rows,
+        }),
+      );
+      await addFwaMatchChecklistReactions(postedMessage as any, rows);
     };
 
     await interaction.deferReply({ ephemeral: !isPublic });
@@ -14003,6 +14183,13 @@ export const Fwa: Command = {
     }
 
     if (subcommand === "match") {
+      const copyPaste = interaction.options.getBoolean?.("copy_paste", false) ?? false;
+      const checklist = resolveFwaMatchChecklistEnabled({
+        copyPaste,
+        checklist: copyPaste
+          ? interaction.options.getBoolean?.("checklist", false) ?? false
+          : false,
+      });
       if (tag) {
         const trackedClan = await prisma.trackedClan.findFirst({
           where: { tag: { equals: `#${tag}`, mode: "insensitive" } },
@@ -14062,14 +14249,27 @@ export const Fwa: Command = {
         {
           onlyClanTags: tag ? [tag] : undefined,
           mailStatusDebugEnabled: matchMailStatusDebugEnabled,
+          compactChecklist: checklist,
         },
       );
+      const checklistBadgeByTag = checklist
+        ? new Map(
+            (
+              await prisma.trackedClan.findMany({
+                select: { tag: true, clanBadge: true },
+              })
+            ).map((row) => [
+              normalizeTag(row.tag),
+              row.clanBadge?.trim() || null,
+            ]),
+          )
+        : new Map<string, string | null>();
       const key = interaction.id;
       if (!tag) {
         console.info(
           `[fwa-match-payload] stage=command_build scope=full guild=${interaction.guildId ?? "none"} source=alliance`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14083,16 +14283,41 @@ export const Fwa: Command = {
           currentScope: "alliance",
           currentTag: null,
           revisionDraftByTag: {},
-        });
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          if (checklist) {
+            const checklistRows = buildFwaMatchChecklistRowsFromCopyView({
+              orderedTags: Object.keys(overview.singleViews),
+              copyText: payload.allianceView.copyText,
+              badgeByTag: checklistBadgeByTag,
+            });
+            await postChecklistMessage(
+              buildFwaMatchChecklistContent({
+                rows: checklistRows,
+                checkedClanTags: [],
+              }),
+              payload.allianceView.copyText,
+              checklistRows,
+              null,
+              checklist,
+            );
+            return;
+          }
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: payload.allianceView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [overview.embed],
-          buildFwaMatchCopyComponents(
-            fwaMatchCopyPayloads.get(key)!,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       }
@@ -14102,7 +14327,7 @@ export const Fwa: Command = {
         console.info(
           `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag tag=#${tag}`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14116,17 +14341,41 @@ export const Fwa: Command = {
           currentScope: "single",
           currentTag: tag,
           revisionDraftByTag: {},
-        });
-        const stored = fwaMatchCopyPayloads.get(key)!;
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          if (checklist) {
+            const checklistRows = buildFwaMatchChecklistRowsFromCopyView({
+              orderedTags: [tag],
+              copyText: trackedSingleView.copyText,
+              badgeByTag: checklistBadgeByTag,
+            });
+            await postChecklistMessage(
+              buildFwaMatchChecklistContent({
+                rows: checklistRows,
+                checkedClanTags: [],
+              }),
+              trackedSingleView.copyText,
+              checklistRows,
+              tag,
+              checklist,
+            );
+            return;
+          }
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: trackedSingleView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [trackedSingleView.embed],
-          buildFwaMatchCopyComponents(
-            stored,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       }
@@ -14403,10 +14652,7 @@ export const Fwa: Command = {
                 subscription?.matchType === "SKIP" ? { tag } : null,
             };
           }
-          console.info(
-            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${nonActiveMode === "no_opponent" ? "single_tag_no_opponent" : "single_tag_prewar"} tag=#${tag}`,
-          );
-          fwaMatchCopyPayloads.set(key, {
+          const payload = {
             userId: interaction.user.id,
             guildId: interaction.guildId ?? null,
             includePostButton: !isPublic,
@@ -14423,17 +14669,26 @@ export const Fwa: Command = {
             currentScope: "single",
             currentTag: tag,
             revisionDraftByTag: {},
-          });
-          const stored = fwaMatchCopyPayloads.get(key)!;
+          } satisfies FwaMatchCopyPayload;
+          if (copyPaste) {
+            const response = buildFwaMatchViewRenderPayload({
+              payload,
+              key,
+              view: singleView,
+              showMode: "copy",
+              includeComponents: false,
+            });
+            await editReplySafe(response.content ?? "", response.embeds, response.components);
+            return;
+          }
+          console.info(
+            `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=${nonActiveMode === "no_opponent" ? "single_tag_no_opponent" : "single_tag_prewar"} tag=#${tag}`,
+          );
+          fwaMatchCopyPayloads.set(key, payload);
           await editReplySafe(
             "",
             [singleView.embed],
-            buildFwaMatchCopyComponents(
-              stored,
-              interaction.user.id,
-              key,
-              "embed",
-            ),
+            buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
           );
           return;
         }
@@ -14499,12 +14754,15 @@ export const Fwa: Command = {
           existingInferredMatchType: subscription?.inferredMatchType ?? null,
         });
         const trackedPair = await prisma.trackedClan.findMany({
-          select: { name: true, tag: true },
+          select: { name: true, shortName: true, tag: true },
         });
-        const trackedNameByTag = new Map(
+        const trackedClanByTag = new Map(
           trackedPair.map((c) => [
             normalizeTag(c.tag),
-            sanitizeClanName(c.name),
+            {
+              name: sanitizeClanName(c.name),
+              shortName: sanitizeFwaMatchCopyText(c.shortName?.trim() || null),
+            },
           ]),
         );
 
@@ -14660,12 +14918,14 @@ export const Fwa: Command = {
           detail: `tag=${tag} opponent=${opponentTag}`,
         });
 
+        const trackedPrimaryClan = trackedClanByTag.get(tag) ?? null;
+        const trackedOpponentClan = trackedClanByTag.get(opponentTag) ?? null;
         const resolvedPrimaryName =
-          trackedNameByTag.get(tag) ??
+          trackedPrimaryClan?.name ??
           sanitizeClanName(String(war?.clan?.name ?? "")) ??
           sanitizeClanName(primary.clanName);
         const resolvedOpponentName =
-          trackedNameByTag.get(opponentTag) ??
+          trackedOpponentClan?.name ??
           sanitizeClanName(String(war?.opponent?.name ?? "")) ??
           sanitizeClanName(opponent.clanName);
         const [primaryNameFromApi, opponentNameFromApi] = await Promise.all([
@@ -14908,6 +15168,8 @@ export const Fwa: Command = {
           );
         const compactCopyLine = buildFwaMatchCompactCopyLine({
           mailStatusEmoji: liveMailStatus.mailStatusEmoji,
+          checklist,
+          clanShortName: trackedPrimaryClan?.shortName ?? null,
           clanName: leftName,
           opponentName: rightName,
           opponentTag: opponentTag || null,
@@ -14970,7 +15232,7 @@ export const Fwa: Command = {
         console.info(
           `[fwa-match-payload] stage=command_build scope=scoped guild=${interaction.guildId ?? "none"} source=single_tag_live tag=#${tag}`,
         );
-        fwaMatchCopyPayloads.set(key, {
+        const payload = {
           userId: interaction.user.id,
           guildId: interaction.guildId ?? null,
           includePostButton: !isPublic,
@@ -14984,17 +15246,41 @@ export const Fwa: Command = {
           currentScope: "single",
           currentTag: tag,
           revisionDraftByTag: {},
-        });
-        const stored = fwaMatchCopyPayloads.get(key)!;
+        } satisfies FwaMatchCopyPayload;
+        if (copyPaste) {
+          if (checklist) {
+            const checklistRows = buildFwaMatchChecklistRowsFromCopyView({
+              orderedTags: [tag],
+              copyText: singleView.copyText,
+              badgeByTag: checklistBadgeByTag,
+            });
+            await postChecklistMessage(
+              buildFwaMatchChecklistContent({
+                rows: checklistRows,
+                checkedClanTags: [],
+              }),
+              singleView.copyText,
+              checklistRows,
+              tag,
+              checklist,
+            );
+            return;
+          }
+          const response = buildFwaMatchViewRenderPayload({
+            payload,
+            key,
+            view: singleView,
+            showMode: "copy",
+            includeComponents: false,
+          });
+          await editReplySafe(response.content ?? "", response.embeds, response.components);
+          return;
+        }
+        fwaMatchCopyPayloads.set(key, payload);
         await editReplySafe(
           "",
           [embed],
-          buildFwaMatchCopyComponents(
-            stored,
-            interaction.user.id,
-            key,
-            "embed",
-          ),
+          buildFwaMatchCopyComponents(payload, interaction.user.id, key, "embed"),
         );
         return;
       } catch (err) {

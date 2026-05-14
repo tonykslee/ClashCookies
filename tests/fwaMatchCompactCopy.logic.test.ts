@@ -1,9 +1,37 @@
+import { EmbedBuilder } from "discord.js";
 import { describe, expect, it } from "vitest";
 
 import {
   buildFwaMatchCompactCopyLineForTest,
   buildFwaMatchCompactCopyStateEmojiForTest,
+  buildFwaMatchViewRenderPayload,
+  resolveFwaMatchChecklistEnabledForTest,
 } from "../src/commands/Fwa";
+
+function makeView(copyText: string, title: string) {
+  return {
+    embed: new EmbedBuilder().setTitle(title).setDescription(title),
+    copyText,
+  };
+}
+
+function makePayload(allianceCopyText: string, singleCopyText: string) {
+  const allianceView = makeView(allianceCopyText, "Alliance");
+  const singleView = makeView(singleCopyText, "Single");
+  return {
+    userId: "111111111111111111",
+    guildId: "guild-1",
+    includePostButton: true,
+    allianceView,
+    allianceViewIsScoped: false,
+    singleViews: {
+      ABC123: singleView,
+    },
+    currentScope: "alliance" as const,
+    currentTag: null,
+    revisionDraftByTag: {},
+  };
+}
 
 describe("fwa match compact copy view", () => {
   it.each([
@@ -17,7 +45,7 @@ describe("fwa match compact copy view", () => {
       buildFwaMatchCompactCopyStateEmojiForTest({
         matchType,
         outcome,
-      })
+      }),
     ).toBe(expected);
   });
 
@@ -110,7 +138,7 @@ describe("fwa match compact copy view", () => {
     ];
 
     expect(lines.join("\n")).toBe(
-      "📬 | 🟢 | Alpha vs `Bravo` (`#B1`)\n📭 | ⚪ | Charlie vs `Delta` (`#D2`)"
+      "📬 | 🟢 | Alpha vs `Bravo` (`#B1`)\n📭 | ⚪ | Charlie vs `Delta` (`#D2`)",
     );
   });
 
@@ -126,5 +154,162 @@ describe("fwa match compact copy view", () => {
 
     expect(line).toBe("📭 | ⚫ | Echo vs `Foxtrot` (`#F3`)");
     expect(line.includes("\n")).toBe(false);
+  });
+
+  it("omits the checklist column unless requested", () => {
+    const uncheckedLine = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      matchType: "FWA",
+      outcome: "WIN",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      checklist: false,
+    });
+    const checkedLine = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      matchType: "FWA",
+      outcome: "WIN",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      checklist: true,
+    });
+
+    expect(uncheckedLine).toBe("📬 | 🟢 | RR vs `Bravo` (`#B1`)");
+    expect(checkedLine).toBe("📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)");
+  });
+
+  it("ignores checklist unless copy_paste is enabled", () => {
+    expect(
+      resolveFwaMatchChecklistEnabledForTest({
+        copyPaste: false,
+        checklist: true,
+      }),
+    ).toBe(false);
+    expect(
+      resolveFwaMatchChecklistEnabledForTest({
+        copyPaste: true,
+        checklist: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("prefers tracked clan short names in compact copy rows", () => {
+    const line = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      clanShortName: "RR",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      matchType: "FWA",
+      outcome: "WIN",
+    });
+
+    expect(line).toBe("📬 | 🟢 | RR vs `Bravo` (`#B1`)");
+  });
+
+  it("falls back to the full clan name when short name is missing", () => {
+    const line = buildFwaMatchCompactCopyLineForTest({
+      mailStatusEmoji: "📬",
+      clanShortName: "   ",
+      clanName: "Red Ridge",
+      opponentName: "Bravo",
+      opponentTag: "#B1",
+      matchType: "FWA",
+      outcome: "WIN",
+    });
+
+    expect(line).toBe("📬 | 🟢 | Red Ridge vs `Bravo` (`#B1`)");
+  });
+
+  it("renders normal match embed by default and direct copy_paste without components", () => {
+    const payload = makePayload(
+      "📬 | 🟢 | Alliance vs `Bravo` (`#B1`)",
+      "📬 | ⚫ | Single vs `Delta` (`#D2`)",
+    );
+
+    const embedResponse = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-1",
+      view: payload.allianceView as any,
+      showMode: "embed",
+    });
+    expect(embedResponse.content).toBeUndefined();
+    expect(embedResponse.embeds).toHaveLength(1);
+    expect(embedResponse.components.length).toBeGreaterThan(0);
+
+    const copyResponse = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-1",
+      view: payload.allianceView as any,
+      showMode: "copy",
+      includeComponents: false,
+    });
+    expect(copyResponse.content).toBe(payload.allianceView.copyText);
+    expect(copyResponse.embeds).toHaveLength(0);
+    expect(copyResponse.components).toHaveLength(0);
+  });
+
+  it("renders direct checklist copy output without buttons or components", () => {
+    const payload = makePayload(
+      "📬 | 🟢 | ☐ | Alliance vs `Bravo` (`#B1`)",
+      "📭 | 🔴 | ☐ | Single vs `Delta` (`#D2`)",
+    );
+
+    const copyResponse = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-checklist",
+      view: payload.allianceView as any,
+      showMode: "copy",
+      includeComponents: false,
+    });
+
+    expect(copyResponse.content).toBe(payload.allianceView.copyText);
+    expect(copyResponse.embeds).toHaveLength(0);
+    expect(copyResponse.components).toHaveLength(0);
+  });
+
+  it("renders alliance and single-clan copy_paste output with the same copy text shape as the button view", () => {
+    const payload = makePayload(
+      "📬 | 🟢 | Alliance vs `Bravo` (`#B1`)",
+      "📭 | 🔴 | Single vs `Delta` (`#D2`)",
+    );
+
+    const allianceButtonView = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-2",
+      view: payload.allianceView as any,
+      showMode: "copy",
+    });
+    const allianceDirectView = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-2",
+      view: payload.allianceView as any,
+      showMode: "copy",
+      includeComponents: false,
+    });
+    expect(allianceDirectView.content).toBe(allianceButtonView.content);
+    expect(allianceButtonView.components.length).toBeGreaterThan(0);
+    expect(allianceDirectView.components).toHaveLength(0);
+
+    const singleButtonView = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-3",
+      view: payload.singleViews.ABC123 as any,
+      showMode: "copy",
+    });
+    const singleDirectView = buildFwaMatchViewRenderPayload({
+      payload,
+      key: "key-3",
+      view: payload.singleViews.ABC123 as any,
+      showMode: "copy",
+      includeComponents: false,
+    });
+    expect(singleDirectView.content).toBe(singleButtonView.content);
+    expect(singleButtonView.components.length).toBeGreaterThan(0);
+    expect(singleDirectView.components).toHaveLength(0);
   });
 });

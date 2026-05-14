@@ -1,11 +1,13 @@
 import { Client, EmbedBuilder } from "discord.js";
 import { normalizeClanTag } from "./PlayerLinkService";
+import { resolveFwaMatchStateEmoji } from "../commands/fwa/matchStateEmoji";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
   SYNC_TIME_POST: "SYNC_TIME_POST",
+  FWA_MATCH_CHECKLIST: "FWA_MATCH_CHECKLIST",
 } as const;
 
 export const TRACKED_MESSAGE_STATUS = {
@@ -82,10 +84,131 @@ export type SyncTimeTrackedMetadata = {
   reminderSentAt?: string | null;
 };
 
+export type FwaMatchChecklistTrackedRow = {
+  clanTag: string;
+  compactCopyLine: string;
+  badgeEmojiId: string | null;
+  badgeEmojiName: string | null;
+  badgeEmojiInline: string;
+};
+
+export type FwaMatchChecklistTrackedMetadata = {
+  createdByUserId: string;
+  createdAtIso: string;
+  rows: FwaMatchChecklistTrackedRow[];
+};
+
+const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
+const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
+const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
+
+/** Purpose: sanitize copy text so inline-code formatting stays intact in compact match rows. */
+export function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
+  return String(input ?? "").replace(/`/g, "'");
+}
+
+/** Purpose: determine whether `/fwa match` should render the checklist column in compact copy output. */
+export function resolveFwaMatchChecklistEnabled(params: {
+  copyPaste: boolean;
+  checklist: boolean | null | undefined;
+}): boolean {
+  return params.copyPaste ? Boolean(params.checklist) : false;
+}
+
+/** Purpose: choose the compact copy label for a tracked clan, preferring the configured short name. */
+export function resolveFwaMatchCompactClanLabel(params: {
+  shortName: string | null | undefined;
+  clanName: string | null | undefined;
+  fallbackLabel?: string | null | undefined;
+}): string {
+  const shortName = sanitizeFwaMatchCopyText(params.shortName?.trim() || null);
+  if (shortName) return shortName;
+  const clanName = sanitizeFwaMatchCopyText(params.clanName);
+  if (clanName.trim()) return clanName;
+  const fallbackLabel = sanitizeFwaMatchCopyText(params.fallbackLabel);
+  return fallbackLabel.trim() || "unknown";
+}
+
+/** Purpose: build one mobile-friendly compact copy row for /fwa match overview and single-clan views. */
+export function buildFwaMatchCompactCopyLine(params: {
+  mailStatusEmoji?: string;
+  checklist?: boolean;
+  checklistChecked?: boolean;
+  clanShortName?: string | null | undefined;
+  clanName: string | null | undefined;
+  opponentName: string | null | undefined;
+  opponentTag: string | null | undefined;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+}): string {
+  const mailStatusEmoji = params.mailStatusEmoji ?? "📬";
+  const clanName = resolveFwaMatchCompactClanLabel({
+    shortName: params.clanShortName,
+    clanName: params.clanName,
+  });
+  const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
+  const opponentTagRaw = normalizeTagBare(String(params.opponentTag ?? ""));
+  const opponentTag = opponentTagRaw
+    ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
+    : "—";
+  const matchStateEmoji = resolveFwaMatchStateEmoji({
+    matchType: params.matchType,
+    outcome: params.outcome,
+  });
+  const checklistColumn = params.checklist
+    ? ` | ${params.checklistChecked ? FWA_MATCH_CHECKLIST_CHECKED_EMOJI : FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI}`
+    : "";
+
+  return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
+}
+
+export function buildFwaMatchChecklistContent(input: {
+  rows: Iterable<FwaMatchChecklistTrackedRow>;
+  checkedClanTags: Iterable<string>;
+}): string {
+  const checkedSet = new Set(
+    [...input.checkedClanTags]
+      .map((clanTag) => normalizeChecklistClanTag(clanTag))
+      .filter((clanTag): clanTag is string => Boolean(clanTag)),
+  );
+  return [...input.rows]
+    .map((row) =>
+      insertFwaMatchChecklistColumn(row.compactCopyLine, checkedSet.has(normalizeChecklistClanTag(row.clanTag))),
+    )
+    .join("\n");
+}
+
+function insertFwaMatchChecklistColumn(line: string, checked: boolean): string {
+  const normalized = stripFwaMatchChecklistColumn(String(line ?? "").trim());
+  if (!normalized) return normalized;
+  const firstSeparator = normalized.indexOf(" | ");
+  if (firstSeparator < 0) return normalized;
+  const secondSeparator = normalized.indexOf(" | ", firstSeparator + 3);
+  if (secondSeparator < 0) return normalized;
+  const mark = checked ? FWA_MATCH_CHECKLIST_CHECKED_EMOJI : FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI;
+  return `${normalized.slice(0, secondSeparator + 3)}${mark} | ${normalized.slice(secondSeparator + 3)}`;
+}
+
+function stripFwaMatchChecklistColumn(line: string): string {
+  const normalized = String(line ?? "").trim();
+  if (!normalized) return normalized;
+  const firstSeparator = normalized.indexOf(" | ");
+  if (firstSeparator < 0) return normalized;
+  const secondSeparator = normalized.indexOf(" | ", firstSeparator + 3);
+  if (secondSeparator < 0) return normalized;
+  const thirdSeparator = normalized.indexOf(" | ", secondSeparator + 3);
+  if (thirdSeparator < 0) return normalized;
+  const checklistValue = normalized.slice(secondSeparator + 3, thirdSeparator).trim();
+  if (checklistValue !== FWA_MATCH_CHECKLIST_CHECKED_EMOJI && checklistValue !== FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI) {
+    return normalized;
+  }
+  return `${normalized.slice(0, secondSeparator + 3)}${normalized.slice(thirdSeparator + 3)}`;
+}
+
 function activeWhere(featureType?: TrackedMessageFeatureType) {
   return {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
-    ...(featureType ? { featureType } : {}),
+    ...(featureType ? { featureType: featureType as any } : {}),
   };
 }
 
@@ -94,6 +217,39 @@ function normalizeTagBare(tag: string): string {
     .trim()
     .replace(/^#/, "")
     .toUpperCase();
+}
+
+function normalizeChecklistClanTag(tag: string): string {
+  const normalized = normalizeClanTag(tag);
+  return normalized || normalizeTagBare(tag);
+}
+
+export function parseFwaMatchChecklistBadgeInline(input: string | null | undefined): {
+  badgeEmojiId: string | null;
+  badgeEmojiName: string | null;
+  badgeEmojiInline: string;
+} {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) {
+    return {
+      badgeEmojiId: null,
+      badgeEmojiName: null,
+      badgeEmojiInline: "",
+    };
+  }
+  const custom = trimmed.match(CUSTOM_EMOJI_INLINE_PATTERN);
+  if (custom) {
+    return {
+      badgeEmojiId: custom[3],
+      badgeEmojiName: custom[2],
+      badgeEmojiInline: `<${custom[1] ? "a" : ""}:${custom[2]}:${custom[3]}>`,
+    };
+  }
+  return {
+    badgeEmojiId: null,
+    badgeEmojiName: trimmed,
+    badgeEmojiInline: trimmed,
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -246,6 +402,44 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
   };
 }
 
+function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow | null {
+  if (!isObject(value)) return null;
+  const clanTag = String(value.clanTag ?? "").trim();
+  const compactCopyLine = String(value.compactCopyLine ?? "").trim();
+  const badgeEmojiInline = String(value.badgeEmojiInline ?? "").trim();
+  if (!clanTag || !compactCopyLine) return null;
+  const badgeEmojiId = String(value.badgeEmojiId ?? "").trim();
+  const badgeEmojiName = String(value.badgeEmojiName ?? "").trim();
+  return {
+    clanTag,
+    compactCopyLine,
+    badgeEmojiId: badgeEmojiId || null,
+    badgeEmojiName: badgeEmojiName || null,
+    badgeEmojiInline: badgeEmojiInline || "",
+  };
+}
+
+export function parseFwaMatchChecklistMetadata(
+  value: unknown,
+): FwaMatchChecklistTrackedMetadata | null {
+  if (!isObject(value) || !Array.isArray(value.rows)) return null;
+  const createdByUserId = String(value.createdByUserId ?? "").trim();
+  const createdAtIso = String(value.createdAtIso ?? "").trim();
+  if (!createdByUserId || !createdAtIso) return null;
+  const rows = value.rows
+    .map((row) => parseFwaMatchChecklistRow(row))
+    .filter(
+      (row): row is FwaMatchChecklistTrackedRow =>
+        Boolean(row && row.clanTag),
+    );
+  if (rows.length === 0) return null;
+  return {
+    createdByUserId,
+    createdAtIso,
+    rows,
+  };
+}
+
 /** Purpose: render the current sync spin/claim state into one embed shared by the scheduler and the manual command. */
 export function buildSyncSpinStatusEmbed(input: {
   guildId: string;
@@ -318,7 +512,7 @@ export class TrackedMessageService {
           update: {
             guildId: params.guildId,
             channelId: message.channelId,
-            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
             status: TRACKED_MESSAGE_STATUS.ACTIVE,
             referenceId: params.referenceId ?? null,
             clanTag: params.clanTag,
@@ -329,7 +523,7 @@ export class TrackedMessageService {
             guildId: params.guildId,
             channelId: message.channelId,
             messageId: message.messageId,
-            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
             status: TRACKED_MESSAGE_STATUS.ACTIVE,
             referenceId: params.referenceId ?? null,
             clanTag: params.clanTag,
@@ -376,10 +570,10 @@ export class TrackedMessageService {
     if (!params.guildId || !normalizedClanTag) return null;
 
     const rows = await prisma.trackedMessage.findMany({
-      where: {
-        guildId: params.guildId,
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
-        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        where: {
+          guildId: params.guildId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
         expiresAt: { gt: now },
         OR: [
           { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
@@ -648,7 +842,7 @@ export class TrackedMessageService {
       update: {
         guildId: params.guildId,
         channelId: params.channelId,
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
         referenceId: params.referenceId ?? null,
         remindAt: params.remindAt ?? null,
@@ -659,11 +853,46 @@ export class TrackedMessageService {
         guildId: params.guildId,
         channelId: params.channelId,
         messageId: params.messageId,
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
         referenceId: params.referenceId ?? null,
         remindAt: params.remindAt ?? null,
         expiresAt: params.expiresAt,
+        metadata: params.metadata as any,
+      },
+    });
+  }
+
+  async createFwaMatchChecklistTrackedMessage(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    clanTag?: string | null;
+    expiresAt?: Date | null;
+    referenceId?: string | null;
+    metadata: FwaMatchChecklistTrackedMetadata;
+  }): Promise<void> {
+    await prisma.trackedMessage.upsert({
+      where: { messageId: params.messageId },
+      update: {
+        guildId: params.guildId,
+        channelId: params.channelId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: params.referenceId ?? null,
+        clanTag: params.clanTag ?? null,
+        expiresAt: params.expiresAt ?? null,
+        metadata: params.metadata as any,
+      },
+      create: {
+        guildId: params.guildId,
+        channelId: params.channelId,
+        messageId: params.messageId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: params.referenceId ?? null,
+        clanTag: params.clanTag ?? null,
+        expiresAt: params.expiresAt ?? null,
         metadata: params.metadata as any,
       },
     });
@@ -896,6 +1125,61 @@ export class TrackedMessageService {
       title: "Sync Spin Status",
     });
     await message.edit({ embeds: [embed] });
+    return true;
+  }
+
+  async refreshFwaMatchChecklistMessage(message: {
+    id: string;
+    reactions: {
+      cache: {
+        values(): IterableIterator<{
+          emoji: { id: string | null; name: string | null };
+          count?: number | null;
+        }>;
+      };
+    };
+    edit: (payload: {
+      content: string;
+      allowedMentions?: { parse: [] };
+    }) => Promise<unknown>;
+  }): Promise<boolean> {
+    const tracked = await prisma.trackedMessage.findUnique({
+      where: { messageId: message.id },
+    });
+    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
+    if ((tracked.featureType as string) !== TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) return false;
+
+    const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
+    if (!metadata) {
+      await prisma.trackedMessage.update({
+        where: { messageId: message.id },
+        data: { status: TRACKED_MESSAGE_STATUS.EXPIRED },
+      });
+      return false;
+    }
+
+    const reactedTags = new Set<string>();
+    for (const row of metadata.rows) {
+      const reaction = [...message.reactions.cache.values()].find((candidate) =>
+        emojiMatches(candidate, {
+          emojiId: row.badgeEmojiId,
+          emojiName: row.badgeEmojiName,
+        }),
+      );
+      if (!reaction) continue;
+      if ((reaction.count ?? 0) > 1) {
+        reactedTags.add(normalizeChecklistClanTag(row.clanTag));
+      }
+    }
+
+    const content = buildFwaMatchChecklistContent({
+      rows: metadata.rows,
+      checkedClanTags: reactedTags,
+    });
+    await message.edit({
+      content,
+      allowedMentions: { parse: [] },
+    });
     return true;
   }
 }
