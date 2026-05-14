@@ -568,6 +568,7 @@ export class TrackedMessageService {
     const now = new Date();
     const normalizedClanTag = String(params.clanTag ?? "").trim();
     if (!params.guildId || !normalizedClanTag) return null;
+    const logPrefix = `[fwa base-swap] reminder candidate guild=${params.guildId} clan=${normalizedClanTag}`;
 
     const rows = await prisma.trackedMessage.findMany({
         where: {
@@ -608,10 +609,21 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
-      if (!metadata.swapReminder) continue;
-      if (!metadata.entries.some((entry) => entry.section === "fwa_bases")) {
+      if (!metadata.swapReminder) {
+        console.log(
+          `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=swapReminder_false`,
+        );
         continue;
       }
+      if (!metadata.entries.some((entry) => entry.section === "fwa_bases")) {
+        console.log(
+          `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=no_fwa_bases_entry`,
+        );
+        continue;
+      }
+      console.log(
+        `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} selected=true`,
+      );
       return {
         id: row.id,
         guildId: row.guildId,
@@ -625,6 +637,7 @@ export class TrackedMessageService {
       };
     }
 
+    console.log(`${logPrefix} selected=false reason=no_qualifying_candidate`);
     return null;
   }
 
