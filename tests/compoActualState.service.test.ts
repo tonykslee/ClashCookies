@@ -30,7 +30,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { CompoActualStateService } from "../src/services/CompoActualStateService";
+import {
+  CompoActualStateService,
+  loadCompoActualStateContext,
+} from "../src/services/CompoActualStateService";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -220,7 +223,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "798,000",
-      "1",
+      "2",
       "6",
       "2",
       "1",
@@ -238,6 +241,67 @@ describe("CompoActualStateService", () => {
     expect(result.contentLines).toContain(
       "Missing-to-50 roster fill info: 44",
     );
+  });
+
+  it("selects ACTUAL sources by explicit precedence and only counts war fallback rows as missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000008", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000009", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000020", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000028", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000088", weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 166000 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000008", currentWeight: 177000 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000009",
+        deferredWeight: 146000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      makeWarFallback({
+        clanTag: "#AAA111",
+        playerTag: "#P000020",
+        effectiveWeight: 174000,
+      }),
+      makeWarFallback({
+        clanTag: "#BBB222",
+        playerTag: "#P000028",
+        effectiveWeight: 175000,
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 2,
+        th17Count: 1,
+        th16Count: 1,
+        th15Count: 1,
+      }),
+    ]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const clan = context.clans[0];
+
+    expect(clan?.base.resolvedTotalWeight).toBe(806000);
+    expect(clan?.base.unresolvedWeightCount).toBe(3);
+    expect(clan?.members.find((member) => member.playerTag === "#P000002")?.resolvedWeightSource).toBe("member");
+    expect(clan?.members.find((member) => member.playerTag === "#P000008")?.resolvedWeightSource).toBe("catalog");
+    expect(clan?.members.find((member) => member.playerTag === "#P000009")?.resolvedWeightSource).toBe("defer");
+    expect(clan?.members.find((member) => member.playerTag === "#P000020")?.resolvedWeightSource).toBe("war");
+    expect(clan?.members.find((member) => member.playerTag === "#P000028")?.resolvedWeightSource).toBe("war");
+    expect(clan?.members.find((member) => member.playerTag === "#P000088")?.resolvedWeightSource).toBeNull();
   });
 
   it("renders ACTUAL state from persisted current-member data without sheet reads and still counts unresolved missing weights", async () => {
@@ -311,7 +375,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]).toEqual([
       "Alpha Clan",
       "466,000",
-      "1",
+      "2",
       "4",
       "0",
       "1",
@@ -410,7 +474,7 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
     expect(result.stateRows?.[1]?.[1]).toBe("798,000");
     expect(result.stateRows?.[1]?.[2]).toEqual(expect.any(String));
-    expect(result.stateRows?.[1]?.[3]).toBe("45");
+    expect(result.stateRows?.[1]?.[3]).toBe("46");
     expect(result.stateRows?.[1]?.[4]).toBe("6");
     expect(result.stateRows?.[1]?.[5]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[6]).toEqual(expect.any(String));
