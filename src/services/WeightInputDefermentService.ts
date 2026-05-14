@@ -1132,7 +1132,7 @@ export async function processWeightInputDefermentStages(
       }
       if (
         destination.currentWeight !== null &&
-        destination.currentWeight === locked.deferredWeight
+        destination.currentWeight >= locked.deferredWeight
       ) {
         const resolved = await markDefermentResolvedByCurrentWeight({
           rowId: locked.id,
