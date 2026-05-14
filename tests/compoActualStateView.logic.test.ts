@@ -150,6 +150,58 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket.TH18).toBe(-2);
   });
 
+  it("keeps the Auto-Detect fill plan fixed when missing slots shift the selected band upward", () => {
+    const result = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 7_208_000,
+        unresolvedWeightCount: 0,
+        memberCount: 44,
+        bucketCounts: makeBucketCounts({
+          TH18: 6,
+          TH17: 9,
+          TH16: 6,
+          TH15: 10,
+          TH14: 8,
+          TH13: 10,
+        }),
+      },
+      heatMapRefs: [
+        makeHeatMapRef({
+          weightMinInclusive: 7_000_000,
+          weightMaxInclusive: 7_299_999,
+          th18Count: 4,
+          th17Count: 8,
+          th16Count: 5,
+          th15Count: 9,
+          th14Count: 7,
+          th13Count: 11,
+        }),
+        makeHeatMapRef({
+          weightMinInclusive: 7_300_000,
+          weightMaxInclusive: 9_999_999,
+          th18Count: 12,
+          th17Count: 6,
+          th16Count: 6,
+          th15Count: 10,
+          th14Count: 8,
+          th13Count: 10,
+        }),
+      ],
+    });
+
+    expect(result.missingWeights).toBe(6);
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_300_000);
+    expect(result.totalWeight).toBeGreaterThan(7_208_000);
+    expect(result.totalWeight).toBeLessThan(8_258_000);
+    expect(result.deltaByBucket.TH18).toBe(-6);
+    expect(result.deltaByBucket.TH17).toBe(3);
+    expect(result.deltaByBucket.TH16).toBe(0);
+    expect(result.deltaByBucket.TH15).toBe(0);
+    expect(result.deltaByBucket.TH14).toBe(0);
+    expect(result.deltaByBucket["<=TH13"]).toBe(0);
+  });
+
   it("uses deterministic low-bucket overflow when Auto-Detect has more missing slots than deficits", () => {
     const result = projectCompoActualStateView({
       view: "auto",
@@ -191,7 +243,7 @@ describe("projectCompoActualStateView", () => {
     });
   });
 
-  it("breaks Auto-Detect oscillation by choosing the band closest to its midpoint", () => {
+  it("keeps Auto-Detect on the one-pass projected total when the band shifts upward", () => {
     const result = projectCompoActualStateView({
       view: "auto",
       base: {
@@ -215,8 +267,8 @@ describe("projectCompoActualStateView", () => {
     });
 
     expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(650000);
-    expect(result.totalWeight).toBe(635000);
-    expect(result.displayCounts.TH14).toBe(1);
+    expect(result.totalWeight).toBe(675000);
+    expect(result.displayCounts.TH18).toBe(1);
   });
 
   it("uses weighted deviation scoring to choose the best-fit band", () => {
