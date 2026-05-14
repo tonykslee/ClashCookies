@@ -23,6 +23,7 @@ import {
 import {
   addFwaMatchChecklistReactionsForTest,
   buildFwaMatchChecklistRowsFromCopyView,
+  buildFwaMatchChecklistTrackedMessageInput,
 } from "../src/commands/Fwa";
 
 function makeTrackedChecklistRow() {
@@ -70,6 +71,22 @@ describe("fwa checklist tracked messages", () => {
 
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(react).toHaveBeenCalledWith("<:twc:222>");
+  });
+
+  it("builds checklist tracked message input with a non-null expiresAt", () => {
+    const input = buildFwaMatchChecklistTrackedMessageInput({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-1",
+      clanTag: null,
+      createdByUserId: "user-1",
+      rows: makeTrackedChecklistRow().metadata.rows,
+      createdAtIso: "2026-05-13T00:00:00.000Z",
+    });
+
+    expect(input.expiresAt).toBeInstanceOf(Date);
+    expect(input.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(input.metadata.rows).toHaveLength(2);
   });
 
   it("builds checklist rows from compact copy text without duplicating the checklist column", () => {

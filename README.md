@@ -57,7 +57,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Maintains contributor documentation, setup guides, and script-based workflows.
 
 ## Detailed Capability Notes
-- `/fwa match` and `/fwa mail send` share active-war mail freshness gating and only treat same-war, same-outcome references as up to date; `/fwa match copy_paste:true` posts the compact copy view directly without buttons.
+- `/fwa match` and `/fwa mail send` share active-war mail freshness gating and only treat same-war, same-outcome references as up to date; `/fwa match copy_paste:true` posts the compact copy view directly without buttons, and `/fwa match copy_paste:true checklist:true visibility:public` posts the reaction-driven checklist version.
 - `/fwa police` includes canonical per-violation template management (`Custom -> Default -> Built-in`), warplan-aware applicability preview (`show`/`show-default`/`show-all`), and sample test-send (`DM`/`LOG`) through the same renderer used by live enforcement.
 - Active-war mail lifecycle reconciliation handles missing/inaccessible tracked references and keeps lifecycle state aligned with usable message targets.
 - `/force sync mail` validates supplied mail `message_id` against current-channel active-war identity before writing `WarMailLifecycle`.

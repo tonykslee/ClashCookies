@@ -2019,6 +2019,7 @@ function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
 }
 
 const FWA_MATCH_CHECKLIST_UNCHECKED = "☐";
+const FWA_MATCH_CHECKLIST_TTL_MS = 48 * 60 * 60 * 1000;
 
 /** Purpose: determine whether `/fwa match` should render the checklist column in compact copy output. */
 function resolveFwaMatchChecklistEnabled(params: {
@@ -2096,6 +2097,33 @@ export function buildFwaMatchChecklistRowsFromCopyView(params: {
       },
     ];
   });
+}
+
+export function buildFwaMatchChecklistExpiresAt(nowMs: number = Date.now()): Date {
+  return new Date(nowMs + FWA_MATCH_CHECKLIST_TTL_MS);
+}
+
+export function buildFwaMatchChecklistTrackedMessageInput(params: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  clanTag: string | null;
+  createdByUserId: string;
+  rows: FwaMatchChecklistTrackedRow[];
+  createdAtIso?: string;
+}): Parameters<typeof trackedMessageService.createFwaMatchChecklistTrackedMessage>[0] {
+  return {
+    guildId: params.guildId,
+    channelId: params.channelId,
+    messageId: params.messageId,
+    clanTag: params.clanTag,
+    expiresAt: buildFwaMatchChecklistExpiresAt(),
+    metadata: {
+      createdByUserId: params.createdByUserId,
+      createdAtIso: params.createdAtIso ?? new Date().toISOString(),
+      rows: params.rows,
+    },
+  };
 }
 
 function stripFwaMatchChecklistColumn(line: string): string {
@@ -12967,18 +12995,16 @@ export const Fwa: Command = {
         components: [],
       });
       const postedMessage = await interaction.fetchReply();
-      await trackedMessageService.createFwaMatchChecklistTrackedMessage({
-        guildId: interaction.guildId ?? "",
-        channelId: interaction.channelId,
-        messageId: postedMessage.id,
-        clanTag,
-        expiresAt: null,
-        metadata: {
+      await trackedMessageService.createFwaMatchChecklistTrackedMessage(
+        buildFwaMatchChecklistTrackedMessageInput({
+          guildId: interaction.guildId ?? "",
+          channelId: interaction.channelId,
+          messageId: postedMessage.id,
+          clanTag,
           createdByUserId: interaction.user.id,
-          createdAtIso: new Date().toISOString(),
           rows,
-        },
-      });
+        }),
+      );
       await addFwaMatchChecklistReactions(postedMessage as any, rows);
     };
 
