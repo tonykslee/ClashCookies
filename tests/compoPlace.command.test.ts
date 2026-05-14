@@ -104,7 +104,7 @@ describe("/compo place command", () => {
     const interaction = makeInteraction("145k");
     await Compo.run({} as any, interaction as any, {} as any);
 
-    expect(readPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
+    expect(readPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1", expect.any(Map));
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
 
@@ -134,7 +134,7 @@ describe("/compo place command", () => {
     const interaction = makeInteraction("100000");
     await Compo.run({} as any, interaction as any, {} as any);
 
-    expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13", "guild-1");
+    expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13", "guild-1", expect.any(Map));
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(getComponentCustomIds(payload)).toEqual(["compo-refresh:place:user-1:100000"]);
     expect(getFirstButtonState(payload)).toEqual({
