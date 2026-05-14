@@ -834,6 +834,7 @@ describe("/fillers command", () => {
     expect(String(userEmbed.description)).toContain("User: <@222222222222222222>");
     expect(String(userEmbed.description)).toContain("Alpha");
     expect(String(userEmbed.description)).not.toContain("Gamma");
+    expect(String(userEmbed.description)).not.toContain("Clan membership uses saved account data");
 
     const clanInteraction = makeInteraction({
       subcommand: "list",
@@ -844,6 +845,75 @@ describe("/fillers command", () => {
     expect(String(clanEmbed.title)).toBe("Filler Accounts in Beta Clan (1)");
     expect(String(clanEmbed.description)).toContain("Gamma");
     expect(String(clanEmbed.description)).not.toContain("Alpha");
+    expect(String(clanEmbed.description)).toContain(
+      "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
+    );
+
+    const allListEmbed = getEmbedJson(getLastEditPayload(allInteraction));
+    expect(String(allListEmbed.description)).not.toContain("Clan membership uses saved account data");
+  });
+
+  it("keeps the clan membership note visible across paginated clan lists", async () => {
+    const clanTag = "#PQL0289";
+    for (let index = 0; index < 40; index += 1) {
+      seedAccount({
+        playerTag: makeValidPlayerTag(index),
+        discordUserId: "222222222222222222",
+        playerName: `Clan Member ${String(index + 1).padStart(2, "0")} With A Long Display Name`,
+        townHall: 18,
+        clanTag,
+        clanName: "Alpha Clan",
+        weight: 9000 - index,
+      });
+      fillerState.add(makeValidPlayerTag(index));
+    }
+
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clan: clanTag,
+    });
+
+    await runFillers(interaction);
+
+    const firstPayload = getLastEditPayload(interaction);
+    const firstEmbed = getEmbedJson(firstPayload);
+    const firstComponents = getComponentJson(firstPayload);
+    expect(String(firstEmbed.description)).toContain(
+      "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
+    );
+
+    const nextButton = firstComponents
+      .at(-1)
+      ?.components?.find((component: any) => String(component.custom_id ?? component.customId ?? "").endsWith(":next"));
+    expect(nextButton).toBeTruthy();
+
+    const nextInteraction = makeButtonInteraction({
+      customId: nextButton.custom_id ?? nextButton.customId,
+    });
+    await interaction.__collectorHandlers.collect(nextInteraction);
+
+    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0];
+    const nextEmbed = getEmbedJson(nextPayload);
+    expect(String(nextEmbed.description)).toContain(
+      "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
+    );
+
+    const nextComponents = getComponentJson(nextPayload);
+    const prevButton = nextComponents
+      .at(-1)
+      ?.components?.find((component: any) => String(component.custom_id ?? component.customId ?? "").endsWith(":prev"));
+    expect(prevButton).toBeTruthy();
+
+    const prevInteraction = makeButtonInteraction({
+      customId: prevButton.custom_id ?? prevButton.customId,
+    });
+    await interaction.__collectorHandlers.collect(prevInteraction);
+
+    const prevPayload = prevInteraction.update.mock.calls.at(-1)?.[0];
+    const prevEmbed = getEmbedJson(prevPayload);
+    expect(String(prevEmbed.description)).toContain(
+      "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
+    );
   });
 
   it("renders the targeted user mention in the filler editor body instead of the title", async () => {
