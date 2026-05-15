@@ -259,43 +259,116 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Attacks: 11");
   });
 
-  it("renders raid intel overview and drilldown summaries with default counts and grouped abbreviations", () => {
-    const row = {
-      clanTag: "2QG2C08UP",
-      clanName: "Alpha Raid",
-      upgrades: 2210,
-      joinType: "open",
-      createdAt: new Date("2026-05-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
-      attacksCompleted: 11,
-      attacksMax: 12,
-      hasOngoingRaid: true,
-      raidsCompleted: 0,
-      defaultLayoutCount: 3,
-      intelGradeScore: 0,
-      raidIntelMarks: [
-        { districtName: "Goblin Mines", layoutGrade: "DEFAULT" },
-        { districtName: "Skeleton Park", layoutGrade: "DEFAULT" },
-        { districtName: "Golem Quarry", layoutGrade: "DEFAULT" },
-      ],
-      openDefenseSections: [
-        {
-          attackerName: "Enemy Clan",
-          attackerTag: "#2QG2C08UR",
-          joinType: "open",
-          joinRequirements: null,
-          attacksUsed: 30,
-          districtsRemaining: 1,
-        },
-      ],
-    } as any;
+  it("renders raid intel overview and drilldown summaries with defender upgrades and grouped abbreviations", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+      {
+        clanTag: "2QG2C08UQ",
+        name: "Defender Raid",
+        upgrades: 1444,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        id: 1,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Goblin Mines",
+        districtHallLevel: 5,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+      {
+        id: 2,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Skeleton Park",
+        districtHallLevel: 4,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:01:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:01:00.000Z"),
+      },
+      {
+        id: 3,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Golem Quarry",
+        districtHallLevel: 3,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:02:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:02:00.000Z"),
+      },
+    ]);
 
-    const overview = buildRaidDashboardOverviewDescription([row]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        if (tag === "#2QG2C08UP") {
+          return [
+            {
+              startTime: "2026-05-08T00:00:00.000Z",
+              endTime: "2026-05-11T00:00:00.000Z",
+              members: [{ attacks: 6 }, { attacks: 5 }],
+              attackLog: [
+                {
+                  defender: { name: "Defender Clan", tag: "#2DEFEND1" },
+                  districtCount: 2,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      attackCount: 3,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                  ],
+                },
+              ],
+              defenseLog: [],
+              raidsCompleted: null,
+            },
+          ];
+        }
+        return [];
+      }),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    const sourceRow = rows.find((row) => row.clanTag === "2QG2C08UP");
+    expect(sourceRow?.defaultLayoutCount).toBe(3);
+    expect(sourceRow?.raidIntelDefenderUpgrades).toBe(1444);
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
-    expect(overview).toContain("- ⚔️ 🏘️ 2210 | defaults: 3 | GM, SP, GQ");
-    expect(overview).toContain("- 🛡️ [Enemy Clan]");
+    expect(overview).toContain("- ⚔️ 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
+    expect(overview).not.toContain("- ⚔️ 🏘️ 2210 | defaults: 3 | GM, SP, GQ");
 
-    const drilldown = buildRaidDashboardSingleClanDescription(row, {
+    const drilldown = buildRaidDashboardSingleClanDescription(sourceRow as any, {
       activeSeason: { state: "ongoing" },
       attackSections: [],
       defenseSections: [],

@@ -76,6 +76,7 @@ export type RaidDashboardCountRow = {
 
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
   defaultLayoutCount: number | null;
+  raidIntelDefenderUpgrades: number | null;
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
@@ -1148,6 +1149,9 @@ export async function listRaidDashboardRows(input: {
   if (tracked.length <= 0) {
     return [];
   }
+  const trackedByTag = new Map(
+    tracked.map((row) => [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, row] as const),
+  );
 
   const nowMs = Date.now();
   const snapshots = await Promise.all(
@@ -1214,6 +1218,23 @@ export async function listRaidDashboardRows(input: {
       raidIntelMarks.length > 0
         ? raidIntelMarks.filter((mark) => mark.layoutGrade === "DEFAULT").length
         : null;
+    const raidIntelDefenderUpgrades = (() => {
+      const defenderTags = [
+        ...new Set(
+          raidIntelMarks
+            .map((mark) => normalizeRaidTrackedClanTag(mark.defenderTag))
+            .filter((tag): tag is string => Boolean(tag)),
+        ),
+      ];
+      if (defenderTags.length !== 1) {
+        return null;
+      }
+      const defenderRow = trackedByTag.get(defenderTags[0]!) ?? null;
+      if (!defenderRow || defenderRow.upgrades === null || defenderRow.upgrades === undefined) {
+        return null;
+      }
+      return Number.isFinite(defenderRow.upgrades) ? Math.trunc(defenderRow.upgrades) : null;
+    })();
     const intelGradeScore = raidIntelMarks.reduce(
       (sum, mark) => sum + calculateRaidIntelLayoutGradeScore(mark.layoutGrade),
       0,
@@ -1228,6 +1249,7 @@ export async function listRaidDashboardRows(input: {
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
       defaultLayoutCount,
+      raidIntelDefenderUpgrades,
       intelGradeScore,
       raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
@@ -1287,7 +1309,10 @@ function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string 
   const groups = buildRaidIntelSummaryGroups(marks);
   const defaultAbbreviations = groups.get("Default") ?? [];
   const defaultText = defaultAbbreviations.length > 0 ? defaultAbbreviations.join(", ") : "—";
-  const upgradesText = row.upgrades === null ? "—" : String(row.upgrades);
+  const upgradesText =
+    row.raidIntelDefenderUpgrades === null || row.raidIntelDefenderUpgrades === undefined
+      ? "—"
+      : String(row.raidIntelDefenderUpgrades);
   const defaultLayoutCount =
     row.defaultLayoutCount ?? marks.filter((mark) => mark.layoutGrade === "DEFAULT").length;
   return `- ⚔️ 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
