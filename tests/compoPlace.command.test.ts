@@ -167,7 +167,11 @@ describe("/compo place command", () => {
     const rawIndex = captured.findIndex(
       (entry) =>
         entry.level === "error" &&
-        entry.message.some((part) => String(part).includes("stage=run_catch_raw")),
+        entry.message.some(
+          (part) =>
+            String(part).includes("stage=place_error_raw") ||
+            String(part).includes("stage=run_catch_raw"),
+        ),
     );
     const fallbackReturnIndex = captured.findIndex(
       (entry) =>
