@@ -77,6 +77,7 @@ describe("/compo state mode:war DB cutover", () => {
     const interaction = makeInteraction({ subcommand: "state", mode: "war" });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(readStateSpy).toHaveBeenCalledTimes(1);
     expect(getSheetSpy).not.toHaveBeenCalled();
     expect(readSheetSpy).not.toHaveBeenCalled();
@@ -103,6 +104,7 @@ describe("/compo state mode:war DB cutover", () => {
     const interaction = makeInteraction({ subcommand: "state", mode: "war" });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("No DB-backed WAR roster snapshots are currently renderable.");
     expect(Object.prototype.hasOwnProperty.call(payload, "files")).toBe(false);
@@ -128,6 +130,7 @@ describe("/compo state mode:war DB cutover", () => {
     const interaction = makeInteraction({ subcommand: "state", mode: "actual" });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(readStateSpy).not.toHaveBeenCalled();
     expect(actualReadStateSpy).toHaveBeenCalledTimes(1);
     expect(actualReadStateSpy).toHaveBeenCalledWith("guild-1", { view: "auto" });

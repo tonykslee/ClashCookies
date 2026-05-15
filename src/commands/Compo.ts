@@ -2597,7 +2597,7 @@ export const Compo: Command = {
     console.error(
       `[compo-command] stage=run_after_is_public command=compo subcommand=${subcommandHint} isPublic=${isPublic} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
     );
-    if (subcommandHint === "place" && !interaction.deferred && !interaction.replied) {
+    if (!interaction.deferred && !interaction.replied) {
       logCompoStage(interaction, "before_defer");
       const deferStartedAt = Date.now();
       const deferBeforeDeferred = Boolean(interaction.deferred);
