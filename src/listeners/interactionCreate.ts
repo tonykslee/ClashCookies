@@ -349,9 +349,12 @@ function logHandlerRunCheckpoint(input: {
   runId: string;
   stage: "before_handler_run" | "after_handler_run";
   handlerName: string;
+  runFnType?: string;
+  runFnName?: string;
+  handlerKeys?: string[];
 }): void {
   console.log(
-    `[interaction] stage=${input.stage} command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId}`,
+    `[interaction] stage=${input.stage} command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId}${input.runFnType ? ` runFnType=${input.runFnType}` : ""}${input.runFnName ? ` runFnName=${input.runFnName}` : ""}${input.handlerKeys ? ` handlerKeys=${input.handlerKeys.join(",")}` : ""}`,
   );
 }
 
@@ -370,9 +373,12 @@ function logHandlerRunBegin(input: {
   interaction: ChatInputCommandInteraction;
   runId: string;
   handlerName: string;
+  runFnType: string;
+  runFnName: string;
+  handlerKeys: string[];
 }): void {
   console.log(
-    `[interaction] stage=handler_run_begin command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId}`,
+    `[interaction] stage=handler_run_begin command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} runFnType=${input.runFnType} runFnName=${input.runFnName} handlerKeys=${input.handlerKeys.join(",")}`,
   );
 }
 
@@ -393,10 +399,29 @@ function logHandlerRunStillRunning(input: {
   handlerName: string;
   thresholdMs: number;
   durationMs: number;
+  activeHandleSummary?: string;
 }): void {
   console.log(
-    `[interaction] stage=handler_run_still_running command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} thresholdMs=${input.thresholdMs} durationMs=${input.durationMs}`,
+    `[interaction] stage=handler_run_still_running command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} thresholdMs=${input.thresholdMs} durationMs=${input.durationMs}${input.activeHandleSummary ? ` activeHandleSummary=${input.activeHandleSummary}` : ""}`,
   );
+}
+
+function buildActiveHandleSummary(): string {
+  const processAny = process as typeof process & {
+    _getActiveHandles?: () => unknown[];
+    _getActiveRequests?: () => unknown[];
+  };
+  const handles = typeof processAny._getActiveHandles === "function" ? processAny._getActiveHandles() : [];
+  const requests = typeof processAny._getActiveRequests === "function" ? processAny._getActiveRequests() : [];
+  const handleTypes = [...new Set(handles.slice(0, 8).map((handle) => {
+    if (!handle || typeof handle !== "object") return typeof handle;
+    return (handle as { constructor?: { name?: string } }).constructor?.name ?? "Object";
+  }))];
+  return safeDiagnosticJson({
+    handleCount: handles.length,
+    requestCount: requests.length,
+    handleTypes,
+  }, 2000, 200);
 }
 
 async function handleBestEffortSelectMenuFailure(
@@ -1880,6 +1905,8 @@ const handleSlashCommand = async (
               handlerName,
               thresholdMs,
               durationMs: Date.now() - executionStartedAtMs,
+              activeHandleSummary:
+                thresholdMs >= 8000 ? buildActiveHandleSummary() : undefined,
             });
           }, thresholdMs);
           handlerRunWatchdogTimers.push(timer);
@@ -1887,18 +1914,33 @@ const handleSlashCommand = async (
         scheduleHandlerRunWatchdog(3000);
         scheduleHandlerRunWatchdog(8000);
         scheduleHandlerRunWatchdog(15000);
+        scheduleHandlerRunWatchdog(30000);
         try {
+          const runFn = (slashCommand as { run?: unknown }).run;
+          const runFnType = typeof runFn;
+          const runFnName = runFnType === "function" ? (runFn as { name?: string }).name || "" : "";
+          const handlerKeys = Object.keys(slashCommand as unknown as Record<string, unknown>).sort();
           if (interaction.commandName === "compo") {
             console.log(
-              `[interaction] stage=before_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+              `[interaction] stage=before_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId} runFnType=${runFnType} runFnName=${runFnName} handlerKeys=${handlerKeys.join(",")}`,
             );
             logHandlerRunBegin({
               interaction,
               runId,
               handlerName,
+              runFnType,
+              runFnName,
+              handlerKeys,
             });
           }
-          await slashCommand.run(client, interaction, cocService);
+          if (runFnType !== "function") {
+            throw new TypeError(`Handler ${handlerName} is not callable.`);
+          }
+          await (runFn as (
+            client: Client,
+            interaction: ChatInputCommandInteraction,
+            cocService: CoCService,
+          ) => Promise<void>).call(slashCommand, client, interaction, cocService);
           handlerRunSettled = true;
           clearHandlerRunWatchdogTimers();
           if (interaction.commandName === "compo") {
@@ -1909,7 +1951,7 @@ const handleSlashCommand = async (
               durationMs: Date.now() - executionStartedAtMs,
             });
             console.log(
-              `[interaction] stage=after_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+              `[interaction] stage=after_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId} runFnType=${runFnType} runFnName=${runFnName}`,
             );
           }
           telemetryIngest.recordStageTiming({

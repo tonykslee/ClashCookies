@@ -176,7 +176,7 @@ describe("/compo place command", () => {
     expect(readPlaceSpy).toHaveBeenCalled();
     const runEntrySyncIndex = captured.findIndex(
       (entry) =>
-        entry.level === "log" &&
+        entry.level === "error" &&
         entry.message.some((part) => String(part).includes("stage=run_entry_sync")),
     );
     const runEntryIndex = captured.findIndex(
