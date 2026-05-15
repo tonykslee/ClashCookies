@@ -203,14 +203,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   dump: {
-    summary: "Show or update the stored dump link with a short clan summary.",
+    summary: "Show or update stored dump links with a short clan summary.",
     details: [
-      "Use `/dump` to show a short clan summary plus the configured guild link, all as plain text.",
+      "Use `/dump` to show one or more short clan summaries plus the configured guild links, all as plain text.",
+      "Each configured link is rendered in slot order and separated by `------------`.",
       "The link is wrapped in `< >` to prevent Discord from building an embed preview.",
       "If live clan data is unavailable, `/dump` falls back to the cached clan summary when present.",
-      "`edit` is admin-only and stores one link per guild/server.",
+      "`edit` is admin-only and stores one link per guild/server in slot `1`, `2`, or `3`.",
+      "Use `/dump slot:X` to delete a slot as an admin, or `/dump edit:<url> slot:X` to upsert a specific slot.",
     ],
-    examples: ["/dump", "/dump edit:https://example.com/dump"],
+    examples: [
+      "/dump",
+      "/dump edit:https://example.com/dump",
+      "/dump edit:https://example.com/dump slot:2",
+      "/dump slot:2",
+    ],
   },
   "tracked-clan": {
     summary: "Manage tracked clans used by activity features.",

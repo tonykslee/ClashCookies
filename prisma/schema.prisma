@@ -172,7 +172,8 @@ model PlayerCurrent {
 }
 
 model DumpLink {
-  guildId               String   @id
+  guildId               String
+  slot                  Int      @default(1)
   link                  String
   updatedByDiscordUserId String
   clanInfoJson          Json?
@@ -180,6 +181,7 @@ model DumpLink {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  @@id([guildId, slot])
   @@index([updatedAt])
 }
 
