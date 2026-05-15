@@ -2874,12 +2874,10 @@ export const Compo: Command = {
       });
       return;
     } catch (err) {
-      if (getSubcommandSafe(interaction) === "place") {
-        logCompoRunCatchError({
-          interaction,
-          error: err,
-        });
-      }
+      logCompoRunCatchError({
+        interaction,
+        error: err,
+      });
       console.error(`compo command failed: ${formatError(err)}`);
       console.error(
         `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
