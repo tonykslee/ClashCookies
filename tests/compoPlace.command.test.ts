@@ -142,4 +142,38 @@ describe("/compo place command", () => {
       disabled: false,
     });
   });
+
+  it("logs the raw run_catch error before the fallback response build when place throws", async () => {
+    const captured: Array<{ level: "log" | "error"; message: unknown[] }> = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      captured.push({ level: "log", message: args });
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      captured.push({ level: "error", message: args });
+    });
+    const readPlaceSpy = vi
+      .spyOn(CompoPlaceService.prototype, "readPlace")
+      .mockRejectedValue(new Error("boom"));
+
+    const interaction = makeInteraction("145k");
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    expect(readPlaceSpy).toHaveBeenCalled();
+    const rawIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "error" &&
+        entry.message.some((part) => String(part).includes("stage=run_catch_raw")),
+    );
+    const fallbackIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "log" &&
+        entry.message.some((part) => String(part).includes("reason=run_catch")),
+    );
+    expect(rawIndex).toBeGreaterThanOrEqual(0);
+    expect(fallbackIndex).toBeGreaterThanOrEqual(0);
+    expect(rawIndex).toBeLessThan(fallbackIndex);
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
 });
