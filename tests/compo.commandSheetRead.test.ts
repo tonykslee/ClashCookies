@@ -147,6 +147,7 @@ describe("/compo advice command", () => {
     });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(readAdviceSpy).toHaveBeenCalledWith({
       guildId: "guild-1",
       targetTag: "LQQ99UV8",
@@ -314,6 +315,7 @@ describe("/compo advice command", () => {
     });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload?.embeds?.[0]?.data ?? {};
     expect(JSON.stringify(embed?.fields ?? [])).toContain("Raw roster deficits:");
@@ -405,6 +407,7 @@ describe("/compo advice command", () => {
     });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
     expect(JSON.stringify(payload?.embeds?.[0]?.data?.fields ?? [])).toContain(
@@ -439,6 +442,7 @@ describe("/compo advice command", () => {
     });
     await Compo.run({} as any, interaction as any, {} as any);
 
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toBe("RAW Data last refreshed: <t:1709900000:F>");
     expect(String(payload?.embeds?.[0]?.data?.description ?? "")).toContain(
