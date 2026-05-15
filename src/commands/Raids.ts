@@ -22,6 +22,7 @@ import {
   buildRaidIntelDistrictOptions,
   buildRaidIntelSelectedDistrictLabel,
   applyRaidIntelLayoutGrades,
+  applyRaidIntelDefenderUpgrades,
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
@@ -32,6 +33,7 @@ import {
   loadRaidDashboardSeasonDetailWithQueueContext,
   listRaidDashboardRowsWithQueueContext,
   parseRaidSeasonTimeMs,
+  resolveRaidIntelDefenderUpgrade,
   type RaidDashboardClanRow,
   type RaidIntelDistrict,
   type RaidIntelLayoutGrade,
@@ -45,6 +47,10 @@ import {
   updateRaidTrackedClanUpgrades,
   type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
+import {
+  loadRaidIntelDefenderProfileUpgradesForTags,
+  upsertRaidIntelDefenderProfileUpgrades,
+} from "../services/RaidIntelDefenderProfileService";
 import {
   loadRaidIntelLayoutGradeLookupForSeason,
   upsertRaidIntelDistrictLayoutMark,
@@ -380,6 +386,7 @@ function buildRaidIntelEmbed(input: {
   controlsHint?: string | null;
   districtArgsNote?: string | null;
   districtControlsNote?: string | null;
+  upgradesNote?: string | null;
 }) {
   return new EmbedBuilder()
     .setTitle("Raid Intel")
@@ -391,6 +398,7 @@ function buildRaidIntelEmbed(input: {
         controlsHint: input.controlsHint,
         districtArgsNote: input.districtArgsNote,
         districtControlsNote: input.districtControlsNote,
+        upgradesNote: input.upgradesNote,
       }),
     )
     .setColor(0x5865f2);
@@ -502,7 +510,7 @@ async function buildRaidIntelPayload(input: {
   guildId: string | null;
   userId: string;
   trackedClan: RaidIntelTrackedClanRow;
-  upgradesOverride: number | null;
+  upgradesArg: number | null;
   selectedDistrictKey: string | null;
   districtGradeArgs: RaidIntelDistrictGradeArg[];
   cocService: CoCService;
@@ -516,14 +524,51 @@ async function buildRaidIntelPayload(input: {
   selectedDistrictKey: string | null;
   districtKeyMap: Map<string, RaidIntelDistrict>;
 }> {
-  const trackedClan =
-    (await loadRaidTrackedClanDisplayRowByTag({ clanTag: input.trackedClan.clanTag })) ??
-    input.trackedClan;
+  const [trackedClan, trackedClans] = await Promise.all([
+    loadRaidTrackedClanDisplayRowByTag({ clanTag: input.trackedClan.clanTag }),
+    listRaidTrackedClansForDisplay(),
+  ]);
+  const currentTrackedClan = trackedClan ?? input.trackedClan;
+  const trackedClanByTag = new Map(
+    trackedClans.map((row) => [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, row] as const),
+  );
   const detail = await loadRaidIntelSeasonDetailWithQueueContext({
     cocService: input.cocService,
-    clanTag: trackedClan.clanTag,
+    clanTag: currentTrackedClan.clanTag,
     source: input.source,
   });
+
+  const defenderTags = [
+    ...new Set(
+      detail.defenders
+        .map((defender) => normalizeRaidTrackedClanTag(defender.defenderTag ?? ""))
+        .filter((tag): tag is string => Boolean(tag)),
+    ),
+  ];
+  let upgradesNote: string | null = null;
+  if (input.upgradesArg !== null) {
+    if (defenderTags.length === 1) {
+      const defenderTag = defenderTags[0]!;
+      const trackedDefender = trackedClanByTag.get(defenderTag) ?? null;
+      if (trackedDefender) {
+        const persistedTrackedDefender = await updateRaidTrackedClanUpgrades({
+          clanTag: defenderTag,
+          upgrades: input.upgradesArg,
+        });
+        if (persistedTrackedDefender) {
+          trackedClanByTag.set(defenderTag, persistedTrackedDefender);
+        }
+      } else {
+        await upsertRaidIntelDefenderProfileUpgrades({
+          guildId: input.guildId,
+          defenderTag,
+          upgrades: input.upgradesArg,
+        });
+      }
+    } else {
+      upgradesNote = "Upgrades were not saved because the attacked clan was ambiguous.";
+    }
+  }
 
   const seasonStartMs = detail.activeSeason?.startTime
     ? parseRaidSeasonTimeMs(detail.activeSeason.startTime)
@@ -531,7 +576,7 @@ async function buildRaidIntelPayload(input: {
   const seasonStart = seasonStartMs === null ? null : new Date(seasonStartMs);
   const districtArgsNote = await applyRaidIntelDistrictGradeArgs({
     guildId: input.guildId,
-    sourceClanTag: trackedClan.clanTag,
+    sourceClanTag: currentTrackedClan.clanTag,
     raidSeasonStartTime: seasonStart,
     detail,
     districtGradeArgs: input.districtGradeArgs,
@@ -541,11 +586,31 @@ async function buildRaidIntelPayload(input: {
     detail.activeSeason && input.guildId
         ? await loadRaidIntelLayoutGradeLookupForSeason({
           guildId: input.guildId,
-          sourceClanTag: trackedClan.clanTag,
+          sourceClanTag: currentTrackedClan.clanTag,
           raidSeasonStartTime: seasonStart,
         })
       : new Map<string, RaidIntelLayoutGradeLabel>();
-  const markedDetail = applyRaidIntelLayoutGrades(detail, gradeLookup);
+  const defenderProfileUpgradesByTag = await loadRaidIntelDefenderProfileUpgradesForTags({
+    guildId: input.guildId,
+    defenderTags,
+  });
+  const defenderUpgradesByTag = new Map<string, number | null>();
+  for (const defender of detail.defenders) {
+    const defenderTag = normalizeRaidTrackedClanTag(defender.defenderTag ?? "");
+    if (!defenderTag) continue;
+    defenderUpgradesByTag.set(
+      defenderTag,
+      resolveRaidIntelDefenderUpgrade({
+        defenderTag,
+        trackedClanByTag,
+        defenderProfileUpgradesByTag,
+      }),
+    );
+  }
+  const markedDetail = applyRaidIntelLayoutGrades(
+    applyRaidIntelDefenderUpgrades(detail, defenderUpgradesByTag),
+    gradeLookup,
+  );
   const districtResult = buildRaidIntelDistrictOptions({ detail: markedDetail });
   const selectedDistrict =
     input.selectedDistrictKey && markedDetail.activeSeason
@@ -562,12 +627,13 @@ async function buildRaidIntelPayload(input: {
     : null;
 
   const embed = buildRaidIntelEmbed({
-    trackedClan,
+    trackedClan: currentTrackedClan,
     detail: markedDetail,
     selectedDistrictLabel,
     controlsHint,
     districtArgsNote,
     districtControlsNote,
+    upgradesNote,
   });
 
   const components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> = [];
@@ -651,7 +717,7 @@ export async function handleRaidsIntelSelectMenuInteraction(
       guildId: session.guildId,
       userId: session.userId,
       trackedClan,
-      upgradesOverride: session.upgradesOverride,
+      upgradesArg: null,
       selectedDistrictKey: session.selectedDistrictKey,
       districtGradeArgs: [],
       cocService,
@@ -734,7 +800,7 @@ export async function handleRaidsIntelButtonInteraction(
       guildId: session.guildId,
       userId: session.userId,
       trackedClan,
-      upgradesOverride: session.upgradesOverride,
+      upgradesArg: null,
       selectedDistrictKey: session.selectedDistrictKey,
       districtGradeArgs: [],
       cocService,
@@ -780,7 +846,7 @@ export async function handleRaidsIntelButtonInteraction(
         guildId: session.guildId,
         userId: session.userId,
         trackedClan,
-        upgradesOverride: session.upgradesOverride,
+        upgradesArg: null,
         selectedDistrictKey: session.selectedDistrictKey,
         districtGradeArgs: [],
         cocService,
@@ -1226,25 +1292,12 @@ export const Raids: Command = {
       const sessionId = interaction.id;
 
       try {
-        if (upgradesArg !== null) {
-          const persistedTrackedClan = await updateRaidTrackedClanUpgrades({
-            clanTag: trackedClan.clanTag,
-            upgrades: upgradesArg,
-          });
-          if (!persistedTrackedClan) {
-            await safeReply(interaction, {
-              ephemeral: true,
-              content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
-            });
-            return;
-          }
-        }
         const payload = await buildRaidIntelPayload({
           sessionId,
           guildId: interaction.guildId ?? null,
           userId: interaction.user.id,
           trackedClan,
-          upgradesOverride: null,
+          upgradesArg,
           selectedDistrictKey: null,
           districtGradeArgs: buildRaidIntelDistrictGradeArgs(interaction),
           cocService,

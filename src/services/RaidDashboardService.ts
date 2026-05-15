@@ -15,6 +15,9 @@ import {
   type RaidIntelDistrictLayoutMarkRecord,
 } from "./RaidIntelLayoutMarkService";
 import {
+  loadRaidIntelDefenderProfileUpgradesForTags,
+} from "./RaidIntelDefenderProfileService";
+import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
   normalizeRaidTrackedClanTag,
@@ -135,6 +138,7 @@ export type RaidIntelDistrict = {
 export type RaidIntelDefender = {
   defenderName: string | null;
   defenderTag: string | null;
+  upgrades?: number | null;
   districts: RaidIntelDistrict[];
 };
 
@@ -527,7 +531,8 @@ function buildRaidIntelDistrictLabel(row: RaidIntelDistrict): string {
 function buildRaidIntelSectionLines(section: RaidIntelDefender): RaidDetailLine[] {
   const defenderTag = section.defenderTag ? formatRaidTrackedClanTag(section.defenderTag) : null;
   const title = buildClanProfileMarkdownLink(section.defenderName, section.defenderTag);
-  const header = defenderTag ? `### ${title} \`${defenderTag}\`` : `### ${title}`;
+  const upgradesText = section.upgrades === null || section.upgrades === undefined ? "—" : String(section.upgrades);
+  const header = defenderTag ? `### ${title} \`${defenderTag}\` | 🏘️ ${upgradesText}` : `### ${title} | 🏘️ ${upgradesText}`;
 
   if (section.districts.length <= 0) {
     return [
@@ -763,6 +768,7 @@ function normalizeRaidIntelDefenders(season: ClanCapitalRaidSeason): RaidIntelDe
   return normalizeAttackSections(season).map((section) => ({
     defenderName: section.defenderName,
     defenderTag: section.defenderTag,
+    upgrades: null,
     districts: section.districts.map((district) => ({
       key: buildRaidIntelDistrictKey({
         defenderTag: section.defenderTag,
@@ -997,6 +1003,43 @@ export async function loadRaidIntelSeasonDetailWithQueueContext(input: {
   );
 }
 
+export function resolveRaidIntelDefenderUpgrade(input: {
+  defenderTag: string | null;
+  trackedClanByTag: ReadonlyMap<string, RaidTrackedClanDisplayRow>;
+  defenderProfileUpgradesByTag: ReadonlyMap<string, number>;
+}): number | null {
+  const defenderTag = normalizeRaidTrackedClanTag(input.defenderTag ?? "");
+  if (!defenderTag) return null;
+  const trackedClan = input.trackedClanByTag.get(defenderTag) ?? null;
+  if (trackedClan?.upgrades !== null && trackedClan?.upgrades !== undefined && Number.isFinite(trackedClan.upgrades)) {
+    return Math.trunc(trackedClan.upgrades);
+  }
+  const defenderProfileUpgrades = input.defenderProfileUpgradesByTag.get(defenderTag);
+  return defenderProfileUpgrades !== null && defenderProfileUpgrades !== undefined && Number.isFinite(defenderProfileUpgrades)
+    ? Math.trunc(defenderProfileUpgrades)
+    : null;
+}
+
+export function applyRaidIntelDefenderUpgrades(
+  detail: RaidIntelSeasonDetail,
+  upgradesByDefenderTag: ReadonlyMap<string, number | null>,
+): RaidIntelSeasonDetail {
+  if (upgradesByDefenderTag.size <= 0) {
+    return detail;
+  }
+
+  return {
+    ...detail,
+    defenders: detail.defenders.map((defender) => {
+      const defenderTag = normalizeRaidTrackedClanTag(defender.defenderTag ?? "");
+      return {
+        ...defender,
+        upgrades: defenderTag ? (upgradesByDefenderTag.get(defenderTag) ?? null) : null,
+      };
+    }),
+  };
+}
+
 export function buildRaidIntelDescription(input: {
   trackedClan: RaidTrackedClanDisplayRow;
   detail: RaidIntelSeasonDetail;
@@ -1004,21 +1047,18 @@ export function buildRaidIntelDescription(input: {
   controlsHint?: string | null;
   districtArgsNote?: string | null;
   districtControlsNote?: string | null;
+  upgradesNote?: string | null;
 }): string {
   if (!input.detail.activeSeason) {
     return "No active raid weekend data available.";
   }
 
   const clanTag = formatRaidTrackedClanTag(input.trackedClan.clanTag);
-  const upgradesText =
-    input.trackedClan.upgrades === null || input.trackedClan.upgrades === undefined
-      ? "—"
-      : String(input.trackedClan.upgrades);
   const lines: RaidDetailLine[] = [
     { text: "## Raid Intel", item: false },
     { text: "", item: false },
     {
-      text: `Tracked clan: ${buildClanProfileMarkdownLink(input.trackedClan.clanName, input.trackedClan.clanTag)} \`${clanTag}\` | 🏘️ ${upgradesText}`,
+      text: `Tracked clan: ${buildClanProfileMarkdownLink(input.trackedClan.clanName, input.trackedClan.clanTag)} \`${clanTag}\``,
       item: false,
     },
     { text: "Raid weekend: Active", item: false },
@@ -1036,6 +1076,9 @@ export function buildRaidIntelDescription(input: {
   }
   if (input.districtControlsNote) {
     lines.push({ text: input.districtControlsNote, item: false });
+  }
+  if (input.upgradesNote) {
+    lines.push({ text: input.upgradesNote, item: false });
   }
 
   if (input.detail.defenders.length <= 0) {
@@ -1188,6 +1231,18 @@ export async function listRaidDashboardRows(input: {
       seasons: raidIntelSeasonInputs,
     }),
   ]);
+  const raidIntelDefenderTags = [
+    ...new Set(
+      [...raidIntelMarksBySeason.values()]
+        .flat()
+        .map((mark) => normalizeRaidTrackedClanTag(mark.defenderTag))
+        .filter((tag): tag is string => Boolean(tag)),
+    ),
+  ];
+  const raidIntelDefenderProfileUpgradesByTag = await loadRaidIntelDefenderProfileUpgradesForTags({
+    guildId: input.guildId ?? null,
+    defenderTags: raidIntelDefenderTags,
+  });
 
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
@@ -1228,11 +1283,11 @@ export async function listRaidDashboardRows(input: {
       if (defenderTags.length !== 1) {
         return null;
       }
-      const defenderRow = trackedByTag.get(defenderTags[0]!) ?? null;
-      if (!defenderRow || defenderRow.upgrades === null || defenderRow.upgrades === undefined) {
-        return null;
-      }
-      return Number.isFinite(defenderRow.upgrades) ? Math.trunc(defenderRow.upgrades) : null;
+      return resolveRaidIntelDefenderUpgrade({
+        defenderTag: defenderTags[0]!,
+        trackedClanByTag: trackedByTag,
+        defenderProfileUpgradesByTag: raidIntelDefenderProfileUpgradesByTag,
+      });
     })();
     const intelGradeScore = raidIntelMarks.reduce(
       (sum, mark) => sum + calculateRaidIntelLayoutGradeScore(mark.layoutGrade),
