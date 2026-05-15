@@ -3,6 +3,8 @@ import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 
 export type TownHallEmojiMap = Map<number, string>;
 
+let cachedTownHallEmojiMap: TownHallEmojiMap = new Map();
+
 /** Purpose: normalize any likely Town Hall field to a positive integer or null. */
 export function normalizeTownHallLevel(input: unknown): number | null {
   const numeric = Number(input);
@@ -26,7 +28,13 @@ export async function resolveTownHallEmojiMap(client: Client): Promise<TownHallE
       renderedByTownHall.set(townHall, rendered);
     }
   }
+  cachedTownHallEmojiMap = new Map(renderedByTownHall);
   return renderedByTownHall;
+}
+
+/** Purpose: read the last cached Town Hall emoji map without triggering any live fetch. */
+export function getCachedTownHallEmojiMap(): TownHallEmojiMap {
+  return new Map(cachedTownHallEmojiMap);
 }
 
 /** Purpose: render one Town Hall icon with safe fallback text when no emoji exists. */

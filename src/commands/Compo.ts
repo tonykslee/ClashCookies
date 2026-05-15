@@ -37,7 +37,7 @@ import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compo
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
+import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
@@ -2265,12 +2265,12 @@ export async function handleCompoRefreshButton(
       if (!bucket) {
         throw new Error("Invalid placement bucket for refresh.");
       }
-      const placeResult = await new CompoPlaceService().refreshPlace(
-        parsed.weight,
-        bucket,
-        interaction.guildId ?? null,
-        await resolveTownHallEmojiMap(interaction.client),
-      );
+        const placeResult = await new CompoPlaceService().refreshPlace(
+          parsed.weight,
+          bucket,
+          interaction.guildId ?? null,
+          getCachedTownHallEmojiMap(),
+        );
       await interaction.editReply({
         content: placeResult.content,
         embeds: placeResult.embeds,
@@ -2821,7 +2821,7 @@ export const Compo: Command = {
             inputWeight,
             bucket,
             interaction.guildId ?? null,
-            await resolveTownHallEmojiMap(interaction.client),
+            getCachedTownHallEmojiMap(),
           );
           logCompoStage(interaction, "after_service_readPlace");
         } catch (err) {
