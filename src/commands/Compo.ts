@@ -2517,41 +2517,66 @@ export const Compo: Command = {
     console.error(
       `[compo-command] stage=run_entry_sync command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
     );
+    console.error(
+      `[compo-command] stage=run_after_entry_sync_1 command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    console.error(
+      `[compo-command] stage=run_before_subcommand_hint command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    const subcommandHint = getSubcommandSafe(interaction);
+    console.error(
+      `[compo-command] stage=run_after_subcommand_hint command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    console.error(
+      `[compo-command] stage=run_before_visibility_read command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    const visibility =
+      interaction.options.getString("visibility", false) ?? "private";
+    console.error(
+      `[compo-command] stage=run_after_visibility_read command=compo subcommand=${subcommandHint} visibility=${visibility} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    const isPublic = visibility === "public";
+    console.error(
+      `[compo-command] stage=run_after_is_public command=compo subcommand=${subcommandHint} isPublic=${isPublic} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
+    if (subcommandHint === "place" && !interaction.deferred && !interaction.replied) {
+      logCompoStage(interaction, "before_defer");
+      try {
+        await interaction.deferReply(
+          isPublic ? {} : { flags: MessageFlags.Ephemeral },
+        );
+        logCompoStage(interaction, "after_defer");
+        logCompoStage(interaction, "defer_reply_ok");
+      } catch (err) {
+        logCompoPlaceStageFailure({
+          interaction,
+          stage: "defer_reply",
+          error: err,
+          detail: { isPublic },
+        });
+        throw err;
+      }
+    }
+    console.error(
+      `[compo-command] stage=run_before_telemetry_context command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
     const telemetryContext = getTelemetryContext();
+    console.error(
+      `[compo-command] stage=run_after_telemetry_context command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
+    );
     let placeOutcome: string | null = null;
+    console.error(
+      `[compo-command] stage=run_after_place_outcome_init command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
+    );
     logCompoStage(interaction, "run_entry", {
       interactionId: interaction.id,
       runId: telemetryContext?.runId ?? null,
     });
-    const visibility =
-      interaction.options.getString("visibility", false) ?? "private";
-    const isPublic = visibility === "public";
     try {
+      console.error(
+        `[compo-command] stage=run_before_handler_enter command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
+      );
       logCompoStage(interaction, "handler_enter");
-
-      const subcommandHint = getSubcommandSafe(interaction);
-      if (!interaction.deferred && !interaction.replied) {
-        if (subcommandHint === "place") {
-          logCompoStage(interaction, "before_defer");
-        }
-        try {
-          await interaction.deferReply(
-            isPublic ? {} : { flags: MessageFlags.Ephemeral },
-          );
-          if (subcommandHint === "place") {
-            logCompoStage(interaction, "after_defer");
-          }
-          logCompoStage(interaction, "defer_reply_ok");
-        } catch (err) {
-          logCompoPlaceStageFailure({
-            interaction,
-            stage: "defer_reply",
-            error: err,
-            detail: { isPublic },
-          });
-          throw err;
-        }
-      }
 
       let subcommand = subcommandHint;
       let mode: ReturnType<typeof readMode> = "actual";
