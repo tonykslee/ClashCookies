@@ -1,6 +1,9 @@
 import { prisma } from "../prisma";
 import { getCompoWarDisplayBucket, type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
-import { loadCompoActualStateContext } from "./CompoActualStateService";
+import {
+  loadCompoActualStateContext,
+  type CompoActualStateContext,
+} from "./CompoActualStateService";
 import { InactiveWarService } from "./InactiveWarService";
 import { normalizePlayerTag } from "./PlayerLinkService";
 
@@ -127,6 +130,7 @@ export class CompoReplacementService {
     guildId?: string | null;
     weight: number;
     bucket?: CompoWarDisplayBucket | null;
+    context?: CompoActualStateContext | null;
   }): Promise<CompoReplacementResolution> {
     const bucket = input.bucket ?? getCompoWarDisplayBucket(input.weight);
     if (!bucket) {
@@ -138,7 +142,8 @@ export class CompoReplacementService {
       };
     }
 
-    const context = await loadCompoActualStateContext(input.guildId ?? null);
+    const context =
+      input.context ?? (await loadCompoActualStateContext(input.guildId ?? null));
     if (context.clans.length === 0) {
       return {
         inputWeight: input.weight,
