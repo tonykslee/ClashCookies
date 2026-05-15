@@ -41,13 +41,17 @@ import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
+import { summarizeDiscordEmbedText } from "../helper/embedTextBudget";
 import { CoCService } from "../services/CoCService";
 import {
   CompoAdviceService,
   type CompoAdviceReadResult,
 } from "../services/CompoAdviceService";
 import { CompoActualStateService } from "../services/CompoActualStateService";
-import { CompoPlaceService } from "../services/CompoPlaceService";
+import {
+  CompoPlaceService,
+  ensureCompoPlaceEmbedsWithinBudgetForSend,
+} from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
 import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
@@ -177,7 +181,10 @@ type CompoPlaceEmbedMetrics = {
   index: number;
   titleLength: number;
   descriptionLength: number;
+  authorNameLength: number;
+  footerTextLength: number;
   fieldCount: number;
+  maxFieldNameLength: number;
   maxFieldValueLength: number;
   estimatedTextLength: number;
   fieldLengths: Array<{ nameLength: number; valueLength: number }>;
@@ -195,46 +202,33 @@ function summarizeCompoPlacePayloadMetrics(input: {
 } {
   const embeds = input.embeds.map((embed, index) => {
     const json = embed.toJSON();
-    const fields = Array.isArray(json.fields) ? json.fields : [];
-    const fieldLengths = fields.map((field) => ({
-      nameLength: String(field.name ?? "").length,
-      valueLength: String(field.value ?? "").length,
-    }));
-    const titleLength = String(json.title ?? "").length;
-    const descriptionLength = String(json.description ?? "").length;
-    const footerLength =
-      json.footer && typeof json.footer.text === "string" ? json.footer.text.length : 0;
-    const estimatedTextLength =
-      titleLength +
-      descriptionLength +
-      footerLength +
-      fieldLengths.reduce((sum, field) => sum + field.nameLength + field.valueLength, 0);
+    const metrics = summarizeDiscordEmbedText(json);
     return {
       index,
-      titleLength,
-      descriptionLength,
-      fieldCount: fields.length,
-      maxFieldValueLength:
-        fieldLengths.length > 0 ? Math.max(...fieldLengths.map((field) => field.valueLength)) : 0,
-      estimatedTextLength,
-      fieldLengths,
+      titleLength: metrics.titleLength,
+      descriptionLength: metrics.descriptionLength,
+      authorNameLength: metrics.authorNameLength,
+      footerTextLength: metrics.footerTextLength,
+      fieldCount: metrics.fieldCount,
+      maxFieldNameLength: metrics.maxFieldNameLength,
+      maxFieldValueLength: metrics.maxFieldValueLength,
+      estimatedTextLength: metrics.estimatedTextLength,
+      fieldLengths: metrics.fieldLengths,
     };
   });
-
-  const payloadJsonLength = JSON.stringify({
-    content: input.content,
-    embeds: input.embeds.map((embed) => embed.toJSON()),
-    components: input.components.map((component) =>
-      typeof (component as { toJSON?: () => unknown }).toJSON === "function"
-        ? (component as { toJSON: () => unknown }).toJSON()
-        : component,
-    ),
-  }).length;
 
   return {
     embedCount: input.embeds.length,
     componentRowCount: input.components.length,
-    payloadJsonLength,
+    payloadJsonLength: JSON.stringify({
+      content: input.content,
+      embeds: input.embeds.map((embed) => embed.toJSON()),
+      components: input.components.map((component) =>
+        typeof (component as { toJSON?: () => unknown }).toJSON === "function"
+          ? (component as { toJSON: () => unknown }).toJSON()
+          : component,
+      ),
+    }).length,
     embeds,
   };
 }
@@ -2835,9 +2829,12 @@ export const Compo: Command = {
           });
           throw err;
         }
+        const safePlaceEmbeds = ensureCompoPlaceEmbedsWithinBudgetForSend(
+          placeResult.embeds,
+        );
         const placeResponsePayload = {
           content: placeResult.content,
-          embeds: placeResult.embeds,
+          embeds: safePlaceEmbeds,
           components: placeResponseComponents,
         };
         const placeResponseMetrics = summarizeCompoPlacePayloadMetrics({
