@@ -351,6 +351,27 @@ function logCompoRunCatchError(input: {
   );
 }
 
+function logCompoPlaceErrorRaw(input: {
+  interaction: ChatInputCommandInteraction;
+  error: unknown;
+}): void {
+  const telemetryContext = getTelemetryContext();
+  const details = {
+    command: "compo",
+    subcommand: "place",
+    guildId: input.interaction.guildId ?? null,
+    userId: input.interaction.user.id,
+    interactionId: input.interaction.id,
+    runId: telemetryContext?.runId ?? null,
+    deferred: Boolean(input.interaction.deferred),
+    replied: Boolean(input.interaction.replied),
+    error: summarizeDiscordRestError(input.error),
+  };
+  console.error(
+    `[compo-command-error] stage=place_error_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
+  );
+}
+
 const COMPO_MODE_CHOICES = [
   { name: "Actual Roster", value: "actual" },
   { name: "War Roster", value: "war" },
@@ -2913,6 +2934,10 @@ export const Compo: Command = {
         error: err,
       });
       if (getSubcommandSafe(interaction) === "place") {
+        logCompoPlaceErrorRaw({
+          interaction,
+          error: err,
+        });
         logCompoStage(interaction, "place_return_error_fallback", {
           reason: "run_catch",
         });
