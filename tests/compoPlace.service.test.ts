@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { summarizeDiscordEmbedText } from "../src/helper/embedTextBudget";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -108,20 +109,6 @@ function validPlayerTag(index: number): string {
     value = Math.floor(value / 4);
   } while (value > 0);
   return `#P${suffix.padStart(6, "0")}`;
-}
-
-function estimateEmbedTextLength(embed: any): number {
-  let total = 0;
-  if (typeof embed?.title === "string") total += embed.title.length;
-  if (typeof embed?.description === "string") total += embed.description.length;
-  if (typeof embed?.footer?.text === "string") total += embed.footer.text.length;
-  if (Array.isArray(embed?.fields)) {
-    for (const field of embed.fields) {
-      total += String(field?.name ?? "").length;
-      total += String(field?.value ?? "").length;
-    }
-  }
-  return total;
 }
 
 function makeCurrentMembers(input: {
@@ -627,6 +614,31 @@ describe("CompoPlaceService", () => {
     expect(replaceValue).not.toContain(":crown: `#P000002`");
   });
 
+  it("counts title, description, author, footer, and field text in the shared embed budget helper", () => {
+    const metrics = summarizeDiscordEmbedText(
+      {
+        title: "T".repeat(2000),
+        description: "D".repeat(1200),
+        author: { name: "A".repeat(400) },
+        footer: { text: "F".repeat(300) },
+        fields: [
+          {
+            name: "N".repeat(200),
+            value: "V".repeat(400),
+          },
+        ],
+      },
+    );
+
+    expect(metrics.titleLength).toBe(2000);
+    expect(metrics.descriptionLength).toBe(1200);
+    expect(metrics.authorNameLength).toBe(400);
+    expect(metrics.footerTextLength).toBe(300);
+    expect(metrics.maxFieldNameLength).toBe(200);
+    expect(metrics.maxFieldValueLength).toBe(400);
+    expect(metrics.estimatedTextLength).toBe(4500);
+  });
+
   it("paginates Replace rows without cutting a player line mid-row", async () => {
     const replaceRows = Array.from({ length: 70 }, (_, index) => {
       const suffix = String(index + 1).padStart(6, "0");
@@ -680,7 +692,11 @@ describe("CompoPlaceService", () => {
     }
 
     for (const embed of embeds) {
-      expect(estimateEmbedTextLength(embed.toJSON())).toBeLessThanOrEqual(4096);
+      const metrics = summarizeDiscordEmbedText(embed.toJSON());
+      expect(metrics.estimatedTextLength).toBeLessThanOrEqual(4096);
+      expect(metrics.fieldCount).toBeLessThanOrEqual(25);
+      expect(metrics.maxFieldNameLength).toBeLessThanOrEqual(256);
+      expect(metrics.maxFieldValueLength).toBeLessThanOrEqual(1024);
     }
   });
 

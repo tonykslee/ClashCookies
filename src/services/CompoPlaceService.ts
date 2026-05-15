@@ -26,6 +26,14 @@ import {
   projectCompoActualStateView,
   type CompoActualStateProjection,
 } from "../helper/compoActualStateView";
+import {
+  DISCORD_EMBED_FIELD_VALUE_LIMIT,
+  isDiscordEmbedTextWithinLimits,
+  summarizeDiscordEmbedText,
+  truncateDiscordFieldName,
+  truncateDiscordFieldValue,
+  truncateDiscordMultilineText,
+} from "../helper/embedTextBudget";
 
 type PlacementCandidate = {
   clanName: string;
@@ -60,8 +68,7 @@ type ReplaceCandidate = {
   linkedDiscordUserId: string | null;
 };
 
-const REPLACE_FIELD_VALUE_LIMIT = 1024;
-const REPLACE_EMBED_TEXT_SAFE_LIMIT = 4096;
+const REPLACE_FIELD_VALUE_LIMIT = DISCORD_EMBED_FIELD_VALUE_LIMIT;
 
 export type CompoPlaceReadResult = {
   content: string;
@@ -221,23 +228,260 @@ function paginateReplaceRows(lines: string[]): string[] {
   return pages;
 }
 
-function estimateEmbedTextLength(embed: EmbedBuilder): number {
-  const json = embed.toJSON();
-  let total = 0;
-  if (typeof json.title === "string") total += json.title.length;
-  if (typeof json.description === "string") total += json.description.length;
-  if (json.footer && typeof json.footer.text === "string") total += json.footer.text.length;
-  if (Array.isArray(json.fields)) {
-    for (const field of json.fields) {
-      total += String(field.name ?? "").length;
-      total += String(field.value ?? "").length;
-    }
-  }
-  return total;
+function cloneEmbed(embed: EmbedBuilder): EmbedBuilder {
+  return EmbedBuilder.from(embed.toJSON());
 }
 
-function estimateEmbedFieldTextLength(field: { name: string; value: string }): number {
-  return field.name.length + field.value.length;
+function isCompoPlaceEmbedWithinBudget(embed: EmbedBuilder): boolean {
+  return isDiscordEmbedTextWithinLimits(summarizeDiscordEmbedText(embed.toJSON()));
+}
+
+function normalizeCompoPlaceField(field: { name: string; value: string }): {
+  name: string;
+  value: string;
+  inline: false;
+} {
+  return {
+    name: truncateDiscordFieldName(String(field.name ?? "")),
+    value: truncateDiscordMultilineText(String(field.value ?? ""), REPLACE_FIELD_VALUE_LIMIT, {
+      suffix: " ... truncated to fit Discord limits",
+    }),
+    inline: false,
+  };
+}
+
+function buildCompoPlaceEmbedShell(params: {
+  inputWeight: number;
+  bucket: CompoWarDisplayBucket;
+  modeLabel?: string;
+  deltaLabel?: string;
+  refreshLine: string;
+}): EmbedBuilder {
+  return new EmbedBuilder().setTitle("Compo Placement Suggestions").setDescription(
+    `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
+      `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
+      `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
+      `Bucket: **${params.bucket}**\n` +
+      params.refreshLine,
+  );
+}
+
+function buildCompoPlaceCoreFields(params: {
+  bucket: CompoWarDisplayBucket;
+  recommended: PlacementCandidateWithDelta[];
+  vacancyList: PlacementCandidate[];
+  compositionList: PlacementCandidateWithDelta[];
+}): Array<{ name: string; value: string; inline: false }> {
+  const recommendedRows = params.recommended.map(
+    (candidate) =>
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
+  );
+  const vacancyRows = params.vacancyList.map(
+    (candidate) =>
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${
+        candidate.liveMemberCount !== null ? `${candidate.liveMemberCount}/50` : "unknown/50"
+      }`,
+  );
+  const compositionRows = params.compositionList.map(
+    (candidate) =>
+      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
+  );
+
+  return [
+    {
+      name: truncateDiscordFieldName("Recommended"),
+      value: truncateDiscordMultilineText(formatPlacementRows(recommendedRows), REPLACE_FIELD_VALUE_LIMIT, {
+        suffix: " ... truncated to fit Discord limits",
+      }),
+      inline: false,
+    },
+    {
+      name: truncateDiscordFieldName("Vacancy"),
+      value: truncateDiscordMultilineText(formatPlacementRows(vacancyRows), REPLACE_FIELD_VALUE_LIMIT, {
+        suffix: " ... truncated to fit Discord limits",
+      }),
+      inline: false,
+    },
+    {
+      name: truncateDiscordFieldName("Composition"),
+      value: truncateDiscordMultilineText(
+        formatPlacementRows(compositionRows),
+        REPLACE_FIELD_VALUE_LIMIT,
+        {
+          suffix: " ... truncated to fit Discord limits",
+        },
+      ),
+      inline: false,
+    },
+  ];
+}
+
+function buildCompoPlaceReplaceFields(replaceRows: string[]): Array<{ name: string; value: string; inline: false }> {
+  const replacePages = paginateReplaceRows(replaceRows);
+  return replacePages.map((value, index) => ({
+    name: truncateDiscordFieldName(`Replace ${index + 1}/${replacePages.length}`),
+    value: truncateDiscordFieldValue(value),
+    inline: false,
+  }));
+}
+
+function packCompoPlaceFieldsIntoEmbeds(params: {
+  shell: EmbedBuilder;
+  fields: Array<{ name: string; value: string; inline: false }>;
+}): EmbedBuilder[] {
+  const embeds: EmbedBuilder[] = [];
+  let current = cloneEmbed(params.shell);
+  current.setFields([]);
+
+  for (const rawField of params.fields) {
+    const field = normalizeCompoPlaceField(rawField);
+    const candidate = cloneEmbed(current);
+    candidate.addFields(field);
+    if (isCompoPlaceEmbedWithinBudget(candidate)) {
+      current = candidate;
+      continue;
+    }
+
+    if ((current.toJSON().fields?.length ?? 0) > 0) {
+      embeds.push(current);
+      current = cloneEmbed(params.shell);
+      current.setFields([]);
+      const freshCandidate = cloneEmbed(current);
+      freshCandidate.addFields(field);
+      if (isCompoPlaceEmbedWithinBudget(freshCandidate)) {
+        current = freshCandidate;
+        continue;
+      }
+    }
+
+    const safeField = normalizeCompoPlaceField({
+      name: field.name,
+      value: truncateDiscordMultilineText(field.value, REPLACE_FIELD_VALUE_LIMIT, {
+        suffix: " ... truncated to fit Discord limits",
+      }),
+    });
+    const fallbackCandidate = cloneEmbed(current);
+    fallbackCandidate.addFields(safeField);
+    if (isCompoPlaceEmbedWithinBudget(fallbackCandidate)) {
+      current = fallbackCandidate;
+      continue;
+    }
+
+    const noteEmbed = cloneEmbed(params.shell);
+    noteEmbed.setFooter({
+      text: "Some /compo place rows were truncated to fit Discord embed limits.",
+    });
+    if (isCompoPlaceEmbedWithinBudget(noteEmbed)) {
+      if ((current.toJSON().fields?.length ?? 0) > 0) {
+        embeds.push(current);
+      }
+      current = noteEmbed;
+      continue;
+    }
+
+    // Last-resort fallback: keep the current page and avoid sending invalid payloads.
+    if ((current.toJSON().fields?.length ?? 0) > 0) {
+      embeds.push(current);
+    }
+    current = cloneEmbed(params.shell);
+    current.setFields([]);
+    current.setFooter({
+      text: "Some /compo place rows were truncated to fit Discord embed limits.",
+    });
+  }
+
+  if ((current.toJSON().fields?.length ?? 0) > 0 || current.toJSON().footer) {
+    embeds.push(current);
+  }
+
+  return embeds;
+}
+
+function buildCompoPlaceTruncationNoteEmbed(shell: EmbedBuilder): EmbedBuilder {
+  const noteEmbed = cloneEmbed(shell);
+  noteEmbed.setFields([]);
+  noteEmbed.setFooter({
+    text: "Some /compo place rows were truncated to fit Discord embed limits.",
+  });
+  return noteEmbed;
+}
+
+function ensureCompoPlaceEmbedsWithinBudget(params: {
+  shell: EmbedBuilder;
+  embeds: EmbedBuilder[];
+}): EmbedBuilder[] {
+  const sanitized: EmbedBuilder[] = [];
+  for (const embed of params.embeds) {
+    if (isCompoPlaceEmbedWithinBudget(embed)) {
+      sanitized.push(embed);
+      continue;
+    }
+    const embedJson = embed.toJSON();
+    const fields = Array.isArray(embedJson.fields) ? embedJson.fields : [];
+    const repacked = packCompoPlaceFieldsIntoEmbeds({
+      shell: params.shell,
+      fields: fields.map((field) => ({
+        name: String(field?.name ?? ""),
+        value: String(field?.value ?? ""),
+        inline: false as const,
+      })),
+    });
+    if (repacked.length > 0 && repacked.every((candidate) => isCompoPlaceEmbedWithinBudget(candidate))) {
+      sanitized.push(...repacked);
+      continue;
+    }
+    sanitized.push(buildCompoPlaceTruncationNoteEmbed(params.shell));
+  }
+  return sanitized;
+}
+
+export function ensureCompoPlaceEmbedsWithinBudgetForSend(
+  embeds: EmbedBuilder[],
+): EmbedBuilder[] {
+  if (embeds.length === 0) {
+    return [];
+  }
+  const shell = cloneEmbed(embeds[0]);
+  shell.setFields([]);
+  return ensureCompoPlaceEmbedsWithinBudget({
+    shell,
+    embeds,
+  });
+}
+
+function buildSafeCompoPlaceEmbeds(params: {
+  inputWeight: number;
+  bucket: CompoWarDisplayBucket;
+  modeLabel?: string;
+  deltaLabel?: string;
+  recommended: PlacementCandidateWithDelta[];
+  vacancyList: PlacementCandidate[];
+  compositionList: PlacementCandidateWithDelta[];
+  replaceRows?: string[];
+  refreshLine: string;
+}): EmbedBuilder[] {
+  const shell = buildCompoPlaceEmbedShell({
+    inputWeight: params.inputWeight,
+    bucket: params.bucket,
+    modeLabel: params.modeLabel,
+    deltaLabel: params.deltaLabel,
+    refreshLine: params.refreshLine,
+  });
+  const fields = [
+    ...buildCompoPlaceCoreFields({
+      bucket: params.bucket,
+      recommended: params.recommended,
+      vacancyList: params.vacancyList,
+      compositionList: params.compositionList,
+    }),
+    ...buildCompoPlaceReplaceFields(params.replaceRows ?? []),
+  ];
+  const packedEmbeds = packCompoPlaceFieldsIntoEmbeds({ shell, fields });
+  const safeEmbeds = ensureCompoPlaceEmbedsWithinBudget({
+    shell,
+    embeds: packedEmbeds,
+  });
+  return safeEmbeds.length > 0 ? safeEmbeds : [shell];
 }
 
 async function buildReplaceRows(input: {
@@ -453,53 +697,23 @@ function buildCompoPlaceBaseEmbed(params: {
   refreshLine: string;
   includeCoreSections?: boolean;
 }): EmbedBuilder {
-  const includeCoreSections = params.includeCoreSections ?? true;
-  const recommendedRows = params.recommended.map(
-    (candidate) =>
-      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
-  );
-  const vacancyRows = params.vacancyList.map(
-    (candidate) =>
-      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${
-        candidate.liveMemberCount !== null
-          ? `${candidate.liveMemberCount}/50`
-          : "unknown/50"
-      }`,
-  );
-  const compositionRows = params.compositionList.map(
-    (candidate) =>
-      `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
-  );
-  const fields = [
-    {
-      name: "Recommended",
-      value: formatPlacementRows(recommendedRows),
-      inline: false,
-    },
-    {
-      name: "Vacancy",
-      value: formatPlacementRows(vacancyRows),
-      inline: false,
-    },
-    {
-      name: "Composition",
-      value: formatPlacementRows(compositionRows),
-      inline: false,
-    },
-  ];
+  const embed = buildCompoPlaceEmbedShell({
+    inputWeight: params.inputWeight,
+    bucket: params.bucket,
+    modeLabel: params.modeLabel,
+    deltaLabel: params.deltaLabel,
+    refreshLine: params.refreshLine,
+  });
 
-  const embed = new EmbedBuilder()
-    .setTitle("Compo Placement Suggestions")
-    .setDescription(
-      `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
-        `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
-      `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
-        `Bucket: **${params.bucket}**\n` +
-        params.refreshLine,
+  if (params.includeCoreSections ?? true) {
+    embed.addFields(
+      ...buildCompoPlaceCoreFields({
+        bucket: params.bucket,
+        recommended: params.recommended,
+        vacancyList: params.vacancyList,
+        compositionList: params.compositionList,
+      }),
     );
-
-  if (includeCoreSections) {
-    embed.addFields(...fields);
   }
 
   return embed;
@@ -516,73 +730,8 @@ function buildCompoPlaceEmbeds(params: {
   replaceRows?: string[];
   refreshLine: string;
 }): EmbedBuilder[] {
-  const replacePages = paginateReplaceRows(params.replaceRows ?? []);
-  if (replacePages.length === 0) {
-    return [
-      buildCompoPlaceBaseEmbed({
-        inputWeight: params.inputWeight,
-        bucket: params.bucket,
-        modeLabel: params.modeLabel,
-        deltaLabel: params.deltaLabel,
-        recommended: params.recommended,
-        vacancyList: params.vacancyList,
-        compositionList: params.compositionList,
-        refreshLine: params.refreshLine,
-        includeCoreSections: true,
-      }),
-    ];
-  }
-
-  const replaceFields = replacePages.map((value, index) => ({
-    name: `Replace ${index + 1}/${replacePages.length}`,
-    value,
-    inline: false,
-  }));
-
-  const embeds: EmbedBuilder[] = [];
-  let currentEmbed = buildCompoPlaceBaseEmbed({
-    inputWeight: params.inputWeight,
-    bucket: params.bucket,
-    modeLabel: params.modeLabel,
-    deltaLabel: params.deltaLabel,
-    recommended: params.recommended,
-    vacancyList: params.vacancyList,
-    compositionList: params.compositionList,
-    refreshLine: params.refreshLine,
-    includeCoreSections: true,
-  });
-  let currentEstimate = estimateEmbedTextLength(currentEmbed);
-
-  for (const field of replaceFields) {
-    const fieldEstimate = estimateEmbedFieldTextLength(field);
-    if (
-      currentEstimate + fieldEstimate > REPLACE_EMBED_TEXT_SAFE_LIMIT &&
-      currentEmbed.toJSON().fields?.length
-    ) {
-      embeds.push(currentEmbed);
-      currentEmbed = buildCompoPlaceBaseEmbed({
-        inputWeight: params.inputWeight,
-        bucket: params.bucket,
-        modeLabel: params.modeLabel,
-        deltaLabel: params.deltaLabel,
-        recommended: [],
-        vacancyList: [],
-        compositionList: [],
-        refreshLine: params.refreshLine,
-        includeCoreSections: false,
-      });
-      currentEstimate = estimateEmbedTextLength(currentEmbed);
-    }
-
-    currentEmbed.addFields(field);
-    currentEstimate += fieldEstimate;
-  }
-
-  if (currentEmbed.toJSON().fields?.length) {
-    embeds.push(currentEmbed);
-  }
-
-  return embeds;
+  const safeEmbeds = buildSafeCompoPlaceEmbeds(params);
+  return safeEmbeds;
 }
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
