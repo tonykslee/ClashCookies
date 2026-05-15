@@ -41,6 +41,8 @@ import { normalizeRaidIntelLayoutGrade } from "../helper/raidIntelLayout";
 import {
   normalizeRaidTrackedClanTag,
   listRaidTrackedClansForDisplay,
+  loadRaidTrackedClanDisplayRowByTag,
+  updateRaidTrackedClanUpgrades,
   type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
 import {
@@ -370,7 +372,6 @@ function buildRaidDashboardEmbed(
 
 function buildRaidIntelEmbed(input: {
   trackedClan: RaidIntelTrackedClanRow;
-  upgrades: number | null;
   detail: Awaited<ReturnType<typeof loadRaidIntelSeasonDetailWithQueueContext>>;
   selectedDistrictLabel?: string | null;
   controlsHint?: string | null;
@@ -382,7 +383,6 @@ function buildRaidIntelEmbed(input: {
     .setDescription(
       buildRaidIntelDescription({
         trackedClan: input.trackedClan,
-        upgrades: input.upgrades,
         detail: input.detail,
         selectedDistrictLabel: input.selectedDistrictLabel,
         controlsHint: input.controlsHint,
@@ -513,9 +513,12 @@ async function buildRaidIntelPayload(input: {
   selectedDistrictKey: string | null;
   districtKeyMap: Map<string, RaidIntelDistrict>;
 }> {
+  const trackedClan =
+    (await loadRaidTrackedClanDisplayRowByTag({ clanTag: input.trackedClan.clanTag })) ??
+    input.trackedClan;
   const detail = await loadRaidIntelSeasonDetailWithQueueContext({
     cocService: input.cocService,
-    clanTag: input.trackedClan.clanTag,
+    clanTag: trackedClan.clanTag,
     source: input.source,
   });
 
@@ -525,7 +528,7 @@ async function buildRaidIntelPayload(input: {
   const seasonStart = seasonStartMs === null ? null : new Date(seasonStartMs);
   const districtArgsNote = await applyRaidIntelDistrictGradeArgs({
     guildId: input.guildId,
-    sourceClanTag: input.trackedClan.clanTag,
+    sourceClanTag: trackedClan.clanTag,
     raidSeasonStartTime: seasonStart,
     detail,
     districtGradeArgs: input.districtGradeArgs,
@@ -533,9 +536,9 @@ async function buildRaidIntelPayload(input: {
   });
   const gradeLookup =
     detail.activeSeason && input.guildId
-      ? await loadRaidIntelLayoutGradeLookupForSeason({
+        ? await loadRaidIntelLayoutGradeLookupForSeason({
           guildId: input.guildId,
-          sourceClanTag: input.trackedClan.clanTag,
+          sourceClanTag: trackedClan.clanTag,
           raidSeasonStartTime: seasonStart,
         })
       : new Map<string, RaidIntelLayoutGradeLabel>();
@@ -556,8 +559,7 @@ async function buildRaidIntelPayload(input: {
     : null;
 
   const embed = buildRaidIntelEmbed({
-    trackedClan: input.trackedClan,
-    upgrades: input.upgradesOverride ?? input.trackedClan.upgrades,
+    trackedClan,
     detail: markedDetail,
     selectedDistrictLabel,
     controlsHint,
@@ -1221,12 +1223,25 @@ export const Raids: Command = {
       const sessionId = interaction.id;
 
       try {
+        if (upgradesArg !== null) {
+          const persistedTrackedClan = await updateRaidTrackedClanUpgrades({
+            clanTag: trackedClan.clanTag,
+            upgrades: upgradesArg,
+          });
+          if (!persistedTrackedClan) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
+            });
+            return;
+          }
+        }
         const payload = await buildRaidIntelPayload({
           sessionId,
           guildId: interaction.guildId ?? null,
           userId: interaction.user.id,
           trackedClan,
-          upgradesOverride: upgradesArg ?? null,
+          upgradesOverride: null,
           selectedDistrictKey: null,
           districtGradeArgs: buildRaidIntelDistrictGradeArgs(interaction),
           cocService,
@@ -1243,7 +1258,7 @@ export const Raids: Command = {
             guildId: interaction.guildId ?? null,
             userId: interaction.user.id,
             trackedClanTag: requestedClan,
-            upgradesOverride: upgradesArg ?? null,
+            upgradesOverride: null,
             raidSeasonStartTime: payload.raidSeasonStartTime,
             selectedDistrictKey: payload.selectedDistrictKey,
             districtKeyMap: payload.districtKeyMap,

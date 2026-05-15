@@ -93,6 +93,7 @@ describe("interactionCreate /compo dispatcher diagnostics", () => {
   it("logs before and after handler.run for /compo", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
     vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
     const runMock = vi.fn().mockResolvedValue(undefined);
@@ -102,17 +103,25 @@ describe("interactionCreate /compo dispatcher diagnostics", () => {
     await handler(interaction);
     restoreCommand();
 
+    expect(
+      infoSpy.mock.calls.some((call) =>
+        String(call[0] ?? "").includes("stage=compo_module_loaded"),
+      ),
+    ).toBe(true);
     expect(runMock).toHaveBeenCalledTimes(1);
     expect(
       logSpy.mock.calls.some((call) =>
         String(call[0] ?? "").includes("stage=before_handler_run") &&
-        String(call[0] ?? "").includes("handler=compo.run"),
+        String(call[0] ?? "").includes("handler=compo.run") &&
+        String(call[0] ?? "").includes("runFnType=function") &&
+        String(call[0] ?? "").includes("handlerKeys="),
       ),
     ).toBe(true);
     expect(
       logSpy.mock.calls.some((call) =>
         String(call[0] ?? "").includes("stage=after_handler_run") &&
-        String(call[0] ?? "").includes("handler=compo.run"),
+        String(call[0] ?? "").includes("handler=compo.run") &&
+        String(call[0] ?? "").includes("runFnType=function"),
       ),
     ).toBe(true);
     expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("handler_run_failed"));

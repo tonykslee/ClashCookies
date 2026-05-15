@@ -62,6 +62,8 @@ import {
 } from "../services/GoogleSheetsService";
 import { getTelemetryContext } from "../services/telemetry/context";
 
+console.info("[compo-command] stage=compo_module_loaded");
+
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -2512,7 +2514,7 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
-    console.info(
+    console.error(
       `[compo-command] stage=run_entry_sync command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
     );
     const telemetryContext = getTelemetryContext();
