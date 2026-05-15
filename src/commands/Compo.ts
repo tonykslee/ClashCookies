@@ -336,6 +336,27 @@ function logCompoPlaceStageFailure(input: {
   );
 }
 
+function logCompoRunCatchError(input: {
+  interaction: ChatInputCommandInteraction;
+  error: unknown;
+}): void {
+  const telemetryContext = getTelemetryContext();
+  const details = {
+    command: "compo",
+    subcommand: getSubcommandSafe(input.interaction),
+    guildId: input.interaction.guildId ?? null,
+    userId: input.interaction.user.id,
+    interactionId: input.interaction.id,
+    runId: telemetryContext?.runId ?? null,
+    deferred: Boolean(input.interaction.deferred),
+    replied: Boolean(input.interaction.replied),
+    error: summarizeDiscordRestError(input.error),
+  };
+  console.error(
+    `[compo-command-error] stage=run_catch_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
+  );
+}
+
 const COMPO_MODE_CHOICES = [
   { name: "Actual Roster", value: "actual" },
   { name: "War Roster", value: "war" },
@@ -2482,11 +2503,18 @@ export const Compo: Command = {
     try {
       logCompoStage(interaction, "handler_enter");
 
+      const subcommandHint = getSubcommandSafe(interaction);
       if (!interaction.deferred && !interaction.replied) {
+        if (subcommandHint === "place") {
+          logCompoStage(interaction, "before_defer");
+        }
         try {
           await interaction.deferReply(
             isPublic ? {} : { flags: MessageFlags.Ephemeral },
           );
+          if (subcommandHint === "place") {
+            logCompoStage(interaction, "after_defer");
+          }
           logCompoStage(interaction, "defer_reply_ok");
         } catch (err) {
           logCompoPlaceStageFailure({
@@ -2499,11 +2527,17 @@ export const Compo: Command = {
         }
       }
 
-      let subcommand = "";
+      let subcommand = subcommandHint;
       let mode: ReturnType<typeof readMode> = "actual";
       try {
+        if (subcommand === "place") {
+          logCompoStage(interaction, "before_options_parse");
+        }
         subcommand = interaction.options.getSubcommand(true);
         mode = readMode(interaction);
+        if (subcommand === "place") {
+          logCompoStage(interaction, "after_options_parse");
+        }
         logCompoStage(interaction, "options_parsed", {
           mode,
           tag: interaction.options.getString("tag", false) ?? "",
@@ -2688,8 +2722,10 @@ export const Compo: Command = {
         let rawWeight = "";
         let inputWeight: number | null = null;
         try {
+          logCompoStage(interaction, "before_weight_parse");
           rawWeight = interaction.options.getString("weight", true);
           inputWeight = parseWeightInput(rawWeight);
+          logCompoStage(interaction, "after_weight_parse");
           logCompoStage(interaction, "computation_start", {
             weightInput: rawWeight,
             parsedWeight: inputWeight ?? "",
@@ -2736,12 +2772,14 @@ export const Compo: Command = {
 
         let placeResult: Awaited<ReturnType<CompoPlaceService["readPlace"]>>;
         try {
+          logCompoStage(interaction, "before_service_readPlace");
           placeResult = await new CompoPlaceService().readPlace(
             inputWeight,
             bucket,
             interaction.guildId ?? null,
             await resolveTownHallEmojiMap(interaction.client),
           );
+          logCompoStage(interaction, "after_service_readPlace");
         } catch (err) {
           logCompoPlaceStageFailure({
             interaction,
@@ -2839,6 +2877,12 @@ export const Compo: Command = {
       });
       return;
     } catch (err) {
+      if (getSubcommandSafe(interaction) === "place") {
+        logCompoRunCatchError({
+          interaction,
+          error: err,
+        });
+      }
       console.error(`compo command failed: ${formatError(err)}`);
       console.error(
         `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
