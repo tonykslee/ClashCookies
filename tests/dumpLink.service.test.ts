@@ -1,37 +1,48 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+type DumpLinkRow = {
+  guildId: string;
+  slot: number;
+  link: string;
+  updatedByDiscordUserId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  clanInfoJson: unknown | null;
+  clanInfoFetchedAt: Date | null;
+};
 
 const prismaMock = vi.hoisted(() => {
-  const dumpLinks = new Map<
-    string,
-    {
-      guildId: string;
-      link: string;
-      updatedByDiscordUserId: string;
-      createdAt: Date;
-      updatedAt: Date;
-      clanInfoJson: unknown | null;
-      clanInfoFetchedAt: Date | null;
-    }
-  >();
+  const dumpLinks = new Map<string, DumpLinkRow>();
+  const dumpKey = (guildId: string, slot: number): string => `${guildId}:${slot}`;
 
   return {
     dumpLinks,
+    dumpKey,
     dumpLink: {
-      findUnique: vi.fn(async ({ where }: { where: { guildId: string } }) => {
-        return dumpLinks.get(where.guildId) ?? null;
+      findMany: vi.fn(async ({ where }: { where?: { guildId?: string } }) => {
+        const guildId = String(where?.guildId ?? "").trim();
+        return [...dumpLinks.values()]
+          .filter((row) => !guildId || row.guildId === guildId)
+          .sort((left, right) => left.slot - right.slot);
+      }),
+      findUnique: vi.fn(async ({ where }: { where: { guildId_slot: { guildId: string; slot: number } } }) => {
+        return dumpLinks.get(dumpKey(where.guildId_slot.guildId, where.guildId_slot.slot)) ?? null;
       }),
       upsert: vi.fn(async (input: any) => {
-        const existing = dumpLinks.get(input.where.guildId);
+        const key = dumpKey(input.where.guildId_slot.guildId, input.where.guildId_slot.slot);
+        const existing = dumpLinks.get(key);
         const now = new Date("2026-04-15T00:00:00.000Z");
         const next = existing
           ? {
               ...existing,
               ...input.update,
+              slot: input.where.guildId_slot.slot,
               updatedAt: now,
             }
           : {
               guildId: input.create.guildId,
+              slot: input.create.slot,
               link: input.create.link,
               updatedByDiscordUserId: input.create.updatedByDiscordUserId,
               clanInfoJson:
@@ -42,11 +53,12 @@ const prismaMock = vi.hoisted(() => {
               createdAt: now,
               updatedAt: now,
             };
-        dumpLinks.set(input.where.guildId, next);
+        dumpLinks.set(key, next);
         return next;
       }),
       update: vi.fn(async (input: any) => {
-        const existing = dumpLinks.get(input.where.guildId);
+        const key = dumpKey(input.where.guildId_slot.guildId, input.where.guildId_slot.slot);
+        const existing = dumpLinks.get(key);
         if (!existing) throw new Error("missing dump link");
         const now = new Date("2026-04-15T01:00:00.000Z");
         const next = {
@@ -54,8 +66,15 @@ const prismaMock = vi.hoisted(() => {
           ...input.data,
           updatedAt: now,
         };
-        dumpLinks.set(input.where.guildId, next);
+        dumpLinks.set(key, next);
         return next;
+      }),
+      delete: vi.fn(async (input: any) => {
+        const key = dumpKey(input.where.guildId_slot.guildId, input.where.guildId_slot.slot);
+        const existing = dumpLinks.get(key);
+        if (!existing) throw new Error("missing dump link");
+        dumpLinks.delete(key);
+        return existing;
       }),
     },
   };
@@ -69,12 +88,17 @@ import {
   buildDumpClanInfoCacheFromClan,
   buildDumpClanInfoContent,
   buildDumpClanInfoFallbackContent,
+  deleteDumpLinkForGuildSlot,
   extractDumpClanTagFromLink,
   getDumpLinkForGuild,
+  getDumpLinkForGuildSlot,
+  listDumpLinksForGuild,
   normalizeDumpLink,
   parseDumpClanInfoCache,
   updateDumpLinkClanInfoForGuild,
+  updateDumpLinkClanInfoForGuildSlot,
   upsertDumpLinkForGuild,
+  upsertDumpLinkForGuildSlot,
 } from "../src/services/DumpLinkService";
 
 describe("DumpLinkService", () => {
@@ -147,40 +171,57 @@ describe("DumpLinkService", () => {
     );
   });
 
-  it("reads and updates the derived clan cache on the existing DumpLink row", async () => {
-    prismaMock.dumpLinks.set("111111111111111111", {
+  it("lists and updates dump links by slot independently", async () => {
+    prismaMock.dumpLinks.set(prismaMock.dumpKey("111111111111111111", 1), {
       guildId: "111111111111111111",
-      link: "https://example.com/dump",
+      slot: 1,
+      link: "https://example.com/one",
       updatedByDiscordUserId: "222222222222222222",
       clanInfoJson: null,
       clanInfoFetchedAt: null,
       createdAt: new Date("2026-04-15T00:00:00.000Z"),
       updatedAt: new Date("2026-04-15T00:00:00.000Z"),
     });
-
-    const loaded = await getDumpLinkForGuild("111111111111111111");
-    expect(prismaMock.dumpLink.findUnique).toHaveBeenCalledWith({
-      where: { guildId: "111111111111111111" },
-      select: {
-        guildId: true,
-        link: true,
-        updatedByDiscordUserId: true,
-        createdAt: true,
-        updatedAt: true,
-        clanInfoJson: true,
-        clanInfoFetchedAt: true,
-      },
-    });
-    expect(loaded?.clanInfoJson).toBeNull();
-
-    await upsertDumpLinkForGuild({
+    prismaMock.dumpLinks.set(prismaMock.dumpKey("111111111111111111", 3), {
       guildId: "111111111111111111",
-      link: "https://example.com/updated",
+      slot: 3,
+      link: "https://example.com/three",
+      updatedByDiscordUserId: "333333333333333333",
+      clanInfoJson: null,
+      clanInfoFetchedAt: null,
+      createdAt: new Date("2026-04-15T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+    });
+
+    const listed = await listDumpLinksForGuild("111111111111111111");
+    expect(listed.map((row) => row.slot)).toEqual([1, 3]);
+
+    const loaded = await getDumpLinkForGuildSlot({
+      guildId: "111111111111111111",
+      slot: 3,
+    });
+    expect(loaded?.link).toBe("https://example.com/three");
+    await expect(getDumpLinkForGuild("111111111111111111")).resolves.toMatchObject({
+      slot: 1,
+      link: "https://example.com/one",
+    });
+
+    await upsertDumpLinkForGuildSlot({
+      guildId: "111111111111111111",
+      slot: 2,
+      link: "https://example.com/two",
       updatedByDiscordUserId: "222222222222222222",
     });
     expect(prismaMock.dumpLink.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: {
+          guildId_slot: {
+            guildId: "111111111111111111",
+            slot: 2,
+          },
+        },
         create: expect.objectContaining({
+          slot: 2,
           clanInfoJson: Prisma.DbNull,
           clanInfoFetchedAt: null,
         }),
@@ -191,10 +232,11 @@ describe("DumpLinkService", () => {
       }),
     );
 
-    await updateDumpLinkClanInfoForGuild({
+    await updateDumpLinkClanInfoForGuildSlot({
       guildId: "111111111111111111",
+      slot: 2,
       clanInfoJson: {
-        clanTag: "2QG2C08UP",
+        clanTag: "#2QG2C08UP",
         name: "TheWiseCowboys",
         joinType: "inviteOnly",
         minTownHall: 18,
@@ -204,9 +246,9 @@ describe("DumpLinkService", () => {
       clanInfoFetchedAt: new Date("2026-04-15T01:00:00.000Z"),
     });
 
-    const updated = prismaMock.dumpLinks.get("111111111111111111");
+    const updated = prismaMock.dumpLinks.get(prismaMock.dumpKey("111111111111111111", 2));
     expect(updated?.clanInfoJson).toEqual({
-      clanTag: "2QG2C08UP",
+      clanTag: "#2QG2C08UP",
       name: "TheWiseCowboys",
       joinType: "inviteOnly",
       minTownHall: 18,
@@ -214,5 +256,67 @@ describe("DumpLinkService", () => {
       minTrophies: 2000,
     });
     expect(updated?.clanInfoFetchedAt).toEqual(new Date("2026-04-15T01:00:00.000Z"));
+
+    const deleted = await deleteDumpLinkForGuildSlot({
+      guildId: "111111111111111111",
+      slot: 3,
+    });
+    expect(deleted?.slot).toBe(3);
+    expect(prismaMock.dumpLinks.has(prismaMock.dumpKey("111111111111111111", 3))).toBe(false);
+  });
+
+  it("preserves legacy slot 1 wrapper helpers", async () => {
+    prismaMock.dumpLinks.set(prismaMock.dumpKey("111111111111111111", 1), {
+      guildId: "111111111111111111",
+      slot: 1,
+      link: "https://example.com/legacy",
+      updatedByDiscordUserId: "222222222222222222",
+      clanInfoJson: null,
+      clanInfoFetchedAt: null,
+      createdAt: new Date("2026-04-15T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+    });
+
+    const loaded = await getDumpLinkForGuild("111111111111111111");
+    expect(loaded?.slot).toBe(1);
+
+    await upsertDumpLinkForGuild({
+      guildId: "111111111111111111",
+      link: "https://example.com/updated",
+      updatedByDiscordUserId: "222222222222222222",
+    });
+    expect(prismaMock.dumpLink.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId_slot: {
+            guildId: "111111111111111111",
+            slot: 1,
+          },
+        },
+      }),
+    );
+
+    await updateDumpLinkClanInfoForGuild({
+      guildId: "111111111111111111",
+      clanInfoJson: {
+        clanTag: "#2QG2C08UP",
+        name: "TheWiseCowboys",
+        joinType: "inviteOnly",
+        minTownHall: 18,
+        minLeagueLabel: "Crystal League I",
+        minTrophies: 2000,
+      },
+      clanInfoFetchedAt: new Date("2026-04-15T01:00:00.000Z"),
+    });
+    expect(prismaMock.dumpLink.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId_slot: {
+            guildId: "111111111111111111",
+            slot: 1,
+          },
+        },
+      }),
+    );
   });
 });
