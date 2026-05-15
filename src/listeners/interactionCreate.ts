@@ -228,6 +228,144 @@ function getInteractionSubcommandPath(interaction: ChatInputCommandInteraction):
   return "";
 }
 
+function truncateDiagnosticText(input: string, maxLength = 220): string {
+  if (input.length <= maxLength) return input;
+  return `${input.slice(0, maxLength)}...[len=${input.length}]`;
+}
+
+function safeDiagnosticJson(
+  value: unknown,
+  maxLength = 6000,
+  stringLimit = 220,
+): string {
+  try {
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(
+      value,
+      (_key, current) => {
+        if (typeof current === "string") {
+          return truncateDiagnosticText(current, stringLimit);
+        }
+        if (
+          typeof current === "number" ||
+          typeof current === "boolean" ||
+          current === null
+        ) {
+          return current;
+        }
+        if (typeof current === "bigint") {
+          return current.toString();
+        }
+        if (typeof current === "undefined") {
+          return "[undefined]";
+        }
+        if (current instanceof Error) {
+          return {
+            name: current.name,
+            message: truncateDiagnosticText(current.message, 220),
+            stack: current.stack ? truncateDiagnosticText(current.stack, 1200) : null,
+          };
+        }
+        if (typeof current === "object" && current !== null) {
+          if (seen.has(current as object)) return "[Circular]";
+          seen.add(current as object);
+        }
+        return current;
+      },
+      2,
+    );
+    if (!text) return "null";
+    return text.length <= maxLength
+      ? text
+      : `${text.slice(0, maxLength)}...[len=${text.length}]`;
+  } catch (error) {
+    return truncateDiagnosticText(`"<unstringifiable:${formatError(error)}>"`, maxLength);
+  }
+}
+
+function getDiscordRestErrorCode(err: unknown): number | null {
+  if (!err || typeof err !== "object") return null;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "number" && Number.isFinite(code)) return code;
+  if (typeof code === "string" && /^[0-9]+$/.test(code)) return Number(code);
+  return null;
+}
+
+function getDiscordRestErrorStatus(err: unknown): number | null {
+  if (!err || typeof err !== "object") return null;
+  const status = (err as { status?: unknown }).status;
+  if (typeof status === "number" && Number.isFinite(status)) return status;
+  if (typeof status === "string" && /^[0-9]+$/.test(status)) return Number(status);
+  return null;
+}
+
+function summarizeDiscordRestError(err: unknown): Record<string, unknown> {
+  const error = err as {
+    name?: unknown;
+    message?: unknown;
+    stack?: unknown;
+    code?: unknown;
+    status?: unknown;
+    method?: unknown;
+    url?: unknown;
+    rawError?: unknown;
+    errors?: unknown;
+    requestBody?: unknown;
+    response?: { data?: unknown } | undefined;
+    cause?: unknown;
+  };
+  const requestBody = error.requestBody as
+    | {
+        json?: unknown;
+      }
+    | undefined;
+  const requestBodyJson = requestBody && typeof requestBody === "object" ? requestBody.json : undefined;
+  const requestBodyJsonKeys =
+    requestBodyJson && typeof requestBodyJson === "object" && !Array.isArray(requestBodyJson)
+      ? Object.keys(requestBodyJson as Record<string, unknown>)
+      : [];
+  return {
+    name: typeof error.name === "string" ? error.name : typeof err,
+    message:
+      typeof error.message === "string"
+        ? truncateDiagnosticText(error.message, 500)
+        : String(err ?? ""),
+    stack: typeof error.stack === "string" ? truncateDiagnosticText(error.stack, 2000) : null,
+    code: getDiscordRestErrorCode(err),
+    status: getDiscordRestErrorStatus(err),
+    method: typeof error.method === "string" ? error.method : null,
+    url: typeof error.url === "string" ? error.url : null,
+    rawError: error.rawError ?? null,
+    errors: error.errors ?? null,
+    requestBody: requestBody ?? null,
+    requestBodyJsonKeys,
+    responseData: error.response?.data ?? null,
+    cause: error.cause ?? null,
+  };
+}
+
+function logHandlerRunCheckpoint(input: {
+  interaction: ChatInputCommandInteraction;
+  runId: string;
+  stage: "before_handler_run" | "after_handler_run";
+  handlerName: string;
+}): void {
+  console.log(
+    `[interaction] stage=${input.stage} command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId}`,
+  );
+}
+
+function logHandlerRunFailure(input: {
+  interaction: ChatInputCommandInteraction;
+  runId: string;
+  handlerName: string;
+  error: unknown;
+}): void {
+  console.error(
+    `[interaction-error] stage=handler_run_failed command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} deferred=${Boolean(input.interaction.deferred)} replied=${Boolean(input.interaction.replied)} error=${safeDiagnosticJson(summarizeDiscordRestError(input.error), 6000, 800)}`,
+  );
+}
+
 async function handleBestEffortSelectMenuFailure(
   interaction: StringSelectMenuInteraction,
   context: string,
@@ -1690,7 +1828,17 @@ const handleSlashCommand = async (
 
         const executionStartedAtMs = Date.now();
         try {
+          if (interaction.commandName === "compo") {
+            console.log(
+              `[interaction] stage=before_handler_run command=compo subcommand=${subcommand} handler=${slashCommand.name}.run guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+            );
+          }
           await slashCommand.run(client, interaction, cocService);
+          if (interaction.commandName === "compo") {
+            console.log(
+              `[interaction] stage=after_handler_run command=compo subcommand=${subcommand} handler=${slashCommand.name}.run guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+            );
+          }
           telemetryIngest.recordStageTiming({
             stage: "command_execute",
             status: "success",
@@ -1702,6 +1850,14 @@ const handleSlashCommand = async (
           });
           recordSuccess();
         } catch (err) {
+          if (interaction.commandName === "compo") {
+            logHandlerRunFailure({
+              interaction,
+              runId,
+              handlerName: `${slashCommand.name}.run`,
+              error: err,
+            });
+          }
           telemetryIngest.recordStageTiming({
             stage: "command_execute",
             status: "failure",
