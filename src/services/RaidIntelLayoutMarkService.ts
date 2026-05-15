@@ -114,6 +114,107 @@ export async function loadRaidIntelLayoutMarksForSeason(input: {
   }));
 }
 
+export async function loadRaidIntelLayoutMarksForSeasons(input: {
+  guildId: string | null;
+  seasons: Array<{
+    sourceClanTag: string;
+    raidSeasonStartTime: Date | null;
+  }>;
+}): Promise<Map<string, RaidIntelDistrictLayoutMarkRecord[]>> {
+  const guildId = String(input.guildId ?? "").trim();
+  if (!guildId || !Array.isArray(input.seasons) || input.seasons.length <= 0) {
+    return new Map();
+  }
+
+  const normalizedSeasons = input.seasons
+    .map((season) => {
+      const sourceClanTag = normalizeRaidTrackedClanTag(season.sourceClanTag);
+      const raidSeasonStartTime = normalizeRaidIntelSeasonStartTime(season.raidSeasonStartTime);
+      return sourceClanTag && raidSeasonStartTime
+        ? {
+            sourceClanTag,
+            raidSeasonStartTime,
+          }
+        : null;
+    })
+    .filter(
+      (
+        season,
+      ): season is {
+        sourceClanTag: string;
+        raidSeasonStartTime: Date;
+      } => season !== null,
+    );
+
+  if (normalizedSeasons.length <= 0) {
+    return new Map();
+  }
+
+  const sourceClanTags = [...new Set(normalizedSeasons.map((season) => season.sourceClanTag))];
+  const raidSeasonStartTimes = [
+    ...new Map(normalizedSeasons.map((season) => [season.raidSeasonStartTime.getTime(), season.raidSeasonStartTime])).values(),
+  ];
+  const requestedKeys = new Set(
+    normalizedSeasons.map((season) =>
+      buildRaidIntelLayoutScoreKey({
+        sourceClanTag: season.sourceClanTag,
+        raidSeasonStartTime: season.raidSeasonStartTime,
+      }),
+    ),
+  );
+
+  const rows = await prisma.raidIntelDistrictLayoutMark.findMany({
+    where: {
+      guildId,
+      sourceClanTag: { in: sourceClanTags },
+      raidSeasonStartTime: { in: raidSeasonStartTimes },
+    },
+    orderBy: [{ sourceClanTag: "asc" }, { defenderTag: "asc" }, { districtName: "asc" }],
+    select: {
+      id: true,
+      guildId: true,
+      sourceClanTag: true,
+      raidSeasonStartTime: true,
+      defenderTag: true,
+      districtName: true,
+      districtHallLevel: true,
+      layoutGrade: true,
+      markedByDiscordUserId: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  const rowsBySeason = new Map<string, RaidIntelDistrictLayoutMarkRecord[]>();
+  for (const row of rows) {
+    const sourceClanTag = normalizeRaidTrackedClanTag(row.sourceClanTag);
+    const raidSeasonStartTime = normalizeRaidIntelSeasonStartTime(row.raidSeasonStartTime);
+    if (!sourceClanTag || !raidSeasonStartTime) continue;
+    const key = buildRaidIntelLayoutScoreKey({
+      sourceClanTag,
+      raidSeasonStartTime,
+    });
+    if (!requestedKeys.has(key)) continue;
+    const bucket = rowsBySeason.get(key) ?? [];
+    bucket.push({
+      id: row.id,
+      guildId: row.guildId,
+      sourceClanTag: row.sourceClanTag,
+      raidSeasonStartTime: row.raidSeasonStartTime,
+      defenderTag: row.defenderTag,
+      districtName: row.districtName,
+      districtHallLevel: row.districtHallLevel,
+      layoutGrade: row.layoutGrade as RaidIntelLayoutGrade,
+      markedByDiscordUserId: row.markedByDiscordUserId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    rowsBySeason.set(key, bucket);
+  }
+
+  return rowsBySeason;
+}
+
 export async function loadRaidIntelLayoutGradeLookupForSeason(input: {
   guildId: string | null;
   sourceClanTag: string;
