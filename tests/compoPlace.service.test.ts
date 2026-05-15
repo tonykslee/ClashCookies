@@ -680,7 +680,7 @@ describe("CompoPlaceService", () => {
     }
 
     for (const embed of embeds) {
-      expect(estimateEmbedTextLength(embed.toJSON())).toBeLessThanOrEqual(5200);
+      expect(estimateEmbedTextLength(embed.toJSON())).toBeLessThanOrEqual(4096);
     }
   });
 
