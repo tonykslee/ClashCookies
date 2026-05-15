@@ -1,14 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
-import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
-import { summarizeDiscordEmbedText } from "../src/helper/embedTextBudget";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
-    findMany: vi.fn(),
-  },
-  fillerAccount: {
     findMany: vi.fn(),
   },
   fwaClanMemberCurrent: {
@@ -21,12 +16,6 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   playerCurrent: {
-    findMany: vi.fn(),
-  },
-  playerLink: {
-    findMany: vi.fn(),
-  },
-  playerActivity: {
     findMany: vi.fn(),
   },
   heatMapRef: {
@@ -44,15 +33,13 @@ vi.mock("../src/prisma", () => ({
 import {
   buildBucketDeltaByHeaderForTest,
   CompoPlaceService,
-  buildCompoPlaceEmbedsForTest,
   resolvePlacementWeightForTest,
 } from "../src/services/CompoPlaceService";
 
-function makeTrackedClan(tag: string, name: string, shortName: string | null = null) {
+function makeTrackedClan(tag: string, name: string) {
   return {
     tag,
     name,
-    shortName,
   };
 }
 
@@ -194,28 +181,14 @@ describe("CompoPlaceService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
-    prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
-    prismaMock.playerLink.findMany.mockReset();
-    prismaMock.playerActivity.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
-    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
-      results: [],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([]);
   });
 
   it("reads ACTUAL placement suggestions from persisted tracked clans, current members, and HeatMapRef without sheet services", async () => {
@@ -313,449 +286,6 @@ describe("CompoPlaceService", () => {
     expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
     expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toBe("None");
     expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toBe("None");
-  });
-
-  it("adds a Replace section for same-bucket filler candidates with clan short-name prefixes", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        clanTag: "#AAA111",
-        playerTag: "#P000002",
-        playerName: "Filler Alpha",
-        weight: 145000,
-        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: null,
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([
-      { playerTag: "#P000002" },
-    ]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        townHall: 16,
-        role: "leader",
-      },
-    ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000) },
-    ]);
-    prismaMock.playerLink.findMany.mockImplementation(async (query: any) => {
-      const allowed = new Set<string>(query?.where?.playerTag?.in ?? []);
-      return [
-        {
-          playerTag: "#P000002",
-          discordUserId: "111111111111111111",
-          discordUsername: "Alpha One",
-          createdAt: new Date("2026-04-10T16:30:00.000Z"),
-        },
-      ].filter((row) => allowed.has(row.playerTag));
-    });
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: [
-        {
-          clanTag: "#AAA111",
-          playerTag: "#P000002",
-          playerName: "Filler Alpha",
-          townHall: 16,
-          missedWars: 1,
-          participationWars: 3,
-          totalTrueStars: 0,
-          avgAttackDelay: null,
-          lateAttacks: 0,
-          warsAvailable: 3,
-          missedWarStates: [],
-        } as any,
-      ],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
-
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[16, "<:th16:12345678901234567>"]]),
-    );
-
-    const embed = result.embeds[0]?.toJSON();
-    const replaceField = embed?.fields?.find((field) => String(field.name).startsWith("Replace"));
-    expect(replaceField?.name).toBe("Replace 1/1");
-    expect(replaceField?.value).toContain("ALP <:th16:12345678901234567> 145,000");
-    expect(replaceField?.value).toContain(
-      "[Filler Alpha](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P000002>) :crown: `#P000002`",
-    );
-  });
-
-  it("adds a crown for filler co-leader candidates", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        clanTag: "#AAA111",
-        playerTag: "#P000002",
-        playerName: "Filler CoLeader",
-        weight: 145000,
-        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: null,
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000002" }]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        townHall: 16,
-        role: "coLeader",
-      },
-    ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000) },
-    ]);
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        discordUserId: "444444444444444444",
-        discordUsername: "Bravo Two",
-        createdAt: new Date("2026-04-10T16:30:00.000Z"),
-      },
-    ]);
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: [
-        {
-          clanTag: "#AAA111",
-          playerTag: "#P000002",
-          playerName: "Filler CoLeader",
-          townHall: 16,
-          missedWars: 1,
-          participationWars: 3,
-          totalTrueStars: 0,
-          avgAttackDelay: null,
-          lateAttacks: 0,
-          warsAvailable: 3,
-          missedWarStates: [],
-        } as any,
-      ],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
-
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[16, "<:th16:12345678901234567>"]]),
-    );
-
-    const embed = result.embeds[0]?.toJSON();
-    const replaceField = embed?.fields?.find((field) => String(field.name).startsWith("Replace"));
-    expect(replaceField?.name).toBe("Replace 1/1");
-    expect(replaceField?.value).toContain("ALP <:th16:12345678901234567> 145,000");
-    expect(replaceField?.value).toContain(
-      "[Filler CoLeader](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P000002>) :crown: `#P000002`",
-    );
-  });
-
-  it("does not add a crown for inactive-only leaders", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        clanTag: "#AAA111",
-        playerTag: "#P000002",
-        playerName: "Inactive Leader",
-        weight: 145000,
-        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: 15,
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        townHall: 15,
-        role: "coLeader",
-      },
-    ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000) },
-    ]);
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        discordUserId: "111111111111111111",
-        discordUsername: "Alpha One",
-        createdAt: new Date("2026-04-10T16:30:00.000Z"),
-      },
-    ]);
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: [
-        {
-          clanTag: "#AAA111",
-          playerTag: "#P000002",
-          playerName: "Inactive Leader",
-          townHall: 15,
-          missedWars: 1,
-          participationWars: 3,
-          totalTrueStars: 0,
-          avgAttackDelay: null,
-          lateAttacks: 0,
-          warsAvailable: 3,
-          missedWarStates: [],
-        } as any,
-      ],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
-
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[15, "<:th15:12345678901234567>"]]),
-    );
-
-    const embed = result.embeds[0]?.toJSON();
-    const replaceValue = embed?.fields?.find((field) => String(field.name).startsWith("Replace"))?.value ?? "";
-    expect(replaceValue).toContain("ALP <:th15:12345678901234567> 145,000");
-    expect(replaceValue).not.toContain(":crown: `#P000002`");
-  });
-
-  it("does not add a crown for filler members", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        clanTag: "#AAA111",
-        playerTag: "#P000002",
-        playerName: "Filler Member",
-        weight: 145000,
-        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: 15,
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000002" }]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        townHall: 15,
-        role: "member",
-      },
-    ]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000) },
-    ]);
-    prismaMock.playerLink.findMany.mockResolvedValue([
-      {
-        playerTag: "#P000002",
-        discordUserId: "111111111111111111",
-        discordUsername: "Alpha One",
-        createdAt: new Date("2026-04-10T16:30:00.000Z"),
-      },
-    ]);
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: [
-        {
-          clanTag: "#AAA111",
-          playerTag: "#P000002",
-          playerName: "Filler Member",
-          townHall: 15,
-          missedWars: 1,
-          participationWars: 3,
-          totalTrueStars: 0,
-          avgAttackDelay: null,
-          lateAttacks: 0,
-          warsAvailable: 3,
-          missedWarStates: [],
-        } as any,
-      ],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
-
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[15, "<:th15:12345678901234567>"]]),
-    );
-
-    const embed = result.embeds[0]?.toJSON();
-    const replaceValue = embed?.fields?.find((field) => String(field.name).startsWith("Replace"))?.value ?? "";
-    expect(replaceValue).toContain("ALP <:th15:12345678901234567> 145,000");
-    expect(replaceValue).not.toContain(":crown: `#P000002`");
-  });
-
-  it("counts title, description, author, footer, and field text in the shared embed budget helper", () => {
-    const metrics = summarizeDiscordEmbedText(
-      {
-        title: "T".repeat(2000),
-        description: "D".repeat(1200),
-        author: { name: "A".repeat(400) },
-        footer: { text: "F".repeat(300) },
-        fields: [
-          {
-            name: "N".repeat(200),
-            value: "V".repeat(400),
-          },
-        ],
-      },
-    );
-
-    expect(metrics.titleLength).toBe(2000);
-    expect(metrics.descriptionLength).toBe(1200);
-    expect(metrics.authorNameLength).toBe(400);
-    expect(metrics.footerTextLength).toBe(300);
-    expect(metrics.maxFieldNameLength).toBe(200);
-    expect(metrics.maxFieldValueLength).toBe(400);
-    expect(metrics.estimatedTextLength).toBe(4500);
-  });
-
-  it("paginates Replace rows without cutting a player line mid-row", async () => {
-    const replaceRows = Array.from({ length: 70 }, (_, index) => {
-      const suffix = String(index + 1).padStart(6, "0");
-      const tag = `#P${suffix}`;
-      return `ALP <:th15:12345678901234567> 145,000 :man_standing: :zzz: 8d | :x: 1 - [Player ${
-        index + 1
-      }](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=%23P${suffix}>) \`${tag}\``;
-    });
-
-    const embeds = buildCompoPlaceEmbedsForTest({
-      inputWeight: 145000,
-      bucket: "TH15",
-      recommended: [],
-      vacancyList: [],
-      compositionList: [],
-      replaceRows,
-      refreshLine: "RAW Data last refreshed: <t:1744302600:F>",
-      modeLabel: "ACTUAL Auto-Detect",
-      deltaLabel: "resolved roster vs HeatMapRef",
-    });
-
-    const replaceFields = embeds.flatMap((embed) => {
-      const json = embed.toJSON();
-      return (json.fields ?? [])
-        .filter((field) => String(field.name).startsWith("Replace"))
-        .map((field) => ({
-          name: String(field.name),
-          value: String(field.value),
-        }));
-    });
-
-    expect(embeds.length).toBeGreaterThan(1);
-    expect(replaceFields.length).toBeGreaterThan(1);
-    expect(replaceFields.length).toBeGreaterThan(embeds.length);
-    expect(
-      embeds[0]?.toJSON().fields?.filter((field) => String(field.name).startsWith("Replace"))?.length ?? 0,
-    ).toBeGreaterThan(1);
-    expect(embeds.slice(1).every((embed) => {
-      const json = embed.toJSON();
-      return (json.fields ?? []).every((field) => String(field.name).startsWith("Replace"));
-    })).toBe(true);
-
-    for (const field of replaceFields) {
-      expect(field.value.length).toBeLessThanOrEqual(1024);
-      for (const line of field.value.split("\n")) {
-        expect(line).toContain("ALP <:th15:12345678901234567> 145,000 ");
-        expect(line).toContain(" - [");
-        expect(line).toContain("](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=");
-        expect(line).toMatch(/`#P[0-9A-Z]+`$/);
-      }
-    }
-
-    for (const embed of embeds) {
-      const metrics = summarizeDiscordEmbedText(embed.toJSON());
-      expect(metrics.estimatedTextLength).toBeLessThanOrEqual(4096);
-      expect(metrics.fieldCount).toBeLessThanOrEqual(25);
-      expect(metrics.maxFieldNameLength).toBeLessThanOrEqual(256);
-      expect(metrics.maxFieldValueLength).toBeLessThanOrEqual(1024);
-    }
-  });
-
-  it("falls back to the unknown Town Hall icon when no TH source exists", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      makeTrackedClan("AAA111", "Alpha Clan-war", "ALP"),
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        clanTag: "#AAA111",
-        playerTag: "#P000002",
-        playerName: "Unknown Town Hall",
-        weight: 145000,
-        sourceSyncedAt: new Date("2026-04-10T16:30:00.000Z"),
-        townHall: null,
-      },
-    ]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000002" }]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000002", lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
-    ]);
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    vi.mocked(InactiveWarService.prototype.listInactiveWarPlayers).mockResolvedValue({
-      results: [
-        {
-          clanTag: "#AAA111",
-          playerTag: "#P000002",
-          playerName: "Unknown Town Hall",
-          townHall: null,
-          missedWars: 1,
-          participationWars: 3,
-          totalTrueStars: 0,
-          avgAttackDelay: null,
-          lateAttacks: 0,
-          warsAvailable: 3,
-          missedWarStates: [],
-        } as any,
-      ],
-      trackedTags: [],
-      trackedNameByTag: new Map(),
-      trackedBadgeByTag: new Map(),
-      warnings: [],
-      diagnosticNote: null,
-    });
-
-    const result = await new CompoPlaceService().readPlace(
-      145000,
-      "TH15",
-      "guild-1",
-      new Map([[15, "<:th15:12345678901234567>"]]),
-    );
-
-    const embed = result.embeds[0]?.toJSON();
-    const replaceValue = embed?.fields?.find((field) => String(field.name).startsWith("Replace"))?.value ?? "";
-    expect(replaceValue).toContain("\u2754");
   });
 
   it("uses member weight, then deferred weight, then WAR effective weight, and ignores unresolved zero-weight rows", async () => {
