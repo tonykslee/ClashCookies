@@ -6,34 +6,17 @@ import {
   collapseCompoWarBucketCountsForDisplay,
 } from "../helper/compoWarBucketCounts";
 import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
-import {
-  normalizeTownHallLevel,
-  renderTownHallIcon,
-  type TownHallEmojiMap,
-} from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
-import { playerCurrentService } from "./PlayerCurrentService";
 import {
   loadCompoActualStateContext,
   type CompoActualStateClanContext,
 } from "./CompoActualStateService";
-import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
-import { listFillerAccountTagsForGuild } from "./FillerAccountService";
-import { InactiveWarService, type InactiveWarSummary } from "./InactiveWarService";
-import { listPlayerLinksForClanMembers, normalizePlayerTag } from "./PlayerLinkService";
 import { normalizeTag } from "./war-events/core";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import {
   projectCompoActualStateView,
   type CompoActualStateProjection,
 } from "../helper/compoActualStateView";
-import {
-  DISCORD_EMBED_FIELD_VALUE_LIMIT,
-  isDiscordEmbedTextWithinLimits,
-  summarizeDiscordEmbedText,
-  truncateDiscordFieldName,
-  truncateDiscordFieldValue,
-  truncateDiscordMultilineText,
-} from "../helper/embedTextBudget";
 
 type PlacementCandidate = {
   clanName: string;
@@ -51,30 +34,6 @@ type PlacementCandidate = {
 type PlacementCandidateWithDelta = PlacementCandidate & {
   delta: number;
 };
-
-type ReplaceCandidate = {
-  clanName: string;
-  clanTag: string;
-  playerTag: string;
-  playerName: string;
-  townHall: number | null;
-  clanRole: "leader" | "coLeader" | null;
-  weight: number;
-  filler: boolean;
-  daysInactive: number | null;
-  warsMissed: number | null;
-  inactiveByDays: boolean;
-  inactiveByWars: boolean;
-  linkedDiscordUserId: string | null;
-};
-
-type ReplaceRowsResult = {
-  rows: string[];
-  metadataMayBeStale: boolean;
-};
-
-const REPLACE_FIELD_VALUE_LIMIT = DISCORD_EMBED_FIELD_VALUE_LIMIT;
-
 export type CompoPlaceReadResult = {
   content: string;
   embeds: EmbedBuilder[];
@@ -130,153 +89,17 @@ function formatPlacementRows(lines: string[]): string {
   return lines.length > 0 ? lines.join("\n") : "None";
 }
 
-function buildPlayerProfileMarkdownLink(
-  playerName: string | null,
-  playerTag: string,
-): string {
-  const normalizedTag = normalizePlayerTag(playerTag);
-  const label = String(playerName ?? "").trim() || normalizedTag || "Unknown Player";
-  if (!normalizedTag) return label;
-  const encodedTag = normalizedTag.replace(/^#/, "");
-  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
-}
-
-function buildTrackedClanShortNameMap(rows: Array<{
-  tag: string;
-  shortName: string | null;
-}>): Map<string, string> {
-  const byTag = new Map<string, string>();
-  for (const row of rows) {
-    const tag = normalizeTag(row.tag);
-    if (!tag) continue;
-    const shortName = String(row.shortName ?? "").trim();
-    if (shortName) {
-      byTag.set(tag, shortName);
-      byTag.set(tag.replace(/^#/, ""), shortName);
-    }
-  }
-  return byTag;
-}
-
-function buildReplaceReasonText(candidate: ReplaceCandidate): string {
-  const parts: string[] = [];
-  if (candidate.filler) parts.push(":man_standing:");
-  if (candidate.daysInactive !== null || candidate.warsMissed !== null) {
-    parts.push(
-      `:zzz: ${Math.max(0, Math.trunc(candidate.daysInactive ?? 0))}d | :x: ${Math.max(
-        0,
-        Math.trunc(candidate.warsMissed ?? 0),
-      )}`,
-    );
-  }
-  return parts.join(" ").trim();
-}
-
-function buildReplaceClanPrefix(input: {
-  clanName: string;
-  clanTag: string;
-  shortNameByClanTag: Map<string, string>;
-}): string {
-  const clanTag = normalizeTag(input.clanTag);
-  const shortName = clanTag ? input.shortNameByClanTag.get(clanTag)?.trim() ?? "" : "";
-  const clanName = normalizePlaceClanDisplayName(String(input.clanName ?? ""));
-  return shortName || clanName || input.clanTag;
-}
-
-function normalizeClanMemberRole(input: unknown): "leader" | "coLeader" | null {
-  const normalized = String(input ?? "")
-    .trim()
-    .replace(/[\s_-]+/g, "")
-    .toLowerCase();
-  if (normalized === "leader") return "leader";
-  if (normalized === "coleader" || normalized === "coleadership") return "coLeader";
-  return null;
-}
-
-function truncateReplaceRow(line: string, limit = REPLACE_FIELD_VALUE_LIMIT): string {
-  if (line.length <= limit) return line;
-  if (limit <= 1) return "\u2026";
-  return `${line.slice(0, limit - 1).trimEnd()}\u2026`;
-}
-
-function paginateReplaceRows(lines: string[]): string[] {
-  const pages: string[] = [];
-  let current = "";
-
-  for (const rawLine of lines) {
-    const line = String(rawLine ?? "").trim();
-    if (!line) continue;
-
-    const next = current.length > 0 ? `${current}\n${line}` : line;
-    if (next.length <= REPLACE_FIELD_VALUE_LIMIT) {
-      current = next;
-      continue;
-    }
-
-    if (current.length > 0) {
-      pages.push(current);
-      current = "";
-    }
-
-    if (line.length <= REPLACE_FIELD_VALUE_LIMIT) {
-      current = line;
-      continue;
-    }
-
-    pages.push(truncateReplaceRow(line));
-  }
-
-  if (current.length > 0) {
-    pages.push(current);
-  }
-
-  return pages;
-}
-
-function cloneEmbed(embed: EmbedBuilder): EmbedBuilder {
-  return EmbedBuilder.from(embed.toJSON());
-}
-
-function isCompoPlaceEmbedWithinBudget(embed: EmbedBuilder): boolean {
-  return isDiscordEmbedTextWithinLimits(summarizeDiscordEmbedText(embed.toJSON()));
-}
-
-function normalizeCompoPlaceField(field: { name: string; value: string }): {
-  name: string;
-  value: string;
-  inline: false;
-} {
-  return {
-    name: truncateDiscordFieldName(String(field.name ?? "")),
-    value: truncateDiscordMultilineText(String(field.value ?? ""), REPLACE_FIELD_VALUE_LIMIT, {
-      suffix: " ... truncated to fit Discord limits",
-    }),
-    inline: false,
-  };
-}
-
-function buildCompoPlaceEmbedShell(params: {
+/** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
+function buildCompoPlaceEmbed(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
   modeLabel?: string;
   deltaLabel?: string;
-  refreshLine: string;
-}): EmbedBuilder {
-  return new EmbedBuilder().setTitle("Compo Placement Suggestions").setDescription(
-    `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
-      `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
-      `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
-      `Bucket: **${params.bucket}**\n` +
-      params.refreshLine,
-  );
-}
-
-function buildCompoPlaceCoreFields(params: {
-  bucket: CompoWarDisplayBucket;
   recommended: PlacementCandidateWithDelta[];
   vacancyList: PlacementCandidate[];
   compositionList: PlacementCandidateWithDelta[];
-}): Array<{ name: string; value: string; inline: false }> {
+  refreshLine: string;
+}): EmbedBuilder {
   const recommendedRows = params.recommended.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${Math.abs(candidate.delta)} ${params.bucket}`,
@@ -284,7 +107,9 @@ function buildCompoPlaceCoreFields(params: {
   const vacancyRows = params.vacancyList.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${
-        candidate.liveMemberCount !== null ? `${candidate.liveMemberCount}/50` : "unknown/50"
+        candidate.liveMemberCount !== null
+          ? `${candidate.liveMemberCount}/50`
+          : "unknown/50"
       }`,
   );
   const compositionRows = params.compositionList.map(
@@ -292,460 +117,32 @@ function buildCompoPlaceCoreFields(params: {
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
   );
 
-  return [
-    {
-      name: truncateDiscordFieldName("Recommended"),
-      value: truncateDiscordMultilineText(formatPlacementRows(recommendedRows), REPLACE_FIELD_VALUE_LIMIT, {
-        suffix: " ... truncated to fit Discord limits",
-      }),
-      inline: false,
-    },
-    {
-      name: truncateDiscordFieldName("Vacancy"),
-      value: truncateDiscordMultilineText(formatPlacementRows(vacancyRows), REPLACE_FIELD_VALUE_LIMIT, {
-        suffix: " ... truncated to fit Discord limits",
-      }),
-      inline: false,
-    },
-    {
-      name: truncateDiscordFieldName("Composition"),
-      value: truncateDiscordMultilineText(
-        formatPlacementRows(compositionRows),
-        REPLACE_FIELD_VALUE_LIMIT,
-        {
-          suffix: " ... truncated to fit Discord limits",
-        },
-      ),
-      inline: false,
-    },
-  ];
-}
-
-function buildCompoPlaceReplaceFields(replaceRows: string[]): Array<{ name: string; value: string; inline: false }> {
-  const replacePages = paginateReplaceRows(replaceRows);
-  return replacePages.map((value, index) => ({
-    name: truncateDiscordFieldName(`Replace ${index + 1}/${replacePages.length}`),
-    value: truncateDiscordFieldValue(value),
-    inline: false,
-  }));
-}
-
-function packCompoPlaceFieldsIntoEmbeds(params: {
-  shell: EmbedBuilder;
-  fields: Array<{ name: string; value: string; inline: false }>;
-}): EmbedBuilder[] {
-  const embeds: EmbedBuilder[] = [];
-  let current = cloneEmbed(params.shell);
-  current.setFields([]);
-
-  for (const rawField of params.fields) {
-    const field = normalizeCompoPlaceField(rawField);
-    const candidate = cloneEmbed(current);
-    candidate.addFields(field);
-    if (isCompoPlaceEmbedWithinBudget(candidate)) {
-      current = candidate;
-      continue;
-    }
-
-    if ((current.toJSON().fields?.length ?? 0) > 0) {
-      embeds.push(current);
-      current = cloneEmbed(params.shell);
-      current.setFields([]);
-      const freshCandidate = cloneEmbed(current);
-      freshCandidate.addFields(field);
-      if (isCompoPlaceEmbedWithinBudget(freshCandidate)) {
-        current = freshCandidate;
-        continue;
-      }
-    }
-
-    const safeField = normalizeCompoPlaceField({
-      name: field.name,
-      value: truncateDiscordMultilineText(field.value, REPLACE_FIELD_VALUE_LIMIT, {
-        suffix: " ... truncated to fit Discord limits",
-      }),
-    });
-    const fallbackCandidate = cloneEmbed(current);
-    fallbackCandidate.addFields(safeField);
-    if (isCompoPlaceEmbedWithinBudget(fallbackCandidate)) {
-      current = fallbackCandidate;
-      continue;
-    }
-
-    const noteEmbed = cloneEmbed(params.shell);
-    noteEmbed.setFooter({
-      text: "Some /compo place rows were truncated to fit Discord embed limits.",
-    });
-    if (isCompoPlaceEmbedWithinBudget(noteEmbed)) {
-      if ((current.toJSON().fields?.length ?? 0) > 0) {
-        embeds.push(current);
-      }
-      current = noteEmbed;
-      continue;
-    }
-
-    // Last-resort fallback: keep the current page and avoid sending invalid payloads.
-    if ((current.toJSON().fields?.length ?? 0) > 0) {
-      embeds.push(current);
-    }
-    current = cloneEmbed(params.shell);
-    current.setFields([]);
-    current.setFooter({
-      text: "Some /compo place rows were truncated to fit Discord embed limits.",
-    });
-  }
-
-  if ((current.toJSON().fields?.length ?? 0) > 0 || current.toJSON().footer) {
-    embeds.push(current);
-  }
-
-  return embeds;
-}
-
-function buildCompoPlaceTruncationNoteEmbed(shell: EmbedBuilder): EmbedBuilder {
-  const noteEmbed = cloneEmbed(shell);
-  noteEmbed.setFields([]);
-  noteEmbed.setFooter({
-    text: "Some /compo place rows were truncated to fit Discord embed limits.",
-  });
-  return noteEmbed;
-}
-
-function ensureCompoPlaceEmbedsWithinBudget(params: {
-  shell: EmbedBuilder;
-  embeds: EmbedBuilder[];
-}): EmbedBuilder[] {
-  const sanitized: EmbedBuilder[] = [];
-  for (const embed of params.embeds) {
-    if (isCompoPlaceEmbedWithinBudget(embed)) {
-      sanitized.push(embed);
-      continue;
-    }
-    const embedJson = embed.toJSON();
-    const fields = Array.isArray(embedJson.fields) ? embedJson.fields : [];
-    const repacked = packCompoPlaceFieldsIntoEmbeds({
-      shell: params.shell,
-      fields: fields.map((field) => ({
-        name: String(field?.name ?? ""),
-        value: String(field?.value ?? ""),
-        inline: false as const,
-      })),
-    });
-    if (repacked.length > 0 && repacked.every((candidate) => isCompoPlaceEmbedWithinBudget(candidate))) {
-      sanitized.push(...repacked);
-      continue;
-    }
-    sanitized.push(buildCompoPlaceTruncationNoteEmbed(params.shell));
-  }
-  return sanitized;
-}
-
-export function ensureCompoPlaceEmbedsWithinBudgetForSend(
-  embeds: EmbedBuilder[],
-): EmbedBuilder[] {
-  if (embeds.length === 0) {
-    return [];
-  }
-  const shell = cloneEmbed(embeds[0]);
-  shell.setFields([]);
-  return ensureCompoPlaceEmbedsWithinBudget({
-    shell,
-    embeds,
-  });
-}
-
-function buildSafeCompoPlaceEmbeds(params: {
-  inputWeight: number;
-  bucket: CompoWarDisplayBucket;
-  modeLabel?: string;
-  deltaLabel?: string;
-  recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidate[];
-  compositionList: PlacementCandidateWithDelta[];
-  replaceRows?: string[];
-  refreshLine: string;
-}): EmbedBuilder[] {
-  const shell = buildCompoPlaceEmbedShell({
-    inputWeight: params.inputWeight,
-    bucket: params.bucket,
-    modeLabel: params.modeLabel,
-    deltaLabel: params.deltaLabel,
-    refreshLine: params.refreshLine,
-  });
-  const fields = [
-    ...buildCompoPlaceCoreFields({
-      bucket: params.bucket,
-      recommended: params.recommended,
-      vacancyList: params.vacancyList,
-      compositionList: params.compositionList,
-    }),
-    ...buildCompoPlaceReplaceFields(params.replaceRows ?? []),
-  ];
-  const packedEmbeds = packCompoPlaceFieldsIntoEmbeds({ shell, fields });
-  const safeEmbeds = ensureCompoPlaceEmbedsWithinBudget({
-    shell,
-    embeds: packedEmbeds,
-  });
-  return safeEmbeds.length > 0 ? safeEmbeds : [shell];
-}
-
-async function buildReplaceRows(input: {
-  guildId: string | null | undefined;
-  bucket: CompoWarDisplayBucket;
-  clans: CompoActualStateClanContext[];
-  townHallEmojiByLevel: TownHallEmojiMap;
-}): Promise<ReplaceRowsResult> {
-  const sameBucketMembers = input.clans.flatMap((clan) =>
-    clan.members
-      .filter(
-        (member) =>
-          member.resolvedBucket === input.bucket &&
-          member.resolvedWeight !== null &&
-          member.resolvedWeight > 0,
-      )
-      .map((member) => ({
-        clanName: clan.clanName,
-        clanTag: clan.clanTag,
-        playerTag: member.playerTag,
-        playerName: member.playerName,
-        townHall: member.townHall,
-        weight: member.resolvedWeight ?? 0,
-      })),
-  );
-  if (sameBucketMembers.length === 0) {
-    return { rows: [], metadataMayBeStale: false };
-  }
-
-  const uniquePlayerTags = [...new Set(
-    sameBucketMembers
-      .map((member) => normalizePlayerTag(member.playerTag))
-      .filter((tag): tag is string => Boolean(tag)),
-  )];
-
-  const [fillerTags, activityRows, inactiveWarSummary, linkedRows, trackedClanRows, playerCurrentByTag, fwaCatalogRows] = await Promise.all([
-    input.guildId ? listFillerAccountTagsForGuild({ guildId: input.guildId }) : Promise.resolve([]),
-    input.guildId
-      ? prisma.playerActivity.findMany({
-          where: {
-            guildId: input.guildId,
-            tag: { in: uniquePlayerTags },
-          },
-          select: {
-            tag: true,
-            lastSeenAt: true,
-          },
-          orderBy: [{ tag: "asc" }, { lastSeenAt: "desc" }],
-        })
-      : Promise.resolve([] as Array<{ tag: string; lastSeenAt: Date }>),
-    input.guildId
-      ? new InactiveWarService().listInactiveWarPlayers({
-          guildId: input.guildId,
-          wars: 3,
-        })
-      : Promise.resolve(null as InactiveWarSummary | null),
-    listPlayerLinksForClanMembers({ memberTagsInOrder: uniquePlayerTags }),
-    prisma.trackedClan.findMany({
-      where: {
-        tag: {
-          in: input.clans.flatMap((clan) => {
-            const normalized = normalizeTag(clan.clanTag);
-            return normalized ? [normalized, normalized.replace(/^#/, "")] : [];
-          }),
-        },
+  return new EmbedBuilder()
+    .setTitle("Compo Placement Suggestions")
+    .setDescription(
+      `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**\n` +
+        `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**\n` +
+      `Weight: **${params.inputWeight.toLocaleString("en-US")}**\n` +
+        `Bucket: **${params.bucket}**\n` +
+        params.refreshLine,
+    )
+    .addFields(
+      {
+        name: "Recommended",
+        value: formatPlacementRows(recommendedRows),
+        inline: false,
       },
-      select: {
-        tag: true,
-        shortName: true,
+      {
+        name: "Vacancy",
+        value: formatPlacementRows(vacancyRows),
+        inline: false,
       },
-    }),
-    playerCurrentService.listPlayerCurrentByTags(uniquePlayerTags),
-    prisma.fwaPlayerCatalog.findMany({
-      where: { playerTag: { in: uniquePlayerTags } },
-      select: {
-        playerTag: true,
-        latestTownHall: true,
+      {
+        name: "Composition",
+        value: formatPlacementRows(compositionRows),
+        inline: false,
       },
-    }),
-  ]);
-
-  const fillerTagSet = new Set(
-    fillerTags.map((tag) => normalizePlayerTag(tag)).filter((tag): tag is string => Boolean(tag)),
-  );
-  const lastSeenByTag = new Map<string, Date>();
-  for (const row of activityRows as Array<{ tag: string; lastSeenAt: Date }>) {
-    const tag = normalizePlayerTag(row.tag);
-    if (!tag || lastSeenByTag.has(tag)) continue;
-    lastSeenByTag.set(tag, row.lastSeenAt);
-  }
-  const warsMissedByTag = new Map<string, number>();
-  const warRows = inactiveWarSummary?.results ?? [];
-  for (const row of warRows) {
-    const tag = normalizePlayerTag(row.playerTag);
-    const missedWars = Math.trunc(Number(row.missedWars));
-    if (!tag || !Number.isFinite(missedWars) || missedWars <= 0) continue;
-    warsMissedByTag.set(tag, missedWars);
-  }
-  const linkedDiscordUserIdByTag = new Map<string, string>();
-  for (const row of linkedRows) {
-    const tag = normalizePlayerTag(row.playerTag);
-    const discordUserId = String(row.discordUserId ?? "").trim();
-    if (!tag || !discordUserId) continue;
-    linkedDiscordUserIdByTag.set(tag, discordUserId);
-  }
-  const shortNameByClanTag = buildTrackedClanShortNameMap(
-    trackedClanRows as Array<{ tag: string; shortName: string | null }>,
-  );
-  const townHallByTag = new Map<string, number | null>();
-  for (const [playerTag, playerCurrent] of playerCurrentByTag.entries()) {
-    const playerCurrentTownHall = normalizeTownHallLevel(playerCurrent.townHall);
-    if (playerCurrentTownHall !== null) {
-      townHallByTag.set(playerTag, playerCurrentTownHall);
-    }
-  }
-  for (const row of fwaCatalogRows as Array<{ playerTag: string; latestTownHall: unknown }>) {
-    const playerTag = normalizePlayerTag(row.playerTag);
-    if (!playerTag || townHallByTag.get(playerTag) !== undefined) continue;
-    townHallByTag.set(playerTag, normalizeTownHallLevel(row.latestTownHall));
-  }
-
-  const candidates = sameBucketMembers
-    .map((member) => {
-      const playerTag = normalizePlayerTag(member.playerTag);
-      if (!playerTag) return null;
-      const filler = fillerTagSet.has(playerTag);
-      const lastSeenAt = lastSeenByTag.get(playerTag) ?? null;
-      const daysInactive =
-        lastSeenAt !== null
-          ? Math.max(0, Math.floor((Date.now() - lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)))
-          : null;
-      const inactiveByDays = daysInactive !== null && daysInactive >= 7;
-      const warsMissed = warsMissedByTag.get(playerTag) ?? null;
-      const inactiveByWars = warsMissed !== null && warsMissed > 0;
-      if (!filler && !inactiveByDays && !inactiveByWars) {
-        return null;
-      }
-      return {
-        clanName: member.clanName,
-        clanTag: member.clanTag,
-        playerTag,
-        playerName: member.playerName,
-        townHall:
-          normalizeTownHallLevel(member.townHall) ??
-          townHallByTag.get(playerTag) ??
-          null,
-        clanRole: normalizeClanMemberRole(playerCurrentByTag.get(playerTag)?.role ?? null),
-        weight: member.weight,
-        filler,
-        daysInactive,
-        warsMissed,
-        inactiveByDays,
-        inactiveByWars,
-        linkedDiscordUserId: linkedDiscordUserIdByTag.get(playerTag) ?? null,
-      } satisfies ReplaceCandidate;
-    })
-    .filter((candidate): candidate is ReplaceCandidate => candidate !== null)
-    .sort((a, b) => {
-      const aScore =
-        (a.filler ? 1 : 0) +
-        (a.inactiveByDays ? 1 : 0) +
-        (a.inactiveByWars ? 1 : 0);
-      const bScore =
-        (b.filler ? 1 : 0) +
-        (b.inactiveByDays ? 1 : 0) +
-        (b.inactiveByWars ? 1 : 0);
-      if (bScore !== aScore) return bScore - aScore;
-      if ((b.daysInactive ?? -1) !== (a.daysInactive ?? -1)) {
-        return (b.daysInactive ?? -1) - (a.daysInactive ?? -1);
-      }
-      if ((b.warsMissed ?? -1) !== (a.warsMissed ?? -1)) {
-        return (b.warsMissed ?? -1) - (a.warsMissed ?? -1);
-      }
-      if (b.weight !== a.weight) return b.weight - a.weight;
-      const clanCompare = a.clanName.localeCompare(b.clanName);
-      if (clanCompare !== 0) return clanCompare;
-      const nameCompare = a.playerName.localeCompare(b.playerName);
-      if (nameCompare !== 0) return nameCompare;
-      return a.playerTag.localeCompare(b.playerTag);
-    });
-
-  const metadataMayBeStale =
-    input.townHallEmojiByLevel.size === 0 ||
-    candidates.some(
-      (candidate) => candidate.townHall === null || (candidate.filler && candidate.clanRole === null),
     );
-
-  return {
-    rows: candidates.map((candidate) => {
-    const clanPrefix = buildReplaceClanPrefix({
-      clanName: candidate.clanName,
-      clanTag: candidate.clanTag,
-      shortNameByClanTag,
-    });
-    const reason = buildReplaceReasonText(candidate);
-    const mention = candidate.linkedDiscordUserId
-      ? ` <@${candidate.linkedDiscordUserId}>`
-      : "";
-    const crown =
-      candidate.filler && candidate.clanRole ? ":crown: " : "";
-    return `${clanPrefix} ${renderTownHallIcon(
-      candidate.townHall,
-      input.townHallEmojiByLevel,
-    )} ${candidate.weight.toLocaleString("en-US")} ${reason} - ${buildPlayerProfileMarkdownLink(
-      candidate.playerName,
-      candidate.playerTag,
-    )} ${crown}\`${candidate.playerTag}\`${mention}`;
-    }),
-    metadataMayBeStale,
-  };
-}
-
-/** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
-function buildCompoPlaceBaseEmbed(params: {
-  inputWeight: number;
-  bucket: CompoWarDisplayBucket;
-  modeLabel?: string;
-  deltaLabel?: string;
-  recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidate[];
-  compositionList: PlacementCandidateWithDelta[];
-  refreshLine: string;
-  includeCoreSections?: boolean;
-}): EmbedBuilder {
-  const embed = buildCompoPlaceEmbedShell({
-    inputWeight: params.inputWeight,
-    bucket: params.bucket,
-    modeLabel: params.modeLabel,
-    deltaLabel: params.deltaLabel,
-    refreshLine: params.refreshLine,
-  });
-
-  if (params.includeCoreSections ?? true) {
-    embed.addFields(
-      ...buildCompoPlaceCoreFields({
-        bucket: params.bucket,
-        recommended: params.recommended,
-        vacancyList: params.vacancyList,
-        compositionList: params.compositionList,
-      }),
-    );
-  }
-
-  return embed;
-}
-
-function buildCompoPlaceEmbeds(params: {
-  inputWeight: number;
-  bucket: CompoWarDisplayBucket;
-  modeLabel?: string;
-  deltaLabel?: string;
-  recommended: PlacementCandidateWithDelta[];
-  vacancyList: PlacementCandidate[];
-  compositionList: PlacementCandidateWithDelta[];
-  replaceRows?: string[];
-  refreshLine: string;
-}): EmbedBuilder[] {
-  const safeEmbeds = buildSafeCompoPlaceEmbeds(params);
-  return safeEmbeds;
 }
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
@@ -844,7 +241,6 @@ export class CompoPlaceService {
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
-    townHallEmojiByLevel: TownHallEmojiMap = new Map(),
   ): Promise<CompoPlaceReadResult> {
     const context = await loadCompoActualStateContext(guildId ?? null);
     if (context.trackedClanTags.length === 0) {
@@ -907,30 +303,21 @@ export class CompoPlaceService {
       });
 
     const recommended = compositionNeeds.filter((candidate) => candidate.hasVacancy);
-    const replaceRows = await buildReplaceRows({
-      guildId,
-      bucket,
-      clans: context.clans,
-      townHallEmojiByLevel,
-    });
-    const replaceMetadataNote =
-      replaceRows.metadataMayBeStale && replaceRows.rows.length > 0
-        ? "Some replacement metadata may be stale/missing."
-        : "";
 
     return {
-      content: replaceMetadataNote,
-      embeds: buildCompoPlaceEmbeds({
+      content: "",
+      embeds: [
+        buildCompoPlaceEmbed({
           inputWeight,
           bucket,
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
-          replaceRows: replaceRows.rows,
           refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
           modeLabel: buildCompoPlaceModeLabel(),
           deltaLabel: buildCompoPlaceDeltaLabel(),
         }),
+      ],
       trackedClanTags: context.trackedClanTags,
       eligibleClanTags: candidates.map((candidate) => candidate.clanTag),
       candidateCount: candidates.length,
@@ -945,7 +332,6 @@ export class CompoPlaceService {
     inputWeight: number,
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
-    townHallEmojiByLevel: TownHallEmojiMap = new Map(),
   ): Promise<CompoPlaceReadResult> {
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
@@ -963,11 +349,10 @@ export class CompoPlaceService {
         trackedClanTags,
       );
     }
-    return this.readPlace(inputWeight, bucket, guildId, townHallEmojiByLevel);
+    return this.readPlace(inputWeight, bucket, guildId);
   }
 }
 
-export const buildCompoPlaceEmbedForTest = buildCompoPlaceBaseEmbed;
-export const buildCompoPlaceEmbedsForTest = buildCompoPlaceEmbeds;
+export const buildCompoPlaceEmbedForTest = buildCompoPlaceEmbed;
 export const buildBucketDeltaByHeaderForTest = buildBucketDeltaByHeader;
 export const resolvePlacementWeightForTest = resolveActualCompoWeight;
