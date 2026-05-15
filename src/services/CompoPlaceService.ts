@@ -61,7 +61,7 @@ type ReplaceCandidate = {
 };
 
 const REPLACE_FIELD_VALUE_LIMIT = 1024;
-const REPLACE_EMBED_TEXT_SAFE_LIMIT = 5200;
+const REPLACE_EMBED_TEXT_SAFE_LIMIT = 4096;
 
 export type CompoPlaceReadResult = {
   content: string;
