@@ -250,6 +250,7 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
     expect(overview).not.toContain("Upgrades:");
+    expect(overview).not.toContain("🏘️");
 
     const single = buildRaidDashboardSingleClanDescription(rows[0]!);
     expect(single).toContain("## Raid Clan");
@@ -258,7 +259,81 @@ describe("RaidDashboardService", () => {
     expect(single).toContain("Attacks: 11");
   });
 
-  it("sorts overview rows by ongoing status, raids completed, and intel grade score", async () => {
+  it("renders raid intel overview and drilldown summaries with default counts and grouped abbreviations", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 11,
+      attacksMax: 12,
+      hasOngoingRaid: true,
+      raidsCompleted: 0,
+      defaultLayoutCount: 3,
+      intelGradeScore: 0,
+      raidIntelMarks: [
+        { districtName: "Goblin Mines", layoutGrade: "DEFAULT" },
+        { districtName: "Skeleton Park", layoutGrade: "DEFAULT" },
+        { districtName: "Golem Quarry", layoutGrade: "DEFAULT" },
+      ],
+      openDefenseSections: [
+        {
+          attackerName: "Enemy Clan",
+          attackerTag: "#2QG2C08UR",
+          joinType: "open",
+          joinRequirements: null,
+          attacksUsed: 30,
+          districtsRemaining: 1,
+        },
+      ],
+    } as any;
+
+    const overview = buildRaidDashboardOverviewDescription([row]);
+    expect(overview).toContain("## Raid Clans");
+    expect(overview).toContain("- ⚔️ 🏘️ 2210 | defaults: 3 | GM, SP, GQ");
+    expect(overview).toContain("- 🛡️ [Enemy Clan]");
+
+    const drilldown = buildRaidDashboardSingleClanDescription(row, {
+      activeSeason: { state: "ongoing" },
+      attackSections: [],
+      defenseSections: [],
+      raidsCompleted: 0,
+    } as any);
+    expect(drilldown).toContain("- ⚔️ ⚪ GM, SP, GQ");
+    expect(drilldown.indexOf("- ⚔️ ⚪ GM, SP, GQ")).toBeLessThan(drilldown.indexOf("## Attacking"));
+    expect(drilldown).toContain("Upgrades: 2210");
+  });
+
+  it("renders zero defaults in the overview intel line when only non-default marks exist", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 1,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        raidIntelMarks: [
+          { districtName: "Dragon Cliffs", layoutGrade: "CUSTOM_EASY" },
+          { districtName: "Balloon Lagoon", layoutGrade: "CUSTOM_MEDIUM" },
+          { districtName: "Wizard Valley", layoutGrade: "CUSTOM_HARD" },
+        ],
+      } as any,
+    ]);
+
+    expect(overview).toContain("- ⚔️ 🏘️ — | defaults: 0 | —");
+    expect(overview).not.toContain("GM, SP, GQ");
+  });
+
+  it("sorts overview rows by ongoing status, raids completed, and default layout count", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2QG2C08UP",
@@ -289,12 +364,20 @@ describe("RaidDashboardService", () => {
       {
         sourceClanTag: "2RVGJYLC0",
         raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
-        layoutGrade: "CUSTOM_HARD",
+        districtName: "Goblin Mines",
+        layoutGrade: "DEFAULT",
       },
       {
         sourceClanTag: "2QG2C08UR",
         raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
-        layoutGrade: "CUSTOM_MEDIUM",
+        districtName: "Skeleton Park",
+        layoutGrade: "DEFAULT",
+      },
+      {
+        sourceClanTag: "2QG2C08UR",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        districtName: "Dragon Cliffs",
+        layoutGrade: "DEFAULT",
       },
     ]);
 
@@ -332,20 +415,20 @@ describe("RaidDashboardService", () => {
       guildId: "guild-1",
     });
 
-    expect(rows.map((row) => row.clanTag)).toEqual(["2RVGJYLC0", "2QG2C08UR", "2QG2C08UP"]);
-    expect(rows.map((row) => row.intelGradeScore)).toEqual([3, 2, 0]);
+    expect(rows.map((row) => row.clanTag)).toEqual(["2QG2C08UR", "2RVGJYLC0", "2QG2C08UP"]);
+    expect(rows.map((row) => row.defaultLayoutCount)).toEqual([2, 1, null]);
 
     const overview = buildRaidDashboardOverviewDescription(rows);
-    const bravoIndex = overview.indexOf("\ud83c\udf04 [Bravo Raid]");
     const charlieIndex = overview.indexOf("\ud83c\udf04 [Charlie Raid]");
+    const bravoIndex = overview.indexOf("\ud83c\udf04 [Bravo Raid]");
     const alphaIndex = overview.indexOf("\ud83c\udf04 [Alpha Raid]");
-    expect(bravoIndex).toBeGreaterThanOrEqual(0);
-    expect(charlieIndex).toBeGreaterThan(bravoIndex);
-    expect(alphaIndex).toBeGreaterThan(charlieIndex);
+    expect(charlieIndex).toBeGreaterThanOrEqual(0);
+    expect(bravoIndex).toBeGreaterThan(charlieIndex);
+    expect(alphaIndex).toBeGreaterThan(bravoIndex);
 
     const choices = buildRaidDashboardSelectChoices(rows, null);
     expect(choices).toHaveLength(3);
-    expect(choices.map((choice) => choice.value)).toEqual(["2RVGJYLC0", "2QG2C08UR", "2QG2C08UP"]);
+    expect(choices.map((choice) => choice.value)).toEqual(["2QG2C08UR", "2RVGJYLC0", "2QG2C08UP"]);
     expect(choices.every((choice) => choice.selected === false)).toBe(true);
   });
 

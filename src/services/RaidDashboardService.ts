@@ -1,15 +1,19 @@
-import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+﻿import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import {
   buildRaidIntelDistrictKey,
   buildRaidIntelLayoutGradeLabel,
   buildRaidIntelLayoutScoreKey,
+  calculateRaidIntelLayoutGradeScore,
   parseRaidSeasonTimeMs,
   type RaidIntelLayoutGrade,
   type RaidIntelLayoutGradeLabel,
 } from "../helper/raidIntelLayout";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
-import { loadRaidIntelLayoutGradeScoresForSeasons } from "./RaidIntelLayoutMarkService";
+import {
+  loadRaidIntelLayoutMarksForSeasons,
+  type RaidIntelDistrictLayoutMarkRecord,
+} from "./RaidIntelLayoutMarkService";
 import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
@@ -20,6 +24,40 @@ import {
 
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const RAID_DETAIL_TRUNCATION_RESERVE = 96;
+const RAID_INTEL_SUMMARY_GRADE_EMOJI: Record<RaidIntelLayoutGradeLabel, string> = {
+  Unmarked: "⚪",
+  Default: "⚪",
+  "Custom - Hard": "🔴",
+  "Custom - Medium": "🟡",
+  "Custom - Easy": "🟢",
+};
+const RAID_INTEL_SUMMARY_GRADE_ORDER: RaidIntelLayoutGradeLabel[] = [
+  "Default",
+  "Custom - Easy",
+  "Custom - Medium",
+  "Custom - Hard",
+];
+const RAID_INTEL_SUMMARY_DISTRICT_ORDER = [
+  "GM",
+  "SP",
+  "GQ",
+  "DC",
+  "BL",
+  "WV",
+  "BC",
+  "BW",
+];
+const RAID_INTEL_SUMMARY_DISTRICT_ABBREVIATIONS = new Map<string, string>([
+  ["goblin mines", "GM"],
+  ["skeleton park", "SP"],
+  ["golem quarry", "GQ"],
+  ["dragon cliffs", "DC"],
+  ["balloon lagoon", "BL"],
+  ["wizard valley", "WV"],
+  ["barbarian camp", "BC"],
+  ["builders workshop", "BW"],
+  ["builder's workshop", "BW"],
+]);
 
 export {
   buildRaidIntelDistrictKey,
@@ -37,7 +75,9 @@ export type RaidDashboardCountRow = {
 };
 
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
+  defaultLayoutCount: number | null;
   intelGradeScore: number;
+  raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
 };
 
@@ -157,6 +197,46 @@ function formatJoinTypeLabel(joinType: RaidTrackedClanJoinType | null): string {
 
 function formatCompletedAttacksLabel(attacksCompleted: number | null): string {
   return attacksCompleted === null ? "—" : String(attacksCompleted);
+}
+
+function normalizeRaidIntelSummaryDistrictName(name: unknown): string | null {
+  const trimmed = String(name ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.replace(/['’]/g, "");
+}
+
+function buildRaidIntelDistrictAbbreviation(name: string | null | undefined): string | null {
+  const normalized = normalizeRaidIntelSummaryDistrictName(name);
+  if (!normalized) return null;
+  return RAID_INTEL_SUMMARY_DISTRICT_ABBREVIATIONS.get(normalized) ?? null;
+}
+
+function sortRaidIntelDistrictAbbreviations(abbreviations: string[]): string[] {
+  const order = new Map(RAID_INTEL_SUMMARY_DISTRICT_ORDER.map((value, index) => [value, index] as const));
+  return [...new Set(abbreviations)].sort((left, right) => {
+    const leftIndex = order.get(left) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = order.get(right) ?? Number.MAX_SAFE_INTEGER;
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    return left.localeCompare(right);
+  });
+}
+
+function buildRaidIntelSummaryGroups(
+  marks: RaidIntelDistrictLayoutMarkRecord[],
+): Map<RaidIntelLayoutGradeLabel, string[]> {
+  const groups = new Map<RaidIntelLayoutGradeLabel, string[]>();
+  for (const mark of marks) {
+    const abbreviation = buildRaidIntelDistrictAbbreviation(mark.districtName);
+    if (!abbreviation) continue;
+    const grade = buildRaidIntelLayoutGradeLabel(mark.layoutGrade);
+    const bucket = groups.get(grade) ?? [];
+    bucket.push(abbreviation);
+    groups.set(grade, bucket);
+  }
+  for (const [grade, abbreviations] of groups) {
+    groups.set(grade, sortRaidIntelDistrictAbbreviations(abbreviations));
+  }
+  return groups;
 }
 
 function normalizeDistrictName(name: unknown): string | null {
@@ -1081,7 +1161,7 @@ export async function listRaidDashboardRows(input: {
     }),
   );
   const allDefenseSections = snapshots.flatMap(([, snapshot]) => snapshot.defenseSections);
-  const gradeScoreInputs = tracked.flatMap((row, index) => {
+  const raidIntelSeasonInputs = tracked.flatMap((row, index) => {
     const activeSeason = snapshots[index]?.[1]?.activeSeason ?? null;
     const startMs = activeSeason?.startTime ? parseRaidSeasonTimeMs(activeSeason.startTime) : null;
     return startMs === null
@@ -1094,15 +1174,15 @@ export async function listRaidDashboardRows(input: {
         ];
   });
 
-  const [metadataByTag, intelGradeScoreBySeason] = await Promise.all([
+  const [metadataByTag, raidIntelMarksBySeason] = await Promise.all([
     loadRaidAttackerClanMetadata({
       cocService: input.cocService,
       defenseSections: allDefenseSections,
       source: "raids:overview",
     }),
-    loadRaidIntelLayoutGradeScoresForSeasons({
+    loadRaidIntelLayoutMarksForSeasons({
       guildId: input.guildId ?? null,
-      seasons: gradeScoreInputs,
+      seasons: raidIntelSeasonInputs,
     }),
   ]);
 
@@ -1121,15 +1201,23 @@ export async function listRaidDashboardRows(input: {
     const activeSeasonStartMs = snapshot.activeSeason?.startTime
       ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
       : null;
-    const intelGradeScore =
+    const raidIntelMarks =
       activeSeasonStartMs === null
-        ? 0
-        : intelGradeScoreBySeason.get(
+        ? []
+        : raidIntelMarksBySeason.get(
             buildRaidIntelLayoutScoreKey({
               sourceClanTag: row.clanTag,
               raidSeasonStartTime: new Date(activeSeasonStartMs),
             }),
-          ) ?? 0;
+          ) ?? [];
+    const defaultLayoutCount =
+      raidIntelMarks.length > 0
+        ? raidIntelMarks.filter((mark) => mark.layoutGrade === "DEFAULT").length
+        : null;
+    const intelGradeScore = raidIntelMarks.reduce(
+      (sum, mark) => sum + calculateRaidIntelLayoutGradeScore(mark.layoutGrade),
+      0,
+    );
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1139,7 +1227,9 @@ export async function listRaidDashboardRows(input: {
       ...row,
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
+      defaultLayoutCount,
       intelGradeScore,
+      raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
       raidsCompleted: snapshot.counts.raidsCompleted,
       openDefenseSections,
@@ -1188,6 +1278,39 @@ function buildRaidDashboardOverviewClanTitle(input: {
   return `${prefix}${link} \`${clanTag}\``;
 }
 
+function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string | null {
+  const marks = row.raidIntelMarks ?? [];
+  if (marks.length <= 0) {
+    return null;
+  }
+
+  const groups = buildRaidIntelSummaryGroups(marks);
+  const defaultAbbreviations = groups.get("Default") ?? [];
+  const defaultText = defaultAbbreviations.length > 0 ? defaultAbbreviations.join(", ") : "—";
+  const upgradesText = row.upgrades === null ? "—" : String(row.upgrades);
+  const defaultLayoutCount =
+    row.defaultLayoutCount ?? marks.filter((mark) => mark.layoutGrade === "DEFAULT").length;
+  return `- ⚔️ 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
+}
+
+function buildRaidDashboardIntelSummaryLine(
+  marks: RaidIntelDistrictLayoutMarkRecord[] | null | undefined,
+): string | null {
+  const normalizedMarks = Array.isArray(marks) ? marks : [];
+  if (normalizedMarks.length <= 0) {
+    return null;
+  }
+
+  const groups = buildRaidIntelSummaryGroups(normalizedMarks);
+  const chunks = RAID_INTEL_SUMMARY_GRADE_ORDER.flatMap((grade) => {
+    const abbreviations = groups.get(grade) ?? [];
+    if (abbreviations.length <= 0) return [];
+    return [`${RAID_INTEL_SUMMARY_GRADE_EMOJI[grade]} ${abbreviations.join(", ")}`];
+  });
+
+  return chunks.length > 0 ? `- ⚔️ ${chunks.join(" ")}` : null;
+}
+
 function buildRaidDashboardOverviewOpenDefenseSectionText(
   section: RaidDashboardDefenseSection,
 ): string | null {
@@ -1213,6 +1336,10 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
   const lines: string[] = ["## Raid Clans", ""];
   for (const row of sortRaidDashboardRows(rows)) {
     lines.push(buildRaidDashboardOverviewClanTitle(row));
+    const intelLine = buildRaidDashboardOverviewIntelLine(row);
+    if (intelLine) {
+      lines.push(intelLine);
+    }
     for (const section of row.openDefenseSections ?? []) {
       const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
       if (text) {
@@ -1257,6 +1384,11 @@ export function buildRaidDashboardSingleClanDescription(
       item: false,
     },
   ];
+
+  const intelSummaryLine = buildRaidDashboardIntelSummaryLine(row.raidIntelMarks);
+  if (intelSummaryLine) {
+    lines.push({ text: intelSummaryLine, item: false });
+  }
 
   if (detail) {
     lines.push({ text: "", item: false });
@@ -1335,10 +1467,10 @@ function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanR
         return rightCompleted - leftCompleted;
       }
 
-      const leftGradeScore = left.intelGradeScore ?? 0;
-      const rightGradeScore = right.intelGradeScore ?? 0;
-      if (leftGradeScore !== rightGradeScore) {
-        return rightGradeScore - leftGradeScore;
+      const leftDefaultLayoutCount = left.defaultLayoutCount ?? -1;
+      const rightDefaultLayoutCount = right.defaultLayoutCount ?? -1;
+      if (leftDefaultLayoutCount !== rightDefaultLayoutCount) {
+        return rightDefaultLayoutCount - leftDefaultLayoutCount;
       }
 
       return (left as { overviewSortIndex: number }).overviewSortIndex -
@@ -1346,3 +1478,4 @@ function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanR
     })
     .map(({ overviewSortIndex: _overviewSortIndex, ...row }) => row);
 }
+
