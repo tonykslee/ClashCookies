@@ -2491,6 +2491,11 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
+    const telemetryContext = getTelemetryContext();
+    logCompoStage(interaction, "run_entry", {
+      interactionId: interaction.id,
+      runId: telemetryContext?.runId ?? null,
+    });
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
@@ -2742,6 +2747,15 @@ export const Compo: Command = {
             content:
               "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
           });
+          logCompoStage(interaction, "response_sent_success", {
+            method:
+              interaction.deferred || interaction.replied ? "editReply" : "reply",
+            embedCount: 0,
+            componentCount: 0,
+          });
+          logCompoStage(interaction, "place_return_early", {
+            reason: "invalid_weight",
+          });
           logCompoStage(interaction, "response_sent", {
             reason: "invalid_weight",
           });
@@ -2757,6 +2771,15 @@ export const Compo: Command = {
           await safeReply(interaction, {
             ephemeral: !isPublic,
             content: "Weight is outside supported ranges for ACTUAL compo buckets.",
+          });
+          logCompoStage(interaction, "response_sent_success", {
+            method:
+              interaction.deferred || interaction.replied ? "editReply" : "reply",
+            embedCount: 0,
+            componentCount: 0,
+          });
+          logCompoStage(interaction, "place_return_early", {
+            reason: "weight_out_of_range",
           });
           logCompoStage(interaction, "response_sent", {
             reason: "weight_out_of_range",
@@ -2853,7 +2876,18 @@ export const Compo: Command = {
           });
           throw sendErr;
         }
+        logCompoStage(interaction, "response_sent_success", {
+          method: "editReply",
+          embedCount: placeResponseMetrics.embedCount,
+          componentCount: placeResponseMetrics.componentRowCount,
+        });
         logCompoStage(interaction, "response_sent", {
+          reason:
+            placeResult.candidateCount === 0
+              ? "no_candidates"
+              : "placement_result",
+        });
+        logCompoStage(interaction, "place_return_success", {
           reason:
             placeResult.candidateCount === 0
               ? "no_candidates"
@@ -2878,6 +2912,11 @@ export const Compo: Command = {
         interaction,
         error: err,
       });
+      if (getSubcommandSafe(interaction) === "place") {
+        logCompoStage(interaction, "place_return_error_fallback", {
+          reason: "run_catch",
+        });
+      }
       console.error(`compo command failed: ${formatError(err)}`);
       console.error(
         `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
