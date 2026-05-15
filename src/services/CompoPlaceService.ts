@@ -68,6 +68,11 @@ type ReplaceCandidate = {
   linkedDiscordUserId: string | null;
 };
 
+type ReplaceRowsResult = {
+  rows: string[];
+  metadataMayBeStale: boolean;
+};
+
 const REPLACE_FIELD_VALUE_LIMIT = DISCORD_EMBED_FIELD_VALUE_LIMIT;
 
 export type CompoPlaceReadResult = {
@@ -489,7 +494,7 @@ async function buildReplaceRows(input: {
   bucket: CompoWarDisplayBucket;
   clans: CompoActualStateClanContext[];
   townHallEmojiByLevel: TownHallEmojiMap;
-}): Promise<string[]> {
+}): Promise<ReplaceRowsResult> {
   const sameBucketMembers = input.clans.flatMap((clan) =>
     clan.members
       .filter(
@@ -508,7 +513,7 @@ async function buildReplaceRows(input: {
       })),
   );
   if (sameBucketMembers.length === 0) {
-    return [];
+    return { rows: [], metadataMayBeStale: false };
   }
 
   const uniquePlayerTags = [...new Set(
@@ -663,7 +668,14 @@ async function buildReplaceRows(input: {
       return a.playerTag.localeCompare(b.playerTag);
     });
 
-  return candidates.map((candidate) => {
+  const metadataMayBeStale =
+    input.townHallEmojiByLevel.size === 0 ||
+    candidates.some(
+      (candidate) => candidate.townHall === null || (candidate.filler && candidate.clanRole === null),
+    );
+
+  return {
+    rows: candidates.map((candidate) => {
     const clanPrefix = buildReplaceClanPrefix({
       clanName: candidate.clanName,
       clanTag: candidate.clanTag,
@@ -682,7 +694,9 @@ async function buildReplaceRows(input: {
       candidate.playerName,
       candidate.playerTag,
     )} ${crown}\`${candidate.playerTag}\`${mention}`;
-  });
+    }),
+    metadataMayBeStale,
+  };
 }
 
 /** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
@@ -899,16 +913,20 @@ export class CompoPlaceService {
       clans: context.clans,
       townHallEmojiByLevel,
     });
+    const replaceMetadataNote =
+      replaceRows.metadataMayBeStale && replaceRows.rows.length > 0
+        ? "Some replacement metadata may be stale/missing."
+        : "";
 
     return {
-      content: "",
+      content: replaceMetadataNote,
       embeds: buildCompoPlaceEmbeds({
           inputWeight,
           bucket,
           recommended,
           vacancyList,
           compositionList: compositionNeeds,
-          replaceRows,
+          replaceRows: replaceRows.rows,
           refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
           modeLabel: buildCompoPlaceModeLabel(),
           deltaLabel: buildCompoPlaceDeltaLabel(),
