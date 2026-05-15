@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCompoRefreshCustomIdForTest,
   handleCompoRefreshButton,
@@ -73,7 +73,7 @@ describe("compo place refresh button behavior", () => {
 
     await handleCompoRefreshButton(interaction as any, {} as any);
 
-    expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1", expect.any(Map));
+    expect(refreshPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1");
     const loadingPayload = interaction.update.mock.calls[0]?.[0];
     expect(loadingPayload?.components?.length ?? 0).toBeGreaterThan(0);
     expect(

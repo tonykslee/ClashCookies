@@ -37,11 +37,9 @@ import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compo
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
-import { summarizeDiscordEmbedText } from "../helper/embedTextBudget";
 import { CoCService } from "../services/CoCService";
 import {
   CompoAdviceService,
@@ -50,7 +48,6 @@ import {
 import { CompoActualStateService } from "../services/CompoActualStateService";
 import {
   CompoPlaceService,
-  ensureCompoPlaceEmbedsWithinBudgetForSend,
 } from "../services/CompoPlaceService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
 import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
@@ -179,62 +176,6 @@ function getDiscordRestErrorStatus(error: unknown): number | null {
   return null;
 }
 
-type CompoPlaceEmbedMetrics = {
-  index: number;
-  titleLength: number;
-  descriptionLength: number;
-  authorNameLength: number;
-  footerTextLength: number;
-  fieldCount: number;
-  maxFieldNameLength: number;
-  maxFieldValueLength: number;
-  estimatedTextLength: number;
-  fieldLengths: Array<{ nameLength: number; valueLength: number }>;
-};
-
-function summarizeCompoPlacePayloadMetrics(input: {
-  content: string;
-  embeds: EmbedBuilder[];
-  components: Array<unknown>;
-}): {
-  embedCount: number;
-  componentRowCount: number;
-  payloadJsonLength: number;
-  embeds: CompoPlaceEmbedMetrics[];
-} {
-  const embeds = input.embeds.map((embed, index) => {
-    const json = embed.toJSON();
-    const metrics = summarizeDiscordEmbedText(json);
-    return {
-      index,
-      titleLength: metrics.titleLength,
-      descriptionLength: metrics.descriptionLength,
-      authorNameLength: metrics.authorNameLength,
-      footerTextLength: metrics.footerTextLength,
-      fieldCount: metrics.fieldCount,
-      maxFieldNameLength: metrics.maxFieldNameLength,
-      maxFieldValueLength: metrics.maxFieldValueLength,
-      estimatedTextLength: metrics.estimatedTextLength,
-      fieldLengths: metrics.fieldLengths,
-    };
-  });
-
-  return {
-    embedCount: input.embeds.length,
-    componentRowCount: input.components.length,
-    payloadJsonLength: JSON.stringify({
-      content: input.content,
-      embeds: input.embeds.map((embed) => embed.toJSON()),
-      components: input.components.map((component) =>
-        typeof (component as { toJSON?: () => unknown }).toJSON === "function"
-          ? (component as { toJSON: () => unknown }).toJSON()
-          : component,
-      ),
-    }).length,
-    embeds,
-  };
-}
-
 function summarizeDiscordRestError(error: unknown): Record<string, unknown> {
   const err = error as {
     name?: unknown;
@@ -282,114 +223,6 @@ function summarizeDiscordRestError(error: unknown): Record<string, unknown> {
   };
 }
 
-function findFirstValidationPath(
-  value: unknown,
-  trail: string[] = [],
-): string | null {
-  if (value == null) {
-    return trail.length > 0 ? trail.join(".") : null;
-  }
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      const nested = findFirstValidationPath(value[index], [...trail, String(index)]);
-      if (nested) return nested;
-    }
-    return trail.length > 0 ? trail.join(".") : null;
-  }
-  if (typeof value !== "object") {
-    return trail.length > 0 ? trail.join(".") : null;
-  }
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length === 0) {
-    return trail.length > 0 ? trail.join(".") : null;
-  }
-  for (const [key, current] of entries) {
-    const nextTrail = [...trail, key];
-    if (current && typeof current === "object") {
-      const nested = findFirstValidationPath(current, nextTrail);
-      if (nested) return nested;
-    }
-    if (current !== undefined && (current === null || typeof current !== "object")) {
-      return nextTrail.join(".");
-    }
-  }
-  return trail.length > 0 ? trail.join(".") : null;
-}
-
-function getDiscordValidationPath(errorSummary: Record<string, unknown>): string | null {
-  const candidates = [
-    errorSummary.responseData,
-    errorSummary.errors,
-    errorSummary.rawError,
-  ];
-  for (const candidate of candidates) {
-    const path = findFirstValidationPath(candidate);
-    if (path) return path;
-  }
-  return null;
-}
-
-function logCompoPlaceSendFailure(input: {
-  interaction: ChatInputCommandInteraction;
-  attemptedMethod: "editReply" | "followUp" | "reply";
-  payloadMetrics: ReturnType<typeof summarizeCompoPlacePayloadMetrics>;
-  error: unknown;
-  durationMs?: number;
-}): void {
-  const telemetryContext = getTelemetryContext();
-  const errorSummary = summarizeDiscordRestError(input.error);
-  const validationPath =
-    typeof errorSummary === "object" && errorSummary !== null
-      ? getDiscordValidationPath(errorSummary)
-      : null;
-  console.error(
-    `[compo-command-error] stage=response_send_failed_header command=compo subcommand=place guildId=${input.interaction.guildId ?? null} userId=${input.interaction.user.id} interactionId=${input.interaction.id} runId=${telemetryContext?.runId ?? null} method=${input.attemptedMethod} deferred=${Boolean(input.interaction.deferred)} replied=${Boolean(input.interaction.replied)} errorName=${String(errorSummary.name ?? "")} errorMessage=${String(errorSummary.message ?? "")} code=${String(errorSummary.code ?? "")} status=${String(errorSummary.status ?? "")} validationPath=${String(validationPath ?? "")} durationMs=${String(input.durationMs ?? "")}`,
-  );
-  const details = {
-    command: "compo",
-    subcommand: "place",
-    guildId: input.interaction.guildId ?? null,
-    userId: input.interaction.user.id,
-    interactionId: input.interaction.id,
-    runId: telemetryContext?.runId ?? null,
-    deferred: Boolean(input.interaction.deferred),
-    replied: Boolean(input.interaction.replied),
-    method: input.attemptedMethod,
-    durationMs: input.durationMs ?? null,
-    validationPath,
-    error: errorSummary,
-    payload: input.payloadMetrics,
-  };
-  console.error(
-    `[compo-command-error] stage=response_send_failed details=${safeDiagnosticJson(details, 30000, 1000)}`,
-  );
-}
-
-function logCompoPlaceStageFailure(input: {
-  interaction: ChatInputCommandInteraction;
-  stage: string;
-  error: unknown;
-  detail?: Record<string, string | number | boolean | null | undefined>;
-}): void {
-  const telemetryContext = getTelemetryContext();
-  const details = {
-    command: "compo",
-    subcommand: "place",
-    guildId: input.interaction.guildId ?? null,
-    userId: input.interaction.user.id,
-    interactionId: input.interaction.id,
-    runId: telemetryContext?.runId ?? null,
-    deferred: Boolean(input.interaction.deferred),
-    replied: Boolean(input.interaction.replied),
-    stage: input.stage,
-    error: summarizeDiscordRestError(input.error),
-    ...(input.detail ?? {}),
-  };
-  console.error(
-    `[compo-command-error] stage=${input.stage}_failed details=${safeDiagnosticJson(details, 30000, 1000)}`,
-  );
-}
-
 function logCompoRunCatchError(input: {
   interaction: ChatInputCommandInteraction;
   error: unknown;
@@ -408,27 +241,6 @@ function logCompoRunCatchError(input: {
   };
   console.error(
     `[compo-command-error] stage=run_catch_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
-  );
-}
-
-function logCompoPlaceErrorRaw(input: {
-  interaction: ChatInputCommandInteraction;
-  error: unknown;
-}): void {
-  const telemetryContext = getTelemetryContext();
-  const details = {
-    command: "compo",
-    subcommand: "place",
-    guildId: input.interaction.guildId ?? null,
-    userId: input.interaction.user.id,
-    interactionId: input.interaction.id,
-    runId: telemetryContext?.runId ?? null,
-    deferred: Boolean(input.interaction.deferred),
-    replied: Boolean(input.interaction.replied),
-    error: summarizeDiscordRestError(input.error),
-  };
-  console.error(
-    `[compo-command-error] stage=place_error_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
   );
 }
 
@@ -2325,12 +2137,11 @@ export async function handleCompoRefreshButton(
       if (!bucket) {
         throw new Error("Invalid placement bucket for refresh.");
       }
-        const placeResult = await new CompoPlaceService().refreshPlace(
-          parsed.weight,
-          bucket,
-          interaction.guildId ?? null,
-          getCachedTownHallEmojiMap(),
-        );
+      const placeResult = await new CompoPlaceService().refreshPlace(
+        parsed.weight,
+        bucket,
+        interaction.guildId ?? null,
+      );
       await interaction.editReply({
         content: placeResult.content,
         embeds: placeResult.embeds,
@@ -2572,120 +2383,17 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
-    console.error(
-      `[compo-command] stage=run_entry_sync command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
-    console.error(
-      `[compo-command] stage=run_after_entry_sync_1 command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
-    console.error(
-      `[compo-command] stage=run_before_subcommand_hint command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
-    const subcommandHint = getSubcommandSafe(interaction);
-    console.error(
-      `[compo-command] stage=run_after_subcommand_hint command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
-    console.error(
-      `[compo-command] stage=run_before_visibility_read command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
-    console.error(
-      `[compo-command] stage=run_after_visibility_read command=compo subcommand=${subcommandHint} visibility=${visibility} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
     const isPublic = visibility === "public";
-    console.error(
-      `[compo-command] stage=run_after_is_public command=compo subcommand=${subcommandHint} isPublic=${isPublic} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
     if (!interaction.deferred && !interaction.replied) {
-      logCompoStage(interaction, "before_defer");
-      const deferStartedAt = Date.now();
-      const deferBeforeDeferred = Boolean(interaction.deferred);
-      const deferBeforeReplied = Boolean(interaction.replied);
-      logCompoStage(interaction, "defer_attempt", {
-        method: "deferReply",
-        deferredBefore: deferBeforeDeferred,
-        repliedBefore: deferBeforeReplied,
-        isPublic,
-      });
-      try {
-        await interaction.deferReply(
-          isPublic ? {} : { flags: MessageFlags.Ephemeral },
-        );
-        logCompoStage(interaction, "after_defer");
-        logCompoStage(interaction, "defer_success", {
-          method: "deferReply",
-          durationMs: Date.now() - deferStartedAt,
-          deferredBefore: deferBeforeDeferred,
-          repliedBefore: deferBeforeReplied,
-          deferredAfter: Boolean(interaction.deferred),
-          repliedAfter: Boolean(interaction.replied),
-          isPublic,
-        });
-        logCompoStage(interaction, "defer_reply_ok");
-      } catch (err) {
-        logCompoPlaceStageFailure({
-          interaction,
-          stage: "defer",
-          error: err,
-          detail: {
-            isPublic,
-            durationMs: Date.now() - deferStartedAt,
-            deferredBefore: deferBeforeDeferred,
-            repliedBefore: deferBeforeReplied,
-            deferredAfter: Boolean(interaction.deferred),
-            repliedAfter: Boolean(interaction.replied),
-          },
-        });
-        throw err;
-      }
-    }
-    console.error(
-      `[compo-command] stage=run_before_telemetry_context command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
-    );
-    const telemetryContext = getTelemetryContext();
-    console.error(
-      `[compo-command] stage=run_after_telemetry_context command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
-    );
-    let placeOutcome: string | null = null;
-    console.error(
-      `[compo-command] stage=run_after_place_outcome_init command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
-    );
-    logCompoStage(interaction, "run_entry", {
-      interactionId: interaction.id,
-      runId: telemetryContext?.runId ?? null,
-    });
-    try {
-      console.error(
-        `[compo-command] stage=run_before_handler_enter command=compo subcommand=${subcommandHint} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=${telemetryContext?.runId ?? ""}`,
+      await interaction.deferReply(
+        isPublic ? {} : { flags: MessageFlags.Ephemeral },
       );
-      logCompoStage(interaction, "handler_enter");
-
-      let subcommand = subcommandHint;
-      let mode: ReturnType<typeof readMode> = "actual";
-      try {
-        if (subcommand === "place") {
-          logCompoStage(interaction, "before_options_parse");
-        }
-        subcommand = interaction.options.getSubcommand(true);
-        mode = readMode(interaction);
-        if (subcommand === "place") {
-          logCompoStage(interaction, "after_options_parse");
-        }
-        logCompoStage(interaction, "options_parsed", {
-          mode,
-          tag: interaction.options.getString("tag", false) ?? "",
-          weight: interaction.options.getString("weight", false) ?? "",
-        });
-      } catch (err) {
-        logCompoPlaceStageFailure({
-          interaction,
-          stage: "options_parse",
-          error: err,
-          detail: { isPublic },
-        });
-        throw err;
-      }
+    }
+    try {
+      const subcommand = interaction.options.getSubcommand(true);
+      const mode = readMode(interaction);
 
       if (subcommand === "advice") {
         const tagInput = interaction.options.getString("tag", true);
@@ -2853,28 +2561,13 @@ export const Compo: Command = {
       }
 
       if (subcommand === "place") {
-        let rawWeight = "";
-        let inputWeight: number | null = null;
-        try {
-          logCompoStage(interaction, "before_weight_parse");
-          rawWeight = interaction.options.getString("weight", true);
-          inputWeight = parseWeightInput(rawWeight);
-          logCompoStage(interaction, "after_weight_parse");
-          logCompoStage(interaction, "computation_start", {
-            weightInput: rawWeight,
-            parsedWeight: inputWeight ?? "",
-          });
-        } catch (err) {
-          logCompoPlaceStageFailure({
-            interaction,
-            stage: "weight_parse",
-            error: err,
-            detail: { weightInput: rawWeight || null },
-          });
-          throw err;
-        }
+        const rawWeight = interaction.options.getString("weight", true);
+        const inputWeight = parseWeightInput(rawWeight);
+        logCompoStage(interaction, "computation_start", {
+          weightInput: rawWeight,
+          parsedWeight: inputWeight ?? "",
+        });
         if (!inputWeight || inputWeight <= 0) {
-          placeOutcome = "invalid_weight";
           logCompoStage(interaction, "response_build", {
             reason: "invalid_weight",
           });
@@ -2882,15 +2575,6 @@ export const Compo: Command = {
             ephemeral: !isPublic,
             content:
               "Invalid weight. Use formats like `145000`, `145,000`, or `145k`.",
-          });
-          logCompoStage(interaction, "response_sent_success", {
-            method:
-              interaction.deferred || interaction.replied ? "editReply" : "reply",
-            embedCount: 0,
-            componentCount: 0,
-          });
-          logCompoStage(interaction, "place_return_early", {
-            reason: "invalid_weight",
           });
           logCompoStage(interaction, "response_sent", {
             reason: "invalid_weight",
@@ -2900,7 +2584,6 @@ export const Compo: Command = {
 
         const bucket = getCompoWarDisplayBucket(inputWeight);
         if (!bucket) {
-          placeOutcome = "weight_out_of_range";
           logCompoStage(interaction, "response_build", {
             reason: "weight_out_of_range",
             parsedWeight: inputWeight,
@@ -2909,43 +2592,17 @@ export const Compo: Command = {
             ephemeral: !isPublic,
             content: "Weight is outside supported ranges for ACTUAL compo buckets.",
           });
-          logCompoStage(interaction, "response_sent_success", {
-            method:
-              interaction.deferred || interaction.replied ? "editReply" : "reply",
-            embedCount: 0,
-            componentCount: 0,
-          });
-          logCompoStage(interaction, "place_return_early", {
-            reason: "weight_out_of_range",
-          });
           logCompoStage(interaction, "response_sent", {
             reason: "weight_out_of_range",
           });
           return;
         }
 
-        let placeResult: Awaited<ReturnType<CompoPlaceService["readPlace"]>>;
-        try {
-          logCompoStage(interaction, "before_service_readPlace");
-          placeResult = await new CompoPlaceService().readPlace(
-            inputWeight,
-            bucket,
-            interaction.guildId ?? null,
-            getCachedTownHallEmojiMap(),
-          );
-          logCompoStage(interaction, "after_service_readPlace");
-        } catch (err) {
-          logCompoPlaceStageFailure({
-            interaction,
-            stage: "service_call",
-            error: err,
-            detail: {
-              parsedWeight: inputWeight,
-              bucket,
-            },
-          });
-          throw err;
-        }
+        const placeResult = await new CompoPlaceService().readPlace(
+          inputWeight,
+          bucket,
+          interaction.guildId ?? null,
+        );
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
           mode: "actual",
@@ -2967,70 +2624,17 @@ export const Compo: Command = {
           vacancy: placeResult.vacancyCount,
           composition: placeResult.compositionCount,
         });
-        let placeResponseComponents: ReturnType<typeof buildCompoRefreshComponents>;
-        try {
-          placeResponseComponents = buildCompoRefreshComponents({
+        await interaction.editReply({
+          content: placeResult.content,
+          embeds: placeResult.embeds,
+          components: buildCompoRefreshComponents({
             refreshPayload: {
               kind: "place",
               userId: interaction.user.id,
               weight: inputWeight,
             },
             loading: false,
-          });
-        } catch (err) {
-          logCompoPlaceStageFailure({
-            interaction,
-            stage: "response_components",
-            error: err,
-            detail: {
-              parsedWeight: inputWeight,
-              bucket,
-            },
-          });
-          placeOutcome = placeOutcome ?? "response_components_failed";
-          throw err;
-        }
-        const safePlaceEmbeds = ensureCompoPlaceEmbedsWithinBudgetForSend(
-          placeResult.embeds,
-        );
-        const placeResponsePayload = {
-          content: placeResult.content,
-          embeds: safePlaceEmbeds,
-          components: placeResponseComponents,
-        };
-        const placeResponseMetrics = summarizeCompoPlacePayloadMetrics({
-          content: placeResponsePayload.content ?? "",
-          embeds: placeResponsePayload.embeds,
-          components: placeResponsePayload.components,
-        });
-        const responseSendStartedAt = Date.now();
-        logCompoStage(interaction, "response_send_attempt", {
-          method: "editReply",
-          deferred: Boolean(interaction.deferred),
-          replied: Boolean(interaction.replied),
-          embedCount: placeResponseMetrics.embedCount,
-          componentRowCount: placeResponseMetrics.componentRowCount,
-          payloadJsonLength: placeResponseMetrics.payloadJsonLength,
-        });
-        try {
-          await interaction.editReply(placeResponsePayload);
-        } catch (sendErr) {
-          logCompoPlaceSendFailure({
-            interaction,
-            attemptedMethod: "editReply",
-            payloadMetrics: placeResponseMetrics,
-            error: sendErr,
-            durationMs: Date.now() - responseSendStartedAt,
-          });
-          placeOutcome = "response_send_failed";
-          throw sendErr;
-        }
-        logCompoStage(interaction, "response_sent_success", {
-          method: "editReply",
-          embedCount: placeResponseMetrics.embedCount,
-          componentRowCount: placeResponseMetrics.componentRowCount,
-          componentCount: placeResponseMetrics.componentRowCount,
-          durationMs: Date.now() - responseSendStartedAt,
+          }),
         });
         logCompoStage(interaction, "response_sent", {
           reason:
@@ -3038,14 +2642,6 @@ export const Compo: Command = {
               ? "no_candidates"
               : "placement_result",
         });
-        logCompoStage(interaction, "place_return_success", {
-          reason:
-            placeResult.candidateCount === 0
-              ? "no_candidates"
-              : "placement_result",
-        });
-        placeOutcome =
-          placeResult.candidateCount === 0 ? "no_candidates" : "placement_result";
         return;
       }
 
@@ -3061,22 +2657,10 @@ export const Compo: Command = {
       });
       return;
     } catch (err) {
-      if (getSubcommandSafe(interaction) === "place" && placeOutcome == null) {
-        placeOutcome = "run_catch";
-      }
       logCompoRunCatchError({
         interaction,
         error: err,
       });
-      if (getSubcommandSafe(interaction) === "place") {
-        logCompoPlaceErrorRaw({
-          interaction,
-          error: err,
-        });
-        logCompoStage(interaction, "place_return_error_fallback", {
-          reason: "run_catch",
-        });
-      }
       console.error(`compo command failed: ${formatError(err)}`);
       console.error(
         `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
@@ -3111,16 +2695,6 @@ export const Compo: Command = {
                   : mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
-    } finally {
-      if (getSubcommandSafe(interaction) === "place") {
-        logCompoStage(interaction, "place_finally", {
-          interactionId: interaction.id,
-          runId: telemetryContext?.runId ?? null,
-          deferred: Boolean(interaction.deferred),
-          replied: Boolean(interaction.replied),
-          outcome: placeOutcome ?? "unknown",
-        });
-      }
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
