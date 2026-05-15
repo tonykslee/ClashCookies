@@ -31,6 +31,68 @@ export type RaidTrackedClanRefreshResult = {
   joinTypeRefreshFailures: string[];
 };
 
+export async function loadRaidTrackedClanDisplayRowByTag(input: {
+  clanTag: string;
+}): Promise<RaidTrackedClanDisplayRow | null> {
+  const normalizedTag = normalizeRaidTrackedClanTag(input.clanTag);
+  if (!normalizedTag) return null;
+
+  const rows = await prisma.raidTrackedClan.findMany({
+    where: {
+      clanTag: {
+        in: [normalizedTag, `#${normalizedTag}`],
+      },
+    },
+    orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+    select: {
+      clanTag: true,
+      name: true,
+      upgrades: true,
+      joinType: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  const row = rows[0] ?? null;
+  if (!row) return null;
+
+  return {
+    clanTag: normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag,
+    clanName: normalizeRaidTrackedClanName(row.name),
+    upgrades:
+      row.upgrades !== null && row.upgrades !== undefined && Number.isFinite(row.upgrades)
+        ? Math.trunc(row.upgrades)
+        : null,
+    joinType: normalizeRaidJoinType(row.joinType),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function updateRaidTrackedClanUpgrades(input: {
+  clanTag: string;
+  upgrades: number | null;
+}): Promise<RaidTrackedClanDisplayRow | null> {
+  const normalizedTag = normalizeRaidTrackedClanTag(input.clanTag);
+  if (!normalizedTag) return null;
+
+  const upgrades =
+    input.upgrades !== null && input.upgrades !== undefined && Number.isFinite(input.upgrades)
+      ? Math.trunc(input.upgrades)
+      : null;
+
+  await prisma.raidTrackedClan.updateMany({
+    where: {
+      clanTag: {
+        in: [normalizedTag, `#${normalizedTag}`],
+      },
+    },
+    data: { upgrades },
+  });
+
+  return loadRaidTrackedClanDisplayRowByTag({ clanTag: normalizedTag });
+}
+
 function stripLeadingHash(tag: string): string {
   return tag.startsWith("#") ? tag.slice(1) : tag;
 }

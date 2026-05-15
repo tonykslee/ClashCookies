@@ -999,7 +999,6 @@ export async function loadRaidIntelSeasonDetailWithQueueContext(input: {
 
 export function buildRaidIntelDescription(input: {
   trackedClan: RaidTrackedClanDisplayRow;
-  upgrades: number | null;
   detail: RaidIntelSeasonDetail;
   selectedDistrictLabel?: string | null;
   controlsHint?: string | null;
@@ -1011,15 +1010,15 @@ export function buildRaidIntelDescription(input: {
   }
 
   const clanTag = formatRaidTrackedClanTag(input.trackedClan.clanTag);
+  const upgradesText =
+    input.trackedClan.upgrades === null || input.trackedClan.upgrades === undefined
+      ? "—"
+      : String(input.trackedClan.upgrades);
   const lines: RaidDetailLine[] = [
     { text: "## Raid Intel", item: false },
     { text: "", item: false },
     {
-      text: `Tracked clan: ${buildClanProfileMarkdownLink(input.trackedClan.clanName, input.trackedClan.clanTag)} \`${clanTag}\``,
-      item: false,
-    },
-    {
-      text: `Upgrades: ${input.upgrades === null ? "—" : input.upgrades}`,
+      text: `Tracked clan: ${buildClanProfileMarkdownLink(input.trackedClan.clanName, input.trackedClan.clanTag)} \`${clanTag}\` | 🏘️ ${upgradesText}`,
       item: false,
     },
     { text: "Raid weekend: Active", item: false },
