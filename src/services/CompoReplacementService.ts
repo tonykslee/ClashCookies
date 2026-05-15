@@ -22,6 +22,7 @@ export type CompoReplacementCandidate = {
   resolvedBucket: CompoWarDisplayBucket;
   discordUserId: string | null;
   discordMention: string | null;
+  inactiveLabel: string | null;
   reasons: CompoReplacementReasonFlags;
 };
 
@@ -49,6 +50,7 @@ type ReplacementCandidateSeed = {
   resolvedWeight: number;
   resolvedBucket: CompoWarDisplayBucket;
   discordUserId: string | null;
+  inactiveLabel: string | null;
   reasons: CompoReplacementReasonFlags;
 };
 
@@ -220,12 +222,20 @@ export class CompoReplacementService {
     }
 
     const inactiveByDaysTagSet = new Set<string>();
+    const inactiveLabelByPlayerTag = new Map<string, string>();
     const inactiveCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     for (const row of playerActivityRows) {
       const playerTag = normalizeTagLike(row.tag);
       if (!playerTag || !row.lastSeenAt) continue;
       if (row.lastSeenAt.getTime() < inactiveCutoff.getTime()) {
         inactiveByDaysTagSet.add(playerTag);
+        const daysInactive = Math.max(
+          1,
+          Math.floor((Date.now() - row.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)),
+        );
+        if (!inactiveLabelByPlayerTag.has(playerTag)) {
+          inactiveLabelByPlayerTag.set(playerTag, `${daysInactive}d`);
+        }
       }
     }
 
@@ -235,6 +245,9 @@ export class CompoReplacementService {
       if (!playerTag) continue;
       if ((row.missedWars ?? 0) > 0) {
         inactiveByWarsTagSet.add(playerTag);
+        if (!inactiveLabelByPlayerTag.has(playerTag)) {
+          inactiveLabelByPlayerTag.set(playerTag, `${Math.max(1, Math.trunc(row.missedWars ?? 0))}w`);
+        }
       }
     }
 
@@ -263,6 +276,7 @@ export class CompoReplacementService {
           resolvedWeight: member.resolvedWeight,
           resolvedBucket: bucket,
           discordUserId,
+          inactiveLabel: inactiveLabelByPlayerTag.get(playerTag) ?? null,
           reasons,
         });
       }
@@ -286,6 +300,7 @@ export class CompoReplacementService {
         resolvedBucket: seed.resolvedBucket,
         discordUserId: seed.discordUserId,
         discordMention: buildDiscordMention(seed.discordUserId),
+        inactiveLabel: seed.inactiveLabel,
         reasons: seed.reasons,
       }));
 
