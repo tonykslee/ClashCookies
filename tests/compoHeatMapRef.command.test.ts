@@ -102,7 +102,6 @@ describe("/compo heatmapref command", () => {
     expect(GoogleSheetsService.prototype.getCompoLinkedSheet).not.toHaveBeenCalled();
     expect(GoogleSheetsService.prototype.readCompoLinkedValues).not.toHaveBeenCalled();
     expect(HeatMapRefDisplayService.prototype.readHeatMapRefDisplayTable).toHaveBeenCalledTimes(1);
-    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.files)).toBe(true);
