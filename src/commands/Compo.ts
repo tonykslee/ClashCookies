@@ -2512,6 +2512,9 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
+    console.info(
+      `[compo-command] stage=run_entry_sync command=compo subcommand=${interaction.options.getSubcommand(false) ?? ""} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interactionId=${interaction.id} runId=`,
+    );
     const telemetryContext = getTelemetryContext();
     let placeOutcome: string | null = null;
     logCompoStage(interaction, "run_entry", {

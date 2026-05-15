@@ -231,114 +231,66 @@ export async function runReminderSchedulerCycle(input: {
         target,
         contexts: contextBundle,
       });
-      if (!context) continue;
+      if (!context) {
+        dozzleLog.info(
+          `[reminders] catchup_skip reason=stale_no_active_event reminder_id=${reminder.id} clan=${target.clanTag} type=${reminder.type}`,
+        );
+        continue;
+      }
 
+      let latestDueOffsetSeconds: number | null = null;
+      let latestDueTriggerAtMs = Number.NEGATIVE_INFINITY;
       for (const offset of reminder.times) {
         const offsetSeconds = Math.max(1, Math.trunc(Number(offset.offsetSeconds)));
         evaluated += 1;
-        const isRegularDue = shouldReminderOffsetFire({
-          nowMs,
-          intervalMs,
-          eventEndsAtMs: context.eventEndsAt.getTime(),
-          offsetSeconds,
-          reminderCreatedAtMs: reminder.createdAt?.getTime() ?? null,
-        });
-        const retryableWar24hFireLog = await resolveRetryableWar24hFireLog({
-          reminder,
-          context,
-          offsetSeconds,
-          nowMs,
-        });
-
-        if (!isRegularDue && !retryableWar24hFireLog) {
+        const triggerAtMs = context.eventEndsAt.getTime() - offsetSeconds * 1000;
+        if (!Number.isFinite(triggerAtMs)) continue;
+        if (triggerAtMs > nowMs) continue;
+        const reminderCreatedAtMs = reminder.createdAt?.getTime() ?? null;
+        if (Number.isFinite(reminderCreatedAtMs) && triggerAtMs < Number(reminderCreatedAtMs)) {
           continue;
         }
-
-        const dedupeKey = buildReminderDedupeKey({
-          reminderId: reminder.id,
-          clanTag: context.clanTag,
-          clanType: context.clanType,
-          eventIdentity: context.eventIdentity,
-          offsetSeconds,
-        });
-        if (retryableWar24hFireLog) {
-          const retryClaim = await claimRetryableWar24hFireLog({
-            fireLog: retryableWar24hFireLog.fireLog,
-            dedupeKey,
-            nowMs,
-          });
-          if (!retryClaim.claimed) {
-            deduped += 1;
-            continue;
-          }
-
-          dozzleLog.debug(
-            `[reminders] retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
-          );
-
-          const dispatchResult = await input.dispatch.dispatchReminder(input.client, {
-            guildId: reminder.guildId,
-            channelId: reminder.channelId,
-            reminderId: reminder.id,
-            type: reminder.type,
-            clanTag: context.clanTag,
-            clanName: context.clanName,
-            offsetSeconds,
-            eventIdentity: context.eventIdentity,
-            eventEndsAt: context.eventEndsAt,
-            eventLabel: context.eventLabel,
-          });
-          if (dispatchResult.status === "sent") {
-            fired += 1;
-            await finalizeReminderFireLogSuccess({
-              fireLogId: retryableWar24hFireLog.fireLog.id,
-              messageId: dispatchResult.messageId,
-              nowMs,
-            });
-            dozzleLog.info(
-              `[reminders] retry_sent reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId} outcome=sent`,
-            );
-            continue;
-          }
-
-          failed += 1;
-          const retryableAgain = isRetryableWar24hAttackWindowInactiveFailure({
-            reminderType: reminder.type,
-            offsetSeconds,
-            eventIdentity: context.eventIdentity,
-            eventEndsAtMs: context.eventEndsAt.getTime(),
-            nowMs,
-            errorMessage: dispatchResult.errorMessage,
-          });
-          await finalizeReminderFireLogFailure({
-            fireLogId: retryableWar24hFireLog.fireLog.id,
-            errorMessage: retryableAgain
-              ? RETRYABLE_WAR_24H_ERROR_MESSAGE
-              : dispatchResult.errorMessage.slice(0, 500),
-            nowMs,
-          });
-          if (retryableAgain) {
-            dozzleLog.warn(
-              `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active error=${dispatchResult.errorMessage}`,
-            );
-          } else {
-            dozzleLog.error(
-              `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=terminal error=${dispatchResult.errorMessage}`,
-            );
-          }
-          continue;
+        if (triggerAtMs > latestDueTriggerAtMs) {
+          latestDueTriggerAtMs = triggerAtMs;
+          latestDueOffsetSeconds = offsetSeconds;
         }
+      }
 
-        const fireLog = await createReminderFireLogIfFirst({
+      if (latestDueOffsetSeconds == null) {
+        continue;
+      }
+
+      const dedupeKey = buildReminderDedupeKey({
+        reminderId: reminder.id,
+        clanTag: context.clanTag,
+        clanType: context.clanType,
+        eventIdentity: context.eventIdentity,
+        offsetSeconds: latestDueOffsetSeconds,
+      });
+      const retryableWar24hFireLog = await resolveRetryableWar24hFireLog({
+        reminder,
+        context,
+        offsetSeconds: latestDueOffsetSeconds,
+        nowMs,
+      });
+
+      if (retryableWar24hFireLog) {
+        const retryClaim = await claimRetryableWar24hFireLog({
+          fireLog: retryableWar24hFireLog.fireLog,
           dedupeKey,
-          reminder,
-          context,
-          offsetSeconds,
+          nowMs,
         });
-        if (!fireLog.created) {
+        if (!retryClaim.claimed) {
           deduped += 1;
+          dozzleLog.info(
+            `[reminders] catchup_skip reason=already_fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} outcome=deduped`,
+          );
           continue;
         }
+
+        dozzleLog.debug(
+          `[reminders] retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
+        );
 
         const dispatchResult = await input.dispatch.dispatchReminder(input.client, {
           guildId: reminder.guildId,
@@ -347,7 +299,7 @@ export async function runReminderSchedulerCycle(input: {
           type: reminder.type,
           clanTag: context.clanTag,
           clanName: context.clanName,
-          offsetSeconds,
+          offsetSeconds: latestDueOffsetSeconds,
           eventIdentity: context.eventIdentity,
           eventEndsAt: context.eventEndsAt,
           eventLabel: context.eventLabel,
@@ -355,26 +307,108 @@ export async function runReminderSchedulerCycle(input: {
         if (dispatchResult.status === "sent") {
           fired += 1;
           await finalizeReminderFireLogSuccess({
-            fireLogId: fireLog.id,
+            fireLogId: retryableWar24hFireLog.fireLog.id,
             messageId: dispatchResult.messageId,
             nowMs,
           });
           dozzleLog.info(
-            `[reminders] fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId}`,
+            `[reminders] catchup_fire_latest reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId} outcome=sent`,
           );
           continue;
         }
 
         failed += 1;
+        const retryableAgain = isRetryableWar24hAttackWindowInactiveFailure({
+          reminderType: reminder.type,
+          offsetSeconds: latestDueOffsetSeconds,
+          eventIdentity: context.eventIdentity,
+          eventEndsAtMs: context.eventEndsAt.getTime(),
+          nowMs,
+          errorMessage: dispatchResult.errorMessage,
+        });
         await finalizeReminderFireLogFailure({
-          fireLogId: fireLog.id,
-          errorMessage: dispatchResult.errorMessage.slice(0, 500),
+          fireLogId: retryableWar24hFireLog.fireLog.id,
+          errorMessage: retryableAgain
+            ? RETRYABLE_WAR_24H_ERROR_MESSAGE
+            : dispatchResult.errorMessage.slice(0, 500),
           nowMs,
         });
-        dozzleLog.error(
-          `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${offsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
-        );
+        if (retryableAgain) {
+          dozzleLog.warn(
+            `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active error=${dispatchResult.errorMessage}`,
+          );
+        } else {
+          dozzleLog.error(
+            `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=terminal error=${dispatchResult.errorMessage}`,
+          );
+        }
+        continue;
       }
+
+      const fireLog = await prisma.reminderFireLog.findUnique({
+        where: { dedupeKey },
+        select: {
+          id: true,
+          dispatchStatus: true,
+          errorMessage: true,
+        },
+      });
+      if (fireLog) {
+        deduped += 1;
+        dozzleLog.info(
+          `[reminders] catchup_skip reason=already_fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} outcome=deduped`,
+        );
+        continue;
+      }
+
+      const createdFireLog = await createReminderFireLogIfFirst({
+        dedupeKey,
+        reminder,
+        context,
+        offsetSeconds: latestDueOffsetSeconds,
+      });
+      if (!createdFireLog.created) {
+        deduped += 1;
+        dozzleLog.info(
+          `[reminders] catchup_skip reason=already_fired reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} outcome=deduped`,
+        );
+        continue;
+      }
+
+      const dispatchResult = await input.dispatch.dispatchReminder(input.client, {
+        guildId: reminder.guildId,
+        channelId: reminder.channelId,
+        reminderId: reminder.id,
+        type: reminder.type,
+        clanTag: context.clanTag,
+        clanName: context.clanName,
+        offsetSeconds: latestDueOffsetSeconds,
+        eventIdentity: context.eventIdentity,
+        eventEndsAt: context.eventEndsAt,
+        eventLabel: context.eventLabel,
+      });
+      if (dispatchResult.status === "sent") {
+        fired += 1;
+        await finalizeReminderFireLogSuccess({
+          fireLogId: createdFireLog.id,
+          messageId: dispatchResult.messageId,
+          nowMs,
+        });
+        dozzleLog.info(
+          `[reminders] catchup_fire_latest reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} message_id=${dispatchResult.messageId} outcome=sent`,
+        );
+        continue;
+      }
+
+      failed += 1;
+      await finalizeReminderFireLogFailure({
+        fireLogId: createdFireLog.id,
+        errorMessage: dispatchResult.errorMessage.slice(0, 500),
+        nowMs,
+      });
+      dozzleLog.error(
+        `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
+      );
     }
   }
 

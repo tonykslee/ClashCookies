@@ -6,6 +6,7 @@ import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 
 function makeInteraction(weight: string) {
   const interaction: any = {
+    id: "interaction-1",
     commandName: "compo",
     guildId: "guild-1",
     user: { id: "user-1" },
@@ -145,6 +146,9 @@ describe("/compo place command", () => {
 
   it("logs the raw run_catch error before the fallback response build when place throws", async () => {
     const captured: Array<{ level: "log" | "error"; message: unknown[] }> = [];
+    const infoSpy = vi.spyOn(console, "info").mockImplementation((...args) => {
+      captured.push({ level: "log", message: args });
+    });
     const logSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
       captured.push({ level: "log", message: args });
     });
@@ -159,10 +163,15 @@ describe("/compo place command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(readPlaceSpy).toHaveBeenCalled();
+    const runEntrySyncIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "log" &&
+        entry.message.some((part) => String(part).includes("stage=run_entry_sync")),
+    );
     const runEntryIndex = captured.findIndex(
       (entry) =>
         entry.level === "log" &&
-        entry.message.some((part) => String(part).includes("stage=run_entry")),
+        entry.message.some((part) => String(part).includes("stage=run_entry command=")),
     );
     const rawIndex = captured.findIndex(
       (entry) =>
@@ -192,17 +201,20 @@ describe("/compo place command", () => {
         entry.level === "log" &&
         entry.message.some((part) => String(part).includes("stage=place_finally")),
     );
+    expect(runEntrySyncIndex).toBeGreaterThanOrEqual(0);
     expect(runEntryIndex).toBeGreaterThanOrEqual(0);
     expect(rawIndex).toBeGreaterThanOrEqual(0);
     expect(fallbackReturnIndex).toBeGreaterThanOrEqual(0);
     expect(fallbackBuildIndex).toBeGreaterThanOrEqual(0);
     expect(finallyIndex).toBeGreaterThanOrEqual(0);
+    expect(runEntrySyncIndex).toBeLessThan(runEntryIndex);
     expect(runEntryIndex).toBeLessThan(rawIndex);
     expect(rawIndex).toBeLessThan(fallbackBuildIndex);
     expect(fallbackReturnIndex).toBeLessThan(fallbackBuildIndex);
     expect(fallbackBuildIndex).toBeLessThan(finallyIndex);
 
     logSpy.mockRestore();
+    infoSpy.mockRestore();
     errorSpy.mockRestore();
   });
 });
