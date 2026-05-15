@@ -252,19 +252,22 @@ function buildRaidIntelGradeButtonRow(input: {
 }
 
 function buildRaidIntelDistrictGradeArgs(interaction: ChatInputCommandInteraction): RaidIntelDistrictGradeArg[] {
-  return RAID_INTEL_DISTRICT_GRADE_OPTIONS.flatMap((option) => {
+  const args: RaidIntelDistrictGradeArg[] = [];
+  for (const option of RAID_INTEL_DISTRICT_GRADE_OPTIONS) {
     const rawGrade = interaction.options.getString(option.name, false);
+    if (rawGrade === null || rawGrade === undefined || String(rawGrade).trim().length <= 0) {
+      continue;
+    }
     const layoutGrade = normalizeRaidIntelLayoutGrade(rawGrade);
-    if (!layoutGrade) return [];
-    return [
-      {
-        optionName: option.name,
-        districtDisplayName: option.displayName,
-        districtMatchNames: [...option.matchNames],
-        layoutGrade,
-      },
-    ];
-  });
+    if (!layoutGrade) continue;
+    args.push({
+      optionName: option.name,
+      districtDisplayName: option.displayName,
+      districtMatchNames: [...option.matchNames],
+      layoutGrade,
+    });
+  }
+  return args;
 }
 
 async function applyRaidIntelDistrictGradeArgs(input: {
