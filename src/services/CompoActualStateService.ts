@@ -33,7 +33,9 @@ import {
 import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 
-type TrackedClanRow = Pick<TrackedClan, "tag" | "name">;
+type TrackedClanRow = Pick<TrackedClan, "tag" | "name"> & {
+  shortName?: string | null;
+};
 type CurrentMemberRow = Pick<
   FwaClanMemberCurrent,
   "clanTag" | "playerTag" | "playerName" | "townHall" | "weight" | "sourceSyncedAt"
@@ -54,6 +56,7 @@ type CompoActualDiagnosticsCoverageReason =
 export type CompoActualStateClanContext = {
   clanTag: string;
   clanName: string;
+  shortName: string | null;
   base: CompoActualStateBaseMetrics;
   members: CompoActualStateMemberContext[];
 };
@@ -371,7 +374,7 @@ export async function loadCompoActualStateContext(
 ): Promise<CompoActualStateContext> {
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true },
+    select: { tag: true, name: true, shortName: true },
   });
   const trackedClanTags = tracked
     .map((clan) => normalizeTag(clan.tag))
@@ -550,6 +553,7 @@ export async function loadCompoActualStateContext(
     clans.push({
       clanTag,
       clanName: clan.name?.trim() || clan.tag,
+      shortName: clan.shortName?.trim() || null,
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
