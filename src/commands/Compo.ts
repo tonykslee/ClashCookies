@@ -282,13 +282,69 @@ function summarizeDiscordRestError(error: unknown): Record<string, unknown> {
   };
 }
 
+function findFirstValidationPath(
+  value: unknown,
+  trail: string[] = [],
+): string | null {
+  if (value == null) {
+    return trail.length > 0 ? trail.join(".") : null;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const nested = findFirstValidationPath(value[index], [...trail, String(index)]);
+      if (nested) return nested;
+    }
+    return trail.length > 0 ? trail.join(".") : null;
+  }
+  if (typeof value !== "object") {
+    return trail.length > 0 ? trail.join(".") : null;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) {
+    return trail.length > 0 ? trail.join(".") : null;
+  }
+  for (const [key, current] of entries) {
+    const nextTrail = [...trail, key];
+    if (current && typeof current === "object") {
+      const nested = findFirstValidationPath(current, nextTrail);
+      if (nested) return nested;
+    }
+    if (current !== undefined && (current === null || typeof current !== "object")) {
+      return nextTrail.join(".");
+    }
+  }
+  return trail.length > 0 ? trail.join(".") : null;
+}
+
+function getDiscordValidationPath(errorSummary: Record<string, unknown>): string | null {
+  const candidates = [
+    errorSummary.responseData,
+    errorSummary.errors,
+    errorSummary.rawError,
+  ];
+  for (const candidate of candidates) {
+    const path = findFirstValidationPath(candidate);
+    if (path) return path;
+  }
+  return null;
+}
+
 function logCompoPlaceSendFailure(input: {
   interaction: ChatInputCommandInteraction;
   attemptedMethod: "editReply" | "followUp" | "reply";
   payloadMetrics: ReturnType<typeof summarizeCompoPlacePayloadMetrics>;
   error: unknown;
+  durationMs?: number;
 }): void {
   const telemetryContext = getTelemetryContext();
+  const errorSummary = summarizeDiscordRestError(input.error);
+  const validationPath =
+    typeof errorSummary === "object" && errorSummary !== null
+      ? getDiscordValidationPath(errorSummary)
+      : null;
+  console.error(
+    `[compo-command-error] stage=response_send_failed_header command=compo subcommand=place guildId=${input.interaction.guildId ?? null} userId=${input.interaction.user.id} interactionId=${input.interaction.id} runId=${telemetryContext?.runId ?? null} method=${input.attemptedMethod} deferred=${Boolean(input.interaction.deferred)} replied=${Boolean(input.interaction.replied)} errorName=${String(errorSummary.name ?? "")} errorMessage=${String(errorSummary.message ?? "")} code=${String(errorSummary.code ?? "")} status=${String(errorSummary.status ?? "")} validationPath=${String(validationPath ?? "")} durationMs=${String(input.durationMs ?? "")}`,
+  );
   const details = {
     command: "compo",
     subcommand: "place",
@@ -299,7 +355,9 @@ function logCompoPlaceSendFailure(input: {
     deferred: Boolean(input.interaction.deferred),
     replied: Boolean(input.interaction.replied),
     method: input.attemptedMethod,
-    error: summarizeDiscordRestError(input.error),
+    durationMs: input.durationMs ?? null,
+    validationPath,
+    error: errorSummary,
     payload: input.payloadMetrics,
   };
   console.error(
@@ -2541,18 +2599,43 @@ export const Compo: Command = {
     );
     if (subcommandHint === "place" && !interaction.deferred && !interaction.replied) {
       logCompoStage(interaction, "before_defer");
+      const deferStartedAt = Date.now();
+      const deferBeforeDeferred = Boolean(interaction.deferred);
+      const deferBeforeReplied = Boolean(interaction.replied);
+      logCompoStage(interaction, "defer_attempt", {
+        method: "deferReply",
+        deferredBefore: deferBeforeDeferred,
+        repliedBefore: deferBeforeReplied,
+        isPublic,
+      });
       try {
         await interaction.deferReply(
           isPublic ? {} : { flags: MessageFlags.Ephemeral },
         );
         logCompoStage(interaction, "after_defer");
+        logCompoStage(interaction, "defer_success", {
+          method: "deferReply",
+          durationMs: Date.now() - deferStartedAt,
+          deferredBefore: deferBeforeDeferred,
+          repliedBefore: deferBeforeReplied,
+          deferredAfter: Boolean(interaction.deferred),
+          repliedAfter: Boolean(interaction.replied),
+          isPublic,
+        });
         logCompoStage(interaction, "defer_reply_ok");
       } catch (err) {
         logCompoPlaceStageFailure({
           interaction,
-          stage: "defer_reply",
+          stage: "defer",
           error: err,
-          detail: { isPublic },
+          detail: {
+            isPublic,
+            durationMs: Date.now() - deferStartedAt,
+            deferredBefore: deferBeforeDeferred,
+            repliedBefore: deferBeforeReplied,
+            deferredAfter: Boolean(interaction.deferred),
+            repliedAfter: Boolean(interaction.replied),
+          },
         });
         throw err;
       }
@@ -2920,6 +3003,15 @@ export const Compo: Command = {
           embeds: placeResponsePayload.embeds,
           components: placeResponsePayload.components,
         });
+        const responseSendStartedAt = Date.now();
+        logCompoStage(interaction, "response_send_attempt", {
+          method: "editReply",
+          deferred: Boolean(interaction.deferred),
+          replied: Boolean(interaction.replied),
+          embedCount: placeResponseMetrics.embedCount,
+          componentRowCount: placeResponseMetrics.componentRowCount,
+          payloadJsonLength: placeResponseMetrics.payloadJsonLength,
+        });
         try {
           await interaction.editReply(placeResponsePayload);
         } catch (sendErr) {
@@ -2928,6 +3020,7 @@ export const Compo: Command = {
             attemptedMethod: "editReply",
             payloadMetrics: placeResponseMetrics,
             error: sendErr,
+            durationMs: Date.now() - responseSendStartedAt,
           });
           placeOutcome = "response_send_failed";
           throw sendErr;
@@ -2935,7 +3028,9 @@ export const Compo: Command = {
         logCompoStage(interaction, "response_sent_success", {
           method: "editReply",
           embedCount: placeResponseMetrics.embedCount,
+          componentRowCount: placeResponseMetrics.componentRowCount,
           componentCount: placeResponseMetrics.componentRowCount,
+          durationMs: Date.now() - responseSendStartedAt,
         });
         logCompoStage(interaction, "response_sent", {
           reason:
