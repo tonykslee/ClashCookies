@@ -11,6 +11,7 @@
   Client,
   ComponentType,
   EmbedBuilder,
+  MessageFlags,
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
@@ -307,6 +308,31 @@ function logCompoPlaceSendFailure(input: {
   };
   console.error(
     `[compo-command-error] stage=response_send_failed details=${safeDiagnosticJson(details, 30000, 1000)}`,
+  );
+}
+
+function logCompoPlaceStageFailure(input: {
+  interaction: ChatInputCommandInteraction;
+  stage: string;
+  error: unknown;
+  detail?: Record<string, string | number | boolean | null | undefined>;
+}): void {
+  const telemetryContext = getTelemetryContext();
+  const details = {
+    command: "compo",
+    subcommand: "place",
+    guildId: input.interaction.guildId ?? null,
+    userId: input.interaction.user.id,
+    interactionId: input.interaction.id,
+    runId: telemetryContext?.runId ?? null,
+    deferred: Boolean(input.interaction.deferred),
+    replied: Boolean(input.interaction.replied),
+    stage: input.stage,
+    error: summarizeDiscordRestError(input.error),
+    ...(input.detail ?? {}),
+  };
+  console.error(
+    `[compo-command-error] stage=${input.stage}_failed details=${safeDiagnosticJson(details, 30000, 1000)}`,
   );
 }
 
@@ -2457,17 +2483,41 @@ export const Compo: Command = {
       logCompoStage(interaction, "handler_enter");
 
       if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ ephemeral: !isPublic });
-        logCompoStage(interaction, "defer_reply_ok");
+        try {
+          await interaction.deferReply(
+            isPublic ? {} : { flags: MessageFlags.Ephemeral },
+          );
+          logCompoStage(interaction, "defer_reply_ok");
+        } catch (err) {
+          logCompoPlaceStageFailure({
+            interaction,
+            stage: "defer_reply",
+            error: err,
+            detail: { isPublic },
+          });
+          throw err;
+        }
       }
 
-      const subcommand = interaction.options.getSubcommand(true);
-      const mode = readMode(interaction);
-      logCompoStage(interaction, "options_parsed", {
-        mode,
-        tag: interaction.options.getString("tag", false) ?? "",
-        weight: interaction.options.getString("weight", false) ?? "",
-      });
+      let subcommand = "";
+      let mode: ReturnType<typeof readMode> = "actual";
+      try {
+        subcommand = interaction.options.getSubcommand(true);
+        mode = readMode(interaction);
+        logCompoStage(interaction, "options_parsed", {
+          mode,
+          tag: interaction.options.getString("tag", false) ?? "",
+          weight: interaction.options.getString("weight", false) ?? "",
+        });
+      } catch (err) {
+        logCompoPlaceStageFailure({
+          interaction,
+          stage: "options_parse",
+          error: err,
+          detail: { isPublic },
+        });
+        throw err;
+      }
 
       if (subcommand === "advice") {
         const tagInput = interaction.options.getString("tag", true);
@@ -2635,12 +2685,24 @@ export const Compo: Command = {
       }
 
       if (subcommand === "place") {
-        const rawWeight = interaction.options.getString("weight", true);
-        const inputWeight = parseWeightInput(rawWeight);
-        logCompoStage(interaction, "computation_start", {
-          weightInput: rawWeight,
-          parsedWeight: inputWeight ?? "",
-        });
+        let rawWeight = "";
+        let inputWeight: number | null = null;
+        try {
+          rawWeight = interaction.options.getString("weight", true);
+          inputWeight = parseWeightInput(rawWeight);
+          logCompoStage(interaction, "computation_start", {
+            weightInput: rawWeight,
+            parsedWeight: inputWeight ?? "",
+          });
+        } catch (err) {
+          logCompoPlaceStageFailure({
+            interaction,
+            stage: "weight_parse",
+            error: err,
+            detail: { weightInput: rawWeight || null },
+          });
+          throw err;
+        }
         if (!inputWeight || inputWeight <= 0) {
           logCompoStage(interaction, "response_build", {
             reason: "invalid_weight",
@@ -2672,12 +2734,26 @@ export const Compo: Command = {
           return;
         }
 
-        const placeResult = await new CompoPlaceService().readPlace(
-          inputWeight,
-          bucket,
-          interaction.guildId ?? null,
-          await resolveTownHallEmojiMap(interaction.client),
-        );
+        let placeResult: Awaited<ReturnType<CompoPlaceService["readPlace"]>>;
+        try {
+          placeResult = await new CompoPlaceService().readPlace(
+            inputWeight,
+            bucket,
+            interaction.guildId ?? null,
+            await resolveTownHallEmojiMap(interaction.client),
+          );
+        } catch (err) {
+          logCompoPlaceStageFailure({
+            interaction,
+            stage: "service_call",
+            error: err,
+            detail: {
+              parsedWeight: inputWeight,
+              bucket,
+            },
+          });
+          throw err;
+        }
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_place_source",
           mode: "actual",
@@ -2699,17 +2775,32 @@ export const Compo: Command = {
           vacancy: placeResult.vacancyCount,
           composition: placeResult.compositionCount,
         });
-        const placeResponsePayload = {
-          content: placeResult.content,
-          embeds: placeResult.embeds,
-          components: buildCompoRefreshComponents({
+        let placeResponseComponents: ReturnType<typeof buildCompoRefreshComponents>;
+        try {
+          placeResponseComponents = buildCompoRefreshComponents({
             refreshPayload: {
               kind: "place",
               userId: interaction.user.id,
               weight: inputWeight,
             },
             loading: false,
-          }),
+          });
+        } catch (err) {
+          logCompoPlaceStageFailure({
+            interaction,
+            stage: "response_components",
+            error: err,
+            detail: {
+              parsedWeight: inputWeight,
+              bucket,
+            },
+          });
+          throw err;
+        }
+        const placeResponsePayload = {
+          content: placeResult.content,
+          embeds: placeResult.embeds,
+          components: placeResponseComponents,
         };
         const placeResponseMetrics = summarizeCompoPlacePayloadMetrics({
           content: placeResponsePayload.content ?? "",
