@@ -7,6 +7,7 @@ const refreshHelperMock = vi.hoisted(() => ({
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   raidIntelDistrictLayoutMark: {
     findMany: vi.fn(),
@@ -360,6 +361,7 @@ describe("/raids command", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     prismaMock.raidTrackedClan.findMany.mockResolvedValue(makeTrackedClanRows());
+    prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
     prismaMock.raidIntelDistrictLayoutMark.upsert.mockResolvedValue({
       id: 1,
@@ -525,6 +527,28 @@ describe("/raids command", () => {
   });
 
   it("renders a read-only intel view for a tracked clan", async () => {
+    let trackedClanRows = makeTrackedClanRows();
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async (args: any) => {
+      const clanTagFilter = new Set(
+        (args?.where?.clanTag?.in ?? []).map((value: string) => String(value).replace(/^#/, "")),
+      );
+      const rows = clanTagFilter.size
+        ? trackedClanRows.filter((row) => clanTagFilter.has(row.clanTag.replace(/^#/, "")))
+        : trackedClanRows;
+      return rows.map((row) => ({ ...row }));
+    });
+    prismaMock.raidTrackedClan.updateMany.mockImplementation(async ({ where, data }: any) => {
+      const clanTags = Array.isArray(where?.clanTag?.in) ? where.clanTag.in : [where?.clanTag];
+      const normalizedTags = clanTags
+        .filter(Boolean)
+        .map((value: string) => String(value).replace(/^#/, ""));
+      trackedClanRows = trackedClanRows.map((row) =>
+        normalizedTags.includes(row.clanTag.replace(/^#/, ""))
+          ? { ...row, upgrades: data?.upgrades ?? null }
+          : row,
+      );
+      return { count: 1 };
+    });
     const cocService = {
       getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
         expect(cocQueueMock.state.active).toBe(true);
@@ -546,7 +570,7 @@ describe("/raids command", () => {
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("Upgrades: 2299");
+    expect(description).toContain("| 🏘️ 2299");
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("Select a district below, then choose a layout grade.");
     expect(description).toContain("### [Defender One]");
@@ -568,6 +592,19 @@ describe("/raids command", () => {
     );
     expect(cocService.getClan).not.toHaveBeenCalled();
     expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
+
+    const reopenedInteraction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+    });
+    await Raids.run({} as any, reopenedInteraction as any, cocService as any);
+
+    const reopenedPayload = reopenedInteraction.editReply.mock.calls[0]?.[0] as any;
+    const reopenedDescription = reopenedPayload.embeds[0].toJSON().description as string;
+    expect(reopenedDescription).toContain("Tracked clan: [Alpha Raid]");
+    expect(reopenedDescription).toContain("`#2QG2C08UP`");
+    expect(reopenedDescription).toContain("| 🏘️ 2299");
+    expect(reopenedDescription).not.toContain("Upgrades:");
   });
 
   it("loads saved intel marks on the initial embed", async () => {

@@ -1659,14 +1659,13 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-01T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       } as any,
-      upgrades: null,
       detail,
     });
 
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("Upgrades: —");
+    expect(description).toContain("| 🏘️ 2210");
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("### [Defender One]");
     expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
@@ -1694,7 +1693,6 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-01T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       } as any,
-      upgrades: null,
       detail,
     });
     expect(description).toBe("No active raid weekend data available.");
@@ -1729,12 +1727,12 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-01T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       } as any,
-      upgrades: null,
       detail,
     });
 
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("No defender intel available yet.");
+    expect(description).toContain("| 🏘️ 2210");
   });
 
   it("renders a clean empty message when no active raid weekend data is available", async () => {
