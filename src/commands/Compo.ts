@@ -55,6 +55,7 @@ import {
   GoogleSheetReadError,
   GoogleSheetReadErrorCode,
 } from "../services/GoogleSheetsService";
+import { getTelemetryContext } from "../services/telemetry/context";
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
@@ -96,6 +97,217 @@ function logCompoStage(
     .map(([k, v]) => `${k}=${String(v ?? "")}`)
     .join(" ");
   console.log(`[compo-command] ${serialized}`);
+}
+
+function truncateDiagnosticText(input: string, maxLength = 220): string {
+  if (input.length <= maxLength) return input;
+  return `${input.slice(0, maxLength)}...[len=${input.length}]`;
+}
+
+function safeDiagnosticJson(
+  value: unknown,
+  maxLength = 6000,
+  stringLimit = 220,
+): string {
+  try {
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(
+      value,
+      (_key, current) => {
+        if (typeof current === "string") {
+          return truncateDiagnosticText(current, stringLimit);
+        }
+        if (
+          typeof current === "number" ||
+          typeof current === "boolean" ||
+          current === null
+        ) {
+          return current;
+        }
+        if (typeof current === "bigint") {
+          return current.toString();
+        }
+        if (typeof current === "undefined") {
+          return "[undefined]";
+        }
+        if (current instanceof Error) {
+          return {
+            name: current.name,
+            message: truncateDiagnosticText(current.message, 220),
+            stack: current.stack ? truncateDiagnosticText(current.stack, 1200) : null,
+          };
+        }
+        if (typeof current === "object" && current !== null) {
+          if (seen.has(current as object)) {
+            return "[Circular]";
+          }
+          seen.add(current as object);
+        }
+        return current;
+      },
+      2,
+    );
+    if (!text) return "null";
+    return text.length <= maxLength
+      ? text
+      : `${text.slice(0, maxLength)}...[len=${text.length}]`;
+  } catch (error) {
+    return truncateDiagnosticText(`"<unstringifiable:${formatError(error)}>"`, maxLength);
+  }
+}
+
+function getDiscordRestErrorCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const value = (error as { code?: unknown }).code;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^[0-9]+$/.test(value)) return Number(value);
+  return null;
+}
+
+function getDiscordRestErrorStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const value = (error as { status?: unknown }).status;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^[0-9]+$/.test(value)) return Number(value);
+  return null;
+}
+
+type CompoPlaceEmbedMetrics = {
+  index: number;
+  titleLength: number;
+  descriptionLength: number;
+  fieldCount: number;
+  maxFieldValueLength: number;
+  estimatedTextLength: number;
+  fieldLengths: Array<{ nameLength: number; valueLength: number }>;
+};
+
+function summarizeCompoPlacePayloadMetrics(input: {
+  content: string;
+  embeds: EmbedBuilder[];
+  components: Array<unknown>;
+}): {
+  embedCount: number;
+  componentRowCount: number;
+  payloadJsonLength: number;
+  embeds: CompoPlaceEmbedMetrics[];
+} {
+  const embeds = input.embeds.map((embed, index) => {
+    const json = embed.toJSON();
+    const fields = Array.isArray(json.fields) ? json.fields : [];
+    const fieldLengths = fields.map((field) => ({
+      nameLength: String(field.name ?? "").length,
+      valueLength: String(field.value ?? "").length,
+    }));
+    const titleLength = String(json.title ?? "").length;
+    const descriptionLength = String(json.description ?? "").length;
+    const footerLength =
+      json.footer && typeof json.footer.text === "string" ? json.footer.text.length : 0;
+    const estimatedTextLength =
+      titleLength +
+      descriptionLength +
+      footerLength +
+      fieldLengths.reduce((sum, field) => sum + field.nameLength + field.valueLength, 0);
+    return {
+      index,
+      titleLength,
+      descriptionLength,
+      fieldCount: fields.length,
+      maxFieldValueLength:
+        fieldLengths.length > 0 ? Math.max(...fieldLengths.map((field) => field.valueLength)) : 0,
+      estimatedTextLength,
+      fieldLengths,
+    };
+  });
+
+  const payloadJsonLength = JSON.stringify({
+    content: input.content,
+    embeds: input.embeds.map((embed) => embed.toJSON()),
+    components: input.components.map((component) =>
+      typeof (component as { toJSON?: () => unknown }).toJSON === "function"
+        ? (component as { toJSON: () => unknown }).toJSON()
+        : component,
+    ),
+  }).length;
+
+  return {
+    embedCount: input.embeds.length,
+    componentRowCount: input.components.length,
+    payloadJsonLength,
+    embeds,
+  };
+}
+
+function summarizeDiscordRestError(error: unknown): Record<string, unknown> {
+  const err = error as {
+    name?: unknown;
+    message?: unknown;
+    stack?: unknown;
+    code?: unknown;
+    status?: unknown;
+    method?: unknown;
+    url?: unknown;
+    rawError?: unknown;
+    errors?: unknown;
+    requestBody?: unknown;
+    response?: { data?: unknown } | undefined;
+    cause?: unknown;
+  };
+  const requestBody = err.requestBody as
+    | {
+        json?: unknown;
+        files?: unknown;
+      }
+    | undefined;
+  const requestBodyJson = requestBody && typeof requestBody === "object" ? requestBody.json : undefined;
+  const requestBodyJsonKeys =
+    requestBodyJson && typeof requestBodyJson === "object" && !Array.isArray(requestBodyJson)
+      ? Object.keys(requestBodyJson as Record<string, unknown>)
+      : [];
+
+  return {
+    name: typeof err.name === "string" ? err.name : typeof error,
+    message:
+      typeof err.message === "string"
+        ? truncateDiagnosticText(err.message, 500)
+        : String(error ?? ""),
+    stack: typeof err.stack === "string" ? truncateDiagnosticText(err.stack, 2000) : null,
+    code: getDiscordRestErrorCode(error),
+    status: getDiscordRestErrorStatus(error),
+    method: typeof err.method === "string" ? err.method : null,
+    url: typeof err.url === "string" ? err.url : null,
+    rawError: err.rawError !== undefined ? err.rawError : null,
+    errors: err.errors !== undefined ? err.errors : null,
+    requestBody: requestBody ?? null,
+    requestBodyJsonKeys,
+    responseData: err.response?.data ?? null,
+    cause: err.cause !== undefined ? err.cause : null,
+  };
+}
+
+function logCompoPlaceSendFailure(input: {
+  interaction: ChatInputCommandInteraction;
+  attemptedMethod: "editReply" | "followUp" | "reply";
+  payloadMetrics: ReturnType<typeof summarizeCompoPlacePayloadMetrics>;
+  error: unknown;
+}): void {
+  const telemetryContext = getTelemetryContext();
+  const details = {
+    command: "compo",
+    subcommand: "place",
+    guildId: input.interaction.guildId ?? null,
+    userId: input.interaction.user.id,
+    interactionId: input.interaction.id,
+    runId: telemetryContext?.runId ?? null,
+    deferred: Boolean(input.interaction.deferred),
+    replied: Boolean(input.interaction.replied),
+    method: input.attemptedMethod,
+    error: summarizeDiscordRestError(input.error),
+    payload: input.payloadMetrics,
+  };
+  console.error(
+    `[compo-command-error] stage=response_send_failed details=${safeDiagnosticJson(details, 30000, 1000)}`,
+  );
 }
 
 const COMPO_MODE_CHOICES = [
@@ -2487,7 +2699,7 @@ export const Compo: Command = {
           vacancy: placeResult.vacancyCount,
           composition: placeResult.compositionCount,
         });
-        await interaction.editReply({
+        const placeResponsePayload = {
           content: placeResult.content,
           embeds: placeResult.embeds,
           components: buildCompoRefreshComponents({
@@ -2498,7 +2710,23 @@ export const Compo: Command = {
             },
             loading: false,
           }),
+        };
+        const placeResponseMetrics = summarizeCompoPlacePayloadMetrics({
+          content: placeResponsePayload.content ?? "",
+          embeds: placeResponsePayload.embeds,
+          components: placeResponsePayload.components,
         });
+        try {
+          await interaction.editReply(placeResponsePayload);
+        } catch (sendErr) {
+          logCompoPlaceSendFailure({
+            interaction,
+            attemptedMethod: "editReply",
+            payloadMetrics: placeResponseMetrics,
+            error: sendErr,
+          });
+          throw sendErr;
+        }
         logCompoStage(interaction, "response_sent", {
           reason:
             placeResult.candidateCount === 0
