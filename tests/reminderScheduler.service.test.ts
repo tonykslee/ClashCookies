@@ -375,7 +375,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     expect(dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload.offsetSeconds)).toEqual([60 * 60]);
   });
 
-  it("fires a future offset when the scheduler crosses its boundary later", async () => {
+  it("fires the latest missed offset first and later fires the next offset when it becomes due", async () => {
     const nowMs = Date.parse("2026-04-05T01:00:00.000Z");
     const eventEndsAtMs = nowMs + 2 * 60 * 60 * 1000;
     prismaMock.reminder.findMany.mockResolvedValue([
@@ -429,7 +429,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
 
     expect(initialCounts).toEqual({
       evaluated: 2,
-      fired: 0,
+      fired: 1,
       deduped: 0,
       failed: 0,
     });
@@ -439,8 +439,122 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
       deduped: 0,
       failed: 0,
     });
-    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
-    expect(dispatch.dispatchReminder.mock.calls[0]?.[1]?.offsetSeconds).toBe(60 * 60);
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
+    expect(dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload.offsetSeconds)).toEqual([
+      24 * 60 * 60,
+      60 * 60,
+    ]);
+  });
+
+  it("skips a catch-up reminder when the latest missed offset is already logged", async () => {
+    const nowMs = Date.parse("2026-04-05T01:00:00.000Z");
+    const eventEndsAtMs = nowMs + 2 * 60 * 60 * 1000;
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-war",
+        guildId: "guild-1",
+        channelId: "channel-war",
+        type: ReminderType.WAR_CWL,
+        isEnabled: true,
+        times: [
+          { offsetSeconds: 24 * 60 * 60 },
+          { offsetSeconds: 60 * 60 },
+        ],
+        targetClans: [{ clanTag: "#PYLQ0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warId: 905,
+        state: "inWar",
+        startTime: new Date(nowMs - 22 * 60 * 60 * 1000),
+        endTime: new Date(eventEndsAtMs),
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289", name: "War Clan" }]);
+    prismaMock.reminderFireLog.findUnique.mockResolvedValue({
+      id: "fire-existing",
+      dispatchStatus: ReminderDispatchStatus.SENT,
+      errorMessage: null,
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+    const logSpy = vi.spyOn(dozzleConsoleSink, "info").mockImplementation(() => undefined);
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 2,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(
+      logSpy.mock.calls.some(([message]) =>
+        String(message).includes("catchup_skip reason=already_fired"),
+      ),
+    ).toBe(true);
+  });
+
+  it("logs a stale no-active-event skip during catch-up", async () => {
+    const nowMs = Date.parse("2026-04-05T01:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-war",
+        guildId: "guild-1",
+        channelId: "channel-war",
+        type: ReminderType.WAR_CWL,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PYLQ0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warId: 906,
+        state: "preparation",
+        startTime: new Date(nowMs + 30 * 60 * 1000),
+        endTime: new Date(nowMs - 10 * 60 * 1000),
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PYLQ0289", name: "War Clan" }]);
+    const dispatch = {
+      dispatchReminder: vi.fn(),
+    };
+    const logSpy = vi.spyOn(dozzleConsoleSink, "info").mockImplementation(() => undefined);
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 0,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(
+      logSpy.mock.calls.some(([message]) =>
+        String(message).includes("catchup_skip reason=stale_no_active_event"),
+      ),
+    ).toBe(true);
   });
 
   it("dedupes multi-offset deliveries per event and resets eligibility when event identity changes", async () => {
@@ -978,7 +1092,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     expect(thirdCounts).toEqual({
       evaluated: 1,
       fired: 0,
-      deduped: 0,
+      deduped: 1,
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
@@ -1211,7 +1325,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     expect(secondCounts).toEqual({
       evaluated: 1,
       fired: 0,
-      deduped: 0,
+      deduped: 1,
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
