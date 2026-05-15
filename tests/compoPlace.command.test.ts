@@ -187,13 +187,20 @@ describe("/compo place command", () => {
             String(part).includes("reason=run_catch"),
         ),
     );
+    const finallyIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "log" &&
+        entry.message.some((part) => String(part).includes("stage=place_finally")),
+    );
     expect(runEntryIndex).toBeGreaterThanOrEqual(0);
     expect(rawIndex).toBeGreaterThanOrEqual(0);
     expect(fallbackReturnIndex).toBeGreaterThanOrEqual(0);
     expect(fallbackBuildIndex).toBeGreaterThanOrEqual(0);
+    expect(finallyIndex).toBeGreaterThanOrEqual(0);
     expect(runEntryIndex).toBeLessThan(rawIndex);
     expect(rawIndex).toBeLessThan(fallbackBuildIndex);
     expect(fallbackReturnIndex).toBeLessThan(fallbackBuildIndex);
+    expect(fallbackBuildIndex).toBeLessThan(finallyIndex);
 
     logSpy.mockRestore();
     errorSpy.mockRestore();

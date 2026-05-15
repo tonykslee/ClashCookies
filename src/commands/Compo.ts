@@ -2513,6 +2513,7 @@ export const Compo: Command = {
     _cocService: CoCService,
   ) => {
     const telemetryContext = getTelemetryContext();
+    let placeOutcome: string | null = null;
     logCompoStage(interaction, "run_entry", {
       interactionId: interaction.id,
       runId: telemetryContext?.runId ?? null,
@@ -2760,6 +2761,7 @@ export const Compo: Command = {
           throw err;
         }
         if (!inputWeight || inputWeight <= 0) {
+          placeOutcome = "invalid_weight";
           logCompoStage(interaction, "response_build", {
             reason: "invalid_weight",
           });
@@ -2785,6 +2787,7 @@ export const Compo: Command = {
 
         const bucket = getCompoWarDisplayBucket(inputWeight);
         if (!bucket) {
+          placeOutcome = "weight_out_of_range";
           logCompoStage(interaction, "response_build", {
             reason: "weight_out_of_range",
             parsedWeight: inputWeight,
@@ -2871,6 +2874,7 @@ export const Compo: Command = {
               bucket,
             },
           });
+          placeOutcome = placeOutcome ?? "response_components_failed";
           throw err;
         }
         const safePlaceEmbeds = ensureCompoPlaceEmbedsWithinBudgetForSend(
@@ -2895,6 +2899,7 @@ export const Compo: Command = {
             payloadMetrics: placeResponseMetrics,
             error: sendErr,
           });
+          placeOutcome = "response_send_failed";
           throw sendErr;
         }
         logCompoStage(interaction, "response_sent_success", {
@@ -2914,6 +2919,8 @@ export const Compo: Command = {
               ? "no_candidates"
               : "placement_result",
         });
+        placeOutcome =
+          placeResult.candidateCount === 0 ? "no_candidates" : "placement_result";
         return;
       }
 
@@ -2929,6 +2936,9 @@ export const Compo: Command = {
       });
       return;
     } catch (err) {
+      if (getSubcommandSafe(interaction) === "place" && placeOutcome == null) {
+        placeOutcome = "run_catch";
+      }
       logCompoRunCatchError({
         interaction,
         error: err,
@@ -2976,6 +2986,16 @@ export const Compo: Command = {
                   : mapCompoSheetErrorToMessage(err),
       });
       logCompoStage(interaction, "response_sent", { reason: "run_catch" });
+    } finally {
+      if (getSubcommandSafe(interaction) === "place") {
+        logCompoStage(interaction, "place_finally", {
+          interactionId: interaction.id,
+          runId: telemetryContext?.runId ?? null,
+          deferred: Boolean(interaction.deferred),
+          replied: Boolean(interaction.replied),
+          outcome: placeOutcome ?? "unknown",
+        });
+      }
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
