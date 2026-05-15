@@ -3,6 +3,7 @@ import { EmbedBuilder } from "discord.js";
 import { Compo } from "../src/commands/Compo";
 import { CompoPlaceService } from "../src/services/CompoPlaceService";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
+import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 
 function makeInteraction(weight: string) {
   const interaction: any = {
@@ -89,10 +90,14 @@ describe("/compo place command", () => {
         trackedClanTags: ["#AAA111"],
         eligibleClanTags: ["#AAA111"],
         candidateCount: 1,
-        recommendedCount: 0,
-        vacancyCount: 0,
-        compositionCount: 1,
-      });
+      recommendedCount: 0,
+      vacancyCount: 0,
+      compositionCount: 1,
+    });
+    const fetchEmojiSpy = vi.spyOn(
+      emojiResolverService,
+      "fetchApplicationEmojiInventory",
+    );
     const getCompoLinkedSheetSpy = vi.spyOn(
       GoogleSheetsService.prototype,
       "getCompoLinkedSheet",
@@ -106,6 +111,7 @@ describe("/compo place command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(readPlaceSpy).toHaveBeenCalledWith(145000, "TH15", "guild-1", expect.any(Map));
+    expect(fetchEmojiSpy).not.toHaveBeenCalled();
     expect(getCompoLinkedSheetSpy).not.toHaveBeenCalled();
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
 
@@ -131,11 +137,16 @@ describe("/compo place command", () => {
         vacancyCount: 0,
         compositionCount: 0,
       });
+    const fetchEmojiSpy = vi.spyOn(
+      emojiResolverService,
+      "fetchApplicationEmojiInventory",
+    );
 
     const interaction = makeInteraction("100000");
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(readPlaceSpy).toHaveBeenCalledWith(100000, "<=TH13", "guild-1", expect.any(Map));
+    expect(fetchEmojiSpy).not.toHaveBeenCalled();
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(getComponentCustomIds(payload)).toEqual(["compo-refresh:place:user-1:100000"]);
     expect(getFirstButtonState(payload)).toEqual({
