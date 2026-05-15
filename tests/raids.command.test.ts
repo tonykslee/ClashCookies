@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const refreshHelperMock = vi.hoisted(() => ({
   refreshRaidTrackedClanListWithQueueContext: vi.fn(),
@@ -9,11 +9,23 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     updateMany: vi.fn(),
   },
+  raidIntelDefenderProfile: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
   raidIntelDistrictLayoutMark: {
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
 }));
+
+const raidIntelDefenderProfiles = vi.hoisted(() => [] as Array<{
+  guildId: string;
+  defenderTag: string;
+  upgrades: number;
+  createdAt: Date;
+  updatedAt: Date;
+}>);
 
 const cocQueueMock = vi.hoisted(() => {
   const state = { active: false };
@@ -353,6 +365,7 @@ function makeSelectInteraction(customId: string, value: string) {
 describe("/raids command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    raidIntelDefenderProfiles.splice(0, raidIntelDefenderProfiles.length);
     cocQueueMock.state.active = false;
     cocQueueMock.runWithCoCQueueContext.mockImplementation(cocQueueMock.defaultImpl);
     vi.useFakeTimers();
@@ -362,6 +375,43 @@ describe("/raids command", () => {
 
     prismaMock.raidTrackedClan.findMany.mockResolvedValue(makeTrackedClanRows());
     prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidIntelDefenderProfile.findMany.mockImplementation(async (args: any) => {
+      const guildId = String(args?.where?.guildId ?? "").trim();
+      const defenderTagFilter = Array.isArray(args?.where?.defenderTag?.in)
+        ? new Set(args.where.defenderTag.in.map((value: string) => String(value).replace(/^#/, "")))
+        : null;
+      return raidIntelDefenderProfiles
+        .filter((row) => {
+          if (guildId && row.guildId !== guildId) return false;
+          if (defenderTagFilter && !defenderTagFilter.has(row.defenderTag.replace(/^#/, ""))) return false;
+          return true;
+        })
+        .map((row) => ({ ...row }));
+    });
+    prismaMock.raidIntelDefenderProfile.upsert.mockImplementation(async (args: any) => {
+      const guildId = String(args?.where?.guildId_defenderTag?.guildId ?? args?.create?.guildId ?? "").trim();
+      const defenderTag = String(
+        args?.where?.guildId_defenderTag?.defenderTag ?? args?.create?.defenderTag ?? "",
+      ).replace(/^#/, "");
+      const upgrades = Number(args?.create?.upgrades ?? args?.update?.upgrades);
+      const now = new Date("2026-05-08T01:00:00.000Z");
+      const existingIndex = raidIntelDefenderProfiles.findIndex(
+        (row) => row.guildId === guildId && row.defenderTag.replace(/^#/, "") === defenderTag,
+      );
+      const row = {
+        guildId,
+        defenderTag,
+        upgrades: Number.isFinite(upgrades) ? Math.trunc(upgrades) : 0,
+        createdAt: existingIndex >= 0 ? raidIntelDefenderProfiles[existingIndex]!.createdAt : now,
+        updatedAt: now,
+      };
+      if (existingIndex >= 0) {
+        raidIntelDefenderProfiles[existingIndex] = row;
+      } else {
+        raidIntelDefenderProfiles.push(row);
+      }
+      return { ...row };
+    });
     prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
     prismaMock.raidIntelDistrictLayoutMark.upsert.mockResolvedValue({
       id: 1,
@@ -567,13 +617,16 @@ describe("/raids command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
+    const descriptionLines = description.split("\n");
+    const topIntelLine = descriptionLines.find((line) => line.startsWith("Tracked clan: "));
+    const defenderHeader = descriptionLines.find((line) => line.startsWith("### [Defender One]"));
     expect(description).toContain("## Raid Intel");
-    expect(description).toContain("Tracked clan: [Alpha Raid]");
-    expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("| 🏘️ 2299");
+    expect(topIntelLine).toBeDefined();
+    expect(topIntelLine).not.toContain("🏘️");
+    expect(defenderHeader).toBeDefined();
+    expect(defenderHeader).toContain("2299");
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("Select a district below, then choose a layout grade.");
-    expect(description).toContain("### [Defender One]");
     expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
     expect(description).toContain("Wizard Valley DH4 \u2014 Grade: Unmarked");
     expect(payload.components).toHaveLength(2);
@@ -601,9 +654,13 @@ describe("/raids command", () => {
 
     const reopenedPayload = reopenedInteraction.editReply.mock.calls[0]?.[0] as any;
     const reopenedDescription = reopenedPayload.embeds[0].toJSON().description as string;
-    expect(reopenedDescription).toContain("Tracked clan: [Alpha Raid]");
-    expect(reopenedDescription).toContain("`#2QG2C08UP`");
-    expect(reopenedDescription).toContain("| 🏘️ 2299");
+    const reopenedLines = reopenedDescription.split("\n");
+    const reopenedTopLine = reopenedLines.find((line) => line.startsWith("Tracked clan: "));
+    const reopenedDefenderHeader = reopenedLines.find((line) => line.startsWith("### [Defender One]"));
+    expect(reopenedTopLine).toBeDefined();
+    expect(reopenedTopLine).not.toContain("🏘️");
+    expect(reopenedDefenderHeader).toBeDefined();
+    expect(reopenedDefenderHeader).toContain("2299");
     expect(reopenedDescription).not.toContain("Upgrades:");
   });
 
@@ -686,11 +743,72 @@ describe("/raids command", () => {
     expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
-    expect(description).toContain("Tracked clan: [Alpha Raid]");
-    expect(description).toContain("| 🏘️ 2299");
+    expect(description).toContain("Upgrades were not saved because the attacked clan was ambiguous.");
     expect(description).toContain("Capital Peak DH10 \u2014 Grade: Custom - Medium");
     expect(description).toContain("Barbarian Camp DH5 \u2014 Grade: Default");
     expect(description).toContain("Skeleton Park DH4 \u2014 Grade: Default");
+  });
+
+  it("does not persist upgrades when the attacked clan is ambiguous", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 6 }, { attacks: 5 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#2QG2C08UQ" },
+              districtCount: 1,
+              districtsDestroyed: 1,
+              districts: [
+                {
+                  name: "Capital Hall",
+                  districtHallLevel: 5,
+                  attackCount: 3,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+              ],
+            },
+            {
+              defender: { name: "Defender Two", tag: "#2QG2C08UR" },
+              districtCount: 1,
+              districtsDestroyed: 1,
+              districts: [
+                {
+                  name: "Wizard Valley",
+                  districtHallLevel: 4,
+                  attackCount: 2,
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+          raidsCompleted: null,
+        },
+      ]),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction({
+      clan: "2QG2C08UP",
+      subcommand: "intel",
+      upgrades: 1444,
+    });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.raidTrackedClan.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.raidIntelDefenderProfile.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.raidIntelDistrictLayoutMark.upsert).not.toHaveBeenCalled();
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("Upgrades were not saved because the attacked clan was ambiguous.");
+    expect(description).toContain("### [Defender One]");
+    expect(description).toContain("### [Defender Two]");
   });
 
   it("updates only the provided raid intel district grade and preserves other saved marks", async () => {
@@ -1473,3 +1591,6 @@ describe("/raids command", () => {
     expect(refreshedDescription).toContain("## Defending");
   });
 });
+
+
+
