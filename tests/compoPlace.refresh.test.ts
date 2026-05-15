@@ -46,6 +46,32 @@ function makeInteraction(customId: string) {
   return interaction;
 }
 
+function getComponentCustomIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  return rows.flatMap((row) => {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") return [];
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    return components
+      .map((component) =>
+        String(
+          (component as { custom_id?: unknown; customId?: unknown }).custom_id ??
+            (component as { custom_id?: unknown; customId?: unknown }).customId ??
+            "",
+        ),
+      )
+      .filter((value) => value.length > 0);
+  });
+}
+
 describe("compo place refresh button behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -86,6 +112,10 @@ describe("compo place refresh button behavior", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain("Mode Displayed: **PLACE**");
     expect(payload?.components?.length ?? 0).toBeGreaterThan(0);
+    expect(getComponentCustomIds(payload)).toEqual([
+      "compo-refresh:place:user-1:145000",
+      "compo-replacements:open:user-1:145000",
+    ]);
     expect(
       String(
         payload?.components?.[0]?.toJSON?.()?.components?.[0]?.label ??

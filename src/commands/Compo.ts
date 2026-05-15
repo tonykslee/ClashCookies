@@ -49,6 +49,11 @@ import { CompoActualStateService } from "../services/CompoActualStateService";
 import {
   CompoPlaceService,
 } from "../services/CompoPlaceService";
+import {
+  CompoReplacementService,
+  type CompoReplacementCandidate,
+  type CompoReplacementResolution,
+} from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
 import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
@@ -58,6 +63,7 @@ import {
   GoogleSheetReadErrorCode,
 } from "../services/GoogleSheetsService";
 import { getTelemetryContext } from "../services/telemetry/context";
+import { loadCompoActualStateContext, type CompoActualStateContext } from "../services/CompoActualStateService";
 
 console.info("[compo-command] stage=compo_module_loaded");
 
@@ -275,8 +281,11 @@ const STATE_HEADERS = [
 ];
 const COMPO_HEATMAPREF_COPY_PREFIX = "compo-heatmapref-copy";
 const COMPO_REFRESH_PREFIX = "compo-refresh";
+const COMPO_REPLACEMENTS_PREFIX = "compo-replacements";
 const COMPO_REFRESH_LABEL = "Refresh Data";
 const COMPO_REFRESH_LOADING_LABEL = "Refreshing...";
+const COMPO_REPLACEMENTS_LABEL = "Show replacements";
+const COMPO_REPLACEMENTS_PAGE_LIMIT = 3600;
 const COMPO_ERROR_MESSAGE_BY_CODE: Record<GoogleSheetReadErrorCode, string> = {
   SHEET_LINK_MISSING: "No compo sheet is linked for this server.",
   SHEET_PROXY_UNAUTHORIZED:
@@ -599,6 +608,77 @@ export function isCompoRefreshButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${COMPO_REFRESH_PREFIX}:`);
 }
 
+type CompoReplacementButtonCustomId =
+  | {
+      kind: "open";
+      userId: string;
+      weight: number;
+    }
+  | {
+      kind: "page";
+      userId: string;
+      weight: number;
+      page: number;
+      direction: "prev" | "next";
+    };
+
+function buildCompoReplacementCustomId(
+  payload: CompoReplacementButtonCustomId,
+): string {
+  if (payload.kind === "open") {
+    return `${COMPO_REPLACEMENTS_PREFIX}:open:${payload.userId}:${Math.trunc(payload.weight)}`;
+  }
+  return `${COMPO_REPLACEMENTS_PREFIX}:page:${payload.userId}:${Math.trunc(payload.weight)}:${Math.trunc(payload.page)}:${payload.direction}`;
+}
+
+function parseCompoReplacementCustomId(
+  customId: string,
+): CompoReplacementButtonCustomId | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts[0] !== COMPO_REPLACEMENTS_PREFIX) return null;
+  const action = parts[1];
+  const userId = parts[2];
+  if (!action || !userId) return null;
+
+  if (action === "open" && parts.length === 4) {
+    const weight = Number(parts[3]);
+    if (!Number.isFinite(weight) || weight <= 0) return null;
+    return {
+      kind: "open",
+      userId,
+      weight: Math.trunc(weight),
+    };
+  }
+
+  if (action === "page" && parts.length === 6) {
+    const weight = Number(parts[3]);
+    const page = Number(parts[4]);
+    const direction = parts[5];
+    if (
+      !Number.isFinite(weight) ||
+      weight <= 0 ||
+      !Number.isFinite(page) ||
+      page < 0 ||
+      (direction !== "prev" && direction !== "next")
+    ) {
+      return null;
+    }
+    return {
+      kind: "page",
+      userId,
+      weight: Math.trunc(weight),
+      page: Math.trunc(page),
+      direction,
+    };
+  }
+
+  return null;
+}
+
+export function isCompoReplacementButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${COMPO_REPLACEMENTS_PREFIX}:`);
+}
+
 export function isCompoAdviceClanSelectMenuCustomId(customId: string): boolean {
   const parsed = parseCompoRefreshCustomId(customId);
   return parsed?.kind === "advice-clan";
@@ -606,15 +686,77 @@ export function isCompoAdviceClanSelectMenuCustomId(customId: string): boolean {
 
 function buildCompoRefreshActionRow(
   customId: string,
-  options?: { loading?: boolean },
+  options?: { loading?: boolean; trailingButton?: ButtonBuilder | null },
 ): ActionRowBuilder<ButtonBuilder> {
   const loading = options?.loading ?? false;
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(customId)
       .setLabel(loading ? COMPO_REFRESH_LOADING_LABEL : COMPO_REFRESH_LABEL)
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(loading),
+  );
+  if (options?.trailingButton) {
+    row.addComponents(options.trailingButton);
+  }
+  return row;
+}
+
+function buildCompoReplacementOpenButton(input: {
+  userId: string;
+  weight: number;
+  loading?: boolean;
+}): ButtonBuilder {
+  return new ButtonBuilder()
+    .setCustomId(
+      buildCompoReplacementCustomId({
+        kind: "open",
+        userId: input.userId,
+        weight: input.weight,
+      }),
+    )
+    .setLabel(COMPO_REPLACEMENTS_LABEL)
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(input.loading ?? false);
+}
+
+function buildCompoReplacementPagerRow(input: {
+  userId: string;
+  weight: number;
+  page: number;
+  totalPages: number;
+  loading?: boolean;
+}): ActionRowBuilder<ButtonBuilder> {
+  const loading = input.loading ?? false;
+  const prevDisabled = loading || input.page <= 0;
+  const nextDisabled = loading || input.page >= input.totalPages - 1;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(
+        buildCompoReplacementCustomId({
+          kind: "page",
+          userId: input.userId,
+          weight: input.weight,
+          page: input.page,
+          direction: "prev",
+        }),
+      )
+      .setLabel("Prev")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(prevDisabled),
+    new ButtonBuilder()
+      .setCustomId(
+        buildCompoReplacementCustomId({
+          kind: "page",
+          userId: input.userId,
+          weight: input.weight,
+          page: input.page,
+          direction: "next",
+        }),
+      )
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(nextDisabled),
   );
 }
 
@@ -1790,7 +1932,19 @@ function buildCompoRefreshComponents(input: {
     | ActionRowBuilder<ButtonBuilder>
     | ActionRowBuilder<StringSelectMenuBuilder>
     | APIActionRowComponent<APIComponentInMessageActionRow>
-  > = [buildCompoRefreshActionRow(refreshCustomId, { loading: input.loading })];
+  > = [
+    buildCompoRefreshActionRow(refreshCustomId, {
+      loading: input.loading,
+      trailingButton:
+        input.refreshPayload.kind === "place"
+          ? buildCompoReplacementOpenButton({
+              userId: input.refreshPayload.userId,
+              weight: input.refreshPayload.weight,
+              loading: input.loading,
+            })
+          : null,
+    }),
+  ];
   if (input.refreshPayload.kind === "state" && input.refreshPayload.mode === "actual") {
     components.push(
       buildCompoActualViewActionRow({
@@ -1857,6 +2011,146 @@ function buildCompoRefreshComponents(input: {
     components.push(...input.supplementalRows);
   }
   return components.slice(0, 5);
+}
+
+function buildCompoReplacementReasonLabel(candidate: CompoReplacementCandidate): string[] {
+  const labels: string[] = [];
+  if (candidate.reasons.filler) {
+    labels.push("🧍 filler");
+  }
+  if (candidate.reasons.inactive) {
+    labels.push(
+      candidate.inactiveLabel ? `😴 inactive ${candidate.inactiveLabel}` : "😴 inactive",
+    );
+  }
+  if (candidate.reasons.unlinked) {
+    labels.push("📵 unlinked");
+  }
+  return labels;
+}
+
+function formatCompoReplacementDetailRow(candidate: CompoReplacementCandidate): string {
+  const reasons = buildCompoReplacementReasonLabel(candidate).join(" · ");
+  const namePrefix = candidate.discordMention ? `${candidate.discordMention} ` : "";
+  const reasonSuffix = reasons ? ` — ${reasons}` : "";
+  return `- ${namePrefix}${candidate.playerName} — ${formatCompoAdviceCompactWeight(candidate.resolvedWeight)}${reasonSuffix}`;
+}
+
+function buildCompoReplacementClanLabel(
+  clanTag: string,
+  context: CompoActualStateContext,
+  resolution: CompoReplacementResolution,
+): string {
+  const clanContext = context.clans.find((clan) => clan.clanTag === clanTag) ?? null;
+  const summary = resolution.summaryByClan.find((item) => item.clanTag === clanTag) ?? null;
+  const shortName = clanContext?.shortName?.trim() || "";
+  if (shortName) {
+    return shortName;
+  }
+  const summaryName = summary?.clanName?.trim() || clanContext?.clanName?.trim() || clanTag;
+  return normalizeCompoClanDisplayName(summaryName).trimEnd();
+}
+
+function buildCompoReplacementDetailPages(input: {
+  context: CompoActualStateContext;
+  resolution: CompoReplacementResolution;
+}): string[] {
+  const pages: string[] = [];
+  const legend = "Legend: 🧍 filler · 😴 inactive · 📵 unlinked";
+  const groupedCandidates = input.resolution.summaryByClan
+    .map((summary) => ({
+      clanTag: summary.clanTag,
+      label: buildCompoReplacementClanLabel(summary.clanTag, input.context, input.resolution),
+      rows: input.resolution.candidates
+        .filter((candidate) => candidate.clanTag === summary.clanTag)
+        .map((candidate) => formatCompoReplacementDetailRow(candidate)),
+    }))
+    .filter((group) => group.rows.length > 0);
+
+  if (groupedCandidates.length === 0) {
+    return [];
+  }
+
+  const buildPageText = (lines: string[]): string => lines.join("\n").trim();
+  const pagesLines: string[][] = [];
+  let currentLines: string[] = [legend, ""];
+
+  const flushCurrent = () => {
+    if (currentLines.length > 2) {
+      pagesLines.push(currentLines);
+    }
+    currentLines = [legend, ""];
+  };
+
+  const currentTextLength = (lines: string[]): number => buildPageText(lines).length;
+  const canAppendLine = (line: string): boolean =>
+    currentTextLength([...currentLines, line]) <= COMPO_REPLACEMENTS_PAGE_LIMIT;
+
+  for (const group of groupedCandidates) {
+    const heading = `**${group.label}**`;
+    if (!canAppendLine(heading) && currentLines.length > 2) {
+      flushCurrent();
+    }
+    if (!canAppendLine(heading) && currentLines.length <= 2) {
+      currentLines.push(heading);
+    } else {
+      currentLines.push(heading);
+    }
+
+    for (const row of group.rows) {
+      if (!canAppendLine(row) && currentLines.length > 2) {
+        flushCurrent();
+        currentLines.push(heading);
+      }
+      currentLines.push(row);
+    }
+
+    if (!canAppendLine("") && currentLines.length > 2) {
+      flushCurrent();
+    } else {
+      currentLines.push("");
+    }
+  }
+
+  flushCurrent();
+  for (const lines of pagesLines) {
+    pages.push(buildPageText(lines));
+  }
+  return pages;
+}
+
+function buildCompoReplacementDetailEmbed(input: {
+  pageText: string;
+  pageIndex: number;
+  totalPages: number;
+}): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setTitle("Possible replacements")
+    .setDescription(input.pageText);
+  if (input.totalPages > 1) {
+    embed.setFooter({ text: `Page ${input.pageIndex + 1}/${input.totalPages}` });
+  }
+  return embed;
+}
+
+function buildCompoReplacementDetailComponents(input: {
+  userId: string;
+  weight: number;
+  pageIndex: number;
+  totalPages: number;
+}): Array<ActionRowBuilder<ButtonBuilder>> {
+  if (input.totalPages <= 1) {
+    return [];
+  }
+  return [
+    buildCompoReplacementPagerRow({
+      userId: input.userId,
+      weight: input.weight,
+      page: input.pageIndex,
+      totalPages: input.totalPages,
+      loading: false,
+    }),
+  ];
 }
 
 function mapCompoActualStateErrorToMessage(action: "load" | "refresh"): string {
@@ -2218,6 +2512,89 @@ export async function handleCompoHeatMapRefCopyButton(
     await interaction.reply({
       ephemeral: true,
       content: "Failed to build HeatMapRef copy text. Try again in a moment.",
+    });
+  }
+}
+
+export async function handleCompoReplacementButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseCompoReplacementCustomId(interaction.customId);
+  if (!parsed) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid replacement action.",
+      });
+    }
+    return;
+  }
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this replacements button.",
+    });
+    return;
+  }
+
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+
+    const context = await loadCompoActualStateContext(interaction.guildId ?? null);
+    const resolver = new CompoReplacementService();
+    const resolution = await resolver.resolveReplacementCandidates({
+      guildId: interaction.guildId ?? null,
+      weight: parsed.weight,
+      context,
+    });
+    const pages = buildCompoReplacementDetailPages({
+      context,
+      resolution,
+    });
+
+    if (pages.length === 0) {
+      await interaction.editReply({
+        content: "No replacement candidates found from current stored data.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+
+    const pageIndex =
+      parsed.kind === "page"
+        ? Math.min(pages.length - 1, Math.max(0, parsed.direction === "next" ? parsed.page + 1 : parsed.page - 1))
+        : 0;
+    await interaction.editReply({
+      content: "",
+      embeds: [buildCompoReplacementDetailEmbed({
+        pageText: pages[pageIndex] ?? pages[0] ?? "",
+        pageIndex,
+        totalPages: pages.length,
+      })],
+      components: buildCompoReplacementDetailComponents({
+        userId: parsed.userId,
+        weight: parsed.weight,
+        pageIndex,
+        totalPages: pages.length,
+      }),
+    });
+  } catch (err) {
+    console.error(`compo replacements button failed: ${formatError(err)}`);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: "Failed to open replacement candidates. Try again in a moment.",
+        embeds: [],
+        components: [],
+      }).catch(() => undefined);
+      return;
+    }
+    await interaction.reply({
+      ephemeral: true,
+      content: "Failed to open replacement candidates. Try again in a moment.",
     });
   }
 }

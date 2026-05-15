@@ -9,6 +9,7 @@ import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
 import {
   loadCompoActualStateContext,
+  type CompoActualStateContext,
   type CompoActualStateClanContext,
 } from "./CompoActualStateService";
 import { normalizeTag } from "./war-events/core";
@@ -17,6 +18,10 @@ import {
   projectCompoActualStateView,
   type CompoActualStateProjection,
 } from "../helper/compoActualStateView";
+import {
+  CompoReplacementService,
+  type CompoReplacementClanSummary,
+} from "./CompoReplacementService";
 
 type PlacementCandidate = {
   clanName: string;
@@ -232,9 +237,74 @@ function buildPlacementCandidates(input: {
   return { candidates, latestSourceSyncedAt: null };
 }
 
+function buildReplacementSummaryLabel(clan: CompoActualStateClanContext): string {
+  const shortName = clan.shortName?.trim() || "";
+  if (shortName) {
+    return shortName;
+  }
+  return abbreviateClan(normalizePlaceClanDisplayName(clan.clanName));
+}
+
+function buildPossibleReplacementsValue(input: {
+  clansInDisplayOrder: CompoActualStateClanContext[];
+  summaryByClan: CompoReplacementClanSummary[];
+}): string {
+  const summaryByClan = new Map(
+    input.summaryByClan.map((summary) => [summary.clanTag, summary] as const),
+  );
+
+  const rows = input.clansInDisplayOrder.map((clan) => {
+    const label = buildReplacementSummaryLabel(clan);
+    const summary = summaryByClan.get(clan.clanTag);
+    if (!summary || summary.uniqueCandidateCount <= 0) {
+      return `${label}: none`;
+    }
+
+    const reasonCounts: string[] = [];
+    if (summary.fillerCount > 0) {
+      reasonCounts.push(`🧍${summary.fillerCount}`);
+    }
+    if (summary.inactiveCount > 0) {
+      reasonCounts.push(`😴${summary.inactiveCount}`);
+    }
+    if (summary.unlinkedCount > 0) {
+      reasonCounts.push(`📵${summary.unlinkedCount}`);
+    }
+
+    const candidateLabel =
+      summary.uniqueCandidateCount === 1 ? "candidate" : "candidates";
+    const reasonSuffix =
+      reasonCounts.length > 0 ? ` · ${reasonCounts.join(" ")}` : "";
+
+    return `${label}: ${summary.uniqueCandidateCount} ${candidateLabel}${reasonSuffix}`;
+  });
+
+  return [
+    "Legend: 🧍 fillers · 😴 inactive · 📵 unlinked",
+    "",
+    ...rows,
+  ].join("\n");
+}
+
+function buildPossibleReplacementsField(input: {
+  clansInDisplayOrder: CompoActualStateClanContext[];
+  summaryByClan: CompoReplacementClanSummary[];
+}): { name: string; value: string; inline: boolean } | null {
+  if (input.clansInDisplayOrder.length === 0) {
+    return null;
+  }
+
+  return {
+    name: "Possible replacements",
+    value: buildPossibleReplacementsValue(input),
+    inline: false,
+  };
+}
+
 /** Purpose: derive `/compo place` suggestions from persisted ACTUAL feed-backed current-member state. */
 export class CompoPlaceService {
   private readonly clanMembersSync = new FwaClanMembersSyncService();
+  private readonly replacementService = new CompoReplacementService();
 
   /** Purpose: load ACTUAL placement suggestions using one persisted tracked-clan/member snapshot read plus deterministic weight fallbacks. */
   async readPlace(
@@ -303,21 +373,41 @@ export class CompoPlaceService {
       });
 
     const recommended = compositionNeeds.filter((candidate) => candidate.hasVacancy);
+    const replacementResolution = await this.replacementService.resolveReplacementCandidates({
+      guildId: guildId ?? null,
+      weight: inputWeight,
+      bucket,
+      context,
+    });
+    const possibleReplacementsField = buildPossibleReplacementsField({
+      clansInDisplayOrder: candidates
+        .map((candidate) =>
+          context.clans.find((clan) => clan.clanTag === candidate.clanTag) ?? null,
+        )
+        .filter((clan): clan is CompoActualStateClanContext => Boolean(clan)),
+      summaryByClan: replacementResolution.summaryByClan,
+    });
+
+    const embeds = [
+      buildCompoPlaceEmbed({
+        inputWeight,
+        bucket,
+        recommended,
+        vacancyList,
+        compositionList: compositionNeeds,
+        refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
+        modeLabel: buildCompoPlaceModeLabel(),
+        deltaLabel: buildCompoPlaceDeltaLabel(),
+      }),
+    ];
+    const placementEmbed = embeds[0];
+    if (placementEmbed && possibleReplacementsField) {
+      placementEmbed.addFields(possibleReplacementsField);
+    }
 
     return {
       content: "",
-      embeds: [
-        buildCompoPlaceEmbed({
-          inputWeight,
-          bucket,
-          recommended,
-          vacancyList,
-          compositionList: compositionNeeds,
-          refreshLine: buildPersistedRefreshLine(context.latestSourceSyncedAt),
-          modeLabel: buildCompoPlaceModeLabel(),
-          deltaLabel: buildCompoPlaceDeltaLabel(),
-        }),
-      ],
+      embeds,
       trackedClanTags: context.trackedClanTags,
       eligibleClanTags: candidates.map((candidate) => candidate.clanTag),
       candidateCount: candidates.length,

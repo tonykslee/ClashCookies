@@ -74,9 +74,11 @@ import {
 } from "../commands/Notify";
 import {
   handleCompoHeatMapRefCopyButton,
+  handleCompoReplacementButton,
   handleCompoRefreshButton,
   handleCompoAdviceClanSelectMenuInteraction,
   isCompoHeatMapRefCopyButtonCustomId,
+  isCompoReplacementButtonCustomId,
   isCompoRefreshButtonCustomId,
   isCompoAdviceClanSelectMenuCustomId,
 } from "../commands/Compo";
@@ -940,6 +942,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to build the HeatMapRef copy text.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isCompoReplacementButtonCustomId(interaction.customId)) {
+    try {
+      await handleCompoReplacementButton(interaction);
+    } catch (err) {
+      console.error(`Compo replacements button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to open replacement candidates.",
         });
       }
     }

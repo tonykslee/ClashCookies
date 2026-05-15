@@ -1,5 +1,6 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
+import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -24,6 +25,18 @@ const prismaMock = vi.hoisted(() => ({
   weightInputDeferment: {
     findMany: vi.fn(),
   },
+  clanWarHistory: {
+    findMany: vi.fn(),
+  },
+  playerLink: {
+    findMany: vi.fn(),
+  },
+  playerActivity: {
+    findMany: vi.fn(),
+  },
+  fillerAccount: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -36,10 +49,11 @@ import {
   resolvePlacementWeightForTest,
 } from "../src/services/CompoPlaceService";
 
-function makeTrackedClan(tag: string, name: string) {
+function makeTrackedClan(tag: string, name: string, shortName: string | null = null) {
   return {
     tag,
     name,
+    shortName,
   };
 }
 
@@ -124,6 +138,7 @@ function makeCurrentMembers(input: {
       rows.push({
         clanTag: input.clanTag,
         playerTag: validPlayerTag(index),
+        playerName: "Player " + index,
         weight: bucketWeight(bucket),
         sourceSyncedAt,
         townHall: input.townHall ?? 18,
@@ -187,8 +202,24 @@ describe("CompoPlaceService", () => {
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.clanWarHistory.findMany.mockReset();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.playerActivity.findMany.mockReset();
+    prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    } as Awaited<ReturnType<InactiveWarService["listInactiveWarPlayers"]>>);
   });
 
   it("reads ACTUAL placement suggestions from persisted tracked clans, current members, and HeatMapRef without sheet services", async () => {
@@ -286,6 +317,107 @@ describe("CompoPlaceService", () => {
     expect(embed?.description).toContain("Deltas: **resolved roster vs HeatMapRef**");
     expect(embed?.fields?.find((field) => field.name === "Composition")?.value).toBe("None");
     expect(embed?.fields?.find((field) => field.name === "Recommended")?.value).toBe("None");
+  });
+
+  it("adds a compact Possible replacements summary after Composition and reuses the loaded ACTUAL context once", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan", "RR"),
+      makeTrackedClan("#BBB222", "Bravo Clan", "RD"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      ...makeCurrentMembers({
+        clanTag: "#AAA111",
+        counts: { TH15: 3 },
+        startIndex: 1,
+      }),
+      ...makeCurrentMembers({
+        clanTag: "#BBB222",
+        counts: { TH15: 2 },
+        startIndex: 100,
+      }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        th15Count: 5,
+      }),
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: validPlayerTag(2), discordUserId: "555555555555555555" },
+      { playerTag: validPlayerTag(100), discordUserId: "666666666666666666" },
+      { playerTag: validPlayerTag(101), discordUserId: "777777777777777777" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: validPlayerTag(2), lastSeenAt: new Date("2026-04-01T00:00:00.000Z") },
+      { tag: validPlayerTag(3), lastSeenAt: new Date("2026-04-01T00:00:00.000Z") },
+      { tag: validPlayerTag(100), lastSeenAt: new Date("2026-05-14T00:00:00.000Z") },
+      { tag: validPlayerTag(101), lastSeenAt: new Date("2026-05-14T00:00:00.000Z") },
+    ]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([
+      { playerTag: validPlayerTag(1) },
+      { playerTag: validPlayerTag(2) },
+    ]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P000002",
+          playerName: "Alpha Two",
+          townHall: 15,
+          missedWars: 2,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [],
+        },
+        {
+          clanTag: "#AAA111",
+          playerTag: "#P000008",
+          playerName: "Alpha Three",
+          townHall: 15,
+          missedWars: 2,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [],
+        },
+      ],
+      trackedTags: ["#AAA111", "#BBB222"],
+      trackedNameByTag: new Map([
+        ["#AAA111", "Alpha Clan"],
+        ["#BBB222", "Bravo Clan"],
+      ]),
+      trackedBadgeByTag: new Map([
+        ["#AAA111", null],
+        ["#BBB222", null],
+      ]),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const result = await new CompoPlaceService().readPlace(145000, "TH15", "guild-1");
+
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
+    const embed = result.embeds[0]?.toJSON();
+    const fieldNames = (embed?.fields ?? []).map((field) => field.name);
+    expect(fieldNames).toEqual([
+      "Recommended",
+      "Vacancy",
+      "Composition",
+      "Possible replacements",
+    ]);
+    const possibleReplacements =
+      embed?.fields?.find((field) => field.name === "Possible replacements")?.value ?? "";
+    expect(possibleReplacements).toContain("Legend: 🧍 fillers · 😴 inactive · 📵 unlinked");
+    expect(possibleReplacements).toContain("RR: 3 candidates · 🧍2 😴3 📵2");
+    expect(possibleReplacements).toContain("RD: none");
+    expect(possibleReplacements).not.toContain("stale");
+    expect(possibleReplacements).not.toContain("missing");
   });
 
   it("uses member weight, then deferred weight, then WAR effective weight, and ignores unresolved zero-weight rows", async () => {
