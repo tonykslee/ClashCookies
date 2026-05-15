@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ./ops/deploy/ensure-yarn-deps.sh
-yarn start
+npm run start
