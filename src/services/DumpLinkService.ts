@@ -13,6 +13,7 @@ export type DumpClanInfoCache = {
 
 export type DumpLinkRecord = {
   guildId: string;
+  slot: number;
   link: string;
   updatedByDiscordUserId: string;
   createdAt: Date;
@@ -20,6 +21,8 @@ export type DumpLinkRecord = {
   clanInfoJson: unknown | null;
   clanInfoFetchedAt: Date | null;
 };
+
+export const DUMP_LINK_SLOT_RANGE = { min: 1, max: 3 } as const;
 
 const DUMP_CACHE_KEYS: Array<keyof DumpClanInfoCache> = [
   "clanTag",
@@ -117,6 +120,17 @@ function formatDumpClanInfoLines(cache: DumpClanInfoCache): string[] {
 function normalizeDumpClanTag(input: string | null | undefined): string | null {
   const normalized = normalizeTag(String(input ?? ""));
   return normalized ? normalized : null;
+}
+
+function normalizeDumpSlot(input: number | string | null | undefined): number | null {
+  if (input === null || input === undefined) return null;
+  const parsed = typeof input === "number" ? input : Number(input);
+  if (!Number.isFinite(parsed)) return null;
+  const slot = Math.trunc(parsed);
+  if (slot < DUMP_LINK_SLOT_RANGE.min || slot > DUMP_LINK_SLOT_RANGE.max) {
+    return null;
+  }
+  return slot;
 }
 
 function leagueLabelFromRequiredTrophies(requiredTrophies: number | null): string | null {
@@ -263,10 +277,52 @@ export async function getDumpLinkForGuild(
   const normalizedGuildId = String(guildId ?? "").trim();
   if (!normalizedGuildId) return null;
 
-  return prisma.dumpLink.findUnique({
+  return getDumpLinkForGuildSlot({
+    guildId: normalizedGuildId,
+    slot: 1,
+  });
+}
+
+export async function listDumpLinksForGuild(
+  guildId: string,
+): Promise<DumpLinkRecord[]> {
+  const normalizedGuildId = String(guildId ?? "").trim();
+  if (!normalizedGuildId) return [];
+
+  return prisma.dumpLink.findMany({
     where: { guildId: normalizedGuildId },
+    orderBy: [{ slot: "asc" }],
     select: {
       guildId: true,
+      slot: true,
+      link: true,
+      updatedByDiscordUserId: true,
+      createdAt: true,
+      updatedAt: true,
+      clanInfoJson: true,
+      clanInfoFetchedAt: true,
+    },
+  });
+}
+
+export async function getDumpLinkForGuildSlot(input: {
+  guildId: string;
+  slot: number;
+}): Promise<DumpLinkRecord | null> {
+  const guildId = String(input.guildId ?? "").trim();
+  const slot = normalizeDumpSlot(input.slot);
+  if (!guildId || slot === null) return null;
+
+  return prisma.dumpLink.findUnique({
+    where: {
+      guildId_slot: {
+        guildId,
+        slot,
+      },
+    },
+    select: {
+      guildId: true,
+      slot: true,
       link: true,
       updatedByDiscordUserId: true,
       createdAt: true,
@@ -282,14 +338,36 @@ export async function upsertDumpLinkForGuild(input: {
   link: string;
   updatedByDiscordUserId: string;
 }): Promise<DumpLinkRecord> {
+  return upsertDumpLinkForGuildSlot({
+    ...input,
+    slot: 1,
+  });
+}
+
+export async function upsertDumpLinkForGuildSlot(input: {
+  guildId: string;
+  slot: number;
+  link: string;
+  updatedByDiscordUserId: string;
+}): Promise<DumpLinkRecord> {
   const guildId = String(input.guildId ?? "").trim();
+  const slot = normalizeDumpSlot(input.slot);
+  if (!guildId || slot === null) {
+    throw new Error("Invalid dump slot.");
+  }
   const link = String(input.link ?? "").trim();
   const updatedByDiscordUserId = String(input.updatedByDiscordUserId ?? "").trim();
 
   return prisma.dumpLink.upsert({
-    where: { guildId },
+    where: {
+      guildId_slot: {
+        guildId,
+        slot,
+      },
+    },
     create: {
       guildId,
+      slot,
       link,
       updatedByDiscordUserId,
       clanInfoJson: Prisma.DbNull,
@@ -303,6 +381,7 @@ export async function upsertDumpLinkForGuild(input: {
     },
     select: {
       guildId: true,
+      slot: true,
       link: true,
       updatedByDiscordUserId: true,
       createdAt: true,
@@ -318,17 +397,36 @@ export async function updateDumpLinkClanInfoForGuild(input: {
   clanInfoJson: DumpClanInfoCache | null;
   clanInfoFetchedAt: Date | null;
 }): Promise<DumpLinkRecord | null> {
+  return updateDumpLinkClanInfoForGuildSlot({
+    ...input,
+    slot: 1,
+  });
+}
+
+export async function updateDumpLinkClanInfoForGuildSlot(input: {
+  guildId: string;
+  slot: number;
+  clanInfoJson: DumpClanInfoCache | null;
+  clanInfoFetchedAt: Date | null;
+}): Promise<DumpLinkRecord | null> {
   const guildId = String(input.guildId ?? "").trim();
-  if (!guildId) return null;
+  const slot = normalizeDumpSlot(input.slot);
+  if (!guildId || slot === null) return null;
 
   return prisma.dumpLink.update({
-    where: { guildId },
+    where: {
+      guildId_slot: {
+        guildId,
+        slot,
+      },
+    },
     data: {
       clanInfoJson: toDumpClanInfoJsonValue(input.clanInfoJson),
       clanInfoFetchedAt: input.clanInfoFetchedAt,
     },
     select: {
       guildId: true,
+      slot: true,
       link: true,
       updatedByDiscordUserId: true,
       createdAt: true,
@@ -337,4 +435,26 @@ export async function updateDumpLinkClanInfoForGuild(input: {
       clanInfoFetchedAt: true,
     },
   });
+}
+
+export async function deleteDumpLinkForGuildSlot(input: {
+  guildId: string;
+  slot: number;
+}): Promise<DumpLinkRecord | null> {
+  const guildId = String(input.guildId ?? "").trim();
+  const slot = normalizeDumpSlot(input.slot);
+  if (!guildId || slot === null) return null;
+
+  const existing = await getDumpLinkForGuildSlot({ guildId, slot });
+  if (!existing) return null;
+
+  await prisma.dumpLink.delete({
+    where: {
+      guildId_slot: {
+        guildId,
+        slot,
+      },
+    },
+  });
+  return existing;
 }
