@@ -143,4 +143,67 @@ describe("interactionCreate /compo dispatcher diagnostics", () => {
       ),
     ).toBe(true);
   }, 30000);
+
+  it("logs handler_run watchdog checkpoints while /compo stays pending", async () => {
+    vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    let resolveRun!: () => void;
+    const runPromise = new Promise<void>((resolve) => {
+      resolveRun = resolve;
+    });
+    const runMock = vi.fn().mockReturnValue(runPromise);
+    const { handler, restoreCommand } = await loadInteractionHandler(runMock as unknown as ReturnType<typeof vi.fn>);
+    const interaction = makeCompoSlashInteraction();
+
+    try {
+      const handlerPromise = handler(interaction);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(
+        logSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("stage=handler_run_begin") &&
+          String(call[0] ?? "").includes("handler=compo.run"),
+        ),
+      ).toBe(true);
+      expect(
+        logSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("stage=handler_run_still_running") &&
+          String(call[0] ?? "").includes("thresholdMs=3000"),
+        ),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(
+        logSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("stage=handler_run_still_running") &&
+          String(call[0] ?? "").includes("thresholdMs=8000"),
+        ),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(7000);
+      expect(
+        logSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("stage=handler_run_still_running") &&
+          String(call[0] ?? "").includes("thresholdMs=15000"),
+        ),
+      ).toBe(true);
+
+      resolveRun();
+      await handlerPromise;
+      restoreCommand();
+
+      expect(
+        logSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("stage=handler_run_done") &&
+          String(call[0] ?? "").includes("handler=compo.run"),
+        ),
+      ).toBe(true);
+      expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("handler_run_failed"));
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 30000);
 });
