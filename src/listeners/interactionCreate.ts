@@ -366,6 +366,39 @@ function logHandlerRunFailure(input: {
   );
 }
 
+function logHandlerRunBegin(input: {
+  interaction: ChatInputCommandInteraction;
+  runId: string;
+  handlerName: string;
+}): void {
+  console.log(
+    `[interaction] stage=handler_run_begin command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId}`,
+  );
+}
+
+function logHandlerRunDone(input: {
+  interaction: ChatInputCommandInteraction;
+  runId: string;
+  handlerName: string;
+  durationMs: number;
+}): void {
+  console.log(
+    `[interaction] stage=handler_run_done command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} durationMs=${input.durationMs}`,
+  );
+}
+
+function logHandlerRunStillRunning(input: {
+  interaction: ChatInputCommandInteraction;
+  runId: string;
+  handlerName: string;
+  thresholdMs: number;
+  durationMs: number;
+}): void {
+  console.log(
+    `[interaction] stage=handler_run_still_running command=${input.interaction.commandName} subcommand=${getInteractionSubcommandPath(input.interaction)} handler=${input.handlerName} guild=${input.interaction.guildId ?? "DM"} user=${input.interaction.user.id} interaction=${input.interaction.id} runId=${input.runId} thresholdMs=${input.thresholdMs} durationMs=${input.durationMs}`,
+  );
+}
+
 async function handleBestEffortSelectMenuFailure(
   interaction: StringSelectMenuInteraction,
   context: string,
@@ -1827,16 +1860,56 @@ const handleSlashCommand = async (
         }
 
         const executionStartedAtMs = Date.now();
+        const handlerName = `${slashCommand.name}.run`;
+        const shouldWatchHandlerRun = interaction.commandName === "compo";
+        const handlerRunWatchdogTimers: ReturnType<typeof setTimeout>[] = [];
+        let handlerRunSettled = false;
+        const clearHandlerRunWatchdogTimers = () => {
+          while (handlerRunWatchdogTimers.length > 0) {
+            const timer = handlerRunWatchdogTimers.pop();
+            if (timer) clearTimeout(timer);
+          }
+        };
+        const scheduleHandlerRunWatchdog = (thresholdMs: number) => {
+          if (!shouldWatchHandlerRun) return;
+          const timer = setTimeout(() => {
+            if (handlerRunSettled) return;
+            logHandlerRunStillRunning({
+              interaction,
+              runId,
+              handlerName,
+              thresholdMs,
+              durationMs: Date.now() - executionStartedAtMs,
+            });
+          }, thresholdMs);
+          handlerRunWatchdogTimers.push(timer);
+        };
+        scheduleHandlerRunWatchdog(3000);
+        scheduleHandlerRunWatchdog(8000);
+        scheduleHandlerRunWatchdog(15000);
         try {
           if (interaction.commandName === "compo") {
             console.log(
-              `[interaction] stage=before_handler_run command=compo subcommand=${subcommand} handler=${slashCommand.name}.run guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+              `[interaction] stage=before_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
             );
+            logHandlerRunBegin({
+              interaction,
+              runId,
+              handlerName,
+            });
           }
           await slashCommand.run(client, interaction, cocService);
+          handlerRunSettled = true;
+          clearHandlerRunWatchdogTimers();
           if (interaction.commandName === "compo") {
+            logHandlerRunDone({
+              interaction,
+              runId,
+              handlerName,
+              durationMs: Date.now() - executionStartedAtMs,
+            });
             console.log(
-              `[interaction] stage=after_handler_run command=compo subcommand=${subcommand} handler=${slashCommand.name}.run guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
+              `[interaction] stage=after_handler_run command=compo subcommand=${subcommand} handler=${handlerName} guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} interaction=${interaction.id} runId=${runId}`,
             );
           }
           telemetryIngest.recordStageTiming({
@@ -1850,11 +1923,13 @@ const handleSlashCommand = async (
           });
           recordSuccess();
         } catch (err) {
+          handlerRunSettled = true;
+          clearHandlerRunWatchdogTimers();
           if (interaction.commandName === "compo") {
             logHandlerRunFailure({
               interaction,
               runId,
-              handlerName: `${slashCommand.name}.run`,
+              handlerName,
               error: err,
             });
           }
