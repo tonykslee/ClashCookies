@@ -87,6 +87,18 @@ model RaidIntelDistrictLayoutMark {
   @@index([guildId, defenderTag])
 }
 
+model RaidIntelDefenderProfile {
+  id          Int      @id @default(autoincrement())
+  guildId     String
+  defenderTag String   @db.VarChar(16)
+  upgrades    Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([guildId, defenderTag])
+  @@index([guildId, defenderTag])
+}
+
 model BotSetting {
   key       String   @id
   value     String

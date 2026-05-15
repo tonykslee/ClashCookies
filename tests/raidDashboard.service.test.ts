@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
+    findMany: vi.fn(),
+  },
+  raidIntelDefenderProfile: {
     findMany: vi.fn(),
   },
   raidIntelDistrictLayoutMark: {
@@ -36,6 +39,7 @@ vi.mock("../src/services/CoCQueueContext", () => ({
 
 import {
   buildRaidIntelDescription,
+  applyRaidIntelDefenderUpgrades,
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
@@ -55,6 +59,7 @@ describe("RaidDashboardService", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-08T12:00:00.000Z"));
     prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
+    prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -377,6 +382,86 @@ describe("RaidDashboardService", () => {
     expect(drilldown).toContain("- ⚔️ ⚪ GM, SP, GQ");
     expect(drilldown.indexOf("- ⚔️ ⚪ GM, SP, GQ")).toBeLessThan(drilldown.indexOf("## Attacking"));
     expect(drilldown).toContain("Upgrades: 2210");
+  });
+
+  it("uses the defender profile owner for untracked raid intel upgrades in the overview", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValueOnce([
+      {
+        id: 1,
+        guildId: "guild-1",
+        sourceClanTag: "2QG2C08UP",
+        raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+        defenderTag: "2QG2C08UQ",
+        districtName: "Goblin Mines",
+        districtHallLevel: 5,
+        layoutGrade: "DEFAULT",
+        markedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-05-08T01:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T01:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValueOnce([
+      {
+        defenderTag: "2QG2C08UQ",
+        upgrades: 1444,
+      },
+    ]);
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        if (tag === "#2QG2C08UP") {
+          return [
+            {
+              startTime: "2026-05-08T00:00:00.000Z",
+              endTime: "2026-05-11T00:00:00.000Z",
+              members: [{ attacks: 6 }, { attacks: 5 }],
+              attackLog: [
+                {
+                  defender: { name: "Defender Clan", tag: "#2DEFEND1" },
+                  districtCount: 1,
+                  districtsDestroyed: 1,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      attackCount: 3,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                  ],
+                },
+              ],
+              defenseLog: [],
+              raidsCompleted: null,
+            },
+          ];
+        }
+        return [];
+      }),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    const sourceRow = rows.find((row) => row.clanTag === "2QG2C08UP");
+    expect(sourceRow?.raidIntelDefenderUpgrades).toBe(1444);
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    expect(overview).toContain("- ⚔️ 🏘️ 1444 | defaults: 1 | GM");
+    expect(overview).not.toContain("- ⚔️ 🏘️ 2210 | defaults: 1 | GM");
   });
 
   it("renders zero defaults in the overview intel line when only non-default marks exist", () => {
@@ -1050,7 +1135,7 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("Capital Hall DH5 — 3 attacks");
     expect(description).toContain("Wizard Valley DH4 — 2 attacks");
     expect(description).toContain("## Defending");
-    expect(description).toContain("🔓 [Enemy Clan]");
+    expect(description).toContain("🔓 [Enemy Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UR>)");
     expect(description).toContain("`#2QG2C08UR`");
     expect(description).toContain("30 attacks used");
     expect(description).toContain("1 district remaining");
@@ -1061,7 +1146,7 @@ describe("RaidDashboardService", () => {
     expect(enemyLine).toMatch(/^- 🛡️ \[Enemy Clan\]/);
     expect(enemyLine).toContain("`#2QG2C08UR`");
     expect(enemyLine).toContain("— 1 districts remaining");
-    expect(enemyLine).not.toContain("🔓");
+    expect(enemyLine).not.toContain("🔒");
     expect(enemyLine?.startsWith("  -")).toBe(false);
   });
 
@@ -1103,7 +1188,7 @@ describe("RaidDashboardService", () => {
     expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
     expect(pendingLine).toContain("`#2PQQQ`");
     expect(pendingLine).not.toContain("districts remaining");
-    expect(pendingLine).not.toContain("🔓");
+    expect(pendingLine).not.toContain("🔒");
     expect(pendingLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Completed Clan");
@@ -1650,6 +1735,8 @@ describe("RaidDashboardService", () => {
     expect(detail.defenders).toHaveLength(1);
     expect(detail.defenders[0]?.districts).toHaveLength(2);
 
+    const upgradedDetail = applyRaidIntelDefenderUpgrades(detail, new Map([["2QG2C08UQ", 1444]]));
+
     const description = buildRaidIntelDescription({
       trackedClan: {
         clanTag: "2QG2C08UP",
@@ -1659,15 +1746,16 @@ describe("RaidDashboardService", () => {
         createdAt: new Date("2026-05-01T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:00:00.000Z"),
       } as any,
-      detail,
+      detail: upgradedDetail,
     });
 
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).toContain("| 🏘️ 2210");
+    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | 🏘️");
     expect(description).toContain("Raid weekend: Active");
-    expect(description).toContain("### [Defender One]");
+    expect(description).toContain("### [Defender One](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UQ>)");
+    expect(description).toContain("`#2QG2C08UQ` | 🏘️ 1444");
     expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
     expect(description).toContain("Wizard Valley DH4 \u2014 Grade: Unmarked");
   });
@@ -1732,7 +1820,7 @@ describe("RaidDashboardService", () => {
 
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("No defender intel available yet.");
-    expect(description).toContain("| 🏘️ 2210");
+    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | 🏘️");
   });
 
   it("renders a clean empty message when no active raid weekend data is available", async () => {
@@ -1971,3 +2059,4 @@ describe("RaidDashboardService", () => {
     expect(choices.filter((choice) => choice.value === selectedClanTag)).toHaveLength(1);
   });
 });
+
