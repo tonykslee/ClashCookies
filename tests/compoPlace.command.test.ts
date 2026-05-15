@@ -159,19 +159,37 @@ describe("/compo place command", () => {
     await Compo.run({} as any, interaction as any, {} as any);
 
     expect(readPlaceSpy).toHaveBeenCalled();
+    const runEntryIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "log" &&
+        entry.message.some((part) => String(part).includes("stage=run_entry")),
+    );
     const rawIndex = captured.findIndex(
       (entry) =>
         entry.level === "error" &&
         entry.message.some((part) => String(part).includes("stage=run_catch_raw")),
     );
-    const fallbackIndex = captured.findIndex(
+    const fallbackReturnIndex = captured.findIndex(
       (entry) =>
         entry.level === "log" &&
-        entry.message.some((part) => String(part).includes("reason=run_catch")),
+        entry.message.some((part) => String(part).includes("stage=place_return_error_fallback")),
     );
+    const fallbackBuildIndex = captured.findIndex(
+      (entry) =>
+        entry.level === "log" &&
+        entry.message.some(
+          (part) =>
+            String(part).includes("stage=response_build") &&
+            String(part).includes("reason=run_catch"),
+        ),
+    );
+    expect(runEntryIndex).toBeGreaterThanOrEqual(0);
     expect(rawIndex).toBeGreaterThanOrEqual(0);
-    expect(fallbackIndex).toBeGreaterThanOrEqual(0);
-    expect(rawIndex).toBeLessThan(fallbackIndex);
+    expect(fallbackReturnIndex).toBeGreaterThanOrEqual(0);
+    expect(fallbackBuildIndex).toBeGreaterThanOrEqual(0);
+    expect(runEntryIndex).toBeLessThan(rawIndex);
+    expect(rawIndex).toBeLessThan(fallbackBuildIndex);
+    expect(fallbackReturnIndex).toBeLessThan(fallbackBuildIndex);
 
     logSpy.mockRestore();
     errorSpy.mockRestore();
