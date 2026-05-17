@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { Compo } from "../src/commands/Compo";
 import { CompoFillService } from "../src/services/CompoFillService";
 
@@ -38,6 +39,14 @@ describe("/compo fill command", () => {
           }),
         },
       ],
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("compo-refresh:fill:user-1")
+            .setLabel("Refresh Data")
+            .setStyle(ButtonStyle.Secondary),
+        ),
+      ],
       trackedClanTags: ["#AAA111"],
       destinationClanCount: 1,
       plannedMoveCount: 1,
@@ -53,7 +62,9 @@ describe("/compo fill command", () => {
     await Compo.run({} as any, interaction as any, cocService);
 
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
-    expect(readFillSpy).toHaveBeenCalledWith("guild-1");
+    expect(readFillSpy).toHaveBeenCalledWith("guild-1", {
+      userId: "user-1",
+    });
     expect(cocService.getClan).not.toHaveBeenCalled();
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(cocService.getClanWarLog).not.toHaveBeenCalled();
@@ -61,6 +72,10 @@ describe("/compo fill command", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toBe("");
     expect(Array.isArray(payload?.embeds)).toBe(true);
+    expect(Array.isArray(payload?.components)).toBe(true);
+    expect(String(payload?.components?.[0]?.toJSON?.()?.components?.[0]?.custom_id ?? "")).toBe(
+      "compo-refresh:fill:user-1",
+    );
     expect(String(payload?.embeds?.[0]?.toJSON?.()?.description ?? "")).toContain(
       "Clans under 50: 1",
     );

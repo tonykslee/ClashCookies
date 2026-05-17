@@ -362,6 +362,10 @@ type CompoRefreshPayload =
       kind: "place";
       userId: string;
       weight: number;
+    }
+  | {
+      kind: "fill";
+      userId: string;
     };
 
 function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
@@ -399,7 +403,10 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
   if (payload.kind === "advice-band") {
     return `${COMPO_REFRESH_PREFIX}:advice-band:${payload.userId}:${payload.targetTag}:${Math.trunc(payload.customBandCount)}:${Math.trunc(payload.customBandIndex)}:${payload.direction}`;
   }
-  return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
+  if (payload.kind === "place") {
+    return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
+  }
+  return `${COMPO_REFRESH_PREFIX}:fill:${payload.userId}`;
 }
 
 function parseCompoRefreshCustomId(
@@ -600,6 +607,12 @@ function parseCompoRefreshCustomId(
       kind: "place",
       userId,
       weight: Math.trunc(weight),
+    };
+  }
+  if (kind === "fill" && parts.length === 3) {
+    return {
+      kind: "fill",
+      userId,
     };
   }
   return null;
@@ -1916,7 +1929,7 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
 }
 
 function buildCompoRefreshComponents(input: {
-  refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "advice" | "place" }>;
+  refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "advice" | "place" | "fill" }>;
   loading: boolean;
   adviceClanChoices?: readonly CompoAdviceClanChoice[];
   selectedAdviceClanTag?: string | null;
@@ -2206,6 +2219,9 @@ function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
   if (payload.kind === "place") {
     return mapCompoPlaceErrorToMessage("refresh");
   }
+  if (payload.kind === "fill") {
+    return "Failed to refresh compo fill recommendations. Try again in a moment.";
+  }
   return "Failed to refresh compo view. Try again in a moment.";
 }
 
@@ -2236,7 +2252,7 @@ export async function handleCompoRefreshButton(
   let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
   let loadingRefreshPayload: Extract<
     CompoRefreshPayload,
-    { kind: "state" | "advice" | "place" }
+    { kind: "state" | "advice" | "place" | "fill" }
   >;
   if (parsed.kind === "view" && parsed.target === "advice") {
     adviceRefreshPayload = {
@@ -2297,7 +2313,7 @@ export async function handleCompoRefreshButton(
   } else {
     loadingRefreshPayload = parsed;
   }
-  await interaction.update({
+  const loadingUpdatePayload: any = {
     components: buildCompoRefreshComponents({
       refreshPayload: loadingRefreshPayload,
       loading: true,
@@ -2307,7 +2323,11 @@ export async function handleCompoRefreshButton(
         (parsed.kind === "advice-clan" ? parsed.targetTag : null),
       supplementalRows,
     }),
-  });
+  };
+  if (parsed.kind === "fill") {
+    loadingUpdatePayload.content = "Refreshing compo fill...";
+  }
+  await interaction.update(loadingUpdatePayload);
 
   try {
   if (parsed.kind === "state") {
@@ -2452,6 +2472,23 @@ export async function handleCompoRefreshButton(
           supplementalRows,
         }),
       });
+      return;
+    }
+
+    if (parsed.kind === "fill") {
+      const fillResult = await new CompoFillService().refreshFill(
+        interaction.guildId ?? null,
+        {
+          userId: parsed.userId,
+          cocService: _cocService,
+        },
+      );
+      await interaction.editReply({
+        content: fillResult.warningText ?? fillResult.content,
+        embeds: fillResult.embeds,
+        components: fillResult.components,
+      });
+      return;
     }
   } catch (err) {
     console.error(`compo refresh button failed: ${formatError(err)}`);
@@ -3034,6 +3071,9 @@ export const Compo: Command = {
         });
         const fillResult = await new CompoFillService().readFill(
           interaction.guildId ?? null,
+          {
+            userId: interaction.user.id,
+          },
         );
         logCompoStage(interaction, "db_fetch", {
           entity: "actual_compo_fill_source",
@@ -3055,6 +3095,7 @@ export const Compo: Command = {
         await interaction.editReply({
           content: fillResult.content,
           embeds: fillResult.embeds,
+          components: fillResult.components,
         });
         logCompoStage(interaction, "response_sent", {
           reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
