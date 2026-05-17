@@ -3069,37 +3069,55 @@ export const Compo: Command = {
         logCompoStage(interaction, "computation_start", {
           mode: "actual",
         });
-        const fillResult = await new CompoFillService().readFill(
-          interaction.guildId ?? null,
-          {
-            userId: interaction.user.id,
-          },
-        );
-        logCompoStage(interaction, "db_fetch", {
-          entity: "actual_compo_fill_source",
-          mode: "actual",
-          trackedClans: fillResult.trackedClanTags.length,
-          destinationClans: fillResult.destinationClanCount,
-          availableFillers: fillResult.availableFillerCount,
-          recommendedMoves: fillResult.plannedMoveCount,
-        });
-        logCompoStage(interaction, "computation_complete", {
-          result: "fill_rendered",
-          mode: "actual",
-          destinationClans: fillResult.destinationClanCount,
-          recommendedMoves: fillResult.plannedMoveCount,
-        });
-        logCompoStage(interaction, "response_build", {
-          reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
-        });
-        await interaction.editReply({
-          content: fillResult.content,
-          embeds: fillResult.embeds,
-          components: fillResult.components,
-        });
-        logCompoStage(interaction, "response_sent", {
-          reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
-        });
+        try {
+          const fillResult = await new CompoFillService().readFill(
+            interaction.guildId ?? null,
+            {
+              userId: interaction.user.id,
+            },
+          );
+          logCompoStage(interaction, "db_fetch", {
+            entity: "actual_compo_fill_source",
+            mode: "actual",
+            trackedClans: fillResult.trackedClanTags.length,
+            destinationClans: fillResult.destinationClanCount,
+            availableFillers: fillResult.availableFillerCount,
+            recommendedMoves: fillResult.plannedMoveCount,
+          });
+          logCompoStage(interaction, "computation_complete", {
+            result: "fill_rendered",
+            mode: "actual",
+            destinationClans: fillResult.destinationClanCount,
+            recommendedMoves: fillResult.plannedMoveCount,
+          });
+          logCompoStage(interaction, "response_build", {
+            reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
+          });
+          await interaction.editReply({
+            content: fillResult.content,
+            embeds: fillResult.embeds,
+            components: fillResult.components,
+          });
+          logCompoStage(interaction, "response_sent", {
+            reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
+          });
+        } catch (error) {
+          logCompoStage(interaction, "response_build", {
+            reason: "fill_error",
+          });
+          console.error(
+            `[compo-command] stage=fill_render_failed command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} error=${formatError(error)}`,
+          );
+          await interaction.editReply({
+            content:
+              "Failed to build DB-backed compo fill recommendations. Try again in a moment.",
+            embeds: [],
+            components: [],
+          });
+          logCompoStage(interaction, "response_sent", {
+            reason: "fill_error",
+          });
+        }
         return;
       }
 

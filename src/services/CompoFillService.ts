@@ -1,6 +1,7 @@
 import type { HeatMapRef } from "@prisma/client";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { formatError } from "../helper/formatError";
 import { type CompoWarBucketCounts } from "../helper/compoWarBucketCounts";
 import {
   getCompoActualStateTargetBucketCounts,
@@ -61,6 +62,43 @@ const FILL_PAGE_CHAR_LIMIT = 4000;
 const FILL_MAX_EMBEDS = 10;
 const FILL_REFRESH_LABEL = "Refresh Data";
 const FILL_REFRESH_LOADING_LABEL = "Refreshing...";
+
+type FillStageDetail = Record<string, string | number | boolean | null | undefined>;
+
+function logFillStage(stage: string, detail: FillStageDetail = {}): void {
+  const serialized = Object.entries({ stage, ...detail })
+    .map(([key, value]) => `${key}=${String(value ?? "")}`)
+    .join(" ");
+  console.log(`[compo-fill] ${serialized}`);
+}
+
+async function measureFillStage<T>(input: {
+  stage: string;
+  startDetail?: FillStageDetail;
+  work: () => Promise<T>;
+  completeDetail?: (result: T, durationMs: number) => FillStageDetail;
+  errorDetail?: (error: unknown, durationMs: number) => FillStageDetail;
+}): Promise<T> {
+  logFillStage(`${input.stage}_start`, input.startDetail ?? {});
+  const startedAt = Date.now();
+  try {
+    const result = await input.work();
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    logFillStage(`${input.stage}_complete`, {
+      duration_ms: durationMs,
+      ...(input.completeDetail ? input.completeDetail(result, durationMs) : {}),
+    });
+    return result;
+  } catch (error) {
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    logFillStage(`${input.stage}_error`, {
+      duration_ms: durationMs,
+      error: formatError(error),
+      ...(input.errorDetail ? input.errorDetail(error, durationMs) : {}),
+    });
+    throw error;
+  }
+}
 
 function truncateForDiscord(text: string, maxLength: number): string {
   const suffix = "...";
@@ -499,12 +537,51 @@ export class CompoFillService {
     guildId?: string | null,
     options?: { userId?: string | null },
   ): Promise<CompoFillReadResult> {
-    const context = await loadCompoActualStateContext(guildId ?? null);
+    const userId = options?.userId ?? null;
+    const guild = guildId ?? null;
+    const context = await measureFillStage({
+      stage: "load_context",
+      startDetail: {
+        guildId: guild ?? "DM",
+      },
+      work: () => loadCompoActualStateContext(guild),
+      completeDetail: (loadedContext) => ({
+        trackedClanTags: loadedContext.trackedClanTags.length,
+        contextClans: loadedContext.clans.length,
+        heatMapRefs: loadedContext.heatMapRefs.length,
+      }),
+    });
+
     if (context.trackedClanTags.length === 0) {
+      const emptyRender = await measureFillStage({
+        stage: "build_render",
+        startDetail: {
+          trackedClanTags: 0,
+          contextClans: context.clans.length,
+          heatMapRefs: context.heatMapRefs.length,
+          fillerRows: 0,
+          destinationPlans: 0,
+          plannedMoveCount: 0,
+        },
+        work: async () => ({
+          content: "No tracked FWA clans are configured for DB-backed compo fill recommendations.",
+          embeds: [] as EmbedBuilder[],
+          components: buildFillRefreshComponents({ userId }),
+        }),
+        completeDetail: (render) => ({
+          trackedClanTags: 0,
+          contextClans: context.clans.length,
+          heatMapRefs: context.heatMapRefs.length,
+          fillerRows: 0,
+          destinationPlans: 0,
+          plannedMoveCount: 0,
+          embedCount: render.embeds.length,
+        }),
+      });
       return {
-        content: "No tracked FWA clans are configured for DB-backed compo fill recommendations.",
-        embeds: [],
-        components: buildFillRefreshComponents({ userId: options?.userId ?? null }),
+        content: emptyRender.content,
+        embeds: emptyRender.embeds,
+        components: emptyRender.components,
         trackedClanTags: [],
         destinationClanCount: 0,
         plannedMoveCount: 0,
@@ -512,21 +589,77 @@ export class CompoFillService {
       };
     }
 
-    const fillers =
-      guildId && guildId.trim().length > 0
-        ? await listFillerAccountsForGuild({ guildId })
-        : [];
-
-    const trackedClans = context.clans.map((clan) =>
-      buildTrackedClanState({
-        clan,
-        heatMapRefs: context.heatMapRefs,
+    const fillers = await measureFillStage({
+      stage: "list_fillers",
+      startDetail: {
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+      },
+      work: async () =>
+        guild && guild.trim().length > 0
+          ? listFillerAccountsForGuild({ guildId: guild })
+          : [],
+      completeDetail: (fillerRows) => ({
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillerRows.length,
       }),
-    );
+    });
 
-    const result = buildCompoFillPlan({
-      trackedClans,
-      fillers: fillers.map(buildFillerCandidate),
+    const trackedClans = await measureFillStage({
+      stage: "build_tracked_clans",
+      startDetail: {
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+      },
+      work: async () =>
+        context.clans.map((clan) =>
+          buildTrackedClanState({
+            clan,
+            heatMapRefs: context.heatMapRefs,
+          }),
+        ),
+      completeDetail: (plannedClans) => ({
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        trackedClans: plannedClans.length,
+      }),
+    });
+
+    const result = await measureFillStage({
+      stage: "build_plan",
+      startDetail: {
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        trackedClans: trackedClans.length,
+      },
+      work: async () =>
+        buildCompoFillPlan({
+          trackedClans,
+          fillers: fillers.map(buildFillerCandidate),
+        }),
+      completeDetail: (planResult) => {
+        const plannedMoveCount = planResult.destinationPlans.reduce(
+          (sum, plan) => sum + plan.plannedMoves.length,
+          0,
+        );
+        return {
+          trackedClanTags: context.trackedClanTags.length,
+          contextClans: context.clans.length,
+          heatMapRefs: context.heatMapRefs.length,
+          fillerRows: fillers.length,
+          destinationPlans: planResult.destinationPlans.length,
+          plannedMoveCount,
+        };
+      },
     });
 
     const plannedMoveCount = result.destinationPlans.reduce(
@@ -536,23 +669,53 @@ export class CompoFillService {
     const availableFillerCount =
       plannedMoveCount + result.unusedAvailableFillers.length;
 
-    const fields = buildSectionFieldList({
-      result,
-    });
-    const summaryDescription = buildSummaryDescription({
-      destinationPlans: result.destinationPlans,
-      remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
-      unusedAvailableFillers: result.unusedAvailableFillers,
-      plannedMoveCount,
+    const render = await measureFillStage({
+      stage: "build_render",
+      startDetail: {
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        destinationPlans: result.destinationPlans.length,
+        plannedMoveCount,
+      },
+      work: async () => {
+        const fields = buildSectionFieldList({
+          result,
+        });
+        const summaryDescription = buildSummaryDescription({
+          destinationPlans: result.destinationPlans,
+          remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
+          unusedAvailableFillers: result.unusedAvailableFillers,
+          plannedMoveCount,
+        });
+        const embeds = buildEmbeds({
+          summaryDescription,
+          fields,
+        });
+        const components = buildFillRefreshComponents({ userId });
+        return {
+          content: "",
+          embeds,
+          components,
+        };
+      },
+      completeDetail: (renderResult) => ({
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        destinationPlans: result.destinationPlans.length,
+        plannedMoveCount,
+        embedCount: renderResult.embeds.length,
+        componentRows: renderResult.components.length,
+      }),
     });
 
     return {
-      content: "",
-      embeds: buildEmbeds({
-        summaryDescription,
-        fields,
-      }),
-      components: buildFillRefreshComponents({ userId: options?.userId ?? null }),
+      content: render.content,
+      embeds: render.embeds,
+      components: render.components,
       trackedClanTags: context.trackedClanTags,
       destinationClanCount: result.destinationPlans.length,
       plannedMoveCount,
