@@ -81,6 +81,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "fillers",
   "fillers:list",
   "fillers:set",
+  "compo:fill",
 ]);
 
 type CommandDoc = {
@@ -281,6 +282,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`heatmapref`: renders the persisted HeatMapRef table as an attached PNG image with `TH11+`, `Match%`, and `Clans` columns, plus an inline `Copy Table` button that returns a formatted CSV text block with `WeightMin`, `WeightMax`, `TH11+`, `Match%`, and `# Clans` without triggering any rebuild/update work.",
       "`place`: suggest placement by war weight from persisted ACTUAL current-member state (`TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`) using the same ACTUAL Auto-Detect projection path as `/compo state` and `/compo advice`, with projected totals selecting the target band and resolved-roster deltas driving recommendations. The main result still shows `Recommended`, `Vacancy`, and `Composition`, and may include a compact `Possible replacements` summary per clan when replacement candidates exist.",
       "`place` refresh: every response includes an inline refresh button that explicitly refreshes ACTUAL current-member/weight state plus live CoC member counts for all tracked clans, then rerenders from persisted DB state. A `Show replacements` button opens an ephemeral, paginated player-level drill-down using only DB-backed replacement reasons (`🧍 filler`, `😴 inactive`, `📵 unlinked`); linked rows show the Discord mention first, while unlinked rows show no mention and include `📵 unlinked`.",
+      "`fill`: recommend filler placements using the existing pure planner, tracked FWA clan state, and guild filler accounts without calling live CoC APIs. The render groups recommended moves by destination clan and separates remaining open slots, unused available fillers, unavailable fillers, and excluded/missing-weight fillers.",
     ],
     examples: [
       "/compo advice tag:#2QG2C08UP mode:actual",
@@ -288,6 +290,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/compo state mode:war",
       "/compo heatmapref",
       "/compo place weight:145k",
+      "/compo fill",
     ],
   },
   cc: {

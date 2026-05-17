@@ -1,6 +1,7 @@
 import type { HeatMapRef } from "@prisma/client";
 import {
   collapseCompoWarBucketCountsForDisplay,
+  EMPTY_COMPO_WAR_BUCKET_COUNTS,
   EMPTY_COMPO_WAR_DISPLAY_BUCKET_COUNTS,
   type CompoWarBucketCounts,
   type CompoWarDisplayBucketCounts,
@@ -119,6 +120,42 @@ function buildTargetCounts(heatMapRef: HeatMapRef): CompoWarDisplayBucketCounts 
       heatMapRef.th12Count +
       heatMapRef.th11Count +
       heatMapRef.th10OrLowerCount,
+  };
+}
+
+/** Purpose: expose the exact target display counts implied by one HeatMapRef. */
+export function getCompoActualStateTargetDisplayCounts(
+  heatMapRef: HeatMapRef | null,
+): CompoWarDisplayBucketCounts {
+  return heatMapRef ? buildTargetCounts(heatMapRef) : buildEmptyDisplayCounts();
+}
+
+/** Purpose: expose planner-friendly target bucket counts for one HeatMapRef, collapsing the low display band into TH13. */
+export function getCompoActualStateTargetBucketCounts(
+  heatMapRef: HeatMapRef | null,
+): CompoWarBucketCounts {
+  if (!heatMapRef) {
+    return {
+      ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
+    };
+  }
+
+  return {
+    TH18: heatMapRef.th18Count,
+    TH17: heatMapRef.th17Count,
+    TH16: heatMapRef.th16Count,
+    TH15: heatMapRef.th15Count,
+    TH14: heatMapRef.th14Count,
+    TH13:
+      heatMapRef.th13Count +
+      heatMapRef.th12Count +
+      heatMapRef.th11Count +
+      heatMapRef.th10OrLowerCount,
+    TH12: 0,
+    TH11: 0,
+    TH10: 0,
+    TH9: 0,
+    TH8_OR_LOWER: 0,
   };
 }
 

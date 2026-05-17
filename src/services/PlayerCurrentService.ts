@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { todoSnapshotService } from "./TodoSnapshotService";
+import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 
 export type PlayerCurrentResolutionField =
   | "playerName"
@@ -605,6 +606,76 @@ export class PlayerCurrentService {
       ...state,
       source,
       liveRefreshInvoked: true,
+    };
+  }
+
+  async refreshCurrentPlayersFromLiveTags(input: {
+    playerTags: string[];
+    cocService?: Pick<CoCService, "getPlayerRaw"> | null;
+    concurrency?: number;
+    source?: PlayerCurrentResolutionSource;
+    now?: Date;
+  }): Promise<{
+    playerCount: number;
+    successCount: number;
+    failedPlayerTags: string[];
+  }> {
+    const normalizedTags = normalizeFields(input.playerTags);
+    if (normalizedTags.length === 0) {
+      return {
+        playerCount: 0,
+        successCount: 0,
+        failedPlayerTags: [],
+      };
+    }
+
+    const cocService = input.cocService ?? null;
+    const getPlayerRaw =
+      cocService && typeof cocService.getPlayerRaw === "function"
+        ? cocService.getPlayerRaw.bind(cocService)
+        : null;
+    if (!getPlayerRaw) {
+      return {
+        playerCount: normalizedTags.length,
+        successCount: 0,
+        failedPlayerTags: normalizedTags,
+      };
+    }
+
+    const concurrency = Math.max(1, Math.trunc(input.concurrency ?? 4));
+    const existingByTag = await this.listPlayerCurrentByTags(normalizedTags);
+    const now = input.now ?? new Date();
+    const outcomes = await mapWithConcurrency(normalizedTags, concurrency, async (playerTag) => {
+      try {
+        const livePlayer = await getPlayerRaw(playerTag);
+        if (!livePlayer) {
+          return { playerTag, success: false } as const;
+        }
+        await this.upsertPlayerCurrentFromLivePlayer({
+          playerTag,
+          livePlayer,
+          existing: existingByTag.get(playerTag) ?? null,
+          source: input.source ?? "live_refresh",
+          now,
+        });
+        return { playerTag, success: true } as const;
+      } catch (error) {
+        console.warn(
+          `[player-current] refresh_current_players_from_live_tags tag=${playerTag} error=${String(
+            (error as { message?: unknown })?.message ?? error,
+          ).slice(0, 200)}`,
+        );
+        return { playerTag, success: false } as const;
+      }
+    });
+
+    const failedPlayerTags = outcomes
+      .filter((row) => !row.success)
+      .map((row) => row.playerTag);
+    return {
+      playerCount: normalizedTags.length,
+      successCount: normalizedTags.length - failedPlayerTags.length,
+      failedPlayerTags,
     };
   }
 
