@@ -1,5 +1,5 @@
 import type { HeatMapRef } from "@prisma/client";
-import { EmbedBuilder } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { type CompoWarBucketCounts } from "../helper/compoWarBucketCounts";
 import {
@@ -11,6 +11,7 @@ import {
   listFillerAccountsForGuild,
   type FillerAccountViewRow,
 } from "./FillerAccountService";
+import { CoCService } from "./CoCService";
 import {
   buildCompoFillPlan,
   type CompoFillAvailableFiller,
@@ -23,6 +24,8 @@ import {
   type CompoFillPlannedMove,
 } from "./CompoFillPlanner";
 import { loadCompoActualStateContext } from "./CompoActualStateService";
+import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import { playerCurrentService } from "./PlayerCurrentService";
 
 type FillEmbedField = {
   name: string;
@@ -38,10 +41,17 @@ type FillEmbedPage = {
 export type CompoFillReadResult = {
   content: string;
   embeds: EmbedBuilder[];
+  components: Array<ActionRowBuilder<ButtonBuilder>>;
   trackedClanTags: string[];
   destinationClanCount: number;
   plannedMoveCount: number;
   availableFillerCount: number;
+};
+
+export type CompoFillRefreshResult = CompoFillReadResult & {
+  warningText: string | null;
+  failedTrackedClanTags: string[];
+  failedFillerTags: string[];
 };
 
 const FILL_EMBED_TITLE = "Compo Fill Planner";
@@ -49,6 +59,8 @@ const FILL_PAGE_DESCRIPTION_LIMIT = 4096;
 const FILL_PAGE_FIELD_LIMIT = 25;
 const FILL_PAGE_CHAR_LIMIT = 4000;
 const FILL_MAX_EMBEDS = 10;
+const FILL_REFRESH_LABEL = "Refresh Data";
+const FILL_REFRESH_LOADING_LABEL = "Refreshing...";
 
 function truncateForDiscord(text: string, maxLength: number): string {
   const suffix = "...";
@@ -438,14 +450,61 @@ function buildSectionFieldList(input: {
   return fields;
 }
 
+function buildFillRefreshComponents(input: {
+  userId?: string | null;
+  loading?: boolean;
+}): Array<ActionRowBuilder<ButtonBuilder>> {
+  const userId = String(input.userId ?? "").trim();
+  if (!userId) {
+    return [];
+  }
+  const loading = input.loading ?? false;
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`compo-refresh:fill:${userId}`)
+        .setLabel(loading ? FILL_REFRESH_LOADING_LABEL : FILL_REFRESH_LABEL)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(loading),
+    ),
+  ];
+}
+
+function buildCompoFillRefreshWarning(input: {
+  failedTrackedClanTags: string[];
+  failedFillerTags: string[];
+}): string | null {
+  const trackedClanCount = input.failedTrackedClanTags.length;
+  const fillerCount = input.failedFillerTags.length;
+  if (trackedClanCount <= 0 && fillerCount <= 0) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (trackedClanCount > 0) {
+    parts.push(
+      `${trackedClanCount} tracked clan${trackedClanCount === 1 ? "" : "s"}`,
+    );
+  }
+  if (fillerCount > 0) {
+    parts.push(`${fillerCount} filler${fillerCount === 1 ? "" : "s"}`);
+  }
+
+  return `Refresh warning: ${parts.join(" and ")} failed to update.`;
+}
+
 /** Purpose: read and render DB-backed compo fill recommendations without any live CoC API calls. */
 export class CompoFillService {
-  async readFill(guildId?: string | null): Promise<CompoFillReadResult> {
+  async readFill(
+    guildId?: string | null,
+    options?: { userId?: string | null },
+  ): Promise<CompoFillReadResult> {
     const context = await loadCompoActualStateContext(guildId ?? null);
     if (context.trackedClanTags.length === 0) {
       return {
         content: "No tracked FWA clans are configured for DB-backed compo fill recommendations.",
         embeds: [],
+        components: buildFillRefreshComponents({ userId: options?.userId ?? null }),
         trackedClanTags: [],
         destinationClanCount: 0,
         plannedMoveCount: 0,
@@ -493,10 +552,101 @@ export class CompoFillService {
         summaryDescription,
         fields,
       }),
+      components: buildFillRefreshComponents({ userId: options?.userId ?? null }),
       trackedClanTags: context.trackedClanTags,
       destinationClanCount: result.destinationPlans.length,
       plannedMoveCount,
       availableFillerCount,
+    };
+  }
+
+  async refreshFill(
+    guildId?: string | null,
+    options?: {
+      userId?: string | null;
+      cocService?: CoCService | null;
+      clanConcurrency?: number;
+      fillerConcurrency?: number;
+      now?: Date;
+    },
+  ): Promise<CompoFillRefreshResult> {
+    const guild = guildId ?? null;
+    const cocService = options?.cocService ?? null;
+    const context = await loadCompoActualStateContext(guild);
+    const fillerRows =
+      guild && guild.trim().length > 0
+        ? await listFillerAccountsForGuild({ guildId: guild })
+        : [];
+
+    const clanSync = new FwaClanMembersSyncService();
+    const trackedClanTags = context.trackedClanTags;
+    const clanRefreshPromise =
+      trackedClanTags.length > 0
+        ? clanSync.refreshCurrentClanMembersForClanTags(trackedClanTags, {
+            cocService: cocService ?? undefined,
+            concurrency: Math.max(1, Math.trunc(options?.clanConcurrency ?? 4)),
+            now: options?.now,
+          })
+        : Promise.resolve({
+            clanCount: 0,
+            rowCount: 0,
+            changedRowCount: 0,
+            failedClans: [] as string[],
+          });
+
+    const fillerTags = [
+      ...new Set(
+        fillerRows
+          .map((row) => row.tag)
+          .filter((tag) => String(tag ?? "").trim().length > 0),
+      ),
+    ];
+    const fillerRefreshPromise =
+      fillerTags.length > 0
+        ? playerCurrentService.refreshCurrentPlayersFromLiveTags({
+            playerTags: fillerTags,
+            cocService,
+            concurrency: Math.max(1, Math.trunc(options?.fillerConcurrency ?? 4)),
+            source: "live_refresh",
+            now: options?.now,
+          })
+        : Promise.resolve({
+            playerCount: 0,
+            successCount: 0,
+            failedPlayerTags: [] as string[],
+          });
+
+    const [clanRefresh, fillerRefresh] = await Promise.all([
+      clanRefreshPromise,
+      fillerRefreshPromise,
+    ]);
+
+    const failedTrackedClanTags = [...new Set(clanRefresh.failedClans)].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const failedFillerTags = [...new Set(fillerRefresh.failedPlayerTags)].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const warningText = buildCompoFillRefreshWarning({
+      failedTrackedClanTags,
+      failedFillerTags,
+    });
+
+    if (warningText) {
+      console.warn(
+        `[compo-fill] refresh partial failure guild=${guild ?? "DM"} trackedClanCount=${trackedClanTags.length} fillerCount=${fillerTags.length} failedTrackedClans=${failedTrackedClanTags.join(",") || "none"} failedFillers=${failedFillerTags.join(",") || "none"}`,
+      );
+    }
+
+    const render = await this.readFill(guild, {
+      userId: options?.userId ?? null,
+    });
+
+    return {
+      ...render,
+      warningText,
+      failedTrackedClanTags,
+      failedFillerTags,
     };
   }
 }

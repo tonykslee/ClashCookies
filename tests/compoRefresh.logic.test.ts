@@ -3,6 +3,7 @@ import {
   buildCompoRefreshCustomIdForTest,
   handleCompoRefreshButton,
 } from "../src/commands/Compo";
+import { CompoFillService } from "../src/services/CompoFillService";
 import { CompoAdviceService } from "../src/services/CompoAdviceService";
 import { CompoActualStateService } from "../src/services/CompoActualStateService";
 
@@ -130,6 +131,69 @@ describe("compo refresh button behavior", () => {
       disabled: false,
     });
     expect(Array.isArray(refreshedPayload.files)).toBe(true);
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the fill view through the fill service and rerenders with a warning", async () => {
+    const refreshFillSpy = vi
+      .spyOn(CompoFillService.prototype, "refreshFill")
+      .mockResolvedValue({
+        content: "Refresh warning: 1 tracked clan failed to update.",
+        embeds: [
+          {
+            toJSON: () => ({
+              title: "Compo Fill Planner",
+              description:
+                "Clans under 50: 1 | Open slots: 1 | Available fillers: 1 | Recommended moves: 1",
+            }),
+          },
+        ],
+        components: [makeMessageRow("compo-refresh:fill:user-1", "Refresh Data")],
+        trackedClanTags: ["#AAA111"],
+        destinationClanCount: 1,
+        plannedMoveCount: 1,
+        availableFillerCount: 1,
+        warningText: "Refresh warning: 1 tracked clan failed to update.",
+        failedTrackedClanTags: ["#AAA111"],
+        failedFillerTags: [],
+      } as any);
+    const cocService = {
+      getClan: vi.fn(),
+      getPlayerRaw: vi.fn(),
+    } as any;
+
+    const customId = buildCompoRefreshCustomIdForTest({
+      kind: "fill",
+      userId: "user-1",
+    });
+    const interaction = makeInteraction(customId);
+    interaction.message.components = [makeMessageRow(customId, "Refresh Data")];
+
+    await handleCompoRefreshButton(interaction as any, cocService);
+
+    expect(interaction.update).toHaveBeenCalledTimes(1);
+    expect(String(interaction.update.mock.calls[0]?.[0]?.content ?? "")).toBe(
+      "Refreshing compo fill...",
+    );
+    expect(refreshFillSpy).toHaveBeenCalledWith(
+      "guild-1",
+      expect.objectContaining({
+        userId: "user-1",
+        cocService,
+      }),
+    );
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toBe(
+      "Refresh warning: 1 tracked clan failed to update.",
+    );
+    expect(readFirstButton(payload)).toEqual({
+      label: "Refresh Data",
+      disabled: false,
+    });
+    expect(Array.isArray(payload?.embeds)).toBe(true);
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
 
