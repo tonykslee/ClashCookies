@@ -565,7 +565,10 @@ export function buildCompoFillPlan(input: {
   const usedPlayerTags = new Set<string>();
   let sequence = 1;
 
-  while (true) {
+  while (
+    usedPlayerTags.size < normalizedCandidates.length &&
+    destinationPlanOrder.some((plan) => plan.remainingSlots > 0)
+  ) {
     let selectedPlan: CompoFillDestinationPlan | null = null;
     let selectedCandidate: NormalizedCandidate | null = null;
     let selectedSourceTag: string | null = null;
