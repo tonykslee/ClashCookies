@@ -46,6 +46,7 @@ import {
   type CompoAdviceReadResult,
 } from "../services/CompoAdviceService";
 import { CompoActualStateService } from "../services/CompoActualStateService";
+import { CompoFillService } from "../services/CompoFillService";
 import {
   CompoPlaceService,
 } from "../services/CompoPlaceService";
@@ -2754,6 +2755,11 @@ export const Compo: Command = {
         },
       ],
     },
+    {
+      name: "fill",
+      description: "Recommend filler placements to bring tracked clans to 50",
+      type: ApplicationCommandOptionType.Subcommand,
+    },
   ],
   run: async (
     _client: Client,
@@ -3018,6 +3024,40 @@ export const Compo: Command = {
             placeResult.candidateCount === 0
               ? "no_candidates"
               : "placement_result",
+        });
+        return;
+      }
+
+      if (subcommand === "fill") {
+        logCompoStage(interaction, "computation_start", {
+          mode: "actual",
+        });
+        const fillResult = await new CompoFillService().readFill(
+          interaction.guildId ?? null,
+        );
+        logCompoStage(interaction, "db_fetch", {
+          entity: "actual_compo_fill_source",
+          mode: "actual",
+          trackedClans: fillResult.trackedClanTags.length,
+          destinationClans: fillResult.destinationClanCount,
+          availableFillers: fillResult.availableFillerCount,
+          recommendedMoves: fillResult.plannedMoveCount,
+        });
+        logCompoStage(interaction, "computation_complete", {
+          result: "fill_rendered",
+          mode: "actual",
+          destinationClans: fillResult.destinationClanCount,
+          recommendedMoves: fillResult.plannedMoveCount,
+        });
+        logCompoStage(interaction, "response_build", {
+          reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
+        });
+        await interaction.editReply({
+          content: fillResult.content,
+          embeds: fillResult.embeds,
+        });
+        logCompoStage(interaction, "response_sent", {
+          reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
         });
         return;
       }
