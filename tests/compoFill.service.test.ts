@@ -465,6 +465,7 @@ describe("/compo fill service", () => {
   });
 
   it("refreshes tracked clans and filler current-state data before rerendering with a warning", async () => {
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
       trackedClanTags: ["#AAA111"],
       renderableClanTags: ["#AAA111"],
@@ -584,6 +585,44 @@ describe("/compo fill service", () => {
         }),
       ],
     });
+
+    const fillLogs = consoleLogSpy.mock.calls.map((entry) => String(entry[0] ?? ""));
+    expect(fillLogs.some((line) => line.includes("stage=load_context_start"))).toBe(true);
+    expect(
+      fillLogs.some(
+        (line) =>
+          line.includes("stage=load_context_complete") &&
+          line.includes("trackedClanTags=1") &&
+          line.includes("contextClans=1") &&
+          line.includes("heatMapRefs=1") &&
+          line.includes("duration_ms="),
+      ),
+    ).toBe(true);
+    expect(
+      fillLogs.some(
+        (line) =>
+          line.includes("stage=list_fillers_complete") &&
+          line.includes("fillerRows=2") &&
+          line.includes("duration_ms="),
+      ),
+    ).toBe(true);
+    expect(
+      fillLogs.some(
+        (line) =>
+          line.includes("stage=build_plan_complete") &&
+          line.includes("destinationPlans=2") &&
+          line.includes("plannedMoveCount=2") &&
+          line.includes("duration_ms="),
+      ),
+    ).toBe(true);
+    expect(
+      fillLogs.some(
+        (line) =>
+          line.includes("stage=build_render_complete") &&
+          line.includes("embedCount=1") &&
+          line.includes("duration_ms="),
+      ),
+    ).toBe(true);
   });
 
   it("paginates safely when the planned output is large", async () => {

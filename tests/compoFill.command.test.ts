@@ -80,4 +80,28 @@ describe("/compo fill command", () => {
       "Clans under 50: 1",
     );
   });
+
+  it("surfaces readFill failures to the user instead of hanging", async () => {
+    const readFillSpy = vi
+      .spyOn(CompoFillService.prototype, "readFill")
+      .mockRejectedValue(new Error("fill boom"));
+    const cocService = {
+      getClan: vi.fn(),
+      getCurrentWar: vi.fn(),
+      getClanWarLog: vi.fn(),
+    } as any;
+
+    const interaction = makeInteraction();
+    await Compo.run({} as any, interaction as any, cocService);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(readFillSpy).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toContain(
+      "Failed to build DB-backed compo fill recommendations.",
+    );
+    expect(Array.isArray(payload?.embeds)).toBe(true);
+    expect(Array.isArray(payload?.components)).toBe(true);
+  });
 });
