@@ -126,6 +126,20 @@ describe("command coverage", () => {
     expect(fwaHelpText).not.toContain("command:fwa:mail:send");
   });
 
+  it("registers /compo fill as a subcommand", () => {
+    const compo = Commands.find((command) => command.name === "compo");
+    expect(compo).toBeTruthy();
+    expect(
+      (compo?.options ?? []).some((option) => option.name === "fill"),
+    ).toBe(true);
+  });
+
+  it("documents /compo fill in the compo help detail text", () => {
+    const compoHelpText = helpEmbedText("compo");
+    expect(compoHelpText).toContain("/compo fill");
+    expect(compoHelpText).toContain("remaining open slots");
+  });
+
   it("documents /autorole refresh in the autorole help detail text", () => {
     const autoroleHelpText = helpEmbedText("autorole");
     expect(autoroleHelpText).toContain("/autorole refresh");
