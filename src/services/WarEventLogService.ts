@@ -3512,21 +3512,32 @@ export class WarEventLogService {
         warEndFwaPoints: canonicalWarEndFwaPoints,
         testFinalResultOverride: canonicalFinalResult,
       };
-      if (
-        payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints
-      ) {
-        await this.history
-          .persistWarEndHistory({
+    if (
+      payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints
+    ) {
+      await this.history
+        .persistWarEndHistory({
             ...payloadForDelivery,
             guildId: params.sub.guildId,
           })
           .catch((err) => {
             console.error(
               `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`,
-            );
-          });
+          );
+        });
       }
 
+    }
+    if (
+      params.sendBattleDaySwapReminders === true &&
+      payloadForDelivery.eventType === "battle_day"
+    ) {
+      const battleDayPayload =
+        payloadForDelivery as EventEmitPayload & { eventType: "battle_day" };
+      await this.sendFwaBaseSwapBattleDayReminder({
+        sub: params.sub,
+        payload: battleDayPayload,
+      });
     }
     if (!params.sub.notify || !params.sub.channelId) return;
     const reserved = await this.reserveEventDelivery({
@@ -3561,35 +3572,27 @@ export class WarEventLogService {
       resolvedWarIdForDelivery,
       params.sub,
     );
-    if (
-      params.sendBattleDaySwapReminders === true &&
-      payloadForDelivery.eventType === "battle_day"
-    ) {
-      const battleDayPayload =
-        payloadForDelivery as EventEmitPayload & { eventType: "battle_day" };
-      await this.sendFwaBaseSwapBattleDayReminder({
-        sub: params.sub,
-        payload: battleDayPayload,
-      });
-    }
   }
 
   private async sendFwaBaseSwapBattleDayReminder(params: {
     sub: SubscriptionRow;
     payload: EventEmitPayload & { eventType: "battle_day" };
   }): Promise<boolean> {
-    if (params.payload.matchType !== "BL") return false;
+    if (params.payload.matchType !== "BL") {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reason=non_bl_match_type`,
+      );
+      return false;
+    }
 
     const candidate =
       await trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate({
         guildId: params.sub.guildId,
         clanTag: params.sub.clanTag,
       });
-    if (!candidate) return false;
-    const targetChannelId = String(params.sub.channelId ?? candidate.channelId ?? "").trim();
-    if (!targetChannelId) {
+    if (!candidate) {
       console.warn(
-        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} reason=target_channel_missing`,
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reason=no_reminder_candidate`,
       );
       return false;
     }
@@ -3601,7 +3604,7 @@ export class WarEventLogService {
     });
     if (!claimed) {
       console.warn(
-        `[fwa base-swap] battle-day reminder claim failed guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId}`,
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId} reason=claim_exists`,
       );
       return false;
     }
@@ -3609,17 +3612,31 @@ export class WarEventLogService {
       `[fwa base-swap] battle-day reminder claim success guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId}`,
     );
 
-    const channel = await this.client.channels
-      .fetch(targetChannelId)
-      .catch(() => null);
-    if (!channel || !channel.isTextBased() || typeof (channel as any).send !== "function") {
+    const candidateChannelId = String(candidate.channelId ?? "").trim();
+    const fallbackChannelId = String(params.sub.channelId ?? "").trim();
+    const channelCandidates = [
+      candidateChannelId,
+      fallbackChannelId !== candidateChannelId ? fallbackChannelId : "",
+    ].filter((channelId): channelId is string => Boolean(channelId));
+    let targetChannelId = channelCandidates[0] ?? "";
+    let channel: unknown = null;
+    for (const channelId of channelCandidates) {
+      const fetched = await this.client.channels.fetch(channelId).catch(() => null);
+      if (fetched && (fetched as any).isTextBased?.() && typeof (fetched as any).send === "function") {
+        targetChannelId = channelId;
+        channel = fetched;
+        break;
+      }
+      if (!targetChannelId) targetChannelId = channelId;
+    }
+    if (!channel) {
       console.error(
-        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${targetChannelId} reason=channel_unavailable`,
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${targetChannelId || candidateChannelId || fallbackChannelId || "unknown"} reason=channel_unavailable`,
       );
       await this.logFwaBaseSwapBattleDayReminderFailure({
         sub: params.sub,
         candidate,
-        targetChannelId,
+        targetChannelId: targetChannelId || candidateChannelId || fallbackChannelId,
         reason: "channel_unavailable",
       });
       return false;

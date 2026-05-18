@@ -1632,6 +1632,87 @@ describe("War-ended sync and metadata canonicalization", () => {
   });
 });
 
+describe("Battle-day swap reminder dispatch", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends the reminder even when notify is disabled", async () => {
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const reminderSpy = vi
+      .spyOn(service as any, "sendFwaBaseSwapBattleDayReminder")
+      .mockResolvedValue(true);
+    const reserveSpy = vi.spyOn(service as any, "reserveEventDelivery");
+    const emitSpy = vi.spyOn(service as any, "emitEvent");
+    const payload = buildBasePayload({
+      eventType: "battle_day",
+      matchType: "BL",
+    });
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      notify: false,
+      channelId: null,
+    });
+
+    await (service as any).dispatchDetectedEvent({
+      sub,
+      payload,
+      resolvedWarId: 1001303,
+      sendBattleDaySwapReminders: true,
+    });
+
+    expect(reminderSpy).toHaveBeenCalledTimes(1);
+    expect(reserveSpy).not.toHaveBeenCalled();
+    expect(emitSpy).not.toHaveBeenCalled();
+  });
+
+  it("still sends the reminder when battle-day delivery is blocked by reservation", async () => {
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const reminderSpy = vi
+      .spyOn(service as any, "sendFwaBaseSwapBattleDayReminder")
+      .mockResolvedValue(true);
+    const reserveSpy = vi
+      .spyOn(service as any, "reserveEventDelivery")
+      .mockResolvedValue({
+        allowed: false,
+        existingMessage: {
+          channelId: "chan-1",
+          messageId: "msg-1",
+        },
+        warId: 1001303,
+      });
+    const emitSpy = vi.spyOn(service as any, "emitEvent");
+    const payload = buildBasePayload({
+      eventType: "battle_day",
+      matchType: "BL",
+    });
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      channelId: "chan-1",
+      notify: true,
+    });
+
+    await (service as any).dispatchDetectedEvent({
+      sub,
+      payload,
+      resolvedWarId: 1001303,
+      sendBattleDaySwapReminders: true,
+    });
+
+    expect(reminderSpy).toHaveBeenCalledTimes(1);
+    expect(reserveSpy).toHaveBeenCalledTimes(1);
+    expect(emitSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("War-start notify refresh sync fallback", () => {
   afterEach(() => {
     vi.restoreAllMocks();
