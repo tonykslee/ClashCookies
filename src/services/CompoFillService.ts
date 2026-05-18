@@ -143,69 +143,90 @@ function formatClanName(value: string): string {
   return normalizeCompoClanDisplayName(value).trim() || value.trim();
 }
 
-function formatClanReference(input: {
-  clanTag: string | null;
-  clanName: string | null;
-  shortName?: string | null;
-}): string {
-  const shortName = String(input.shortName ?? "").trim();
-  const clanName = formatClanName(String(input.clanName ?? "").trim());
-  const clanTag = String(input.clanTag ?? "").trim();
-  if (shortName && clanName) {
-    return `${shortName} | ${clanName} (${clanTag || "?"})`;
+function normalizeLinkTag(tag: string): string {
+  return String(tag ?? "").trim().replace(/^#+/, "");
+}
+
+function formatDiscordMarkdownLink(label: string, url: string): string {
+  return `[${label}](<${url}>)`;
+}
+
+function buildInGamePlayerProfileUrl(playerTag: string): string {
+  return `https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodeURIComponent(
+    normalizeLinkTag(playerTag),
+  )}`;
+}
+
+function buildInGameClanProfileUrl(clanTag: string): string {
+  return `https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${encodeURIComponent(
+    normalizeLinkTag(clanTag),
+  )}`;
+}
+
+function formatShortWeight(weight: number): string {
+  if (!Number.isFinite(weight) || weight <= 0) {
+    return "0";
   }
-  if (clanName) {
-    return `${clanName} (${clanTag || "?"})`;
+  if (weight < 1000) {
+    return `${Math.trunc(weight)}`;
   }
-  if (shortName) {
-    return `${shortName} (${clanTag || "?"})`;
-  }
-  return clanTag || "Unknown Clan";
+  return `${Math.round(weight / 1000)}k`;
 }
 
 function formatClanFieldHeader(plan: CompoFillDestinationPlan): string {
-  const clanReference = formatClanReference({
-    clanTag: plan.clanTag,
-    clanName: plan.clanName,
-    shortName: plan.shortName,
-  });
-  return `${clanReference} | ${plan.initialMemberCount}/50 -> ${plan.targetMemberCount}/50`;
+  const clanName = formatClanName(String(plan.clanName ?? "").trim());
+  const clanTag = String(plan.clanTag ?? "").trim();
+  const headerLabel = clanName || clanTag || "Unknown Clan";
+  return `${formatDiscordMarkdownLink(headerLabel, buildInGameClanProfileUrl(clanTag))} \`${clanTag || "?"}\` ${plan.initialMemberCount}/50`;
 }
 
 function formatSlotHeader(slot: CompoFillRemainingSlot): string {
-  return formatClanReference({
-    clanTag: slot.clanTag,
-    clanName: slot.clanName,
-    shortName: slot.shortName,
-  });
+  const clanName = formatClanName(String(slot.clanName ?? "").trim());
+  const clanTag = String(slot.clanTag ?? "").trim();
+  const headerLabel = clanName || clanTag || "Unknown Clan";
+  return `${formatDiscordMarkdownLink(headerLabel, buildInGameClanProfileUrl(clanTag))} \`${clanTag || "?"}\` ${slot.currentMemberCount}/50`;
 }
 
 function formatSourceLabel(sourceClanTag: string | null, sourceClanName: string | null): string {
-  if (!sourceClanTag) {
+  const clanTag = String(sourceClanTag ?? "").trim();
+  if (!clanTag) {
     return "outside tracked clans";
   }
-  return formatClanReference({
-    clanTag: sourceClanTag,
-    clanName: sourceClanName,
-  });
+  const clanName = formatClanName(String(sourceClanName ?? "").trim());
+  const label = clanName || clanTag;
+  return `${formatDiscordMarkdownLink(label, buildInGameClanProfileUrl(clanTag))}`;
 }
 
 function formatFillerLabel(input: {
   playerTag: string;
   playerName: string;
+  discordUserId?: string | null;
 }): string {
-  return `${input.playerName} (${input.playerTag})`;
+  const playerTag = String(input.playerTag ?? "").trim();
+  const displayTag = playerTag.startsWith("#") ? playerTag : `#${playerTag}`;
+  const playerLink = formatDiscordMarkdownLink(
+    input.playerName,
+    buildInGamePlayerProfileUrl(playerTag),
+  );
+  const userMention = String(input.discordUserId ?? "").trim()
+    ? `<@${String(input.discordUserId).trim()}>`
+    : "—";
+  return `${userMention} | ${playerLink} (\`${displayTag}\`)`;
 }
 
-function formatMoveLine(move: CompoFillPlannedMove): string {
-  const sourceLabel = formatSourceLabel(move.sourceClanTag, move.sourceClanName);
-  const matchedLabel = move.matchedBucket ? `matched ${move.matchedBucket}` : "generic open slot";
+function formatMoveLine(input: {
+  move: CompoFillPlannedMove;
+  linkedDiscordUserId: string | null;
+}): string {
+  const sourceLabel = formatSourceLabel(input.move.sourceClanTag, input.move.sourceClanName);
   return [
-    `${move.sequence}. ${formatFillerLabel(move.filler)}`,
-    `${move.filler.resolvedWeight.toLocaleString("en-US")}`,
-    `${move.filler.resolvedWeightBucket}`,
-    `from ${sourceLabel}`,
-    matchedLabel,
+    formatFillerLabel({
+      playerTag: input.move.filler.playerTag,
+      playerName: input.move.filler.playerName,
+      discordUserId: input.linkedDiscordUserId,
+    }),
+    formatShortWeight(input.move.filler.resolvedWeight),
+    `⚜️ ${sourceLabel}`,
   ].join(" | ");
 }
 
@@ -272,6 +293,7 @@ function buildFillerSummaryField(input: {
 
 function buildFillEmbedFields(input: {
   result: CompoFillPlanResult;
+  fillerAccountsByTag: Map<string, FillerAccountViewRow>;
 }): {
   fields: FillEmbedField[];
   truncated: boolean;
@@ -283,7 +305,13 @@ function buildFillEmbedFields(input: {
       continue;
     }
     const header = formatClanFieldHeader(plan);
-    const lines = plan.plannedMoves.map((move) => formatMoveLine(move));
+    const lines = plan.plannedMoves.map((move) =>
+      formatMoveLine({
+        move,
+        linkedDiscordUserId:
+          input.fillerAccountsByTag.get(String(move.filler.playerTag ?? "").trim())?.discordUserId ?? null,
+      }),
+    );
     detailedFields.push(
       ...buildSectionFields({
         sectionName: `Recommended Moves - ${header}`,
@@ -647,9 +675,12 @@ export class CompoFillService {
         plannedMoveCount,
       },
       work: async () => {
-        const fillEmbedFields = buildFillEmbedFields({
-          result,
-        });
+    const fillEmbedFields = buildFillEmbedFields({
+      result,
+      fillerAccountsByTag: new Map(
+        fillers.map((filler) => [String(filler.tag ?? "").trim(), filler] as const),
+      ),
+    });
         const summaryDescription = buildSummaryDescription({
           destinationPlans: result.destinationPlans,
           remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
@@ -783,3 +814,8 @@ export class CompoFillService {
 }
 
 export const estimateFillEmbedTextLengthForTest = estimateFillEmbedTextLength;
+export const buildInGamePlayerProfileUrlForTest = buildInGamePlayerProfileUrl;
+export const buildInGameClanProfileUrlForTest = buildInGameClanProfileUrl;
+export const formatDiscordMarkdownLinkForTest = formatDiscordMarkdownLink;
+export const formatShortWeightForTest = formatShortWeight;
+export const normalizeLinkTagForTest = normalizeLinkTag;

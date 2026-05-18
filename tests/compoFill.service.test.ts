@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   CompoFillService,
+  buildInGameClanProfileUrlForTest,
+  buildInGamePlayerProfileUrlForTest,
   estimateFillEmbedTextLengthForTest,
+  formatDiscordMarkdownLinkForTest,
+  formatShortWeightForTest,
+  normalizeLinkTagForTest,
 } from "../src/services/CompoFillService";
 import * as actualStateService from "../src/services/CompoActualStateService";
 import * as fillerAccountService from "../src/services/FillerAccountService";
@@ -454,11 +459,19 @@ describe("/compo fill service", () => {
     const embed = getEmbedJSON(result.embeds[0]);
     const text = JSON.stringify(embed);
     expect(text).toContain("Clans under 50: 2 | Open slots: 1 | Available fillers: 3 | Recommended moves: 2");
-    expect(text).toContain("Recommended Moves - A | Alpha (#AAA111) | 48/50 -> 50/50");
-    expect(text).toContain("1. Alice (#P1) | 145,000 | TH15 | from outside tracked clans | matched TH15");
-    expect(text).toContain("2. Bob (#P2) | 135,000 | TH14 | from Source (#SRC) | matched TH14");
+    expect(text).toContain(
+      "Recommended Moves - [Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=AAA111>) `#AAA111` 48/50",
+    );
+    expect(text).toContain(
+      "— | [Alice](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P1>) (`#P1`) | 145k | ⚜️ outside tracked clans",
+    );
+    expect(text).toContain(
+      "— | [Bob](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P2>) (`#P2`) | 135k | ⚜️ [Source](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=SRC>)",
+    );
     expect(text).toContain("Remaining Open Slots");
-    expect(text).toContain("B | Bravo (#BBB222) | 1 open slot | 49/50");
+    expect(text).toContain(
+      "[Bravo](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=BBB222>) `#BBB222` 49/50 | 1 open slot | 49/50",
+    );
     expect(text).toContain("Filler Summary");
     expect(text).toContain("Unused Available Fillers: 1");
     expect(text).toContain("Unavailable Fillers: 1");
@@ -466,6 +479,22 @@ describe("/compo fill service", () => {
     expect(String(embed.footer?.text ?? "")).toContain(
       "Output truncated to stay within Discord limits.",
     );
+  });
+
+  it("builds profile URLs and compact display helpers", () => {
+    expect(normalizeLinkTagForTest("#2C998J8LY")).toBe("2C998J8LY");
+    expect(normalizeLinkTagForTest("  #ABC123  ")).toBe("ABC123");
+    expect(buildInGamePlayerProfileUrlForTest("#TAG")).toBe(
+      "https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=TAG",
+    );
+    expect(buildInGameClanProfileUrlForTest("#CLANTAG")).toBe(
+      "https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLANTAG",
+    );
+    expect(formatDiscordMarkdownLinkForTest("Player Name", "https://example.com")).toBe(
+      "[Player Name](<https://example.com>)",
+    );
+    expect(formatShortWeightForTest(156000)).toBe("156k");
+    expect(formatShortWeightForTest(999)).toBe("999");
   });
 
   it("refreshes tracked clans and filler current-state data before rerendering with a warning", async () => {
@@ -835,11 +864,16 @@ describe("/compo fill service", () => {
       "Output truncated to stay within Discord limits.",
     );
     const text = JSON.stringify(embed);
-    expect(text).toContain("Recommended Moves - C0 | Clan 0 (#CLAN0) | 49/50 -> 50/50");
+    expect(text).toContain(
+      "Recommended Moves - [Clan 0](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLAN0>) `#CLAN0` 49/50",
+    );
     expect(text).toContain("Remaining Open Slots");
     expect(text).toContain("Filler Summary");
     expect(text).toContain("Unused Available Fillers: 40");
     expect(text).toContain("Unavailable Fillers: 30");
     expect(text).toContain("Excluded / Missing Weight: 20");
+    expect(String(embed.footer?.text ?? "")).toContain(
+      "Output truncated to stay within Discord limits.",
+    );
   });
 });
