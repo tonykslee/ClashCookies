@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ActivityService } from "../src/services/ActivityService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -57,6 +58,8 @@ type InteractionInput = {
   subcommand: string;
   strings?: Record<string, string | null | undefined>;
   integers?: Record<string, number | null | undefined>;
+  channels?: Record<string, { id: string; isTextBased?: () => boolean } | null | undefined>;
+  roles?: Record<string, { id: string } | null | undefined>;
   guildId?: string | null;
 };
 
@@ -64,6 +67,8 @@ type InteractionInput = {
 function createInteraction(input: InteractionInput) {
   const strings = input.strings ?? {};
   const integers = input.integers ?? {};
+  const channels = input.channels ?? {};
+  const roles = input.roles ?? {};
   const collectorHandlers: Record<string, (button: any) => Promise<void>> = {};
   const collector = {
     on: vi.fn((event: string, handler: (button: any) => Promise<void>) => {
@@ -73,7 +78,7 @@ function createInteraction(input: InteractionInput) {
   };
   return {
     id: "tracked-clan-itx-1",
-    commandName: "tracked-clan",
+    commandName: "clan",
     deferred: true,
     replied: false,
     guildId: input.guildId ?? "guild-1",
@@ -83,8 +88,8 @@ function createInteraction(input: InteractionInput) {
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => strings[name] ?? null),
       getInteger: vi.fn((name: string) => integers[name] ?? null),
-      getChannel: vi.fn().mockReturnValue(null),
-      getRole: vi.fn().mockReturnValue(null),
+      getChannel: vi.fn((name: string) => channels[name] ?? null),
+      getRole: vi.fn((name: string) => roles[name] ?? null),
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
@@ -119,13 +124,14 @@ function makeButtonInteraction(customId: string) {
   };
 }
 
-describe("/tracked-clan command behavior", () => {
+describe("/clan command behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-26T00:00:00.000Z"));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(ActivityService.prototype, "observeClan").mockResolvedValue(undefined as any);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -392,6 +398,7 @@ describe("/tracked-clan command behavior", () => {
         loseStyle: "TRADITIONAL",
         mailChannelId: null,
         logChannelId: null,
+        leaderChannelId: "leader-channel-1",
         clanRoleId: null,
         clanBadge: null,
         shortName: "AC",
@@ -412,6 +419,7 @@ describe("/tracked-clan command behavior", () => {
       "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>)** `#2QG2C08UP`",
     );
     expect(description).toContain("shortName: AC");
+    expect(description).toContain("leaderChannel: <#leader-channel-1>");
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
@@ -616,6 +624,83 @@ describe("/tracked-clan command behavior", () => {
     expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.raidTrackedClan.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists leaderChannelId when /clan configure receives leader-channel", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: "leader-channel-1",
+      clanRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+      channels: {
+        "leader-channel": {
+          id: "leader-channel-1",
+          isTextBased: () => true,
+        },
+      },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClan.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          leaderChannelId: "leader-channel-1",
+        }),
+        update: expect.objectContaining({
+          leaderChannelId: "leader-channel-1",
+        }),
+      }),
+    );
+    expect(getReplyContent(interaction)).toContain("leaderChannel: <#leader-channel-1>");
+  });
+
+  it("keeps an existing leaderChannelId when /clan configure omits leader-channel", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      leaderChannelId: "leader-channel-1",
+    });
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: "leader-channel-1",
+      clanRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const update = (prismaMock.trackedClan.upsert.mock.calls[0]?.[0] as any)?.update ?? {};
+    expect(Object.prototype.hasOwnProperty.call(update, "leaderChannelId")).toBe(false);
+    expect(getReplyContent(interaction)).toContain("leaderChannel: <#leader-channel-1>");
   });
 
   it("falls back to the clan tag when a tracked FWA name is missing", async () => {

@@ -38,6 +38,7 @@ model TrackedClan {
   loseStyle       LoseStyle @default(TRIPLE_TOP_30)
   mailChannelId   String?
   logChannelId    String?
+  leaderChannelId String?
   clanRoleId      String?
   clanBadge       String?
   shortName       String?
