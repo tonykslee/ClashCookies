@@ -308,7 +308,7 @@ async function normalizeClanBadgeInput(
 }
 
 export const TrackedClan: Command = {
-  name: "tracked-clan",
+  name: "clan",
   description: "Configure, remove, or list tracked clans",
   options: [
     {
@@ -563,7 +563,7 @@ export const TrackedClan: Command = {
               if (!button.replied && !button.deferred) {
                 await button.reply({
                   ephemeral: true,
-                  content: "Failed to update tracked-clan CWL list page.",
+                  content: "Failed to update clan CWL list page.",
                 });
               }
             }
@@ -725,7 +725,7 @@ export const TrackedClan: Command = {
               if (!button.replied && !button.deferred) {
                 await button.reply({
                   ephemeral: true,
-                  content: "Failed to update tracked-clan RAIDS list page.",
+                  content: "Failed to update clan RAIDS list page.",
                 });
               }
             }
@@ -801,7 +801,7 @@ export const TrackedClan: Command = {
           } catch (err) {
             console.error(`tracked-clan list paginator failed: ${formatError(err)}`);
             if (!button.replied && !button.deferred) {
-              await button.reply({ ephemeral: true, content: "Failed to update tracked-clan list page." });
+              await button.reply({ ephemeral: true, content: "Failed to update clan list page." });
             }
           }
         });
@@ -1154,7 +1154,7 @@ export const TrackedClan: Command = {
             ephemeral: true,
             content:
               `Ambiguous remove for ${tag}: it exists in multiple tracked-clan registries (${result.season}).\n` +
-              "Re-run `/tracked-clan remove` with `type:FWA`, `type:CWL`, or `type:RAIDS`.",
+              "Re-run `/clan remove` with `type:FWA`, `type:CWL`, or `type:RAIDS`.",
           });
           return;
         }

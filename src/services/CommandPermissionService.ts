@@ -43,11 +43,11 @@ export const COMMAND_PERMISSION_TARGETS = [
   "war",
   "notify",
   "warplan",
-  "tracked-clan:configure",
-  "tracked-clan:cwl-tags",
-  "tracked-clan:raid-tags",
-  "tracked-clan:remove",
-  "tracked-clan:list",
+  "clan:configure",
+  "clan:cwl-tags",
+  "clan:raid-tags",
+  "clan:remove",
+  "clan:list",
   "raids",
   "raids:overview",
   "raids:intel",
@@ -161,10 +161,10 @@ export type CommandPermissionTarget =
 type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
-  "tracked-clan:configure",
-  "tracked-clan:cwl-tags",
-  "tracked-clan:raid-tags",
-  "tracked-clan:remove",
+  "clan:configure",
+  "clan:cwl-tags",
+  "clan:raid-tags",
+  "clan:remove",
   "reminders",
   "reminders:create",
   "reminders:list",
@@ -212,7 +212,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
 ]);
 
 const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
-  "tracked-clan:list",
+  "clan:list",
   "sheet:refresh",
   "compo:advice",
   "compo:state",
@@ -258,8 +258,16 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
 ]);
 
 /** Purpose: command roles key. */
+function normalizePermissionTargetNamespace(commandName: string): string {
+  const normalized = String(commandName ?? "").trim();
+  if (normalized === "clan") return "tracked-clan";
+  if (normalized.startsWith("clan:")) return `tracked-clan:${normalized.slice("clan:".length)}`;
+  return normalized;
+}
+
+/** Purpose: command roles key. */
 function commandRolesKey(commandName: string): string {
-  return `command_roles:${commandName}`;
+  return `command_roles:${normalizePermissionTargetNamespace(commandName)}`;
 }
 
 /** Purpose: fwa leader role key. */

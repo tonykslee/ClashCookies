@@ -2821,7 +2821,7 @@ function getMailBlockedReasonFromRevisionState(params: {
   hasConfirmedBaseline: boolean;
 }): string | null {
   if (!params.hasMailChannel) {
-    return "Mail channel is not configured. Use /tracked-clan configure with a mail channel.";
+    return "Mail channel is not configured. Use /clan configure with a mail channel.";
   }
   if (params.inferredMatchType) {
     return INFERRED_MATCHTYPE_MAIL_BLOCK_REASON;
@@ -10595,10 +10595,10 @@ async function buildTrackedMatchOverview(
       embed: new EmbedBuilder()
         .setTitle("FWA Match Overview")
         .setDescription(
-          "No tracked clans configured. Use `/tracked-clan configure` first.",
+          "No tracked clans configured. Use `/clan configure` first.",
         ),
       copyText:
-        "No tracked clans configured. Use `/tracked-clan configure` first.",
+        "No tracked clans configured. Use `/clan configure` first.",
       singleViews: {},
     };
   }
@@ -14236,7 +14236,7 @@ export const Fwa: Command = {
 
       if (tracked.length === 0) {
         await editReplySafe(
-          "No tracked clans configured. Use `/tracked-clan configure` or provide a clan tag.",
+          "No tracked clans configured. Use `/clan configure` or provide a clan tag.",
         );
         return;
       }
@@ -14393,7 +14393,7 @@ export const Fwa: Command = {
           await editReplySafe(
             tag
               ? `Clan #${tag} is not in tracked clans.`
-              : "No tracked clans configured. Use `/tracked-clan configure` first.",
+              : "No tracked clans configured. Use `/clan configure` first.",
           );
           return;
         }

@@ -274,7 +274,7 @@ function buildReminderPanelComponents(input: {
       {
         label: "No tracked clans",
         value: "none",
-        description: "Configure /tracked-clan first",
+        description: "Configure /clan first",
       },
     ]);
   }

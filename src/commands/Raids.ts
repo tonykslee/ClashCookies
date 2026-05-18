@@ -1217,7 +1217,7 @@ export const Raids: Command = {
       if (rows.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+          content: "No RAIDS tracked clans in the database. Use `/clan raid-tags` first.",
         });
         return;
       }
@@ -1263,7 +1263,7 @@ export const Raids: Command = {
       if (trackedClans.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+          content: "No RAIDS tracked clans in the database. Use `/clan raid-tags` first.",
         });
         return;
       }
