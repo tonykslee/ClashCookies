@@ -78,6 +78,7 @@ function buildTrackedClanBlock(clan: {
   loseStyle: string;
   mailChannelId: string | null;
   logChannelId: string | null;
+  leaderChannelId: string | null;
   clanRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
@@ -87,6 +88,7 @@ function buildTrackedClanBlock(clan: {
   const label = clan.name && clanTag ? `**${title}** \`${clanTag}\`` : `**${title}**`;
   const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
   const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
+  const leaderChannel = clan.leaderChannelId ? `<#${clan.leaderChannelId}>` : "not set";
   const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
   const clanBadge = clan.clanBadge ?? "not set";
   const shortName = clan.shortName ?? "not set";
@@ -96,6 +98,7 @@ function buildTrackedClanBlock(clan: {
     `lose-style: ${clan.loseStyle}`,
     `mailChannel: ${mailChannel}`,
     `logChannel: ${logChannel}`,
+    `leaderChannel: ${leaderChannel}`,
     `clanRole: ${clanRole}`,
     `clanBadge: ${clanBadge}`,
   ].join("\n");
@@ -342,6 +345,12 @@ export const TrackedClan: Command = {
         {
           name: "log-channel",
           description: "Discord channel for tracked clan logs",
+          type: ApplicationCommandOptionType.Channel,
+          required: false,
+        },
+        {
+          name: "leader-channel",
+          description: "Discord channel for tracked clan leader updates",
           type: ApplicationCommandOptionType.Channel,
           required: false,
         },
@@ -939,6 +948,7 @@ export const TrackedClan: Command = {
           | null;
         const mailChannel = interaction.options.getChannel("mail-channel", false);
         const logChannel = interaction.options.getChannel("log-channel", false);
+        const leaderChannel = interaction.options.getChannel("leader-channel", false);
         const clanRole = interaction.options.getRole("clan-role", false);
         const clanBadgeInput = interaction.options.getString("clan-badge", false);
         const shortNameInput = interaction.options.getString("short-name", false);
@@ -955,6 +965,13 @@ export const TrackedClan: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content: "Log channel must be a text-based channel.",
+          });
+          return;
+        }
+        if (leaderChannel && (!("isTextBased" in leaderChannel) || !(leaderChannel as any).isTextBased())) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Leader channel must be a text-based channel.",
           });
           return;
         }
@@ -997,6 +1014,7 @@ export const TrackedClan: Command = {
             loseStyle: createLoseStyle,
             mailChannelId: mailChannel?.id ?? null,
             logChannelId: logChannel?.id ?? null,
+            leaderChannelId: leaderChannel?.id ?? null,
             clanRoleId: clanRole?.id ?? null,
             clanBadge,
             shortName,
@@ -1006,6 +1024,7 @@ export const TrackedClan: Command = {
             ...(loseStyle ? { loseStyle } : {}),
             ...(mailChannel ? { mailChannelId: mailChannel.id } : {}),
             ...(logChannel ? { logChannelId: logChannel.id } : {}),
+            ...(leaderChannel ? { leaderChannelId: leaderChannel.id } : {}),
             ...(clanRole ? { clanRoleId: clanRole.id } : {}),
             ...(clanBadge ? { clanBadge } : {}),
             ...(shortName ? { shortName } : {}),
@@ -1112,6 +1131,7 @@ export const TrackedClan: Command = {
           `lose-style: ${saved.loseStyle}`,
           `mailChannel: ${saved.mailChannelId ? `<#${saved.mailChannelId}>` : "not set"}`,
           `logChannel: ${saved.logChannelId ? `<#${saved.logChannelId}>` : "not set"}`,
+          `leaderChannel: ${saved.leaderChannelId ? `<#${saved.leaderChannelId}>` : "not set"}`,
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
           `clanBadge: ${saved.clanBadge ?? "not set"}`,
           `shortName: ${saved.shortName ?? "not set"}`,

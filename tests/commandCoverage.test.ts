@@ -126,6 +126,13 @@ describe("command coverage", () => {
     expect(fwaHelpText).not.toContain("command:fwa:mail:send");
   });
 
+  it("documents the /clan root in clan help detail text", () => {
+    const clanHelpText = helpEmbedText("clan");
+    expect(clanHelpText).toContain("/clan configure");
+    expect(clanHelpText).toContain("leader channel");
+    expect(clanHelpText).not.toContain("/tracked-clan configure");
+  });
+
   it("registers /compo fill as a subcommand", () => {
     const compo = Commands.find((command) => command.name === "compo");
     expect(compo).toBeTruthy();

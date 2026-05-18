@@ -1471,7 +1471,7 @@ describe("/raids command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "No RAIDS tracked clans in the database. Use `/tracked-clan raid-tags` first.",
+      content: "No RAIDS tracked clans in the database. Use `/clan raid-tags` first.",
     });
   });
 
