@@ -366,6 +366,7 @@ type FwaBaseSwapSplitPostPayload = {
   username: string;
   guildId: string;
   channelId: string;
+  mailChannelId: string;
   clanTag: string;
   clanName: string;
   commandText: string;
@@ -468,14 +469,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     return;
   }
 
-  const channel = interaction.channel;
-  if (
-    !channel ||
-    !channel.isTextBased() ||
-    !("send" in channel) ||
-    interaction.guildId !== payload.guildId ||
-    interaction.channelId !== payload.channelId
-  ) {
+  if (interaction.guildId !== payload.guildId) {
     await interaction.reply({
       ephemeral: true,
       content: "Could not post split base-swap messages in this channel.",
@@ -483,13 +477,29 @@ export async function handleFwaBaseSwapSplitPostButton(
     return;
   }
 
+  const resolvedMailChannel = await resolveFwaBaseSwapMailChannel({
+    client: interaction.client,
+    guildId: payload.guildId,
+    clanDisplay: payload.clanName,
+    mailChannelId: payload.mailChannelId,
+  });
+  if ("error" in resolvedMailChannel) {
+    await interaction.reply({
+      ephemeral: true,
+      content: resolvedMailChannel.error,
+    });
+    return;
+  }
+  const { channel: mailChannel, channelId: mailChannelId } =
+    resolvedMailChannel;
+
   try {
     const clanKind = payload.clanKind ?? "FWA";
-    const postedA = await (channel as any).send({
+    const postedA = await mailChannel.send({
       content: payload.splitContents[0],
       allowedMentions: { users: payload.mentionUserIds },
     });
-    const postedB = await (channel as any).send({
+    const postedB = await mailChannel.send({
       content: payload.splitContents[1],
       allowedMentions: { users: payload.mentionUserIds },
     });
@@ -502,7 +512,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       referenceId: `fwa-base-swap:${parsed.key}`,
       messages: [
         {
-          channelId: payload.channelId,
+          channelId: mailChannelId,
           messageId: postedA.id,
           metadata: {
             clanKind,
@@ -519,7 +529,7 @@ export async function handleFwaBaseSwapSplitPostButton(
           },
         },
         {
-          channelId: payload.channelId,
+          channelId: mailChannelId,
           messageId: postedB.id,
           metadata: {
             clanKind,
@@ -540,14 +550,14 @@ export async function handleFwaBaseSwapSplitPostButton(
 
     await postedA.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
       console.error(
-        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${mailChannelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
           err,
         )}`,
       );
     });
     await postedB.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
       console.error(
-        `[fwa base-swap] react failed guild=${payload.guildId} channel=${payload.channelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${mailChannelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
           err,
         )}`,
       );
@@ -556,7 +566,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     await logFwaBaseSwapPublication({
       client: interaction.client,
       guildId: payload.guildId,
-      sourceChannelId: payload.channelId,
+      sourceChannelId: mailChannelId,
       userId: payload.userId,
       username: payload.username,
       clanKind,
@@ -570,7 +580,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       clanKind,
       entries: payload.entries,
       guildId: payload.guildId,
-      channelId: payload.channelId,
+      channelId: mailChannelId,
       clanTag: payload.clanTag,
       userId: payload.userId,
       sendDm: async (content) => interaction.user.send({ content }),
@@ -585,7 +595,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     });
   } catch (err) {
     console.error(
-      `[fwa base-swap] split publish failed guild=${payload.guildId} channel=${payload.channelId} clan=#${payload.clanTag} user=${payload.userId} error=${formatError(
+      `[fwa base-swap] split publish failed guild=${payload.guildId} channel=${payload.mailChannelId} clan=#${payload.clanTag} user=${payload.userId} error=${formatError(
         err,
       )}`,
     );
@@ -1255,6 +1265,80 @@ async function resolveBotLogChannel(
   }
 
   return { send: logChannel.send.bind(logChannel) };
+}
+
+async function resolveFwaBaseSwapMailChannel(input: {
+  client: Client;
+  guildId: string | null;
+  clanDisplay: string;
+  mailChannelId: string | null;
+}): Promise<
+  | {
+      channelId: string;
+      channel: {
+        send: (payload: {
+          content: string;
+          allowedMentions: { users: string[] };
+        }) => Promise<any>;
+      };
+    }
+  | { error: string }
+> {
+  const clanDisplay = String(input.clanDisplay ?? "").trim() || "unknown clan";
+  const mailChannelId = String(input.mailChannelId ?? "").trim();
+  if (!mailChannelId) {
+    return {
+      error: `No mail channel configured for ${clanDisplay}. Set the tracked clan mail channel first.`,
+    };
+  }
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await input.client.channels.fetch(mailChannelId);
+  } catch {
+    return {
+      error: `Configured mail channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+  if (!fetchedChannel) {
+    return {
+      error: `Configured mail channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+
+  const channel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: {
+      content: string;
+      allowedMentions: { users: string[] };
+    }) => Promise<any>;
+  };
+  if (input.guildId) {
+    const channelGuildId = String(channel.guildId ?? "").trim();
+    if (!channelGuildId || channelGuildId !== input.guildId) {
+      return {
+        error: `Configured mail channel for ${clanDisplay} is unavailable or not sendable.`,
+      };
+    }
+  }
+  if (typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
+    return {
+      error: `Configured mail channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+  if (typeof channel.send !== "function") {
+    return {
+      error: `Configured mail channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+
+  return {
+    channelId: mailChannelId,
+    channel: {
+      send: channel.send.bind(channel),
+    },
+  };
 }
 
 function formatFwaBaseSwapAuditBlock(input: string | null | undefined): string {
@@ -13290,6 +13374,20 @@ export const Fwa: Command = {
         return;
       }
 
+      const trackedConfig = await getTrackedClanMailConfig(clanTag);
+      const resolvedMailChannel = await resolveFwaBaseSwapMailChannel({
+        client: interaction.client,
+        guildId: interaction.guildId,
+        clanDisplay: clanName,
+        mailChannelId: trackedConfig?.mailChannelId ?? null,
+      });
+      if ("error" in resolvedMailChannel) {
+        await editReplySafe(resolvedMailChannel.error);
+        return;
+      }
+      const { channel: mailChannel, channelId: mailChannelId } =
+        resolvedMailChannel;
+
       const townhalls = collectBaseSwapTownhallLevels(entries);
       const layoutRows =
         townhalls.length > 0
@@ -13336,6 +13434,7 @@ export const Fwa: Command = {
           username: interaction.user.username,
           guildId: interaction.guildId,
           channelId: interaction.channelId,
+          mailChannelId,
           clanTag,
           clanName,
           clanKind,
@@ -13374,7 +13473,7 @@ export const Fwa: Command = {
         return;
       }
 
-      const posted = await interaction.channel.send({
+      const posted = await mailChannel.send({
         content: renderPlan.singleContent,
         allowedMentions: { users: mentionUserIds },
       });
@@ -13385,7 +13484,7 @@ export const Fwa: Command = {
         expiresAt,
         messages: [
           {
-            channelId: interaction.channelId,
+            channelId: mailChannelId,
             messageId: posted.id,
             metadata: {
               clanName,
@@ -13407,7 +13506,7 @@ export const Fwa: Command = {
 
       await posted.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
         console.error(
-          `[fwa base-swap] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
+          `[fwa base-swap] react failed guild=${interaction.guildId} channel=${mailChannelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
           )}`,
         );
@@ -13416,7 +13515,7 @@ export const Fwa: Command = {
       await logFwaBaseSwapPublication({
         client: interaction.client,
         guildId: interaction.guildId,
-        sourceChannelId: interaction.channelId,
+        sourceChannelId: mailChannelId,
         userId: interaction.user.id,
         username: interaction.user.username,
         clanKind,
@@ -13439,7 +13538,7 @@ export const Fwa: Command = {
         clanKind,
         entries,
         guildId: interaction.guildId,
-        channelId: interaction.channelId,
+        channelId: mailChannelId,
         clanTag,
         userId: interaction.user.id,
         sendDm: async (content) => interaction.user.send({ content }),
