@@ -120,13 +120,26 @@ describe("TrackedMessageService sync spin status", () => {
   });
 
   it("posts the scheduled status embed once and reacts with every clan badge", async () => {
-    const trackedRow = makeTrackedRow();
+    const trackedRow = makeTrackedRow({
+      claims: [
+        { clanTag: "#PYLQ", userId: "user-1" },
+        { clanTag: "#PYLG", userId: "user-2" },
+      ],
+    });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
-    const client = makeClient({ guildChannel: { send } });
+    const user1Send = vi.fn().mockResolvedValue(undefined);
+    const user2Send = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      guildChannel: { send },
+      userById: {
+        "user-1": { send: user1Send },
+        "user-2": { send: user2Send },
+      },
+    });
 
     const result = await trackedMessageService.processDueSyncReminders(client);
 
@@ -138,6 +151,8 @@ describe("TrackedMessageService sync spin status", () => {
     expect(embed.description).toContain("Claimed: **0/2**");
     expect(embed.description).toContain("- <:rr:111> **RR** (Rocky Road)");
     expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
+    expect(user1Send).toHaveBeenCalledTimes(1);
+    expect(user2Send).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(react).toHaveBeenCalledWith("<:twc:222>");
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(

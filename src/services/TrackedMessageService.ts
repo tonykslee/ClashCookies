@@ -1245,9 +1245,7 @@ export class TrackedMessageService {
         sourceChannelId: tracked.channelId,
         sourceMessageId: tracked.messageId,
         metadata,
-        claimedClanTags: new Set(
-          tracked.claims.map((claim) => String(claim.clanTag ?? "").trim()).filter(Boolean),
-        ),
+        claimedClanTags: [],
         title: "Sync Spin Status",
       });
 
