@@ -1540,8 +1540,8 @@ describe("FWA base-swap split-post prompt actions", () => {
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
       "Test Clan (#2QG2C08UP)",
     );
-    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Source channel: <#mail-1>",
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "Source channel:",
     );
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
       postedA.url,
@@ -1692,8 +1692,8 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(upsertCall.create.channelId).toBe("mail-1");
     expect(upsertCall.update.channelId).toBe("mail-1");
     expect(botLogSendSpy).toHaveBeenCalledTimes(1);
-    expect(String(run.botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Source channel: <#mail-1>",
+    expect(String(run.botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "Source channel:",
     );
     expect(run.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2389,10 +2389,11 @@ describe("CWL base-swap labels", () => {
 });
 
 describe("FWA base-swap bot-log audit", () => {
-  it("builds a structured audit log with user, source channel, links, and command text", () => {
+  it("builds a compact audit log with user, channel, links, and command text", () => {
     const content = buildFwaBaseSwapAuditLogContentForTest({
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       sourceChannelId: "channel-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
@@ -2408,16 +2409,53 @@ describe("FWA base-swap bot-log audit", () => {
       ],
     });
 
-    expect(content).toContain("FWA base-swap announcement posted");
-    expect(content).toContain("<@user-1> (Requester, user-1) posted /fwa base-swap");
-    expect(content).toContain("Source channel: <#channel-1>");
+    expect(content).toContain("**FWA base-swap announcement posted**");
+    expect(content).toContain(
+      "<@user-1> (driedsheets, user-1) posted /fwa base-swap in <#channel-1> for Test Clan (#2QG2C08UP)",
+    );
     expect(content).toContain("Posted message link(s):");
     expect(content).toContain(
       "https://discord.com/channels/guild-1/channel-1/msg-1",
     );
     expect(content).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true`",
     );
+    expect(content).not.toContain("Source channel:");
+    expect(content).not.toContain("```text");
+    expect(content).not.toContain("```");
+  });
+
+  it("renders multiple posted links without a verbose block", () => {
+    const content = buildFwaBaseSwapAuditLogContentForTest({
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      sourceChannelId: "channel-1",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
+      messageUrls: [
+        "https://discord.com/channels/guild-1/channel-1/msg-1",
+        "https://discord.com/channels/guild-1/channel-1/msg-2",
+      ],
+    });
+
+    expect(content).toContain("Posted message link(s):");
+    expect(content).toContain(
+      "https://discord.com/channels/guild-1/channel-1/msg-1",
+    );
+    expect(content).toContain(
+      "https://discord.com/channels/guild-1/channel-1/msg-2",
+    );
+    expect(content).toContain("- https://discord.com/channels/guild-1/channel-1/msg-2");
+    expect(content).not.toContain("Source channel:");
+    expect(content).not.toContain("```text");
   });
 
   it("sends the audit log to the configured bot-log channel when available", async () => {
@@ -2441,6 +2479,7 @@ describe("FWA base-swap bot-log audit", () => {
       sourceChannelId: "channel-1",
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -2456,10 +2495,15 @@ describe("FWA base-swap bot-log audit", () => {
     expect(client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
     expect(botLogSend).toHaveBeenCalledTimes(1);
     const payload = botLogSend.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Test Clan (#2QG2C08UP)");
-    expect(String(payload.content ?? "")).toContain("Source channel: <#channel-1>");
     expect(String(payload.content ?? "")).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true",
+      "**FWA base-swap announcement posted**",
+    );
+    expect(String(payload.content ?? "")).toContain(
+      "<@user-1> (driedsheets, user-1) posted /fwa base-swap in <#channel-1> for Test Clan (#2QG2C08UP)",
+    );
+    expect(String(payload.content ?? "")).toContain("Posted message link(s):");
+    expect(String(payload.content ?? "")).toContain(
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true`",
     );
   });
 
@@ -2484,6 +2528,7 @@ describe("FWA base-swap bot-log audit", () => {
       sourceChannelId: "channel-1",
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
