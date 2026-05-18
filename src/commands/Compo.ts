@@ -46,7 +46,11 @@ import {
   type CompoAdviceReadResult,
 } from "../services/CompoAdviceService";
 import { CompoActualStateService } from "../services/CompoActualStateService";
-import { CompoFillService } from "../services/CompoFillService";
+import {
+  CompoFillService,
+  isCompoFillPageButtonCustomId as isCompoFillPageButtonCustomIdFromService,
+  parseCompoFillPageCustomId,
+} from "../services/CompoFillService";
 import {
   CompoPlaceService,
 } from "../services/CompoPlaceService";
@@ -660,6 +664,10 @@ function parseCompoRefreshCustomId(
 
 export function isCompoRefreshButtonCustomId(customId: string): boolean {
   return String(customId ?? "").startsWith(`${COMPO_REFRESH_PREFIX}:`);
+}
+
+export function isCompoFillPageButtonCustomId(customId: string): boolean {
+  return isCompoFillPageButtonCustomIdFromService(customId);
 }
 
 type CompoReplacementButtonCustomId =
@@ -2545,6 +2553,74 @@ export async function handleCompoRefreshButton(
       ephemeral: true,
       content: getCompoRefreshFailureMessage(parsed),
     });
+  }
+}
+
+export async function handleCompoFillPageButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseCompoFillPageCustomId(interaction.customId);
+  if (!parsed) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid fill page action.",
+      });
+    }
+    return;
+  }
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the original requester can change this page.",
+    });
+    return;
+  }
+
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferUpdate();
+    }
+
+    const fillResult = await new CompoFillService().readFill(
+      interaction.guildId ?? null,
+      {
+        userId: parsed.userId,
+        pageIndex: parsed.pageIndex,
+      },
+    );
+    await interaction.editReply({
+      content: fillResult.content,
+      embeds: fillResult.embeds,
+      components: fillResult.components,
+    });
+  } catch (error) {
+    const safeError = safeFormatUnknownError(error);
+    try {
+      console.error(
+        `[compo-command] stage=fill_page_error command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} pageIndex=${parsed.pageIndex} error=${safeError}`,
+      );
+    } catch {
+      // best-effort only
+    }
+    try {
+      const failureMessage =
+        "Failed to load compo fill page. Try again in a moment.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({
+          ephemeral: true,
+          content: failureMessage,
+        });
+      } else {
+        await interaction.reply({
+          ephemeral: true,
+          content: failureMessage,
+        });
+      }
+    } catch {
+      // best-effort only
+    }
   }
 }
 
