@@ -1269,6 +1269,91 @@ async function resolveBotLogChannel(
   return { send: logChannel.send.bind(logChannel) };
 }
 
+function logFwaBaseSwapBotLogRoutingIssue(input: {
+  guildId: string | null;
+  destinationChannelId: string;
+  reason: string;
+}): void {
+  console.warn(
+    `[fwa base-swap] bot-log routing type=base-swap guild=${input.guildId ?? "unknown"} destination=${input.destinationChannelId} reason=${input.reason}`,
+  );
+}
+
+async function resolveFwaBaseSwapBotLogChannel(
+  client: Client,
+  guildId: string | null,
+  botLogChannelService: BotLogChannelService,
+): Promise<{ send: (payload: { content: string }) => Promise<unknown> } | null> {
+  if (!guildId) return null;
+
+  const configuredTypedChannelId =
+    await botLogChannelService.getChannelIdForType(guildId, "base-swap");
+  if (!configuredTypedChannelId) {
+    return resolveBotLogChannel(client, guildId, botLogChannelService);
+  }
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await client.channels.fetch(configuredTypedChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await botLogChannelService.clearChannelIdForType(guildId, "base-swap");
+    }
+    logFwaBaseSwapBotLogRoutingIssue({
+      guildId,
+      destinationChannelId: configuredTypedChannelId,
+      reason: code === 10003 ? "missing" : "fetch_failed",
+    });
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await botLogChannelService.clearChannelIdForType(guildId, "base-swap");
+    logFwaBaseSwapBotLogRoutingIssue({
+      guildId,
+      destinationChannelId: configuredTypedChannelId,
+      reason: "missing",
+    });
+    return null;
+  }
+
+  const logChannel = fetchedChannel as {
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: { content: string }) => Promise<unknown>;
+  };
+
+  const logGuildId = String(logChannel.guildId ?? "").trim();
+  if (!logGuildId || logGuildId !== guildId) {
+    await botLogChannelService.clearChannelIdForType(guildId, "base-swap");
+    logFwaBaseSwapBotLogRoutingIssue({
+      guildId,
+      destinationChannelId: configuredTypedChannelId,
+      reason: "guild_mismatch",
+    });
+    return null;
+  }
+  if (typeof logChannel.isTextBased !== "function" || !logChannel.isTextBased()) {
+    logFwaBaseSwapBotLogRoutingIssue({
+      guildId,
+      destinationChannelId: configuredTypedChannelId,
+      reason: "not_text_based",
+    });
+    return null;
+  }
+  if (typeof logChannel.send !== "function") {
+    logFwaBaseSwapBotLogRoutingIssue({
+      guildId,
+      destinationChannelId: configuredTypedChannelId,
+      reason: "not_sendable",
+    });
+    return null;
+  }
+
+  return { send: logChannel.send.bind(logChannel) };
+}
+
 async function resolveFwaBaseSwapMailChannel(input: {
   client: Client;
   guildId: string | null;
@@ -1442,7 +1527,7 @@ async function logFwaBaseSwapPublication(input: {
   commandText: string;
   messageUrls: readonly string[];
 }): Promise<void> {
-  const logChannel = await resolveBotLogChannel(
+  const logChannel = await resolveFwaBaseSwapBotLogChannel(
     input.client,
     input.guildId,
     new BotLogChannelService(),
