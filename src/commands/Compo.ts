@@ -115,6 +115,50 @@ function truncateDiagnosticText(input: string, maxLength = 220): string {
   return `${input.slice(0, maxLength)}...[len=${input.length}]`;
 }
 
+function safeFormatUnknownError(error: unknown): string {
+  const safeRead = (getter: () => unknown): string | null => {
+    try {
+      const value = getter();
+      if (typeof value !== "string") return null;
+      const normalized = value.trim();
+      return normalized ? normalized : null;
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    if (error === null || error === undefined) {
+      return "Unknown error";
+    }
+    if (typeof error === "string") {
+      return truncateDiagnosticText(error, 1500);
+    }
+    if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+      return truncateDiagnosticText(String(error), 1500);
+    }
+
+    const name = safeRead(() => (error as { name?: unknown }).name);
+    const message = safeRead(() => (error as { message?: unknown }).message);
+    const stack = safeRead(() => (error as { stack?: unknown }).stack);
+    const parts: string[] = [];
+    if (name) parts.push(`name=${truncateDiagnosticText(name, 120)}`);
+    if (message) parts.push(`message=${truncateDiagnosticText(message, 500)}`);
+    if (stack) parts.push(`stack=${truncateDiagnosticText(stack, 1000)}`);
+    if (parts.length > 0) {
+      return truncateDiagnosticText(parts.join(" | "), 1800);
+    }
+
+    try {
+      return truncateDiagnosticText(Object.prototype.toString.call(error), 200);
+    } catch {
+      return "Unhandled non-error throw";
+    }
+  } catch {
+    return "Unformattable error";
+  }
+}
+
 function safeDiagnosticJson(
   value: unknown,
   maxLength = 6000,
@@ -3070,12 +3114,25 @@ export const Compo: Command = {
           mode: "actual",
         });
         try {
+          logCompoStage(interaction, "fill_read_start", {
+            guild: interaction.guildId ?? "DM",
+            user: interaction.user.id,
+          });
           const fillResult = await new CompoFillService().readFill(
             interaction.guildId ?? null,
             {
               userId: interaction.user.id,
             },
           );
+          logCompoStage(interaction, "fill_read_complete", {
+            guild: interaction.guildId ?? "DM",
+            user: interaction.user.id,
+            trackedClans: fillResult.trackedClanTags.length,
+            destinationClans: fillResult.destinationClanCount,
+            availableFillers: fillResult.availableFillerCount,
+            recommendedMoves: fillResult.plannedMoveCount,
+            embedCount: fillResult.embeds.length,
+          });
           logCompoStage(interaction, "db_fetch", {
             entity: "actual_compo_fill_source",
             mode: "actual",
@@ -3102,21 +3159,44 @@ export const Compo: Command = {
             reason: fillResult.embeds.length > 1 ? "fill_paginated" : "fill_result",
           });
         } catch (error) {
-          logCompoStage(interaction, "response_build", {
-            reason: "fill_error",
-          });
-          console.error(
-            `[compo-command] stage=fill_render_failed command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} error=${formatError(error)}`,
-          );
-          await interaction.editReply({
-            content:
-              "Failed to build DB-backed compo fill recommendations. Try again in a moment.",
-            embeds: [],
-            components: [],
-          });
-          logCompoStage(interaction, "response_sent", {
-            reason: "fill_error",
-          });
+          const safeError = safeFormatUnknownError(error);
+          try {
+            await interaction.editReply({
+              content:
+                "Failed to build DB-backed compo fill recommendations. Try again in a moment.",
+              embeds: [],
+              components: [],
+            });
+            try {
+              logCompoStage(interaction, "response_sent", {
+                reason: "fill_error",
+              });
+            } catch {
+              // best-effort only
+            }
+            try {
+              console.error(
+                `[compo-command] stage=fill_read_error command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} error=${safeError}`,
+              );
+            } catch {
+              // best-effort only
+            }
+          } catch (replyError) {
+            try {
+              console.error(
+                `[compo-command] stage=fill_error_reply_failed command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} error=${safeFormatUnknownError(replyError)}`,
+              );
+            } catch {
+              // best-effort only
+            }
+            try {
+              console.error(
+                `[compo-command] stage=fill_read_error command=compo subcommand=fill guild=${interaction.guildId ?? "DM"} user=${interaction.user.id} error=${safeError}`,
+              );
+            } catch {
+              // best-effort only
+            }
+          }
         }
         return;
       }
@@ -3222,6 +3302,7 @@ export const toGlyphSafeTextForTest = toGlyphSafeText;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
+export const safeFormatUnknownErrorForTest = safeFormatUnknownError;
 export const buildCompoRefreshCustomIdForTest = buildCompoRefreshCustomId;
 export const parseCompoRefreshCustomIdForTest = parseCompoRefreshCustomId;
 export const parseWeightInputForTest = parseWeightInput;
