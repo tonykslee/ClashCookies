@@ -261,25 +261,28 @@ export const Notify: Command = {
     const sub = interaction.options.getSubcommand(true);
     if (sub === "show") {
       const rawTag = interaction.options.getString("clan", false);
-      const normalizedFilter = rawTag ? normalizeClanTag(rawTag) : "";
+      const displayFilterTag = rawTag ? normalizeClanTag(rawTag) : "";
+      const persistedFilterTag = rawTag ? normalizeClanTagInput(rawTag) : "";
 
       const tracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
         select: { name: true, tag: true },
       });
       const configs = await prisma.clanNotifyConfig.findMany({
-        where: normalizedFilter ? { clanTag: normalizedFilter, guildId: interaction.guildId } : { guildId: interaction.guildId },
+        where: persistedFilterTag
+          ? { clanTag: persistedFilterTag, guildId: interaction.guildId }
+          : { guildId: interaction.guildId },
         orderBy: { updatedAt: "asc" },
       });
 
       const configByTag = new Map(
-        configs.map((c) => [normalizeClanTag(c.clanTag), c])
+        configs.map((c) => [normalizeClanTagInput(c.clanTag), c])
       );
 
       const rows = tracked
         .map((clan) => {
           const clanTag = normalizeClanTag(clan.tag);
-          const config = configByTag.get(clanTag);
+          const config = configByTag.get(normalizeClanTagInput(clan.tag));
           return {
             clanName: clan.name?.trim() || clanTag,
             clanTag,
@@ -289,12 +292,12 @@ export const Notify: Command = {
             pingEnabled: config?.pingEnabled ?? true,
           };
         })
-        .filter((r) => (normalizedFilter ? r.clanTag === normalizedFilter : true));
+        .filter((r) => (displayFilterTag ? r.clanTag === displayFilterTag : true));
 
       if (rows.length === 0) {
         await interaction.editReply(
-          normalizedFilter
-            ? `No tracked clan found for ${normalizedFilter}.`
+          displayFilterTag
+            ? `No tracked clan found for ${displayFilterTag}.`
             : "No tracked clans configured."
         );
         return;
