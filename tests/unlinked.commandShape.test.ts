@@ -23,6 +23,7 @@ describe("/unlinked command shape", () => {
       required: true,
       choices: [
         { name: "clan-log channel", value: "clan-log channel" },
+        { name: "clan-lead channel", value: "clan-lead channel" },
         { name: "bot-log channel", value: "bot-log channel" },
         { name: "custom", value: "custom" },
         { name: "false", value: "false" },

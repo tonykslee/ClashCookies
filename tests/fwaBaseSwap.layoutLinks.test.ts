@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  clanPointsSync: {
+    findFirst: vi.fn(),
+  },
+  fwaLayouts: {
+    findMany: vi.fn(),
+  },
+  $queryRaw: vi.fn(),
   trackedMessage: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -28,6 +35,23 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+const baseSwapRosterMock = vi.hoisted(() => ({
+  resolveBaseSwapRosterForClan: vi.fn(),
+}));
+
+vi.mock("../src/services/BaseSwapRosterService", () => ({
+  buildBaseSwapClanAutocompleteChoices: vi.fn(),
+  resolveBaseSwapRosterForClan: baseSwapRosterMock.resolveBaseSwapRosterForClan,
+}));
+
+const emojiResolverMock = vi.hoisted(() => ({
+  fetchApplicationEmojiInventory: vi.fn(),
+}));
+
+vi.mock("../src/services/emoji/EmojiResolverService", () => ({
+  emojiResolverService: emojiResolverMock,
+}));
+
 import {
   batchFwaBaseSwapPingLinesForTest,
   buildFwaBaseSwapActiveWarDmLinesForTest,
@@ -48,6 +72,7 @@ import {
   parseFwaBaseSwapPositionSelectionsForTest,
   logFwaBaseSwapPublicationForTest,
   handleFwaBaseSwapSplitPostButton,
+  Fwa,
   renderFwaBaseSwapAnnouncementForTest,
   setFwaBaseSwapSplitPostPayloadForTest,
   validateFwaBaseSwapSwapReminderOptionForTest,
@@ -62,7 +87,45 @@ import {
 } from "../src/services/TrackedMessageService";
 
 beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(
+    null,
+  );
   clearFwaBaseSwapSplitPostPayloadsForTest();
+  prismaMock.clanPointsSync.findFirst.mockReset();
+  prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
+  prismaMock.$queryRaw.mockReset();
+  prismaMock.fwaLayouts.findMany.mockReset();
+  prismaMock.trackedMessage.findUnique.mockReset();
+  prismaMock.trackedMessage.findMany.mockReset();
+  prismaMock.trackedMessage.update.mockReset();
+  prismaMock.trackedMessage.updateMany.mockReset();
+  prismaMock.trackedMessage.upsert.mockReset();
+  prismaMock.trackedMessageClaim.findFirst.mockReset();
+  prismaMock.trackedMessageClaim.createMany.mockReset();
+  prismaMock.$transaction.mockImplementation(async (arg: unknown) => {
+    if (typeof arg === "function") {
+      return (arg as (tx: unknown) => Promise<unknown>)({
+        trackedMessage: prismaMock.trackedMessage,
+        trackedMessageClaim: prismaMock.trackedMessageClaim,
+      });
+    }
+    if (Array.isArray(arg)) return Promise.all(arg as Promise<unknown>[]);
+    return null;
+  });
+  baseSwapRosterMock.resolveBaseSwapRosterForClan.mockReset();
+  emojiResolverMock.fetchApplicationEmojiInventory.mockReset();
+  emojiResolverMock.fetchApplicationEmojiInventory.mockResolvedValue({
+    ok: false,
+    code: "application_missing",
+    diagnostics: {
+      applicationExistedBeforeFetch: false,
+      applicationFetchAttempted: false,
+      applicationEmojiFetchAvailable: false,
+      emojiFetchSucceeded: false,
+      fetchedEmojiCount: 0,
+    },
+  });
 });
 
 function buildEntry(input: {
@@ -107,6 +170,110 @@ function buildRosterMember(input: {
     townhallLevel: input.townhallLevel ?? null,
     discordUserId: input.discordUserId ?? null,
     section: input.section,
+  };
+}
+
+function makeBaseSwapCommandInteraction(input: {
+  clanTag: string;
+  warBases?: string | null;
+  baseErrors?: string | null;
+  fwaBases?: string | null;
+  swapReminder?: boolean | null;
+  guildId?: string;
+  invokeChannelId?: string;
+  mailChannelId?: string | null;
+  botLogChannelId?: string | null;
+  userId?: string;
+  username?: string;
+}) {
+  const deferReply = vi.fn().mockResolvedValue(undefined);
+  const editReply = vi.fn().mockResolvedValue(undefined);
+  const followUp = vi.fn().mockResolvedValue(undefined);
+  const reply = vi.fn().mockResolvedValue(undefined);
+  const update = vi.fn().mockResolvedValue(undefined);
+  const interactionChannelSend = vi.fn().mockResolvedValue(undefined);
+  const mailChannelSend = vi.fn();
+  const botLogSend = vi.fn().mockResolvedValue(undefined);
+  const mailChannel =
+    input.mailChannelId === null
+      ? null
+      : {
+          id: input.mailChannelId ?? "mail-1",
+          guildId: input.guildId ?? "guild-1",
+          isTextBased: () => true,
+          send: mailChannelSend,
+        };
+  const botLogChannel =
+    input.botLogChannelId === null
+      ? null
+      : {
+          id: input.botLogChannelId ?? "bot-log-1",
+          guildId: input.guildId ?? "guild-1",
+          isTextBased: () => true,
+          send: botLogSend,
+        };
+
+  const client = {
+    channels: {
+      fetch: vi.fn().mockImplementation(async (channelId: string) => {
+        if (channelId === input.mailChannelId) return mailChannel;
+        if (channelId === input.botLogChannelId) return botLogChannel;
+        return null;
+      }),
+    },
+  } as any;
+
+  const interaction = {
+    id: "interaction-1",
+    guildId: input.guildId ?? "guild-1",
+    channelId: input.invokeChannelId ?? "invoke-channel-1",
+    client,
+    user: {
+      id: input.userId ?? "user-1",
+      username: input.username ?? "Requester",
+      send: vi.fn().mockResolvedValue(undefined),
+    },
+    channel: {
+      id: input.invokeChannelId ?? "invoke-channel-1",
+      guildId: input.guildId ?? "guild-1",
+      isTextBased: () => true,
+      send: interactionChannelSend,
+    },
+    inGuild: vi.fn(() => true),
+    deferReply,
+    editReply,
+    followUp,
+    reply,
+    update,
+    options: {
+      getSubcommandGroup: vi.fn(() => null),
+      getSubcommand: vi.fn(() => "base-swap"),
+      getString: vi.fn((name: string) => {
+        if (name === "clan") return input.clanTag;
+        if (name === "war-bases") return input.warBases ?? null;
+        if (name === "base-errors") return input.baseErrors ?? null;
+        if (name === "fwa-bases") return input.fwaBases ?? null;
+        if (name === "visibility") return null;
+        return null;
+      }),
+      getBoolean: vi.fn((name: string) => {
+        if (name === "swap-reminder") return input.swapReminder ?? null;
+        return null;
+      }),
+    },
+  };
+
+  return {
+    interaction,
+    client,
+    deferReply,
+    editReply,
+    followUp,
+    reply,
+    update,
+    interactionChannelSend,
+    mailChannelSend,
+    botLogSend,
   };
 }
 
@@ -1257,6 +1424,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       username: "Requester",
       guildId: "guild-1",
       channelId: "channel-1",
+      mailChannelId: "mail-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -1291,15 +1459,15 @@ describe("FWA base-swap split-post prompt actions", () => {
 
     const postedA = {
       id: "msg-1",
-      url: "https://discord.com/channels/guild-1/channel-1/msg-1",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-1",
       react: vi.fn().mockResolvedValue(undefined),
     };
     const postedB = {
       id: "msg-2",
-      url: "https://discord.com/channels/guild-1/channel-1/msg-2",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-2",
       react: vi.fn().mockResolvedValue(undefined),
     };
-    const send = vi
+    const mailChannelSend = vi
       .fn()
       .mockResolvedValueOnce(postedA)
       .mockResolvedValueOnce(postedB);
@@ -1323,16 +1491,28 @@ describe("FWA base-swap split-post prompt actions", () => {
       channelId: "channel-1",
       client: {
         channels: {
-          fetch: vi.fn().mockResolvedValue({
-            guildId: "guild-1",
-            isTextBased: () => true,
-            send: botLogSend,
+          fetch: vi.fn().mockImplementation(async (channelId: string) => {
+            if (channelId === "mail-1") {
+              return {
+                guildId: "guild-1",
+                isTextBased: () => true,
+                send: mailChannelSend,
+              };
+            }
+            if (channelId === "bot-log-1") {
+              return {
+                guildId: "guild-1",
+                isTextBased: () => true,
+                send: botLogSend,
+              };
+            }
+            return null;
           }),
         },
       },
       channel: {
         isTextBased: () => true,
-        send,
+        send: vi.fn().mockResolvedValue(undefined),
       },
       followUp: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
@@ -1341,29 +1521,30 @@ describe("FWA base-swap split-post prompt actions", () => {
 
     await handleFwaBaseSwapSplitPostButton(interaction as any);
 
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(send).toHaveBeenNthCalledWith(
+    expect(mailChannelSend).toHaveBeenCalledTimes(2);
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         content: "Part 1 content\nline 2",
         allowedMentions: { users: ["user-1"] },
       }),
     );
-    expect(send).toHaveBeenNthCalledWith(
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         content: `Part 2 content\n\nReact with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
         allowedMentions: { users: ["user-1"] },
       }),
     );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
     expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(botLogSend).toHaveBeenCalledTimes(1);
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
       "Test Clan (#2QG2C08UP)",
     );
-    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Source channel: <#channel-1>",
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "Source channel:",
     );
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
       postedA.url,
@@ -1389,6 +1570,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       username: "Requester",
       guildId: "guild-1",
       channelId: "channel-1",
+      mailChannelId: "mail-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -1440,6 +1622,358 @@ describe("FWA base-swap split-post prompt actions", () => {
       components: [],
     });
     expect(interaction.reply).not.toHaveBeenCalled();
+  });
+});
+
+describe("FWA base-swap mail-channel routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("posts a single base-swap announcement to the clan mail channel", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      warBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+    const posted = {
+      id: "msg-1",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-1",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    const botLogSendSpy = vi.spyOn(
+      BotLogChannelService.prototype,
+      "getChannelId",
+    );
+    botLogSendSpy.mockResolvedValue("bot-log-1");
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(run.interaction.channel.send).not.toHaveBeenCalled();
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(run.mailChannelSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.any(String),
+        allowedMentions: { users: ["111"] },
+      }),
+    );
+    expect(run.client.channels.fetch).toHaveBeenCalledWith("mail-1");
+    expect(run.client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.channelId).toBe("mail-1");
+    expect(upsertCall.update.channelId).toBe("mail-1");
+    expect(botLogSendSpy).toHaveBeenCalledTimes(1);
+    expect(String(run.botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "Source channel:",
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(posted.url),
+      }),
+    );
+  });
+
+  it("publishes both split base-swap posts to the clan mail channel", async () => {
+    const key = "split-mail-1";
+    setFwaBaseSwapSplitPostPayloadForTest(key, {
+      userId: "user-1",
+      username: "Requester",
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      mailChannelId: "mail-1",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "111",
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: null,
+      alertEmoji: null,
+      layoutBulletEmoji: null,
+      mentionUserIds: ["111"],
+      swapReminder: false,
+      createdAtIso: "2026-03-20T00:00:00.000Z",
+      splitContents: ["Part 1 content", "Part 2 content"],
+    });
+
+    const postedA = {
+      id: "msg-1",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-1",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    const postedB = {
+      id: "msg-2",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-2",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    const mailChannelSend = vi
+      .fn()
+      .mockResolvedValueOnce(postedA)
+      .mockResolvedValueOnce(postedB);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      null,
+    );
+    const interaction = {
+      customId: buildFwaBaseSwapSplitPostCustomId({
+        userId: "user-1",
+        key,
+        action: "yes",
+      }),
+      user: {
+        id: "user-1",
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      client: {
+        channels: {
+          fetch: vi.fn().mockImplementation(async (channelId: string) => {
+            if (channelId === "mail-1") {
+              return {
+                id: "mail-1",
+                guildId: "guild-1",
+                isTextBased: () => true,
+                send: mailChannelSend,
+              };
+            }
+            return null;
+          }),
+        },
+      },
+      channel: {
+        isTextBased: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+      followUp: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFwaBaseSwapSplitPostButton(interaction as any);
+
+    expect(mailChannelSend).toHaveBeenCalledTimes(2);
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        content: "Part 1 content",
+        allowedMentions: { users: ["111"] },
+      }),
+    );
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: "Part 2 content",
+        allowedMentions: { users: ["111"] },
+      }),
+    );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
+    for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
+      expect(call[0].create.channelId).toBe("mail-1");
+      expect(call[0].update.channelId).toBe("mail-1");
+    }
+    expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(postedA.url),
+        components: [],
+      }),
+    );
+  });
+
+  it("does not post when the tracked clan has no mail channel configured", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2QG2C08UP",
+      warBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: null,
+        clanRoleId: null,
+      },
+    ]);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(run.client.channels.fetch).not.toHaveBeenCalled();
+    expect(run.interaction.channel.send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "No mail channel configured for Test Clan. Set the tracked clan mail channel first.",
+      }),
+    );
+  });
+
+  it("does not post when the configured mail channel is unavailable or not sendable", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2QG2C08UP",
+      warBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+    run.client.channels.fetch.mockResolvedValueOnce({
+      id: "mail-1",
+      guildId: "guild-1",
+      isTextBased: () => false,
+      send: vi.fn(),
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(run.interaction.channel.send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Configured mail channel for Test Clan is unavailable or not sendable.",
+      }),
+    );
+  });
+
+  it("does not post when the configured mail channel is missing from Discord", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2QG2C08UP",
+      warBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+    run.client.channels.fetch.mockResolvedValueOnce(null);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(run.interaction.channel.send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Configured mail channel for Test Clan is unavailable or not sendable.",
+      }),
+    );
   });
 });
 
@@ -1858,10 +2392,11 @@ describe("CWL base-swap labels", () => {
 });
 
 describe("FWA base-swap bot-log audit", () => {
-  it("builds a structured audit log with user, source channel, links, and command text", () => {
+  it("builds a compact audit log with user, channel, links, and command text", () => {
     const content = buildFwaBaseSwapAuditLogContentForTest({
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       sourceChannelId: "channel-1",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
@@ -1877,19 +2412,56 @@ describe("FWA base-swap bot-log audit", () => {
       ],
     });
 
-    expect(content).toContain("FWA base-swap announcement posted");
-    expect(content).toContain("<@user-1> (Requester, user-1) posted /fwa base-swap");
-    expect(content).toContain("Source channel: <#channel-1>");
+    expect(content).toContain("**FWA base-swap announcement posted**");
+    expect(content).toContain(
+      "<@user-1> (driedsheets, user-1) posted /fwa base-swap in <#channel-1> for Test Clan (#2QG2C08UP)",
+    );
     expect(content).toContain("Posted message link(s):");
     expect(content).toContain(
       "https://discord.com/channels/guild-1/channel-1/msg-1",
     );
     expect(content).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true`",
     );
+    expect(content).not.toContain("Source channel:");
+    expect(content).not.toContain("```text");
+    expect(content).not.toContain("```");
   });
 
-  it("sends the audit log to the configured bot-log channel when available", async () => {
+  it("renders multiple posted links without a verbose block", () => {
+    const content = buildFwaBaseSwapAuditLogContentForTest({
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      sourceChannelId: "channel-1",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: null,
+        baseErrors: null,
+        swapReminder: null,
+      }),
+      messageUrls: [
+        "https://discord.com/channels/guild-1/channel-1/msg-1",
+        "https://discord.com/channels/guild-1/channel-1/msg-2",
+      ],
+    });
+
+    expect(content).toContain("Posted message link(s):");
+    expect(content).toContain(
+      "https://discord.com/channels/guild-1/channel-1/msg-1",
+    );
+    expect(content).toContain(
+      "https://discord.com/channels/guild-1/channel-1/msg-2",
+    );
+    expect(content).toContain("- https://discord.com/channels/guild-1/channel-1/msg-2");
+    expect(content).not.toContain("Source channel:");
+    expect(content).not.toContain("```text");
+  });
+
+  it("sends the audit log to the configured generic bot-log channel when no typed channel is configured", async () => {
     const botLogSend = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "bot-log-1",
@@ -1910,6 +2482,7 @@ describe("FWA base-swap bot-log audit", () => {
       sourceChannelId: "channel-1",
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -1925,11 +2498,135 @@ describe("FWA base-swap bot-log audit", () => {
     expect(client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
     expect(botLogSend).toHaveBeenCalledTimes(1);
     const payload = botLogSend.mock.calls[0]?.[0] ?? {};
-    expect(String(payload.content ?? "")).toContain("Test Clan (#2QG2C08UP)");
-    expect(String(payload.content ?? "")).toContain("Source channel: <#channel-1>");
     expect(String(payload.content ?? "")).toContain(
-      "/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true",
+      "**FWA base-swap announcement posted**",
     );
+    expect(String(payload.content ?? "")).toContain(
+      "<@user-1> (driedsheets, user-1) posted /fwa base-swap in <#channel-1> for Test Clan (#2QG2C08UP)",
+    );
+    expect(String(payload.content ?? "")).toContain("Posted message link(s):");
+    expect(String(payload.content ?? "")).toContain(
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 fwa-bases:5 base-errors:2 swap-reminder:true`",
+    );
+  });
+
+  it("sends the audit log to the typed base-swap bot-log channel when configured", async () => {
+    const typedBotLogSend = vi.fn().mockResolvedValue(undefined);
+    const genericBotLogSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-bot-log-1",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "typed-bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: typedBotLogSend,
+            };
+          }
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: genericBotLogSend,
+            };
+          }
+          return null;
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "5",
+        baseErrors: "2",
+        swapReminder: true,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
+    expect(client.channels.fetch).not.toHaveBeenCalledWith("bot-log-1");
+    expect(typedBotLogSend).toHaveBeenCalledTimes(1);
+    expect(genericBotLogSend).not.toHaveBeenCalled();
+    const payload = typedBotLogSend.mock.calls[0]?.[0] ?? {};
+    expect(String(payload.content ?? "")).toContain(
+      "**FWA base-swap announcement posted**",
+    );
+    expect(String(payload.content ?? "")).not.toContain("Source channel:");
+  });
+
+  it("does not fall back to generic bot-log routing when the typed base-swap channel is unavailable", async () => {
+    const genericBotLogSend = vi.fn().mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-bot-log-1",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "clearChannelIdForType").mockResolvedValue(
+      undefined,
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "typed-bot-log-1") {
+            return null;
+          }
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: genericBotLogSend,
+            };
+          }
+          return null;
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "5",
+        baseErrors: "2",
+        swapReminder: true,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
+    expect(client.channels.fetch).not.toHaveBeenCalledWith("bot-log-1");
+    expect(genericBotLogSend).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("type=base-swap"),
+    );
+    expect(warnSpy.mock.calls.some((call) => String(call[0] ?? "").includes("destination=typed-bot-log-1"))).toBe(true);
   });
 
   it("does nothing when no bot-log channel is configured", async () => {
@@ -1953,6 +2650,7 @@ describe("FWA base-swap bot-log audit", () => {
       sourceChannelId: "channel-1",
       userId: "user-1",
       username: "Requester",
+      displayName: "driedsheets",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({

@@ -2,8 +2,8 @@ import { ApplicationCommandOptionType } from "discord.js";
 import { describe, expect, it } from "vitest";
 import { TrackedClan } from "../src/commands/TrackedClan";
 
-describe("/tracked-clan command shape", () => {
-  it("registers CWL and type-aware tracked-clan options without changing existing subcommands", () => {
+describe("/clan command shape", () => {
+  it("registers CWL and type-aware clan options without changing existing subcommands", () => {
     const configure = TrackedClan.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -35,6 +35,14 @@ describe("/tracked-clan command shape", () => {
     expect(list).toBeTruthy();
     expect(cwlTags).toBeTruthy();
     expect(raidTags).toBeTruthy();
+    expect(TrackedClan.name).toBe("clan");
+
+    expect(configure?.options?.find((o: any) => o.name === "leader-channel")?.type).toBe(
+      ApplicationCommandOptionType.Channel,
+    );
+    expect(configure?.options?.find((o: any) => o.name === "leader-channel")?.required).toBe(
+      false,
+    );
 
     expect(remove?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,

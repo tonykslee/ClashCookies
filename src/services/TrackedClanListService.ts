@@ -7,6 +7,7 @@ export type FwaTrackedClanDisplayRow = {
   loseStyle: string;
   mailChannelId: string | null;
   logChannelId: string | null;
+  leaderChannelId: string | null;
   clanRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
@@ -23,6 +24,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
       loseStyle: true,
       mailChannelId: true,
       logChannelId: true,
+      leaderChannelId: true,
       clanRoleId: true,
       clanBadge: true,
       shortName: true,
@@ -36,6 +38,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     loseStyle: row.loseStyle,
     mailChannelId: row.mailChannelId,
     logChannelId: row.logChannelId,
+    leaderChannelId: row.leaderChannelId,
     clanRoleId: row.clanRoleId,
     clanBadge: row.clanBadge,
     shortName: row.shortName,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
@@ -33,9 +33,95 @@ function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
 }
 
+const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
+  currentWar: {
+    findFirst: vi.fn(),
+  },
+  warEvent: {
+    create: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  prismaMock.$queryRaw.mockResolvedValue([]);
+  prismaMock.currentWar.findFirst.mockResolvedValue(null);
+  prismaMock.warEvent.create.mockResolvedValue({});
+});
+
+const testGuildId = "guild-1";
+const testClanTag = "2QG2C08UP";
+const mailChannelId = "mail-channel-1";
+const botLogChannelId = "bot-log-1";
+const notifyChannelId = "notify-channel-1";
+
+function makeTextChannel(send: ReturnType<typeof vi.fn>) {
+  return {
+    guildId: testGuildId,
+    isTextBased: () => true,
+    send,
+  };
+}
+
+function makeReminderClient(params: {
+  mailChannel: unknown;
+  botLogChannel?: unknown;
+  extraChannels?: Record<string, unknown>;
+}) {
+  return {
+    channels: {
+      fetch: vi.fn().mockImplementation(async (channelId: string) => {
+        if (channelId === mailChannelId) return params.mailChannel;
+        if (channelId === botLogChannelId) return params.botLogChannel ?? null;
+        if (params.extraChannels && channelId in params.extraChannels) {
+          return params.extraChannels[channelId];
+        }
+        throw new Error(`unexpected channel lookup: ${channelId}`);
+      }),
+    },
+  } as any;
+}
+
+function makeFwaBaseSwapCandidate(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    id: "tracked-1",
+    guildId: testGuildId,
+    channelId: "base-channel",
+    messageId: "base-message-1",
+    referenceId: "fwa-base-swap:split-key",
+    clanTag: testClanTag,
+    createdAt: new Date("2026-03-20T00:05:00.000Z"),
+    expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+    metadata: {
+      clanName: "Test Clan",
+      createdByUserId: "user-1",
+      createdAtIso: "2026-03-20T00:05:00.000Z",
+      swapReminder: true,
+      entries: [
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          discordUserId: "100",
+          townhallLevel: 18,
+          section: "fwa_bases",
+          acknowledged: true,
+        },
+      ],
+      layoutLinks: [],
+    },
+    ...overrides,
+  };
+}
 
 describe("War-end view custom IDs", () => {
   it("encodes and parses war-ended view context linkage", () => {
@@ -971,83 +1057,39 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     );
   });
 
-  it("sends the clan-wide reminder to the tracked clan log channel with a role ping", async () => {
+  it("sends the clan-wide reminder to the tracked clan mail channel with a role ping", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
     const reminderSend = vi.fn().mockResolvedValue({
       id: "reminder-1",
-      url: "https://discord.com/channels/guild-1/base-channel/reminder-1",
+      url: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-1`,
     });
     const botLogSend = vi.fn().mockResolvedValue(undefined);
 
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
-      id: "tracked-1",
-      guildId: "guild-1",
-      channelId: "base-channel",
-      messageId: "base-message-1",
-      referenceId: "fwa-base-swap:split-key",
-      clanTag: "2QG2C08UP",
-      createdAt: new Date("2026-03-20T00:05:00.000Z"),
-      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
-      metadata: {
-        clanName: "Test Clan",
-        createdByUserId: "user-1",
-        createdAtIso: "2026-03-20T00:05:00.000Z",
-        swapReminder: true,
-        entries: [
-          {
-            position: 1,
-            playerTag: "#AAA111",
-            playerName: "Alpha",
-            discordUserId: "100",
-            townhallLevel: 18,
-            section: "fwa_bases",
-            acknowledged: true,
-          },
-        ],
-        layoutLinks: [],
-      },
-    });
-    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder").mockResolvedValue(true);
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    ).mockResolvedValue(true);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      "bot-log-1",
+      botLogChannelId,
     );
 
-    const client = {
-        channels: {
-          fetch: vi.fn().mockImplementation(async (channelId: string) => {
-            if (channelId === "bot-log-1") {
-              return {
-                guildId: "guild-1",
-                isTextBased: () => true,
-                send: botLogSend,
-              };
-            }
-            if (channelId === "base-channel") {
-              return {
-                guildId: "guild-1",
-                isTextBased: () => true,
-                send: reminderSend,
-              };
-            }
-            if (channelId === "clan-log-1") {
-              return {
-                guildId: "guild-1",
-                isTextBased: () => true,
-                send: reminderSend,
-            };
-          }
-          throw new Error(`unexpected channel lookup: ${channelId}`);
-        }),
-      },
-    } as any;
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
+    });
 
     const service = new WarEventLogService(client, {} as any);
     const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
       sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
+        guildId: testGuildId,
+        clanTag: testClanTag,
         clanName: "Test Clan",
         clanRoleId: "123456789",
-        channelId: "clan-log-1",
+        channelId: notifyChannelId,
       },
       payload: {
         eventType: "battle_day",
@@ -1063,110 +1105,14 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       allowedMentions: { roles: ["123456789"] },
     });
     expect(botLogSend).toHaveBeenCalledTimes(1);
-    const botLogContent = String(botLogSend.mock.calls[0]?.[0]?.content ?? "");
-    expect(botLogContent).toBe(
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toBe(
       buildFwaBaseSwapBattleDayReminderLogContentForTest({
         clanName: "Test Clan",
-        clanTag: "2QG2C08UP",
-        targetChannelId: "base-channel",
-        reminderMessageUrl:
-          "https://discord.com/channels/guild-1/base-channel/reminder-1",
-        referenceId: "fwa-base-swap:split-key",
-        clanRoleMentionIncluded: true,
-      }),
-    );
-  });
-
-  it("falls back to the notify channel when the candidate channel is unavailable", async () => {
-    const reminderSend = vi.fn().mockResolvedValue({
-      id: "reminder-3",
-      url: "https://discord.com/channels/guild-1/clan-log-1/reminder-3",
-    });
-    const botLogSend = vi.fn().mockResolvedValue(undefined);
-
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
-      id: "tracked-1",
-      guildId: "guild-1",
-      channelId: "base-channel",
-      messageId: "base-message-1",
-      referenceId: "fwa-base-swap:split-key",
-      clanTag: "2QG2C08UP",
-      createdAt: new Date("2026-03-20T00:05:00.000Z"),
-      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
-      metadata: {
-        clanName: "Test Clan",
-        createdByUserId: "user-1",
-        createdAtIso: "2026-03-20T00:05:00.000Z",
-        swapReminder: true,
-        entries: [
-          {
-            position: 1,
-            playerTag: "#AAA111",
-            playerName: "Alpha",
-            discordUserId: "100",
-            townhallLevel: 18,
-            section: "fwa_bases",
-            acknowledged: true,
-          },
-        ],
-        layoutLinks: [],
-      },
-    });
-    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder").mockResolvedValue(true);
-    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      "bot-log-1",
-    );
-
-    const client = {
-        channels: {
-          fetch: vi.fn().mockImplementation(async (channelId: string) => {
-            if (channelId === "bot-log-1") {
-              return {
-                guildId: "guild-1",
-                isTextBased: () => true,
-                send: botLogSend,
-              };
-            }
-            if (channelId === "base-channel") {
-              return null;
-            }
-            if (channelId === "clan-log-1") {
-              return {
-                guildId: "guild-1",
-                isTextBased: () => true,
-                send: reminderSend,
-              };
-            }
-            throw new Error(`unexpected channel lookup: ${channelId}`);
-          }),
-        },
-      } as any;
-
-    const service = new WarEventLogService(client, {} as any);
-    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
-      sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
-        clanName: "Test Clan",
-        clanRoleId: "123456789",
-        channelId: "clan-log-1",
-      },
-      payload: {
-        eventType: "battle_day",
-        matchType: "BL",
-      },
-    });
-
-    expect(sent).toBe(true);
-    expect(reminderSend).toHaveBeenCalledTimes(1);
-    expect(botLogSend).toHaveBeenCalledTimes(1);
-    expect(botLogSend.mock.calls[0]?.[0]?.content).toBe(
-      buildFwaBaseSwapBattleDayReminderLogContentForTest({
-        clanName: "Test Clan",
-        clanTag: "2QG2C08UP",
-        targetChannelId: "clan-log-1",
-        reminderMessageUrl:
-          "https://discord.com/channels/guild-1/clan-log-1/reminder-3",
+        clanTag: testClanTag,
+        targetChannelId: mailChannelId,
+        reminderMessageUrl: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-1`,
         referenceId: "fwa-base-swap:split-key",
         clanRoleMentionIncluded: true,
       }),
@@ -1174,22 +1120,19 @@ describe("WarEventLogService FWA battle-day reminder", () => {
   });
 
   it("sends the clan-wide reminder without a role ping when no clan role is configured", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
     const reminderSend = vi.fn().mockResolvedValue({
       id: "reminder-2",
-      url: "https://discord.com/channels/guild-1/base-channel/reminder-2",
+      url: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-2`,
     });
     const botLogSend = vi.fn().mockResolvedValue(undefined);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
-      id: "tracked-1",
-      guildId: "guild-1",
-      channelId: "base-channel",
-      messageId: "base-message-1",
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate({
       referenceId: null,
-      clanTag: "2QG2C08UP",
-      createdAt: new Date("2026-03-20T00:05:00.000Z"),
-      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
       metadata: {
         clanName: "Test Clan",
         createdByUserId: "user-1",
@@ -1208,49 +1151,28 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         ],
         layoutLinks: [],
       },
-    });
-    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder").mockResolvedValue(true);
+    }));
+    vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    ).mockResolvedValue(true);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      "bot-log-1",
+      botLogChannelId,
     );
 
-    const client = {
-      channels: {
-        fetch: vi.fn().mockImplementation(async (channelId: string) => {
-          if (channelId === "bot-log-1") {
-            return {
-              guildId: "guild-1",
-              isTextBased: () => true,
-              send: botLogSend,
-            };
-          }
-          if (channelId === "base-channel") {
-            return {
-              guildId: "guild-1",
-              isTextBased: () => true,
-              send: reminderSend,
-            };
-          }
-          if (channelId === "clan-log-1") {
-            return {
-              guildId: "guild-1",
-              isTextBased: () => true,
-              send: reminderSend,
-            };
-          }
-          throw new Error(`unexpected channel lookup: ${channelId}`);
-        }),
-      },
-    } as any;
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
+    });
 
     const service = new WarEventLogService(client, {} as any);
     const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
       sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
+        guildId: testGuildId,
+        clanTag: testClanTag,
         clanName: "Test Clan",
         clanRoleId: null,
-        channelId: "clan-log-1",
+        channelId: notifyChannelId,
       },
       payload: {
         eventType: "battle_day",
@@ -1269,182 +1191,51 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       expect.stringContaining("battle-day reminder role missing"),
     );
     expect(botLogSend).toHaveBeenCalledTimes(1);
-    const botLogContent = String(botLogSend.mock.calls[0]?.[0]?.content ?? "");
-    expect(botLogContent).toBe(
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toBe(
       buildFwaBaseSwapBattleDayReminderLogContentForTest({
         clanName: "Test Clan",
-        clanTag: "2QG2C08UP",
-        targetChannelId: "base-channel",
-        reminderMessageUrl:
-          "https://discord.com/channels/guild-1/base-channel/reminder-2",
+        clanTag: testClanTag,
+        targetChannelId: mailChannelId,
+        reminderMessageUrl: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-2`,
         referenceId: "base-message-1",
         clanRoleMentionIncluded: false,
       }),
     );
   });
 
-  it("sends only once when the same reference is claimed twice", async () => {
-    const reminderSend = vi.fn().mockResolvedValue({
-      id: "reminder-1",
-      url: "https://discord.com/channels/guild-1/clan-log-1/reminder-1",
-    });
+  it("skips when mail channel is missing and does not claim", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: null }]);
+    const reminderSend = vi.fn();
     const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue({
-      id: "tracked-1",
-      guildId: "guild-1",
-      channelId: "base-channel",
-      messageId: "base-message-1",
-      referenceId: "fwa-base-swap:split-key",
-      clanTag: "2QG2C08UP",
-      createdAt: new Date("2026-03-20T00:05:00.000Z"),
-      expiresAt: new Date("2026-03-22T00:00:00.000Z"),
-      metadata: {
-        clanName: "Test Clan",
-        createdByUserId: "user-1",
-        createdAtIso: "2026-03-20T00:05:00.000Z",
-        swapReminder: true,
-        entries: [
-          {
-            position: 1,
-            playerTag: "#AAA111",
-            playerName: "Alpha",
-            discordUserId: "100",
-            townhallLevel: 18,
-            section: "fwa_bases",
-            acknowledged: true,
-          },
-        ],
-        layoutLinks: [],
-      },
-    });
-    vi.spyOn(trackedMessageService, "claimFwaBaseSwapBattleDayReminder")
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      "bot-log-1",
+      botLogChannelId,
     );
 
-    const client = {
-      channels: {
-        fetch: vi.fn().mockImplementation(async (channelId: string) => {
-          if (channelId === "bot-log-1") {
-            return {
-              guildId: "guild-1",
-              isTextBased: () => true,
-              send: botLogSend,
-            };
-          }
-          if (channelId === "clan-log-1") {
-            return {
-              guildId: "guild-1",
-              isTextBased: () => true,
-              send: reminderSend,
-            };
-          }
-          throw new Error(`unexpected channel lookup: ${channelId}`);
-        }),
-      },
-    } as any;
-
-    const service = new WarEventLogService(client, {} as any);
-    const payload = {
-      eventType: "battle_day",
-      matchType: "BL",
-    } as const;
-
-    const first = await (service as any).sendFwaBaseSwapBattleDayReminder({
-      sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
-        clanName: "Test Clan",
-        clanRoleId: "123456789",
-        channelId: "clan-log-1",
-      },
-      payload,
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
     });
-    const second = await (service as any).sendFwaBaseSwapBattleDayReminder({
-      sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
-        clanName: "Test Clan",
-        clanRoleId: "123456789",
-        channelId: "clan-log-1",
-      },
-      payload,
-    });
-
-    expect(first).toBe(true);
-    expect(second).toBe(false);
-    expect(reminderSend).toHaveBeenCalledTimes(1);
-    expect(botLogSend).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips non-BL wars before claiming or sending", async () => {
-    const reminderSend = vi.fn();
-    const claimSpy = vi.spyOn(
-      trackedMessageService,
-      "claimFwaBaseSwapBattleDayReminder",
-    );
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate");
-    const client = {
-      channels: {
-        fetch: vi.fn().mockResolvedValue({
-          guildId: "guild-1",
-          isTextBased: () => true,
-          send: reminderSend,
-        }),
-      },
-    } as any;
 
     const service = new WarEventLogService(client, {} as any);
     const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
       sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
+        guildId: testGuildId,
+        clanTag: testClanTag,
         clanName: "Test Clan",
         clanRoleId: "123456789",
-        channelId: "clan-log-1",
-      },
-      payload: {
-        eventType: "battle_day",
-        matchType: "MM",
-      },
-    });
-
-    expect(sent).toBe(false);
-    expect(claimSpy).not.toHaveBeenCalled();
-    expect(reminderSend).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reason=non_bl_match_type"));
-  });
-
-  it("skips when no qualifying candidate exists", async () => {
-    const reminderSend = vi.fn();
-    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate").mockResolvedValue(null);
-    const claimSpy = vi.spyOn(
-      trackedMessageService,
-      "claimFwaBaseSwapBattleDayReminder",
-    );
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const client = {
-      channels: {
-        fetch: vi.fn().mockResolvedValue({
-          guildId: "guild-1",
-          isTextBased: () => true,
-          send: reminderSend,
-        }),
-      },
-    } as any;
-
-    const service = new WarEventLogService(client, {} as any);
-    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
-      sub: {
-        guildId: "guild-1",
-        clanTag: "2QG2C08UP",
-        clanName: "Test Clan",
-        clanRoleId: "123456789",
-        channelId: "clan-log-1",
+        channelId: notifyChannelId,
       },
       payload: {
         eventType: "battle_day",
@@ -1455,7 +1246,403 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(sent).toBe(false);
     expect(claimSpy).not.toHaveBeenCalled();
     expect(reminderSend).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reason=no_reminder_candidate"));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=mail_channel_missing"),
+    );
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toContain("Target channel: unknown");
+  });
+
+  it("skips when mail channel is unavailable and does not claim", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn();
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      botLogChannelId,
+    );
+
+    const client = makeReminderClient({
+      mailChannel: null,
+      botLogChannel: makeTextChannel(botLogSend),
+    });
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=mail_channel_unavailable"),
+    );
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toContain(`Target channel: <#${mailChannelId}>`);
+  });
+
+  it("skips when mail channel is not text-based or sendable", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn();
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      botLogChannelId,
+    );
+
+    const client = makeReminderClient({
+      mailChannel: {
+        guildId: testGuildId,
+        isTextBased: () => false,
+        send: reminderSend,
+      },
+      botLogChannel: makeTextChannel(botLogSend),
+    });
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=mail_channel_unavailable"),
+    );
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends only once when the same reference is claimed twice", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-1",
+      url: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-1`,
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    )
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      botLogChannelId,
+    );
+
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
+    });
+
+    const service = new WarEventLogService(client, {} as any);
+    const payload = {
+      eventType: "battle_day",
+      matchType: "BL",
+    } as const;
+
+    const first = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload,
+    });
+    const second = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload,
+    });
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the reminder even when notify is disabled", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-1",
+      url: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-1`,
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    ).mockResolvedValue(true);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      botLogChannelId,
+    );
+
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
+    });
+    const service = new WarEventLogService(client, {} as any);
+
+    await (service as any).dispatchDetectedEvent({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        notify: false,
+        channelId: null,
+      },
+      payload: {
+        eventType: "battle_day",
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        opponentTag: "#OPP",
+        opponentName: "Enemy",
+        syncNumber: 1,
+        notifyRole: null,
+        pingRole: false,
+        pointsNeedsValidation: null,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "BL",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        prepStartTime: null,
+        warStartTime: null,
+        warEndTime: null,
+        clanAttacks: null,
+        opponentAttacks: null,
+        teamSize: null,
+        attacksPerMember: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      },
+      resolvedWarId: 123,
+      sendBattleDaySwapReminders: true,
+    });
+
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(reminderSend).toHaveBeenCalledWith({
+      content:
+        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+      allowedMentions: { roles: ["123456789"] },
+    });
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the reminder even when notify reservation is blocked", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn().mockResolvedValue({
+      id: "reminder-1",
+      url: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-1`,
+    });
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(makeFwaBaseSwapCandidate());
+    vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    ).mockResolvedValue(true);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      botLogChannelId,
+    );
+
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+      botLogChannel: makeTextChannel(botLogSend),
+    });
+    const service = new WarEventLogService(client, {} as any);
+    vi.spyOn(service as any, "tryCreateEventGuard").mockResolvedValue(false);
+
+    await (service as any).dispatchDetectedEvent({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        notify: true,
+        channelId: notifyChannelId,
+        warId: 123,
+      },
+      payload: {
+        eventType: "battle_day",
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        opponentTag: "#OPP",
+        opponentName: "Enemy",
+        syncNumber: 1,
+        notifyRole: null,
+        pingRole: false,
+        pointsNeedsValidation: null,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "BL",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        prepStartTime: null,
+        warStartTime: null,
+        warEndTime: null,
+        clanAttacks: null,
+        opponentAttacks: null,
+        teamSize: null,
+        attacksPerMember: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      },
+      resolvedWarId: 123,
+      sendBattleDaySwapReminders: true,
+    });
+
+    expect(reminderSend).toHaveBeenCalledTimes(1);
+    expect(reminderSend).toHaveBeenCalledWith({
+      content:
+        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+      allowedMentions: { roles: ["123456789"] },
+    });
+    expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips non-BL wars before claiming or sending", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn();
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapReminderCandidate");
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+    });
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "MM",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=non_bl_match_type"),
+    );
+  });
+
+  it("skips when no qualifying candidate exists", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
+    const reminderSend = vi.fn();
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapReminderCandidate",
+    ).mockResolvedValue(null);
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const client = makeReminderClient({
+      mailChannel: makeTextChannel(reminderSend),
+    });
+
+    const service = new WarEventLogService(client, {} as any);
+    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        channelId: notifyChannelId,
+      },
+      payload: {
+        eventType: "battle_day",
+        matchType: "BL",
+      },
+    });
+
+    expect(sent).toBe(false);
+    expect(claimSpy).not.toHaveBeenCalled();
+    expect(reminderSend).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=no_reminder_candidate"),
+    );
   });
 });
 

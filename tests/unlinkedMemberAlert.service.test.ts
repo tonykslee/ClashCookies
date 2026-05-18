@@ -652,6 +652,80 @@ describe("UnlinkedMemberAlertService", () => {
     expect(result.alertedCount).toBe(1);
   });
 
+  it("sends alerts only to tracked clan leader channels when clan-lead routing is selected", async () => {
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([
+        {
+          tag: "#2QG2C08UP",
+          logChannelId: "333333333333333333",
+          leaderChannelId: "444444444444444444",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+    });
+    const leaderSend = vi.fn().mockResolvedValue(undefined);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const customSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "444444444444444444",
+          {
+            id: "444444444444444444",
+            send: leaderSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+        [
+          "bot-log-1",
+          {
+            id: "bot-log-1",
+            send: botLogSend,
+          },
+        ],
+        [
+          "custom-1",
+          {
+            id: "custom-1",
+            send: customSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    const result = await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(leaderSend).toHaveBeenCalledTimes(1);
+    expect(trackedSend).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
+    expect(customSend).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelId).not.toHaveBeenCalled();
+    expect(result.alertedCount).toBe(1);
+  });
+
   it("sends alerts only to /bot-logs when bot-log routing is selected", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
@@ -759,6 +833,84 @@ describe("UnlinkedMemberAlertService", () => {
     expect(botLogSend).not.toHaveBeenCalled();
   });
 
+  it("skips clan-lead alerts when the tracked clan has no leader channel configured", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    prismaMock.trackedClan.findMany
+      .mockResolvedValueOnce([
+        {
+          tag: "#2QG2C08UP",
+          logChannelId: "333333333333333333",
+          leaderChannelId: null,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+    });
+    const leaderSend = vi.fn().mockResolvedValue(undefined);
+    const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const customSend = vi.fn().mockResolvedValue(undefined);
+    const client = createClient(
+      new Map<string, unknown>([
+        [
+          "444444444444444444",
+          {
+            id: "444444444444444444",
+            send: leaderSend,
+          },
+        ],
+        [
+          "333333333333333333",
+          {
+            id: "333333333333333333",
+            send: trackedSend,
+          },
+        ],
+        [
+          "bot-log-1",
+          {
+            id: "bot-log-1",
+            send: botLogSend,
+          },
+        ],
+        [
+          "custom-1",
+          {
+            id: "custom-1",
+            send: customSend,
+          },
+        ],
+      ]),
+    );
+    const service = new UnlinkedMemberAlertService();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "333333333333333333",
+          members: [{ playerTag: "#PYLQ0289", playerName: "One" }],
+        },
+      ],
+    });
+
+    expect(leaderSend).not.toHaveBeenCalled();
+    expect(trackedSend).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
+    expect(customSend).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "alert_destination_unusable guild=guild-1 player=#PYLQ0289 clan=#2QG2C08UP destination=none source=clan_lead reason=missing_leader_channel",
+      ),
+    );
+  });
+
   it("sends no alerts when routing is disabled", async () => {
     prismaMock.trackedClan.findMany
       .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
@@ -816,23 +968,51 @@ describe("UnlinkedMemberAlertService", () => {
     expect(botLogSend).not.toHaveBeenCalled();
   });
 
-  it("does not silently reroute when the selected destination is unavailable", async () => {
+  it("skips clan-lead alerts when the configured leader channel is unavailable or not sendable", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     prismaMock.trackedClan.findMany
-      .mockResolvedValueOnce([{ tag: "#2QG2C08UP", logChannelId: "333333333333333333" }])
+      .mockResolvedValueOnce([
+        {
+          tag: "#2QG2C08UP",
+          logChannelId: "333333333333333333",
+          leaderChannelId: "444444444444444444",
+        },
+      ])
       .mockResolvedValueOnce([]);
     prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue({
-      routingMode: "BOT_LOG",
+      routingMode: "CLAN_LEAD",
       channelId: null,
     });
-    botLogChannelServiceMock.getChannelId.mockResolvedValue(null);
     const trackedSend = vi.fn().mockResolvedValue(undefined);
+    const botLogSend = vi.fn().mockResolvedValue(undefined);
+    const customSend = vi.fn().mockResolvedValue(undefined);
     const client = createClient(
       new Map<string, unknown>([
+        [
+          "444444444444444444",
+          {
+            id: "444444444444444444",
+          },
+        ],
         [
           "333333333333333333",
           {
             id: "333333333333333333",
             send: trackedSend,
+          },
+        ],
+        [
+          "bot-log-1",
+          {
+            id: "bot-log-1",
+            send: botLogSend,
+          },
+        ],
+        [
+          "custom-1",
+          {
+            id: "custom-1",
+            send: customSend,
           },
         ],
       ]),
@@ -854,6 +1034,13 @@ describe("UnlinkedMemberAlertService", () => {
     });
 
     expect(trackedSend).not.toHaveBeenCalled();
+    expect(botLogSend).not.toHaveBeenCalled();
+    expect(customSend).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "alert_destination_unusable guild=guild-1 player=#PYLQ0289 clan=#2QG2C08UP destination=444444444444444444 source=clan_lead reason=unavailable_or_not_sendable",
+      ),
+    );
   });
 
   it("supports clan-scoped list filtering and includes active CWL clan members", async () => {

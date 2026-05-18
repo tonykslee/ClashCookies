@@ -154,6 +154,7 @@ function normalizeChannelId(input: string | null | undefined): string | null {
 
 export type UnlinkedAlertRoutingMode =
   | "CLAN_LOG"
+  | "CLAN_LEAD"
   | "BOT_LOG"
   | "CUSTOM"
   | "DISABLED";
@@ -164,8 +165,8 @@ export type UnlinkedAlertRoutingConfig = {
 };
 
 type AlertChannelCandidate = {
-  channelId: string;
-  source: "clan_log" | "bot_log" | "custom";
+  channelId: string | null;
+  source: "clan_log" | "clan_lead" | "bot_log" | "custom";
 };
 
 /** Purpose: normalize the persisted explicit routing mode for unlinked alerts. */
@@ -175,6 +176,7 @@ function normalizeUnlinkedAlertRoutingMode(
   const normalized = String(input ?? "").trim().toUpperCase();
   if (
     normalized === "CLAN_LOG" ||
+    normalized === "CLAN_LEAD" ||
     normalized === "BOT_LOG" ||
     normalized === "CUSTOM" ||
     normalized === "DISABLED"
@@ -196,16 +198,6 @@ function resolveLegacyUnlinkedAlertRoutingMode(input: {
     return normalizedRoutingMode;
   }
   return normalizeChannelId(input?.channelId) ? "CUSTOM" : "CLAN_LOG";
-}
-
-/** Purpose: render a stable label for the resolved unlinked-alert routing mode in logs. */
-function resolveUnlinkedAlertRoutingModeLabel(
-  routingMode: UnlinkedAlertRoutingMode,
-): string {
-  if (routingMode === "CLAN_LOG") return "clan_log";
-  if (routingMode === "BOT_LOG") return "bot_log";
-  if (routingMode === "CUSTOM") return "custom";
-  return "disabled";
 }
 
 function normalizeDisplayText(input: string | null | undefined, fallback: string): string {
@@ -269,7 +261,10 @@ async function resolveSendableGuildChannel(input: {
   };
 }
 
-async function loadTrackedClanLogChannelByTag(): Promise<Map<string, string | null>> {
+async function loadTrackedClanAlertChannelsByTag(): Promise<{
+  logChannelByTag: Map<string, string | null>;
+  leaderChannelByTag: Map<string, string | null>;
+}> {
   const trackedClans = await runBoundedUnlinkedStage({
     stage: "tracked_clan_log_channel_query",
     timeoutMs: UNLINKED_DB_STAGE_TIMEOUT_MS,
@@ -279,15 +274,24 @@ async function loadTrackedClanLogChannelByTag(): Promise<Map<string, string | nu
         select: {
           tag: true,
           logChannelId: true,
+          leaderChannelId: true,
         },
       }),
   });
-  return new Map(
-    trackedClans.map((row) => [
-      normalizeClanTag(row.tag),
-      normalizeChannelId(row.logChannelId),
-    ] as const),
-  );
+  return {
+    logChannelByTag: new Map(
+      trackedClans.map((row) => [
+        normalizeClanTag(row.tag),
+        normalizeChannelId(row.logChannelId),
+      ] as const),
+    ),
+    leaderChannelByTag: new Map(
+      trackedClans.map((row) => [
+        normalizeClanTag(row.tag),
+        normalizeChannelId(row.leaderChannelId),
+      ] as const),
+    ),
+  };
 }
 
 async function loadLiveFwaMembers(input: {
@@ -701,7 +705,8 @@ export class UnlinkedMemberAlertService {
       return { unresolvedCount: 0, alertedCount: 0, resolvedCount: 0 };
     }
 
-    const trackedClanLogChannelByTag = await loadTrackedClanLogChannelByTag();
+    const trackedClanAlertChannelsByTag = await loadTrackedClanAlertChannelsByTag();
+    const trackedClanLogChannelByTag = trackedClanAlertChannelsByTag.logChannelByTag;
     const [fwaMembers, cwlMembers, routingConfig, existingRows] =
       await Promise.all([
         loadLiveFwaMembers({
@@ -809,15 +814,18 @@ export class UnlinkedMemberAlertService {
       const candidate = this.resolveAlertChannelCandidate({
         routingConfig,
         trackedClanLogChannelByTag,
+        trackedClanLeaderChannelByTag: trackedClanAlertChannelsByTag.leaderChannelByTag,
         botLogChannelId,
         clanTag: member.clanTag,
       });
       if (!candidate) {
-        if (routingConfig.routingMode !== "DISABLED") {
-          console.info(
-            `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=none source=${resolveUnlinkedAlertRoutingModeLabel(routingConfig.routingMode)}`,
-          );
-        }
+        continue;
+      }
+
+      if (!candidate.channelId) {
+        console.info(
+          `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=none source=${candidate.source} reason=${candidate.source === "clan_lead" ? "missing_leader_channel" : "missing_channel"}`,
+        );
         continue;
       }
 
@@ -828,7 +836,7 @@ export class UnlinkedMemberAlertService {
       });
       if (!channel) {
         console.info(
-          `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source}`,
+          `[unlinked] alert_destination_unusable guild=${guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} reason=unavailable_or_not_sendable`,
         );
         continue;
       }
@@ -874,6 +882,7 @@ export class UnlinkedMemberAlertService {
   private resolveAlertChannelCandidate(input: {
     routingConfig: UnlinkedAlertRoutingConfig;
     trackedClanLogChannelByTag: Map<string, string | null>;
+    trackedClanLeaderChannelByTag: Map<string, string | null>;
     botLogChannelId: string | null;
     clanTag: string;
   }): AlertChannelCandidate | null {
@@ -882,15 +891,21 @@ export class UnlinkedMemberAlertService {
       const channelId = normalizeChannelId(
         input.trackedClanLogChannelByTag.get(clanTag) ?? null,
       );
-      return channelId ? { channelId, source: "clan_log" } : null;
+      return { channelId, source: "clan_log" };
+    }
+    if (input.routingConfig.routingMode === "CLAN_LEAD") {
+      const channelId = normalizeChannelId(
+        input.trackedClanLeaderChannelByTag.get(clanTag) ?? null,
+      );
+      return { channelId, source: "clan_lead" };
     }
     if (input.routingConfig.routingMode === "BOT_LOG") {
       const channelId = normalizeChannelId(input.botLogChannelId);
-      return channelId ? { channelId, source: "bot_log" } : null;
+      return { channelId, source: "bot_log" };
     }
     if (input.routingConfig.routingMode === "CUSTOM") {
       const channelId = normalizeChannelId(input.routingConfig.channelId);
-      return channelId ? { channelId, source: "custom" } : null;
+      return { channelId, source: "custom" };
     }
     return null;
   }

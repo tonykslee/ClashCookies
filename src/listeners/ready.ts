@@ -417,7 +417,7 @@ export default (client: Client, cocService: CoCService): void => {
 
       if (trackedTags.length === 0) {
         console.warn(
-          "No tracked clans configured. Use /tracked-clan configure."
+          "No tracked clans configured. Use /clan configure."
         );
         return {
           observedTags: [],
