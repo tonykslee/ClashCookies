@@ -99,6 +99,22 @@ function readModeSafe(interaction: ChatInputCommandInteraction): GoogleSheetMode
   }
 }
 
+function readVisibilitySafe(
+  interaction: ChatInputCommandInteraction,
+): { visibility: string; error: unknown | null } {
+  try {
+    return {
+      visibility: interaction.options.getString("visibility", false) ?? "private",
+      error: null,
+    };
+  } catch (error) {
+    return {
+      visibility: "private",
+      error,
+    };
+  }
+}
+
 function logCompoStage(
   interaction: ChatInputCommandInteraction,
   stage: string,
@@ -2827,13 +2843,18 @@ export const Compo: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
-    const visibility =
-      interaction.options.getString("visibility", false) ?? "private";
-    const isPublic = visibility === "public";
     logCompoStage(interaction, "run_enter", {
-      visibility,
-      public: isPublic,
+      visibility: "pending",
     });
+    const visibilityResult = readVisibilitySafe(interaction);
+    if (visibilityResult.error !== null) {
+      logCompoStage(interaction, "visibility_error", {
+        error: safeFormatUnknownError(visibilityResult.error),
+        fallback: "private",
+      });
+    }
+    const visibility = visibilityResult.visibility;
+    const isPublic = visibility === "public";
     logCompoStage(interaction, "visibility_resolved", {
       visibility,
       public: isPublic,

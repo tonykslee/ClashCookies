@@ -179,6 +179,44 @@ describe("/compo fill command", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
+  it("logs visibility_error and continues when visibility lookup throws", async () => {
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const readFillSpy = vi.spyOn(CompoFillService.prototype, "readFill").mockResolvedValue({
+      content: "",
+      embeds: [],
+      components: [],
+      trackedClanTags: [],
+      destinationClanCount: 0,
+      plannedMoveCount: 0,
+      availableFillerCount: 0,
+    } as any);
+    const interaction = makeInteraction();
+    interaction.options.getString = vi.fn((name: string) => {
+      if (name === "visibility") {
+        throw new Error("visibility boom");
+      }
+      return null;
+    });
+
+    await Compo.run({} as any, interaction as any, {
+      getClan: vi.fn(),
+      getCurrentWar: vi.fn(),
+      getClanWarLog: vi.fn(),
+    } as any);
+
+    expect(readFillSpy).toHaveBeenCalledTimes(1);
+    const stages = extractCompoStages(consoleLogSpy);
+    expect(stages[0]).toBe("run_enter");
+    expect(stages).toContain("visibility_error");
+    expect(stages).toContain("visibility_resolved");
+    expect(stages).toContain("defer_start");
+    expect(stages).toContain("subcommand_resolve_start");
+    expect(stages).toContain("fill_read_start");
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps the general catch path safe when subcommand resolution throws", async () => {
     const hostileError = {
       get name() {
