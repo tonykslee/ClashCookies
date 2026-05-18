@@ -704,12 +704,12 @@ async function runDaysMode(
   if (roster.trackedTags.length === 0) {
     if (clanTag) {
       await interaction.editReply(
-        `No tracked clan matched ${formatInactiveClanTag(clanTag)}. Configure at least one tracked clan with \`/tracked-clan configure\` before using \`/inactive\` in wars or days mode.`
+        `No tracked clan matched ${formatInactiveClanTag(clanTag)}. Configure at least one tracked clan with \`/clan configure\` before using \`/inactive\` in wars or days mode.`
       );
       return;
     }
     await interaction.editReply(
-      "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
+      "No tracked clans configured. Configure at least one clan with `/clan configure` before using `/inactive`."
     );
     return;
   }
@@ -874,7 +874,7 @@ async function runWarsMode(
       );
     } else {
       await interaction.editReply(
-        "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
+        "No tracked clans configured. Configure at least one clan with `/clan configure` before using `/inactive`."
       );
     }
     return;
@@ -934,7 +934,7 @@ async function runCombinedMode(
       return;
     }
     await interaction.editReply(
-      "No tracked clans configured. Configure at least one clan with `/tracked-clan configure` before using `/inactive`."
+      "No tracked clans configured. Configure at least one clan with `/clan configure` before using `/inactive`."
     );
     return;
   }
