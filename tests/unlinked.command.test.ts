@@ -101,6 +101,27 @@ describe("/unlinked command", () => {
     );
   });
 
+  it("stores clan-lead routing through the dedicated service", async () => {
+    const setAlertRoutingConfig = vi
+      .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable: "clan-lead channel",
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Saved unlinked-player alert routing: tracked clan leader channel.",
+    );
+  });
+
   it("stores a custom thread destination and mentions its parent channel", async () => {
     const setAlertRoutingConfig = vi
       .spyOn(unlinkedMemberAlertService, "setAlertRoutingConfig")
@@ -179,6 +200,29 @@ describe("/unlinked command", () => {
     const interaction = createInteraction({
       subcommand: "set-alert",
       enable,
+      channel: {
+        id: "channel-1",
+        guildId: "guild-1",
+        type: ChannelType.GuildText,
+      },
+    });
+
+    await Unlinked.run({} as any, interaction as any, {} as any);
+
+    expect(setAlertRoutingConfig).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "The `channel` option is only used when `enable=custom`.",
+    );
+  });
+
+  it("rejects stray channel input for clan-lead channel", async () => {
+    const setAlertRoutingConfig = vi.spyOn(
+      unlinkedMemberAlertService,
+      "setAlertRoutingConfig",
+    );
+    const interaction = createInteraction({
+      subcommand: "set-alert",
+      enable: "clan-lead channel",
       channel: {
         id: "channel-1",
         guildId: "guild-1",

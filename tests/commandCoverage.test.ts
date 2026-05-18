@@ -133,6 +133,12 @@ describe("command coverage", () => {
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 
+  it("documents clan-lead routing in unlinked help detail text", () => {
+    const unlinkedHelpText = helpEmbedText("unlinked");
+    expect(unlinkedHelpText).toContain("clan-lead channel");
+    expect(unlinkedHelpText).toContain("leader-channel");
+  });
+
   it("registers /compo fill as a subcommand", () => {
     const compo = Commands.find((command) => command.name === "compo");
     expect(compo).toBeTruthy();
