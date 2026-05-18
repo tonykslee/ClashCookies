@@ -70,6 +70,44 @@ function makeTrackedRow(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function makeClient(params?: {
+  guildChannel?: { send: ReturnType<typeof vi.fn> };
+  userById?: Record<string, { send: ReturnType<typeof vi.fn> }>;
+}) {
+  const guildChannel = params?.guildChannel ?? { send: vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() }) };
+  const userById = params?.userById ?? {};
+  return {
+    guilds: {
+      fetch: vi.fn().mockResolvedValue({
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            isTextBased: () => true,
+            send: guildChannel.send,
+          }),
+        },
+      }),
+    },
+    users: {
+      fetch: vi.fn(async (userId: string) => userById[userId] ?? null),
+    },
+  } as any;
+}
+
+function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>): void {
+  prismaMock.trackedMessage.update.mockImplementation(async ({ where, data }: any) => {
+    if (where?.id === trackedRow.id && data?.metadata) {
+      trackedRow.metadata = {
+        ...(trackedRow.metadata as Record<string, unknown>),
+        ...(data.metadata as Record<string, unknown>),
+      };
+    }
+    if (where?.id === trackedRow.id && data?.status) {
+      trackedRow.status = data.status;
+    }
+    return trackedRow;
+  });
+}
+
 describe("TrackedMessageService sync spin status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -82,24 +120,13 @@ describe("TrackedMessageService sync spin status", () => {
   });
 
   it("posts the scheduled status embed once and reacts with every clan badge", async () => {
-    prismaMock.trackedMessage.findMany.mockResolvedValue([makeTrackedRow()]);
+    const trackedRow = makeTrackedRow();
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
-    const channel = {
-      isTextBased: () => true,
-      send,
-    };
-    const guild = {
-      channels: {
-        fetch: vi.fn().mockResolvedValue(channel),
-      },
-    };
-    const client = {
-      guilds: {
-        fetch: vi.fn().mockResolvedValue(guild),
-      },
-    } as any;
+    const client = makeClient({ guildChannel: { send } });
 
     const result = await trackedMessageService.processDueSyncReminders(client);
 
@@ -132,36 +159,137 @@ describe("TrackedMessageService sync spin status", () => {
         }),
       }),
     );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "tracked-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            statusPostedAt: expect.any(String),
+          }),
+        }),
+      }),
+    );
   });
 
-  it("does not create a duplicate scheduled status post when one already exists", async () => {
-    prismaMock.trackedMessage.findMany.mockImplementation(() => [makeTrackedRow()]);
-    prismaMock.trackedMessage.findFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: "status-message-1" });
+  it("keeps sending DMs when the public status post already exists", async () => {
+    const trackedRow = makeTrackedRow({
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockImplementation(() => [trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockImplementation(async () => ({ id: "status-message-1" }));
+
+    const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      guildChannel: { send },
+      userById: {
+        "user-1": { send: userSend },
+      },
+    });
+
+    await trackedMessageService.processDueSyncReminders(client);
+    await trackedMessageService.processDueSyncReminders(client);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(userSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(0);
+    expect(trackedRow.metadata.reminderSentAt).toEqual(expect.any(String));
+    expect(trackedRow.metadata.statusPostedAt).toEqual(expect.any(String));
+  });
+
+  it("sends DMs and the public status post together on the first due sweep", async () => {
+    const trackedRow = makeTrackedRow({
+      claims: [
+        { clanTag: "#PYLQ", userId: "user-1" },
+        { clanTag: "#PYLG", userId: "user-1" },
+        { clanTag: "#PYLG", userId: "user-2" },
+      ],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
-    const channel = {
-      isTextBased: () => true,
-      send,
-    };
-    const guild = {
-      channels: {
-        fetch: vi.fn().mockResolvedValue(channel),
+    const user1Send = vi.fn().mockResolvedValue(undefined);
+    const user2Send = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      guildChannel: { send },
+      userById: {
+        "user-1": { send: user1Send },
+        "user-2": { send: user2Send },
       },
-    };
-    const client = {
-      guilds: {
-        fetch: vi.fn().mockResolvedValue(guild),
-      },
-    } as any;
+    });
 
-    await trackedMessageService.processDueSyncReminders(client);
-    await trackedMessageService.processDueSyncReminders(client);
+    const result = await trackedMessageService.processDueSyncReminders(client);
 
+    expect(result).toBe(1);
+    expect(user1Send).toHaveBeenCalledTimes(1);
+    expect(user2Send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    expect(trackedRow.metadata.reminderSentAt).toEqual(expect.any(String));
+    expect(trackedRow.metadata.statusPostedAt).toEqual(expect.any(String));
+  });
+
+  it("sends DMs even when the public status post already exists", async () => {
+    const trackedRow = makeTrackedRow({
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+
+    const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      guildChannel: { send },
+      userById: {
+        "user-1": { send: userSend },
+      },
+    });
+
+    const result = await trackedMessageService.processDueSyncReminders(client);
+
+    expect(result).toBe(1);
+    expect(userSend).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+    expect(trackedRow.metadata.reminderSentAt).toEqual(expect.any(String));
+    expect(trackedRow.metadata.statusPostedAt).toEqual(expect.any(String));
+  });
+
+  it("retries the public status post when DMs were already sent", async () => {
+    const trackedRow = makeTrackedRow({
+      metadata: {
+        ...makeMetadata(),
+        reminderSentAt: "2026-03-19T15:25:00.000Z",
+      },
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+
+    const react = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      guildChannel: { send },
+      userById: {
+        "user-1": { send: userSend },
+      },
+    });
+
+    const result = await trackedMessageService.processDueSyncReminders(client);
+
+    expect(result).toBe(1);
+    expect(userSend).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    expect(trackedRow.metadata.reminderSentAt).toBe("2026-03-19T15:25:00.000Z");
+    expect(trackedRow.metadata.statusPostedAt).toEqual(expect.any(String));
   });
 
   it("re-renders the status message line to claimed and back to unclaimed", async () => {

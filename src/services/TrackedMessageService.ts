@@ -82,6 +82,7 @@ export type SyncTimeTrackedMetadata = {
     emojiInline: string;
   }>;
   reminderSentAt?: string | null;
+  statusPostedAt?: string | null;
 };
 
 export type FwaMatchChecklistTrackedRow = {
@@ -488,12 +489,15 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     })
     .filter((clan): clan is SyncTimeTrackedMetadata["clans"][number] => Boolean(clan));
   if (clans.length === 0) return null;
+  const reminderSentAt = typeof value.reminderSentAt === "string" ? value.reminderSentAt : null;
+  const statusPostedAt = typeof value.statusPostedAt === "string" ? value.statusPostedAt : null;
   return {
     syncTimeIso,
     syncEpochSeconds: Math.trunc(syncEpochSeconds),
     roleId,
     clans,
-    reminderSentAt: typeof value.reminderSentAt === "string" ? value.reminderSentAt : null,
+    ...(reminderSentAt ? { reminderSentAt } : {}),
+    ...(statusPostedAt ? { statusPostedAt } : {}),
   };
 }
 
@@ -579,8 +583,65 @@ export function buildSyncSpinStatusEmbed(input: {
           return `${prefix} ${clan.emojiInline} **${clan.code}** (${clan.clanName})`;
         }),
       ].join("\n"),
-    );
+  );
   return embed;
+}
+
+async function sendSyncTimeReminderDms(input: {
+  client: Client;
+  tracked: {
+    messageId: string;
+    claims: Array<{
+      clanTag: string;
+      userId: string;
+    }>;
+  };
+  metadata: SyncTimeTrackedMetadata;
+}): Promise<void> {
+  const claimsByUser = new Map<string, string[]>();
+  const countByClan = new Map<string, number>();
+  for (const claim of input.tracked.claims) {
+    claimsByUser.set(claim.userId, [...(claimsByUser.get(claim.userId) ?? []), claim.clanTag]);
+    countByClan.set(claim.clanTag, (countByClan.get(claim.clanTag) ?? 0) + 1);
+  }
+
+  for (const [userId, clanTags] of claimsByUser.entries()) {
+    const user = await input.client.users.fetch(userId).catch(() => null);
+    if (!user) continue;
+
+    const uniqueClanTags = [...new Set(clanTags)];
+    const clans = uniqueClanTags
+      .map((clanTag) => {
+        const clan = input.metadata.clans.find((entry) => entry.clanTag === clanTag);
+        if (!clan) return null;
+        const claimedCount = countByClan.get(clanTag) ?? 0;
+        return {
+          clanTag,
+          clanName: clan.clanName,
+          claimedCount,
+          exclusive: claimedCount === 1,
+        };
+      })
+      .filter((entry): entry is { clanTag: string; clanName: string; claimedCount: number; exclusive: boolean } => Boolean(entry))
+      .sort((a, b) => {
+        if (a.exclusive !== b.exclusive) return a.exclusive ? -1 : 1;
+        return a.clanName.localeCompare(b.clanName, undefined, { sensitivity: "base" });
+      });
+    if (clans.length === 0) continue;
+
+    const lines = clans.map((clan) => `- ${clan.clanName} (${clan.claimedCount})`);
+    await user
+      .send([
+        `<@${userId}> sync reminder for <t:${input.metadata.syncEpochSeconds}:F> (<t:${input.metadata.syncEpochSeconds}:R>).`,
+        "You opted into these clans:",
+        ...lines,
+      ].join("\n"))
+      .catch((err) => {
+        console.error(
+          `[tracked-message] sync reminder DM failed user=${userId} message=${input.tracked.messageId} error=${formatError(err)}`,
+        );
+      });
+  }
 }
 
 function emojiMatches(
@@ -1122,7 +1183,6 @@ export class TrackedMessageService {
         });
         continue;
       }
-      if (metadata.reminderSentAt) continue;
       const existingStatus = await prisma.trackedMessage.findFirst({
         where: {
           featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
@@ -1131,14 +1191,35 @@ export class TrackedMessageService {
         },
         select: { id: true },
       });
+
+      let didWork = false;
+      if (!metadata.reminderSentAt) {
+        await sendSyncTimeReminderDms({
+          client,
+          tracked: {
+            messageId: tracked.messageId,
+            claims: tracked.claims as Array<{ clanTag: string; userId: string }>,
+          },
+          metadata,
+        });
+        metadata.reminderSentAt = now.toISOString();
+        await prisma.trackedMessage.update({
+          where: { id: tracked.id },
+          data: { metadata: metadata as any },
+        });
+        didWork = true;
+      }
+
       if (existingStatus) {
-        if (!metadata.reminderSentAt) {
-          metadata.reminderSentAt = now.toISOString();
+        if (!metadata.statusPostedAt) {
+          metadata.statusPostedAt = now.toISOString();
           await prisma.trackedMessage.update({
             where: { id: tracked.id },
             data: { metadata: metadata as any },
           });
+          didWork = true;
         }
+        if (didWork) sentCount += 1;
         continue;
       }
 
@@ -1147,6 +1228,7 @@ export class TrackedMessageService {
         console.error(
           `[tracked-message] sync status post skipped guild_missing message=${tracked.messageId}`,
         );
+        if (didWork) sentCount += 1;
         continue;
       }
       const channel = await guild.channels.fetch(tracked.channelId).catch(() => null);
@@ -1154,6 +1236,7 @@ export class TrackedMessageService {
         console.error(
           `[tracked-message] sync status post skipped channel_unavailable guild=${tracked.guildId} channel=${tracked.channelId} message=${tracked.messageId}`,
         );
+        if (didWork) sentCount += 1;
         continue;
       }
 
@@ -1177,9 +1260,12 @@ export class TrackedMessageService {
         );
         return null;
       });
-      if (!sentMessage) continue;
+      if (!sentMessage) {
+        if (didWork) sentCount += 1;
+        continue;
+      }
 
-      metadata.reminderSentAt = now.toISOString();
+      metadata.statusPostedAt = now.toISOString();
       await prisma.trackedMessage.update({
         where: { id: tracked.id },
         data: { metadata: metadata as any },
@@ -1221,6 +1307,7 @@ export class TrackedMessageService {
           );
         }
       }
+      didWork = true;
       sentCount += 1;
     }
     return sentCount;
