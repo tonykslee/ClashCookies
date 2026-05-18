@@ -1,5 +1,6 @@
 import type { HeatMapRef } from "@prisma/client";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
+import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { formatError } from "../helper/formatError";
 import { type CompoWarBucketCounts } from "../helper/compoWarBucketCounts";
@@ -23,6 +24,7 @@ import {
   type CompoFillPlannedMove,
 } from "./CompoFillPlanner";
 import { loadCompoActualStateContext } from "./CompoActualStateService";
+import { prisma } from "../prisma";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { playerCurrentService } from "./PlayerCurrentService";
 
@@ -35,6 +37,13 @@ type FillEmbedField = {
 type FillSectionSource = {
   sectionName: string;
   lines: string[];
+};
+
+type FillClanHeaderContext = {
+  clanTag: string;
+  clanName: string;
+  currentMemberCount: number;
+  clanBadge: string | null;
 };
 
 export type CompoFillReadResult = {
@@ -181,11 +190,16 @@ function formatShortWeight(weight: number): string {
   return `${Math.round(weight / 1000)}k`;
 }
 
-function formatClanFieldHeader(plan: CompoFillDestinationPlan): string {
-  const clanName = formatClanName(String(plan.clanName ?? "").trim());
-  const clanTag = String(plan.clanTag ?? "").trim();
+function formatRecommendedMovesClanHeader(input: FillClanHeaderContext): string {
+  const clanTag = String(input.clanTag ?? "").trim();
+  const clanName = formatClanName(String(input.clanName ?? "").trim());
   const headerLabel = clanName || clanTag || "Unknown Clan";
-  return `${formatDiscordMarkdownLink(headerLabel, buildInGameClanProfileUrl(clanTag))} \`${clanTag || "?"}\` ${plan.initialMemberCount}/50`;
+  const badge = formatClanBadgeEmoji(input.clanBadge);
+  const badgePrefix = badge ? `${badge} ` : "";
+  return `**${badgePrefix}${formatDiscordMarkdownLink(
+    headerLabel,
+    buildInGameClanProfileUrl(clanTag),
+  )} \`${clanTag || "?"}\` ${Math.trunc(input.currentMemberCount)}/50**`;
 }
 
 function formatSlotHeader(slot: CompoFillRemainingSlot): string {
@@ -302,6 +316,7 @@ function buildFillerSummaryField(input: {
 function buildFillSectionSources(input: {
   result: CompoFillPlanResult;
   fillerAccountsByTag: Map<string, FillerAccountViewRow>;
+  clanHeadersByTag: Map<string, FillClanHeaderContext>;
 }): FillSectionSource[] {
   const sections: FillSectionSource[] = [];
 
@@ -309,7 +324,15 @@ function buildFillSectionSources(input: {
     if (plan.plannedMoves.length === 0) {
       continue;
     }
-    const header = formatClanFieldHeader(plan);
+    const headerContext =
+      input.clanHeadersByTag.get(normalizeLinkTag(String(plan.clanTag ?? ""))) ??
+      input.clanHeadersByTag.get(String(plan.clanTag ?? "").trim()) ??
+      {
+        clanTag: plan.clanTag,
+        clanName: plan.clanName,
+        currentMemberCount: plan.initialMemberCount,
+        clanBadge: null,
+      };
     const lines = plan.plannedMoves.map((move) =>
       formatMoveLine({
         move,
@@ -320,8 +343,8 @@ function buildFillSectionSources(input: {
       }),
     );
     sections.push({
-      sectionName: `Recommended Moves - ${header}`,
-      lines,
+      sectionName: "Recommended Moves",
+      lines: [formatRecommendedMovesClanHeader(headerContext), ...lines],
     });
   }
 
@@ -754,6 +777,56 @@ export class CompoFillService {
       }),
     });
 
+    const clanHeaderRows = await measureFillStage({
+      stage: "load_clan_badges",
+      startDetail: {
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        trackedClans: trackedClans.length,
+      },
+      work: async () =>
+        context.trackedClanTags.length > 0
+          ? prisma.trackedClan.findMany({
+              where: {
+                tag: {
+                  in: context.trackedClanTags,
+                },
+              },
+              select: {
+                tag: true,
+                clanBadge: true,
+              },
+            })
+          : [],
+      completeDetail: (rows) => ({
+        trackedClanTags: context.trackedClanTags.length,
+        contextClans: context.clans.length,
+        heatMapRefs: context.heatMapRefs.length,
+        fillerRows: fillers.length,
+        trackedClans: trackedClans.length,
+        badgeRows: rows.length,
+      }),
+    });
+    const clanHeadersByTag = new Map<string, FillClanHeaderContext>();
+    for (const clan of trackedClans) {
+      clanHeadersByTag.set(normalizeLinkTag(clan.clanTag), {
+        clanTag: clan.clanTag,
+        clanName: clan.clanName,
+        currentMemberCount: clan.memberCount,
+        clanBadge: null,
+      });
+    }
+    for (const row of clanHeaderRows as Array<{ tag: string; clanBadge: string | null }>) {
+      const clanTag = normalizeLinkTag(String(row.tag ?? ""));
+      if (!clanTag) continue;
+      const current = clanHeadersByTag.get(clanTag);
+      if (current) {
+        current.clanBadge = formatClanBadgeEmoji(row.clanBadge);
+      }
+    }
+
     const result = await measureFillStage({
       stage: "build_plan",
       startDetail: {
@@ -815,7 +888,8 @@ export class CompoFillService {
               normalizeLinkTag(String(filler.tag ?? "")),
               filler,
             ] as const),
-        ),
+          ),
+          clanHeadersByTag,
         });
         const pages = buildFillPageEmbeds({
           summaryDescription,

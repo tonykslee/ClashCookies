@@ -13,6 +13,7 @@ import * as fillerAccountService from "../src/services/FillerAccountService";
 import * as planner from "../src/services/CompoFillPlanner";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { playerCurrentService } from "../src/services/PlayerCurrentService";
+import { prisma } from "../src/prisma";
 
 function getEmbedJSON(embed: any): any {
   return typeof embed?.toJSON === "function" ? embed.toJSON() : embed;
@@ -376,6 +377,7 @@ function makePagedPlannerResult(): any {
 describe("/compo fill service", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(prisma.trackedClan, "findMany").mockResolvedValue([] as any);
   });
 
   it("passes tracked clan and filler inputs to the planner and renders grouped sections", async () => {
@@ -553,8 +555,9 @@ describe("/compo fill service", () => {
     const embed = getEmbedJSON(result.embeds[0]);
     const text = JSON.stringify(embed);
     expect(text).toContain("Clans under 50: 2 | Open slots: 1 | Available fillers: 3 | Recommended moves: 2");
+    expect(text).toContain('"name":"Recommended Moves"');
     expect(text).toContain(
-      "Recommended Moves - [Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=AAA111>) `#AAA111` 48/50",
+      "**[Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=AAA111>) `#AAA111` 48/50**",
     );
     expect(text).toContain(
       "— | [Alice](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P1>) (`#P1`) | 145k | ⚜️ outside tracked clans",
@@ -574,6 +577,9 @@ describe("/compo fill service", () => {
   });
 
   it("renders linked Discord mentions when stored and planned tags differ by leading #", async () => {
+    vi.spyOn(prisma.trackedClan, "findMany").mockResolvedValue([
+      { tag: "#AAA111", clanBadge: "<:badge:123>" },
+    ] as any);
     vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
       trackedClanTags: ["#AAA111"],
       renderableClanTags: ["#AAA111"],
@@ -737,6 +743,8 @@ describe("/compo fill service", () => {
 
     const embed = getEmbedJSON(result.embeds[0]);
     const text = JSON.stringify(embed);
+    expect(text).toContain('"name":"Recommended Moves"');
+    expect(text).toContain("**<:badge:123> [Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=AAA111>) `#AAA111` 49/50**");
     expect(text).toContain("<@123456789>");
     expect(text).toContain(
       "[Alice](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P1>) (`#P1`)",
@@ -1127,7 +1135,10 @@ describe("/compo fill service", () => {
     expect(String(embed.footer?.text ?? "")).toBe("Page 1/1");
     const text = JSON.stringify(embed);
     expect(text).toContain(
-      "Recommended Moves - [Clan 0](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLAN0>) `#CLAN0` 49/50",
+      '"name":"Recommended Moves"',
+    );
+    expect(text).toContain(
+      "**[Clan 0](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLAN0>) `#CLAN0` 49/50**",
     );
     expect(text).toContain("Remaining Open Slots");
     expect(text).toContain("Filler Summary");
@@ -1245,6 +1256,8 @@ describe("/compo fill service", () => {
     expect(String(firstEmbed.footer?.text ?? "")).toMatch(/^Page 1\/\d+$/);
     expect(String(secondEmbed.footer?.text ?? "")).toMatch(/^Page 2\/\d+$/);
     expect(JSON.stringify(firstEmbed)).not.toBe(JSON.stringify(secondEmbed));
+    expect(JSON.stringify(firstEmbed)).toContain('"name":"Recommended Moves"');
+    expect(JSON.stringify(firstEmbed)).toContain("**[Clan 0](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLAN0>) `#CLAN0` 44/50**");
 
     expect(firstPage.components).toHaveLength(1);
     const firstButtons = firstPage.components[0]?.toJSON?.().components as Array<{
