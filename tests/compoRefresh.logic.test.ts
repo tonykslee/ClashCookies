@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCompoRefreshCustomIdForTest,
+  handleCompoFillPageButton,
   handleCompoRefreshButton,
 } from "../src/commands/Compo";
 import { CompoFillService } from "../src/services/CompoFillService";
@@ -81,6 +82,9 @@ function makeInteraction(customId: string) {
     replied: false,
     deferred: false,
     update: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    deferUpdate: vi.fn(async () => {
       interaction.deferred = true;
     }),
     editReply: vi.fn().mockResolvedValue(undefined),
@@ -195,6 +199,73 @@ describe("compo refresh button behavior", () => {
     });
     expect(Array.isArray(payload?.embeds)).toBe(true);
     expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("re-renders a requested fill page without calling CoC and keeps pagination controls", async () => {
+    const readFillSpy = vi.spyOn(CompoFillService.prototype, "readFill").mockResolvedValue({
+      content: "",
+      embeds: [
+        {
+          toJSON: () => ({
+            title: "Compo Fill Planner",
+            description: "Clans under 50: 2 | Open slots: 12 | Available fillers: 20 | Recommended moves: 12",
+            footer: { text: "Page 2/4" },
+          }),
+        },
+      ],
+      components: [
+        makeMessageRow("compo-fill-page:user-1:1", "Prev"),
+        makeMessageRow("compo-fill-page:user-1:3", "Next"),
+        makeMessageRow("compo-refresh:fill:user-1", "Refresh Data"),
+      ],
+      trackedClanTags: ["#AAA111", "#BBB222"],
+      destinationClanCount: 2,
+      plannedMoveCount: 12,
+      availableFillerCount: 20,
+      pageIndex: 1,
+      pageCount: 4,
+    } as any);
+    const cocService = {
+      getClan: vi.fn(),
+      getPlayerRaw: vi.fn(),
+    } as any;
+    const interaction = makeInteraction("compo-fill-page:user-1:1");
+
+    await handleCompoFillPageButton(interaction as any);
+
+    expect(readFillSpy).toHaveBeenCalledWith("guild-1", {
+      userId: "user-1",
+      pageIndex: 1,
+    });
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.embeds?.[0]?.toJSON?.().footer?.text ?? "")).toBe("Page 2/4");
+    expect(collectButtonCustomIds(payload)).toEqual(
+      expect.arrayContaining([
+        "compo-fill-page:user-1:1",
+        "compo-fill-page:user-1:3",
+        "compo-refresh:fill:user-1",
+      ]),
+    );
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("rejects fill page changes from other users ephemerally", async () => {
+    const readFillSpy = vi.spyOn(CompoFillService.prototype, "readFill");
+    const interaction = makeInteraction("compo-fill-page:user-1:1");
+    interaction.user.id = "user-2";
+
+    await handleCompoFillPageButton(interaction as any);
+
+    expect(readFillSpy).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledTimes(1);
+    expect(String(interaction.reply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Only the original requester can change this page.",
+    );
+    expect(interaction.deferUpdate).not.toHaveBeenCalled();
   });
 
   it("restores non-loading state and keeps previous output on DB-backed ACTUAL refresh failure", async () => {

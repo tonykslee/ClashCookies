@@ -74,10 +74,12 @@ import {
 } from "../commands/Notify";
 import {
   handleCompoHeatMapRefCopyButton,
+  handleCompoFillPageButton,
   handleCompoReplacementButton,
   handleCompoRefreshButton,
   handleCompoAdviceClanSelectMenuInteraction,
   isCompoHeatMapRefCopyButtonCustomId,
+  isCompoFillPageButtonCustomId,
   isCompoReplacementButtonCustomId,
   isCompoRefreshButtonCustomId,
   isCompoAdviceClanSelectMenuCustomId,
@@ -1611,6 +1613,21 @@ const handleButtonInteraction = async (
         });
       }
     }
+  }
+
+  if (isCompoFillPageButtonCustomId(interaction.customId)) {
+    try {
+      await handleCompoFillPageButton(interaction);
+    } catch (err) {
+      console.error(`Compo fill page button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to load compo fill page.",
+        });
+      }
+    }
+    return;
   }
 
   if (isCompoRefreshButtonCustomId(interaction.customId)) {

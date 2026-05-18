@@ -279,6 +279,100 @@ function makePlannerResult(): any {
   };
 }
 
+function makePagedPlannerResult(): any {
+  return {
+    destinationPlans: Array.from({ length: 11 }, (_value, clanIndex) =>
+      makeTrackedClanPlan({
+        clanTag: `#CLAN${clanIndex}`,
+        clanName: `Clan ${clanIndex}`,
+        shortName: `C${clanIndex}`,
+        initialMemberCount: 44,
+        targetMemberCount: 50,
+        remainingSlots: 6,
+        initialBucketCounts: {
+          TH18: 0,
+          TH17: 0,
+          TH16: 0,
+          TH15: 0,
+          TH14: 44,
+          TH13: 0,
+          TH12: 0,
+          TH11: 0,
+          TH10: 0,
+          TH9: 0,
+          TH8_OR_LOWER: 0,
+        },
+        targetBucketCounts: {
+          TH18: 0,
+          TH17: 0,
+          TH16: 0,
+          TH15: 0,
+          TH14: 50,
+          TH13: 0,
+          TH12: 0,
+          TH11: 0,
+          TH10: 0,
+          TH9: 0,
+          TH8_OR_LOWER: 0,
+        },
+        plannedMoves: Array.from({ length: 6 }, (_moveValue, moveIndex) => {
+          const memberCountBefore = 44 + moveIndex;
+          const memberCountAfter = memberCountBefore + 1;
+          const bucketCountsBefore = {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: memberCountBefore,
+            TH13: 0,
+            TH12: 0,
+            TH11: 0,
+            TH10: 0,
+            TH9: 0,
+            TH8_OR_LOWER: 0,
+          };
+          const bucketCountsAfter = {
+            ...bucketCountsBefore,
+            TH14: memberCountAfter,
+          };
+          return {
+            sequence: clanIndex * 6 + moveIndex + 1,
+            matchedBucket: "TH14",
+            filler: {
+              playerTag: `#P${clanIndex}_${moveIndex}`,
+              playerName: `Player ${clanIndex}-${moveIndex}`,
+              resolvedWeight: 145000 - moveIndex,
+              resolvedWeightBucket: "TH14",
+              currentClanTag: null,
+              currentClanName: null,
+              sourceClanTag: null,
+              sourceClanName: null,
+              sourceKind: "untracked",
+            },
+            destinationClanTag: `#CLAN${clanIndex}`,
+            destinationClanName: `Clan ${clanIndex}`,
+            destinationShortName: `C${clanIndex}`,
+            destinationMemberCountBefore: memberCountBefore,
+            destinationMemberCountAfter: memberCountAfter,
+            destinationBucketCountsBefore: bucketCountsBefore,
+            destinationBucketCountsAfter: bucketCountsAfter,
+            sourceClanTag: null,
+            sourceClanName: null,
+            sourceMemberCountBefore: null,
+            sourceMemberCountAfter: null,
+            sourceBucketCountsBefore: null,
+            sourceBucketCountsAfter: null,
+          };
+        }),
+      }),
+    ),
+    unavailableFillers: [],
+    excludedFillers: [],
+    unusedAvailableFillers: [],
+    remainingUnfilledClanSlots: [],
+  };
+}
+
 describe("/compo fill service", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -476,9 +570,7 @@ describe("/compo fill service", () => {
     expect(text).toContain("Unused Available Fillers: 1");
     expect(text).toContain("Unavailable Fillers: 1");
     expect(text).toContain("Excluded / Missing Weight: 1");
-    expect(String(embed.footer?.text ?? "")).toContain(
-      "Output truncated to stay within Discord limits.",
-    );
+    expect(String(embed.footer?.text ?? "")).toBe("Page 1/1");
   });
 
   it("renders linked Discord mentions when stored and planned tags differ by leading #", async () => {
@@ -1022,7 +1114,9 @@ describe("/compo fill service", () => {
     ];
     vi.spyOn(planner, "buildCompoFillPlan").mockReturnValue(bigResult as any);
 
-    const result = await new CompoFillService().readFill("guild-1");
+    const result = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+    });
     expect(result.embeds).toHaveLength(1);
     const embed = getEmbedJSON(result.embeds[0]);
     const totalEmbedTextLength = estimateFillEmbedTextLengthForTest(embed);
@@ -1030,9 +1124,7 @@ describe("/compo fill service", () => {
     expect(String(embed.title ?? "")).toBe("Compo Fill Planner");
     expect(String(embed.description ?? "")).toContain("Clans under 50: 1");
     expect(String(embed.description ?? "")).toContain("Recommended moves: 1");
-    expect(String(embed.footer?.text ?? "")).toContain(
-      "Output truncated to stay within Discord limits.",
-    );
+    expect(String(embed.footer?.text ?? "")).toBe("Page 1/1");
     const text = JSON.stringify(embed);
     expect(text).toContain(
       "Recommended Moves - [Clan 0](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=CLAN0>) `#CLAN0` 49/50",
@@ -1042,8 +1134,162 @@ describe("/compo fill service", () => {
     expect(text).toContain("Unused Available Fillers: 40");
     expect(text).toContain("Unavailable Fillers: 30");
     expect(text).toContain("Excluded / Missing Weight: 20");
-    expect(String(embed.footer?.text ?? "")).toContain(
-      "Output truncated to stay within Discord limits.",
+    expect(result.components).toHaveLength(1);
+    expect(result.components[0]?.toJSON?.()).toMatchObject({
+      type: 1,
+      components: [
+        expect.objectContaining({
+          label: "Refresh Data",
+          custom_id: "compo-refresh:fill:user-1",
+        }),
+      ],
+    });
+  });
+
+  it("paginates large recommended-move output and keeps each page within budget", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: Array.from({ length: 11 }, (_value, index) => `#CLAN${index}`),
+      renderableClanTags: Array.from({ length: 11 }, (_value, index) => `#CLAN${index}`),
+      latestSourceSyncedAt: null,
+      heatMapRefs: [
+        {
+          weightMinInclusive: 100000,
+          weightMaxInclusive: 200000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: Array.from({ length: 11 }, (_value, index) => ({
+        clanTag: `#CLAN${index}`,
+        clanName: `Clan ${index}`,
+        shortName: `C${index}`,
+        base: {
+          resolvedTotalWeight: 120000 + index,
+          unresolvedWeightCount: 0,
+          deferredWeightCount: 0,
+          memberCount: 44,
+          bucketCounts: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: 44,
+            TH13: 0,
+            TH12: 0,
+            TH11: 0,
+            TH10: 0,
+            TH9: 0,
+            TH8_OR_LOWER: 0,
+          },
+        },
+        members: [],
+      })),
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue(
+      Array.from({ length: 91 }, (_value, index) => ({
+        tag: `#F${index}`,
+        name: `Filler ${index}`,
+        clanTag: index % 3 === 0 ? null : "#SRC",
+        clanName: index % 3 === 0 ? null : "Source",
+        weight: 145000 + index,
+        discordUserId: index % 10 === 0 ? `discord-${index}` : null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      })) as any,
+    );
+    vi.spyOn(planner, "buildCompoFillPlan").mockReturnValue(
+      makePagedPlannerResult() as any,
+    );
+
+    const firstPage = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+      pageIndex: 0,
+    });
+    const secondPage = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+      pageIndex: 1,
+    });
+    const clampedFirstPage = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+      pageIndex: -5,
+    });
+
+    expect(firstPage.embeds).toHaveLength(1);
+    expect(secondPage.embeds).toHaveLength(1);
+
+    const firstEmbed = getEmbedJSON(firstPage.embeds[0]);
+    const secondEmbed = getEmbedJSON(secondPage.embeds[0]);
+    const footerMatch = String(firstEmbed.footer?.text ?? "").match(/^Page 1\/(\d+)$/);
+    const totalPages = Number(footerMatch?.[1] ?? 0);
+    const clampedLastPage = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+      pageIndex: 999,
+    });
+    expect(totalPages).toBeGreaterThan(1);
+    expect(estimateFillEmbedTextLengthForTest(firstEmbed)).toBeLessThanOrEqual(5500);
+    expect(estimateFillEmbedTextLengthForTest(secondEmbed)).toBeLessThanOrEqual(5500);
+    expect(
+      String(getEmbedJSON(clampedFirstPage.embeds[0]).footer?.text ?? ""),
+    ).toMatch(/^Page 1\/\d+$/);
+    expect(String(getEmbedJSON(clampedLastPage.embeds[0]).footer?.text ?? "")).toBe(
+      `Page ${totalPages}/${totalPages}`,
+    );
+    expect(String(firstEmbed.footer?.text ?? "")).toMatch(/^Page 1\/\d+$/);
+    expect(String(secondEmbed.footer?.text ?? "")).toMatch(/^Page 2\/\d+$/);
+    expect(JSON.stringify(firstEmbed)).not.toBe(JSON.stringify(secondEmbed));
+
+    expect(firstPage.components).toHaveLength(1);
+    const firstButtons = firstPage.components[0]?.toJSON?.().components as Array<{
+      label?: string;
+      custom_id?: string;
+      disabled?: boolean;
+    }>;
+    expect(firstButtons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "Prev",
+          custom_id: "compo-fill-page:user-1:0",
+          disabled: true,
+        }),
+        expect.objectContaining({
+          label: "Next",
+          custom_id: "compo-fill-page:user-1:1",
+        }),
+        expect.objectContaining({
+          label: "Refresh Data",
+          custom_id: "compo-refresh:fill:user-1",
+        }),
+      ]),
+    );
+
+    const secondButtons = secondPage.components[0]?.toJSON?.().components as Array<{
+      label?: string;
+      custom_id?: string;
+      disabled?: boolean;
+    }>;
+    expect(secondButtons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "Prev",
+          custom_id: "compo-fill-page:user-1:0",
+        }),
+        expect.objectContaining({
+          label: "Next",
+          custom_id: expect.stringMatching(/^compo-fill-page:user-1:\d+$/),
+        }),
+        expect.objectContaining({
+          label: "Refresh Data",
+          custom_id: "compo-refresh:fill:user-1",
+        }),
+      ]),
     );
   });
 });

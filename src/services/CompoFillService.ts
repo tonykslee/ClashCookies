@@ -32,6 +32,11 @@ type FillEmbedField = {
   inline: false;
 };
 
+type FillSectionSource = {
+  sectionName: string;
+  lines: string[];
+};
+
 export type CompoFillReadResult = {
   content: string;
   embeds: EmbedBuilder[];
@@ -40,6 +45,8 @@ export type CompoFillReadResult = {
   destinationClanCount: number;
   plannedMoveCount: number;
   availableFillerCount: number;
+  pageIndex: number;
+  pageCount: number;
 };
 
 export type CompoFillRefreshResult = CompoFillReadResult & {
@@ -52,9 +59,10 @@ const FILL_EMBED_TITLE = "Compo Fill Planner";
 const FILL_PAGE_DESCRIPTION_LIMIT = 4096;
 const FILL_PAGE_FIELD_LIMIT = 25;
 const FILL_TOTAL_EMBED_TEXT_BUDGET = 5500;
-const FILL_TRUNCATION_FOOTER = "Output truncated to stay within Discord limits.";
+const FILL_PAGE_RENDER_BUDGET = FILL_TOTAL_EMBED_TEXT_BUDGET - 100;
 const FILL_REFRESH_LABEL = "Refresh Data";
 const FILL_REFRESH_LOADING_LABEL = "Refreshing...";
+const COMPO_FILL_PAGE_PREFIX = "compo-fill-page";
 
 type FillStageDetail = Record<string, string | number | boolean | null | undefined>;
 
@@ -291,14 +299,11 @@ function buildFillerSummaryField(input: {
   };
 }
 
-function buildFillEmbedFields(input: {
+function buildFillSectionSources(input: {
   result: CompoFillPlanResult;
   fillerAccountsByTag: Map<string, FillerAccountViewRow>;
-}): {
-  fields: FillEmbedField[];
-  truncated: boolean;
-} {
-  const detailedFields: FillEmbedField[] = [];
+}): FillSectionSource[] {
+  const sections: FillSectionSource[] = [];
 
   for (const plan of input.result.destinationPlans) {
     if (plan.plannedMoves.length === 0) {
@@ -309,27 +314,25 @@ function buildFillEmbedFields(input: {
       formatMoveLine({
         move,
         linkedDiscordUserId:
-          input.fillerAccountsByTag.get(normalizeLinkTag(String(move.filler.playerTag ?? "")))?.discordUserId ?? null,
+          input.fillerAccountsByTag.get(
+            normalizeLinkTag(String(move.filler.playerTag ?? "")),
+          )?.discordUserId ?? null,
       }),
     );
-    detailedFields.push(
-      ...buildSectionFields({
-        sectionName: `Recommended Moves - ${header}`,
-        lines,
-      }),
-    );
+    sections.push({
+      sectionName: `Recommended Moves - ${header}`,
+      lines,
+    });
   }
 
   if (input.result.remainingUnfilledClanSlots.length > 0) {
-    detailedFields.push(
-      ...buildSectionFields({
-        sectionName: "Remaining Open Slots",
-        lines: input.result.remainingUnfilledClanSlots.map(
-          (slot) =>
-            `${formatSlotHeader(slot)} | ${slot.remainingSlots} open slot${slot.remainingSlots === 1 ? "" : "s"} | ${slot.currentMemberCount}/${slot.targetMemberCount}`,
-        ),
-      }),
-    );
+    sections.push({
+      sectionName: "Remaining Open Slots",
+      lines: input.result.remainingUnfilledClanSlots.map(
+        (slot) =>
+          `${formatSlotHeader(slot)} | ${slot.remainingSlots} open slot${slot.remainingSlots === 1 ? "" : "s"} | ${slot.currentMemberCount}/${slot.targetMemberCount}`,
+      ),
+    });
   }
 
   const summaryField = buildFillerSummaryField({
@@ -337,73 +340,161 @@ function buildFillEmbedFields(input: {
     unavailableFillers: input.result.unavailableFillers.length,
     excludedFillers: input.result.excludedFillers.length,
   });
-  const summaryFields = summaryField ? [summaryField] : [];
+  if (summaryField) {
+    sections.push({
+      sectionName: summaryField.name,
+      lines: summaryField.value.split("\n"),
+    });
+  }
 
-  let fields = [...detailedFields, ...summaryFields];
-  let truncated = summaryField !== null;
+  return sections;
+}
+
+function splitFillSectionIntoPageChunks(input: {
+  sectionName: string;
+  lines: string[];
+  description: string;
+}): string[][] {
+  if (input.lines.length === 0) {
+    return [];
+  }
+
+  const chunks: string[][] = [];
+  let current: string[] = [];
+
+  for (const line of input.lines) {
+    const candidateLines = [...current, line];
+    const candidateFields = buildSectionFields({
+      sectionName: input.sectionName,
+      lines: candidateLines,
+    });
+    const candidateLength = estimateFillEmbedTextLength({
+      title: FILL_EMBED_TITLE,
+      description: input.description,
+      fields: candidateFields,
+      footerText: "Page 999/999",
+    });
+    if (
+      candidateLength <= FILL_PAGE_RENDER_BUDGET &&
+      candidateFields.length <= FILL_PAGE_FIELD_LIMIT
+    ) {
+      current = candidateLines;
+      continue;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current);
+    }
+    current = [line];
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+function buildFillPageEmbeds(input: {
+  summaryDescription: string;
+  sections: FillSectionSource[];
+}): {
+  pages: Array<{ fields: FillEmbedField[] }>;
+  description: string;
+} {
   const description = truncateForDiscord(
-    buildSummaryDescription({
-      destinationPlans: input.result.destinationPlans,
-      remainingUnfilledClanSlots: input.result.remainingUnfilledClanSlots,
-      unusedAvailableFillers: input.result.unusedAvailableFillers,
-      plannedMoveCount: input.result.destinationPlans.reduce(
-        (sum, plan) => sum + plan.plannedMoves.length,
-        0,
-      ),
-    }),
+    input.summaryDescription,
     FILL_PAGE_DESCRIPTION_LIMIT,
   );
 
-  while (
-    estimateFillEmbedTextLength({
-      title: FILL_EMBED_TITLE,
+  const sectionChunks: Array<{
+    sectionName: string;
+    lines: string[];
+  }> = [];
+
+  for (const section of input.sections) {
+    const chunks = splitFillSectionIntoPageChunks({
+      sectionName: section.sectionName,
+      lines: section.lines,
       description,
-      fields,
-      footerText: truncated ? FILL_TRUNCATION_FOOTER : null,
-    }) > FILL_TOTAL_EMBED_TEXT_BUDGET &&
-    detailedFields.length > 0
-  ) {
-    detailedFields.pop();
-    fields = [...detailedFields, ...summaryFields];
-    truncated = true;
+    });
+    if (chunks.length === 0) {
+      continue;
+    }
+    for (const lines of chunks) {
+      sectionChunks.push({
+        sectionName: section.sectionName,
+        lines,
+      });
+    }
   }
 
-  while (
-    estimateFillEmbedTextLength({
+  const pages: Array<{ fields: FillEmbedField[] }> = [];
+  let currentFields: FillEmbedField[] = [];
+
+  for (const chunk of sectionChunks) {
+    const chunkFields = buildSectionFields({
+      sectionName: chunk.sectionName,
+      lines: chunk.lines,
+    });
+    const candidateFields = [...currentFields, ...chunkFields];
+    const candidateLength = estimateFillEmbedTextLength({
       title: FILL_EMBED_TITLE,
       description,
-      fields,
-      footerText: truncated ? FILL_TRUNCATION_FOOTER : null,
-    }) > FILL_TOTAL_EMBED_TEXT_BUDGET &&
-    summaryFields.length > 0
-  ) {
-    summaryFields.pop();
-    fields = [...detailedFields, ...summaryFields];
-    truncated = true;
+      fields: candidateFields,
+      footerText: "Page 999/999",
+    });
+    if (
+      candidateLength <= FILL_PAGE_RENDER_BUDGET &&
+      candidateFields.length <= FILL_PAGE_FIELD_LIMIT
+    ) {
+      currentFields = candidateFields;
+      continue;
+    }
+
+    if (currentFields.length > 0) {
+      pages.push({ fields: currentFields });
+    }
+    currentFields = chunkFields;
+  }
+
+  if (currentFields.length > 0 || pages.length === 0) {
+    pages.push({ fields: currentFields });
   }
 
   return {
-    fields,
-    truncated,
+    pages,
+    description,
   };
 }
 
-function buildFillEmbeds(input: {
-  summaryDescription: string;
-  fields: FillEmbedField[];
-  truncated: boolean;
-}): EmbedBuilder[] {
-  const renderedFields = input.fields.slice(0, FILL_PAGE_FIELD_LIMIT);
-  const truncated = input.truncated || input.fields.length > renderedFields.length;
-  const embed = new EmbedBuilder().setTitle(truncateForDiscord(FILL_EMBED_TITLE, 256)).setColor(0x57f287);
-  embed.setDescription(truncateForDiscord(input.summaryDescription, FILL_PAGE_DESCRIPTION_LIMIT));
-  for (const field of renderedFields) {
-    embed.addFields(field);
+export function buildCompoFillPageCustomId(input: {
+  userId: string;
+  pageIndex: number;
+}): string {
+  return `${COMPO_FILL_PAGE_PREFIX}:${input.userId}:${Math.trunc(input.pageIndex)}`;
+}
+
+export function parseCompoFillPageCustomId(
+  customId: string,
+): { userId: string; pageIndex: number } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts[0] !== COMPO_FILL_PAGE_PREFIX || parts.length !== 3) {
+    return null;
   }
-  if (truncated) {
-    embed.setFooter({ text: FILL_TRUNCATION_FOOTER });
+  const userId = parts[1];
+  const pageIndex = Number(parts[2]);
+  if (!userId || !Number.isFinite(pageIndex)) {
+    return null;
   }
-  return [embed];
+  return {
+    userId,
+    pageIndex: Math.trunc(pageIndex),
+  };
+}
+
+export function isCompoFillPageButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${COMPO_FILL_PAGE_PREFIX}:`);
 }
 
 function cloneBucketCounts(counts: CompoWarBucketCounts): CompoWarBucketCounts {
@@ -485,6 +576,8 @@ function buildSummaryDescription(input: {
 
 function buildFillRefreshComponents(input: {
   userId?: string | null;
+  pageIndex?: number;
+  pageCount?: number;
   loading?: boolean;
 }): Array<ActionRowBuilder<ButtonBuilder>> {
   const userId = String(input.userId ?? "").trim();
@@ -492,8 +585,39 @@ function buildFillRefreshComponents(input: {
     return [];
   }
   const loading = input.loading ?? false;
+  const pageCount = Math.max(1, Math.trunc(input.pageCount ?? 1));
+  const pageIndex = Math.min(
+    pageCount - 1,
+    Math.max(0, Math.trunc(input.pageIndex ?? 0)),
+  );
+  const buttons: ButtonBuilder[] = [];
+  if (pageCount > 1) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(
+          buildCompoFillPageCustomId({
+            userId,
+            pageIndex: Math.max(0, pageIndex - 1),
+          }),
+        )
+        .setLabel("Prev")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(loading || pageIndex <= 0),
+      new ButtonBuilder()
+        .setCustomId(
+          buildCompoFillPageCustomId({
+            userId,
+            pageIndex: Math.min(pageCount - 1, pageIndex + 1),
+          }),
+        )
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(loading || pageIndex >= pageCount - 1),
+    );
+  }
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
+      ...buttons,
       new ButtonBuilder()
         .setCustomId(`compo-refresh:fill:${userId}`)
         .setLabel(loading ? FILL_REFRESH_LOADING_LABEL : FILL_REFRESH_LABEL)
@@ -530,7 +654,7 @@ function buildCompoFillRefreshWarning(input: {
 export class CompoFillService {
   async readFill(
     guildId?: string | null,
-    options?: { userId?: string | null },
+    options?: { userId?: string | null; pageIndex?: number | null },
   ): Promise<CompoFillReadResult> {
     const userId = options?.userId ?? null;
     const guild = guildId ?? null;
@@ -571,6 +695,7 @@ export class CompoFillService {
           destinationPlans: 0,
           plannedMoveCount: 0,
           embedCount: render.embeds.length,
+          pageCount: 1,
         }),
       });
       return {
@@ -581,6 +706,8 @@ export class CompoFillService {
         destinationClanCount: 0,
         plannedMoveCount: 0,
         availableFillerCount: 0,
+        pageIndex: 0,
+        pageCount: 1,
       };
     }
 
@@ -675,28 +802,56 @@ export class CompoFillService {
         plannedMoveCount,
       },
       work: async () => {
-        const fillEmbedFields = buildFillEmbedFields({
-          result,
-          fillerAccountsByTag: new Map(
-        fillers.map((filler) => [normalizeLinkTag(String(filler.tag ?? "")), filler] as const),
-        ),
-      });
         const summaryDescription = buildSummaryDescription({
           destinationPlans: result.destinationPlans,
           remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
           unusedAvailableFillers: result.unusedAvailableFillers,
           plannedMoveCount,
         });
-        const embeds = buildFillEmbeds({
-          summaryDescription,
-          fields: fillEmbedFields.fields,
-          truncated: fillEmbedFields.truncated,
+        const sectionSources = buildFillSectionSources({
+          result,
+          fillerAccountsByTag: new Map(
+            fillers.map((filler) => [
+              normalizeLinkTag(String(filler.tag ?? "")),
+              filler,
+            ] as const),
+        ),
         });
-        const components = buildFillRefreshComponents({ userId });
+        const pages = buildFillPageEmbeds({
+          summaryDescription,
+          sections: sectionSources,
+        });
+        const requestedPageIndex = Math.max(
+          0,
+          Math.trunc(options?.pageIndex ?? 0),
+        );
+        const pageIndex = Math.min(
+          pages.pages.length - 1,
+          requestedPageIndex,
+        );
+        const embedPage = pages.pages[pageIndex] ?? { fields: [] };
+        const embed = new EmbedBuilder()
+          .setTitle(truncateForDiscord(FILL_EMBED_TITLE, 256))
+          .setColor(0x57f287)
+          .setDescription(pages.description)
+          .setFooter({
+            text: `Page ${pageIndex + 1}/${Math.max(1, pages.pages.length)}`,
+          });
+        for (const field of embedPage.fields.slice(0, FILL_PAGE_FIELD_LIMIT)) {
+          embed.addFields(field);
+        }
+        const embeds = [embed];
+        const components = buildFillRefreshComponents({
+          userId,
+          pageIndex,
+          pageCount: pages.pages.length,
+        });
         return {
           content: "",
           embeds,
           components,
+          pageIndex,
+          pageCount: pages.pages.length,
         };
       },
       completeDetail: (renderResult) => ({
@@ -708,6 +863,7 @@ export class CompoFillService {
         plannedMoveCount,
         embedCount: renderResult.embeds.length,
         componentRows: renderResult.components.length,
+        pageCount: renderResult.pageCount,
       }),
     });
 
@@ -719,6 +875,8 @@ export class CompoFillService {
       destinationClanCount: result.destinationPlans.length,
       plannedMoveCount,
       availableFillerCount,
+      pageIndex: render.pageIndex,
+      pageCount: render.pageCount,
     };
   }
 
@@ -802,6 +960,7 @@ export class CompoFillService {
 
     const render = await this.readFill(guild, {
       userId: options?.userId ?? null,
+      pageIndex: 0,
     });
 
     return {
