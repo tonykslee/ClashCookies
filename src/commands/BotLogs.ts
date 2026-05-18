@@ -7,9 +7,15 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { CoCService } from "../services/CoCService";
-import { BotLogChannelService } from "../services/BotLogChannelService";
+import {
+  BOT_LOG_CHANNEL_TYPES,
+  BotLogChannelService,
+  type BotLogChannelType,
+} from "../services/BotLogChannelService";
 
 const BOT_LOGS_SET_CHANNEL_OPTION = "set-channel";
+const BOT_LOGS_TYPE_OPTION = "type";
+const BOT_LOGS_BASE_SWAP_TYPE: BotLogChannelType = "base-swap";
 const BOT_LOGS_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
@@ -68,6 +74,16 @@ export const BotLogs: Command = {
   description: "Set or view the guild channel used for important bot logs",
   options: [
     {
+      name: BOT_LOGS_TYPE_OPTION,
+      description: "Type of bot log destination to view or update",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: BOT_LOG_CHANNEL_TYPES.map((type) => ({
+        name: type,
+        value: type,
+      })),
+    },
+    {
       name: BOT_LOGS_SET_CHANNEL_OPTION,
       description: "Channel used for important bot log posts",
       type: ApplicationCommandOptionType.Channel,
@@ -97,6 +113,10 @@ export const BotLogs: Command = {
     }
 
     const botLogChannelService = new BotLogChannelService();
+    const requestedType = interaction.options.getString(
+      BOT_LOGS_TYPE_OPTION,
+      false,
+    ) as BotLogChannelType | null;
     const requestedChannel = interaction.options.getChannel(
       BOT_LOGS_SET_CHANNEL_OPTION,
       false
@@ -120,7 +140,23 @@ export const BotLogs: Command = {
         return;
       }
 
-      await botLogChannelService.setChannelId(interaction.guildId, requestedChannel.id);
+      if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
+        await botLogChannelService.setChannelIdForType(
+          interaction.guildId,
+          requestedType,
+          requestedChannel.id,
+        );
+        await interaction.reply({
+          ephemeral: true,
+          content: `Base-swap bot-log channel saved: <#${requestedChannel.id}>.`,
+        });
+        return;
+      }
+
+      await botLogChannelService.setChannelId(
+        interaction.guildId,
+        requestedChannel.id,
+      );
       await interaction.reply({
         ephemeral: true,
         content: `Bot-log channel saved: <#${requestedChannel.id}>.`,
@@ -128,7 +164,57 @@ export const BotLogs: Command = {
       return;
     }
 
-    const configuredChannelId = await botLogChannelService.getChannelId(interaction.guildId);
+    if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
+      const configuredChannelId = await botLogChannelService.getChannelIdForType(
+        interaction.guildId,
+        requestedType,
+      );
+      if (!configuredChannelId) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "No base-swap bot-log channel is configured yet.",
+        });
+        return;
+      }
+
+      const channelState = await resolveConfiguredChannelState(
+        interaction,
+        configuredChannelId,
+      );
+      if (channelState === "found") {
+        await interaction.reply({
+          ephemeral: true,
+          content: `Current base-swap bot-log channel: <#${configuredChannelId}>.`,
+        });
+        return;
+      }
+
+      if (channelState === "missing") {
+        await botLogChannelService.clearChannelIdForType(
+          interaction.guildId,
+          requestedType,
+        );
+        await interaction.reply({
+          ephemeral: true,
+          content:
+            `Configured base-swap bot-log channel <#${configuredChannelId}> no longer exists. ` +
+            "I cleared the saved setting. Set a new one with `/bot-logs type:base-swap set-channel`.",
+        });
+        return;
+      }
+
+      await interaction.reply({
+        ephemeral: true,
+        content:
+          `Configured base-swap bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+          "Set a new one with `/bot-logs type:base-swap set-channel`.",
+      });
+      return;
+    }
+
+    const configuredChannelId = await botLogChannelService.getChannelId(
+      interaction.guildId,
+    );
     if (!configuredChannelId) {
       await interaction.reply({
         ephemeral: true,
