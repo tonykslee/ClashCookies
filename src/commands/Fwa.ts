@@ -364,6 +364,7 @@ type FwaBaseSwapSplitPostPayload = {
   clanKind?: FwaBaseSwapClanKind;
   userId: string;
   username: string;
+  displayName?: string | null;
   guildId: string;
   channelId: string;
   mailChannelId: string;
@@ -569,6 +570,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       sourceChannelId: mailChannelId,
       userId: payload.userId,
       username: payload.username,
+      displayName: payload.displayName ?? payload.username,
       clanKind,
       clanTag: payload.clanTag,
       clanName: payload.clanName,
@@ -1351,27 +1353,27 @@ function buildFwaBaseSwapAuditLogContent(input: {
   clanKind?: FwaBaseSwapClanKind;
   userId: string;
   username: string;
+  displayName?: string | null;
   sourceChannelId: string | null;
   clanTag: string;
   clanName: string;
   commandText: string;
   messageUrls: readonly string[];
 }): string {
-  const displayUsername = String(input.username ?? "").trim() || "unknown";
-  const clanKind = input.clanKind ?? "FWA";
+  const displayName =
+    String(input.displayName ?? "").trim() ||
+    String(input.username ?? "").trim() ||
+    "unknown";
   const links = input.messageUrls
     .map((url) => String(url ?? "").trim())
     .filter(Boolean);
   const lines = [
-    `${clanKind} base-swap announcement posted`,
-    `<@${input.userId}> (${displayUsername}, ${input.userId}) posted /fwa base-swap in ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"} for ${input.clanName} (#${input.clanTag})`,
-    `Source channel: ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"}`,
-    "Posted message link(s):",
-    ...(links.length > 0 ? links.map((link) => `- ${link}`) : ["- (none)"]),
-    "Command:",
-    "```text",
-    formatFwaBaseSwapAuditBlock(input.commandText),
-    "```",
+    "**FWA base-swap announcement posted**",
+    `<@${input.userId}> (${displayName}, ${input.userId}) posted /fwa base-swap in ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"} for ${input.clanName} (#${input.clanTag})`,
+    links.length > 0
+      ? `Posted message link(s): ${links[0]}${links.length > 1 ? `\n${links.slice(1).map((link) => `- ${link}`).join("\n")}` : ""}`
+      : "Posted message link(s): (none)",
+    `Command: \`${formatFwaBaseSwapAuditBlock(input.commandText)}\``,
   ];
   return truncateDiscordContent(lines.join("\n"), FWA_BASE_SWAP_AUDIT_LOG_LIMIT);
 }
@@ -1398,6 +1400,22 @@ function buildFwaBaseSwapCommandText(input: {
   return parts.join(" ");
 }
 
+function resolveFwaBaseSwapDisplayName(
+  interaction: Pick<ChatInputCommandInteraction, "member" | "user">,
+): string {
+  const member = interaction.member;
+  const memberDisplayName =
+    member && typeof member === "object" && "displayName" in member
+      ? String(member.displayName ?? "").trim()
+      : "";
+  return (
+    memberDisplayName ||
+    String(interaction.user.globalName ?? "").trim() ||
+    String(interaction.user.username ?? "").trim() ||
+    "unknown"
+  );
+}
+
 function validateFwaBaseSwapSwapReminderOption(input: {
   fwaBasesRaw: string | null;
   swapReminderRaw: boolean | null;
@@ -1418,6 +1436,7 @@ async function logFwaBaseSwapPublication(input: {
   sourceChannelId: string | null;
   userId: string;
   username: string;
+  displayName?: string | null;
   clanTag: string;
   clanName: string;
   commandText: string;
@@ -1436,6 +1455,7 @@ async function logFwaBaseSwapPublication(input: {
         clanKind: input.clanKind ?? "FWA",
         userId: input.userId,
         username: input.username,
+        displayName: input.displayName ?? input.username,
         sourceChannelId: input.sourceChannelId,
         clanTag: input.clanTag,
         clanName: input.clanName,
@@ -13432,6 +13452,7 @@ export const Fwa: Command = {
         fwaBaseSwapSplitPostPayloads.set(key, {
           userId: interaction.user.id,
           username: interaction.user.username,
+          displayName: resolveFwaBaseSwapDisplayName(interaction),
           guildId: interaction.guildId,
           channelId: interaction.channelId,
           mailChannelId,
@@ -13518,6 +13539,7 @@ export const Fwa: Command = {
         sourceChannelId: mailChannelId,
         userId: interaction.user.id,
         username: interaction.user.username,
+        displayName: resolveFwaBaseSwapDisplayName(interaction),
         clanKind,
         clanTag,
         clanName,
