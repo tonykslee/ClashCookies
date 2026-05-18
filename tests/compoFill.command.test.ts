@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-import { Compo } from "../src/commands/Compo";
+import { Compo, safeFormatUnknownErrorForTest } from "../src/commands/Compo";
 import { CompoFillService } from "../src/services/CompoFillService";
 
 function makeInteraction() {
@@ -82,6 +82,14 @@ describe("/compo fill command", () => {
   });
 
   it("surfaces readFill failures to the user instead of hanging", async () => {
+    const events: string[] = [];
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      const line = String(args[0] ?? "");
+      if (line.includes("stage=response_sent")) {
+        events.push("response_sent");
+      }
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const readFillSpy = vi
       .spyOn(CompoFillService.prototype, "readFill")
       .mockRejectedValue(new Error("fill boom"));
@@ -92,6 +100,9 @@ describe("/compo fill command", () => {
     } as any;
 
     const interaction = makeInteraction();
+    interaction.editReply = vi.fn(async () => {
+      events.push("editReply");
+    });
     await Compo.run({} as any, interaction as any, cocService);
 
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
@@ -103,5 +114,56 @@ describe("/compo fill command", () => {
     );
     expect(Array.isArray(payload?.embeds)).toBe(true);
     expect(Array.isArray(payload?.components)).toBe(true);
+    expect(events.indexOf("editReply")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("response_sent")).toBeGreaterThan(events.indexOf("editReply"));
+    expect(consoleLogSpy).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it("still replies when the thrown error has hostile getters", async () => {
+    const hostileError = {
+      get name() {
+        throw new Error("name boom");
+      },
+      get message() {
+        throw new Error("message boom");
+      },
+      get stack() {
+        throw new Error("stack boom");
+      },
+    };
+    const readFillSpy = vi
+      .spyOn(CompoFillService.prototype, "readFill")
+      .mockRejectedValue(hostileError as any);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
+      throw new Error("console boom");
+    });
+    const interaction = makeInteraction();
+
+    await Compo.run({} as any, interaction as any, {
+      getClan: vi.fn(),
+      getCurrentWar: vi.fn(),
+      getClanWarLog: vi.fn(),
+    } as any);
+
+    expect(readFillSpy).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toContain(
+      "Failed to build DB-backed compo fill recommendations.",
+    );
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it("truncates safe formatter output", () => {
+    const formatted = safeFormatUnknownErrorForTest({
+      name: "VeryLargeError",
+      message: "x".repeat(5000),
+      stack: "y".repeat(5000),
+    });
+
+    expect(formatted.length).toBeLessThanOrEqual(1800);
+    expect(formatted).toContain("name=VeryLargeError");
+    expect(formatted).toContain("message=");
+    expect(formatted).toContain("stack=");
   });
 });
