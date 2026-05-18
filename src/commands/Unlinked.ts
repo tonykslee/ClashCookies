@@ -26,6 +26,7 @@ const UNLINKED_ALERT_THREAD_CHANNEL_TYPES = [
 
 const UNLINKED_ALERT_SET_ENABLE_CHOICES = [
   "clan-log channel",
+  "clan-lead channel",
   "bot-log channel",
   "custom",
   "false",
@@ -88,6 +89,9 @@ function formatUnlinkedAlertRoutingConfirmation(
 ): string {
   if (routingMode === "CLAN_LOG") {
     return "Saved unlinked-player alert routing: tracked clan log channel.";
+  }
+  if (routingMode === "CLAN_LEAD") {
+    return "Saved unlinked-player alert routing: tracked clan leader channel.";
   }
   if (routingMode === "BOT_LOG") {
     return "Saved unlinked-player alert routing: /bot-logs channel.";
@@ -318,6 +322,7 @@ export const Unlinked: Command = {
 
         const routingModeMap = new Map<string, UnlinkedAlertRoutingMode>([
           ["clan-log channel", "CLAN_LOG"],
+          ["clan-lead channel", "CLAN_LEAD"],
           ["bot-log channel", "BOT_LOG"],
           ["false", "DISABLED"],
         ]);
