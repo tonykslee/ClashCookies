@@ -1,5 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { CompoFillService } from "../src/services/CompoFillService";
+import {
+  CompoFillService,
+  estimateFillEmbedTextLengthForTest,
+} from "../src/services/CompoFillService";
 import * as actualStateService from "../src/services/CompoActualStateService";
 import * as fillerAccountService from "../src/services/FillerAccountService";
 import * as planner from "../src/services/CompoFillPlanner";
@@ -456,12 +459,13 @@ describe("/compo fill service", () => {
     expect(text).toContain("2. Bob (#P2) | 135,000 | TH14 | from Source (#SRC) | matched TH14");
     expect(text).toContain("Remaining Open Slots");
     expect(text).toContain("B | Bravo (#BBB222) | 1 open slot | 49/50");
-    expect(text).toContain("Unused Available Fillers");
-    expect(text).toContain("Extra (#EXTRA) | 155,000 | TH16 | from outside tracked clans");
-    expect(text).toContain("Unavailable Fillers");
-    expect(text).toContain("reason: source_member_count_below_target, source_bucket_deficit");
-    expect(text).toContain("Excluded / Missing Weight");
-    expect(text).toContain("reason: missing_weight");
+    expect(text).toContain("Filler Summary");
+    expect(text).toContain("Unused Available Fillers: 1");
+    expect(text).toContain("Unavailable Fillers: 1");
+    expect(text).toContain("Excluded / Missing Weight: 1");
+    expect(String(embed.footer?.text ?? "")).toContain(
+      "Output truncated to stay within Discord limits.",
+    );
   });
 
   it("refreshes tracked clans and filler current-state data before rerendering with a warning", async () => {
@@ -625,10 +629,10 @@ describe("/compo fill service", () => {
     ).toBe(true);
   });
 
-  it("paginates safely when the planned output is large", async () => {
+  it("keeps the total embed payload within budget for production-like large output", async () => {
     vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
-      trackedClanTags: Array.from({ length: 18 }, (_value, index) => `#CLAN${index}`),
-      renderableClanTags: [],
+      trackedClanTags: Array.from({ length: 11 }, (_value, index) => `#CLAN${index}`),
+      renderableClanTags: Array.from({ length: 11 }, (_value, index) => `#CLAN${index}`),
       latestSourceSyncedAt: null,
       heatMapRefs: [
         {
@@ -645,7 +649,7 @@ describe("/compo fill service", () => {
           th10OrLowerCount: 0,
         },
       ],
-      clans: Array.from({ length: 18 }, (_value, index) => ({
+      clans: Array.from({ length: 11 }, (_value, index) => ({
         clanTag: `#CLAN${index}`,
         clanName: `Clan ${index}`,
         shortName: `C${index}`,
@@ -671,69 +675,83 @@ describe("/compo fill service", () => {
         members: [],
       })),
     } as any);
-    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([] as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue(
+      Array.from({ length: 91 }, (_value, index) => ({
+        tag: `#F${index}`,
+        name: `Filler ${index}`,
+        clanTag: index % 3 === 0 ? null : "#SRC",
+        clanName: index % 3 === 0 ? null : "Source",
+        weight: 145000 + index,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      })) as any,
+    );
 
     const bigResult = makePlannerResult();
-    bigResult.destinationPlans = Array.from({ length: 18 }, (_value, index) =>
+    bigResult.destinationPlans = [
       makeTrackedClanPlan({
-        clanTag: `#CLAN${index}`,
-        clanName: `Clan ${index}`,
-        shortName: `C${index}`,
+        clanTag: "#CLAN0",
+        clanName: "Clan 0",
+        shortName: "C0",
         initialMemberCount: 49,
         targetMemberCount: 50,
         remainingSlots: 0,
-        plannedMoves: Array.from({ length: 2 }, (_move, moveIndex) => ({
-          sequence: index * 2 + moveIndex + 1,
-          matchedBucket: "TH14",
-          filler: {
-            playerTag: `#P${index}_${moveIndex}`,
-            playerName: `Player ${index}-${moveIndex}`,
-            resolvedWeight: 135000 + moveIndex,
-            resolvedWeightBucket: "TH14",
-            currentClanTag: null,
-            currentClanName: null,
+        plannedMoves: [
+          {
+            sequence: 1,
+            matchedBucket: "TH14",
+            filler: {
+              playerTag: "#F0",
+              playerName: "Filler 0",
+              resolvedWeight: 145000,
+              resolvedWeightBucket: "TH14",
+              currentClanTag: null,
+              currentClanName: null,
+              sourceClanTag: null,
+              sourceClanName: null,
+              sourceKind: "untracked",
+            },
+            destinationClanTag: "#CLAN0",
+            destinationClanName: "Clan 0",
+            destinationShortName: "C0",
+            destinationMemberCountBefore: 49,
+            destinationMemberCountAfter: 50,
+            destinationBucketCountsBefore: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 49,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+            destinationBucketCountsAfter: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 50,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
             sourceClanTag: null,
             sourceClanName: null,
-            sourceKind: "untracked",
+            sourceMemberCountBefore: null,
+            sourceMemberCountAfter: null,
+            sourceBucketCountsBefore: null,
+            sourceBucketCountsAfter: null,
           },
-          destinationClanTag: `#CLAN${index}`,
-          destinationClanName: `Clan ${index}`,
-          destinationShortName: `C${index}`,
-          destinationMemberCountBefore: 49,
-          destinationMemberCountAfter: 50,
-          destinationBucketCountsBefore: {
-            TH18: 0,
-            TH17: 0,
-            TH16: 0,
-            TH15: 0,
-            TH14: 49,
-            TH13: 0,
-            TH12: 0,
-            TH11: 0,
-            TH10: 0,
-            TH9: 0,
-            TH8_OR_LOWER: 0,
-          },
-          destinationBucketCountsAfter: {
-            TH18: 0,
-            TH17: 0,
-            TH16: 0,
-            TH15: 0,
-            TH14: 50,
-            TH13: 0,
-            TH12: 0,
-            TH11: 0,
-            TH10: 0,
-            TH9: 0,
-            TH8_OR_LOWER: 0,
-          },
-          sourceClanTag: null,
-          sourceClanName: null,
-          sourceMemberCountBefore: null,
-          sourceMemberCountAfter: null,
-          sourceBucketCountsBefore: null,
-          sourceBucketCountsAfter: null,
-        })),
+        ],
         initialBucketCounts: {
           TH18: 0,
           TH17: 0,
@@ -761,8 +779,8 @@ describe("/compo fill service", () => {
           TH8_OR_LOWER: 0,
         },
       }),
-    );
-    bigResult.unusedAvailableFillers = Array.from({ length: 30 }, (_value, index) => ({
+    ];
+    bigResult.unusedAvailableFillers = Array.from({ length: 40 }, (_value, index) => ({
       playerTag: `#U${index}`,
       playerName: `Unused ${index}`,
       resolvedWeight: 155000,
@@ -773,16 +791,55 @@ describe("/compo fill service", () => {
       sourceClanName: null,
       sourceKind: "untracked",
     }));
-    bigResult.unavailableFillers = [];
-    bigResult.excludedFillers = [];
-    bigResult.remainingUnfilledClanSlots = [];
+    bigResult.unavailableFillers = Array.from({ length: 30 }, (_value, index) => ({
+      playerTag: `#B${index}`,
+      playerName: `Blocked ${index}`,
+      resolvedWeight: 145000,
+      resolvedWeightBucket: "TH15",
+      currentClanTag: "#SRC",
+      currentClanName: "Source",
+      sourceClanTag: "#SRC",
+      sourceClanName: "Source",
+      reasonCodes: ["source_member_count_below_target", "source_bucket_deficit"],
+    }));
+    bigResult.excludedFillers = Array.from({ length: 20 }, (_value, index) => ({
+      playerTag: `#M${index}`,
+      playerName: `Missing ${index}`,
+      resolvedWeight: null,
+      resolvedWeightBucket: null,
+      currentClanTag: null,
+      currentClanName: null,
+      reasonCodes: ["missing_weight"],
+    }));
+    bigResult.remainingUnfilledClanSlots = [
+      {
+        clanTag: "#CLAN1",
+        clanName: "Clan 1",
+        shortName: "C1",
+        remainingSlots: 1,
+        currentMemberCount: 49,
+        targetMemberCount: 50,
+      },
+    ];
     vi.spyOn(planner, "buildCompoFillPlan").mockReturnValue(bigResult as any);
 
     const result = await new CompoFillService().readFill("guild-1");
-    expect(result.embeds.length).toBeGreaterThan(1);
-    expect(result.embeds.length).toBeLessThanOrEqual(10);
-    expect(
-      result.embeds.every((embed) => (getEmbedJSON(embed).fields ?? []).length <= 25),
-    ).toBe(true);
+    expect(result.embeds).toHaveLength(1);
+    const embed = getEmbedJSON(result.embeds[0]);
+    const totalEmbedTextLength = estimateFillEmbedTextLengthForTest(embed);
+    expect(totalEmbedTextLength).toBeLessThanOrEqual(5500);
+    expect(String(embed.title ?? "")).toBe("Compo Fill Planner");
+    expect(String(embed.description ?? "")).toContain("Clans under 50: 1");
+    expect(String(embed.description ?? "")).toContain("Recommended moves: 1");
+    expect(String(embed.footer?.text ?? "")).toContain(
+      "Output truncated to stay within Discord limits.",
+    );
+    const text = JSON.stringify(embed);
+    expect(text).toContain("Recommended Moves - C0 | Clan 0 (#CLAN0) | 49/50 -> 50/50");
+    expect(text).toContain("Remaining Open Slots");
+    expect(text).toContain("Filler Summary");
+    expect(text).toContain("Unused Available Fillers: 40");
+    expect(text).toContain("Unavailable Fillers: 30");
+    expect(text).toContain("Excluded / Missing Weight: 20");
   });
 });
