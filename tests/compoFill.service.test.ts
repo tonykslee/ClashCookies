@@ -481,6 +481,176 @@ describe("/compo fill service", () => {
     );
   });
 
+  it("renders linked Discord mentions when stored and planned tags differ by leading #", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      latestSourceSyncedAt: null,
+      heatMapRefs: [
+        {
+          weightMinInclusive: 100000,
+          weightMaxInclusive: 200000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 2,
+          th14Count: 48,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          shortName: "A",
+          base: {
+            resolvedTotalWeight: 123456,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 1,
+              TH14: 48,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: [],
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#P1",
+        name: "Alice",
+        clanTag: null,
+        clanName: null,
+        weight: 145000,
+        discordUserId: "123456789",
+        discordUsername: "alice",
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+    vi.spyOn(planner, "buildCompoFillPlan").mockReturnValue({
+      destinationPlans: [
+        makeTrackedClanPlan({
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          shortName: "A",
+          initialMemberCount: 49,
+          targetMemberCount: 50,
+          remainingSlots: 0,
+          plannedMoves: [
+            {
+              sequence: 1,
+              matchedBucket: "TH15",
+              filler: {
+                playerTag: "P1",
+                playerName: "Alice",
+                resolvedWeight: 145000,
+                resolvedWeightBucket: "TH15",
+                currentClanTag: null,
+                currentClanName: null,
+                sourceClanTag: null,
+                sourceClanName: null,
+                sourceKind: "untracked",
+              },
+              destinationClanTag: "#AAA111",
+              destinationClanName: "Alpha",
+              destinationShortName: "A",
+              destinationMemberCountBefore: 49,
+              destinationMemberCountAfter: 50,
+              destinationBucketCountsBefore: {
+                TH18: 0,
+                TH17: 0,
+                TH16: 0,
+                TH15: 1,
+                TH14: 48,
+                TH13: 0,
+                TH12: 0,
+                TH11: 0,
+                TH10: 0,
+                TH9: 0,
+                TH8_OR_LOWER: 0,
+              },
+              destinationBucketCountsAfter: {
+                TH18: 0,
+                TH17: 0,
+                TH16: 0,
+                TH15: 2,
+                TH14: 48,
+                TH13: 0,
+                TH12: 0,
+                TH11: 0,
+                TH10: 0,
+                TH9: 0,
+                TH8_OR_LOWER: 0,
+              },
+              sourceClanTag: null,
+              sourceClanName: null,
+              sourceMemberCountBefore: null,
+              sourceMemberCountAfter: null,
+              sourceBucketCountsBefore: null,
+              sourceBucketCountsAfter: null,
+            },
+          ],
+          initialBucketCounts: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 1,
+            TH14: 48,
+            TH13: 0,
+            TH12: 0,
+            TH11: 0,
+            TH10: 0,
+            TH9: 0,
+            TH8_OR_LOWER: 0,
+          },
+          targetBucketCounts: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 2,
+            TH14: 48,
+            TH13: 0,
+            TH12: 0,
+            TH11: 0,
+            TH10: 0,
+            TH9: 0,
+            TH8_OR_LOWER: 0,
+          },
+        }),
+      ],
+      unavailableFillers: [],
+      excludedFillers: [],
+      unusedAvailableFillers: [],
+      remainingUnfilledClanSlots: [],
+    } as any);
+
+    const result = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+    });
+
+    const embed = getEmbedJSON(result.embeds[0]);
+    const text = JSON.stringify(embed);
+    expect(text).toContain("<@123456789>");
+    expect(text).toContain(
+      "[Alice](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P1>) (`#P1`)",
+    );
+  });
+
   it("builds profile URLs and compact display helpers", () => {
     expect(normalizeLinkTagForTest("#2C998J8LY")).toBe("2C998J8LY");
     expect(normalizeLinkTagForTest("  #ABC123  ")).toBe("ABC123");

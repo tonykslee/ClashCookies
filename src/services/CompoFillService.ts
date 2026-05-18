@@ -309,7 +309,7 @@ function buildFillEmbedFields(input: {
       formatMoveLine({
         move,
         linkedDiscordUserId:
-          input.fillerAccountsByTag.get(String(move.filler.playerTag ?? "").trim())?.discordUserId ?? null,
+          input.fillerAccountsByTag.get(normalizeLinkTag(String(move.filler.playerTag ?? "")))?.discordUserId ?? null,
       }),
     );
     detailedFields.push(
@@ -675,12 +675,12 @@ export class CompoFillService {
         plannedMoveCount,
       },
       work: async () => {
-    const fillEmbedFields = buildFillEmbedFields({
-      result,
-      fillerAccountsByTag: new Map(
-        fillers.map((filler) => [String(filler.tag ?? "").trim(), filler] as const),
-      ),
-    });
+        const fillEmbedFields = buildFillEmbedFields({
+          result,
+          fillerAccountsByTag: new Map(
+        fillers.map((filler) => [normalizeLinkTag(String(filler.tag ?? "")), filler] as const),
+        ),
+      });
         const summaryDescription = buildSummaryDescription({
           destinationPlans: result.destinationPlans,
           remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
