@@ -3,6 +3,16 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { Compo, safeFormatUnknownErrorForTest } from "../src/commands/Compo";
 import { CompoFillService } from "../src/services/CompoFillService";
 
+function extractCompoStages(logSpy: { mock: { calls: unknown[][] } }): string[] {
+  return logSpy.mock.calls
+    .map((args) => String(args[0] ?? ""))
+    .filter((line) => line.includes("[compo-command]"))
+    .map((line) => {
+      const match = line.match(/stage=([^\s]+)/);
+      return match?.[1] ?? line;
+    });
+}
+
 function makeInteraction() {
   const interaction: any = {
     commandName: "compo",
@@ -29,6 +39,8 @@ describe("/compo fill command", () => {
   });
 
   it("renders through the fill service without touching the live CoC client", async () => {
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const readFillSpy = vi.spyOn(CompoFillService.prototype, "readFill").mockResolvedValue({
       content: "",
       embeds: [
@@ -69,6 +81,22 @@ describe("/compo fill command", () => {
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(cocService.getClanWarLog).not.toHaveBeenCalled();
 
+    const stages = extractCompoStages(consoleLogSpy);
+    expect(stages).toContain("run_enter");
+    expect(stages).toContain("visibility_resolved");
+    expect(stages).toContain("defer_start");
+    expect(stages).toContain("defer_complete");
+    expect(stages).toContain("subcommand_resolve_start");
+    expect(stages).toContain("subcommand_resolve_complete");
+    expect(stages).toContain("mode_resolve_start");
+    expect(stages).toContain("mode_resolve_complete");
+    expect(stages).toContain("fill_read_start");
+    expect(stages.indexOf("run_enter")).toBeLessThan(stages.indexOf("defer_start"));
+    expect(stages.indexOf("defer_start")).toBeLessThan(stages.indexOf("subcommand_resolve_start"));
+    expect(stages.indexOf("subcommand_resolve_start")).toBeLessThan(
+      stages.indexOf("fill_read_start"),
+    );
+
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toBe("");
     expect(Array.isArray(payload?.embeds)).toBe(true);
@@ -79,6 +107,7 @@ describe("/compo fill command", () => {
     expect(String(payload?.embeds?.[0]?.toJSON?.()?.description ?? "")).toContain(
       "Clans under 50: 1",
     );
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
   it("surfaces readFill failures to the user instead of hanging", async () => {
@@ -120,7 +149,37 @@ describe("/compo fill command", () => {
     expect(consoleErrorSpy).toHaveBeenCalled();
   });
 
-  it("still replies when the thrown error has hostile getters", async () => {
+  it("falls back cleanly when deferReply throws", async () => {
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = makeInteraction();
+    interaction.deferReply = vi.fn().mockRejectedValue(new Error("defer boom"));
+    interaction.reply = vi.fn().mockResolvedValue(undefined);
+    interaction.options.getSubcommand = vi.fn((required?: boolean) => {
+      if (required) return "fill";
+      return "fill";
+    });
+
+    await Compo.run({} as any, interaction as any, {
+      getClan: vi.fn(),
+      getCurrentWar: vi.fn(),
+      getClanWarLog: vi.fn(),
+    } as any);
+
+    expect(interaction.reply).toHaveBeenCalledTimes(1);
+    expect(String(interaction.reply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Failed to start compo fill recommendations.",
+    );
+    expect(String(interaction.reply.mock.calls.at(-1)?.[0]?.content ?? "")).not.toContain(
+      "DB-backed compo fill recommendations",
+    );
+    const stages = extractCompoStages(consoleLogSpy);
+    expect(stages).toContain("defer_error");
+    expect(stages).toContain("response_sent");
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the general catch path safe when subcommand resolution throws", async () => {
     const hostileError = {
       get name() {
         throw new Error("name boom");
@@ -132,13 +191,17 @@ describe("/compo fill command", () => {
         throw new Error("stack boom");
       },
     };
-    const readFillSpy = vi
-      .spyOn(CompoFillService.prototype, "readFill")
-      .mockRejectedValue(hostileError as any);
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {
       throw new Error("console boom");
     });
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const interaction = makeInteraction();
+    interaction.options.getSubcommand = vi.fn((required?: boolean) => {
+      if (required) {
+        throw hostileError;
+      }
+      return "fill";
+    });
 
     await Compo.run({} as any, interaction as any, {
       getClan: vi.fn(),
@@ -146,11 +209,12 @@ describe("/compo fill command", () => {
       getClanWarLog: vi.fn(),
     } as any);
 
-    expect(readFillSpy).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toContain(
-      "Failed to build DB-backed compo fill recommendations.",
+      "Failed to start compo fill recommendations.",
     );
+    const stages = extractCompoStages(consoleLogSpy);
+    expect(stages).toContain("response_sent");
     expect(consoleErrorSpy).toHaveBeenCalled();
   });
 

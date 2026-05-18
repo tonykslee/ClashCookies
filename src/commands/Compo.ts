@@ -91,6 +91,14 @@ function getSubcommandSafe(interaction: ChatInputCommandInteraction): string {
   }
 }
 
+function readModeSafe(interaction: ChatInputCommandInteraction): GoogleSheetMode | null {
+  try {
+    return readMode(interaction);
+  } catch {
+    return null;
+  }
+}
+
 function logCompoStage(
   interaction: ChatInputCommandInteraction,
   stage: string,
@@ -159,6 +167,32 @@ function safeFormatUnknownError(error: unknown): string {
   }
 }
 
+function getCompoRunCatchFallbackMessage(input: {
+  subcommand: string | null;
+  mode: string | null;
+  error: unknown;
+}): string {
+  if (input.subcommand === "fill") {
+    return "Failed to start compo fill recommendations. Try again in a moment.";
+  }
+  if (input.subcommand === "state" && input.mode === "war") {
+    return mapCompoWarStateErrorToMessage("load");
+  }
+  if (input.subcommand === "state") {
+    return mapCompoActualStateErrorToMessage("load");
+  }
+  if (input.subcommand === "heatmapref") {
+    return mapCompoHeatMapRefErrorToMessage("load");
+  }
+  if (input.subcommand === "place") {
+    return mapCompoPlaceErrorToMessage("load");
+  }
+  if (input.subcommand === "advice") {
+    return mapCompoAdviceErrorToMessage("load");
+  }
+  return mapCompoSheetErrorToMessage(input.error);
+}
+
 function safeDiagnosticJson(
   value: unknown,
   maxLength = 6000,
@@ -207,92 +241,38 @@ function safeDiagnosticJson(
       ? text
       : `${text.slice(0, maxLength)}...[len=${text.length}]`;
   } catch (error) {
-    return truncateDiagnosticText(`"<unstringifiable:${formatError(error)}>"`, maxLength);
+    return truncateDiagnosticText(`"<unstringifiable:${safeFormatUnknownError(error)}>"`, maxLength);
   }
-}
-
-function getDiscordRestErrorCode(error: unknown): number | null {
-  if (!error || typeof error !== "object") return null;
-  const value = (error as { code?: unknown }).code;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && /^[0-9]+$/.test(value)) return Number(value);
-  return null;
-}
-
-function getDiscordRestErrorStatus(error: unknown): number | null {
-  if (!error || typeof error !== "object") return null;
-  const value = (error as { status?: unknown }).status;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && /^[0-9]+$/.test(value)) return Number(value);
-  return null;
-}
-
-function summarizeDiscordRestError(error: unknown): Record<string, unknown> {
-  const err = error as {
-    name?: unknown;
-    message?: unknown;
-    stack?: unknown;
-    code?: unknown;
-    status?: unknown;
-    method?: unknown;
-    url?: unknown;
-    rawError?: unknown;
-    errors?: unknown;
-    requestBody?: unknown;
-    response?: { data?: unknown } | undefined;
-    cause?: unknown;
-  };
-  const requestBody = err.requestBody as
-    | {
-        json?: unknown;
-        files?: unknown;
-      }
-    | undefined;
-  const requestBodyJson = requestBody && typeof requestBody === "object" ? requestBody.json : undefined;
-  const requestBodyJsonKeys =
-    requestBodyJson && typeof requestBodyJson === "object" && !Array.isArray(requestBodyJson)
-      ? Object.keys(requestBodyJson as Record<string, unknown>)
-      : [];
-
-  return {
-    name: typeof err.name === "string" ? err.name : typeof error,
-    message:
-      typeof err.message === "string"
-        ? truncateDiagnosticText(err.message, 500)
-        : String(error ?? ""),
-    stack: typeof err.stack === "string" ? truncateDiagnosticText(err.stack, 2000) : null,
-    code: getDiscordRestErrorCode(error),
-    status: getDiscordRestErrorStatus(error),
-    method: typeof err.method === "string" ? err.method : null,
-    url: typeof err.url === "string" ? err.url : null,
-    rawError: err.rawError !== undefined ? err.rawError : null,
-    errors: err.errors !== undefined ? err.errors : null,
-    requestBody: requestBody ?? null,
-    requestBodyJsonKeys,
-    responseData: err.response?.data ?? null,
-    cause: err.cause !== undefined ? err.cause : null,
-  };
 }
 
 function logCompoRunCatchError(input: {
   interaction: ChatInputCommandInteraction;
+  subcommand: string;
+  mode: GoogleSheetMode | null;
   error: unknown;
+  safeError: string;
 }): void {
-  const telemetryContext = getTelemetryContext();
-  const details = {
-    command: "compo",
-    subcommand: getSubcommandSafe(input.interaction),
-    guildId: input.interaction.guildId ?? null,
-    userId: input.interaction.user.id,
-    interactionId: input.interaction.id,
-    runId: telemetryContext?.runId ?? null,
-    deferred: Boolean(input.interaction.deferred),
-    replied: Boolean(input.interaction.replied),
-    error: summarizeDiscordRestError(input.error),
-  };
-  console.error(
-    `[compo-command-error] stage=run_catch_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
-  );
+  try {
+    const telemetryContext = getTelemetryContext();
+    const details = {
+      command: "compo",
+      subcommand: input.subcommand,
+      mode: input.mode ?? null,
+      guildId: input.interaction.guildId ?? null,
+      userId: input.interaction.user.id,
+      interactionId: input.interaction.id,
+      runId: telemetryContext?.runId ?? null,
+      deferred: Boolean(input.interaction.deferred),
+      replied: Boolean(input.interaction.replied),
+      errorType: input.error === null ? "null" : typeof input.error,
+      error: input.safeError,
+    };
+    console.error(
+      `[compo-command-error] stage=run_catch_raw details=${safeDiagnosticJson(details, 30000, 1000)}`,
+    );
+  } catch {
+    // best-effort only
+  }
 }
 
 const COMPO_MODE_CHOICES = [
@@ -2850,36 +2830,104 @@ export const Compo: Command = {
     const visibility =
       interaction.options.getString("visibility", false) ?? "private";
     const isPublic = visibility === "public";
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply(
-        isPublic ? {} : { flags: MessageFlags.Ephemeral },
-      );
-    }
-    try {
-      const subcommand = interaction.options.getSubcommand(true);
-      const mode = readMode(interaction);
+    logCompoStage(interaction, "run_enter", {
+      visibility,
+      public: isPublic,
+    });
+    logCompoStage(interaction, "visibility_resolved", {
+      visibility,
+      public: isPublic,
+    });
 
-      if (subcommand === "advice") {
+    let resolvedSubcommand: string | null = null;
+    let resolvedMode: GoogleSheetMode | null = null;
+    try {
+      logCompoStage(interaction, "defer_start", {
+        ephemeral: !isPublic,
+      });
+      try {
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.deferReply(
+            isPublic ? {} : { flags: MessageFlags.Ephemeral },
+          );
+        }
+        logCompoStage(interaction, "defer_complete", {
+          deferred: Boolean(interaction.deferred),
+          replied: Boolean(interaction.replied),
+        });
+      } catch (error) {
+        logCompoStage(interaction, "defer_error", {
+          error: safeFormatUnknownError(error),
+        });
+        const fallbackMessage = getCompoRunCatchFallbackMessage({
+          subcommand: getSubcommandSafe(interaction),
+          mode: readModeSafe(interaction),
+          error,
+        });
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+              content: fallbackMessage,
+              embeds: [],
+              components: [],
+            });
+          } else {
+            await interaction.reply({
+              ephemeral: !isPublic,
+              content: fallbackMessage,
+            });
+          }
+          logCompoStage(interaction, "response_sent", {
+            reason: "defer_error",
+          });
+        } catch (replyError) {
+          try {
+            console.error(
+              `[compo-command-error] stage=defer_error_response_failed error=${safeFormatUnknownError(replyError)}`,
+            );
+          } catch {
+            // best-effort only
+          }
+        }
+        return;
+      }
+
+      logCompoStage(interaction, "subcommand_resolve_start", {});
+      resolvedSubcommand = interaction.options.getSubcommand(true);
+      logCompoStage(interaction, "subcommand_resolve_complete", {
+        subcommand: resolvedSubcommand,
+      });
+
+      logCompoStage(interaction, "mode_resolve_start", {});
+      resolvedMode = readMode(interaction);
+      logCompoStage(interaction, "mode_resolve_complete", {
+        mode: resolvedMode,
+      });
+
+      if (resolvedSubcommand === "advice") {
         const tagInput = interaction.options.getString("tag", true);
         const targetTag = normalizeTag(tagInput);
-        logCompoStage(interaction, "computation_start", { targetTag, mode });
+        logCompoStage(interaction, "computation_start", { targetTag, mode: resolvedMode });
         const adviceService = new CompoAdviceService();
         const advice = await adviceService.readAdvice({
           guildId: interaction.guildId ?? null,
           targetTag,
-          mode,
+          mode: resolvedMode,
         });
         logCompoStage(interaction, "db_fetch", {
-          entity: mode === "war" ? "tracked_war_advice_source" : "actual_compo_advice_source",
-          mode,
+          entity:
+            resolvedMode === "war"
+              ? "tracked_war_advice_source"
+              : "actual_compo_advice_source",
+          mode: resolvedMode,
           trackedClans: advice.trackedClanTags.length,
         });
         logCompoStage(interaction, "computation_complete", {
           result: "advice_rendered",
-          mode,
+          mode: resolvedMode,
         });
         const adviceRefreshPayload =
-          mode === "actual"
+          resolvedMode === "actual"
             ? {
                 kind: "advice" as const,
                 userId: interaction.user.id,
@@ -2914,21 +2962,21 @@ export const Compo: Command = {
         return;
       }
 
-      if (subcommand === "state") {
-        logCompoStage(interaction, "computation_start", { mode });
+      if (resolvedSubcommand === "state") {
+        logCompoStage(interaction, "computation_start", { mode: resolvedMode });
         const payload =
-          mode === "war"
+          resolvedMode === "war"
             ? await (async () => {
                 const warState = await new CompoWarStateService().readState();
                 logCompoStage(interaction, "db_fetch", {
                   entity: "tracked_war_roster_current",
-                  mode,
+                  mode: resolvedMode,
                   renderableRows: warState.renderableClanTags.length,
                   snapshotRows: warState.snapshotClanTags.length,
                 });
                 logCompoStage(interaction, "db_fetch", {
                   entity: "heat_map_ref",
-                  mode,
+                  mode: resolvedMode,
                   result: warState.stateRows ? "found" : "partial_or_missing",
                 });
                 return warState.stateRows
@@ -2950,13 +2998,13 @@ export const Compo: Command = {
                 );
                 logCompoStage(interaction, "db_fetch", {
                   entity: "actual_compo_state_source",
-                  mode,
+                  mode: resolvedMode,
                   trackedClans: actualState.trackedClanTags.length,
                   renderableRows: actualState.renderableClanTags.length,
                 });
                 logCompoStage(interaction, "db_fetch", {
                   entity: "heat_map_ref",
-                  mode,
+                  mode: resolvedMode,
                   result: actualState.stateRows ? "found" : "partial_or_missing",
                 });
                 return actualState.stateRows
@@ -2974,14 +3022,14 @@ export const Compo: Command = {
               })();
         logCompoStage(interaction, "computation_complete", {
           result: "state_rendered",
-          mode,
+          mode: resolvedMode,
         });
         logCompoStage(interaction, "response_build", { reason: "state_png" });
         await interaction.editReply({
           ...payload,
           components: buildCompoRefreshComponents({
             refreshPayload:
-            mode === "actual"
+            resolvedMode === "actual"
                   ? {
                       kind: "state",
                       userId: interaction.user.id,
@@ -3000,17 +3048,17 @@ export const Compo: Command = {
         return;
       }
 
-      if (subcommand === "heatmapref") {
-        logCompoStage(interaction, "computation_start", { mode });
+      if (resolvedSubcommand === "heatmapref") {
+        logCompoStage(interaction, "computation_start", { mode: resolvedMode });
         const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
         logCompoStage(interaction, "db_fetch", {
           entity: "heat_map_ref",
-          mode,
+          mode: resolvedMode,
           rows: Math.max(0, display.rows.length - 1),
         });
         logCompoStage(interaction, "computation_complete", {
           result: "heatmapref_rendered",
-          mode,
+          mode: resolvedMode,
           rows: Math.max(0, display.rows.length - 1),
         });
         logCompoStage(interaction, "response_build", { reason: "heatmapref_png" });
@@ -3024,7 +3072,7 @@ export const Compo: Command = {
         return;
       }
 
-      if (subcommand === "place") {
+      if (resolvedSubcommand === "place") {
         const rawWeight = interaction.options.getString("weight", true);
         const inputWeight = parseWeightInput(rawWeight);
         logCompoStage(interaction, "computation_start", {
@@ -3109,7 +3157,7 @@ export const Compo: Command = {
         return;
       }
 
-      if (subcommand === "fill") {
+      if (resolvedSubcommand === "fill") {
         logCompoStage(interaction, "computation_start", {
           mode: "actual",
         });
@@ -3213,14 +3261,25 @@ export const Compo: Command = {
       });
       return;
     } catch (err) {
+      const catchSubcommand =
+        resolvedSubcommand ?? getSubcommandSafe(interaction);
+      const catchMode = resolvedMode ?? readModeSafe(interaction);
+      const safeError = safeFormatUnknownError(err);
       logCompoRunCatchError({
         interaction,
+        subcommand: catchSubcommand,
+        mode: catchMode,
         error: err,
+        safeError,
       });
-      console.error(`compo command failed: ${formatError(err)}`);
-      console.error(
-        `[compo-command-error] stage=run_catch subcommand=${getSubcommandSafe(interaction)} error=${formatError(err)}`,
-      );
+      try {
+        console.error(`compo command failed: ${safeError}`);
+        console.error(
+          `[compo-command-error] stage=run_catch subcommand=${catchSubcommand} mode=${String(catchMode ?? "")} error=${safeError}`,
+        );
+      } catch {
+        // best-effort only
+      }
       logCompoStage(interaction, "response_build", {
         reason: "run_catch",
         normalizedCode: err instanceof GoogleSheetReadError ? err.code : "",
@@ -3235,22 +3294,34 @@ export const Compo: Command = {
             ? (err.meta.resolutionSource ?? "")
             : "",
       });
-      await safeReply(interaction, {
-        ephemeral: !isPublic,
-        content:
-          getSubcommandSafe(interaction) === "state" && readMode(interaction) === "war"
-            ? mapCompoWarStateErrorToMessage("load")
-            : getSubcommandSafe(interaction) === "state"
-              ? mapCompoActualStateErrorToMessage("load")
-              : getSubcommandSafe(interaction) === "heatmapref"
-                ? mapCompoHeatMapRefErrorToMessage("load")
-              : getSubcommandSafe(interaction) === "place"
-                ? mapCompoPlaceErrorToMessage("load")
-                : getSubcommandSafe(interaction) === "advice"
-                  ? mapCompoAdviceErrorToMessage("load")
-                  : mapCompoSheetErrorToMessage(err),
+      const fallbackMessage = getCompoRunCatchFallbackMessage({
+        subcommand: catchSubcommand,
+        mode: catchMode,
+        error: err,
       });
-      logCompoStage(interaction, "response_sent", { reason: "run_catch" });
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({
+            content: fallbackMessage,
+            embeds: [],
+            components: [],
+          });
+        } else {
+          await interaction.reply({
+            ephemeral: !isPublic,
+            content: fallbackMessage,
+          });
+        }
+        logCompoStage(interaction, "response_sent", { reason: "run_catch" });
+      } catch (replyError) {
+        try {
+          console.error(
+            `[compo-command-error] stage=run_catch_response_failed subcommand=${catchSubcommand} mode=${String(catchMode ?? "")} error=${safeFormatUnknownError(replyError)}`,
+          );
+        } catch {
+          // best-effort only
+        }
+      }
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
