@@ -18,8 +18,6 @@ import {
   type CompoFillAvailableFiller,
   type CompoFillPlanResult,
   type CompoFillTrackedClanState,
-  type CompoFillUnavailableFiller,
-  type CompoFillExcludedFiller,
   type CompoFillDestinationPlan,
   type CompoFillRemainingSlot,
   type CompoFillPlannedMove,
@@ -32,11 +30,6 @@ type FillEmbedField = {
   name: string;
   value: string;
   inline: false;
-};
-
-type FillEmbedPage = {
-  description?: string;
-  fields: FillEmbedField[];
 };
 
 export type CompoFillReadResult = {
@@ -58,8 +51,8 @@ export type CompoFillRefreshResult = CompoFillReadResult & {
 const FILL_EMBED_TITLE = "Compo Fill Planner";
 const FILL_PAGE_DESCRIPTION_LIMIT = 4096;
 const FILL_PAGE_FIELD_LIMIT = 25;
-const FILL_PAGE_CHAR_LIMIT = 4000;
-const FILL_MAX_EMBEDS = 10;
+const FILL_TOTAL_EMBED_TEXT_BUDGET = 5500;
+const FILL_TRUNCATION_FOOTER = "Output truncated to stay within Discord limits.";
 const FILL_REFRESH_LABEL = "Refresh Data";
 const FILL_REFRESH_LOADING_LABEL = "Refreshing...";
 
@@ -216,37 +209,6 @@ function formatMoveLine(move: CompoFillPlannedMove): string {
   ].join(" | ");
 }
 
-function formatAvailableLine(filler: CompoFillAvailableFiller): string {
-  return [
-    formatFillerLabel(filler),
-    `${filler.resolvedWeight.toLocaleString("en-US")}`,
-    `${filler.resolvedWeightBucket}`,
-    `from ${formatSourceLabel(filler.sourceClanTag, filler.sourceClanName)}`,
-  ].join(" | ");
-}
-
-function formatUnavailableLine(filler: CompoFillUnavailableFiller): string {
-  return [
-    formatFillerLabel(filler),
-    `${filler.resolvedWeight.toLocaleString("en-US")}`,
-    `${filler.resolvedWeightBucket}`,
-    `from ${formatSourceLabel(filler.sourceClanTag, filler.sourceClanName)}`,
-    `reason: ${filler.reasonCodes.join(", ")}`,
-  ].join(" | ");
-}
-
-function formatExcludedLine(filler: CompoFillExcludedFiller): string {
-  const weightLabel =
-    filler.resolvedWeight === null ? "missing weight" : `${filler.resolvedWeight.toLocaleString("en-US")}`;
-  const bucketLabel = filler.resolvedWeightBucket ?? "unresolved";
-  return [
-    formatFillerLabel(filler),
-    weightLabel,
-    bucketLabel,
-    `reason: ${filler.reasonCodes.join(", ")}`,
-  ].join(" | ");
-}
-
 function buildSectionFields(input: {
   sectionName: string;
   lines: string[];
@@ -267,87 +229,153 @@ function buildSectionFields(input: {
   }));
 }
 
-function pageCharCount(
-  page: FillEmbedPage,
-  title: string,
-  footerReserve: number,
-): number {
+function estimateFillEmbedTextLength(input: {
+  title?: string | null;
+  description?: string | null;
+  fields?: readonly FillEmbedField[] | null;
+  footerText?: string | null;
+  footer?: { text?: string | null } | null;
+}): number {
   return (
-    title.length +
-    (page.description?.length ?? 0) +
-    page.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) +
-    footerReserve
+    (input.title?.length ?? 0) +
+    (input.description?.length ?? 0) +
+    (input.fields?.reduce((sum, field) => sum + field.name.length + field.value.length, 0) ?? 0) +
+    (input.footerText?.length ?? 0) +
+    (input.footer?.text?.length ?? 0)
   );
 }
 
-function buildPageFooter(input: {
-  pageIndex: number;
-  pageCount: number;
-  omittedPages: number;
-}): string {
-  const base = `Page ${input.pageIndex + 1}/${input.pageCount}`;
-  if (input.omittedPages <= 0) {
-    return base;
+function buildFillerSummaryField(input: {
+  unusedAvailableFillers: number;
+  unavailableFillers: number;
+  excludedFillers: number;
+}): FillEmbedField | null {
+  const lines: string[] = [];
+  if (input.unusedAvailableFillers > 0) {
+    lines.push(`Unused Available Fillers: ${input.unusedAvailableFillers}`);
   }
-  return `${base} | Truncated ${input.omittedPages} additional page(s) to stay within Discord limits.`;
+  if (input.unavailableFillers > 0) {
+    lines.push(`Unavailable Fillers: ${input.unavailableFillers}`);
+  }
+  if (input.excludedFillers > 0) {
+    lines.push(`Excluded / Missing Weight: ${input.excludedFillers}`);
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  return {
+    name: "Filler Summary",
+    value: lines.join("\n"),
+    inline: false,
+  };
 }
 
-function finalizePage(page: FillEmbedPage, title: string, footer: string): EmbedBuilder {
-  const embed = new EmbedBuilder().setTitle(truncateForDiscord(title, 256)).setColor(0x57f287);
-  if (page.description) {
-    embed.setDescription(truncateForDiscord(page.description, FILL_PAGE_DESCRIPTION_LIMIT));
+function buildFillEmbedFields(input: {
+  result: CompoFillPlanResult;
+}): {
+  fields: FillEmbedField[];
+  truncated: boolean;
+} {
+  const detailedFields: FillEmbedField[] = [];
+
+  for (const plan of input.result.destinationPlans) {
+    if (plan.plannedMoves.length === 0) {
+      continue;
+    }
+    const header = formatClanFieldHeader(plan);
+    const lines = plan.plannedMoves.map((move) => formatMoveLine(move));
+    detailedFields.push(
+      ...buildSectionFields({
+        sectionName: `Recommended Moves - ${header}`,
+        lines,
+      }),
+    );
   }
-  for (const field of page.fields) {
-    embed.addFields(field);
+
+  if (input.result.remainingUnfilledClanSlots.length > 0) {
+    detailedFields.push(
+      ...buildSectionFields({
+        sectionName: "Remaining Open Slots",
+        lines: input.result.remainingUnfilledClanSlots.map(
+          (slot) =>
+            `${formatSlotHeader(slot)} | ${slot.remainingSlots} open slot${slot.remainingSlots === 1 ? "" : "s"} | ${slot.currentMemberCount}/${slot.targetMemberCount}`,
+        ),
+      }),
+    );
   }
-  embed.setFooter({ text: footer });
-  return embed;
+
+  const summaryField = buildFillerSummaryField({
+    unusedAvailableFillers: input.result.unusedAvailableFillers.length,
+    unavailableFillers: input.result.unavailableFillers.length,
+    excludedFillers: input.result.excludedFillers.length,
+  });
+  const summaryFields = summaryField ? [summaryField] : [];
+
+  let fields = [...detailedFields, ...summaryFields];
+  let truncated = summaryField !== null;
+  const description = truncateForDiscord(
+    buildSummaryDescription({
+      destinationPlans: input.result.destinationPlans,
+      remainingUnfilledClanSlots: input.result.remainingUnfilledClanSlots,
+      unusedAvailableFillers: input.result.unusedAvailableFillers,
+      plannedMoveCount: input.result.destinationPlans.reduce(
+        (sum, plan) => sum + plan.plannedMoves.length,
+        0,
+      ),
+    }),
+    FILL_PAGE_DESCRIPTION_LIMIT,
+  );
+
+  while (
+    estimateFillEmbedTextLength({
+      title: FILL_EMBED_TITLE,
+      description,
+      fields,
+      footerText: truncated ? FILL_TRUNCATION_FOOTER : null,
+    }) > FILL_TOTAL_EMBED_TEXT_BUDGET &&
+    detailedFields.length > 0
+  ) {
+    detailedFields.pop();
+    fields = [...detailedFields, ...summaryFields];
+    truncated = true;
+  }
+
+  while (
+    estimateFillEmbedTextLength({
+      title: FILL_EMBED_TITLE,
+      description,
+      fields,
+      footerText: truncated ? FILL_TRUNCATION_FOOTER : null,
+    }) > FILL_TOTAL_EMBED_TEXT_BUDGET &&
+    summaryFields.length > 0
+  ) {
+    summaryFields.pop();
+    fields = [...detailedFields, ...summaryFields];
+    truncated = true;
+  }
+
+  return {
+    fields,
+    truncated,
+  };
 }
 
-function buildEmbeds(input: {
+function buildFillEmbeds(input: {
   summaryDescription: string;
   fields: FillEmbedField[];
+  truncated: boolean;
 }): EmbedBuilder[] {
-  const pages: FillEmbedPage[] = [];
-  let current: FillEmbedPage = {
-    description: truncateForDiscord(input.summaryDescription, FILL_PAGE_DESCRIPTION_LIMIT),
-    fields: [],
-  };
-
-  for (const field of input.fields) {
-    const projectedCharCount = pageCharCount(current, FILL_EMBED_TITLE, 240);
-    const fieldCharCount = field.name.length + field.value.length;
-    const exceedsFieldCount = current.fields.length >= FILL_PAGE_FIELD_LIMIT;
-    const exceedsCharLimit = projectedCharCount + fieldCharCount > FILL_PAGE_CHAR_LIMIT;
-
-    if (current.fields.length > 0 && (exceedsFieldCount || exceedsCharLimit)) {
-      pages.push(current);
-      current = {
-        description: undefined,
-        fields: [],
-      };
-    }
-
-    current.fields.push(field);
+  const renderedFields = input.fields.slice(0, FILL_PAGE_FIELD_LIMIT);
+  const truncated = input.truncated || input.fields.length > renderedFields.length;
+  const embed = new EmbedBuilder().setTitle(truncateForDiscord(FILL_EMBED_TITLE, 256)).setColor(0x57f287);
+  embed.setDescription(truncateForDiscord(input.summaryDescription, FILL_PAGE_DESCRIPTION_LIMIT));
+  for (const field of renderedFields) {
+    embed.addFields(field);
   }
-
-  pages.push(current);
-
-  const cappedPages = pages.slice(0, FILL_MAX_EMBEDS);
-  const omittedPages = pages.length - cappedPages.length;
-  const totalPages = cappedPages.length;
-
-  return cappedPages.map((page, index) =>
-    finalizePage(
-      page,
-      FILL_EMBED_TITLE,
-      buildPageFooter({
-        pageIndex: index,
-        pageCount: totalPages,
-        omittedPages: index === cappedPages.length - 1 ? omittedPages : 0,
-      }),
-    ),
-  );
+  if (truncated) {
+    embed.setFooter({ text: FILL_TRUNCATION_FOOTER });
+  }
+  return [embed];
 }
 
 function cloneBucketCounts(counts: CompoWarBucketCounts): CompoWarBucketCounts {
@@ -425,67 +453,6 @@ function buildSummaryDescription(input: {
     `Available fillers: ${availableFillerCount}`,
     `Recommended moves: ${input.plannedMoveCount}`,
   ].join(" | ");
-}
-
-function buildSectionFieldList(input: {
-  result: CompoFillPlanResult;
-}): FillEmbedField[] {
-  const fields: FillEmbedField[] = [];
-
-  for (const plan of input.result.destinationPlans) {
-    if (plan.plannedMoves.length === 0) {
-      continue;
-    }
-    const header = formatClanFieldHeader(plan);
-    const lines = plan.plannedMoves.map((move) => formatMoveLine(move));
-    fields.push(
-      ...buildSectionFields({
-        sectionName: `Recommended Moves - ${header}`,
-        lines,
-      }),
-    );
-  }
-
-  if (input.result.remainingUnfilledClanSlots.length > 0) {
-    fields.push(
-      ...buildSectionFields({
-        sectionName: "Remaining Open Slots",
-        lines: input.result.remainingUnfilledClanSlots.map(
-          (slot) =>
-            `${formatSlotHeader(slot)} | ${slot.remainingSlots} open slot${slot.remainingSlots === 1 ? "" : "s"} | ${slot.currentMemberCount}/${slot.targetMemberCount}`,
-        ),
-      }),
-    );
-  }
-
-  if (input.result.unusedAvailableFillers.length > 0) {
-    fields.push(
-      ...buildSectionFields({
-        sectionName: "Unused Available Fillers",
-        lines: input.result.unusedAvailableFillers.map((filler) => formatAvailableLine(filler)),
-      }),
-    );
-  }
-
-  if (input.result.unavailableFillers.length > 0) {
-    fields.push(
-      ...buildSectionFields({
-        sectionName: "Unavailable Fillers",
-        lines: input.result.unavailableFillers.map((filler) => formatUnavailableLine(filler)),
-      }),
-    );
-  }
-
-  if (input.result.excludedFillers.length > 0) {
-    fields.push(
-      ...buildSectionFields({
-        sectionName: "Excluded / Missing Weight",
-        lines: input.result.excludedFillers.map((filler) => formatExcludedLine(filler)),
-      }),
-    );
-  }
-
-  return fields;
 }
 
 function buildFillRefreshComponents(input: {
@@ -680,7 +647,7 @@ export class CompoFillService {
         plannedMoveCount,
       },
       work: async () => {
-        const fields = buildSectionFieldList({
+        const fillEmbedFields = buildFillEmbedFields({
           result,
         });
         const summaryDescription = buildSummaryDescription({
@@ -689,9 +656,10 @@ export class CompoFillService {
           unusedAvailableFillers: result.unusedAvailableFillers,
           plannedMoveCount,
         });
-        const embeds = buildEmbeds({
+        const embeds = buildFillEmbeds({
           summaryDescription,
-          fields,
+          fields: fillEmbedFields.fields,
+          truncated: fillEmbedFields.truncated,
         });
         const components = buildFillRefreshComponents({ userId });
         return {
@@ -813,3 +781,5 @@ export class CompoFillService {
     };
   }
 }
+
+export const estimateFillEmbedTextLengthForTest = estimateFillEmbedTextLength;
