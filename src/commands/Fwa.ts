@@ -1634,7 +1634,7 @@ function renderBaseSwapLayoutLinkLine(
   link: FwaBaseSwapLayoutLink,
   layoutBulletEmoji: string,
 ): string {
-  return `## ${layoutBulletEmoji} TH${link.townhall}: ${wrapDiscordLink(link.layoutLink)}`;
+  return `${layoutBulletEmoji} TH${link.townhall}: ${wrapDiscordLink(link.layoutLink)}`;
 }
 
 function buildFwaBaseSwapPhaseTimingLine(input: {

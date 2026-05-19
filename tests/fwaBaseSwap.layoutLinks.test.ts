@@ -316,8 +316,8 @@ describe("FWA base-swap layout links", () => {
       ],
     });
 
-    const th18Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`;
-    const th17Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH17: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>`;
+    const th18Line = `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`;
+    const th17Line = `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH17: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>`;
     const reactLine = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
 
     const th18Index = content.indexOf(th18Line);
@@ -477,8 +477,9 @@ describe("FWA base-swap layout links", () => {
       "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
     );
     expect(content).toContain(
-      "## <a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
     );
+    expect(content).not.toContain("## <a:arrow_arrow:10002> TH18:");
   });
 
   it("uses unicode fallback inline emojis when resolved emojis are unavailable", () => {
@@ -505,8 +506,9 @@ describe("FWA base-swap layout links", () => {
       `# ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI} YOU HAVE AN ACTIVE WAR BASE ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI}`,
     );
     expect(content).toContain(
-      `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
     );
+    expect(content).not.toContain(`## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18:`);
   });
 
   it("skips TH lines when no matching RISINGDAWN layout link is available", () => {
@@ -1005,8 +1007,9 @@ describe("FWA base-swap layout links", () => {
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
     expect(String(editPayload.content)).toContain(
-      "## <a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
     );
+    expect(String(editPayload.content)).not.toContain("## <a:arrow_arrow:10002> TH18:");
     expect(String(editPayload.content)).toContain(
       `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
     );
