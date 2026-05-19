@@ -493,6 +493,22 @@ type TrackedFwaClanRefreshState = {
   clanFetchCount: number;
 };
 
+type TrackedLeadRoleRefreshState = {
+  trackedClans: AutoRoleTrackedClanLike[];
+  clanMembershipIndex: AutoRoleClanMembershipIndex;
+  trackedMembershipScope: {
+    fwaClanTags: Set<string>;
+    cwlClanTags: Set<string>;
+    fwaMemberTags: Set<string>;
+    cwlMemberTags: Set<string>;
+    cwlClanFetchCount: number;
+  };
+  playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
+  candidateUserIds: Set<string>;
+  clanFetchCount: number;
+};
+
 async function loadTrackedFwaClanRefreshState(input: {
   cocService?: CoCService | null;
 }): Promise<TrackedFwaClanRefreshState> {
@@ -589,6 +605,171 @@ async function loadTrackedFwaClanRefreshState(input: {
     clanMembershipIndex,
     trackedClans,
     playerCurrentByTag,
+    clanFetchCount,
+  };
+}
+
+async function loadTrackedLeadRoleRefreshState(input: {
+  roleId: string;
+  membersById: Map<string, AutoRoleGuildMemberLike>;
+  cocService?: CoCService | null;
+}): Promise<TrackedLeadRoleRefreshState | null> {
+  const roleId = String(input.roleId ?? "").trim();
+  if (!roleId) {
+    return null;
+  }
+
+  const rows = await prisma.trackedClan.findMany({
+    where: { leadRoleId: roleId },
+    select: {
+      tag: true,
+      name: true,
+      shortName: true,
+      leadRoleId: true,
+    },
+  });
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const cocService = input.cocService ?? null;
+  if (!cocService || typeof cocService.getClan !== "function") {
+    return null;
+  }
+
+  const currentHolderIds = collectCurrentRoleHolders(input.membersById, new Set([roleId]));
+  const clanLookups = await Promise.all(
+    rows.map(async (row) => {
+      const clanTag = normalizeClanTag(row.tag);
+      if (!clanTag) {
+        return null;
+      }
+
+      const clan = await cocService.getClan(clanTag).catch(() => null);
+      return {
+        row: {
+          tag: clanTag,
+          name: row.name,
+          shortName: row.shortName,
+          leadRoleId: row.leadRoleId,
+        },
+        clan,
+      };
+    }),
+  );
+
+  const successfulLookups = clanLookups.filter((lookup): lookup is NonNullable<typeof lookup> => Boolean(lookup?.clan));
+  if (successfulLookups.length === 0) {
+    return null;
+  }
+
+  const trackedClans: AutoRoleTrackedClanLike[] = [];
+  const clanMembershipIndex = new Map<string, AutoRoleClanMembershipIndexRow>();
+  const playerCurrentByTag = new Map<string, PlayerCurrentLike>();
+  const fwaClanTags = new Set<string>();
+  const fwaMemberTags = new Set<string>();
+  const leaderMemberTags = new Set<string>();
+  let clanFetchCount = 0;
+
+  for (const lookup of successfulLookups) {
+    clanFetchCount += 1;
+    const clanTag = normalizeClanTag(lookup.row.tag);
+    if (!clanTag) {
+      continue;
+    }
+
+    fwaClanTags.add(clanTag);
+    const trackedClanName = normalizeText(lookup.row.name);
+    const shortName = normalizeText(lookup.row.shortName);
+    const clanName = normalizeText(lookup.clan?.name ?? trackedClanName);
+    trackedClans.push({
+      tag: clanTag,
+      name: clanName,
+      shortName,
+      leadRoleId: String(lookup.row.leadRoleId ?? "").trim() || null,
+    });
+
+    const members = Array.isArray(lookup.clan?.members)
+      ? lookup.clan.members
+      : Array.isArray(lookup.clan?.memberList)
+        ? lookup.clan.memberList
+        : [];
+    const playerTags = new Set<string>();
+    for (const member of members) {
+      const clanMember = member as {
+        tag?: unknown;
+        name?: unknown;
+        townHallLevel?: unknown;
+        townhallLevel?: unknown;
+        townHall?: unknown;
+        role?: unknown;
+        league?: { name?: unknown } | null;
+      };
+      const playerTag = normalizePlayerTag(String(clanMember.tag ?? ""));
+      if (!playerTag) {
+        continue;
+      }
+
+      playerTags.add(playerTag);
+      fwaMemberTags.add(playerTag);
+
+      const playerName = normalizePersistedPlayerName(String(clanMember.name ?? ""));
+      const townHall = normalizeTownHallLevel(
+        clanMember.townHallLevel ?? clanMember.townhallLevel ?? clanMember.townHall ?? null,
+      );
+      const role = normalizeClanMemberRole(clanMember.role ?? null);
+      const leagueName = normalizeText(clanMember.league?.name ?? null);
+      if (!playerCurrentByTag.has(playerTag)) {
+        playerCurrentByTag.set(
+          playerTag,
+          createTrackedClanPlayerCurrent({
+            playerTag,
+            playerName,
+            townHall,
+            currentClanTag: clanTag,
+            currentClanName: clanName,
+            role,
+            leagueName,
+          }),
+        );
+      }
+
+      if (role === "leader" || role === "coLeader") {
+        leaderMemberTags.add(playerTag);
+      }
+    }
+
+    clanMembershipIndex.set(clanTag, {
+      source: "FWA",
+      playerTags,
+    });
+  }
+
+  const leaderLinkedAccountsByUserId = await loadLinkedAccountsForPlayerTags({
+    playerTags: [...leaderMemberTags],
+  });
+  const candidateUserIds = new Set<string>(currentHolderIds);
+  for (const userId of leaderLinkedAccountsByUserId.keys()) {
+    candidateUserIds.add(userId);
+  }
+
+  const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
+    guildMemberIds: [...candidateUserIds],
+  });
+
+  return {
+    trackedClans,
+    clanMembershipIndex,
+    trackedMembershipScope: {
+      fwaClanTags,
+      cwlClanTags: new Set<string>(),
+      fwaMemberTags,
+      cwlMemberTags: new Set<string>(),
+      cwlClanFetchCount: 0,
+    },
+    playerCurrentByTag,
+    linkedAccountsByUserId,
+    candidateUserIds,
     clanFetchCount,
   };
 }
@@ -1017,18 +1198,21 @@ async function runRefreshPass(input: {
   };
   runId: string;
   now: Date;
+  candidateUserIdsOverride?: Set<string>;
   preferCurrentClanTagForClanRules?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
-  const candidateUserIds = collectCandidateUsersForScope({
-    scope: input.scope,
-    membersById: input.membersById,
-    linkedAccountsByUserId: input.linkedAccountsByUserId,
-    rules: input.snapshot.rules,
-    clanMembershipIndex: input.clanMembershipIndex,
-    managedRoleIds,
-  });
+  const candidateUserIds =
+    input.candidateUserIdsOverride ??
+    collectCandidateUsersForScope({
+      scope: input.scope,
+      membersById: input.membersById,
+      linkedAccountsByUserId: input.linkedAccountsByUserId,
+      rules: input.snapshot.rules,
+      clanMembershipIndex: input.clanMembershipIndex,
+      managedRoleIds,
+    });
   const { excludedUserIds, excludedRoleIds } = buildExclusionIndexes(input.snapshot);
 
   const memberResults: AutoRoleMemberApplyResult[] = [];
@@ -1255,6 +1439,40 @@ export class AutoRoleRefreshService {
       const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
       if (input.scope.kind === "role" && !managedRoleIds.has(input.scope.discordRoleId)) {
         throw new Error("That Discord role is not managed by autorole.");
+      }
+
+      if (input.scope.kind === "role") {
+        const roleMembersById = await fetchGuildMembersMap(input.guild, input.scope);
+        const leadRoleState = await loadTrackedLeadRoleRefreshState({
+          roleId: input.scope.discordRoleId,
+          membersById: roleMembersById,
+          cocService: input.cocService ?? null,
+        });
+        if (leadRoleState) {
+          const currentHolderCount = collectCurrentRoleHolders(
+            roleMembersById,
+            new Set([input.scope.discordRoleId]),
+          ).size;
+          dozzleLog.info(
+            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} lead_clans=${leadRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${leadRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} lead_member_tags=${leadRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${leadRoleState.clanFetchCount} player_current_tags=${leadRoleState.playerCurrentByTag.size}`,
+          );
+
+          return runRefreshPass({
+            guildId: input.guildId,
+            scope: input.scope,
+            guild: input.guild,
+            snapshot,
+            trackedClans: leadRoleState.trackedClans,
+            membersById: roleMembersById,
+            linkedAccountsByUserId: leadRoleState.linkedAccountsByUserId,
+            playerCurrentByTag: leadRoleState.playerCurrentByTag,
+            clanMembershipIndex: leadRoleState.clanMembershipIndex,
+            trackedMembershipScope: leadRoleState.trackedMembershipScope,
+            runId: run.id,
+            now: input.now,
+            candidateUserIdsOverride: leadRoleState.candidateUserIds,
+          });
+        }
       }
 
       if (input.scope.kind === "guild") {
