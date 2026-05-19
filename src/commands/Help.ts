@@ -798,16 +798,16 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   bot: {
-      summary: "Inspect bot runtime and poll status.",
-      details: [
-        "Use `/bot status` for a concise runtime overview covering startup phase/completion, uptime, health, and warning jobs.",
-        "Use `/bot poll status` for the read-only DB-backed status rows for major background poll jobs.",
-        "Add `job:<jobKey>` to `/bot poll status` to inspect one poll job in detail.",
-        "Rows include the current state emoji, interval, last/next run timestamps, duration, and a short failure summary when failed.",
-        "This command is admin-only by default.",
-      ],
-      examples: ["/bot status", "/bot poll status", "/bot poll status job:autorole_scheduler"],
-    },
+    summary: "Inspect bot runtime and poll status.",
+    details: [
+      "Use `/bot status` for a concise runtime overview covering startup phase/completion, uptime, health, and warning jobs.",
+      "Use `/bot poll status` for the read-only DB-backed status rows for major background poll jobs.",
+      "Add `job:<jobKey>` to `/bot poll status` to inspect one poll job in detail.",
+      "Rows include the current state emoji, interval, last/next run timestamps, duration, and a short failure summary when failed.",
+      "This command is admin-only by default.",
+    ],
+    examples: ["/bot status", "/bot poll status", "/bot poll status job:autorole_scheduler"],
+  },
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
