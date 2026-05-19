@@ -1011,6 +1011,45 @@ function buildManagedRoleIds(
   });
 }
 
+function collectConfiguredLeadRoleIds(trackedClans: AutoRoleTrackedClanLike[]): Set<string> {
+  const roleIds = new Set<string>();
+  for (const trackedClan of trackedClans) {
+    const leadRoleId = String(trackedClan.leadRoleId ?? "").trim();
+    if (leadRoleId) {
+      roleIds.add(leadRoleId);
+    }
+  }
+  return roleIds;
+}
+
+function buildLeadRoleRemovalSuppression(input: {
+  scope: AutoRoleRefreshScope;
+  configuredLeadRoleIds: Set<string>;
+}): Set<string> {
+  if (input.configuredLeadRoleIds.size === 0) {
+    return new Set<string>();
+  }
+
+  if (input.scope.kind === "user") {
+    return new Set<string>();
+  }
+
+  if (input.scope.kind === "guild") {
+    return new Set(input.configuredLeadRoleIds);
+  }
+
+  if (input.scope.kind === "role") {
+    const targetRoleId = String(input.scope.discordRoleId ?? "").trim();
+    if (!targetRoleId || !input.configuredLeadRoleIds.has(targetRoleId)) {
+      return new Set(input.configuredLeadRoleIds);
+    }
+
+    return new Set([...input.configuredLeadRoleIds].filter((roleId) => roleId !== targetRoleId));
+  }
+
+  return new Set<string>();
+}
+
 function collectCurrentRoleHolders(
   membersById: Map<string, AutoRoleGuildMemberLike>,
   managedRoleIds: Set<string>,
@@ -1199,10 +1238,15 @@ async function runRefreshPass(input: {
   runId: string;
   now: Date;
   candidateUserIdsOverride?: Set<string>;
+  suppressRemovalRoleIds?: Set<string>;
   preferCurrentClanTagForClanRules?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
+  const suppressRemovalRoleIds = buildLeadRoleRemovalSuppression({
+    scope: input.scope,
+    configuredLeadRoleIds: collectConfiguredLeadRoleIds(input.trackedClans),
+  });
   const candidateUserIds =
     input.candidateUserIdsOverride ??
     collectCandidateUsersForScope({
@@ -1300,6 +1344,7 @@ async function runRefreshPass(input: {
         linkedAccounts,
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
+        suppressRemovalRoleIds,
         now: input.now,
       });
 
@@ -1437,6 +1482,10 @@ export class AutoRoleRefreshService {
 
       const trackedClans = await loadTrackedClansForAutorole();
       const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
+      const suppressRemovalRoleIds = buildLeadRoleRemovalSuppression({
+        scope: input.scope,
+        configuredLeadRoleIds: collectConfiguredLeadRoleIds(trackedClans),
+      });
       if (input.scope.kind === "role" && !managedRoleIds.has(input.scope.discordRoleId)) {
         throw new Error("That Discord role is not managed by autorole.");
       }
@@ -1467,12 +1516,13 @@ export class AutoRoleRefreshService {
             linkedAccountsByUserId: leadRoleState.linkedAccountsByUserId,
             playerCurrentByTag: leadRoleState.playerCurrentByTag,
             clanMembershipIndex: leadRoleState.clanMembershipIndex,
-            trackedMembershipScope: leadRoleState.trackedMembershipScope,
-            runId: run.id,
-            now: input.now,
-            candidateUserIdsOverride: leadRoleState.candidateUserIds,
-          });
-        }
+          trackedMembershipScope: leadRoleState.trackedMembershipScope,
+          runId: run.id,
+          now: input.now,
+          candidateUserIdsOverride: leadRoleState.candidateUserIds,
+          suppressRemovalRoleIds,
+        });
+      }
       }
 
       if (input.scope.kind === "guild") {
@@ -1526,6 +1576,7 @@ export class AutoRoleRefreshService {
           trackedMembershipScope: trackedMembershipScopeForRefresh,
           runId: run.id,
           now: input.now,
+          suppressRemovalRoleIds,
         });
       }
 
@@ -1602,6 +1653,7 @@ export class AutoRoleRefreshService {
         trackedMembershipScope,
         runId: run.id,
         now: input.now,
+        suppressRemovalRoleIds,
         preferCurrentClanTagForClanRules: input.scope.kind === "user",
       });
     } catch (error) {
