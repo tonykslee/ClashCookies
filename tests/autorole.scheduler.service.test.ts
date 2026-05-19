@@ -15,6 +15,16 @@ const refreshServiceMock = vi.hoisted(() => ({
   refreshGuild: vi.fn(),
 }));
 
+const statusServiceMock = vi.hoisted(() => ({
+  markStarted: vi.fn(),
+  markSucceeded: vi.fn(),
+  markFailed: vi.fn(),
+  markSkipped: vi.fn(),
+  markDisabled: vi.fn(),
+  listStatuses: vi.fn(),
+  getStatus: vi.fn(),
+}));
+
 const pollingModeMock = vi.hoisted(() => ({
   isMirrorPollingMode: vi.fn(),
 }));
@@ -34,6 +44,10 @@ vi.mock("../src/prisma", () => ({
 
 vi.mock("../src/services/AutoRoleRefreshService", () => ({
   autoRoleRefreshService: refreshServiceMock,
+}));
+
+vi.mock("../src/services/BotPollJobStatusService", () => ({
+  botPollJobStatusService: statusServiceMock,
 }));
 
 vi.mock("../src/services/PollingModeService", () => pollingModeMock);
@@ -66,6 +80,11 @@ describe("AutoRoleSchedulerService", () => {
     pollingModeMock.isMirrorPollingMode.mockReturnValue(false);
     prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([]);
     prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([]);
+    statusServiceMock.markStarted.mockResolvedValue({});
+    statusServiceMock.markSucceeded.mockResolvedValue({});
+    statusServiceMock.markFailed.mockResolvedValue({});
+    statusServiceMock.markSkipped.mockResolvedValue({});
+    statusServiceMock.markDisabled.mockResolvedValue({});
     refreshServiceMock.refreshGuild.mockResolvedValue({
       guildId: "111111111111111111",
       scope: { kind: "guild" },
@@ -132,6 +151,12 @@ describe("AutoRoleSchedulerService", () => {
     expect(result).toEqual({ started: false, reason: "mirror" });
     expect(runCycleSpy).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "autorole_scheduler",
+      expect.objectContaining({
+        displayName: "Autorole scheduler",
+      }),
+    );
   });
 
   it("uses the default interval when syncIntervalMinutes is null", async () => {
@@ -191,6 +216,22 @@ describe("AutoRoleSchedulerService", () => {
         guild,
         guildId: guild.id,
         now: new Date("2026-05-18T12:00:00.000Z"),
+      }),
+    );
+    expect(statusServiceMock.markStarted).toHaveBeenCalled();
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "autorole_scheduler",
+      expect.objectContaining({
+        displayName: "Autorole scheduler",
+        intervalMs: 12345,
+        metadata: expect.objectContaining({
+          scanned: 1,
+          due: 1,
+          started: 1,
+          completed: 1,
+          skipped: 0,
+          failed: 0,
+        }),
       }),
     );
   });
@@ -254,5 +295,26 @@ describe("AutoRoleSchedulerService", () => {
       skipped: 0,
       failed: 0,
     });
+  });
+
+  it("marks the scheduler failed when cycle setup throws", async () => {
+    const client = {
+      guilds: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockRejectedValueOnce(new Error("cycle boom"));
+
+    await expect(scheduler.runCycle()).rejects.toThrow("cycle boom");
+    expect(statusServiceMock.markFailed).toHaveBeenCalledWith(
+      "autorole_scheduler",
+      expect.any(Error),
+      expect.objectContaining({
+        displayName: "Autorole scheduler",
+        intervalMs: 12_345,
+      }),
+    );
   });
 });

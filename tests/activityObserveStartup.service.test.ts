@@ -1,11 +1,30 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { startActivityObserveLoop } from "../src/services/ActivityObserveStartupService";
 
+const statusServiceMock = vi.hoisted(() => ({
+  markStarted: vi.fn(),
+  markSucceeded: vi.fn(),
+  markFailed: vi.fn(),
+  markSkipped: vi.fn(),
+  markDisabled: vi.fn(),
+  listStatuses: vi.fn(),
+  getStatus: vi.fn(),
+}));
+
+vi.mock("../src/services/BotPollJobStatusService", () => ({
+  botPollJobStatusService: statusServiceMock,
+}));
+
 describe("ActivityObserveStartupService", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-19T12:00:00.000Z"));
     vi.clearAllMocks();
+    statusServiceMock.markStarted.mockResolvedValue({});
+    statusServiceMock.markSucceeded.mockResolvedValue({});
+    statusServiceMock.markFailed.mockResolvedValue({});
+    statusServiceMock.markSkipped.mockResolvedValue({});
+    statusServiceMock.markDisabled.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -26,6 +45,8 @@ describe("ActivityObserveStartupService", () => {
     });
 
     expect(result).toEqual({ started: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statusServiceMock.markStarted).toHaveBeenCalledTimes(1);
     expect(runObservedCycle).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(1);
     expect(logSpy).toHaveBeenCalledWith("Activity observe loop enabled (every 30 minute(s)).");
@@ -68,6 +89,7 @@ describe("ActivityObserveStartupService", () => {
     });
 
     await vi.advanceTimersByTimeAsync(0);
+    expect(statusServiceMock.markStarted).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith("observeTrackedClans startup run failed: boom");
   });
 
