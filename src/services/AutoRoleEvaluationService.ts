@@ -79,6 +79,7 @@ export type AutoRoleEvaluationInput = {
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   clanMembershipByTag: AutoRoleClanMembershipIndex;
   trackedClanScope: AutoRoleTrackedClanScope;
+  preferCurrentClanTagForClanRules?: boolean;
 };
 
 type RankedLinkedAccount = PlayerLinkWithTrust & {
@@ -163,16 +164,21 @@ function isLinkedAccountInClanTarget(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
   clanMembership: AutoRoleClanMembershipIndexRow | null,
+  preferCurrentClanTagForClanRules: boolean,
 ): boolean {
   const normalizedTarget = normalizeClanTag(targetClanTag);
   if (!normalizedTarget) return false;
+
+  const currentClanTag = resolveMemberSourceCurrentClanTag(linkedAccount);
+  if (preferCurrentClanTagForClanRules && currentClanTag) {
+    return currentClanTag === normalizedTarget;
+  }
 
   if (clanMembership?.playerTags.has(linkedAccount.playerTag)) {
     return true;
   }
 
   if (!clanMembership || clanMembership.source === "UNKNOWN" || clanMembership.source === "FWA") {
-    const currentClanTag = resolveMemberSourceCurrentClanTag(linkedAccount);
     return currentClanTag === normalizedTarget;
   }
 
@@ -250,7 +256,15 @@ export class AutoRoleEvaluationService {
       if (!rule.enabled) continue;
       if (!input.managedRoleIds.has(rule.discordRoleId)) continue;
 
-      if (this.isRuleMatched(rule, linkedAccounts, input.clanMembershipByTag, input.trackedClanScope)) {
+      if (
+        this.isRuleMatched(
+          rule,
+          linkedAccounts,
+          input.clanMembershipByTag,
+          input.trackedClanScope,
+          input.preferCurrentClanTagForClanRules ?? false,
+        )
+      ) {
         desiredManagedRoleIds.add(rule.discordRoleId);
         matchedRuleIds.add(rule.id);
       }
@@ -315,6 +329,7 @@ export class AutoRoleEvaluationService {
     linkedAccounts: RankedLinkedAccount[],
     clanMembershipByTag: AutoRoleClanMembershipIndex,
     trackedClanScope: AutoRoleTrackedClanScope,
+    preferCurrentClanTagForClanRules: boolean,
   ): boolean {
     switch (rule.type) {
       case AutoRoleRuleType.VERIFIED:
@@ -327,6 +342,7 @@ export class AutoRoleEvaluationService {
             account,
             rule.targetValue,
             clanMembershipByTag.get(rule.targetValue) ?? null,
+            preferCurrentClanTagForClanRules,
           ),
         );
       case AutoRoleRuleType.CLAN_ROLE:
