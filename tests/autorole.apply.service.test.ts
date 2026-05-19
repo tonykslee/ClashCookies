@@ -411,6 +411,29 @@ describe("AutoRoleApplyService", () => {
     );
   });
 
+  it("preserves a stale lead role when removal is suppressed for the current refresh scope", async () => {
+    const roleId = "222222222222222222";
+    const member = makeMember("Alpha", [roleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ removeStaleManagedRoles: true }),
+      managedRoleIds: new Set([roleId]),
+      suppressRemovalRoleIds: new Set([roleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount()],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result.rolesRemoved).toEqual([]);
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
+  });
+
   it("clears pending clan removals when the member is desired again", async () => {
     const roleId = "222222222222222222";
     const rule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: roleId, targetValue: "#2CGG9GGRV" });
