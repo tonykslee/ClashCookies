@@ -20,6 +20,7 @@ import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
+import { AutoRoleSchedulerService } from "../services/AutoRoleSchedulerService";
 import {
   buildCommandRegistrationDebugSummary,
   formatStartupLogFields,
@@ -837,6 +838,16 @@ export default (client: Client, cocService: CoCService): void => {
       }, mirrorSyncIntervalMs);
       console.log(
         `[mirror-sync] event=scheduler_started interval_minutes=${mirrorSyncIntervalMinutes}`,
+      );
+    }
+
+    if (activePollingEnabled) {
+      const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
+      autoRoleScheduler.start();
+      console.log("Autorole scheduler loop initialized.");
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
       );
     }
 
