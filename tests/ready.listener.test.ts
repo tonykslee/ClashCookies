@@ -310,7 +310,7 @@ describe("ready listener startup", () => {
     vi.clearAllMocks();
   });
 
-  async function startStartup() {
+  async function startStartup(applicationPresent = true) {
     let capturedReadyHandler: (() => Promise<void>) | undefined;
     const client = {
       once: vi.fn((event: string, handler: () => Promise<void>) => {
@@ -318,12 +318,14 @@ describe("ready listener startup", () => {
           capturedReadyHandler = handler;
         }
       }),
-      application: {
-        fetch: vi.fn().mockResolvedValue(undefined),
-        emojis: {
-          fetch: vi.fn(),
-        },
-      },
+      application: applicationPresent
+        ? {
+            fetch: vi.fn().mockResolvedValue(undefined),
+            emojis: {
+              fetch: vi.fn(),
+            },
+          }
+        : null,
       guilds: {
         fetch: vi.fn(),
       },
@@ -480,5 +482,14 @@ describe("ready listener startup", () => {
     expect(botStartupStatusService.getSnapshot().phase).toBe("war_event_poll");
     expect(warEventPollMock).toHaveBeenCalledTimes(1);
     expect(settled).toBe(false);
+  });
+
+  it("marks startup failed when client.application is missing", async () => {
+    const { startupPromise } = await startStartup(false);
+    await expect(startupPromise).rejects.toThrow("client.application is unavailable during ready startup");
+    const snapshot = botStartupStatusService.getSnapshot();
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.phase).toBe("failed");
+    expect(snapshot.lastError).toContain("client.application is unavailable during ready startup");
   });
 });

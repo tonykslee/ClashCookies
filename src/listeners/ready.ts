@@ -384,7 +384,9 @@ export default (client: Client, cocService: CoCService): void => {
     let startupPhase = "ready_start";
     await markStartupPhase(startupPhase);
     try {
-      if (!client.application) return;
+      if (!client.application) {
+        throw new Error("client.application is unavailable during ready startup");
+      }
 
       dozzleLog.info("ClashCookies is starting...");
       let applicationFetchAttempted = false;
@@ -1393,6 +1395,7 @@ export default (client: Client, cocService: CoCService): void => {
     } catch (err) {
       await markStartupFailed(err, { phase: startupPhase });
       console.error(`[startup] ready startup failed at phase=${startupPhase}: ${formatError(err)}`);
+      throw err;
     }
   });
 };
