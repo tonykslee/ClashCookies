@@ -311,6 +311,8 @@ type FwaBaseSwapAnnouncementState = {
   createdByUserId: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
+  clanRoleId?: string | null;
+  swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
   fwaAlertEmoji?: string | null;
@@ -346,6 +348,7 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
+const FWA_BASE_SWAP_SWAP_BACK_HEADER = "# Swap back to FWA layout";
 const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE IN CWL {emoji}";
 const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
@@ -370,6 +373,7 @@ type FwaBaseSwapSplitPostPayload = {
   mailChannelId: string;
   clanTag: string;
   clanName: string;
+  clanRoleId: string | null;
   commandText: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
@@ -417,7 +421,7 @@ export async function handleFwaBaseSwapReaction(
     client: Client;
     edit: (payload: {
       content: string;
-      allowedMentions: { users: string[] };
+      allowedMentions: { users: string[]; roles?: string[] };
     }) => Promise<unknown>;
   },
 ): Promise<boolean> {
@@ -498,11 +502,21 @@ export async function handleFwaBaseSwapSplitPostButton(
     const clanKind = payload.clanKind ?? "FWA";
     const postedA = await mailChannel.send({
       content: payload.splitContents[0],
-      allowedMentions: { users: payload.mentionUserIds },
+      allowedMentions: {
+        users: payload.mentionUserIds,
+        ...(payload.swapReminder && payload.clanRoleId
+          ? { roles: [payload.clanRoleId] }
+          : {}),
+      },
     });
     const postedB = await mailChannel.send({
       content: payload.splitContents[1],
-      allowedMentions: { users: payload.mentionUserIds },
+      allowedMentions: {
+        users: payload.mentionUserIds,
+        ...(payload.swapReminder && payload.clanRoleId
+          ? { roles: [payload.clanRoleId] }
+          : {}),
+      },
     });
 
     const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -525,6 +539,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
+            clanRoleId: payload.clanRoleId,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_1",
           },
@@ -542,6 +557,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
+            clanRoleId: payload.clanRoleId,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_2",
           },
@@ -933,6 +949,7 @@ function buildFwaBaseSwapAnnouncementSectionLines(input: {
   section: FwaBaseSwapSection;
   headingLine: string;
   noteLine?: string | null;
+  noteLines?: readonly string[] | null;
   separatorBefore?: boolean;
 }): void {
   const sectionLines = getFwaBaseSwapEntriesBySection(
@@ -944,7 +961,9 @@ function buildFwaBaseSwapAnnouncementSectionLines(input: {
     input.lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR, "");
   }
   input.lines.push(input.headingLine, "", ...sectionLines);
-  if (input.noteLine) {
+  if (input.noteLines && input.noteLines.length > 0) {
+    input.lines.push("", ...input.noteLines);
+  } else if (input.noteLine) {
     input.lines.push("", input.noteLine);
   }
 }
@@ -1365,7 +1384,7 @@ async function resolveFwaBaseSwapMailChannel(input: {
       channel: {
         send: (payload: {
           content: string;
-          allowedMentions: { users: string[] };
+          allowedMentions: { users: string[]; roles?: string[] };
         }) => Promise<any>;
       };
     }
@@ -1398,7 +1417,7 @@ async function resolveFwaBaseSwapMailChannel(input: {
     isTextBased?: () => boolean;
     send?: (payload: {
       content: string;
-      allowedMentions: { users: string[] };
+      allowedMentions: { users: string[]; roles?: string[] };
     }) => Promise<any>;
   };
   if (input.guildId) {
@@ -1656,6 +1675,8 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   clanKind?: FwaBaseSwapClanKind;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
+  clanRoleId?: string | null;
+  swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
   fwaAlertEmoji?: string | null;
@@ -1700,6 +1721,14 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   }
 
   if (fwaBaseLines.length > 0) {
+    const swapReminderLines =
+      state.swapReminder && String(state.clanRoleId ?? "").trim()
+        ? [
+            FWA_BASE_SWAP_SWAP_BACK_HEADER,
+            FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
+            `<@&${String(state.clanRoleId).trim()}>`,
+          ]
+        : null;
     buildFwaBaseSwapAnnouncementSectionLines({
       lines,
       entries: state.entries,
@@ -1708,7 +1737,8 @@ function buildFwaBaseSwapAnnouncementLines(state: {
         clanKind,
         fwaAlertEmoji,
       ),
-      noteLine: resolveFwaBaseSwapAnnouncementNote(clanKind),
+      noteLine: swapReminderLines ? null : resolveFwaBaseSwapAnnouncementNote(clanKind),
+      noteLines: swapReminderLines,
       separatorBefore: true,
     });
   }
@@ -1789,6 +1819,8 @@ function buildFwaBaseSwapRenderPlan(state: {
   clanKind?: FwaBaseSwapClanKind;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
+  clanRoleId?: string | null;
+  swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
   fwaAlertEmoji?: string | null;
@@ -1815,6 +1847,8 @@ function renderFwaBaseSwapAnnouncement(
     clanKind?: FwaBaseSwapClanKind;
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
+    clanRoleId?: string | null;
+    swapReminder?: boolean;
     phaseTimingLine?: string | null;
     alertEmoji?: string | null;
     fwaAlertEmoji?: string | null;
@@ -13480,6 +13514,12 @@ export const Fwa: Command = {
       }
 
       const trackedConfig = await getTrackedClanMailConfig(clanTag);
+      if (swapReminder && !String(trackedConfig?.clanRoleId ?? "").trim()) {
+        await editReplySafe(
+          `No clan role configured for ${clanName}. Set the tracked clan clan role first.`,
+        );
+        return;
+      }
       const resolvedMailChannel = await resolveFwaBaseSwapMailChannel({
         client: interaction.client,
         guildId: interaction.guildId,
@@ -13517,6 +13557,8 @@ export const Fwa: Command = {
         clanKind,
         entries,
         layoutLinks,
+        clanRoleId: trackedConfig?.clanRoleId ?? null,
+        swapReminder: Boolean(swapReminder),
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
         fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
@@ -13541,6 +13583,7 @@ export const Fwa: Command = {
           guildId: interaction.guildId,
           channelId: interaction.channelId,
           mailChannelId,
+          clanRoleId: trackedConfig?.clanRoleId ?? null,
           clanTag,
           clanName,
           clanKind,
@@ -13581,7 +13624,12 @@ export const Fwa: Command = {
 
       const posted = await mailChannel.send({
         content: renderPlan.singleContent,
-        allowedMentions: { users: mentionUserIds },
+        allowedMentions: {
+          users: mentionUserIds,
+          ...(swapReminder && trackedConfig?.clanRoleId
+            ? { roles: [trackedConfig.clanRoleId] }
+            : {}),
+        },
       });
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
@@ -13603,6 +13651,7 @@ export const Fwa: Command = {
               fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
               clanKind,
+              clanRoleId: trackedConfig?.clanRoleId ?? null,
               renderVariant: "single",
               swapReminder: Boolean(swapReminder),
             },
