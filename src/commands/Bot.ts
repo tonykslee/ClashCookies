@@ -657,7 +657,16 @@ export const Bot: Command = {
     }
 
     const query = String(focused.value ?? "").trim().toLowerCase();
-    const statuses = await botPollJobStatusService.listStatuses();
+    let statuses: BotPollJobStatusRecord[];
+    try {
+      statuses = await botPollJobStatusService.listStatuses();
+    } catch (error) {
+      console.warn(
+        `[bot poll status autocomplete] failed to load status rows: ${formatError(error)}`,
+      );
+      await interaction.respond([]);
+      return;
+    }
     const choices = statuses
       .map((job) => {
         const label = `${job.displayName} (${job.jobKey})`;

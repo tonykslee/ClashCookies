@@ -797,7 +797,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/bot-logs type:base-swap set-channel:#fwa-audit-logs",
     ],
   },
-    bot: {
+  bot: {
       summary: "Inspect bot runtime and poll status.",
       details: [
         "Use `/bot status` for a concise runtime overview covering uptime, health, and warning jobs.",

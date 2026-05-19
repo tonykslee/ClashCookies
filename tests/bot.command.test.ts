@@ -246,6 +246,28 @@ describe("/bot poll status behavior", () => {
     expect(text).toContain("Note: trigger=startup");
   });
 
+  it("returns no autocomplete choices when poll job rows cannot be loaded", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    listStatusesMock.mockRejectedValueOnce(new Error("boom"));
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue("poll"),
+        getSubcommand: vi.fn().mockReturnValue("status"),
+        getFocused: vi.fn().mockReturnValue({ name: "job", value: "auto" }),
+      },
+      respond,
+    } as any;
+
+    await Bot.autocomplete(interaction);
+
+    expect(respond).toHaveBeenCalledWith([]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[bot poll status autocomplete] failed to load status rows:"),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("renders one job in detail when a job key is provided", async () => {
     const interaction = createInteraction({
       group: "poll",
