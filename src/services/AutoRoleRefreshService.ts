@@ -18,6 +18,7 @@ import {
   type AutoRoleClanMembershipIndex,
   type AutoRoleClanMembershipIndexRow,
   type AutoRoleMemberEvaluation,
+  type AutoRoleTrackedClanLeadRole,
 } from "./AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
 import { normalizeNicknameTemplate } from "./AutoRoleService";
@@ -344,6 +345,7 @@ async function collectGuildCandidateUsersForTrackedMembership(input: {
 function collectPlayerCurrentRequirementFields(input: {
   snapshot: AutoRoleGuildStateSnapshot;
   nicknameEnabled: boolean;
+  leadRolesEnabled: boolean;
 }): PlayerCurrentResolutionField[] {
   const fields: PlayerCurrentResolutionField[] = [];
   const addField = (field: PlayerCurrentResolutionField) => {
@@ -357,6 +359,11 @@ function collectPlayerCurrentRequirementFields(input: {
     addField("townHall");
     addField("role");
     addField("leagueName");
+  }
+
+  if (input.leadRolesEnabled) {
+    addField("currentClanTag");
+    addField("role");
   }
 
   for (const rule of input.snapshot.rules) {
@@ -455,12 +462,15 @@ async function loadPlayerCurrentByLinkedAccountsForUserRefresh(input: {
   });
 }
 
-async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedClanLike[]> {
+type AutoRoleTrackedClanLike = AutoRoleNicknameTrackedClanLike & AutoRoleTrackedClanLeadRole;
+
+async function loadTrackedClansForAutorole(): Promise<AutoRoleTrackedClanLike[]> {
   const rows = await prisma.trackedClan.findMany({
     select: {
       tag: true,
       name: true,
       shortName: true,
+      leadRoleId: true,
     },
   });
 
@@ -469,6 +479,7 @@ async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedCla
       tag: normalizeClanTag(row.tag),
       name: row.name ?? null,
       shortName: row.shortName ?? null,
+      leadRoleId: String(row.leadRoleId ?? "").trim() || null,
     }))
     .filter((row) => row.tag.length > 0);
 }
@@ -808,10 +819,14 @@ function filterLinkedAccountsForClanMembership(
   return playerTags;
 }
 
-function buildManagedRoleIds(snapshot: AutoRoleGuildStateSnapshot): Set<string> {
+function buildManagedRoleIds(
+  snapshot: AutoRoleGuildStateSnapshot,
+  trackedClans: AutoRoleTrackedClanLike[],
+): Set<string> {
   return autoRoleEvaluationService.getManagedRoleIds({
     config: snapshot.config,
     rules: snapshot.rules,
+    trackedClans,
   });
 }
 
@@ -988,10 +1003,10 @@ async function runRefreshPass(input: {
   scope: AutoRoleRefreshScope;
   guild: Guild;
   snapshot: AutoRoleGuildStateSnapshot;
+  trackedClans: AutoRoleTrackedClanLike[];
   membersById: Map<string, AutoRoleGuildMemberLike>;
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
-  trackedClans: AutoRoleNicknameTrackedClanLike[];
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   trackedMembershipScope: {
     fwaClanTags: Set<string>;
@@ -1005,7 +1020,7 @@ async function runRefreshPass(input: {
   preferCurrentClanTagForClanRules?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
-  const managedRoleIds = buildManagedRoleIds(input.snapshot);
+  const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
   const candidateUserIds = collectCandidateUsersForScope({
     scope: input.scope,
     membersById: input.membersById,
@@ -1084,6 +1099,7 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         clanMembershipByTag: input.clanMembershipIndex,
         trackedClanScope: input.trackedMembershipScope,
+        trackedClans: input.trackedClans,
         preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
       });
       dozzleLog.trace(
@@ -1235,7 +1251,8 @@ export class AutoRoleRefreshService {
         throw new Error("Autorole kill switch is enabled for this guild.");
       }
 
-      const managedRoleIds = buildManagedRoleIds(snapshot);
+      const trackedClans = await loadTrackedClansForAutorole();
+      const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
       if (input.scope.kind === "role" && !managedRoleIds.has(input.scope.discordRoleId)) {
         throw new Error("That Discord role is not managed by autorole.");
       }
@@ -1283,10 +1300,10 @@ export class AutoRoleRefreshService {
           scope: input.scope,
           guild: input.guild,
           snapshot,
+          trackedClans,
           membersById,
           linkedAccountsByUserId,
           playerCurrentByTag: trackedFwaRefresh.playerCurrentByTag,
-          trackedClans: trackedFwaRefresh.trackedClans,
           clanMembershipIndex: trackedFwaRefresh.clanMembershipIndex,
           trackedMembershipScope: trackedMembershipScopeForRefresh,
           runId: run.id,
@@ -1332,6 +1349,7 @@ export class AutoRoleRefreshService {
       const playerCurrentRequiredFields = collectPlayerCurrentRequirementFields({
         snapshot,
         nicknameEnabled: snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined,
+        leadRolesEnabled: trackedClans.some((clan) => String(clan.leadRoleId ?? "").trim().length > 0),
       });
       const playerCurrentByTag =
         input.scope.kind === "user"
@@ -1348,9 +1366,6 @@ export class AutoRoleRefreshService {
               cocService: input.cocService ?? null,
               requireFields: playerCurrentRequiredFields,
             });
-      const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
-        ? await loadTrackedClansForNickname()
-        : [];
 
       dozzleLog.info(
         `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size} player_current_fields=${playerCurrentRequiredFields.length > 0 ? playerCurrentRequiredFields.join(",") : "none"}`,
@@ -1361,10 +1376,10 @@ export class AutoRoleRefreshService {
         scope: input.scope,
         guild: input.guild,
         snapshot,
+        trackedClans,
         membersById,
         linkedAccountsByUserId,
         playerCurrentByTag,
-        trackedClans,
         clanMembershipIndex,
         trackedMembershipScope,
         runId: run.id,

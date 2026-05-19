@@ -41,6 +41,11 @@ export type AutoRoleTrackedClanScope = {
   cwlMemberTags: Set<string>;
 };
 
+export type AutoRoleTrackedClanLeadRole = {
+  tag: string;
+  leadRoleId: string | null;
+};
+
 export type AutoRoleEvaluationMemberLike = {
   id: string;
   displayName?: string | null;
@@ -79,6 +84,7 @@ export type AutoRoleEvaluationInput = {
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   clanMembershipByTag: AutoRoleClanMembershipIndex;
   trackedClanScope: AutoRoleTrackedClanScope;
+  trackedClans?: AutoRoleTrackedClanLeadRole[];
   preferCurrentClanTagForClanRules?: boolean;
 };
 
@@ -156,6 +162,22 @@ function isLinkedAccountInTrackedMembershipTags(
   return playerTag.length > 0 && trackedMemberTags.has(playerTag);
 }
 
+function isLinkedAccountLeaderInTrackedClan(
+  linkedAccount: RankedLinkedAccount,
+  targetClanTag: string,
+): boolean {
+  const normalizedTarget = normalizeClanTag(targetClanTag);
+  if (!normalizedTarget) return false;
+
+  const currentClanTag = resolveMemberSourceCurrentClanTag(linkedAccount);
+  if (currentClanTag !== normalizedTarget) {
+    return false;
+  }
+
+  const currentRole = String(linkedAccount.playerCurrent?.role ?? "").trim();
+  return currentRole === "leader" || currentRole === "coLeader";
+}
+
 function isLeaderRankTarget(targetValue: string): boolean {
   return targetValue === "leader" || targetValue === "coLeader";
 }
@@ -208,11 +230,18 @@ export class AutoRoleEvaluationService {
   getManagedRoleIds(input: {
     config: AutoRoleGuildConfigSnapshot;
     rules: AutoRoleRule[];
+    trackedClans?: AutoRoleTrackedClanLeadRole[];
   }): Set<string> {
     const roleIds = new Set<string>();
     if (input.config.verifiedRoleId) roleIds.add(input.config.verifiedRoleId);
     if (input.config.familyRoleId) roleIds.add(input.config.familyRoleId);
     if (input.config.cwlClanRoleId) roleIds.add(input.config.cwlClanRoleId);
+    for (const clan of input.trackedClans ?? []) {
+      const leadRoleId = String(clan.leadRoleId ?? "").trim();
+      if (leadRoleId) {
+        roleIds.add(leadRoleId);
+      }
+    }
     for (const rule of input.rules) {
       if (!rule.enabled) continue;
       roleIds.add(rule.discordRoleId);
@@ -222,6 +251,7 @@ export class AutoRoleEvaluationService {
 
   /** Purpose: evaluate one member's autorole desired managed-role set and stable result hash. */
   evaluateMember(input: AutoRoleEvaluationInput): AutoRoleMemberEvaluation {
+    const trackedClans = input.trackedClans ?? [];
     const linkedAccounts = [...input.linkedAccounts]
       .map((account) => ({
         ...account,
@@ -289,6 +319,18 @@ export class AutoRoleEvaluationService {
       )
     ) {
       desiredManagedRoleIds.add(input.config.cwlClanRoleId);
+    }
+
+    for (const trackedClan of trackedClans) {
+      const leadRoleId = String(trackedClan.leadRoleId ?? "").trim();
+      const clanTag = normalizeClanTag(trackedClan.tag);
+      if (!leadRoleId || !clanTag || !input.managedRoleIds.has(leadRoleId)) {
+        continue;
+      }
+
+      if (linkedAccounts.some((account) => isLinkedAccountLeaderInTrackedClan(account, clanTag))) {
+        desiredManagedRoleIds.add(leadRoleId);
+      }
     }
 
     const primary = linkedAccounts[0] ?? null;
