@@ -21,6 +21,7 @@ import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
 import { AutoRoleSchedulerService } from "../services/AutoRoleSchedulerService";
+import { startActivityObserveLoop } from "../services/ActivityObserveStartupService";
 import {
   buildCommandRegistrationDebugSummary,
   formatStartupLogFields,
@@ -595,52 +596,13 @@ export default (client: Client, cocService: CoCService): void => {
         : DEFAULT_OBSERVE_INTERVAL_MINUTES;
     const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
     const initialObserveDelayMs = await getInitialObserveDelayMs();
-
-    if (activePollingEnabled) {
-      if (initialObserveDelayMs === 0) {
-        await runObservedCycle(Date.now());
-        setInterval(() => {
-          runObservedCycle(Date.now()).catch((err) => {
-            if (isCoCQueueSkippedError(err)) {
-              console.warn(`[activity-observe] skipped reason=${err.message}`);
-              return;
-            }
-            console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
-          });
-        }, intervalMs);
-      } else {
-        const initialObserveDelayMin = Math.ceil(initialObserveDelayMs / 60000);
-        console.log(
-          `Skipping startup activity observe run; next run in ${initialObserveDelayMin} minute(s).`
-        );
-        setTimeout(() => {
-          runObservedCycle(Date.now())
-            .catch((err) => {
-              if (isCoCQueueSkippedError(err)) {
-                console.warn(`[activity-observe] delayed_run_skipped reason=${err.message}`);
-                return;
-              }
-              console.error(`observeTrackedClans delayed run failed: ${formatError(err)}`);
-            })
-            .finally(() => {
-              setInterval(() => {
-                runObservedCycle(Date.now()).catch((err) => {
-                  if (isCoCQueueSkippedError(err)) {
-                    console.warn(`[activity-observe] skipped reason=${err.message}`);
-                    return;
-                  }
-                  console.error(`observeTrackedClans loop failed: ${formatError(err)}`);
-                });
-              }, intervalMs);
-            });
-        }, initialObserveDelayMs);
-      }
-      console.log(`Activity observe loop enabled (every ${intervalMinutes} minute(s)).`);
-    } else {
-      console.log(
-        "[polling-mode] event=poller_skipped job=activity_observe_cycle mode=mirror",
-      );
-    }
+    startActivityObserveLoop({
+      activePollingEnabled,
+      intervalMinutes,
+      intervalMs,
+      initialObserveDelayMs,
+      runObservedCycle,
+    });
 
     const runRecruitmentReminders = async () => {
       await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
