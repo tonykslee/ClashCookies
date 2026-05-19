@@ -27,6 +27,7 @@ export type AutoRoleApplyInput = {
   guildId: string;
   config: AutoRoleGuildConfigSnapshot;
   managedRoleIds: Set<string>;
+  suppressRemovalRoleIds?: Set<string>;
   rules: AutoRoleRule[];
   member: AutoRoleEvaluationMemberLike;
   evaluation: AutoRoleMemberEvaluation;
@@ -121,6 +122,7 @@ export class AutoRoleApplyService {
     const desiredManagedRoleIds = normalizeRoleIds(
       input.evaluation.desiredManagedRoleIds.filter((roleId) => input.managedRoleIds.has(roleId)),
     );
+    const suppressRemovalRoleIds = normalizeRoleIds(input.suppressRemovalRoleIds ?? new Set<string>());
     const currentManagedRoleIds = new Set(
       [...input.member.roles.cache.keys()]
         .map((roleId) => String(roleId ?? "").trim())
@@ -187,7 +189,9 @@ export class AutoRoleApplyService {
     }
 
     if (input.config.removeStaleManagedRoles) {
-      const staleManagedRoleIds = [...currentManagedRoleIds].filter((roleId) => !desiredManagedRoleIds.has(roleId));
+      const staleManagedRoleIds = [...currentManagedRoleIds].filter(
+        (roleId) => !desiredManagedRoleIds.has(roleId) && !suppressRemovalRoleIds.has(roleId),
+      );
       const staleClanRoles: Array<{ roleId: string; rules: AutoRoleRule[] }> = [];
       const immediateRemovalRoleIds = new Set<string>();
 
