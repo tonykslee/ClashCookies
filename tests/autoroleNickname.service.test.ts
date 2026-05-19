@@ -327,6 +327,186 @@ describe("AutoRoleNicknameService", () => {
     expect(result.renderedNickname).toBe("Tilonius | EB | AK");
   });
 
+  it("does not strip tracked-clan labels from {discord} when {trackedClans} is not used", () => {
+    const result = service.renderNickname({
+      config: makeConfig(),
+      template: "{discord}",
+      member: makeMember({ displayName: "Player | ZG" }),
+      linkedAccounts: [
+        makeLink({
+          playerTag: "#PLAYER123",
+          playerName: "Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+      ],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          "#PLAYER123",
+          makePlayerCurrent({
+            playerTag: "#PLAYER123",
+            playerName: "Player",
+            currentClanTag: "#2CGG9GGRV",
+            currentClanName: "Tracked Clan",
+            townHall: 16,
+            role: "member",
+          }),
+        ],
+      ]),
+      trackedClans: [
+        {
+          tag: "#2CGG9GGRV",
+          name: "Tracked Clan",
+          shortName: "TC",
+        },
+      ],
+    });
+
+    expect(result.renderedNickname).toBe("Player | ZG");
+  });
+
+  it("strips stale configured tracked-clan labels when {discord} and {trackedClans} are both used", () => {
+    const result = service.renderNickname({
+      config: makeConfig(),
+      template: "{discord} | {trackedClans}",
+      member: makeMember({ displayName: "Player | ZG" }),
+      linkedAccounts: [
+        makeLink({
+          playerTag: "#PLAYER123",
+          playerName: "Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+      ],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          "#PLAYER123",
+          makePlayerCurrent({
+            playerTag: "#PLAYER123",
+            playerName: "Player",
+            currentClanTag: null,
+            currentClanName: null,
+            townHall: 16,
+            role: "member",
+          }),
+        ],
+      ]),
+      trackedClans: [
+        {
+          tag: "#2CGG9GGRV",
+          name: "Zero Gravity",
+          shortName: "ZG",
+        },
+        {
+          tag: "#8PJLYRC8P",
+          name: "Red Dawn",
+          shortName: "RD",
+        },
+      ],
+    });
+
+    expect(result.renderedNickname).toBe("Player");
+  });
+
+  it("rebuilds the current tracked-clan suffix after stripping a stale one", () => {
+    const result = service.renderNickname({
+      config: makeConfig(),
+      template: "{discord} | {trackedClans}",
+      member: makeMember({ displayName: "Player | ZG" }),
+      linkedAccounts: [
+        makeLink({
+          playerTag: "#PLAYER123",
+          playerName: "Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+      ],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          "#PLAYER123",
+          makePlayerCurrent({
+            playerTag: "#PLAYER123",
+            playerName: "Player",
+            currentClanTag: "#8PJLYRC8P",
+            currentClanName: "Red Dawn",
+            townHall: 16,
+            role: "member",
+          }),
+        ],
+      ]),
+      trackedClans: [
+        {
+          tag: "#2CGG9GGRV",
+          name: "Zero Gravity",
+          shortName: "ZG",
+        },
+        {
+          tag: "#8PJLYRC8P",
+          name: "Red Dawn",
+          shortName: "RD",
+        },
+      ],
+    });
+
+    expect(result.trackedClans).toEqual(["RD"]);
+    expect(result.renderedNickname).toBe("Player | RD");
+  });
+
+  it("strips multiple stale tracked-clan suffixes before appending the current one", () => {
+    const result = service.renderNickname({
+      config: makeConfig(),
+      template: "{discord} | {trackedClans}",
+      member: makeMember({ displayName: "Player | ZG | RD" }),
+      linkedAccounts: [
+        makeLink({
+          playerTag: "#PLAYER123",
+          playerName: "Player",
+          discordUserId: "111111111111111111",
+          linkSource: "SELF_SERVICE",
+          verificationStatus: "VERIFIED",
+          verificationMethod: "PLAYER_API_TOKEN",
+          verifiedAt: new Date("2026-04-01T00:00:00.000Z"),
+        }),
+      ],
+      playerCurrentByTag: new Map<string, PlayerCurrentLike>([
+        [
+          "#PLAYER123",
+          makePlayerCurrent({
+            playerTag: "#PLAYER123",
+            playerName: "Player",
+            currentClanTag: "#8PJLYRC8P",
+            currentClanName: "Red Dawn",
+            townHall: 16,
+            role: "member",
+          }),
+        ],
+      ]),
+      trackedClans: [
+        {
+          tag: "#2CGG9GGRV",
+          name: "Zero Gravity",
+          shortName: "ZG",
+        },
+        {
+          tag: "#8PJLYRC8P",
+          name: "Red Dawn",
+          shortName: "RD",
+        },
+      ],
+    });
+
+    expect(result.renderedNickname).toBe("Player | RD");
+  });
+
   it("keeps unrelated trailing text while stripping only overlapping tracked-clan labels", () => {
     const result = service.renderNickname(makeDiscordTrackedClanRenderInput("Tilonius | Dad | EB"));
 
