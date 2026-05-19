@@ -4,10 +4,19 @@ const refreshHelperMock = vi.hoisted(() => ({
   refreshRaidTrackedClanListWithQueueContext: vi.fn(),
 }));
 
+const raidRosterServiceMock = vi.hoisted(() => ({
+  listRaidRosterStatusRowsForGuild: vi.fn(),
+  buildRaidRosterStatusEmbeds: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
+  },
+  raidRosterMember: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
   },
   trackedClan: {
     findMany: vi.fn(),
@@ -58,6 +67,17 @@ vi.mock("../src/commands/TrackedClan", () => ({
 vi.mock("../src/services/CoCQueueContext", () => ({
   runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
+
+vi.mock("../src/services/RaidRosterService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/RaidRosterService")>(
+    "../src/services/RaidRosterService",
+  );
+  return {
+    ...actual,
+    listRaidRosterStatusRowsForGuild: raidRosterServiceMock.listRaidRosterStatusRowsForGuild,
+    buildRaidRosterStatusEmbeds: raidRosterServiceMock.buildRaidRosterStatusEmbeds,
+  };
+});
 
 import {
   handleRaidsButtonInteraction,
@@ -321,14 +341,18 @@ function makeChatInteraction(options?: {
   clan?: string | null;
   type?: string | null;
   focused?: string;
+  group?: string | null;
   subcommand?: string;
+  tag?: string | null;
   upgrades?: number | null;
   districtArgs?: Record<string, string | null | undefined>;
 }) {
   const clan = options?.clan ?? null;
   const type = options?.type ?? null;
   const focused = options?.focused ?? "";
+  const group = options?.group ?? null;
   const subcommand = options?.subcommand ?? "overview";
+  const tag = options?.tag ?? null;
   const upgrades = options?.upgrades ?? null;
   const districtArgs = options?.districtArgs ?? {};
   const interaction: any = {
@@ -344,10 +368,12 @@ function makeChatInteraction(options?: {
     }),
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
+      getSubcommandGroup: vi.fn(() => group),
       getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => {
         if (name === "type") return type;
         if (name === "clan") return clan;
+        if (name === "tag") return tag;
         return Object.prototype.hasOwnProperty.call(districtArgs, name) ? districtArgs[name] ?? null : null;
       }),
       getInteger: vi.fn((name: string) => (name === "upgrades" ? upgrades : null)),
@@ -410,7 +436,15 @@ describe("/raids command", () => {
 
     prismaMock.raidTrackedClan.findMany.mockResolvedValue(makeTrackedClanRows());
     prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidRosterMember.findMany.mockResolvedValue([]);
+    prismaMock.raidRosterMember.createMany.mockResolvedValue({ count: 0 });
     prismaMock.trackedClan.findMany.mockResolvedValue(makeFwaTrackedClanRows());
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+    raidRosterServiceMock.buildRaidRosterStatusEmbeds.mockReturnValue([
+      {
+        toJSON: () => ({ description: "Roster Status" }),
+      } as any,
+    ]);
     prismaMock.raidIntelDefenderProfile.findMany.mockImplementation(async (args: any) => {
       const guildId = String(args?.where?.guildId ?? "").trim();
       const defenderTagFilter = Array.isArray(args?.where?.defenderTag?.in)
@@ -546,6 +580,100 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("adds roster tags from mixed free-form input and reports invalid and duplicate tags", async () => {
+    prismaMock.raidRosterMember.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { playerTag: "#2RVGJYLC0" },
+        { playerTag: "#2QG2C08UP" },
+      ]);
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "add",
+      tag: "#2RVGJYLC0, 2QG2C08UP #2RVGJYLC0 BADTAG",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(prismaMock.raidRosterMember.createMany).toHaveBeenCalledWith({
+      data: [
+        { guildId: "guild-1", playerTag: "#2RVGJYLC0", createdByDiscordUserId: "user-1" },
+        { guildId: "guild-1", playerTag: "#2QG2C08UP", createdByDiscordUserId: "user-1" },
+      ],
+      skipDuplicates: true,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: [
+        "Updated RAIDS roster.",
+        "added: #2RVGJYLC0, #2QG2C08UP",
+        "already on roster: #2RVGJYLC0",
+        "invalid: BADTAG",
+      ].join("\n"),
+    });
+  });
+
+  it("renders raid roster status from persisted roster members", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Alpha Raider",
+        townHall: 15,
+        discordUserId: "123456789012345678",
+        completedRaidAttacks: 4,
+      },
+    ]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(raidRosterServiceMock.listRaidRosterStatusRowsForGuild).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(raidRosterServiceMock.buildRaidRosterStatusEmbeds).toHaveBeenCalledWith(
+      [
+        {
+          playerTag: "#2RVGJYLC0",
+          playerName: "Alpha Raider",
+          townHall: 15,
+          discordUserId: "123456789012345678",
+          completedRaidAttacks: 4,
+        },
+      ],
+      expect.anything(),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [
+        {
+          toJSON: expect.any(Function),
+        },
+      ],
+    });
+  });
+
+  it("reports an empty roster status set with a clear add-members hint", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No RAIDS roster members configured yet. Use `/raids roster add` first.",
+    });
   });
 
   it("renders the raid overview shell when type is explicitly raids", async () => {
