@@ -27,6 +27,10 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("link:status");
   });
 
+  it("keeps raids roster status registered as an explicit permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("raids:roster:status");
+  });
+
   it("does not expose fwa mail send as a public permission target", () => {
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("fwa:mail:send");
   });

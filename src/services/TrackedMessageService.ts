@@ -28,6 +28,7 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  clanRoleId?: string | null;
   swapReminder: boolean;
   renderVariant?: "single" | "split_part_1" | "split_part_2";
   phaseTimingLine?: string | null;
@@ -384,6 +385,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
   const swapReminder =
     value.swapReminder === true ||
     String(value.swapReminder ?? "").trim().toLowerCase() === "true";
+  const clanRoleId = String(value.clanRoleId ?? "").trim() || null;
   const entries = value.entries
     .map((entry) => {
       if (!isObject(entry)) return null;
@@ -447,6 +449,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     clanName,
     createdByUserId,
     createdAtIso,
+    clanRoleId,
     renderVariant,
     phaseTimingLine: phaseTimingLineRaw || null,
     alertEmoji: alertEmojiRaw || null,
@@ -911,7 +914,7 @@ export class TrackedMessageService {
       channelId: string;
       edit: (payload: {
         content: string;
-        allowedMentions: { users: string[] };
+        allowedMentions: { users: string[]; roles?: string[] };
       }) => Promise<unknown>;
     };
     render: (metadata: FwaBaseSwapTrackedMetadata) => string;
@@ -922,7 +925,7 @@ export class TrackedMessageService {
       | {
           edit: (payload: {
             content: string;
-            allowedMentions: { users: string[] };
+            allowedMentions: { users: string[]; roles?: string[] };
           }) => Promise<unknown>;
         }
       | null

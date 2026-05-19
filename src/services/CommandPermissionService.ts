@@ -51,6 +51,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "raids",
   "raids:overview",
   "raids:intel",
+  "raids:roster:add",
+  "raids:roster:status",
   "sheet:link",
   "sheet:unlink",
   "sheet:show",

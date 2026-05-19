@@ -316,8 +316,8 @@ describe("FWA base-swap layout links", () => {
       ],
     });
 
-    const th18Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`;
-    const th17Line = `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH17: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>`;
+    const th18Line = `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`;
+    const th17Line = `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH17: <https://link.clashofclans.com/en?action=OpenLayout&id=TH17%3AWB%3AAAAARQAAAAI6ppxkTfH3WnNJjWK96bqn>`;
     const reactLine = `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`;
 
     const th18Index = content.indexOf(th18Line);
@@ -477,8 +477,9 @@ describe("FWA base-swap layout links", () => {
       "# <a:alert:10001> YOU HAVE AN ACTIVE WAR BASE <a:alert:10001>",
     );
     expect(content).toContain(
-      "## <a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
     );
+    expect(content).not.toContain("## <a:arrow_arrow:10002> TH18:");
   });
 
   it("uses unicode fallback inline emojis when resolved emojis are unavailable", () => {
@@ -505,8 +506,9 @@ describe("FWA base-swap layout links", () => {
       `# ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI} YOU HAVE AN ACTIVE WAR BASE ${FWA_BASE_SWAP_ALERT_FALLBACK_EMOJI}`,
     );
     expect(content).toContain(
-      `## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
     );
+    expect(content).not.toContain(`## ${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18:`);
   });
 
   it("skips TH lines when no matching RISINGDAWN layout link is available", () => {
@@ -847,6 +849,36 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
+  it("renders the swap-back reminder header and clan role mention when swap-reminder is enabled", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+      swapReminder: true,
+      clanRoleId: "role-1",
+    });
+
+    const lines = content.split("\n");
+    const headerIndex = lines.indexOf("# Swap back to FWA layout");
+    const noteIndex = lines.indexOf(
+      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
+    );
+    const roleIndex = lines.indexOf("<@&role-1>");
+
+    expect(headerIndex).toBeGreaterThan(-1);
+    expect(noteIndex).toBeGreaterThan(headerIndex);
+    expect(roleIndex).toBeGreaterThan(noteIndex);
+    expect(content).toContain("<@&role-1>");
+  });
+
   it("uses alert for war-bases and alert_blue for fwa-bases in mixed sections", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
@@ -1005,8 +1037,9 @@ describe("FWA base-swap layout links", () => {
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
     expect(String(editPayload.content)).toContain(
-      "## <a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
     );
+    expect(String(editPayload.content)).not.toContain("## <a:arrow_arrow:10002> TH18:");
     expect(String(editPayload.content)).toContain(
       `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
     );
@@ -1079,6 +1112,60 @@ describe("FWA base-swap layout links", () => {
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
     expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
+  });
+
+  it("keeps the visible clan role mention in rerenders without re-allowing role pings", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      clanRoleId: "123456789012345678",
+      swapReminder: true,
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "reactor-1",
+          acknowledged: false,
+        }),
+      ],
+      layoutLinks: [],
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-3",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const service = new TrackedMessageService();
+    const message = {
+      id: "message-3",
+      channelId: "channel-1",
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const changed = await service.handleFwaBaseSwapReaction({
+      messageId: "message-3",
+      reactorUserId: "reactor-1",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+    });
+
+    expect(changed).toBe(true);
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(String(editPayload.content)).toContain("# Swap back to FWA layout");
+    expect(String(editPayload.content)).toContain(
+      "<@&123456789012345678>",
+    );
+    expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
+    expect(editPayload.allowedMentions.roles).toBeUndefined();
   });
 
   it("keeps single-post mode when rendered content fits the Discord limit", () => {
@@ -1425,6 +1512,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       mailChannelId: "mail-1",
+      clanRoleId: null,
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -1571,6 +1659,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       mailChannelId: "mail-1",
+      clanRoleId: null,
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
@@ -1705,6 +1794,72 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
+  it("adds a swap-back header and clan role mention when swap-reminder is enabled", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: true,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: "123456789012345678",
+      },
+    ]);
+    const posted = {
+      id: "msg-1",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-1",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.any(String),
+        allowedMentions: { users: ["111"], roles: ["123456789012345678"] },
+      }),
+    );
+    const content = String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "");
+    const headerIndex = content.indexOf("# Swap back to FWA layout");
+    const noteIndex = content.indexOf(
+      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
+    );
+    const roleIndex = content.indexOf("<@&123456789012345678>");
+    expect(headerIndex).toBeGreaterThan(-1);
+    expect(noteIndex).toBeGreaterThan(headerIndex);
+    expect(roleIndex).toBeGreaterThan(noteIndex);
+  });
+
   it("publishes both split base-swap posts to the clan mail channel", async () => {
     const key = "split-mail-1";
     setFwaBaseSwapSplitPostPayloadForTest(key, {
@@ -1713,6 +1868,7 @@ describe("FWA base-swap mail-channel routing", () => {
       guildId: "guild-1",
       channelId: "invoke-1",
       mailChannelId: "mail-1",
+      clanRoleId: null,
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({

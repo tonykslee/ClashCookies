@@ -4,10 +4,22 @@ const refreshHelperMock = vi.hoisted(() => ({
   refreshRaidTrackedClanListWithQueueContext: vi.fn(),
 }));
 
+const raidRosterServiceMock = vi.hoisted(() => ({
+  listRaidRosterStatusRowsForGuild: vi.fn(),
+  buildRaidRosterStatusEmbeds: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
+  },
+  raidRosterMember: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+  },
+  trackedClan: {
+    findMany: vi.fn(),
   },
   raidIntelDefenderProfile: {
     findMany: vi.fn(),
@@ -56,6 +68,17 @@ vi.mock("../src/services/CoCQueueContext", () => ({
   runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
 
+vi.mock("../src/services/RaidRosterService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/RaidRosterService")>(
+    "../src/services/RaidRosterService",
+  );
+  return {
+    ...actual,
+    listRaidRosterStatusRowsForGuild: raidRosterServiceMock.listRaidRosterStatusRowsForGuild,
+    buildRaidRosterStatusEmbeds: raidRosterServiceMock.buildRaidRosterStatusEmbeds,
+  };
+});
+
 import {
   handleRaidsButtonInteraction,
   handleRaidsIntelButtonInteraction,
@@ -89,6 +112,35 @@ function makeTrackedClanRows() {
       joinType: "open",
       createdAt: new Date("2026-05-03T00:00:00.000Z"),
       updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+    },
+  ];
+}
+
+function makeFwaTrackedClanRows() {
+  return [
+    {
+      tag: "#2QG2C08UP",
+      name: "Alpha FWA",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: "mail-1",
+      logChannelId: "log-1",
+      leaderChannelId: "lead-1",
+      clanRoleId: null,
+      clanBadge: null,
+      shortName: null,
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+    },
+    {
+      tag: "#2RVGJYLC0",
+      name: "Bravo FWA",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: "mail-2",
+      logChannelId: "log-2",
+      leaderChannelId: "lead-2",
+      clanRoleId: null,
+      clanBadge: null,
+      shortName: null,
+      createdAt: new Date("2026-05-02T00:00:00.000Z"),
     },
   ];
 }
@@ -287,14 +339,20 @@ function makeIntelDistrictSeason() {
 
 function makeChatInteraction(options?: {
   clan?: string | null;
+  type?: string | null;
   focused?: string;
+  group?: string | null;
   subcommand?: string;
+  tag?: string | null;
   upgrades?: number | null;
   districtArgs?: Record<string, string | null | undefined>;
 }) {
   const clan = options?.clan ?? null;
+  const type = options?.type ?? null;
   const focused = options?.focused ?? "";
+  const group = options?.group ?? null;
   const subcommand = options?.subcommand ?? "overview";
+  const tag = options?.tag ?? null;
   const upgrades = options?.upgrades ?? null;
   const districtArgs = options?.districtArgs ?? {};
   const interaction: any = {
@@ -310,9 +368,12 @@ function makeChatInteraction(options?: {
     }),
     editReply: vi.fn().mockResolvedValue(undefined),
     options: {
+      getSubcommandGroup: vi.fn(() => group),
       getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => {
+        if (name === "type") return type;
         if (name === "clan") return clan;
+        if (name === "tag") return tag;
         return Object.prototype.hasOwnProperty.call(districtArgs, name) ? districtArgs[name] ?? null : null;
       }),
       getInteger: vi.fn((name: string) => (name === "upgrades" ? upgrades : null)),
@@ -375,6 +436,15 @@ describe("/raids command", () => {
 
     prismaMock.raidTrackedClan.findMany.mockResolvedValue(makeTrackedClanRows());
     prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.raidRosterMember.findMany.mockResolvedValue([]);
+    prismaMock.raidRosterMember.createMany.mockResolvedValue({ count: 0 });
+    prismaMock.trackedClan.findMany.mockResolvedValue(makeFwaTrackedClanRows());
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+    raidRosterServiceMock.buildRaidRosterStatusEmbeds.mockReturnValue([
+      {
+        toJSON: () => ({ description: "Roster Status" }),
+      } as any,
+    ]);
     prismaMock.raidIntelDefenderProfile.findMany.mockImplementation(async (args: any) => {
       const guildId = String(args?.where?.guildId ?? "").trim();
       const defenderTagFilter = Array.isArray(args?.where?.defenderTag?.in)
@@ -510,6 +580,237 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("adds roster tags from mixed free-form input and reports invalid and duplicate tags", async () => {
+    prismaMock.raidRosterMember.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { playerTag: "#2RVGJYLC0" },
+        { playerTag: "#2QG2C08UP" },
+      ]);
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "add",
+      tag: "#2RVGJYLC0, 2QG2C08UP #2RVGJYLC0 BADTAG",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(prismaMock.raidRosterMember.createMany).toHaveBeenCalledWith({
+      data: [
+        { guildId: "guild-1", playerTag: "#2RVGJYLC0", createdByDiscordUserId: "user-1" },
+        { guildId: "guild-1", playerTag: "#2QG2C08UP", createdByDiscordUserId: "user-1" },
+      ],
+      skipDuplicates: true,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: [
+        "Updated RAIDS roster.",
+        "added: #2RVGJYLC0, #2QG2C08UP",
+        "already on roster: #2RVGJYLC0",
+        "invalid: BADTAG",
+      ].join("\n"),
+    });
+  });
+
+  it("renders raid roster status from persisted roster members", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Alpha Raider",
+        townHall: 15,
+        discordUserId: "123456789012345678",
+        completedRaidAttacks: 4,
+      },
+    ]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(raidRosterServiceMock.listRaidRosterStatusRowsForGuild).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(raidRosterServiceMock.buildRaidRosterStatusEmbeds).toHaveBeenCalledWith(
+      [
+        {
+          playerTag: "#2RVGJYLC0",
+          playerName: "Alpha Raider",
+          townHall: 15,
+          discordUserId: "123456789012345678",
+          completedRaidAttacks: 4,
+        },
+      ],
+      expect.anything(),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [
+        {
+          toJSON: expect.any(Function),
+        },
+      ],
+    });
+  });
+
+  it("reports an empty roster status set with a clear add-members hint", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No RAIDS roster members configured yet. Use `/raids roster add` first.",
+    });
+  });
+
+  it("renders the raid overview shell when type is explicitly raids", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        if (tag === "#2QG2C08UP") {
+          return [makeOngoingSeason()];
+        }
+        if (tag === "#2RVGJYLC0") {
+          return [makeActiveSeason()];
+        }
+        return makeEmptySeason();
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction({ type: "raids" });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("## Raid Clans");
+    expect(description).toContain("Alpha Raid");
+    expect(description).toContain("Bravo Raid");
+    expect(prismaMock.raidTrackedClan.findMany).toHaveBeenCalled();
+  });
+
+  it("renders the FWA overview shell and preserves the source on selection", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        if (tag === "#2QG2C08UP") {
+          return [makeOngoingSeason()];
+        }
+        if (tag === "#2RVGJYLC0") {
+          return [makeActiveSeason()];
+        }
+        return makeEmptySeason();
+      }),
+      getClan: vi.fn(async (tag: string) => {
+        expect(tag).toBe("#2QG2C08UR");
+        return {
+          type: "open",
+          requiredTownhallLevel: 16,
+          requiredBuilderBaseTrophies: 2600,
+          requiredTrophies: 5000,
+        };
+      }),
+    };
+    const interaction = makeChatInteraction({ type: "fwa" });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalled();
+    expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("## Raid Clans");
+    expect(description).toContain("Alpha FWA");
+    expect(description).toContain("Bravo FWA");
+
+    const selectRow = payload.components[0]?.toJSON?.().components[0];
+    expect(selectRow?.options?.[0]?.label).toContain("Alpha FWA");
+    expect(selectRow?.options?.[1]?.label).toContain("Bravo FWA");
+
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2QG2C08UP");
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+
+    const selectedPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    const selectedDescription = selectedPayload.embeds[0].toJSON().description as string;
+    expect(selectedDescription).toContain("## Raid Clan");
+    expect(selectedDescription).toContain("Alpha FWA");
+
+    const backButton = makeButtonInteraction("raids:raids-itx-1:back");
+    await handleRaidsButtonInteraction(backButton as any, cocService as any);
+
+    const backPayload = backButton.editReply.mock.calls.at(-1)?.[0] as any;
+    const backDescription = backPayload.embeds[0].toJSON().description as string;
+    expect(backDescription).toContain("Alpha FWA");
+    expect(backDescription).toContain("Bravo FWA");
+  });
+
+  it("renders a custom overview from a supplied clan tag", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        expect(tag).toBe("#2QG2C08UP");
+        return [makeActiveSeason()];
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction({ type: "custom", clan: "2QG2C08UP" });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("## Raid Clan");
+    expect(description).toContain("#2QG2C08UP");
+    expect(description).not.toContain("Alpha Raid");
+    expect(description).toContain("## Attacking");
+    expect(description).toContain("## Defending");
+    const buttonIds = payload.components[1]?.toJSON?.().components.map((component: any) =>
+      String(component.custom_id ?? ""),
+    );
+    expect(buttonIds).toEqual(["raids:raids-itx-1:back", "raids:raids-itx-1:refresh"]);
+  });
+
+  it("rejects a custom overview without a clan tag", async () => {
+    const interaction = makeChatInteraction({ type: "custom" });
+
+    await Raids.run({} as any, interaction as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Choose a valid clan with `/raids overview type:custom clan:<tag>`.",
+    });
+  });
+
+  it("rejects an invalid custom overview clan tag", async () => {
+    const interaction = makeChatInteraction({ type: "custom", clan: "not-a-tag" });
+
+    await Raids.run({} as any, interaction as any, {
+      getClanCapitalRaidSeasons: vi.fn(),
+      getClan: vi.fn(),
+    } as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Choose a valid clan with `/raids overview type:custom clan:<tag>`.",
+    });
   });
 
   it("orders completed overview clans by intel grade score before stable fallback", async () => {
@@ -1513,6 +1814,24 @@ describe("/raids command", () => {
     expect(interaction.respond).toHaveBeenCalledWith([
       { name: "Alpha Raid (#2QG2C08UP)", value: "2QG2C08UP" },
     ]);
+  });
+
+  it("supports FWA clan autocomplete when overview type is fwa", async () => {
+    const interaction = makeChatInteraction({ type: "fwa", focused: "brav" });
+
+    await Raids.autocomplete?.(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Bravo FWA (#2RVGJYLC0)", value: "2RVGJYLC0" },
+    ]);
+  });
+
+  it("returns no autocomplete choices for custom overview clan input", async () => {
+    const interaction = makeChatInteraction({ type: "custom", focused: "2QG" });
+
+    await Raids.autocomplete?.(interaction as any);
+
+    expect(interaction.respond).toHaveBeenCalledWith([]);
   });
 
   it("switches to a single-clan view from the dropdown and can return to overview", async () => {
