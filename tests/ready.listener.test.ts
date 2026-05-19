@@ -290,6 +290,7 @@ vi.mock("../src/helper/formatError", () => ({
   formatError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
 
+import { botStartupStatusService } from "../src/services/BotStartupStatusService";
 import ready from "../src/listeners/ready";
 
 describe("ready listener startup", () => {
@@ -302,6 +303,7 @@ describe("ready listener startup", () => {
     statusServiceMock.markFailed.mockResolvedValue({});
     statusServiceMock.markSkipped.mockResolvedValue({});
     statusServiceMock.markDisabled.mockResolvedValue({});
+    botStartupStatusService.markPhase("ready_start", { test: true });
   });
 
   afterEach(() => {
@@ -349,6 +351,9 @@ describe("ready listener startup", () => {
 
   it("continues startup while activity observe work is still pending", async () => {
     await runStartup();
+    const snapshot = botStartupStatusService.getSnapshot();
+    expect(snapshot.status).toBe("online");
+    expect(snapshot.phase).toBe("complete");
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
     expect(fwaFeedStart).toHaveBeenCalledTimes(1);
@@ -472,6 +477,7 @@ describe("ready listener startup", () => {
 
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
+    expect(botStartupStatusService.getSnapshot().phase).toBe("war_event_poll");
     expect(warEventPollMock).toHaveBeenCalledTimes(1);
     expect(settled).toBe(false);
   });

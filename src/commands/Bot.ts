@@ -21,6 +21,10 @@ import {
   type BotPollJobStatusRecord,
   type BotPollJobStatusService,
 } from "../services/BotPollJobStatusService";
+import {
+  botStartupStatusService,
+  type BotStartupStatusSnapshot,
+} from "../services/BotStartupStatusService";
 import { formatError } from "../helper/formatError";
 
 const BOT_STATUS_EMOJI = {
@@ -49,6 +53,8 @@ const BOT_STATUS_HELPER_LIMITS = {
   errorChars: 180,
 } as const;
 
+const BOT_STARTUP_STALE_WARNING_MS = 10 * 60 * 1000;
+
 const BOT_STATUS_REFRESH_BUTTON_PREFIX = "bot:status:refresh";
 const BOT_POLL_STATUS_REFRESH_BUTTON_PREFIX = "bot:poll-status:refresh";
 const BOT_POLL_JOB_REFRESH_BUTTON_PREFIX = "bot:poll-job:refresh";
@@ -63,6 +69,7 @@ type BotStatusHealthSnapshot = {
   runtimeEnvironment: string;
   pollingMode: string;
   discordVersion: string;
+  startup?: BotStartupStatusSnapshot;
 };
 
 function hasAdministratorPermission(
@@ -183,6 +190,52 @@ function safeJsonPreview(
 function formatMetadataField(value: unknown): string {
   if (!isMetadataObject(value)) return "—";
   return `\`\`\`json\n${safeJsonPreview(value, 900, 120)}\n\`\`\``;
+}
+
+function formatStartupStatusEmoji(status: BotStartupStatusSnapshot["status"]): string {
+  switch (status) {
+    case "online":
+      return BOT_STATUS_EMOJI.healthy;
+    case "failed":
+      return BOT_STATUS_EMOJI.unhealthy;
+    default:
+      return BOT_STATUS_EMOJI.warning;
+  }
+}
+
+function formatStartupStatusLabel(status: BotStartupStatusSnapshot["status"]): string {
+  return status;
+}
+
+function buildStartupFieldValue(startup: BotStartupStatusSnapshot | undefined, now: Date): string {
+  if (!startup) {
+    return [
+      "Status: —",
+      "Phase: —",
+      "Started: —",
+      "Updated: —",
+      "Completed: —",
+    ].join("\n");
+  }
+
+  const lines = [
+    `Status: ${formatStartupStatusEmoji(startup.status)} ${formatStartupStatusLabel(startup.status)}`,
+    `Phase: ${startup.phase || "—"}`,
+    `Started: ${toUnixTimestampLabel(startup.startedAt)}`,
+    `Updated: ${toUnixTimestampLabel(startup.updatedAt)}`,
+    `Completed: ${toUnixTimestampLabel(startup.completedAt)}`,
+  ];
+  if (startup.status === "failed" && startup.lastError) {
+    lines.push(`Error: ${formatShortError(startup.lastError, BOT_STATUS_HELPER_LIMITS.errorChars)}`);
+  }
+  if (
+    startup.status === "starting" &&
+    startup.updatedAt &&
+    now.getTime() - startup.updatedAt.getTime() > BOT_STARTUP_STALE_WARNING_MS
+  ) {
+    lines.push("Warning: startup appears stuck");
+  }
+  return lines.join("\n");
 }
 
 function buildRefreshButtonRow(customId: string): ActionRowBuilder<ButtonBuilder> {
@@ -430,7 +483,15 @@ function resolveOverallStatus(
   summary: { failed: number; overdueOrStuck: number },
 ): keyof typeof BOT_STATUS_EMOJI {
   if (!input.dbHealthy || !input.discordHealthy) return "unhealthy";
+  if (input.startup?.status === "failed") return "unhealthy";
   if (summary.failed > 0) return "unhealthy";
+  if (
+    input.startup?.status === "starting" &&
+    input.startup.updatedAt &&
+    Date.now() - input.startup.updatedAt.getTime() > BOT_STARTUP_STALE_WARNING_MS
+  ) {
+    return "warning";
+  }
   if (summary.overdueOrStuck > 0 || input.dbError !== null || input.pollRowsError !== null) return "warning";
   return "healthy";
 }
@@ -507,6 +568,7 @@ export function buildBotStatusEmbeds(
   const counts = summarizePollJobCounts(statuses, now);
   const warnings = collectProblematicJobs(statuses, now);
   const overall = resolveOverallStatus(health, counts);
+  const startupValue = buildStartupFieldValue(health.startup, now);
 
   const runtimeLines = [
     `Uptime: ${formatProcessUptimeLabel(process.uptime())}`,
@@ -560,6 +622,7 @@ export function buildBotStatusEmbeds(
       .setTitle("Bot status")
       .setDescription(`Overall: ${BOT_STATUS_EMOJI[overall]} ${overall}`)
       .addFields(
+        { name: "Startup", value: startupValue, inline: false },
         { name: "Runtime", value: runtimeLines.join("\n"), inline: false },
         { name: "Health", value: healthLines.join("\n"), inline: false },
         { name: "Poll jobs summary", value: summaryLines.join("\n"), inline: false },
@@ -647,6 +710,7 @@ async function runBotStatus(
   if (!skipDeferReply) {
     await interaction.deferReply({ ephemeral: true });
   }
+  const startup = botStartupStatusService.getSnapshot();
   const [dbResult, pollRowsResult] = await Promise.allSettled([
     prisma.$queryRawUnsafe("select 1"),
     statusService.listStatuses(),
@@ -668,6 +732,7 @@ async function runBotStatus(
     runtimeEnvironment: resolveRuntimeEnvironment(process.env),
     pollingMode: resolvePollingMode(process.env),
     discordVersion: discordJsVersion,
+    startup,
   };
 
   const embeds = buildBotStatusEmbeds(statuses, health, new Date());

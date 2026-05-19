@@ -6,6 +6,7 @@ import {
   handleBotPollStatusRefreshButtonInteraction,
   handleBotStatusRefreshButtonInteraction,
 } from "../src/commands/Bot";
+import { botStartupStatusService } from "../src/services/BotStartupStatusService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
@@ -122,6 +123,7 @@ describe("/bot status behavior", () => {
     vi.clearAllMocks();
     prismaMock.$queryRawUnsafe.mockResolvedValue([{ "?column?": 1 }]);
     listStatusesMock.mockResolvedValue([]);
+    botStartupStatusService.markPhase("ready_start", { test: true });
   });
 
   afterEach(() => {
@@ -142,6 +144,7 @@ describe("/bot status behavior", () => {
 
   it("renders a healthy overview", async () => {
     const interaction = createInteraction({ group: null, sub: "status" });
+    botStartupStatusService.markComplete({ pollingMode: "active" });
     listStatusesMock.mockResolvedValue([
       {
         jobKey: "autorole_scheduler",
@@ -171,6 +174,9 @@ describe("/bot status behavior", () => {
     const text = flattenEmbedText(payload);
     expect(extractButtonCustomIds(payload)).toContain("bot:status:refresh");
     expect(text).toContain("Bot status");
+    expect(text).toContain("Startup");
+    expect(text).toContain("Status: ");
+    expect(text).toContain("Phase: complete");
     expect(text).toContain("Overall: 🟢 healthy");
     expect(text).toContain("Runtime");
     expect(text).toContain("Health");
@@ -180,6 +186,37 @@ describe("/bot status behavior", () => {
     expect(text).toContain("Polling mode:");
     expect(text).toContain("Database: 🟢 reachable");
     expect(text).toContain("Discord: 🟢 ready");
+  });
+
+  it("marks stale startup as a warning in the overview", async () => {
+    const interaction = createInteraction({ group: null, sub: "status" });
+    botStartupStatusService.markPhase("autorole_scheduler", { stage: "autorole_scheduler" });
+    vi.setSystemTime(new Date("2026-05-19T12:11:00.000Z"));
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Overall:");
+    expect(text).toContain("warning");
+    expect(text).toContain("Startup");
+    expect(text).toContain("Phase: autorole_scheduler");
+    expect(text).toContain("Warning: startup appears stuck");
+  });
+
+  it("marks failed startup as unhealthy", async () => {
+    const interaction = createInteraction({ group: null, sub: "status" });
+    botStartupStatusService.markFailed(new Error("startup boom"), { phase: "war_event_poll" });
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Overall:");
+    expect(text).toContain("unhealthy");
+    expect(text).toContain("Status:");
+    expect(text).toContain("failed");
+    expect(text).toContain("Error: startup boom");
   });
 
   it("marks failed poll jobs as warnings in the overview", async () => {

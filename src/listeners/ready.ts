@@ -49,6 +49,7 @@ import {
   botPollJobStatusService,
   type BotPollJobStatusService,
 } from "../services/BotPollJobStatusService";
+import { botStartupStatusService } from "../services/BotStartupStatusService";
 import {
   cocRequestQueueService,
   isCoCQueueSkippedError,
@@ -150,6 +151,45 @@ async function safePollJobStatusWrite(
       `[poll-status] status_update_failed job_key=${jobKey} stage=${stage} error=${formatError(err)}`,
     );
   }
+}
+
+async function safeStartupStatusWrite(
+  stage: "phase" | "complete" | "failed",
+  write: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    console.warn(
+      `[startup-status] update_failed stage=${stage} error=${formatError(err)}`,
+    );
+  }
+}
+
+async function markStartupPhase(
+  phase: string,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  await safeStartupStatusWrite("phase", () =>
+    Promise.resolve(botStartupStatusService.markPhase(phase, metadata)),
+  );
+}
+
+async function markStartupComplete(
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  await safeStartupStatusWrite("complete", () =>
+    Promise.resolve(botStartupStatusService.markComplete(metadata)),
+  );
+}
+
+async function markStartupFailed(
+  error: unknown,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  await safeStartupStatusWrite("failed", () =>
+    Promise.resolve(botStartupStatusService.markFailed(error, metadata)),
+  );
 }
 
 function pollJobInput(input: {
@@ -341,28 +381,31 @@ function injectVisibilityOptions(command: any): any {
 
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {
-    if (!client.application) return;
+    let startupPhase = "ready_start";
+    await markStartupPhase(startupPhase);
+    try {
+      if (!client.application) return;
 
-    dozzleLog.info("ClashCookies is starting...");
-    let applicationFetchAttempted = false;
-    let applicationFetchSucceeded = false;
-    if (client.application) {
-      applicationFetchAttempted = true;
-      try {
-        await client.application.fetch();
-        applicationFetchSucceeded = true;
-      } catch {
-        applicationFetchSucceeded = false;
+      dozzleLog.info("ClashCookies is starting...");
+      let applicationFetchAttempted = false;
+      let applicationFetchSucceeded = false;
+      if (client.application) {
+        applicationFetchAttempted = true;
+        try {
+          await client.application.fetch();
+          applicationFetchSucceeded = true;
+        } catch {
+          applicationFetchSucceeded = false;
+        }
       }
-    }
-    const hasApplicationEmojiFetch = Boolean(
-      client.application &&
-        client.application.emojis &&
-        typeof client.application.emojis.fetch === "function"
-    );
-    dozzleLog.debug(
-      `[startup:discord] discord_js_version=${discordJsVersion} application_present=${Boolean(client.application)} application_fetch_attempted=${applicationFetchAttempted} application_fetch_succeeded=${applicationFetchSucceeded} application_emoji_fetch_available=${hasApplicationEmojiFetch}`
-    );
+      const hasApplicationEmojiFetch = Boolean(
+        client.application &&
+          client.application.emojis &&
+          typeof client.application.emojis.fetch === "function"
+      );
+      dozzleLog.debug(
+        `[startup:discord] discord_js_version=${discordJsVersion} application_present=${Boolean(client.application)} application_fetch_attempted=${applicationFetchAttempted} application_fetch_succeeded=${applicationFetchSucceeded} application_emoji_fetch_available=${hasApplicationEmojiFetch}`
+      );
 
     const bootstrapConfig = getStartupBootstrapRetryConfigFromEnv(process.env);
     const summaryEvery = getStartupRetryLogSummaryEveryFromEnv(process.env);
@@ -749,6 +792,8 @@ export default (client: Client, cocService: CoCService): void => {
         : DEFAULT_OBSERVE_INTERVAL_MINUTES;
     const intervalMs = Math.floor(intervalMinutes * 60 * 1000);
     const initialObserveDelayMs = await getInitialObserveDelayMs();
+    startupPhase = "activity_observe_loop";
+    await markStartupPhase(startupPhase, { pollingMode });
     startActivityObserveLoop({
       activePollingEnabled,
       intervalMinutes,
@@ -758,10 +803,14 @@ export default (client: Client, cocService: CoCService): void => {
     });
 
     if (activePollingEnabled) {
+      startupPhase = "autorole_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode });
       const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
       autoRoleScheduler.start();
       console.log("Autorole scheduler loop initialized.");
     } else {
+      startupPhase = "autorole_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode, skipped: true });
       console.log(
         "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
       );
@@ -800,6 +849,8 @@ export default (client: Client, cocService: CoCService): void => {
       });
     };
 
+    startupPhase = "recruitment_reminders";
+    await markStartupPhase(startupPhase, { pollingMode });
     await runRecruitmentReminders();
     setInterval(() => {
       runRecruitmentReminders().catch((err) => {
@@ -890,6 +941,8 @@ export default (client: Client, cocService: CoCService): void => {
       });
     };
 
+    startupPhase = "deferment_reminders";
+    await markStartupPhase(startupPhase, { pollingMode });
     await runDefermentReminders();
     setInterval(() => {
       runDefermentReminders().catch((err) => {
@@ -1033,6 +1086,8 @@ export default (client: Client, cocService: CoCService): void => {
       }
     };
 
+    startupPhase = "tracked_message_sweep";
+    await markStartupPhase(startupPhase, { pollingMode });
     await runTrackedMessageSweep();
     setInterval(() => {
       runTrackedMessageSweep().catch((err) => {
@@ -1158,6 +1213,8 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     if (activePollingEnabled) {
+      startupPhase = "war_event_poll";
+      await markStartupPhase(startupPhase, { pollingMode });
       setNextNotifyRefreshAtMs(Date.now() + warEventPollMs);
       setNextWarMailRefreshAtMs(Date.now() + warEventPollMs);
       await runWarEventPoll(Date.now());
@@ -1177,6 +1234,8 @@ export default (client: Client, cocService: CoCService): void => {
       );
 
       const fwaFeedScheduler = new FwaFeedSchedulerService();
+      startupPhase = "fwa_feed_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode });
       await markPollJobStarted({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaFeedScheduler,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaFeedScheduler,
@@ -1228,6 +1287,8 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
     if (!activePollingEnabled) {
+      startupPhase = "mirror_sync";
+      await markStartupPhase(startupPhase, { pollingMode });
       const mirrorSyncIntervalMs = resolveMirrorSyncIntervalMsFromEnv(process.env);
       const mirrorSyncIntervalMinutes = Math.max(
         1,
@@ -1295,6 +1356,8 @@ export default (client: Client, cocService: CoCService): void => {
         `[mirror-sync] event=scheduler_started interval_minutes=${mirrorSyncIntervalMinutes}`,
       );
     } else {
+      startupPhase = "mirror_sync";
+      await markStartupPhase(startupPhase, { pollingMode, skipped: true });
       await markPollJobDisabled({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
@@ -1303,6 +1366,8 @@ export default (client: Client, cocService: CoCService): void => {
     }
 
     if (activePollingEnabled) {
+      startupPhase = "user_activity_reminder_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode });
       const userActivityReminderScheduler = new UserActivityReminderSchedulerService(
         client,
         cocService
@@ -1310,6 +1375,8 @@ export default (client: Client, cocService: CoCService): void => {
       userActivityReminderScheduler.start();
       console.log("User activity reminder scheduler loop initialized.");
     } else {
+      startupPhase = "user_activity_reminder_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode, skipped: true });
       await markPollJobDisabled({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.userActivityReminderScheduler,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.userActivityReminderScheduler,
@@ -1321,6 +1388,11 @@ export default (client: Client, cocService: CoCService): void => {
       );
     }
 
+    await markStartupComplete({ pollingMode });
     console.log("ClashCookies is online");
+    } catch (err) {
+      await markStartupFailed(err, { phase: startupPhase });
+      console.error(`[startup] ready startup failed at phase=${startupPhase}: ${formatError(err)}`);
+    }
   });
 };
