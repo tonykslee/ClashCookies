@@ -1,8 +1,12 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   EmbedBuilder,
   PermissionFlagsBits,
   version as discordJsVersion,
@@ -45,6 +49,10 @@ const BOT_STATUS_HELPER_LIMITS = {
   errorChars: 180,
 } as const;
 
+const BOT_STATUS_REFRESH_BUTTON_PREFIX = "bot:status:refresh";
+const BOT_POLL_STATUS_REFRESH_BUTTON_PREFIX = "bot:poll-status:refresh";
+const BOT_POLL_JOB_REFRESH_BUTTON_PREFIX = "bot:poll-job:refresh";
+
 type MetadataObject = Record<string, unknown>;
 
 type BotStatusHealthSnapshot = {
@@ -57,7 +65,9 @@ type BotStatusHealthSnapshot = {
   discordVersion: string;
 };
 
-function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
+function hasAdministratorPermission(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+): boolean {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
 }
 
@@ -173,6 +183,46 @@ function safeJsonPreview(
 function formatMetadataField(value: unknown): string {
   if (!isMetadataObject(value)) return "—";
   return `\`\`\`json\n${safeJsonPreview(value, 900, 120)}\n\`\`\``;
+}
+
+function buildRefreshButtonRow(customId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(customId).setLabel("Refresh").setStyle(ButtonStyle.Secondary),
+  );
+}
+
+export function buildBotStatusComponents(): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [buildRefreshButtonRow(BOT_STATUS_REFRESH_BUTTON_PREFIX)];
+}
+
+export function buildBotPollStatusComponents(): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [buildRefreshButtonRow(BOT_POLL_STATUS_REFRESH_BUTTON_PREFIX)];
+}
+
+export function buildBotPollJobComponents(jobKey: string): Array<ActionRowBuilder<ButtonBuilder>> {
+  return [
+    buildRefreshButtonRow(`${BOT_POLL_JOB_REFRESH_BUTTON_PREFIX}:${String(jobKey ?? "").trim()}`),
+  ];
+}
+
+export function isBotStatusRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").trim() === BOT_STATUS_REFRESH_BUTTON_PREFIX;
+}
+
+export function isBotPollStatusRefreshButtonCustomId(customId: string): boolean {
+  return String(customId ?? "").trim() === BOT_POLL_STATUS_REFRESH_BUTTON_PREFIX;
+}
+
+function parseBotPollJobRefreshButtonCustomId(customId: string): { jobKey: string } | null {
+  const prefix = `${BOT_POLL_JOB_REFRESH_BUTTON_PREFIX}:`;
+  if (!String(customId ?? "").startsWith(prefix)) return null;
+  const jobKey = String(customId).slice(prefix.length).trim();
+  if (!jobKey) return null;
+  return { jobKey };
+}
+
+export function isBotPollJobRefreshButtonCustomId(customId: string): boolean {
+  return parseBotPollJobRefreshButtonCustomId(customId) !== null;
 }
 
 function buildBotPollJobDetailEmbed(
@@ -385,6 +435,70 @@ function resolveOverallStatus(
   return "healthy";
 }
 
+export async function handleBotStatusRefreshButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  if (!isBotStatusRefreshButtonCustomId(interaction.customId)) return;
+  if (!hasAdministratorPermission(interaction)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "You do not have permission to use /bot.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  await runBotStatus(interaction.client, interaction, botPollJobStatusService, true);
+}
+
+export async function handleBotPollStatusRefreshButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  if (!isBotPollStatusRefreshButtonCustomId(interaction.customId)) return;
+  if (!hasAdministratorPermission(interaction)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "You do not have permission to use /bot.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  const statuses = await botPollJobStatusService.listStatuses();
+  const embeds = buildBotPollStatusEmbeds(statuses, new Date());
+  await interaction.editReply({ embeds, components: buildBotPollStatusComponents() });
+}
+
+export async function handleBotPollJobRefreshButtonInteraction(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseBotPollJobRefreshButtonCustomId(interaction.customId);
+  if (!parsed) return;
+  if (!hasAdministratorPermission(interaction)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "You do not have permission to use /bot.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  const job = await botPollJobStatusService.getStatus(parsed.jobKey);
+  if (!job) {
+    await interaction.editReply({
+      content: `No poll job found for \`${parsed.jobKey}\`.`,
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  await interaction.editReply({
+    embeds: [buildBotPollJobDetailEmbed(job, new Date())],
+    components: buildBotPollJobComponents(parsed.jobKey),
+  });
+}
+
 export function buildBotStatusEmbeds(
   statuses: BotPollJobStatusRecord[],
   health: BotStatusHealthSnapshot,
@@ -510,8 +624,9 @@ export function buildBotPollStatusEmbeds(
 
 async function runBotStatus(
   client: Client,
-  interaction: ChatInputCommandInteraction,
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
   statusService: BotPollJobStatusService = botPollJobStatusService,
+  skipDeferReply = false,
 ): Promise<void> {
   if (!interaction.inGuild() || !interaction.guildId) {
     await interaction.reply({
@@ -529,7 +644,9 @@ async function runBotStatus(
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  if (!skipDeferReply) {
+    await interaction.deferReply({ ephemeral: true });
+  }
   const [dbResult, pollRowsResult] = await Promise.allSettled([
     prisma.$queryRawUnsafe("select 1"),
     statusService.listStatuses(),
@@ -554,7 +671,7 @@ async function runBotStatus(
   };
 
   const embeds = buildBotStatusEmbeds(statuses, health, new Date());
-  await interaction.editReply({ embeds });
+  await interaction.editReply({ embeds, components: buildBotStatusComponents() });
 }
 
 async function runBotPollStatus(
@@ -590,13 +707,14 @@ async function runBotPollStatus(
 
     await interaction.editReply({
       embeds: [buildBotPollJobDetailEmbed(job, new Date())],
+      components: buildBotPollJobComponents(jobKey),
     });
     return;
   }
 
   const statuses = await statusService.listStatuses();
   const embeds = buildBotPollStatusEmbeds(statuses, new Date());
-  await interaction.editReply({ embeds });
+  await interaction.editReply({ embeds, components: buildBotPollStatusComponents() });
 }
 
 export const Bot: Command = {

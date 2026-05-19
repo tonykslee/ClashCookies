@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Bot, buildBotPollStatusEmbeds } from "../src/commands/Bot";
+import {
+  Bot,
+  buildBotPollStatusEmbeds,
+  handleBotPollJobRefreshButtonInteraction,
+  handleBotPollStatusRefreshButtonInteraction,
+  handleBotStatusRefreshButtonInteraction,
+} from "../src/commands/Bot";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
@@ -75,6 +81,40 @@ function flattenEmbedText(payload: any): string {
     .join("\n");
 }
 
+function extractButtonCustomIds(payload: any): string[] {
+  return (payload.components ?? []).flatMap((row: any) => {
+    const rowJson = typeof row?.toJSON === "function" ? row.toJSON() : row;
+    return (rowJson.components ?? []).map(
+      (component: any) => component.customId ?? component.custom_id ?? "",
+    );
+  });
+}
+
+function createButtonInteraction(input: {
+  isAdmin?: boolean;
+  customId: string;
+  jobKey?: string;
+}): any {
+  const reply = vi.fn().mockResolvedValue(undefined);
+  const deferUpdate = vi.fn().mockResolvedValue(undefined);
+  const editReply = vi.fn().mockResolvedValue(undefined);
+  return {
+    customId: input.customId,
+    inGuild: vi.fn().mockReturnValue(true),
+    guildId: "111111111111111111",
+    memberPermissions: {
+      has: vi.fn().mockReturnValue(input.isAdmin ?? true),
+    },
+    user: { id: "user-1" },
+    client: createClient(),
+    reply,
+    deferUpdate,
+    editReply,
+    deferred: false,
+    replied: false,
+  };
+}
+
 describe("/bot status behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -129,6 +169,7 @@ describe("/bot status behavior", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const text = flattenEmbedText(payload);
+    expect(extractButtonCustomIds(payload)).toContain("bot:status:refresh");
     expect(text).toContain("Bot status");
     expect(text).toContain("Overall: 🟢 healthy");
     expect(text).toContain("Runtime");
@@ -240,6 +281,7 @@ describe("/bot poll status behavior", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const text = flattenEmbedText(payload);
+    expect(extractButtonCustomIds(payload)).toContain("bot:poll-status:refresh");
     expect(text).toContain("Bot poll status");
     expect(text).toContain("Autorole scheduler");
     expect(text).toContain("Status:");
@@ -299,6 +341,7 @@ describe("/bot poll status behavior", () => {
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const text = flattenEmbedText(payload);
+    expect(extractButtonCustomIds(payload)).toContain("bot:poll-job:refresh:autorole_scheduler");
     expect(text).toContain("Bot poll job: Autorole scheduler");
     expect(text).toContain("Status");
     expect(text).toContain("Enabled: yes");
@@ -356,6 +399,115 @@ describe("/bot poll status behavior", () => {
     expect(text).toContain("Last error");
     expect(text).toContain("Very bad poll error");
     expect(text).toContain("reason");
+  });
+
+  it("refreshes the bot status overview when the refresh button is clicked", async () => {
+    listStatusesMock.mockResolvedValue([
+      {
+        jobKey: "autorole_scheduler",
+        displayName: "Autorole scheduler",
+        enabled: true,
+        status: "idle",
+        intervalMs: 3_600_000,
+        lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+        lastFinishedAt: new Date("2026-05-19T11:01:00.000Z"),
+        nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
+        lastSuccessAt: new Date("2026-05-19T11:01:00.000Z"),
+        lastErrorAt: null,
+        lastError: null,
+        runCount: 3,
+        failureCount: 0,
+        metadata: null,
+        updatedAt: new Date("2026-05-19T11:01:00.000Z"),
+      },
+    ]);
+    const interaction = createButtonInteraction({ customId: "bot:status:refresh" });
+
+    await handleBotStatusRefreshButtonInteraction(interaction as any);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(flattenEmbedText(payload)).toContain("Bot status");
+    expect(extractButtonCustomIds(payload)).toContain("bot:status:refresh");
+  });
+
+  it("refreshes all poll status rows when the refresh button is clicked", async () => {
+    listStatusesMock.mockResolvedValue([
+      {
+        jobKey: "autorole_scheduler",
+        displayName: "Autorole scheduler",
+        enabled: true,
+        status: "idle",
+        intervalMs: 3_600_000,
+        lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+        lastFinishedAt: new Date("2026-05-19T11:01:00.000Z"),
+        nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
+        lastSuccessAt: new Date("2026-05-19T11:01:00.000Z"),
+        lastErrorAt: null,
+        lastError: null,
+        runCount: 3,
+        failureCount: 0,
+        metadata: null,
+        updatedAt: new Date("2026-05-19T11:01:00.000Z"),
+      },
+    ]);
+    const interaction = createButtonInteraction({ customId: "bot:poll-status:refresh" });
+
+    await handleBotPollStatusRefreshButtonInteraction(interaction as any);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(flattenEmbedText(payload)).toContain("Bot poll status");
+    expect(extractButtonCustomIds(payload)).toContain("bot:poll-status:refresh");
+  });
+
+  it("refreshes one poll job when the job refresh button is clicked", async () => {
+    getStatusMock.mockResolvedValue({
+      jobKey: "autorole_scheduler",
+      displayName: "Autorole scheduler",
+      enabled: true,
+      status: "running",
+      intervalMs: 3_600_000,
+      lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+      lastFinishedAt: null,
+      nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
+      lastSuccessAt: new Date("2026-05-19T11:00:00.000Z"),
+      lastErrorAt: null,
+      lastError: null,
+      runCount: 42,
+      failureCount: 3,
+      metadata: { trigger: "startup" },
+      updatedAt: new Date("2026-05-19T11:00:00.000Z"),
+    });
+    const interaction = createButtonInteraction({
+      customId: "bot:poll-job:refresh:autorole_scheduler",
+    });
+
+    await handleBotPollJobRefreshButtonInteraction(interaction as any);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(flattenEmbedText(payload)).toContain("Bot poll job: Autorole scheduler");
+    expect(extractButtonCustomIds(payload)).toContain("bot:poll-job:refresh:autorole_scheduler");
+  });
+
+  it("denies non-admin users on bot refresh buttons", async () => {
+    const interaction = createButtonInteraction({
+      customId: "bot:status:refresh",
+      isAdmin: false,
+    });
+
+    await handleBotStatusRefreshButtonInteraction(interaction as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "You do not have permission to use /bot.",
+    });
+    expect(interaction.deferUpdate).not.toHaveBeenCalled();
+    expect(interaction.editReply).not.toHaveBeenCalled();
   });
 });
 
