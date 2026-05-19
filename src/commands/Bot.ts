@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
@@ -120,6 +121,107 @@ function readStatusNote(job: BotPollJobStatusRecord): string | null {
   return null;
 }
 
+function safeJsonPreview(
+  value: unknown,
+  maxChars = 900,
+  stringLimit = 120,
+): string {
+  try {
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(
+      value,
+      (_key, current) => {
+        if (typeof current === "string") {
+          return current.length <= stringLimit
+            ? current
+            : `${current.slice(0, stringLimit)}...[len=${current.length}]`;
+        }
+        if (
+          typeof current === "number" ||
+          typeof current === "boolean" ||
+          current === null
+        ) {
+          return current;
+        }
+        if (typeof current === "bigint") {
+          return current.toString();
+        }
+        if (typeof current === "undefined") {
+          return "[undefined]";
+        }
+        if (current instanceof Error) {
+          return {
+            name: current.name,
+            message: current.message,
+          };
+        }
+        if (typeof current === "object" && current !== null) {
+          if (seen.has(current as object)) return "[Circular]";
+          seen.add(current as object);
+        }
+        return current;
+      },
+      2,
+    );
+    if (!text) return "null";
+    return text.length <= maxChars ? text : `${text.slice(0, maxChars)}...[len=${text.length}]`;
+  } catch {
+    return truncateDiscordContent(String(value ?? ""), maxChars);
+  }
+}
+
+function formatMetadataField(value: unknown): string {
+  if (!isMetadataObject(value)) return "—";
+  return `\`\`\`json\n${safeJsonPreview(value, 900, 120)}\n\`\`\``;
+}
+
+function buildBotPollJobDetailEmbed(
+  job: BotPollJobStatusRecord,
+  now: Date = new Date(),
+): EmbedBuilder {
+  const timing = resolveJobTimes(job, now.getTime());
+  const statusLines = [
+    `Status: ${BOT_POLL_STATUS_EMOJI[timing.state]} ${timing.state}`,
+    `Enabled: ${job.enabled ? "yes" : "no"}`,
+  ];
+  if (timing.warning) {
+    statusLines.push(`Warning: ${timing.warning}`);
+  }
+
+  const scheduleLines = [
+    `Interval: ${formatIntervalLabel(job.intervalMs)}`,
+    `Last started: ${toUnixTimestampLabel(job.lastStartedAt)}`,
+    `Last finished: ${toUnixTimestampLabel(job.lastFinishedAt)}`,
+    `Last success: ${toUnixTimestampLabel(job.lastSuccessAt)}`,
+    `Next due: ${toUnixTimestampLabel(job.nextDueAt)}`,
+    `Duration: ${formatDurationLabel(timing.durationMs)}`,
+  ];
+
+  const countsLines = [
+    `Run count: ${job.runCount}`,
+    `Failure count: ${job.failureCount}`,
+  ];
+
+  const fields = [
+    { name: "Status", value: statusLines.join("\n"), inline: false },
+    { name: "Schedule", value: scheduleLines.join("\n"), inline: false },
+    { name: "Counts", value: countsLines.join("\n"), inline: false },
+    { name: "Metadata", value: formatMetadataField(job.metadata), inline: false },
+  ];
+  if (job.lastError) {
+    fields.push({
+      name: "Last error",
+      value: formatShortError(job.lastError, 900),
+      inline: false,
+    });
+  }
+
+  return new EmbedBuilder()
+    .setTitle(`Bot poll job: ${job.displayName}`)
+    .setFooter({ text: `job_key=${job.jobKey}` })
+    .addFields(fields);
+}
+
 function resolveJobTimes(job: BotPollJobStatusRecord, nowMs: number): {
   lastRunAt: Date | null;
   durationMs: number | null;
@@ -235,7 +337,7 @@ function collectProblematicJobs(
       timing: resolveJobTimes(job, now.getTime()),
       note: readStatusNote(job),
     }))
-    .filter(({ job, timing }) => job.status === "failed" || Boolean(timing.warning));
+    .filter(({ job, timing }) => job.status === "failed" || timing.warning !== null);
 
   const severityScore = (entry: (typeof rows)[number]): number => {
     if (entry.job.status === "failed") return 0;
@@ -476,6 +578,22 @@ async function runBotPollStatus(
   }
 
   await interaction.deferReply({ ephemeral: true });
+  const jobKey = String(interaction.options.getString("job", false) ?? "").trim();
+  if (jobKey) {
+    const job = await statusService.getStatus(jobKey);
+    if (!job) {
+      await interaction.editReply({
+        content: `No poll job found for \`${jobKey}\`.`,
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      embeds: [buildBotPollJobDetailEmbed(job, new Date())],
+    });
+    return;
+  }
+
   const statuses = await statusService.listStatuses();
   const embeds = buildBotPollStatusEmbeds(statuses, new Date());
   await interaction.editReply({ embeds });
@@ -499,6 +617,15 @@ export const Bot: Command = {
           name: "status",
           description: "Show background poll job status rows",
           type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "job",
+              description: "Show one poll job in detail",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+          ],
         },
       ],
     },
@@ -519,5 +646,42 @@ export const Bot: Command = {
       ephemeral: true,
       content: "Unsupported /bot subcommand.",
     });
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const group = interaction.options.getSubcommandGroup(false);
+    const sub = interaction.options.getSubcommand(false);
+    const focused = interaction.options.getFocused(true);
+    if (group !== "poll" || sub !== "status" || focused.name !== "job") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const query = String(focused.value ?? "").trim().toLowerCase();
+    let statuses: BotPollJobStatusRecord[];
+    try {
+      statuses = await botPollJobStatusService.listStatuses();
+    } catch (error) {
+      console.warn(
+        `[bot poll status autocomplete] failed to load status rows: ${formatError(error)}`,
+      );
+      await interaction.respond([]);
+      return;
+    }
+    const choices = statuses
+      .map((job) => {
+        const label = `${job.displayName} (${job.jobKey})`;
+        return {
+          name: label.slice(0, 100),
+          value: job.jobKey,
+        };
+      })
+      .filter((choice) => {
+        const name = choice.name.toLowerCase();
+        const value = choice.value.toLowerCase();
+        return !query || name.includes(query) || value.includes(query);
+      })
+      .slice(0, 25);
+
+    await interaction.respond(choices);
   },
 };

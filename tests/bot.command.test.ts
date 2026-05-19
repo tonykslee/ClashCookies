@@ -7,6 +7,7 @@ const prismaMock = vi.hoisted(() => ({
 }));
 
 const listStatusesMock = vi.hoisted(() => vi.fn());
+const getStatusMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -20,7 +21,7 @@ vi.mock("../src/services/BotPollJobStatusService", () => ({
     markSkipped: vi.fn(),
     markDisabled: vi.fn(),
     listStatuses: listStatusesMock,
-    getStatus: vi.fn(),
+    getStatus: getStatusMock,
   },
 }));
 
@@ -29,6 +30,7 @@ function createInteraction(input: {
   inGuild?: boolean;
   group?: string | null;
   sub?: string;
+  job?: string | null;
 } = {}) {
   const reply = vi.fn().mockResolvedValue(undefined);
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -42,6 +44,12 @@ function createInteraction(input: {
     options: {
       getSubcommandGroup: vi.fn().mockReturnValue(input.group ?? null),
       getSubcommand: vi.fn().mockReturnValue(input.sub ?? "status"),
+      getString: vi.fn().mockImplementation((name: string) => {
+        if (name === "job") {
+          return input.job ?? null;
+        }
+        return null;
+      }),
     },
     reply,
     deferReply,
@@ -236,6 +244,118 @@ describe("/bot poll status behavior", () => {
     expect(text).toContain("Autorole scheduler");
     expect(text).toContain("Status:");
     expect(text).toContain("Note: trigger=startup");
+  });
+
+  it("returns no autocomplete choices when poll job rows cannot be loaded", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    listStatusesMock.mockRejectedValueOnce(new Error("boom"));
+    const respond = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue("poll"),
+        getSubcommand: vi.fn().mockReturnValue("status"),
+        getFocused: vi.fn().mockReturnValue({ name: "job", value: "auto" }),
+      },
+      respond,
+    } as any;
+
+    await Bot.autocomplete(interaction);
+
+    expect(respond).toHaveBeenCalledWith([]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[bot poll status autocomplete] failed to load status rows:"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("renders one job in detail when a job key is provided", async () => {
+    const interaction = createInteraction({
+      group: "poll",
+      sub: "status",
+      job: "autorole_scheduler",
+    });
+    getStatusMock.mockResolvedValue({
+      jobKey: "autorole_scheduler",
+      displayName: "Autorole scheduler",
+      enabled: true,
+      status: "running",
+      intervalMs: 3_600_000,
+      lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+      lastFinishedAt: null,
+      nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
+      lastSuccessAt: new Date("2026-05-19T11:00:00.000Z"),
+      lastErrorAt: null,
+      lastError: null,
+      runCount: 42,
+      failureCount: 3,
+      metadata: { trigger: "startup", nested: { label: "x".repeat(2000) } },
+      updatedAt: new Date("2026-05-19T11:00:00.000Z"),
+    });
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    expect(getStatusMock).toHaveBeenCalledWith("autorole_scheduler");
+    expect(listStatusesMock).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Bot poll job: Autorole scheduler");
+    expect(text).toContain("Status");
+    expect(text).toContain("Enabled: yes");
+    expect(text).toContain("Schedule");
+    expect(text).toContain("Counts");
+    expect(text).toContain("Metadata");
+    expect(text).toContain('"trigger": "startup"');
+    expect(text).toContain("...[len=");
+  });
+
+  it("returns a helpful not-found response for unknown jobs", async () => {
+    const interaction = createInteraction({
+      group: "poll",
+      sub: "status",
+      job: "unknown_job",
+    });
+    getStatusMock.mockResolvedValue(null);
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    expect(getStatusMock).toHaveBeenCalledWith("unknown_job");
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "No poll job found for `unknown_job`.",
+    });
+  });
+
+  it("shows last error details for failed jobs", async () => {
+    const interaction = createInteraction({
+      group: "poll",
+      sub: "status",
+      job: "war_event_poll_cycle",
+    });
+    getStatusMock.mockResolvedValue({
+      jobKey: "war_event_poll_cycle",
+      displayName: "War event poll",
+      enabled: true,
+      status: "failed",
+      intervalMs: 60_000,
+      lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+      lastFinishedAt: new Date("2026-05-19T11:01:00.000Z"),
+      nextDueAt: new Date("2026-05-19T11:02:00.000Z"),
+      lastSuccessAt: null,
+      lastErrorAt: new Date("2026-05-19T11:01:00.000Z"),
+      lastError: "Very bad poll error",
+      runCount: 9,
+      failureCount: 2,
+      metadata: { reason: "timeout" },
+      updatedAt: new Date("2026-05-19T11:01:00.000Z"),
+    });
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Last error");
+    expect(text).toContain("Very bad poll error");
+    expect(text).toContain("reason");
   });
 });
 
