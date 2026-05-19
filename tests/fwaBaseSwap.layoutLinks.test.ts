@@ -1114,6 +1114,60 @@ describe("FWA base-swap layout links", () => {
     expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
   });
 
+  it("keeps the visible clan role mention in rerenders without re-allowing role pings", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      clanRoleId: "123456789012345678",
+      swapReminder: true,
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "reactor-1",
+          acknowledged: false,
+        }),
+      ],
+      layoutLinks: [],
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-3",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const service = new TrackedMessageService();
+    const message = {
+      id: "message-3",
+      channelId: "channel-1",
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const changed = await service.handleFwaBaseSwapReaction({
+      messageId: "message-3",
+      reactorUserId: "reactor-1",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+    });
+
+    expect(changed).toBe(true);
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(String(editPayload.content)).toContain("# Swap back to FWA layout");
+    expect(String(editPayload.content)).toContain(
+      "<@&123456789012345678>",
+    );
+    expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
+    expect(editPayload.allowedMentions.roles).toBeUndefined();
+  });
+
   it("keeps single-post mode when rendered content fits the Discord limit", () => {
     const plan = buildFwaBaseSwapRenderPlanForTest({
       entries: [

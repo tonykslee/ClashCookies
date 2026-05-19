@@ -995,7 +995,6 @@ export class TrackedMessageService {
         content: params.render(rowMetadata),
         allowedMentions: {
           users: mentionUserIds,
-          ...(rowMetadata.clanRoleId ? { roles: [rowMetadata.clanRoleId] } : {}),
         },
       });
     }
