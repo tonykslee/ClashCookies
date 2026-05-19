@@ -6,6 +6,10 @@ import { type CoCService } from "./CoCService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { isMirrorPollingMode } from "./PollingModeService";
 import {
+  botPollJobStatusService,
+  type BotPollJobStatusService,
+} from "./BotPollJobStatusService";
+import {
   autoRoleRefreshService,
   type AutoRoleRefreshResult,
   type AutoRoleRefreshService,
@@ -13,6 +17,8 @@ import {
 
 export const DEFAULT_AUTOROLE_SCHEDULER_INTERVAL_MS = 60 * 1000;
 export const DEFAULT_AUTOROLE_SYNC_INTERVAL_MINUTES = 60;
+const AUTOROLE_SCHEDULER_JOB_KEY = "autorole_scheduler";
+const AUTOROLE_SCHEDULER_DISPLAY_NAME = "Autorole scheduler";
 
 export type AutoRoleSchedulerStartResult =
   | { started: true }
@@ -80,6 +86,7 @@ export class AutoRoleSchedulerService {
     private readonly cocService: CoCService | null = null,
     private readonly refreshService: AutoRoleRefreshService = autoRoleRefreshService,
     private readonly intervalMs: number = DEFAULT_AUTOROLE_SCHEDULER_INTERVAL_MS,
+    private readonly statusService: BotPollJobStatusService = botPollJobStatusService,
   ) {}
 
   /** Purpose: start the autorole scheduler loop once in active polling mode. */
@@ -89,6 +96,15 @@ export class AutoRoleSchedulerService {
     );
 
     if (isMirrorPollingMode(process.env)) {
+      void this.statusService.markDisabled(AUTOROLE_SCHEDULER_JOB_KEY, {
+        displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+        intervalMs: this.intervalMs,
+        metadata: { reason: "mirror" },
+      }).catch((err) => {
+        dozzleLog.warn(
+          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
+        );
+      });
       dozzleLog.info("[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror");
       return { started: false, reason: "mirror" };
     }
@@ -123,6 +139,15 @@ export class AutoRoleSchedulerService {
   /** Purpose: evaluate due autorole guilds and dispatch refreshGuild on the shared refresh path. */
   async runCycle(nowMs: number = Date.now()): Promise<AutoRoleSchedulerCounts> {
     if (isMirrorPollingMode(process.env)) {
+      void this.statusService.markDisabled(AUTOROLE_SCHEDULER_JOB_KEY, {
+        displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+        intervalMs: this.intervalMs,
+        metadata: { reason: "mirror" },
+      }).catch((err) => {
+        dozzleLog.warn(
+          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
+        );
+      });
       dozzleLog.info("[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror");
       return {
         scanned: 0,
@@ -135,90 +160,146 @@ export class AutoRoleSchedulerService {
     }
 
     const normalizedNowMs = normalizeNowMs(nowMs);
-    const configs = await prisma.autoRoleGuildConfig.findMany({
-      where: {
-        enabled: true,
-        syncEnabled: true,
-        killSwitchEnabled: false,
-      },
-      select: {
-        guildId: true,
-        syncIntervalMinutes: true,
-      },
-      orderBy: [{ guildId: "asc" }],
-    });
-    const configRows = configs as AutoRoleSchedulerGuildConfigRow[];
-
-    if (configRows.length === 0) {
-      dozzleLog.debug("[autorole-scheduler] cycle_complete scanned=0 due=0 started=0 completed=0 skipped=0 failed=0");
-      return {
-        scanned: 0,
-        due: 0,
-        started: 0,
-        completed: 0,
-        skipped: 0,
-        failed: 0,
-      };
-    }
-
-    const lastRuns = await prisma.autoRoleSyncRun.findMany({
-      where: {
-        guildId: { in: configRows.map((row) => row.guildId) },
-      },
-      select: {
-        guildId: true,
-        startedAt: true,
-      },
-      orderBy: [{ startedAt: "desc" }],
-    });
-    const lastRunByGuildId = new Map<string, Date>();
-    for (const run of lastRuns as AutoRoleSchedulerGuildRunRow[]) {
-      if (!lastRunByGuildId.has(run.guildId)) {
-        lastRunByGuildId.set(run.guildId, run.startedAt);
-      }
-    }
-
-    const dueWork: AutoRoleScheduledGuildWork[] = [];
-    let skipped = 0;
-    for (const row of configRows) {
-      const intervalMinutes = normalizeIntervalMinutes(row.syncIntervalMinutes);
-      const intervalMs = intervalMinutes * 60_000;
-      const lastRunAt = lastRunByGuildId.get(row.guildId) ?? null;
-      const nextDueAtMs = lastRunAt ? lastRunAt.getTime() + intervalMs : normalizedNowMs;
-      if (lastRunAt && normalizedNowMs < nextDueAtMs) {
-        skipped += 1;
-        continue;
-      }
-
-      dueWork.push({
-        guildId: row.guildId,
-        intervalMinutes,
-        intervalMs,
-        nextDueAtMs,
+    await this.statusService.markStarted(AUTOROLE_SCHEDULER_JOB_KEY, {
+      displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+      intervalMs: this.intervalMs,
+      nextDueAt: new Date(normalizedNowMs + this.intervalMs),
+      }).catch((err) => {
+        dozzleLog.warn(
+          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
+        );
       });
+    try {
+      const configs = await prisma.autoRoleGuildConfig.findMany({
+        where: {
+          enabled: true,
+          syncEnabled: true,
+          killSwitchEnabled: false,
+        },
+        select: {
+          guildId: true,
+          syncIntervalMinutes: true,
+        },
+        orderBy: [{ guildId: "asc" }],
+      });
+      const configRows = configs as AutoRoleSchedulerGuildConfigRow[];
+
+      if (configRows.length === 0) {
+        dozzleLog.debug("[autorole-scheduler] cycle_complete scanned=0 due=0 started=0 completed=0 skipped=0 failed=0");
+        await this.statusService.markSucceeded(AUTOROLE_SCHEDULER_JOB_KEY, {
+          displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+          intervalMs: this.intervalMs,
+          nextDueAt: new Date(normalizedNowMs + this.intervalMs),
+          metadata: {
+            scanned: 0,
+            due: 0,
+            started: 0,
+            completed: 0,
+            skipped: 0,
+            failed: 0,
+          },
+        }).catch((err) => {
+          dozzleLog.warn(
+            `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=succeeded error=${formatError(err)}`,
+          );
+        });
+        return {
+          scanned: 0,
+          due: 0,
+          started: 0,
+          completed: 0,
+          skipped: 0,
+          failed: 0,
+        };
+      }
+
+      const lastRuns = await prisma.autoRoleSyncRun.findMany({
+        where: {
+          guildId: { in: configRows.map((row) => row.guildId) },
+        },
+        select: {
+          guildId: true,
+          startedAt: true,
+        },
+        orderBy: [{ startedAt: "desc" }],
+      });
+      const lastRunByGuildId = new Map<string, Date>();
+      for (const run of lastRuns as AutoRoleSchedulerGuildRunRow[]) {
+        if (!lastRunByGuildId.has(run.guildId)) {
+          lastRunByGuildId.set(run.guildId, run.startedAt);
+        }
+      }
+
+      const dueWork: AutoRoleScheduledGuildWork[] = [];
+      let skipped = 0;
+      for (const row of configRows) {
+        const intervalMinutes = normalizeIntervalMinutes(row.syncIntervalMinutes);
+        const intervalMs = intervalMinutes * 60_000;
+        const lastRunAt = lastRunByGuildId.get(row.guildId) ?? null;
+        const nextDueAtMs = lastRunAt ? lastRunAt.getTime() + intervalMs : normalizedNowMs;
+        if (lastRunAt && normalizedNowMs < nextDueAtMs) {
+          skipped += 1;
+          continue;
+        }
+
+        dueWork.push({
+          guildId: row.guildId,
+          intervalMinutes,
+          intervalMs,
+          nextDueAtMs,
+        });
+      }
+
+      const results = await Promise.allSettled(
+        dueWork.map((work) => this.runGuildRefresh(work, normalizedNowMs)),
+      );
+      const fulfilledResults = results.filter(isFulfilledResult);
+      const skippedByLock = fulfilledResults.filter((result) => result.value.skipped).length;
+      const completed = fulfilledResults.filter((result) => result.value.completed).length;
+      const failed = fulfilledResults.filter((result) => result.value.failed).length;
+      skipped += skippedByLock;
+
+      dozzleLog.debug(
+        `[autorole-scheduler] cycle_complete scanned=${configRows.length} due=${dueWork.length} started=${dueWork.length - skippedByLock} completed=${completed} skipped=${skipped} failed=${failed}`,
+      );
+      await this.statusService.markSucceeded(AUTOROLE_SCHEDULER_JOB_KEY, {
+        displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+        intervalMs: this.intervalMs,
+        nextDueAt: new Date(normalizedNowMs + this.intervalMs),
+        metadata: {
+          scanned: configRows.length,
+          due: dueWork.length,
+          started: dueWork.length - skippedByLock,
+          completed,
+          skipped,
+          failed,
+        },
+      }).catch((err) => {
+        dozzleLog.warn(
+          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=succeeded error=${formatError(err)}`,
+        );
+      });
+
+      return {
+        scanned: configRows.length,
+        due: dueWork.length,
+        started: dueWork.length - skippedByLock,
+        completed,
+        skipped,
+        failed,
+      };
+    } catch (err) {
+      await this.statusService.markFailed(AUTOROLE_SCHEDULER_JOB_KEY, err, {
+        displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
+        intervalMs: this.intervalMs,
+        nextDueAt: new Date(normalizedNowMs + this.intervalMs),
+      }).catch((statusErr) => {
+        dozzleLog.warn(
+          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=failed error=${formatError(statusErr)}`,
+        );
+      });
+      throw err;
     }
-
-    const results = await Promise.allSettled(
-      dueWork.map((work) => this.runGuildRefresh(work, normalizedNowMs)),
-    );
-    const fulfilledResults = results.filter(isFulfilledResult);
-    const skippedByLock = fulfilledResults.filter((result) => result.value.skipped).length;
-    const completed = fulfilledResults.filter((result) => result.value.completed).length;
-    const failed = fulfilledResults.filter((result) => result.value.failed).length;
-    skipped += skippedByLock;
-
-    dozzleLog.debug(
-      `[autorole-scheduler] cycle_complete scanned=${configRows.length} due=${dueWork.length} started=${dueWork.length - skippedByLock} completed=${completed} skipped=${skipped} failed=${failed}`,
-    );
-
-    return {
-      scanned: configRows.length,
-      due: dueWork.length,
-      started: dueWork.length - skippedByLock,
-      completed,
-      skipped,
-      failed,
-    };
   }
 
   private async runGuildRefresh(

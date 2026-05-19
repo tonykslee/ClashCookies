@@ -134,6 +134,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "say",
   "copy-channel",
   "bot-logs",
+  "bot:poll:status",
   "unlinked",
   "unlinked:set-alert",
   "unlinked:list",
@@ -209,6 +210,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "fillers",
   "fillers:list",
   "fillers:set",
+  "bot:poll:status",
   `${MANAGE_COMMAND_ROLES_COMMAND}:add`,
   `${MANAGE_COMMAND_ROLES_COMMAND}:remove`,
 ]);

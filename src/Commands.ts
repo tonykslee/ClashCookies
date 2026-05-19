@@ -27,6 +27,7 @@ import { Dump } from "./commands/Dump";
 import { Layout } from "./commands/Layout";
 import { Say } from "./commands/Say";
 import { BotLogs } from "./commands/BotLogs";
+import { Bot } from "./commands/Bot";
 import { Todo } from "./commands/Todo";
 import { Reminders } from "./commands/Reminders";
 import { RemindMe } from "./commands/RemindMe";
@@ -69,6 +70,7 @@ export const Commands = [
   Dump,
   Post,
   Say,
+  Bot,
   BotLogs,
   Unlinked,
   Autorole,

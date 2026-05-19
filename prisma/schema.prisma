@@ -123,6 +123,24 @@ model BotSetting {
   @@index([updatedAt])
 }
 
+model BotPollJobStatus {
+  jobKey        String   @id
+  displayName   String
+  enabled       Boolean  @default(true)
+  status        String
+  intervalMs    Int?
+  lastStartedAt DateTime?
+  lastFinishedAt DateTime?
+  nextDueAt     DateTime?
+  lastSuccessAt DateTime?
+  lastErrorAt   DateTime?
+  lastError     String?
+  runCount      Int      @default(0)
+  failureCount  Int      @default(0)
+  metadata      Json?
+  updatedAt     DateTime @updatedAt
+}
+
 model PlayerLink {
   playerTag                String                       @id
   discordUserId            String?
