@@ -800,7 +800,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   bot: {
     summary: "Inspect background poll job status rows.",
     details: [
-      "Shows read-only DB-backed status rows for the autorole scheduler and activity observe loop.",
+      "Shows read-only DB-backed status rows for major background poll jobs.",
       "Rows include the current state emoji, interval, last/next run timestamps, duration, and a short failure summary when failed.",
       "This command is admin-only by default.",
     ],

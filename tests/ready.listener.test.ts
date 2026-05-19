@@ -308,7 +308,7 @@ describe("ready listener startup", () => {
     vi.clearAllMocks();
   });
 
-  async function runStartup() {
+  async function startStartup() {
     let capturedReadyHandler: (() => Promise<void>) | undefined;
     const client = {
       once: vi.fn((event: string, handler: () => Promise<void>) => {
@@ -338,6 +338,11 @@ describe("ready listener startup", () => {
     ready(client, {} as any);
     expect(capturedReadyHandler).toBeTypeOf("function");
     const startupPromise = capturedReadyHandler!();
+    return { client, startupPromise };
+  }
+
+  async function runStartup() {
+    const { client, startupPromise } = await startStartup();
     await expect(startupPromise).resolves.toBeUndefined();
     return { client };
   }
@@ -442,5 +447,32 @@ describe("ready listener startup", () => {
 
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts autorole before a hung war poll can block startup", async () => {
+    warEventPollMock.mockImplementationOnce(() => new Promise<void>(() => undefined));
+
+    const { startupPromise } = await startStartup();
+    let settled = false;
+    startupPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    for (let index = 0; index < 10 && observeLoopStart.mock.calls.length === 0; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    for (let index = 0; index < 10 && autoRoleStart.mock.calls.length === 0; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(observeLoopStart).toHaveBeenCalledTimes(1);
+    expect(autoRoleStart).toHaveBeenCalledTimes(1);
+    expect(warEventPollMock).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
   });
 });

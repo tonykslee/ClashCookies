@@ -757,6 +757,16 @@ export default (client: Client, cocService: CoCService): void => {
       runObservedCycle,
     });
 
+    if (activePollingEnabled) {
+      const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
+      autoRoleScheduler.start();
+      console.log("Autorole scheduler loop initialized.");
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
+      );
+    }
+
     const runRecruitmentReminders = async () => {
       const now = new Date();
       await markPollJobStarted({
@@ -1290,16 +1300,6 @@ export default (client: Client, cocService: CoCService): void => {
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
         metadata: { reason: "active" },
       });
-    }
-
-    if (activePollingEnabled) {
-      const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
-      autoRoleScheduler.start();
-      console.log("Autorole scheduler loop initialized.");
-    } else {
-      console.log(
-        "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
-      );
     }
 
     if (activePollingEnabled) {
