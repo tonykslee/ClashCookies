@@ -1,7 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bot, buildBotPollStatusEmbeds } from "../src/commands/Bot";
 
+const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
+  $queryRawUnsafe: vi.fn(),
+}));
+
 const listStatusesMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
 
 vi.mock("../src/services/BotPollJobStatusService", () => ({
   botPollJobStatusService: {
@@ -15,7 +24,12 @@ vi.mock("../src/services/BotPollJobStatusService", () => ({
   },
 }));
 
-function createInteraction(input: { isAdmin?: boolean; inGuild?: boolean } = {}) {
+function createInteraction(input: {
+  isAdmin?: boolean;
+  inGuild?: boolean;
+  group?: string | null;
+  sub?: string;
+} = {}) {
   const reply = vi.fn().mockResolvedValue(undefined);
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
@@ -26,8 +40,8 @@ function createInteraction(input: { isAdmin?: boolean; inGuild?: boolean } = {})
       has: vi.fn().mockReturnValue(input.isAdmin ?? true),
     },
     options: {
-      getSubcommandGroup: vi.fn().mockReturnValue("poll"),
-      getSubcommand: vi.fn().mockReturnValue("status"),
+      getSubcommandGroup: vi.fn().mockReturnValue(input.group ?? null),
+      getSubcommand: vi.fn().mockReturnValue(input.sub ?? "status"),
     },
     reply,
     deferReply,
@@ -35,16 +49,41 @@ function createInteraction(input: { isAdmin?: boolean; inGuild?: boolean } = {})
   };
 }
 
-describe("/bot poll status behavior", () => {
+function createClient(isReady = true) {
+  return {
+    isReady: vi.fn().mockReturnValue(isReady),
+  } as any;
+}
+
+function flattenEmbedText(payload: any): string {
+  const rendered = (payload.embeds ?? []).map((embed: any) => embed.toJSON());
+  return rendered
+    .flatMap((embed: any) => [
+      embed.title,
+      embed.description,
+      ...(embed.fields ?? []).flatMap((field: any) => [field.name, field.value]),
+    ])
+    .filter(Boolean)
+    .join("\n");
+}
+
+describe("/bot status behavior", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-19T12:00:00.000Z"));
     vi.clearAllMocks();
+    prismaMock.$queryRawUnsafe.mockResolvedValue([{ "?column?": 1 }]);
     listStatusesMock.mockResolvedValue([]);
   });
 
-  it("denies non-admin users", async () => {
-    const interaction = createInteraction({ isAdmin: false });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-    await Bot.run({} as any, interaction as any, {} as any);
+  it("denies non-admin users", async () => {
+    const interaction = createInteraction({ isAdmin: false, group: null, sub: "status" });
+
+    await Bot.run(createClient(), interaction as any, {} as any);
 
     expect(listStatusesMock).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
@@ -53,78 +92,150 @@ describe("/bot poll status behavior", () => {
     });
   });
 
-  it("requires a guild context", async () => {
-    const interaction = createInteraction({ inGuild: false });
+  it("renders a healthy overview", async () => {
+    const interaction = createInteraction({ group: null, sub: "status" });
+    listStatusesMock.mockResolvedValue([
+      {
+        jobKey: "autorole_scheduler",
+        displayName: "Autorole scheduler",
+        enabled: true,
+        status: "idle",
+        intervalMs: 3_600_000,
+        lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+        lastFinishedAt: new Date("2026-05-19T11:01:00.000Z"),
+        nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
+        lastSuccessAt: new Date("2026-05-19T11:01:00.000Z"),
+        lastErrorAt: null,
+        lastError: null,
+        runCount: 3,
+        failureCount: 0,
+        metadata: null,
+        updatedAt: new Date("2026-05-19T11:01:00.000Z"),
+      },
+    ]);
 
-    await Bot.run({} as any, interaction as any, {} as any);
+    await Bot.run(createClient(), interaction as any, {} as any);
 
-    expect(listStatusesMock).not.toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalledWith({
-      ephemeral: true,
-      content: "This command can only be used in a server.",
-    });
+    expect(prismaMock.$queryRawUnsafe).toHaveBeenCalledTimes(1);
+    expect(listStatusesMock).toHaveBeenCalledTimes(1);
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Bot status");
+    expect(text).toContain("Overall: 🟢 healthy");
+    expect(text).toContain("Runtime");
+    expect(text).toContain("Health");
+    expect(text).toContain("Poll jobs summary");
+    expect(text).toContain("Warnings");
+    expect(text).toContain("No poll job warnings");
+    expect(text).toContain("Polling mode:");
+    expect(text).toContain("Database: 🟢 reachable");
+    expect(text).toContain("Discord: 🟢 ready");
   });
 
-  it("loads job rows and renders status embeds", async () => {
-    const interaction = createInteraction({ isAdmin: true });
+  it("marks failed poll jobs as warnings in the overview", async () => {
+    const interaction = createInteraction({ group: null, sub: "status" });
+    listStatusesMock.mockResolvedValue([
+      {
+        jobKey: "war_event_poll_cycle",
+        displayName: "War event poll",
+        enabled: true,
+        status: "failed",
+        intervalMs: 60_000,
+        lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
+        lastFinishedAt: new Date("2026-05-19T11:05:00.000Z"),
+        nextDueAt: new Date("2026-05-19T11:06:00.000Z"),
+        lastSuccessAt: null,
+        lastErrorAt: new Date("2026-05-19T11:05:00.000Z"),
+        lastError: "war boom",
+        runCount: 2,
+        failureCount: 1,
+        metadata: { trigger: "startup" },
+        updatedAt: new Date("2026-05-19T11:05:00.000Z"),
+      },
+    ]);
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Overall: 🔴 unhealthy");
+    expect(text).toContain("War event poll");
+    expect(text).toContain("failed");
+    expect(text).toContain("last error: war boom");
+    expect(text).toContain("trigger=startup");
+  });
+
+  it("lists overdue running poll jobs in warnings", async () => {
+    const interaction = createInteraction({ group: null, sub: "status" });
+    listStatusesMock.mockResolvedValue([
+      {
+        jobKey: "activity_observe_cycle",
+        displayName: "Activity observe",
+        enabled: true,
+        status: "running",
+        intervalMs: 1_800_000,
+        lastStartedAt: new Date("2026-05-19T09:00:00.000Z"),
+        lastFinishedAt: null,
+        nextDueAt: new Date("2026-05-19T09:30:00.000Z"),
+        lastSuccessAt: null,
+        lastErrorAt: null,
+        lastError: null,
+        runCount: 1,
+        failureCount: 0,
+        metadata: { trigger: "scheduled" },
+        updatedAt: new Date("2026-05-19T09:00:00.000Z"),
+      },
+    ]);
+
+    await Bot.run(createClient(), interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const text = flattenEmbedText(payload);
+    expect(text).toContain("Overall: 🟡 warning");
+    expect(text).toContain("Activity observe");
+    expect(text).toContain("overdue");
+    expect(text).toContain("trigger=scheduled");
+  });
+});
+
+describe("/bot poll status behavior", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.$queryRaw.mockResolvedValue([{ "?column?": 1 }]);
+    listStatusesMock.mockResolvedValue([]);
+  });
+
+  it("keeps the detailed poll dashboard available", async () => {
+    const interaction = createInteraction({ group: "poll", sub: "status" });
     listStatusesMock.mockResolvedValue([
       {
         jobKey: "autorole_scheduler",
         displayName: "Autorole scheduler",
         enabled: true,
         status: "running",
-        intervalMs: 5 * 60 * 1000,
-        lastStartedAt: new Date("2026-05-19T11:40:00.000Z"),
+        intervalMs: 60_000,
+        lastStartedAt: new Date("2026-05-19T11:59:00.000Z"),
         lastFinishedAt: null,
-        nextDueAt: new Date("2026-05-19T11:45:00.000Z"),
+        nextDueAt: new Date("2026-05-19T12:00:00.000Z"),
         lastSuccessAt: null,
         lastErrorAt: null,
         lastError: null,
-        runCount: 5,
+        runCount: 1,
         failureCount: 0,
         metadata: { trigger: "startup" },
-        updatedAt: new Date("2026-05-19T11:45:00.000Z"),
-      },
-      {
-        jobKey: "activity_observe_cycle",
-        displayName: "Activity observe",
-        enabled: true,
-        status: "failed",
-        intervalMs: 1_800_000,
-        lastStartedAt: new Date("2026-05-19T11:00:00.000Z"),
-        lastFinishedAt: new Date("2026-05-19T11:05:00.000Z"),
-        nextDueAt: new Date("2026-05-19T11:30:00.000Z"),
-        lastSuccessAt: null,
-        lastErrorAt: new Date("2026-05-19T11:05:00.000Z"),
-        lastError: "observe boom",
-        runCount: 3,
-        failureCount: 1,
-        metadata: { trigger: "scheduled" },
-        updatedAt: new Date("2026-05-19T11:05:00.000Z"),
+        updatedAt: new Date("2026-05-19T11:59:00.000Z"),
       },
     ]);
 
-    await Bot.run({} as any, interaction as any, {} as any);
+    await Bot.run(createClient(), interaction as any, {} as any);
 
-    expect(listStatusesMock).toHaveBeenCalledTimes(1);
-    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    expect(payload.embeds).toBeTruthy();
-    const rendered = payload.embeds.map((embed: any) => embed.toJSON());
-    const text = rendered
-      .flatMap((embed: any) => [
-        embed.title,
-        embed.description,
-        ...(embed.fields ?? []).flatMap((field: any) => [field.name, field.value]),
-      ])
-      .join("\n");
+    const text = flattenEmbedText(payload);
     expect(text).toContain("Bot poll status");
     expect(text).toContain("Autorole scheduler");
-    expect(text).toContain("Activity observe");
     expect(text).toContain("Status:");
-    expect(text).toContain("Last error: observe boom");
     expect(text).toContain("Note: trigger=startup");
-    expect(text).toContain("Warning: stuck/overdue");
   });
 });
 

@@ -798,13 +798,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   bot: {
-    summary: "Inspect background poll job status rows.",
+    summary: "Inspect bot runtime and poll status.",
     details: [
-      "Shows read-only DB-backed status rows for major background poll jobs.",
+      "Use `/bot status` for a concise runtime overview covering uptime, health, and warning jobs.",
+      "Use `/bot poll status` for the read-only DB-backed status rows for major background poll jobs.",
       "Rows include the current state emoji, interval, last/next run timestamps, duration, and a short failure summary when failed.",
       "This command is admin-only by default.",
     ],
-    examples: ["/bot poll status"],
+    examples: ["/bot status", "/bot poll status"],
   },
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
