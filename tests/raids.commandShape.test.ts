@@ -9,6 +9,14 @@ describe("/raids command shape", () => {
 
     const overview = Raids.options?.find((option) => option.name === "overview");
     expect(overview?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    const type = overview?.options?.find((option) => option.name === "type");
+    expect(type?.type).toBe(ApplicationCommandOptionType.String);
+    expect(type?.required).toBe(false);
+    expect(type?.choices).toEqual([
+      { name: "raids", value: "raids" },
+      { name: "fwa", value: "fwa" },
+      { name: "custom", value: "custom" },
+    ]);
     const clan = overview?.options?.find((option) => option.name === "clan");
     expect(clan?.type).toBe(ApplicationCommandOptionType.String);
     expect(clan?.required).toBe(false);

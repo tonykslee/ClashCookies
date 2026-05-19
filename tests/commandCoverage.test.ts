@@ -139,6 +139,14 @@ describe("command coverage", () => {
     expect(unlinkedHelpText).toContain("leader-channel");
   });
 
+  it("documents /raids overview source modes in the raids help detail text", () => {
+    const raidsHelpText = helpEmbedText("raids");
+    expect(raidsHelpText).toContain("type:raids");
+    expect(raidsHelpText).toContain("type:fwa");
+    expect(raidsHelpText).toContain("type:custom");
+    expect(raidsHelpText).not.toContain("type:custom tag:");
+  });
+
   it("registers /compo fill as a subcommand", () => {
     const compo = Commands.find((command) => command.name === "compo");
     expect(compo).toBeTruthy();

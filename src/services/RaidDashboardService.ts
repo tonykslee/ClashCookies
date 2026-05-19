@@ -24,6 +24,10 @@ import {
   type RaidTrackedClanDisplayRow,
   type RaidTrackedClanJoinType,
 } from "./RaidTrackedClanService";
+import {
+  listFwaTrackedClansForDisplay,
+  type FwaTrackedClanDisplayRow,
+} from "./TrackedClanListService";
 
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const RAID_DETAIL_TRUNCATION_RESERVE = 96;
@@ -83,6 +87,17 @@ export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCoun
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
+};
+
+export type RaidDashboardOverviewSourceMode = "raids" | "fwa" | "custom";
+
+type RaidDashboardSourceClanRow = {
+  clanTag: string;
+  clanName: string | null;
+  upgrades: number | null;
+  joinType: RaidTrackedClanJoinType | null;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 export type RaidClanJoinRequirements = {
@@ -1183,11 +1198,57 @@ export function buildRaidIntelSelectedDistrictLabel(district: RaidIntelDistrict)
   return `${defenderLabel} / ${districtLabel}`;
 }
 
-export async function listRaidDashboardRows(input: {
+function toRaidDashboardSourceRowFromRaidTrackedClan(row: RaidTrackedClanDisplayRow): RaidDashboardSourceClanRow {
+  return {
+    clanTag: row.clanTag,
+    clanName: row.clanName,
+    upgrades: row.upgrades,
+    joinType: row.joinType,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toRaidDashboardSourceRowFromFwaTrackedClan(row: FwaTrackedClanDisplayRow): RaidDashboardSourceClanRow {
+  return {
+    clanTag: row.tag,
+    clanName: row.name,
+    upgrades: null,
+    joinType: null,
+    createdAt: row.createdAt,
+    updatedAt: row.createdAt,
+  };
+}
+
+function toSyntheticRaidDashboardSourceRow(clanTag: string): RaidDashboardSourceClanRow {
+  const normalizedClanTag = normalizeRaidTrackedClanTag(clanTag) ?? clanTag;
+  const now = new Date(0);
+  return {
+    clanTag: normalizedClanTag,
+    clanName: null,
+    upgrades: null,
+    joinType: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function getRaidDashboardRowsFromSourceRows(input: {
+  sourceRows: RaidDashboardSourceClanRow[];
   cocService: CoCService | null;
   guildId?: string | null;
+  source: string;
 }): Promise<RaidDashboardClanRow[]> {
-  const tracked = await listRaidTrackedClansForDisplay();
+  return loadRaidDashboardRowsFromSourceRows(input);
+}
+
+async function loadRaidDashboardRowsFromSourceRows(input: {
+  sourceRows: RaidDashboardSourceClanRow[];
+  cocService: CoCService | null;
+  guildId?: string | null;
+  source: string;
+}): Promise<RaidDashboardClanRow[]> {
+  const tracked = input.sourceRows;
   if (tracked.length <= 0) {
     return [];
   }
@@ -1224,7 +1285,7 @@ export async function listRaidDashboardRows(input: {
     loadRaidAttackerClanMetadata({
       cocService: input.cocService,
       defenseSections: allDefenseSections,
-      source: "raids:overview",
+      source: input.source,
     }),
     loadRaidIntelLayoutMarksForSeasons({
       guildId: input.guildId ?? null,
@@ -1315,6 +1376,19 @@ export async function listRaidDashboardRows(input: {
   return sortRaidDashboardRows(rows);
 }
 
+export async function listRaidDashboardRows(input: {
+  cocService: CoCService | null;
+  guildId?: string | null;
+}): Promise<RaidDashboardClanRow[]> {
+  const rows = await listRaidTrackedClansForDisplay();
+  return getRaidDashboardRowsFromSourceRows({
+    sourceRows: rows.map(toRaidDashboardSourceRowFromRaidTrackedClan),
+    cocService: input.cocService,
+    guildId: input.guildId ?? null,
+    source: "raids:overview",
+  });
+}
+
 export async function listRaidDashboardRowsWithQueueContext(input: {
   cocService: CoCService | null;
   source: string;
@@ -1326,6 +1400,70 @@ export async function listRaidDashboardRowsWithQueueContext(input: {
       source: input.source,
     },
     () => listRaidDashboardRows({ cocService: input.cocService, guildId: input.guildId ?? null }),
+  );
+}
+
+export async function listRaidDashboardRowsForSource(input: {
+  cocService: CoCService | null;
+  guildId?: string | null;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  customClanTag?: string | null;
+}): Promise<RaidDashboardClanRow[]> {
+  if (input.sourceMode === "custom") {
+    const customClanTag = normalizeRaidTrackedClanTag(input.customClanTag ?? "");
+    if (!customClanTag) {
+      return [];
+    }
+    return getRaidDashboardRowsFromSourceRows({
+      sourceRows: [toSyntheticRaidDashboardSourceRow(customClanTag)],
+      cocService: input.cocService,
+      guildId: input.guildId ?? null,
+      source: "raids:overview:custom",
+    });
+  }
+
+  if (input.sourceMode === "fwa") {
+    const fwaRows = await listFwaTrackedClansForDisplay();
+    return getRaidDashboardRowsFromSourceRows({
+      sourceRows: fwaRows.map(toRaidDashboardSourceRowFromFwaTrackedClan),
+      cocService: input.cocService,
+      guildId: input.guildId ?? null,
+      source: "raids:overview:fwa",
+    });
+  }
+
+  const trackedRows = await listRaidTrackedClansForDisplay();
+  return getRaidDashboardRowsFromSourceRows({
+    sourceRows: trackedRows.map(toRaidDashboardSourceRowFromRaidTrackedClan),
+    cocService: input.cocService,
+    guildId: input.guildId ?? null,
+    source: "raids:overview",
+  });
+}
+
+export async function listRaidDashboardRowsForSourceWithQueueContext(input: {
+  cocService: CoCService | null;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  guildId?: string | null;
+  customClanTag?: string | null;
+}): Promise<RaidDashboardClanRow[]> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source:
+        input.sourceMode === "fwa"
+          ? "raids:overview:fwa"
+          : input.sourceMode === "custom"
+            ? "raids:overview:custom"
+            : "raids:overview",
+    },
+    () =>
+      listRaidDashboardRowsForSource({
+        cocService: input.cocService,
+        guildId: input.guildId ?? null,
+        sourceMode: input.sourceMode,
+        customClanTag: input.customClanTag ?? null,
+      }),
   );
 }
 
