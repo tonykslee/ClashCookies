@@ -166,6 +166,28 @@ function normalizeTrackedClanLabel(input: string): string {
   return normalizeText(input)?.toLowerCase() ?? "";
 }
 
+function buildConfiguredTrackedClanStripLabels(trackedClans: AutoRoleNicknameTrackedClanLike[]): string[] {
+  const labels: string[] = [];
+  for (const clan of trackedClans) {
+    const normalized = normalizeTrackedClan(clan);
+    if (!normalized) {
+      continue;
+    }
+
+    if (normalized.shortName) {
+      labels.push(normalized.shortName);
+    }
+    if (normalized.name) {
+      labels.push(normalized.name);
+    }
+    if (!normalized.shortName && !normalized.name) {
+      labels.push(normalized.tag);
+    }
+  }
+
+  return [...new Set(labels.map((label) => normalizeText(label) ?? "").filter(Boolean))];
+}
+
 function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string[]): string {
   const normalized = normalizeText(input) ?? "";
   if (!normalized || trackedClanLabels.length === 0) {
@@ -253,8 +275,8 @@ export class AutoRoleNicknameService {
     const primaryPlayerCurrent = primary ? primary.playerCurrent : null;
     const primaryPlayerTag = primary?.playerTag ?? null;
     const primaryPlayerName =
-      normalizeText(primaryPlayerCurrent?.playerName) ??
-      normalizeText(primary?.playerName) ??
+      normalizeText(primaryPlayerCurrent?.playerName) ?? 
+      normalizeText(primary?.playerName) ?? 
       null;
     const primaryClanTag = primaryClan?.tag ?? primaryPlayerCurrent?.currentClanTag ?? null;
     const primaryClanName =
@@ -264,8 +286,9 @@ export class AutoRoleNicknameService {
     const primaryClanShort = normalizeText(primaryClan?.shortName) ?? null;
     const template = normalizeNicknameTemplate(input.template) ?? "";
     const discordDisplayName = normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "";
+    const configuredTrackedClanStripLabels = buildConfiguredTrackedClanStripLabels(input.trackedClans);
     const discordToken = templateUsesDiscordTrackedClans(template)
-      ? stripTrailingTrackedClanLabels(discordDisplayName, trackedClanLabels)
+      ? stripTrailingTrackedClanLabels(discordDisplayName, configuredTrackedClanStripLabels)
       : discordDisplayName;
 
     const tokens: AutoRoleNicknameTokens = {
