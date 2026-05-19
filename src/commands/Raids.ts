@@ -31,9 +31,10 @@ import {
   findRaidDashboardClanRow,
   loadRaidIntelSeasonDetailWithQueueContext,
   loadRaidDashboardSeasonDetailWithQueueContext,
-  listRaidDashboardRowsWithQueueContext,
+  listRaidDashboardRowsForSourceWithQueueContext,
   parseRaidSeasonTimeMs,
   resolveRaidIntelDefenderUpgrade,
+  type RaidDashboardOverviewSourceMode,
   type RaidDashboardClanRow,
   type RaidIntelDistrict,
   type RaidIntelLayoutGrade,
@@ -47,6 +48,7 @@ import {
   updateRaidTrackedClanUpgrades,
   type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
+import { listFwaTrackedClansForDisplay } from "../services/TrackedClanListService";
 import {
   loadRaidIntelDefenderProfileUpgradesForTags,
   upsertRaidIntelDefenderProfileUpgrades,
@@ -63,6 +65,8 @@ const RAID_DASHBOARD_PREFIX = "raids";
 type RaidsDashboardSession = {
   guildId: string | null;
   userId: string;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  customClanTag: string | null;
   selectedClanTag: string | null;
   rows: RaidDashboardClanRow[];
   refreshing: boolean;
@@ -193,6 +197,33 @@ function normalizeRaidIntelDistrictMatchName(value: string): string {
 function formatClanTag(tag: string): string {
   const normalized = normalizeRaidTrackedClanTag(tag);
   return normalized ? `#${normalized}` : tag.trim();
+}
+
+function normalizeRaidsOverviewSourceMode(value: string | null | undefined): RaidDashboardOverviewSourceMode {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "fwa") return "fwa";
+  if (normalized === "custom") return "custom";
+  return "raids";
+}
+
+function getRaidsOverviewNoRowsMessage(sourceMode: RaidDashboardOverviewSourceMode): string {
+  if (sourceMode === "fwa") {
+    return "No tracked FWA clans in the database. Use `/clan configure` first.";
+  }
+  if (sourceMode === "custom") {
+    return "No clan data could be loaded for that tag.";
+  }
+  return "No RAIDS tracked clans in the database. Use `/clan raid-tags` first.";
+}
+
+function getRaidsOverviewNoMatchMessage(sourceMode: RaidDashboardOverviewSourceMode, clanTag: string): string {
+  if (sourceMode === "custom") {
+    return `No clan matched ${formatClanTag(clanTag)}.`;
+  }
+  if (sourceMode === "fwa") {
+    return `No tracked FWA clan matched ${formatClanTag(clanTag)}.`;
+  }
+  return `No tracked RAID clan matched ${formatClanTag(clanTag)}.`;
 }
 
 function buildRaidIntelCustomId(
@@ -883,8 +914,9 @@ async function buildRaidDashboardPayload(input: {
   selectedClanTag: string | null;
   cocService: CoCService;
   refreshing: boolean;
-  source: string;
+  sourceMode: RaidDashboardOverviewSourceMode;
   guildId?: string | null;
+  customClanTag?: string | null;
   rows?: RaidDashboardClanRow[];
   detailSource?: string | null;
 }): Promise<{
@@ -894,10 +926,11 @@ async function buildRaidDashboardPayload(input: {
 }> {
   const rows =
     input.rows ??
-    (await listRaidDashboardRowsWithQueueContext({
+    (await listRaidDashboardRowsForSourceWithQueueContext({
       cocService: input.cocService,
-      source: input.source,
+      sourceMode: input.sourceMode,
       guildId: input.guildId ?? null,
+      customClanTag: input.customClanTag ?? null,
     }));
   const selectedRow = input.selectedClanTag ? findRaidDashboardClanRow(rows, input.selectedClanTag) : null;
   const effectiveSelectedTag = selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null;
@@ -935,22 +968,36 @@ async function buildRaidDashboardPayload(input: {
   };
 }
 
-async function loadRaidAutocompleteChoices(query: string): Promise<Array<{ name: string; value: string }>> {
+async function loadRaidAutocompleteChoices(
+  query: string,
+  sourceMode: RaidDashboardOverviewSourceMode,
+): Promise<Array<{ name: string; value: string }>> {
   const normalizedQuery = String(query ?? "").trim().toLowerCase();
-  const clans = await prisma.raidTrackedClan.findMany({
-    orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
-    select: {
-      clanTag: true,
-      name: true,
-      upgrades: true,
-      joinType: true,
-    },
-  });
+  if (sourceMode === "custom") {
+    return [];
+  }
+
+  const clans: Array<
+    | { clanTag: string; name: string | null }
+    | { tag: string; name: string | null }
+  > =
+    sourceMode === "fwa"
+      ? await listFwaTrackedClansForDisplay()
+      : await prisma.raidTrackedClan.findMany({
+          orderBy: [{ createdAt: "asc" }, { clanTag: "asc" }],
+          select: {
+            clanTag: true,
+            name: true,
+            upgrades: true,
+            joinType: true,
+          },
+        });
   return clans
     .map((clan) => {
-      const tag = normalizeRaidTrackedClanTag(clan.clanTag);
+      const tag = normalizeRaidTrackedClanTag("clanTag" in clan ? clan.clanTag : clan.tag);
       if (!tag) return null;
-      const label = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
+      const clanName = clan.name?.trim() ?? "";
+      const label = clanName ? `${clanName} (#${tag})` : `#${tag}`;
       return {
         name: label.slice(0, 100),
         value: tag,
@@ -1010,14 +1057,15 @@ export async function handleRaidsSelectMenuInteraction(
       selectedClanTag,
       cocService,
       refreshing: false,
-      source: "raids:overview:select",
+      sourceMode: session.sourceMode,
+      customClanTag: session.customClanTag,
       guildId: session.guildId,
       rows: session.rows,
       detailSource: selectedClanTag ? "raids:overview:detail" : null,
     });
     if (payload.rows.length <= 0) {
       await interaction.editReply({
-        content: "No RAIDS tracked clans in the database.",
+        content: getRaidsOverviewNoRowsMessage(session.sourceMode),
         embeds: [],
         components: [],
       });
@@ -1084,7 +1132,8 @@ export async function handleRaidsButtonInteraction(
       selectedClanTag: nextSelectedClanTag,
       cocService,
       refreshing: false,
-      source: parsed.action === "refresh" ? "raids:overview:refresh" : "raids:overview:back",
+      sourceMode: session.sourceMode,
+      customClanTag: session.customClanTag,
       guildId: session.guildId,
       rows: parsed.action === "refresh" ? undefined : session.rows,
       detailSource:
@@ -1096,7 +1145,7 @@ export async function handleRaidsButtonInteraction(
     });
     if (payload.rows.length <= 0) {
       await interaction.editReply({
-        content: "No RAIDS tracked clans in the database.",
+        content: getRaidsOverviewNoRowsMessage(session.sourceMode),
         embeds: [],
         components: [],
       });
@@ -1148,8 +1197,26 @@ export const Raids: Command = {
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
+          name: "type",
+          description: "Raid dashboard source",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "raids", value: "raids" },
+            { name: "fwa", value: "fwa" },
+            { name: "custom", value: "custom" },
+          ],
+        },
+        {
           name: "clan",
           description: "Tracked RAID clan to show",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
+        },
+        {
+          name: "tag",
+          description: "Clan tag for custom overview mode",
           type: ApplicationCommandOptionType.String,
           required: false,
           autocomplete: true,
@@ -1191,12 +1258,27 @@ export const Raids: Command = {
   ],
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const query = interaction.options.getFocused(true);
-    if (query.name !== "clan") {
+    if (query.name !== "clan" && query.name !== "tag") {
       await interaction.respond([]);
       return;
     }
 
-    const choices = await loadRaidAutocompleteChoices(String(query.value ?? ""));
+    const subcommand = interaction.options.getSubcommand(false);
+    if (query.name === "tag") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const sourceMode =
+      subcommand === "overview"
+        ? normalizeRaidsOverviewSourceMode(interaction.options.getString("type", false))
+        : "raids";
+    if (sourceMode === "custom") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const choices = await loadRaidAutocompleteChoices(String(query.value ?? ""), sourceMode);
     await interaction.respond(choices);
   },
   run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
@@ -1208,25 +1290,37 @@ export const Raids: Command = {
       subcommand = null;
     }
     if (subcommand === "overview") {
+      const sourceMode = normalizeRaidsOverviewSourceMode(interaction.options.getString("type", false));
       const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
-      const rows = await listRaidDashboardRowsWithQueueContext({
-        cocService,
-        source: "raids:overview",
-        guildId: interaction.guildId ?? null,
-      });
-      if (rows.length <= 0) {
+      const requestedTag = normalizeRaidTrackedClanTag(interaction.options.getString("tag", false) ?? "");
+      if (sourceMode === "custom" && !requestedTag) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "No RAIDS tracked clans in the database. Use `/clan raid-tags` first.",
+          content: "Choose a valid clan tag with `/raids overview type:custom tag:<tag>`.",
         });
         return;
       }
 
-      const selectedRow = requestedClan ? findRaidDashboardClanRow(rows, requestedClan) : null;
-      if (requestedClan && !selectedRow) {
+      const rows = await listRaidDashboardRowsForSourceWithQueueContext({
+        cocService,
+        guildId: interaction.guildId ?? null,
+        sourceMode,
+        customClanTag: requestedTag,
+      });
+      if (rows.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: `No tracked RAID clan matched ${formatClanTag(requestedClan)}.`,
+          content: getRaidsOverviewNoRowsMessage(sourceMode),
+        });
+        return;
+      }
+
+      const requestedSelection = sourceMode === "custom" ? requestedTag : requestedClan;
+      const selectedRow = requestedSelection ? findRaidDashboardClanRow(rows, requestedSelection) : null;
+      if (requestedSelection && !selectedRow) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: getRaidsOverviewNoMatchMessage(sourceMode, requestedSelection),
         });
         return;
       }
@@ -1235,6 +1329,8 @@ export const Raids: Command = {
       raidsDashboardSessions.set(sessionId, {
         guildId: interaction.guildId ?? null,
         userId: interaction.user.id,
+        sourceMode,
+        customClanTag: sourceMode === "custom" ? requestedTag : null,
         selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
         rows,
         refreshing: false,
@@ -1246,7 +1342,8 @@ export const Raids: Command = {
         selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
         cocService,
         refreshing: false,
-        source: "raids:overview",
+        sourceMode,
+        customClanTag: sourceMode === "custom" ? requestedTag : null,
         guildId: interaction.guildId ?? null,
         rows,
         detailSource: selectedRow ? "raids:overview:detail" : null,

@@ -9,10 +9,22 @@ describe("/raids command shape", () => {
 
     const overview = Raids.options?.find((option) => option.name === "overview");
     expect(overview?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    const type = overview?.options?.find((option) => option.name === "type");
+    expect(type?.type).toBe(ApplicationCommandOptionType.String);
+    expect(type?.required).toBe(false);
+    expect(type?.choices).toEqual([
+      { name: "raids", value: "raids" },
+      { name: "fwa", value: "fwa" },
+      { name: "custom", value: "custom" },
+    ]);
     const clan = overview?.options?.find((option) => option.name === "clan");
     expect(clan?.type).toBe(ApplicationCommandOptionType.String);
     expect(clan?.required).toBe(false);
     expect(clan?.autocomplete).toBe(true);
+    const tag = overview?.options?.find((option) => option.name === "tag");
+    expect(tag?.type).toBe(ApplicationCommandOptionType.String);
+    expect(tag?.required).toBe(false);
+    expect(tag?.autocomplete).toBe(true);
 
     const intel = Raids.options?.find((option) => option.name === "intel");
     expect(intel?.type).toBe(ApplicationCommandOptionType.Subcommand);
