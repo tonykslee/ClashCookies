@@ -14,6 +14,14 @@ import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { CoCService } from "../services/CoCService";
+import {
+  handleBotPollJobRefreshButtonInteraction,
+  handleBotPollStatusRefreshButtonInteraction,
+  handleBotStatusRefreshButtonInteraction,
+  isBotPollJobRefreshButtonCustomId,
+  isBotPollStatusRefreshButtonCustomId,
+  isBotStatusRefreshButtonCustomId,
+} from "../commands/Bot";
 import { handlePostModalSubmit, isPostModalCustomId } from "../commands/Post";
 import {
   handleRecruitmentModalSubmit,
@@ -874,6 +882,51 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isBotStatusRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleBotStatusRefreshButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Bot status refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh bot status.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isBotPollStatusRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleBotPollStatusRefreshButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Bot poll status refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh bot poll status.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isBotPollJobRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleBotPollJobRefreshButtonInteraction(interaction);
+    } catch (err) {
+      console.error(`Bot poll job refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh bot poll job.",
+        });
+      }
+    }
+    return;
+  }
 
   if (isTodoPageButtonCustomId(interaction.customId)) {
     try {

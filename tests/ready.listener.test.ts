@@ -290,6 +290,7 @@ vi.mock("../src/helper/formatError", () => ({
   formatError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
 
+import { botStartupStatusService } from "../src/services/BotStartupStatusService";
 import ready from "../src/listeners/ready";
 
 describe("ready listener startup", () => {
@@ -302,13 +303,14 @@ describe("ready listener startup", () => {
     statusServiceMock.markFailed.mockResolvedValue({});
     statusServiceMock.markSkipped.mockResolvedValue({});
     statusServiceMock.markDisabled.mockResolvedValue({});
+    botStartupStatusService.markPhase("ready_start", { test: true });
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  async function startStartup() {
+  async function startStartup(applicationPresent = true) {
     let capturedReadyHandler: (() => Promise<void>) | undefined;
     const client = {
       once: vi.fn((event: string, handler: () => Promise<void>) => {
@@ -316,12 +318,14 @@ describe("ready listener startup", () => {
           capturedReadyHandler = handler;
         }
       }),
-      application: {
-        fetch: vi.fn().mockResolvedValue(undefined),
-        emojis: {
-          fetch: vi.fn(),
-        },
-      },
+      application: applicationPresent
+        ? {
+            fetch: vi.fn().mockResolvedValue(undefined),
+            emojis: {
+              fetch: vi.fn(),
+            },
+          }
+        : null,
       guilds: {
         fetch: vi.fn(),
       },
@@ -349,6 +353,9 @@ describe("ready listener startup", () => {
 
   it("continues startup while activity observe work is still pending", async () => {
     await runStartup();
+    const snapshot = botStartupStatusService.getSnapshot();
+    expect(snapshot.status).toBe("online");
+    expect(snapshot.phase).toBe("complete");
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
     expect(fwaFeedStart).toHaveBeenCalledTimes(1);
@@ -472,7 +479,17 @@ describe("ready listener startup", () => {
 
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
+    expect(botStartupStatusService.getSnapshot().phase).toBe("war_event_poll");
     expect(warEventPollMock).toHaveBeenCalledTimes(1);
     expect(settled).toBe(false);
+  });
+
+  it("marks startup failed when client.application is missing", async () => {
+    const { startupPromise } = await startStartup(false);
+    await expect(startupPromise).rejects.toThrow("client.application is unavailable during ready startup");
+    const snapshot = botStartupStatusService.getSnapshot();
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.phase).toBe("failed");
+    expect(snapshot.lastError).toContain("client.application is unavailable during ready startup");
   });
 });
