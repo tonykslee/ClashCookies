@@ -130,6 +130,7 @@ describe("command coverage", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");
     expect(clanHelpText).toContain("leader channel");
+    expect(clanHelpText).toContain("lead-role");
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 

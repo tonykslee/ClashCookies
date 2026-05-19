@@ -9,6 +9,7 @@ export type FwaTrackedClanDisplayRow = {
   logChannelId: string | null;
   leaderChannelId: string | null;
   clanRoleId: string | null;
+  leadRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
   createdAt: Date;
@@ -26,6 +27,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
       logChannelId: true,
       leaderChannelId: true,
       clanRoleId: true,
+      leadRoleId: true,
       clanBadge: true,
       shortName: true,
       createdAt: true,
@@ -40,6 +42,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     logChannelId: row.logChannelId,
     leaderChannelId: row.leaderChannelId,
     clanRoleId: row.clanRoleId,
+    leadRoleId: row.leadRoleId,
     clanBadge: row.clanBadge,
     shortName: row.shortName,
     createdAt: row.createdAt,

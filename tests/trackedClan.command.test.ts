@@ -400,6 +400,7 @@ describe("/clan command behavior", () => {
         logChannelId: null,
         leaderChannelId: "leader-channel-1",
         clanRoleId: null,
+        leadRoleId: "lead-role-1",
         clanBadge: null,
         shortName: "AC",
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -420,6 +421,7 @@ describe("/clan command behavior", () => {
     );
     expect(description).toContain("shortName: AC");
     expect(description).toContain("leaderChannel: <#leader-channel-1>");
+    expect(description).toContain("leadRole: <@&lead-role-1>");
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
@@ -572,7 +574,9 @@ describe("/clan command behavior", () => {
         loseStyle: "TRADITIONAL",
         mailChannelId: null,
         logChannelId: null,
+        leaderChannelId: null,
         clanRoleId: null,
+        leadRoleId: "lead-role-1",
         clanBadge: null,
         shortName: "AC",
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -614,6 +618,7 @@ describe("/clan command behavior", () => {
     expect(description).toContain(
       "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
     );
+    expect(description).toContain("leadRole: <@&lead-role-1>");
     expect(description).toContain(
       "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289`",
     );
@@ -636,6 +641,7 @@ describe("/clan command behavior", () => {
       logChannelId: null,
       leaderChannelId: "leader-channel-1",
       clanRoleId: null,
+      leadRoleId: null,
       clanBadge: null,
       shortName: null,
     });
@@ -661,6 +667,7 @@ describe("/clan command behavior", () => {
       expect.objectContaining({
         create: expect.objectContaining({
           leaderChannelId: "leader-channel-1",
+          leadRoleId: null,
         }),
         update: expect.objectContaining({
           leaderChannelId: "leader-channel-1",
@@ -668,6 +675,51 @@ describe("/clan command behavior", () => {
       }),
     );
     expect(getReplyContent(interaction)).toContain("leaderChannel: <#leader-channel-1>");
+    expect(getReplyContent(interaction)).toContain("leadRole: not set");
+  });
+
+  it("persists leadRoleId when /clan configure receives lead-role", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      clanRoleId: null,
+      leadRoleId: "lead-role-1",
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+      roles: {
+        "lead-role": {
+          id: "lead-role-1",
+        },
+      },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClan.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          leadRoleId: "lead-role-1",
+        }),
+        update: expect.objectContaining({
+          leadRoleId: "lead-role-1",
+        }),
+      }),
+    );
+    expect(getReplyContent(interaction)).toContain("leadRole: <@&lead-role-1>");
   });
 
   it("keeps an existing leaderChannelId when /clan configure omits leader-channel", async () => {
@@ -683,6 +735,7 @@ describe("/clan command behavior", () => {
       logChannelId: null,
       leaderChannelId: "leader-channel-1",
       clanRoleId: null,
+      leadRoleId: "lead-role-1",
       clanBadge: null,
       shortName: null,
     });
@@ -700,7 +753,9 @@ describe("/clan command behavior", () => {
 
     const update = (prismaMock.trackedClan.upsert.mock.calls[0]?.[0] as any)?.update ?? {};
     expect(Object.prototype.hasOwnProperty.call(update, "leaderChannelId")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(update, "leadRoleId")).toBe(false);
     expect(getReplyContent(interaction)).toContain("leaderChannel: <#leader-channel-1>");
+    expect(getReplyContent(interaction)).toContain("leadRole: <@&lead-role-1>");
   });
 
   it("falls back to the clan tag when a tracked FWA name is missing", async () => {
