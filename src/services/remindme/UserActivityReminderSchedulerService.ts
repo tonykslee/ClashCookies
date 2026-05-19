@@ -10,6 +10,10 @@ import {
   isCoCQueueSkippedError,
 } from "../CoCRequestQueueService";
 import { runWithCoCQueueContext } from "../CoCQueueContext";
+import {
+  botPollJobStatusService,
+  type BotPollJobStatusService,
+} from "../BotPollJobStatusService";
 import { normalizeClanTag } from "../PlayerLinkService";
 import {
   todoSnapshotService,
@@ -22,6 +26,8 @@ import {
 
 const DEFAULT_USER_ACTIVITY_REMINDER_INTERVAL_MS = 60 * 1000;
 const DEFAULT_GAMES_COMPLETE_TARGET = 4000;
+const USER_ACTIVITY_REMINDER_JOB_KEY = "user_activity_reminder_scheduler";
+const USER_ACTIVITY_REMINDER_DISPLAY_NAME = "User activity reminder scheduler";
 
 type ReminderSchedulerCounts = {
   evaluated: number;
@@ -38,6 +44,20 @@ type ResolvedReminderEventContext = {
   clanName: string | null;
 };
 
+async function safePollJobStatusWrite(
+  jobKey: string,
+  stage: "started" | "succeeded" | "failed" | "skipped" | "disabled",
+  write: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    console.warn(
+      `[poll-status] status_update_failed job_key=${jobKey} stage=${stage} error=${formatError(err)}`,
+    );
+  }
+}
+
 /** Purpose: run periodic user-activity reminder evaluation with overlap guards and restart-safe dedupe. */
 export class UserActivityReminderSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -50,6 +70,7 @@ export class UserActivityReminderSchedulerService {
     private readonly dispatch: UserActivityReminderDispatchService =
       userActivityReminderDispatchService,
     private readonly intervalMs: number = DEFAULT_USER_ACTIVITY_REMINDER_INTERVAL_MS,
+    private readonly statusService: BotPollJobStatusService = botPollJobStatusService,
   ) {}
 
   /** Purpose: start immediate + periodic scheduler evaluation for user-scoped reminder rules. */
@@ -73,10 +94,26 @@ export class UserActivityReminderSchedulerService {
   async runCycle(nowMs: number = Date.now()): Promise<ReminderSchedulerCounts> {
     if (this.inFlight) {
       console.log("[remindme] scheduler skipped reason=in_flight");
+      await safePollJobStatusWrite(USER_ACTIVITY_REMINDER_JOB_KEY, "skipped", () =>
+        this.statusService.markSkipped(USER_ACTIVITY_REMINDER_JOB_KEY, {
+          displayName: USER_ACTIVITY_REMINDER_DISPLAY_NAME,
+          intervalMs: this.intervalMs,
+          nextDueAt: new Date(nowMs + this.intervalMs),
+          metadata: { reason: "in_flight" },
+        }),
+      );
       return { evaluated: 0, fired: 0, deduped: 0, failed: 0 };
     }
     this.inFlight = true;
     try {
+      const nextDueAt = new Date(nowMs + this.intervalMs);
+      await safePollJobStatusWrite(USER_ACTIVITY_REMINDER_JOB_KEY, "started", () =>
+        this.statusService.markStarted(USER_ACTIVITY_REMINDER_JOB_KEY, {
+          displayName: USER_ACTIVITY_REMINDER_DISPLAY_NAME,
+          intervalMs: this.intervalMs,
+          nextDueAt,
+        }),
+      );
       const counts = await runWithCoCQueueContext(
         {
           priority: "background",
@@ -96,12 +133,40 @@ export class UserActivityReminderSchedulerService {
       console.log(
         `[remindme] scheduler evaluated=${counts.evaluated} fired=${counts.fired} deduped=${counts.deduped} failed=${counts.failed}`,
       );
+      await safePollJobStatusWrite(USER_ACTIVITY_REMINDER_JOB_KEY, "succeeded", () =>
+        this.statusService.markSucceeded(USER_ACTIVITY_REMINDER_JOB_KEY, {
+          displayName: USER_ACTIVITY_REMINDER_DISPLAY_NAME,
+          intervalMs: this.intervalMs,
+          nextDueAt,
+          metadata: {
+            evaluated: counts.evaluated,
+            fired: counts.fired,
+            deduped: counts.deduped,
+            failed: counts.failed,
+          },
+        }),
+      );
       return counts;
     } catch (err) {
       if (isCoCQueueSkippedError(err)) {
         console.warn(`[remindme] scheduler skipped reason=stale_queue ${err.message}`);
+        await safePollJobStatusWrite(USER_ACTIVITY_REMINDER_JOB_KEY, "skipped", () =>
+          this.statusService.markSkipped(USER_ACTIVITY_REMINDER_JOB_KEY, {
+            displayName: USER_ACTIVITY_REMINDER_DISPLAY_NAME,
+            intervalMs: this.intervalMs,
+            nextDueAt: new Date(nowMs + this.intervalMs),
+            metadata: { reason: err.message },
+          }),
+        );
         return { evaluated: 0, fired: 0, deduped: 0, failed: 0 };
       }
+      await safePollJobStatusWrite(USER_ACTIVITY_REMINDER_JOB_KEY, "failed", () =>
+        this.statusService.markFailed(USER_ACTIVITY_REMINDER_JOB_KEY, err, {
+          displayName: USER_ACTIVITY_REMINDER_DISPLAY_NAME,
+          intervalMs: this.intervalMs,
+          nextDueAt: new Date(nowMs + this.intervalMs),
+        }),
+      );
       throw err;
     } finally {
       this.inFlight = false;

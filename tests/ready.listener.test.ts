@@ -1,10 +1,31 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const autoRoleStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const observeLoopStart = vi.hoisted(() => vi.fn(() => new Promise<void>(() => undefined)));
 const reminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const userActivityReminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaFeedStart = vi.hoisted(() => vi.fn());
+const statusServiceMock = vi.hoisted(() => ({
+  markStarted: vi.fn(),
+  markSucceeded: vi.fn(),
+  markFailed: vi.fn(),
+  markSkipped: vi.fn(),
+  markDisabled: vi.fn(),
+  listStatuses: vi.fn(),
+  getStatus: vi.fn(),
+}));
+const recruitmentCooldownRemindersMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const recruitmentRuleRemindersMock = vi.hoisted(
+  () => vi.fn().mockResolvedValue({ evaluated: 0, sent: 0, failed: 0 }),
+);
+const defermentRemindersMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const trackedMessageExpirationsMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const trackedMessageSyncRemindersMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const warEventPollMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const warEventRefreshMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mirrorSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const isActivePollingModeMock = vi.hoisted(() => vi.fn(() => true));
+const resolvePollingModeMock = vi.hoisted(() => vi.fn(() => "active"));
 
 vi.mock("../src/Commands", () => ({
   Commands: [],
@@ -70,6 +91,10 @@ vi.mock("../src/services/ActivityObserveStartupService", () => ({
   startActivityObserveLoop: observeLoopStart,
 }));
 
+vi.mock("../src/services/BotPollJobStatusService", () => ({
+  botPollJobStatusService: statusServiceMock,
+}));
+
 vi.mock("../src/services/ReminderSchedulerService", () => ({
   ReminderSchedulerService: vi.fn().mockImplementation(() => ({
     start: reminderStart,
@@ -108,8 +133,8 @@ vi.mock("../src/services/ActivityService", () => ({
 
 vi.mock("../src/services/WarEventLogService", () => ({
   WarEventLogService: vi.fn().mockImplementation(() => ({
-    poll: vi.fn().mockResolvedValue(undefined),
-    refreshBattleDayPosts: vi.fn().mockResolvedValue(undefined),
+    poll: warEventPollMock,
+    refreshBattleDayPosts: warEventRefreshMock,
   })),
 }));
 
@@ -130,25 +155,21 @@ vi.mock("../src/services/telemetry/schedule", () => ({
 }));
 
 vi.mock("../src/services/RecruitmentService", () => ({
-  processRecruitmentCooldownReminders: vi.fn().mockResolvedValue(undefined),
+  processRecruitmentCooldownReminders: recruitmentCooldownRemindersMock,
 }));
 
 vi.mock("../src/services/RecruitmentReminderService", () => ({
-  processDueRecruitmentReminders: vi.fn().mockResolvedValue({
-    evaluated: 0,
-    sent: 0,
-    failed: 0,
-  }),
+  processDueRecruitmentReminders: recruitmentRuleRemindersMock,
 }));
 
 vi.mock("../src/services/WeightInputDefermentService", () => ({
-  processWeightInputDefermentStages: vi.fn().mockResolvedValue(undefined),
+  processWeightInputDefermentStages: defermentRemindersMock,
 }));
 
 vi.mock("../src/services/TrackedMessageService", () => ({
   trackedMessageService: {
-    processDueExpirations: vi.fn().mockResolvedValue(undefined),
-    processDueSyncReminders: vi.fn().mockResolvedValue(undefined),
+    processDueExpirations: trackedMessageExpirationsMock,
+    processDueSyncReminders: trackedMessageSyncRemindersMock,
   },
 }));
 
@@ -207,15 +228,18 @@ vi.mock("../src/services/CoCRequestQueueService", () => ({
 
 vi.mock("../src/services/PollCycleGuardService", () => ({
   PollCycleGuardService: vi.fn().mockImplementation(() => ({
-    run: vi.fn(async (_key: string, execute: any) => execute()),
+    run: vi.fn(async (_key: string, execute: any) => ({
+      ran: true,
+      value: await execute(),
+    })),
   })),
 }));
 
 vi.mock("../src/services/PollingModeService", () => ({
-  isActivePollingMode: vi.fn(() => true),
+  isActivePollingMode: isActivePollingModeMock,
   resolveMirrorSyncIntervalMsFromEnv: vi.fn(() => 60_000),
   resolveRuntimeEnvironment: vi.fn(() => "test"),
-  resolvePollingMode: vi.fn(() => "active"),
+  resolvePollingMode: resolvePollingModeMock,
 }));
 
 vi.mock("../src/services/WarEventPollScheduleService", () => ({
@@ -230,7 +254,7 @@ vi.mock("../src/services/fwa-feeds/FwaFeedSchedulerService", () => ({
 
 vi.mock("../src/services/MirrorSyncService", () => ({
   MirrorSyncService: vi.fn().mockImplementation(() => ({
-    syncNow: vi.fn().mockResolvedValue(undefined),
+    syncNow: mirrorSyncMock,
   })),
 }));
 
@@ -269,11 +293,22 @@ vi.mock("../src/helper/formatError", () => ({
 import ready from "../src/listeners/ready";
 
 describe("ready listener startup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isActivePollingModeMock.mockReturnValue(true);
+    resolvePollingModeMock.mockReturnValue("active");
+    statusServiceMock.markStarted.mockResolvedValue({});
+    statusServiceMock.markSucceeded.mockResolvedValue({});
+    statusServiceMock.markFailed.mockResolvedValue({});
+    statusServiceMock.markSkipped.mockResolvedValue({});
+    statusServiceMock.markDisabled.mockResolvedValue({});
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it("continues startup while activity observe work is still pending", async () => {
+  async function runStartup() {
     let capturedReadyHandler: (() => Promise<void>) | undefined;
     const client = {
       once: vi.fn((event: string, handler: () => Promise<void>) => {
@@ -302,12 +337,110 @@ describe("ready listener startup", () => {
 
     ready(client, {} as any);
     expect(capturedReadyHandler).toBeTypeOf("function");
-
     const startupPromise = capturedReadyHandler!();
     await expect(startupPromise).resolves.toBeUndefined();
+    return { client };
+  }
+
+  it("continues startup while activity observe work is still pending", async () => {
+    await runStartup();
     expect(observeLoopStart).toHaveBeenCalledTimes(1);
     expect(autoRoleStart).toHaveBeenCalledTimes(1);
     expect(fwaFeedStart).toHaveBeenCalledTimes(1);
     expect(userActivityReminderStart).toHaveBeenCalledTimes(1);
+    expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
+      "recruitment_cooldown_reminders",
+      expect.objectContaining({
+        displayName: "Recruitment cooldown reminders",
+      }),
+    );
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "recruitment_rule_reminders",
+      expect.objectContaining({
+        displayName: "Recruitment rule reminders",
+        metadata: expect.objectContaining({
+          evaluated: 0,
+          sent: 0,
+          failed: 0,
+        }),
+      }),
+    );
+    expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
+      "tracked_message_sweep",
+      expect.objectContaining({
+        displayName: "Tracked message sweep",
+      }),
+    );
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "tracked_message_sweep",
+      expect.objectContaining({
+        displayName: "Tracked message sweep",
+      }),
+    );
+  });
+
+  it("records tracked message sweep and war event poll failures without throwing", async () => {
+    trackedMessageExpirationsMock.mockRejectedValueOnce(new Error("tracked sweep boom"));
+    warEventPollMock.mockRejectedValueOnce(new Error("war boom"));
+
+    await runStartup();
+
+    expect(statusServiceMock.markFailed).toHaveBeenCalledWith(
+      "tracked_message_sweep",
+      expect.any(Error),
+      expect.objectContaining({
+        displayName: "Tracked message sweep",
+      }),
+    );
+    expect(statusServiceMock.markFailed).toHaveBeenCalledWith(
+      "war_event_poll_cycle",
+      expect.any(Error),
+      expect.objectContaining({
+        displayName: "War event poll",
+      }),
+    );
+  });
+
+  it("marks active-only poll jobs disabled in mirror mode", async () => {
+    isActivePollingModeMock.mockReturnValue(false);
+    resolvePollingModeMock.mockReturnValue("mirror");
+
+    await runStartup();
+
+    const disabledJobKeys = statusServiceMock.markDisabled.mock.calls.map((call) => call[0]);
+    expect(disabledJobKeys).toEqual(
+      expect.arrayContaining([
+        "war_event_poll_cycle",
+        "fwa_feed_scheduler",
+        "user_activity_reminder_scheduler",
+      ]),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "war_event_poll_cycle",
+      expect.objectContaining({
+        displayName: "War event poll",
+      }),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "fwa_feed_scheduler",
+      expect.objectContaining({
+        displayName: "FWA feed scheduler",
+      }),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "user_activity_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "User activity reminder scheduler",
+      }),
+    );
+  });
+
+  it("keeps startup working when a poll-status write fails", async () => {
+    statusServiceMock.markStarted.mockRejectedValueOnce(new Error("status down"));
+
+    await runStartup();
+
+    expect(observeLoopStart).toHaveBeenCalledTimes(1);
+    expect(autoRoleStart).toHaveBeenCalledTimes(1);
   });
 });
