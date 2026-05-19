@@ -251,12 +251,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Shows an overview of tracked RAIDS clans with clickable clan names and open defending-clan rows when the live defense log can resolve them. The single-clan view adds attack and defense detail sections, and open attacking clans include a requirements sub-line when their live clan metadata is available.",
       "`/raids overview` focuses on raid status and sort order; the overview includes a tracked-clan dropdown, refresh button, status emojis (`⚔️` for ongoing/incomplete raids, `🌄` for completed raids), clickable clan titles, an intel line when current-season layout marks exist, and open defending-clan rows when the live defense log can resolve them. Rows sort by ongoing raid, raids completed, current-season default layout count, and then the tracked display order. `type:raids` uses raid-tracked clans and raid autocomplete, `type:fwa` uses tracked FWA clans and FWA autocomplete, and `type:custom` accepts any valid clan tag from the `clan` option without requiring tracked membership. `clan` opens a single-clan view for the selected source when the live raid-season source can resolve it, and both views keep the same refresh button so the message updates in place. `/raids overview clan:<tag>` keeps the detailed attack/completed stats, the drilldown adds a compact grade-grouped intel summary above the attack/defense sections when marks exist, and the defending section shows attacks used plus districts remaining for each attacking clan with `🔓` for open clans and `🔒` for closed, invite-only, or unknown clans. `/raids intel` opens a raid-intel view for one tracked clan with defender/district details, optional district pre-mark args such as `capital_peak:Custom - Hard`, and the same interactive district controls after the embed opens. The tracked-clan line now stays focused on the source clan, each defender section header renders its saved defender upgrades inline as `| 🏘️ {upgrades or —}`, and supplying `upgrades:<number>` saves that value to the single resolved defender clan when there is exactly one; if the attacked clan is ambiguous, the bot leaves persisted marks unchanged and tells you it could not save the upgrades.",
+      "`/raids roster add tag:<playerTag(s)>` adds normalized player tags to the guild's RAIDS roster. The `tag` input accepts comma-separated, space-separated, or mixed-separated player tags and reports added, already on roster, and invalid tags in the reply.",
     ],
     examples: [
       "/raids overview",
       "/raids overview type:raids",
       "/raids overview type:fwa clan:#2RVGJYLC0",
       "/raids overview type:custom clan:#2RVGJYLC0",
+      "/raids roster add tag:#2RVGJYLC0",
+      "/raids roster add tag:#2RVGJYLC0,#2QG2C08UP #2XYZ12345",
       "/raids overview clan:#2RVGJYLC0",
       "/raids intel clan:#2RVGJYLC0",
       "/raids intel clan:#2RVGJYLC0 upgrades:2299",

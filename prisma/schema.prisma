@@ -63,6 +63,19 @@ model RaidTrackedClan {
   @@index([clanTag])
 }
 
+model RaidRosterMember {
+  id                     Int      @id @default(autoincrement())
+  guildId                String
+  playerTag              String   @db.VarChar(16)
+  createdByDiscordUserId String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([guildId, playerTag])
+  @@index([guildId])
+  @@index([playerTag])
+}
+
 enum RaidIntelLayoutGrade {
   DEFAULT
   CUSTOM_HARD

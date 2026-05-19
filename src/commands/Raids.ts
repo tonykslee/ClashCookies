@@ -49,6 +49,7 @@ import {
   type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
 import { listFwaTrackedClansForDisplay } from "../services/TrackedClanListService";
+import { addRaidRosterMembersForGuild } from "../services/RaidRosterService";
 import {
   loadRaidIntelDefenderProfileUpgradesForTags,
   upsertRaidIntelDefenderProfileUpgrades,
@@ -204,6 +205,10 @@ function normalizeRaidsOverviewSourceMode(value: string | null | undefined): Rai
   if (normalized === "fwa") return "fwa";
   if (normalized === "custom") return "custom";
   return "raids";
+}
+
+function formatPlayerTagListForSummary(tags: string[]): string {
+  return tags.length > 0 ? tags.join(", ") : "none";
 }
 
 function getRaidsOverviewNoRowsMessage(sourceMode: RaidDashboardOverviewSourceMode): string {
@@ -1217,6 +1222,26 @@ export const Raids: Command = {
       ],
     },
     {
+      name: "roster",
+      description: "Manage the main raids roster",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "add",
+          description: "Add player tags to the main raids roster",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "tag",
+              description: "Player tag or tag list to add",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
       name: "intel",
       description: "View raid intel for one tracked RAID clan",
       type: ApplicationCommandOptionType.Subcommand,
@@ -1271,10 +1296,13 @@ export const Raids: Command = {
   },
   run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
     await interaction.deferReply({ ephemeral: true });
+    let subcommandGroup: string | null = null;
     let subcommand: string | null = null;
     try {
+      subcommandGroup = interaction.options.getSubcommandGroup(false);
       subcommand = interaction.options.getSubcommand(false);
     } catch {
+      subcommandGroup = null;
       subcommand = null;
     }
     if (subcommand === "overview") {
@@ -1351,6 +1379,34 @@ export const Raids: Command = {
       await interaction.editReply({
         embeds: payload.embeds,
         components: payload.components,
+      });
+      return;
+    }
+
+    if (subcommandGroup === "roster" && subcommand === "add") {
+      if (!interaction.guildId) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "This command can only be used in a server.",
+        });
+        return;
+      }
+
+      const rawTags = interaction.options.getString("tag", true);
+      const result = await addRaidRosterMembersForGuild({
+        guildId: interaction.guildId,
+        rawTags,
+        createdByDiscordUserId: interaction.user.id,
+      });
+
+      await safeReply(interaction, {
+        ephemeral: true,
+        content: [
+          "Updated RAIDS roster.",
+          `added: ${formatPlayerTagListForSummary(result.added)}`,
+          `already on roster: ${formatPlayerTagListForSummary(result.alreadyOnRoster)}`,
+          `invalid: ${formatPlayerTagListForSummary(result.invalidTags)}`,
+        ].join("\n"),
       });
       return;
     }
@@ -1444,7 +1500,7 @@ export const Raids: Command = {
     if (subcommand !== "overview") {
       await safeReply(interaction, {
         ephemeral: true,
-        content: "Unsupported raids subcommand. Use `/raids overview` or `/raids intel`.",
+        content: "Unsupported raids subcommand. Use `/raids overview`, `/raids intel`, or `/raids roster add`.",
       });
       return;
     }

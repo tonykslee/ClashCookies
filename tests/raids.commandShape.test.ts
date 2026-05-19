@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { Raids } from "../src/commands/Raids";
 
 describe("/raids command shape", () => {
-  it("registers overview and intel subcommands with expected options", () => {
+  it("registers overview, roster, and intel subcommands with expected options", () => {
     expect(Raids.name).toBe("raids");
-    expect(Raids.options).toHaveLength(2);
+    expect(Raids.options).toHaveLength(3);
 
     const overview = Raids.options?.find((option) => option.name === "overview");
     expect(overview?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -21,6 +21,15 @@ describe("/raids command shape", () => {
     expect(clan?.type).toBe(ApplicationCommandOptionType.String);
     expect(clan?.required).toBe(false);
     expect(clan?.autocomplete).toBe(true);
+
+    const roster = Raids.options?.find((option) => option.name === "roster");
+    expect(roster?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
+    expect(roster?.options?.map((option) => option.name)).toEqual(["add"]);
+    const rosterAdd = roster?.options?.find((option) => option.name === "add");
+    expect(rosterAdd?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    const rosterAddTag = rosterAdd?.options?.find((option) => option.name === "tag");
+    expect(rosterAddTag?.type).toBe(ApplicationCommandOptionType.String);
+    expect(rosterAddTag?.required).toBe(true);
 
     const intel = Raids.options?.find((option) => option.name === "intel");
     expect(intel?.type).toBe(ApplicationCommandOptionType.Subcommand);
