@@ -25,5 +25,9 @@ describe("/bot command shape", () => {
     const pollStatus = poll?.options?.find((option: any) => option.name === "status");
     expect(pollStatus?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(pollStatus?.description).toContain("background poll job status");
+    const job = pollStatus?.options?.find((option: any) => option.name === "job");
+    expect(job?.type).toBe(ApplicationCommandOptionType.String);
+    expect(job?.required).toBe(false);
+    expect(job?.autocomplete).toBe(true);
   });
 });
