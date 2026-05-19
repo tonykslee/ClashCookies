@@ -90,11 +90,13 @@ export class BotPollJobStatusService {
         ...buildBaseWrite(input),
         status: "idle",
         lastFinishedAt: finishedAt,
+        lastSuccessAt: finishedAt,
       },
       update: {
         ...buildBaseWrite(input),
         status: "idle",
         lastFinishedAt: finishedAt,
+        lastSuccessAt: finishedAt,
       },
     })) as BotPollJobStatusRecord;
   }

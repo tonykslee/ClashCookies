@@ -63,7 +63,8 @@ describe("BotPollJobStatusService", () => {
   });
 
   it("marks a job succeeded and stores the finish timestamps", async () => {
-    vi.setSystemTime(new Date("2026-05-19T12:00:00.000Z"));
+    const now = new Date("2026-05-19T12:00:00.000Z");
+    vi.setSystemTime(now);
 
     await service.markSucceeded("activity_observe_cycle", {
       displayName: "Activity observe",
@@ -71,16 +72,19 @@ describe("BotPollJobStatusService", () => {
       nextDueAt: new Date("2026-05-19T12:30:00.000Z"),
     });
 
-    expect(prismaMock.botPollJobStatus.upsert).toHaveBeenCalledWith(
+    const call = prismaMock.botPollJobStatus.upsert.mock.calls[0]?.[0] as any;
+    expect(call.create).toEqual(
       expect.objectContaining({
-        create: expect.objectContaining({
-          status: "idle",
-          lastFinishedAt: expect.any(Date),
-        }),
-        update: expect.objectContaining({
-          status: "idle",
-          lastFinishedAt: expect.any(Date),
-        }),
+        status: "idle",
+        lastFinishedAt: now,
+        lastSuccessAt: now,
+      }),
+    );
+    expect(call.update).toEqual(
+      expect.objectContaining({
+        status: "idle",
+        lastFinishedAt: now,
+        lastSuccessAt: now,
       }),
     );
   });
