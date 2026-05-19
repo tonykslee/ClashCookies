@@ -4,6 +4,7 @@ import {
   PermissionFlagsBits,
   version as discordJsVersion,
 } from "discord.js";
+import { Prisma } from "@prisma/client";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
@@ -45,6 +46,10 @@ import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
 import { UserActivityReminderSchedulerService } from "../services/remindme/UserActivityReminderSchedulerService";
 import {
+  botPollJobStatusService,
+  type BotPollJobStatusService,
+} from "../services/BotPollJobStatusService";
+import {
   cocRequestQueueService,
   isCoCQueueSkippedError,
 } from "../services/CoCRequestQueueService";
@@ -70,6 +75,28 @@ const DEFERMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const TRACKED_MESSAGE_SWEEP_INTERVAL_MS = 60 * 1000;
 const OBSERVE_LAST_RUN_AT_KEY = "activity_observe:last_run_at_ms";
 const MIRROR_SYNC_POLL_GUARD_KEY = "mirror_snapshot_sync_cycle";
+const BOT_POLL_STATUS_JOB_KEYS = {
+  recruitmentCooldownReminders: "recruitment_cooldown_reminders",
+  recruitmentRuleReminders: "recruitment_rule_reminders",
+  defermentReminders: "deferment_reminders",
+  trackedMessageSweep: "tracked_message_sweep",
+  heatmaprefRebuildCycle: "heatmapref_rebuild_cycle",
+  warEventPollCycle: "war_event_poll_cycle",
+  fwaFeedScheduler: "fwa_feed_scheduler",
+  mirrorSyncCycle: "mirror_sync_cycle",
+  userActivityReminderScheduler: "user_activity_reminder_scheduler",
+} as const;
+const BOT_POLL_STATUS_DISPLAY_NAMES = {
+  recruitmentCooldownReminders: "Recruitment cooldown reminders",
+  recruitmentRuleReminders: "Recruitment rule reminders",
+  defermentReminders: "Deferment reminders",
+  trackedMessageSweep: "Tracked message sweep",
+  heatmaprefRebuildCycle: "Heatmapref rebuild",
+  warEventPollCycle: "War event poll",
+  fwaFeedScheduler: "FWA feed scheduler",
+  mirrorSyncCycle: "Mirror sync",
+  userActivityReminderScheduler: "User activity reminder scheduler",
+} as const;
 const VISIBILITY_OPTION = {
   name: "visibility",
   description: "Response visibility",
@@ -109,6 +136,132 @@ function sanitizeOption(option: any): any {
     out[key] = value;
   }
   return out;
+}
+
+async function safePollJobStatusWrite(
+  jobKey: string,
+  stage: "started" | "succeeded" | "failed" | "skipped" | "disabled",
+  write: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    console.warn(
+      `[poll-status] status_update_failed job_key=${jobKey} stage=${stage} error=${formatError(err)}`,
+    );
+  }
+}
+
+function pollJobInput(input: {
+  displayName: string;
+  intervalMs?: number | null;
+  nextDueAt?: Date | null;
+  metadata?: Prisma.InputJsonValue | null;
+}) {
+  return {
+    displayName: input.displayName,
+    intervalMs: input.intervalMs ?? null,
+    nextDueAt: input.nextDueAt ?? null,
+    metadata: input.metadata ?? null,
+  };
+}
+
+async function markPollJobStarted(input: {
+  jobKey: string;
+  displayName: string;
+  intervalMs?: number | null;
+  nextDueAt?: Date | null;
+  metadata?: Prisma.InputJsonValue | null;
+  statusService?: BotPollJobStatusService;
+}): Promise<void> {
+  const statusService = input.statusService ?? botPollJobStatusService;
+  await safePollJobStatusWrite(input.jobKey, "started", () =>
+    statusService.markStarted(input.jobKey, pollJobInput({
+      displayName: input.displayName,
+      intervalMs: input.intervalMs ?? null,
+      nextDueAt: input.nextDueAt ?? null,
+      metadata: input.metadata ?? null,
+    })),
+  );
+}
+
+async function markPollJobSucceeded(input: {
+  jobKey: string;
+  displayName: string;
+  intervalMs?: number | null;
+  nextDueAt?: Date | null;
+  metadata?: Prisma.InputJsonValue | null;
+  statusService?: BotPollJobStatusService;
+}): Promise<void> {
+  const statusService = input.statusService ?? botPollJobStatusService;
+  await safePollJobStatusWrite(input.jobKey, "succeeded", () =>
+    statusService.markSucceeded(input.jobKey, pollJobInput({
+      displayName: input.displayName,
+      intervalMs: input.intervalMs ?? null,
+      nextDueAt: input.nextDueAt ?? null,
+      metadata: input.metadata ?? null,
+    })),
+  );
+}
+
+async function markPollJobFailed(input: {
+  jobKey: string;
+  displayName: string;
+  error: unknown;
+  intervalMs?: number | null;
+  nextDueAt?: Date | null;
+  metadata?: Prisma.InputJsonValue | null;
+  statusService?: BotPollJobStatusService;
+}): Promise<void> {
+  const statusService = input.statusService ?? botPollJobStatusService;
+  await safePollJobStatusWrite(input.jobKey, "failed", () =>
+    statusService.markFailed(
+      input.jobKey,
+      input.error,
+      pollJobInput({
+        displayName: input.displayName,
+        intervalMs: input.intervalMs ?? null,
+        nextDueAt: input.nextDueAt ?? null,
+        metadata: input.metadata ?? null,
+      }),
+    ),
+  );
+}
+
+async function markPollJobSkipped(input: {
+  jobKey: string;
+  displayName: string;
+  intervalMs?: number | null;
+  nextDueAt?: Date | null;
+  metadata?: Prisma.InputJsonValue | null;
+  statusService?: BotPollJobStatusService;
+}): Promise<void> {
+  const statusService = input.statusService ?? botPollJobStatusService;
+  await safePollJobStatusWrite(input.jobKey, "skipped", () =>
+    statusService.markSkipped(input.jobKey, pollJobInput({
+      displayName: input.displayName,
+      intervalMs: input.intervalMs ?? null,
+      nextDueAt: input.nextDueAt ?? null,
+      metadata: input.metadata ?? null,
+    })),
+  );
+}
+
+async function markPollJobDisabled(input: {
+  jobKey: string;
+  displayName: string;
+  intervalMs?: number | null;
+  metadata?: Prisma.InputJsonValue | null;
+  statusService?: BotPollJobStatusService;
+}): Promise<void> {
+  const statusService = input.statusService ?? botPollJobStatusService;
+  await safePollJobStatusWrite(input.jobKey, "disabled", () =>
+    statusService.markDisabled(input.jobKey, pollJobInput({
+      displayName: input.displayName,
+      intervalMs: input.intervalMs ?? null,
+      metadata: input.metadata ?? null,
+    })),
+  );
 }
 
 function withVisibilityOnSubcommand(sub: any): any {
@@ -604,12 +757,45 @@ export default (client: Client, cocService: CoCService): void => {
       runObservedCycle,
     });
 
+    if (activePollingEnabled) {
+      const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
+      autoRoleScheduler.start();
+      console.log("Autorole scheduler loop initialized.");
+    } else {
+      console.log(
+        "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
+      );
+    }
+
     const runRecruitmentReminders = async () => {
+      const now = new Date();
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentCooldownReminders,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentCooldownReminders,
+        intervalMs: RECRUITMENT_REMINDER_INTERVAL_MS,
+        nextDueAt: new Date(now.getTime() + RECRUITMENT_REMINDER_INTERVAL_MS),
+        metadata: { guildId },
+      });
       await runFetchTelemetryBatch("recruitment_reminder_cycle", async () => {
         try {
           await processRecruitmentCooldownReminders(client, guildId);
+          await markPollJobSucceeded({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentCooldownReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentCooldownReminders,
+            intervalMs: RECRUITMENT_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + RECRUITMENT_REMINDER_INTERVAL_MS),
+            metadata: { guildId },
+          });
         } catch (err) {
           console.error(`[recruitment] reminder loop failed: ${formatError(err)}`);
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentCooldownReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentCooldownReminders,
+            error: err,
+            intervalMs: RECRUITMENT_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + RECRUITMENT_REMINDER_INTERVAL_MS),
+            metadata: { guildId },
+          });
         }
       });
     };
@@ -623,17 +809,42 @@ export default (client: Client, cocService: CoCService): void => {
     console.log("Recruitment reminder loop enabled (every 60 minute(s)).");
 
     const runRecruitmentRuleReminders = async () => {
+      const now = new Date();
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentRuleReminders,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentRuleReminders,
+        intervalMs: RECRUITMENT_RULE_REMINDER_INTERVAL_MS,
+        nextDueAt: new Date(now.getTime() + RECRUITMENT_RULE_REMINDER_INTERVAL_MS),
+      });
       await runFetchTelemetryBatch("recruitment_rule_reminder_cycle", async () => {
         try {
           const counts = await processDueRecruitmentReminders({
             client,
-            now: new Date(),
+            now,
           });
           console.log(
             `[recruitment-reminder] evaluated=${counts.evaluated} sent=${counts.sent} failed=${counts.failed}`,
           );
+          await markPollJobSucceeded({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentRuleReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentRuleReminders,
+            intervalMs: RECRUITMENT_RULE_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + RECRUITMENT_RULE_REMINDER_INTERVAL_MS),
+            metadata: {
+              evaluated: counts.evaluated,
+              sent: counts.sent,
+              failed: counts.failed,
+            },
+          });
         } catch (err) {
           console.error(`[recruitment-reminder] loop failed: ${formatError(err)}`);
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.recruitmentRuleReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.recruitmentRuleReminders,
+            error: err,
+            intervalMs: RECRUITMENT_RULE_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + RECRUITMENT_RULE_REMINDER_INTERVAL_MS),
+          });
         }
       });
     };
@@ -647,11 +858,34 @@ export default (client: Client, cocService: CoCService): void => {
     console.log("Recruitment rule reminder loop enabled (every 1 minute).");
 
     const runDefermentReminders = async () => {
+      const now = new Date();
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.defermentReminders,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.defermentReminders,
+        intervalMs: DEFERMENT_REMINDER_INTERVAL_MS,
+        nextDueAt: new Date(now.getTime() + DEFERMENT_REMINDER_INTERVAL_MS),
+        metadata: { guildId },
+      });
       await runFetchTelemetryBatch("deferment_reminder_cycle", async () => {
         try {
           await processWeightInputDefermentStages(client, guildId);
+          await markPollJobSucceeded({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.defermentReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.defermentReminders,
+            intervalMs: DEFERMENT_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + DEFERMENT_REMINDER_INTERVAL_MS),
+            metadata: { guildId },
+          });
         } catch (err) {
           console.error(`[defer] reminder loop failed: ${formatError(err)}`);
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.defermentReminders,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.defermentReminders,
+            error: err,
+            intervalMs: DEFERMENT_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + DEFERMENT_REMINDER_INTERVAL_MS),
+            metadata: { guildId },
+          });
         }
       });
     };
@@ -665,24 +899,137 @@ export default (client: Client, cocService: CoCService): void => {
     console.log("Deferment reminder loop enabled (every 60 minute(s)).");
 
     const runTrackedMessageSweep = async () => {
+      const now = new Date();
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.trackedMessageSweep,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.trackedMessageSweep,
+        intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+        nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+      });
+      let sweepError: unknown = null;
+      let heatmaprefStatus: string | null = null;
+      let heatmaprefRows = 0;
+      let heatmaprefQualifying = 0;
+      let heatmaprefExcluded = 0;
       try {
         await trackedMessageService.processDueExpirations();
         await trackedMessageService.processDueSyncReminders(client);
-        await pollCycleGuard.run("heatmapref_rebuild_cycle", async () => {
+      } catch (err) {
+        sweepError = err;
+        console.error(`[tracked-messages] sweep failed: ${formatError(err)}`);
+      }
+      try {
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
+          intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+          nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+        });
+        const guardResult = await pollCycleGuard.run("heatmapref_rebuild_cycle", async () => {
           const result = await heatMapRefRebuildService.runScheduledRebuildCycle({
             client,
             guildId,
             pollingMode: activePollingEnabled ? "active" : "mirror",
-            now: new Date(),
+            now,
           });
+          heatmaprefStatus = result.status;
+          heatmaprefRows = result.rowCount;
+          heatmaprefQualifying = result.qualifyingRosterCount;
+          heatmaprefExcluded = result.excludedRosterCount;
           if (result.status !== "skipped") {
             console.log(
               `[heatmapref] status=${result.status} cycle=${result.cycleKey ?? "none"} fwa_clans=${result.trackedClanCount} rosters=${result.sourceRosterCount} qualifying=${result.qualifyingRosterCount} excluded=${result.excludedRosterCount} rows=${result.rowCount} alerted=${result.alertSent}`,
             );
           }
+          if (result.status === "failed") {
+            await markPollJobFailed({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
+              error: new Error(result.reason ?? "Heatmapref rebuild failed"),
+              intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+              nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+              metadata: {
+                status: result.status,
+                cycleKey: result.cycleKey,
+                rows: result.rowCount,
+                qualifying: result.qualifyingRosterCount,
+                excluded: result.excludedRosterCount,
+                alerted: result.alertSent,
+              },
+            });
+          } else if (result.status === "skipped") {
+            await markPollJobSkipped({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
+              intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+              nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+              metadata: {
+                status: result.status,
+                reason: result.reason,
+                cycleKey: result.cycleKey,
+              },
+            });
+          } else {
+            await markPollJobSucceeded({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
+              intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+              nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+              metadata: {
+                status: result.status,
+                cycleKey: result.cycleKey,
+                rows: result.rowCount,
+                qualifying: result.qualifyingRosterCount,
+                excluded: result.excludedRosterCount,
+                alerted: result.alertSent,
+              },
+            });
+          }
         });
+        if (!guardResult.ran) {
+          heatmaprefStatus = "skipped";
+          await markPollJobSkipped({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
+            intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+            nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+            metadata: {
+              status: "skipped",
+              reason: "in_flight",
+            },
+          });
+        }
       } catch (err) {
-        console.error(`[tracked-messages] sweep failed: ${formatError(err)}`);
+        sweepError ??= err;
+        console.error(`[tracked-messages] heatmapref failed: ${formatError(err)}`);
+      }
+      if (sweepError) {
+        await markPollJobFailed({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.trackedMessageSweep,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.trackedMessageSweep,
+          error: sweepError,
+          intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+          nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+          metadata: {
+            heatmaprefStatus,
+            heatmaprefRows,
+            heatmaprefQualifying,
+            heatmaprefExcluded,
+          },
+        });
+      } else {
+        await markPollJobSucceeded({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.trackedMessageSweep,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.trackedMessageSweep,
+          intervalMs: TRACKED_MESSAGE_SWEEP_INTERVAL_MS,
+          nextDueAt: new Date(now.getTime() + TRACKED_MESSAGE_SWEEP_INTERVAL_MS),
+          metadata: {
+            heatmaprefStatus,
+            heatmaprefRows,
+            heatmaprefQualifying,
+            heatmaprefExcluded,
+          },
+        });
       }
     };
 
@@ -698,6 +1045,19 @@ export default (client: Client, cocService: CoCService): void => {
     const warEventPollMinutes = Math.round(warEventPollMs / 60_000);
 
     const runWarEventPoll = async (scheduledAtMs: number = Date.now()) => {
+      const nextDueAt = new Date(scheduledAtMs + warEventPollMs);
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+        intervalMs: warEventPollMs,
+        nextDueAt,
+        metadata: {
+          mode: activePollingEnabled ? "active" : "mirror",
+        },
+      });
+      let pollError: unknown = null;
+      let skippedReason: string | null = null;
+      let guardRan = false;
       await runWithCoCQueueContext(
         {
           priority: "background",
@@ -706,7 +1066,7 @@ export default (client: Client, cocService: CoCService): void => {
           nextScheduledAtMs: scheduledAtMs + warEventPollMs,
         },
         async () => {
-          await pollCycleGuard.run("war_event_poll_cycle", async () => {
+          const guardResult = await pollCycleGuard.run("war_event_poll_cycle", async () => {
             const queueStatus = cocRequestQueueService.getStatus();
             if (queueStatus.degraded) {
               console.warn(
@@ -732,14 +1092,69 @@ export default (client: Client, cocService: CoCService): void => {
               } catch (err) {
                 if (isCoCQueueSkippedError(err)) {
                   console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  skippedReason = err.message;
                   return;
                 }
+                pollError = err;
                 console.error(`[war-events] poll loop failed: ${formatError(err)}`);
               }
             });
           });
+          guardRan = guardResult.ran;
         },
       );
+      if (!guardRan) {
+        skippedReason = skippedReason ?? "in_flight";
+        await markPollJobSkipped({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+          intervalMs: warEventPollMs,
+          nextDueAt,
+          metadata: {
+            mode: activePollingEnabled ? "active" : "mirror",
+            skippedReason,
+          },
+        });
+        return;
+      }
+
+      if (skippedReason) {
+        await markPollJobSkipped({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+          intervalMs: warEventPollMs,
+          nextDueAt,
+          metadata: {
+            mode: activePollingEnabled ? "active" : "mirror",
+            skippedReason,
+          },
+        });
+        return;
+      }
+
+      if (pollError) {
+        await markPollJobFailed({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+          error: pollError,
+          intervalMs: warEventPollMs,
+          nextDueAt,
+          metadata: {
+            mode: activePollingEnabled ? "active" : "mirror",
+          },
+        });
+        return;
+      }
+
+      await markPollJobSucceeded({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+        intervalMs: warEventPollMs,
+        nextDueAt,
+        metadata: {
+          mode: activePollingEnabled ? "active" : "mirror",
+        },
+      });
     };
 
     if (activePollingEnabled) {
@@ -762,9 +1177,48 @@ export default (client: Client, cocService: CoCService): void => {
       );
 
       const fwaFeedScheduler = new FwaFeedSchedulerService();
-      fwaFeedScheduler.start();
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaFeedScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaFeedScheduler,
+        intervalMs: null,
+        metadata: {
+          started: true,
+        },
+      });
+      try {
+        fwaFeedScheduler.start();
+        await markPollJobSucceeded({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaFeedScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaFeedScheduler,
+          intervalMs: null,
+          metadata: {
+            started: true,
+          },
+        });
+      } catch (err) {
+        await markPollJobFailed({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaFeedScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaFeedScheduler,
+          error: err,
+          intervalMs: null,
+          metadata: {
+            started: true,
+          },
+        });
+      }
       console.log("FWA feed scheduler loops initialized.");
     } else {
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+        intervalMs: warEventPollMs,
+        metadata: { reason: "mirror" },
+      });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaFeedScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaFeedScheduler,
+        metadata: { reason: "mirror" },
+      });
       console.log(
         "[polling-mode] event=poller_skipped job=war_event_poll_cycle mode=mirror",
       );
@@ -781,15 +1235,54 @@ export default (client: Client, cocService: CoCService): void => {
       );
 
       const runMirrorSyncCycle = async (trigger: "startup" | "scheduled") => {
-        await pollCycleGuard.run(MIRROR_SYNC_POLL_GUARD_KEY, async () => {
+        const nextDueAt = new Date(Date.now() + mirrorSyncIntervalMs);
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
+          intervalMs: mirrorSyncIntervalMs,
+          nextDueAt,
+          metadata: { trigger },
+        });
+        let cycleError: unknown = null;
+        let skippedReason: string | null = null;
+        const guardResult = await pollCycleGuard.run(MIRROR_SYNC_POLL_GUARD_KEY, async () => {
           try {
             await mirrorSyncService.syncNow("scheduled");
+            await markPollJobSucceeded({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
+              intervalMs: mirrorSyncIntervalMs,
+              nextDueAt,
+              metadata: { trigger },
+            });
           } catch (err) {
-            console.error(
-              `[mirror-sync] event=${trigger}_failed error=${formatError(err)}`,
-            );
+            cycleError = err;
+            console.error(`[mirror-sync] event=${trigger}_failed error=${formatError(err)}`);
           }
         });
+        if (!guardResult.ran) {
+          skippedReason = "in_flight";
+        }
+        if (skippedReason) {
+          await markPollJobSkipped({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
+            intervalMs: mirrorSyncIntervalMs,
+            nextDueAt,
+            metadata: { trigger, reason: skippedReason },
+          });
+          return;
+        }
+        if (cycleError) {
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
+            error: cycleError,
+            intervalMs: mirrorSyncIntervalMs,
+            nextDueAt,
+            metadata: { trigger },
+          });
+        }
       };
 
       await runMirrorSyncCycle("startup");
@@ -801,16 +1294,12 @@ export default (client: Client, cocService: CoCService): void => {
       console.log(
         `[mirror-sync] event=scheduler_started interval_minutes=${mirrorSyncIntervalMinutes}`,
       );
-    }
-
-    if (activePollingEnabled) {
-      const autoRoleScheduler = new AutoRoleSchedulerService(client, cocService);
-      autoRoleScheduler.start();
-      console.log("Autorole scheduler loop initialized.");
     } else {
-      console.log(
-        "[polling-mode] event=poller_skipped job=autorole_scheduler mode=mirror",
-      );
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.mirrorSyncCycle,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.mirrorSyncCycle,
+        metadata: { reason: "active" },
+      });
     }
 
     if (activePollingEnabled) {
@@ -821,6 +1310,12 @@ export default (client: Client, cocService: CoCService): void => {
       userActivityReminderScheduler.start();
       console.log("User activity reminder scheduler loop initialized.");
     } else {
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.userActivityReminderScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.userActivityReminderScheduler,
+        intervalMs: null,
+        metadata: { reason: "mirror" },
+      });
       console.log(
         "[polling-mode] event=poller_skipped job=user_activity_reminder_scheduler mode=mirror",
       );

@@ -50,6 +50,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "fillers:set",
   "sync:time:post",
   "bot-logs",
+  "bot:poll:status",
   "notify:war",
   "link:embed",
   "link:create:admin",
@@ -795,6 +796,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/bot-logs type:base-swap",
       "/bot-logs type:base-swap set-channel:#fwa-audit-logs",
     ],
+  },
+  bot: {
+    summary: "Inspect background poll job status rows.",
+    details: [
+      "Shows read-only DB-backed status rows for major background poll jobs.",
+      "Rows include the current state emoji, interval, last/next run timestamps, duration, and a short failure summary when failed.",
+      "This command is admin-only by default.",
+    ],
+    examples: ["/bot poll status"],
   },
   unlinked: {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
