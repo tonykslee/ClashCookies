@@ -1,11 +1,23 @@
+import { EmbedBuilder } from "discord.js";
 import { prisma } from "../prisma";
 import { normalizePlayerTag } from "./PlayerLinkService";
+import { playerCurrentService } from "./PlayerCurrentService";
+import { todoSnapshotService } from "./TodoSnapshotService";
+import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
 
 export type RaidRosterAddResult = {
   added: string[];
   alreadyOnRoster: string[];
   invalidTags: string[];
   duplicateInRequest: string[];
+};
+
+export type RaidRosterStatusRow = {
+  playerTag: string;
+  playerName: string | null;
+  townHall: number | null;
+  discordUserId: string | null;
+  completedRaidAttacks: number;
 };
 
 export type ParsedRaidRosterPlayerTagsInput = {
@@ -27,6 +39,25 @@ function uniquePreserveOrder(values: string[]): string[] {
     result.push(value);
   }
   return result;
+}
+
+function normalizeText(input: unknown): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function clampInt(value: unknown, min: number, max: number): number {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return min;
+  return Math.min(max, Math.max(min, Math.trunc(raw)));
+}
+
+function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: string): string {
+  const normalizedPlayerTag = normalizePlayerTag(playerTag);
+  const label = normalizeText(playerName) || normalizedPlayerTag || "Unknown Player";
+  if (!normalizedPlayerTag) return label;
+  const encodedTag = normalizedPlayerTag.replace(/^#/, "");
+  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
 }
 
 export function parseRaidRosterPlayerTagsInput(rawInput: string): ParsedRaidRosterPlayerTagsInput {
@@ -137,4 +168,129 @@ export async function addRaidRosterMembersForGuild(input: {
     invalidTags: parsed.invalidTags,
     duplicateInRequest: parsed.duplicateTagsInRequest,
   };
+}
+
+export async function listRaidRosterStatusRowsForGuild(input: {
+  guildId: string;
+}): Promise<RaidRosterStatusRow[]> {
+  const guildId = String(input.guildId ?? "").trim();
+  if (!guildId) return [];
+
+  const rosterRows = await prisma.raidRosterMember.findMany({
+    where: { guildId },
+    orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+    select: {
+      playerTag: true,
+    },
+  });
+  const rosterTags = uniquePreserveOrder(
+    rosterRows.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean),
+  );
+  if (rosterTags.length <= 0) return [];
+
+  const [snapshotRows, playerCurrentRows, playerLinkRows, playerActivityRows] = await Promise.all([
+    todoSnapshotService.listSnapshotsByPlayerTags({ playerTags: rosterTags }),
+    playerCurrentService.listPlayerCurrentByTags(rosterTags),
+    prisma.playerLink.findMany({
+      where: { playerTag: { in: rosterTags } },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+      },
+    }),
+    prisma.playerActivity.findMany({
+      where: { tag: { in: rosterTags } },
+      select: {
+        tag: true,
+        name: true,
+      },
+    }),
+  ]);
+
+  const snapshotByTag = new Map(
+    snapshotRows.map((row) => [
+      normalizePlayerTag(row.playerTag),
+      row,
+    ] as const).filter((entry): entry is readonly [string, (typeof snapshotRows)[number]] => Boolean(entry[0])),
+  );
+  const playerCurrentByTag = new Map(playerCurrentRows);
+  const playerLinkByTag = new Map(
+    playerLinkRows.map((row) => [normalizePlayerTag(row.playerTag), row.discordUserId ?? null] as const).filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
+  );
+  const playerActivityByTag = new Map(
+    playerActivityRows
+      .map((row) => [normalizePlayerTag(row.tag), normalizeText(row.name)] as const)
+      .filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
+  );
+
+  return rosterTags.map((playerTag) => {
+    const snapshot = snapshotByTag.get(playerTag) ?? null;
+    const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
+    const activityName = playerActivityByTag.get(playerTag) ?? null;
+    const playerName =
+      normalizeText(snapshot?.playerName) ??
+      normalizeText(playerCurrent?.playerName) ??
+      activityName ??
+      playerTag;
+    const townHall = snapshot?.townHall ?? playerCurrent?.townHall ?? null;
+    const completedRaidAttacks = clampInt(snapshot?.raidAttacksUsed ?? 0, 0, 6);
+    return {
+      playerTag,
+      playerName,
+      townHall,
+      discordUserId: playerLinkByTag.get(playerTag) ?? null,
+      completedRaidAttacks,
+    };
+  });
+}
+
+function chunkStatusLines(lines: string[], maxChars = 3500): string[] {
+  const pages: string[] = [];
+  let current = "";
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+    if (current && next.length > maxChars) {
+      pages.push(current);
+      current = line;
+      continue;
+    }
+    current = next;
+  }
+  if (current) pages.push(current);
+  return pages;
+}
+
+export function buildRaidRosterStatusLine(
+  row: RaidRosterStatusRow,
+  townHallEmojiByLevel: TownHallEmojiMap = getCachedTownHallEmojiMap(),
+): string {
+  const townHallIcon = renderTownHallIcon(row.townHall, townHallEmojiByLevel);
+  const playerLink = buildPlayerProfileMarkdownLink(row.playerName, row.playerTag);
+  const tag = `\`${normalizePlayerTag(row.playerTag) || row.playerTag}\``;
+  const discordPart = row.discordUserId ? `<@${row.discordUserId}>` : "unlinked";
+  return `- ${townHallIcon} ${playerLink} ${tag} ${discordPart} - ${row.completedRaidAttacks}/6`;
+}
+
+export function buildRaidRosterStatusEmbeds(
+  rows: RaidRosterStatusRow[],
+  townHallEmojiByLevel: TownHallEmojiMap = getCachedTownHallEmojiMap(),
+): EmbedBuilder[] {
+  if (rows.length <= 0) return [];
+
+  const lines = rows.map((row) => buildRaidRosterStatusLine(row, townHallEmojiByLevel));
+  const pages = chunkStatusLines(lines);
+  const totalPages = pages.length;
+
+  return pages.map((description, index) =>
+    (() => {
+      const embed = new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle(totalPages > 1 ? `RAIDS Roster Status (${index + 1}/${totalPages})` : "RAIDS Roster Status")
+        .setDescription(description);
+      if (totalPages > 1) {
+        embed.setFooter({ text: `Page ${index + 1} of ${totalPages}` });
+      }
+      return embed;
+    })(),
+  );
 }

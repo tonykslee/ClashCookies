@@ -24,12 +24,14 @@ describe("/raids command shape", () => {
 
     const roster = Raids.options?.find((option) => option.name === "roster");
     expect(roster?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
-    expect(roster?.options?.map((option) => option.name)).toEqual(["add"]);
+    expect(roster?.options?.map((option) => option.name)).toEqual(["add", "status"]);
     const rosterAdd = roster?.options?.find((option) => option.name === "add");
     expect(rosterAdd?.type).toBe(ApplicationCommandOptionType.Subcommand);
     const rosterAddTag = rosterAdd?.options?.find((option) => option.name === "tag");
     expect(rosterAddTag?.type).toBe(ApplicationCommandOptionType.String);
     expect(rosterAddTag?.required).toBe(true);
+    const rosterStatus = roster?.options?.find((option) => option.name === "status");
+    expect(rosterStatus?.type).toBe(ApplicationCommandOptionType.Subcommand);
 
     const intel = Raids.options?.find((option) => option.name === "intel");
     expect(intel?.type).toBe(ApplicationCommandOptionType.Subcommand);

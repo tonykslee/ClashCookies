@@ -49,7 +49,11 @@ import {
   type RaidTrackedClanDisplayRow,
 } from "../services/RaidTrackedClanService";
 import { listFwaTrackedClansForDisplay } from "../services/TrackedClanListService";
-import { addRaidRosterMembersForGuild } from "../services/RaidRosterService";
+import {
+  addRaidRosterMembersForGuild,
+  buildRaidRosterStatusEmbeds,
+  listRaidRosterStatusRowsForGuild,
+} from "../services/RaidRosterService";
 import {
   loadRaidIntelDefenderProfileUpgradesForTags,
   upsertRaidIntelDefenderProfileUpgrades,
@@ -59,6 +63,7 @@ import {
   upsertRaidIntelDistrictLayoutMark,
 } from "../services/RaidIntelLayoutMarkService";
 import { refreshRaidTrackedClanListWithQueueContext } from "./TrackedClan";
+import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
 
 const RAID_DASHBOARD_TIMEOUT_MS = 10 * 60 * 1000;
 const RAID_DASHBOARD_PREFIX = "raids";
@@ -1239,6 +1244,11 @@ export const Raids: Command = {
             },
           ],
         },
+        {
+          name: "status",
+          description: "Show raid attack completion for persisted roster members",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
       ],
     },
     {
@@ -1411,6 +1421,33 @@ export const Raids: Command = {
       return;
     }
 
+    if (subcommandGroup === "roster" && subcommand === "status") {
+      if (!interaction.guildId) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "This command can only be used in a server.",
+        });
+        return;
+      }
+
+      const rows = await listRaidRosterStatusRowsForGuild({
+        guildId: interaction.guildId,
+      });
+      if (rows.length <= 0) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "No RAIDS roster members configured yet. Use `/raids roster add` first.",
+        });
+        return;
+      }
+
+      const embeds = buildRaidRosterStatusEmbeds(rows, getCachedTownHallEmojiMap());
+      await interaction.editReply({
+        embeds,
+      });
+      return;
+    }
+
     if (subcommand === "intel") {
       const trackedClans = await listRaidTrackedClansForDisplay();
       if (trackedClans.length <= 0) {
@@ -1500,7 +1537,7 @@ export const Raids: Command = {
     if (subcommand !== "overview") {
       await safeReply(interaction, {
         ephemeral: true,
-        content: "Unsupported raids subcommand. Use `/raids overview`, `/raids intel`, or `/raids roster add`.",
+        content: "Unsupported raids subcommand. Use `/raids overview`, `/raids intel`, `/raids roster add`, or `/raids roster status`.",
       });
       return;
     }

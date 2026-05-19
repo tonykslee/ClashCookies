@@ -4,6 +4,11 @@ const refreshHelperMock = vi.hoisted(() => ({
   refreshRaidTrackedClanListWithQueueContext: vi.fn(),
 }));
 
+const raidRosterServiceMock = vi.hoisted(() => ({
+  listRaidRosterStatusRowsForGuild: vi.fn(),
+  buildRaidRosterStatusEmbeds: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   raidTrackedClan: {
     findMany: vi.fn(),
@@ -62,6 +67,17 @@ vi.mock("../src/commands/TrackedClan", () => ({
 vi.mock("../src/services/CoCQueueContext", () => ({
   runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
 }));
+
+vi.mock("../src/services/RaidRosterService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/RaidRosterService")>(
+    "../src/services/RaidRosterService",
+  );
+  return {
+    ...actual,
+    listRaidRosterStatusRowsForGuild: raidRosterServiceMock.listRaidRosterStatusRowsForGuild,
+    buildRaidRosterStatusEmbeds: raidRosterServiceMock.buildRaidRosterStatusEmbeds,
+  };
+});
 
 import {
   handleRaidsButtonInteraction,
@@ -423,6 +439,12 @@ describe("/raids command", () => {
     prismaMock.raidRosterMember.findMany.mockResolvedValue([]);
     prismaMock.raidRosterMember.createMany.mockResolvedValue({ count: 0 });
     prismaMock.trackedClan.findMany.mockResolvedValue(makeFwaTrackedClanRows());
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+    raidRosterServiceMock.buildRaidRosterStatusEmbeds.mockReturnValue([
+      {
+        toJSON: () => ({ description: "Roster Status" }),
+      } as any,
+    ]);
     prismaMock.raidIntelDefenderProfile.findMany.mockImplementation(async (args: any) => {
       const guildId = String(args?.where?.guildId ?? "").trim();
       const defenderTagFilter = Array.isArray(args?.where?.defenderTag?.in)
@@ -591,6 +613,66 @@ describe("/raids command", () => {
         "already on roster: #2RVGJYLC0",
         "invalid: BADTAG",
       ].join("\n"),
+    });
+  });
+
+  it("renders raid roster status from persisted roster members", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Alpha Raider",
+        townHall: 15,
+        discordUserId: "123456789012345678",
+        completedRaidAttacks: 4,
+      },
+    ]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(raidRosterServiceMock.listRaidRosterStatusRowsForGuild).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(raidRosterServiceMock.buildRaidRosterStatusEmbeds).toHaveBeenCalledWith(
+      [
+        {
+          playerTag: "#2RVGJYLC0",
+          playerName: "Alpha Raider",
+          townHall: 15,
+          discordUserId: "123456789012345678",
+          completedRaidAttacks: 4,
+        },
+      ],
+      expect.anything(),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [
+        {
+          toJSON: expect.any(Function),
+        },
+      ],
+    });
+  });
+
+  it("reports an empty roster status set with a clear add-members hint", async () => {
+    raidRosterServiceMock.listRaidRosterStatusRowsForGuild.mockResolvedValue([]);
+
+    const interaction = makeChatInteraction({
+      group: "roster",
+      subcommand: "status",
+    });
+
+    await Raids.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No RAIDS roster members configured yet. Use `/raids roster add` first.",
     });
   });
 
