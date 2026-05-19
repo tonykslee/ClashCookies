@@ -1,5 +1,4 @@
 import { AutoRoleRuleType } from "@prisma/client";
-import { AutoRoleRuleType } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import { AutoRoleEvaluationService } from "../src/services/AutoRoleEvaluationService";
 import type {
@@ -304,6 +303,44 @@ describe("AutoRoleEvaluationService league rules", () => {
 
     expect(result.desiredManagedRoleIds).toContain("555555555555555555");
     expect(result.matchedRuleIds).toContain("rule-1");
+  });
+
+  it("prefers fresh current-clan tags over stale clan membership when requested", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const playerCurrentByTag = new Map([
+      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", currentClanTag: "#QGRJ2222" })],
+    ]);
+    const staleClanMembershipByTag: AutoRoleClanMembershipIndex = new Map([
+      ["#2QG2C08UP", { source: "FWA", playerTags: new Set(["#2QG2C08UP"]) }],
+    ]);
+
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [
+        {
+          id: "rule-1",
+          guildId: "111111111111111111",
+          type: AutoRoleRuleType.CLAN,
+          targetValue: "#2QG2C08UP",
+          discordRoleId: "555555555555555555",
+          priority: 100,
+          enabled: true,
+          createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      ],
+      managedRoleIds: new Set(["555555555555555555"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag,
+      clanMembershipByTag: staleClanMembershipByTag,
+      trackedClanScope,
+      preferCurrentClanTagForClanRules: true,
+    });
+
+    expect(result.desiredManagedRoleIds).not.toContain("555555555555555555");
+    expect(result.matchedRuleIds).not.toContain("rule-1");
   });
 
   it("does not grant tracked-clan roles to untrusted or revoked links when trusted links are disabled", () => {

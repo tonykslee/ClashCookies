@@ -290,6 +290,19 @@ async function loadLinkedAccountsForPlayerTags(input: {
   return byUserId;
 }
 
+function collectLinkedPlayerTags(linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>): string[] {
+  const playerTags: string[] = [];
+  for (const rows of linkedAccountsByUserId.values()) {
+    for (const row of rows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (playerTag) {
+        playerTags.push(playerTag);
+      }
+    }
+  }
+  return [...new Set(playerTags)];
+}
+
 async function collectMembershipScopedCandidateUsers(input: {
   membersById: Map<string, AutoRoleGuildMemberLike>;
   trackedMemberPlayerTags: string[];
@@ -399,6 +412,47 @@ async function loadPlayerCurrentByLinkedAccounts(input: {
     },
     resolution,
   );
+}
+
+async function loadPlayerCurrentByLinkedAccountsForUserRefresh(input: {
+  linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
+  cocService?: CoCService | null;
+  requireFields: PlayerCurrentResolutionField[];
+  guildId: string;
+  discordUserId: string;
+  now?: Date;
+}): Promise<Map<string, PlayerCurrentLike>> {
+  const playerTags = collectLinkedPlayerTags(input.linkedAccountsByUserId);
+  if (playerTags.length === 0 || input.requireFields.length === 0) {
+    dozzleLog.debug(
+      `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=none refreshed=0 skipped=0 reason=no_tags_or_fields`,
+    );
+    return new Map();
+  }
+
+  const cocService = input.cocService ?? null;
+  if (cocService && typeof cocService.getPlayerRaw === "function") {
+    const refreshResult = await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags,
+      cocService,
+      source: "live_refresh",
+      now: input.now ?? new Date(),
+    });
+    const playerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(playerTags);
+    dozzleLog.debug(
+      `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=${playerTags.join(",")} refreshed=${refreshResult.successCount} skipped=${refreshResult.failedPlayerTags.length} failed_tags=${refreshResult.failedPlayerTags.length > 0 ? refreshResult.failedPlayerTags.join(",") : "none"}`,
+    );
+    return playerCurrentByTag;
+  }
+
+  dozzleLog.debug(
+    `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=${playerTags.join(",")} refreshed=0 skipped=${playerTags.length} reason=no_coc_service`,
+  );
+  return loadPlayerCurrentByLinkedAccounts({
+    linkedAccountsByUserId: input.linkedAccountsByUserId,
+    cocService: input.cocService ?? null,
+    requireFields: input.requireFields,
+  });
 }
 
 async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedClanLike[]> {
@@ -948,6 +1002,7 @@ async function runRefreshPass(input: {
   };
   runId: string;
   now: Date;
+  preferCurrentClanTagForClanRules?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot);
@@ -1029,6 +1084,7 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         clanMembershipByTag: input.clanMembershipIndex,
         trackedClanScope: input.trackedMembershipScope,
+        preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
@@ -1277,11 +1333,21 @@ export class AutoRoleRefreshService {
         snapshot,
         nicknameEnabled: snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined,
       });
-      const playerCurrentByTag = await loadPlayerCurrentByLinkedAccounts({
-        linkedAccountsByUserId,
-        cocService: input.cocService ?? null,
-        requireFields: playerCurrentRequiredFields,
-      });
+      const playerCurrentByTag =
+        input.scope.kind === "user"
+          ? await loadPlayerCurrentByLinkedAccountsForUserRefresh({
+              linkedAccountsByUserId,
+              cocService: input.cocService ?? null,
+              requireFields: playerCurrentRequiredFields,
+              guildId: input.guildId,
+              discordUserId: input.scope.discordUserId,
+              now: input.now,
+            })
+          : await loadPlayerCurrentByLinkedAccounts({
+              linkedAccountsByUserId,
+              cocService: input.cocService ?? null,
+              requireFields: playerCurrentRequiredFields,
+            });
       const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
         ? await loadTrackedClansForNickname()
         : [];
@@ -1303,6 +1369,7 @@ export class AutoRoleRefreshService {
         trackedMembershipScope,
         runId: run.id,
         now: input.now,
+        preferCurrentClanTagForClanRules: input.scope.kind === "user",
       });
     } catch (error) {
       await prisma.autoRoleSyncRun.update({
