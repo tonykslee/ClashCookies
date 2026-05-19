@@ -262,7 +262,7 @@ function summarizePollJobCounts(statuses: BotPollJobStatusRecord[], now: Date): 
     if (job.status === "failed") failed += 1;
     if (job.status === "running") running += 1;
     if (job.status === "disabled" || job.status === "skipped") disabledOrSkipped += 1;
-    if (Boolean(timing.warning)) overdueOrStuck += 1;
+    if (timing.warning !== null) overdueOrStuck += 1;
   }
   return {
     total: statuses.length,
@@ -279,7 +279,7 @@ function resolveOverallStatus(
 ): keyof typeof BOT_STATUS_EMOJI {
   if (!input.dbHealthy || !input.discordHealthy) return "unhealthy";
   if (summary.failed > 0) return "unhealthy";
-  if (summary.overdueOrStuck > 0 || Boolean(input.dbError) || Boolean(input.pollRowsError)) return "warning";
+  if (summary.overdueOrStuck > 0 || input.dbError !== null || input.pollRowsError !== null) return "warning";
   return "healthy";
 }
 
