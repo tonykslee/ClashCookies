@@ -1209,14 +1209,7 @@ export const Raids: Command = {
         },
         {
           name: "clan",
-          description: "Tracked RAID clan to show",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          autocomplete: true,
-        },
-        {
-          name: "tag",
-          description: "Clan tag for custom overview mode",
+          description: "Clan tag or tracked source clan to show",
           type: ApplicationCommandOptionType.String,
           required: false,
           autocomplete: true,
@@ -1258,17 +1251,12 @@ export const Raids: Command = {
   ],
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const query = interaction.options.getFocused(true);
-    if (query.name !== "clan" && query.name !== "tag") {
+    if (query.name !== "clan") {
       await interaction.respond([]);
       return;
     }
 
     const subcommand = interaction.options.getSubcommand(false);
-    if (query.name === "tag") {
-      await interaction.respond([]);
-      return;
-    }
-
     const sourceMode =
       subcommand === "overview"
         ? normalizeRaidsOverviewSourceMode(interaction.options.getString("type", false))
@@ -1291,12 +1279,24 @@ export const Raids: Command = {
     }
     if (subcommand === "overview") {
       const sourceMode = normalizeRaidsOverviewSourceMode(interaction.options.getString("type", false));
-      const requestedClan = normalizeRaidTrackedClanTag(interaction.options.getString("clan", false) ?? "");
-      const requestedTag = normalizeRaidTrackedClanTag(interaction.options.getString("tag", false) ?? "");
-      if (sourceMode === "custom" && !requestedTag) {
+      const rawClan = interaction.options.getString("clan", false) ?? "";
+      const requestedClan = normalizeRaidTrackedClanTag(rawClan);
+      if (rawClan.trim().length > 0 && !requestedClan) {
         await safeReply(interaction, {
           ephemeral: true,
-          content: "Choose a valid clan tag with `/raids overview type:custom tag:<tag>`.",
+          content:
+            sourceMode === "custom"
+              ? "Choose a valid clan with `/raids overview type:custom clan:<tag>`."
+              : sourceMode === "fwa"
+                ? "Choose a valid FWA clan tag with `/raids overview type:fwa clan:<tag>`."
+                : "Choose a valid RAID clan tag with `/raids overview type:raids clan:<tag>`.",
+        });
+        return;
+      }
+      if (sourceMode === "custom" && !requestedClan) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Choose a valid clan with `/raids overview type:custom clan:<tag>`.",
         });
         return;
       }
@@ -1305,7 +1305,7 @@ export const Raids: Command = {
         cocService,
         guildId: interaction.guildId ?? null,
         sourceMode,
-        customClanTag: requestedTag,
+        customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
       });
       if (rows.length <= 0) {
         await safeReply(interaction, {
@@ -1315,7 +1315,7 @@ export const Raids: Command = {
         return;
       }
 
-      const requestedSelection = sourceMode === "custom" ? requestedTag : requestedClan;
+      const requestedSelection = requestedClan;
       const selectedRow = requestedSelection ? findRaidDashboardClanRow(rows, requestedSelection) : null;
       if (requestedSelection && !selectedRow) {
         await safeReply(interaction, {
@@ -1330,7 +1330,7 @@ export const Raids: Command = {
         guildId: interaction.guildId ?? null,
         userId: interaction.user.id,
         sourceMode,
-        customClanTag: sourceMode === "custom" ? requestedTag : null,
+        customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
         selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
         rows,
         refreshing: false,
@@ -1343,7 +1343,7 @@ export const Raids: Command = {
         cocService,
         refreshing: false,
         sourceMode,
-        customClanTag: sourceMode === "custom" ? requestedTag : null,
+        customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
         guildId: interaction.guildId ?? null,
         rows,
         detailSource: selectedRow ? "raids:overview:detail" : null,

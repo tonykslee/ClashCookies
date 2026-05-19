@@ -144,6 +144,7 @@ describe("command coverage", () => {
     expect(raidsHelpText).toContain("type:raids");
     expect(raidsHelpText).toContain("type:fwa");
     expect(raidsHelpText).toContain("type:custom");
+    expect(raidsHelpText).not.toContain("type:custom tag:");
   });
 
   it("registers /compo fill as a subcommand", () => {

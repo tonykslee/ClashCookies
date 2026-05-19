@@ -319,19 +319,15 @@ function makeIntelDistrictSeason() {
 
 function makeChatInteraction(options?: {
   clan?: string | null;
-  tag?: string | null;
   type?: string | null;
   focused?: string;
-  focusedName?: string;
   subcommand?: string;
   upgrades?: number | null;
   districtArgs?: Record<string, string | null | undefined>;
 }) {
   const clan = options?.clan ?? null;
-  const tag = options?.tag ?? null;
   const type = options?.type ?? null;
   const focused = options?.focused ?? "";
-  const focusedName = options?.focusedName ?? "clan";
   const subcommand = options?.subcommand ?? "overview";
   const upgrades = options?.upgrades ?? null;
   const districtArgs = options?.districtArgs ?? {};
@@ -352,11 +348,10 @@ function makeChatInteraction(options?: {
       getString: vi.fn((name: string) => {
         if (name === "type") return type;
         if (name === "clan") return clan;
-        if (name === "tag") return tag;
         return Object.prototype.hasOwnProperty.call(districtArgs, name) ? districtArgs[name] ?? null : null;
       }),
       getInteger: vi.fn((name: string) => (name === "upgrades" ? upgrades : null)),
-      getFocused: vi.fn().mockReturnValue({ name: focusedName, value: focused }),
+      getFocused: vi.fn().mockReturnValue({ name: "clan", value: focused }),
     },
     respond: vi.fn().mockResolvedValue(undefined),
   };
@@ -643,7 +638,7 @@ describe("/raids command", () => {
       }),
       getClan: vi.fn(async () => ({ type: "open" })),
     };
-    const interaction = makeChatInteraction({ type: "custom", tag: "2QG2C08UP" });
+    const interaction = makeChatInteraction({ type: "custom", clan: "2QG2C08UP" });
 
     await Raids.run({} as any, interaction as any, cocService as any);
 
@@ -672,12 +667,12 @@ describe("/raids command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Choose a valid clan tag with `/raids overview type:custom tag:<tag>`.",
+      content: "Choose a valid clan with `/raids overview type:custom clan:<tag>`.",
     });
   });
 
   it("rejects an invalid custom overview clan tag", async () => {
-    const interaction = makeChatInteraction({ type: "custom", tag: "not-a-tag" });
+    const interaction = makeChatInteraction({ type: "custom", clan: "not-a-tag" });
 
     await Raids.run({} as any, interaction as any, {
       getClanCapitalRaidSeasons: vi.fn(),
@@ -686,7 +681,7 @@ describe("/raids command", () => {
 
     expect(interaction.editReply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Choose a valid clan tag with `/raids overview type:custom tag:<tag>`.",
+      content: "Choose a valid clan with `/raids overview type:custom clan:<tag>`.",
     });
   });
 
@@ -1703,8 +1698,8 @@ describe("/raids command", () => {
     ]);
   });
 
-  it("returns no autocomplete choices for custom overview tags", async () => {
-    const interaction = makeChatInteraction({ type: "custom", focusedName: "tag", focused: "2QG" });
+  it("returns no autocomplete choices for custom overview clan input", async () => {
+    const interaction = makeChatInteraction({ type: "custom", focused: "2QG" });
 
     await Raids.autocomplete?.(interaction as any);
 

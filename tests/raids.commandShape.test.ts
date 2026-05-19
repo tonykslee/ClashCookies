@@ -21,10 +21,6 @@ describe("/raids command shape", () => {
     expect(clan?.type).toBe(ApplicationCommandOptionType.String);
     expect(clan?.required).toBe(false);
     expect(clan?.autocomplete).toBe(true);
-    const tag = overview?.options?.find((option) => option.name === "tag");
-    expect(tag?.type).toBe(ApplicationCommandOptionType.String);
-    expect(tag?.required).toBe(false);
-    expect(tag?.autocomplete).toBe(true);
 
     const intel = Raids.options?.find((option) => option.name === "intel");
     expect(intel?.type).toBe(ApplicationCommandOptionType.Subcommand);
