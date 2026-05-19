@@ -80,6 +80,7 @@ function buildTrackedClanBlock(clan: {
   logChannelId: string | null;
   leaderChannelId: string | null;
   clanRoleId: string | null;
+  leadRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
 }): string {
@@ -90,6 +91,7 @@ function buildTrackedClanBlock(clan: {
   const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
   const leaderChannel = clan.leaderChannelId ? `<#${clan.leaderChannelId}>` : "not set";
   const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
+  const leadRole = clan.leadRoleId ? `<@&${clan.leadRoleId}>` : "not set";
   const clanBadge = clan.clanBadge ?? "not set";
   const shortName = clan.shortName ?? "not set";
   return [
@@ -100,6 +102,7 @@ function buildTrackedClanBlock(clan: {
     `logChannel: ${logChannel}`,
     `leaderChannel: ${leaderChannel}`,
     `clanRole: ${clanRole}`,
+    `leadRole: ${leadRole}`,
     `clanBadge: ${clanBadge}`,
   ].join("\n");
 }
@@ -222,10 +225,12 @@ function buildRaidTrackedClanListComponents(
   return rows;
 }
 
-function buildTrackedClanSummaryLine(clan: { name: string | null; tag: string }): string {
+function buildTrackedClanSummaryLine(clan: { name: string | null; tag: string; leadRoleId?: string | null }): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  return clan.name && clanTag ? `- ${title} \`${clanTag}\`` : `- ${title}`;
+  const leadRole = String(clan.leadRoleId ?? "").trim();
+  const leadRoleText = leadRole ? ` | leadRole: <@&${leadRole}>` : "";
+  return clan.name && clanTag ? `- ${title} \`${clanTag}\`${leadRoleText}` : `- ${title}${leadRoleText}`;
 }
 
 function buildRaidTrackedClanSummaryLine(clan: {
@@ -357,6 +362,12 @@ export const TrackedClan: Command = {
         {
           name: "clan-role",
           description: "Discord role associated with this tracked clan",
+          type: ApplicationCommandOptionType.Role,
+          required: false,
+        },
+        {
+          name: "lead-role",
+          description: "Discord role automatically assigned to tracked clan leaders",
           type: ApplicationCommandOptionType.Role,
           required: false,
         },
@@ -950,6 +961,7 @@ export const TrackedClan: Command = {
         const logChannel = interaction.options.getChannel("log-channel", false);
         const leaderChannel = interaction.options.getChannel("leader-channel", false);
         const clanRole = interaction.options.getRole("clan-role", false);
+        const leadRole = interaction.options.getRole("lead-role", false);
         const clanBadgeInput = interaction.options.getString("clan-badge", false);
         const shortNameInput = interaction.options.getString("short-name", false);
         let clanBadge: string | null = null;
@@ -979,6 +991,13 @@ export const TrackedClan: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content: "Invalid clan role selected.",
+          });
+          return;
+        }
+        if (leadRole && !("id" in leadRole)) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid lead role selected.",
           });
           return;
         }
@@ -1016,6 +1035,7 @@ export const TrackedClan: Command = {
             logChannelId: logChannel?.id ?? null,
             leaderChannelId: leaderChannel?.id ?? null,
             clanRoleId: clanRole?.id ?? null,
+            leadRoleId: leadRole?.id ?? null,
             clanBadge,
             shortName,
           },
@@ -1026,6 +1046,7 @@ export const TrackedClan: Command = {
             ...(logChannel ? { logChannelId: logChannel.id } : {}),
             ...(leaderChannel ? { leaderChannelId: leaderChannel.id } : {}),
             ...(clanRole ? { clanRoleId: clanRole.id } : {}),
+            ...(leadRole ? { leadRoleId: leadRole.id } : {}),
             ...(clanBadge ? { clanBadge } : {}),
             ...(shortName ? { shortName } : {}),
           },
@@ -1133,6 +1154,7 @@ export const TrackedClan: Command = {
           `logChannel: ${saved.logChannelId ? `<#${saved.logChannelId}>` : "not set"}`,
           `leaderChannel: ${saved.leaderChannelId ? `<#${saved.leaderChannelId}>` : "not set"}`,
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
+          `leadRole: ${saved.leadRoleId ? `<@&${saved.leadRoleId}>` : "not set"}`,
           `clanBadge: ${saved.clanBadge ?? "not set"}`,
           `shortName: ${saved.shortName ?? "not set"}`,
         ].join(" | ");

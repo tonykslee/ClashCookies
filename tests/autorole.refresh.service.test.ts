@@ -182,6 +182,7 @@ function makePlayerCurrent(input: {
   playerTag: string;
   playerName: string;
   currentClanTag?: string | null;
+  role?: "member" | "elder" | "coLeader" | "leader" | null;
 }) {
   return {
     playerTag: input.playerTag,
@@ -193,7 +194,7 @@ function makePlayerCurrent(input: {
     builderTrophies: 2000,
     warStars: 300,
     expLevel: 250,
-    role: "member",
+    role: input.role ?? "member",
     leagueName: "Legend League",
     currentWeight: 150000,
     currentWeightSource: "player_current",
@@ -346,6 +347,377 @@ describe("AutoRoleRefreshService", () => {
       }),
     );
     expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes a stale CLAN role during user refresh when live current-clan data has moved", async () => {
+    const userId = "111111111111111111";
+    const oldClanTag = "#2QG2C08UP";
+    const newClanTag = "#QGRJ2222";
+    const roleId = "222222222222222222";
+    const member = makeMember(userId, [roleId]);
+    const guild = makeGuild(new Map([[userId, member]]));
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: oldClanTag,
+            discordUserId: userId,
+            playerName: "Moved Player",
+          }),
+      ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: oldClanTag }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: oldClanTag,
+        playerTag: oldClanTag,
+      },
+    ]);
+    vi.spyOn(playerCurrentService, "refreshCurrentPlayersFromLiveTags").mockResolvedValue({
+      playerCount: 1,
+      successCount: 1,
+      failedPlayerTags: [],
+    });
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map([
+        [
+          oldClanTag,
+          makePlayerCurrent({
+            playerTag: oldClanTag,
+            playerName: "Moved Player",
+            currentClanTag: newClanTag,
+            currentClanName: "New Clan",
+          }),
+        ],
+      ]),
+    );
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        removeStaleManagedRoles: true,
+        clanRoleRemovalDelayMinutes: null,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: oldClanTag,
+          discordRoleId: roleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+      cocService: cocService as any,
+    });
+
+    expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playerTags: [oldClanTag],
+        source: "live_refresh",
+      }),
+    );
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(member.roles.remove).toHaveBeenCalledWith(roleId);
+    expect(result).toMatchObject({
+      scope: { kind: "user", discordUserId: userId },
+      removedCount: 1,
+      addedCount: 0,
+      failedCount: 0,
+    });
+  });
+
+  it("preserves a stale CLAN role during user refresh when stale removal is disabled", async () => {
+    const userId = "111111111111111111";
+    const oldClanTag = "#2QG2C08UP";
+    const newClanTag = "#QGRJ2222";
+    const roleId = "222222222222222222";
+    const member = makeMember(userId, [roleId]);
+    const guild = makeGuild(new Map([[userId, member]]));
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: oldClanTag,
+            discordUserId: userId,
+            playerName: "Moved Player",
+          }),
+      ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: oldClanTag }]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: oldClanTag,
+        playerTag: oldClanTag,
+      },
+    ]);
+    vi.spyOn(playerCurrentService, "refreshCurrentPlayersFromLiveTags").mockResolvedValue({
+      playerCount: 1,
+      successCount: 1,
+      failedPlayerTags: [],
+    });
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map([
+        [
+          oldClanTag,
+          makePlayerCurrent({
+            playerTag: oldClanTag,
+            playerName: "Moved Player",
+            currentClanTag: newClanTag,
+            currentClanName: "New Clan",
+          }),
+        ],
+      ]),
+    );
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        removeStaleManagedRoles: false,
+        clanRoleRemovalDelayMinutes: null,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: oldClanTag,
+          discordRoleId: roleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+      cocService: cocService as any,
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      scope: { kind: "user", discordUserId: userId },
+      removedCount: 0,
+      addedCount: 0,
+      failedCount: 0,
+    });
+  });
+
+  it("grants a tracked-clan lead role during user refresh when the live current player is a leader", async () => {
+    const userId = "111111111111111111";
+    const clanTag = "#2QG2C08UP";
+    const leadRoleId = "222222222222222222";
+    const member = makeMember(userId);
+    const guild = makeGuild(new Map([[userId, member]]));
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: clanTag,
+            discordUserId: userId,
+            playerName: "Lead Player",
+          }),
+        ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: clanTag, leadRoleId }]);
+    vi.spyOn(playerCurrentService, "refreshCurrentPlayersFromLiveTags").mockResolvedValue({
+      playerCount: 1,
+      successCount: 1,
+      failedPlayerTags: [],
+    });
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map([
+        [
+          clanTag,
+          makePlayerCurrent({
+            playerTag: clanTag,
+            playerName: "Lead Player",
+            currentClanTag: clanTag,
+            currentClanName: "Tracked Clan",
+            role: "leader",
+          }),
+        ],
+      ]),
+    );
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+      cocService: cocService as any,
+    });
+
+    expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        playerTags: [clanTag],
+        source: "live_refresh",
+      }),
+    );
+    expect(member.roles.add).toHaveBeenCalledWith(leadRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      scope: { kind: "user", discordUserId: userId },
+      addedCount: 1,
+      removedCount: 0,
+      failedCount: 0,
+    });
+  });
+
+  it("removes a stale tracked-clan lead role during user refresh when the player loses leader rank", async () => {
+    const userId = "111111111111111111";
+    const clanTag = "#2QG2C08UP";
+    const leadRoleId = "222222222222222222";
+    const member = makeMember(userId, [leadRoleId]);
+    const guild = makeGuild(new Map([[userId, member]]));
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: clanTag,
+            discordUserId: userId,
+            playerName: "Former Lead",
+          }),
+        ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: clanTag, leadRoleId }]);
+    vi.spyOn(playerCurrentService, "refreshCurrentPlayersFromLiveTags").mockResolvedValue({
+      playerCount: 1,
+      successCount: 1,
+      failedPlayerTags: [],
+    });
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map([
+        [
+          clanTag,
+          makePlayerCurrent({
+            playerTag: clanTag,
+            playerName: "Former Lead",
+            currentClanTag: clanTag,
+            currentClanName: "Tracked Clan",
+            role: "member",
+          }),
+        ],
+      ]),
+    );
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+      cocService: cocService as any,
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(leadRoleId);
+    expect(result).toMatchObject({
+      removedCount: 1,
+      addedCount: 0,
+      failedCount: 0,
+    });
+  });
+
+  it("preserves a stale tracked-clan lead role during user refresh when stale removal is disabled", async () => {
+    const userId = "111111111111111111";
+    const clanTag = "#2QG2C08UP";
+    const leadRoleId = "222222222222222222";
+    const member = makeMember(userId, [leadRoleId]);
+    const guild = makeGuild(new Map([[userId, member]]));
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: clanTag,
+            discordUserId: userId,
+            playerName: "Former Lead",
+          }),
+        ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: clanTag, leadRoleId }]);
+    vi.spyOn(playerCurrentService, "refreshCurrentPlayersFromLiveTags").mockResolvedValue({
+      playerCount: 1,
+      successCount: 1,
+      failedPlayerTags: [],
+    });
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map([
+        [
+          clanTag,
+          makePlayerCurrent({
+            playerTag: clanTag,
+            playerName: "Former Lead",
+            currentClanTag: clanTag,
+            currentClanName: "Tracked Clan",
+            role: "member",
+          }),
+        ],
+      ]),
+    );
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshUser({
+      guild,
+      guildId: "111111111111111111",
+      discordUserId: userId,
+      cocService: cocService as any,
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      removedCount: 0,
+      addedCount: 0,
+      failedCount: 0,
+    });
   });
 
   it("keeps nickname refresh idempotent when discord display names already carry tracked clan labels", async () => {

@@ -43,6 +43,10 @@ describe("/clan command shape", () => {
     expect(configure?.options?.find((o: any) => o.name === "leader-channel")?.required).toBe(
       false,
     );
+    expect(configure?.options?.find((o: any) => o.name === "lead-role")?.type).toBe(
+      ApplicationCommandOptionType.Role,
+    );
+    expect(configure?.options?.find((o: any) => o.name === "lead-role")?.required).toBe(false);
 
     expect(remove?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,

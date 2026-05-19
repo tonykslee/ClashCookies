@@ -18,6 +18,7 @@ import {
   type AutoRoleClanMembershipIndex,
   type AutoRoleClanMembershipIndexRow,
   type AutoRoleMemberEvaluation,
+  type AutoRoleTrackedClanLeadRole,
 } from "./AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
 import { normalizeNicknameTemplate } from "./AutoRoleService";
@@ -290,6 +291,19 @@ async function loadLinkedAccountsForPlayerTags(input: {
   return byUserId;
 }
 
+function collectLinkedPlayerTags(linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>): string[] {
+  const playerTags: string[] = [];
+  for (const rows of linkedAccountsByUserId.values()) {
+    for (const row of rows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (playerTag) {
+        playerTags.push(playerTag);
+      }
+    }
+  }
+  return [...new Set(playerTags)];
+}
+
 async function collectMembershipScopedCandidateUsers(input: {
   membersById: Map<string, AutoRoleGuildMemberLike>;
   trackedMemberPlayerTags: string[];
@@ -331,6 +345,7 @@ async function collectGuildCandidateUsersForTrackedMembership(input: {
 function collectPlayerCurrentRequirementFields(input: {
   snapshot: AutoRoleGuildStateSnapshot;
   nicknameEnabled: boolean;
+  leadRolesEnabled: boolean;
 }): PlayerCurrentResolutionField[] {
   const fields: PlayerCurrentResolutionField[] = [];
   const addField = (field: PlayerCurrentResolutionField) => {
@@ -344,6 +359,11 @@ function collectPlayerCurrentRequirementFields(input: {
     addField("townHall");
     addField("role");
     addField("leagueName");
+  }
+
+  if (input.leadRolesEnabled) {
+    addField("currentClanTag");
+    addField("role");
   }
 
   for (const rule of input.snapshot.rules) {
@@ -401,12 +421,56 @@ async function loadPlayerCurrentByLinkedAccounts(input: {
   );
 }
 
-async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedClanLike[]> {
+async function loadPlayerCurrentByLinkedAccountsForUserRefresh(input: {
+  linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
+  cocService?: CoCService | null;
+  requireFields: PlayerCurrentResolutionField[];
+  guildId: string;
+  discordUserId: string;
+  now?: Date;
+}): Promise<Map<string, PlayerCurrentLike>> {
+  const playerTags = collectLinkedPlayerTags(input.linkedAccountsByUserId);
+  if (playerTags.length === 0 || input.requireFields.length === 0) {
+    dozzleLog.debug(
+      `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=none refreshed=0 skipped=0 reason=no_tags_or_fields`,
+    );
+    return new Map();
+  }
+
+  const cocService = input.cocService ?? null;
+  if (cocService && typeof cocService.getPlayerRaw === "function") {
+    const refreshResult = await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags,
+      cocService,
+      source: "live_refresh",
+      now: input.now ?? new Date(),
+    });
+    const playerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(playerTags);
+    dozzleLog.debug(
+      `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=${playerTags.join(",")} refreshed=${refreshResult.successCount} skipped=${refreshResult.failedPlayerTags.length} failed_tags=${refreshResult.failedPlayerTags.length > 0 ? refreshResult.failedPlayerTags.join(",") : "none"}`,
+    );
+    return playerCurrentByTag;
+  }
+
+  dozzleLog.debug(
+    `[autorole] event=user_live_reconcile guild_id=${input.guildId} user_id=${input.discordUserId} player_tags=${playerTags.join(",")} refreshed=0 skipped=${playerTags.length} reason=no_coc_service`,
+  );
+  return loadPlayerCurrentByLinkedAccounts({
+    linkedAccountsByUserId: input.linkedAccountsByUserId,
+    cocService: input.cocService ?? null,
+    requireFields: input.requireFields,
+  });
+}
+
+type AutoRoleTrackedClanLike = AutoRoleNicknameTrackedClanLike & AutoRoleTrackedClanLeadRole;
+
+async function loadTrackedClansForAutorole(): Promise<AutoRoleTrackedClanLike[]> {
   const rows = await prisma.trackedClan.findMany({
     select: {
       tag: true,
       name: true,
       shortName: true,
+      leadRoleId: true,
     },
   });
 
@@ -415,6 +479,7 @@ async function loadTrackedClansForNickname(): Promise<AutoRoleNicknameTrackedCla
       tag: normalizeClanTag(row.tag),
       name: row.name ?? null,
       shortName: row.shortName ?? null,
+      leadRoleId: String(row.leadRoleId ?? "").trim() || null,
     }))
     .filter((row) => row.tag.length > 0);
 }
@@ -754,10 +819,14 @@ function filterLinkedAccountsForClanMembership(
   return playerTags;
 }
 
-function buildManagedRoleIds(snapshot: AutoRoleGuildStateSnapshot): Set<string> {
+function buildManagedRoleIds(
+  snapshot: AutoRoleGuildStateSnapshot,
+  trackedClans: AutoRoleTrackedClanLike[],
+): Set<string> {
   return autoRoleEvaluationService.getManagedRoleIds({
     config: snapshot.config,
     rules: snapshot.rules,
+    trackedClans,
   });
 }
 
@@ -934,10 +1003,10 @@ async function runRefreshPass(input: {
   scope: AutoRoleRefreshScope;
   guild: Guild;
   snapshot: AutoRoleGuildStateSnapshot;
+  trackedClans: AutoRoleTrackedClanLike[];
   membersById: Map<string, AutoRoleGuildMemberLike>;
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
-  trackedClans: AutoRoleNicknameTrackedClanLike[];
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   trackedMembershipScope: {
     fwaClanTags: Set<string>;
@@ -948,9 +1017,10 @@ async function runRefreshPass(input: {
   };
   runId: string;
   now: Date;
+  preferCurrentClanTagForClanRules?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
-  const managedRoleIds = buildManagedRoleIds(input.snapshot);
+  const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
   const candidateUserIds = collectCandidateUsersForScope({
     scope: input.scope,
     membersById: input.membersById,
@@ -1029,6 +1099,8 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         clanMembershipByTag: input.clanMembershipIndex,
         trackedClanScope: input.trackedMembershipScope,
+        trackedClans: input.trackedClans,
+        preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
@@ -1179,7 +1251,8 @@ export class AutoRoleRefreshService {
         throw new Error("Autorole kill switch is enabled for this guild.");
       }
 
-      const managedRoleIds = buildManagedRoleIds(snapshot);
+      const trackedClans = await loadTrackedClansForAutorole();
+      const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
       if (input.scope.kind === "role" && !managedRoleIds.has(input.scope.discordRoleId)) {
         throw new Error("That Discord role is not managed by autorole.");
       }
@@ -1227,10 +1300,10 @@ export class AutoRoleRefreshService {
           scope: input.scope,
           guild: input.guild,
           snapshot,
+          trackedClans,
           membersById,
           linkedAccountsByUserId,
           playerCurrentByTag: trackedFwaRefresh.playerCurrentByTag,
-          trackedClans: trackedFwaRefresh.trackedClans,
           clanMembershipIndex: trackedFwaRefresh.clanMembershipIndex,
           trackedMembershipScope: trackedMembershipScopeForRefresh,
           runId: run.id,
@@ -1276,15 +1349,23 @@ export class AutoRoleRefreshService {
       const playerCurrentRequiredFields = collectPlayerCurrentRequirementFields({
         snapshot,
         nicknameEnabled: snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined,
+        leadRolesEnabled: trackedClans.some((clan) => String(clan.leadRoleId ?? "").trim().length > 0),
       });
-      const playerCurrentByTag = await loadPlayerCurrentByLinkedAccounts({
-        linkedAccountsByUserId,
-        cocService: input.cocService ?? null,
-        requireFields: playerCurrentRequiredFields,
-      });
-      const trackedClans = snapshot.config.applyNicknames && nicknameTemplate !== null && nicknameTemplate !== undefined
-        ? await loadTrackedClansForNickname()
-        : [];
+      const playerCurrentByTag =
+        input.scope.kind === "user"
+          ? await loadPlayerCurrentByLinkedAccountsForUserRefresh({
+              linkedAccountsByUserId,
+              cocService: input.cocService ?? null,
+              requireFields: playerCurrentRequiredFields,
+              guildId: input.guildId,
+              discordUserId: input.scope.discordUserId,
+              now: input.now,
+            })
+          : await loadPlayerCurrentByLinkedAccounts({
+              linkedAccountsByUserId,
+              cocService: input.cocService ?? null,
+              requireFields: playerCurrentRequiredFields,
+            });
 
       dozzleLog.info(
         `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size} player_current_fields=${playerCurrentRequiredFields.length > 0 ? playerCurrentRequiredFields.join(",") : "none"}`,
@@ -1295,14 +1376,15 @@ export class AutoRoleRefreshService {
         scope: input.scope,
         guild: input.guild,
         snapshot,
+        trackedClans,
         membersById,
         linkedAccountsByUserId,
         playerCurrentByTag,
-        trackedClans,
         clanMembershipIndex,
         trackedMembershipScope,
         runId: run.id,
         now: input.now,
+        preferCurrentClanTagForClanRules: input.scope.kind === "user",
       });
     } catch (error) {
       await prisma.autoRoleSyncRun.update({
