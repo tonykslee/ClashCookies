@@ -44,6 +44,7 @@ import {
   buildFwaMatchChecklistScopeKey,
   findLatestFwaMatchChecklistCheckedClanTags,
   trackedMessageService,
+  type FwaMatchChecklistTrackedRow,
 } from "../services/TrackedMessageService";
 import {
   buildFwaMatchChecklistContextKeyByTag,
@@ -8657,7 +8658,7 @@ export async function handlePointsPostButton(
   }
 }
 
-async function getSourceOfTruthSync(
+export async function getSourceOfTruthSync(
   _settings: SettingsService,
   _guildId?: string | null,
 ): Promise<number | null> {
@@ -11678,6 +11679,83 @@ async function buildTrackedMatchOverview(
   };
 }
 
+export type FwaMatchChecklistRenderState = {
+  rows: FwaMatchChecklistTrackedRow[];
+  scopeKey: string;
+  checkedClanTags: string[];
+  referenceId: string | null;
+  emptyMessage: string | null;
+};
+
+export async function buildFwaMatchChecklistRenderStateForGuild(params: {
+  cocService: CoCService;
+  sourceSync: number | null;
+  guildId: string;
+  warLookupCache?: any;
+  client: Client;
+  mailStatusDebugEnabled?: boolean;
+}): Promise<FwaMatchChecklistRenderState> {
+  const overview = await buildTrackedMatchOverview(
+    params.cocService,
+    params.sourceSync,
+    params.guildId,
+    params.warLookupCache,
+    params.client,
+    {
+      includeActualSheet: false,
+      mailStatusDebugEnabled: params.mailStatusDebugEnabled ?? false,
+      compactChecklist: true,
+    },
+  );
+  const orderedTags = Object.keys(overview.singleViews);
+  const latestActiveSyncPost =
+    await trackedMessageService.resolveLatestActiveSyncPost(params.guildId).catch(() => null);
+  if (orderedTags.length === 0) {
+    return {
+      rows: [],
+      scopeKey: buildFwaMatchChecklistScopeKey({
+        guildId: params.guildId,
+        clanTag: null,
+        rows: [],
+      }),
+      checkedClanTags: [],
+      referenceId: latestActiveSyncPost?.messageId ?? null,
+      emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
+    };
+  }
+
+  const trackedClanRows = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, clanBadge: true },
+  });
+  const badgeByTag = new Map(
+    trackedClanRows.map((row) => [normalizeTag(row.tag), row.clanBadge ?? null]),
+  );
+  const rows = buildFwaMatchChecklistRowsFromCopyView({
+    orderedTags,
+    copyText: overview.copyText,
+    badgeByTag,
+    contextKeyByTag: buildFwaMatchChecklistContextKeyByTag(overview.singleViews),
+  });
+  const scopeKey = buildFwaMatchChecklistScopeKey({
+    guildId: params.guildId,
+    clanTag: null,
+    rows,
+  });
+  const checkedClanTags = await findLatestFwaMatchChecklistCheckedClanTags({
+    guildId: params.guildId,
+    clanTag: null,
+    scopeKey,
+  });
+  return {
+    rows,
+    scopeKey,
+    checkedClanTags,
+    referenceId: latestActiveSyncPost?.messageId ?? null,
+    emptyMessage: null,
+  };
+}
+
 export async function runForceSyncDataCommand(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
@@ -13236,53 +13314,22 @@ export const Fwa: Command = {
         await editReplySafe("This command can only be used in a server.");
         return;
       }
-      const overview = await buildTrackedMatchOverview(
+      const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService,
         sourceSync,
-        interaction.guildId ?? null,
+        guildId: interaction.guildId ?? "",
         warLookupCache,
-        interaction.client,
-        {
-          includeActualSheet: false,
-          mailStatusDebugEnabled: matchMailStatusDebugEnabled,
-          compactChecklist: false,
-        },
-      );
-      const checklistBadgeByTag = new Map(
-        (
-          await prisma.trackedClan.findMany({
-            select: { tag: true, clanBadge: true },
-          })
-        ).map((row) => [
-          normalizeTag(row.tag),
-          row.clanBadge?.trim() || null,
-        ]),
-      );
-      const checklistRows = buildFwaMatchChecklistRowsFromCopyView({
-        orderedTags: Object.keys(overview.singleViews),
-        copyText: overview.copyText,
-        badgeByTag: checklistBadgeByTag,
-        contextKeyByTag: buildFwaMatchChecklistContextKeyByTag(
-          overview.singleViews,
-        ),
-      });
-      const scopeKey = buildFwaMatchChecklistScopeKey({
-        guildId: interaction.guildId ?? "",
-        clanTag: null,
-        rows: checklistRows,
-      });
-      const checkedClanTags = await findLatestFwaMatchChecklistCheckedClanTags({
-        guildId: interaction.guildId ?? "",
-        clanTag: null,
-        scopeKey,
+        client: interaction.client,
+        mailStatusDebugEnabled: matchMailStatusDebugEnabled,
       });
       await postFwaMatchChecklistMessage({
         interaction,
         isPublic,
-        rows: checklistRows,
+        rows: checklistState.rows,
         clanTag: null,
-        scopeKey,
-        checkedClanTags,
+        scopeKey: checklistState.scopeKey,
+        checkedClanTags: checklistState.checkedClanTags,
+        referenceId: checklistState.referenceId,
       });
       return;
     }
