@@ -1366,7 +1366,7 @@ export class WarEventLogService {
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
-    const [trackedClans, currentWars] = await Promise.all([
+    const [trackedClans, currentWars, clanNotifyConfigs] = await Promise.all([
       prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
         select: {
@@ -1391,25 +1391,17 @@ export class WarEventLogService {
           clanName: true,
         },
       }),
+      prisma.clanNotifyConfig.findMany({
+        select: {
+          guildId: true,
+          clanTag: true,
+          channelId: true,
+          roleId: true,
+          pingEnabled: true,
+          embedEnabled: true,
+        },
+      }),
     ]);
-
-    const notifyConfigs = trackedClans.flatMap((clan) => {
-      if (!clan.notifyChannelId) return [];
-
-      const clanTag = normalizeTag(clan.tag);
-      const matchingWars = currentWars.filter(
-        (war) => normalizeTag(war.clanTag) === clanTag,
-      );
-
-      return matchingWars.map((war) => ({
-        guildId: war.guildId,
-        clanTag,
-        channelId: clan.notifyChannelId,
-        roleId: clan.notifyRole,
-        pingEnabled: true,
-        embedEnabled: clan.notifyEnabled ?? false,
-      }));
-    });
 
     const currentWarsByTag = new Map<string, typeof currentWars>();
     for (const row of currentWars) {
@@ -1419,18 +1411,18 @@ export class WarEventLogService {
       currentWarsByTag.set(key, list);
     }
 
-    const notifyConfigsByTag = new Map<string, typeof notifyConfigs>();
-    for (const row of notifyConfigs) {
+    const clanNotifyConfigsByTag = new Map<string, typeof clanNotifyConfigs>();
+    for (const row of clanNotifyConfigs) {
       const key = normalizeTag(row.clanTag);
-      const list = notifyConfigsByTag.get(key) ?? [];
+      const list = clanNotifyConfigsByTag.get(key) ?? [];
       list.push(row);
-      notifyConfigsByTag.set(key, list);
+      clanNotifyConfigsByTag.set(key, list);
     }
 
     const targets: PollTarget[] = [];
     for (const tracked of trackedClans) {
       const clanTag = normalizeTag(tracked.tag);
-      const configRows = notifyConfigsByTag.get(clanTag) ?? [];
+      const configRows = clanNotifyConfigsByTag.get(clanTag) ?? [];
       const currentRows = currentWarsByTag.get(clanTag) ?? [];
       const guildIds = new Set<string>();
       for (const row of configRows) guildIds.add(row.guildId);
@@ -1440,16 +1432,18 @@ export class WarEventLogService {
           configRows.find((row) => row.guildId === guildId) ?? null;
         const current =
           currentRows.find((row) => row.guildId === guildId) ?? null;
+        const channelId =
+          config?.channelId ??
+          current?.channelId ??
+          tracked.notifyChannelId ??
+          tracked.mailChannelId ??
+          tracked.logChannelId ??
+          null;
+        if (!channelId) continue;
         targets.push({
           guildId,
           clanTag,
-          channelId:
-            config?.channelId ??
-            current?.channelId ??
-            tracked.notifyChannelId ??
-            tracked.mailChannelId ??
-            tracked.logChannelId ??
-            null,
+          channelId,
           notify:
             config?.embedEnabled ??
             current?.notify ??
