@@ -626,6 +626,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/fwa match` opens an ephemeral war mail preview; inferred matches can preview, but send stays blocked until the current active war is confirmed.",
       "`/fwa match` copy/paste view now collapses to one compact line per clan in alliance overview and one compact line in single-clan view, with opponent name/tag sanitized for mobile copy; `copy_paste:true` renders that view directly without buttons.",
       "Use `/fwa match-checklist visibility:public` to post the reaction-driven checklist version with reactions; `visibility:private` renders an ephemeral snapshot without reactions.",
+      "Public checklist posts are auto-pinned, include a Refresh button, and are also posted automatically 3 minutes after sync time in active polling mode.",
+      "Refreshing the checklist updates mailbox and match-type emoji status in place without clearing clan badge reactions.",
       "War mail embed sidebar colors are state-coded: BL=black, MM=white, FWA WIN=green, FWA LOSE=red, unresolved=gray.",
       "Single-clan `/fwa match` embed sidebar color follows the same state mapping from the currently displayed effective state, including draft revisions.",
       "`/fwa match` war-changing state now shows field-specific mismatch lines (opponent, sync #, outcome, match type) against persisted points validation.",

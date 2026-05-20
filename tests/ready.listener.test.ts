@@ -519,6 +519,135 @@ describe("ready listener startup", () => {
     );
   });
 
+  it("posts only the latest eligible missed checklist when multiple sync windows are due", async () => {
+    const now = Date.now();
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.featureType === "SYNC_TIME_POST") {
+        return [
+          {
+            guildId: "guild-1",
+            channelId: "channel-1",
+            messageId: "sync-message-2",
+            createdAt: new Date(now - 2 * 60 * 1000),
+            metadata: {
+              syncTimeIso: new Date(now - 7 * 60 * 1000).toISOString(),
+              syncEpochSeconds: Math.trunc(now / 1000) - 360,
+              roleId: "role-1",
+              clans: [
+                {
+                  code: "RR",
+                  clanTag: "#RR",
+                  clanName: "Rocky Road",
+                  emojiId: "111",
+                  emojiName: "rr",
+                  emojiInline: "<:rr:111>",
+                },
+              ],
+            },
+          },
+          {
+            guildId: "guild-1",
+            channelId: "channel-1",
+            messageId: "sync-message-1",
+            createdAt: new Date(now - 10 * 60 * 1000),
+            metadata: {
+              syncTimeIso: new Date(now - 12 * 60 * 1000).toISOString(),
+              syncEpochSeconds: Math.trunc(now / 1000) - 600,
+              roleId: "role-1",
+              clans: [
+                {
+                  code: "RR",
+                  clanTag: "#RR",
+                  clanName: "Rocky Road",
+                  emojiId: "111",
+                  emojiName: "rr",
+                  emojiInline: "<:rr:111>",
+                },
+              ],
+            },
+          },
+        ];
+      }
+      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
+        return [];
+      }
+      return [];
+    });
+
+    await runStartup();
+
+    expect(fwaChecklistRenderMock).toHaveBeenCalledTimes(1);
+    expect(fwaChecklistPublishMock).toHaveBeenCalledTimes(1);
+    expect(fwaChecklistPublishMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        referenceId: "sync-message-2",
+      }),
+    );
+  });
+
+  it("does not backfill an older checklist when a newer sync window is not yet due", async () => {
+    const now = Date.now();
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.featureType === "SYNC_TIME_POST") {
+        return [
+          {
+            guildId: "guild-1",
+            channelId: "channel-1",
+            messageId: "sync-message-2",
+            createdAt: new Date(now - 1 * 60 * 1000),
+            metadata: {
+              syncTimeIso: new Date(now + 6 * 60 * 1000).toISOString(),
+              syncEpochSeconds: Math.trunc(now / 1000) + 300,
+              roleId: "role-1",
+              clans: [
+                {
+                  code: "RR",
+                  clanTag: "#RR",
+                  clanName: "Rocky Road",
+                  emojiId: "111",
+                  emojiName: "rr",
+                  emojiInline: "<:rr:111>",
+                },
+              ],
+            },
+          },
+          {
+            guildId: "guild-1",
+            channelId: "channel-1",
+            messageId: "sync-message-1",
+            createdAt: new Date(now - 10 * 60 * 1000),
+            metadata: {
+              syncTimeIso: new Date(now - 12 * 60 * 1000).toISOString(),
+              syncEpochSeconds: Math.trunc(now / 1000) - 600,
+              roleId: "role-1",
+              clans: [
+                {
+                  code: "RR",
+                  clanTag: "#RR",
+                  clanName: "Rocky Road",
+                  emojiId: "111",
+                  emojiName: "rr",
+                  emojiInline: "<:rr:111>",
+                },
+              ],
+            },
+          },
+        ];
+      }
+      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
+        return [];
+      }
+      return [];
+    });
+
+    await runStartup();
+
+    expect(fwaChecklistRenderMock).not.toHaveBeenCalled();
+    expect(fwaChecklistPublishMock).not.toHaveBeenCalled();
+  });
+
   it("skips the scheduled checklist when a duplicate already exists", async () => {
     const now = Date.now();
     prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
