@@ -55,8 +55,9 @@ describe("FWA match checklist service", () => {
 
   it("publishes a public checklist with reactions and tracked-message persistence", async () => {
     const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
-    const fetchReply = vi.fn().mockResolvedValue({ id: "message-1", react });
+    const fetchReply = vi.fn().mockResolvedValue({ id: "message-1", react, pin });
     const interaction = {
       guildId: "guild-1",
       channelId: "channel-1",
@@ -99,6 +100,7 @@ describe("FWA match checklist service", () => {
     );
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(react).toHaveBeenCalledWith("<:twc:222>");
+    expect(pin).toHaveBeenCalledTimes(1);
   });
 
   it("renders a private checklist snapshot without reactions or tracked-message writes", async () => {
@@ -205,5 +207,44 @@ describe("FWA match checklist service", () => {
         content: "This checklist post can no longer be refreshed.",
       }),
     );
+  });
+
+  it("warns and continues when pinning a public checklist fails", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockRejectedValue({ code: 50013 });
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const fetchReply = vi.fn().mockResolvedValue({ id: "message-1", react, pin });
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply,
+      fetchReply,
+      followUp,
+    } as any;
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      rows: buildRows(),
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: ["#PYPY"],
+    });
+
+    expect(pin).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: expect.stringContaining("Checklist pin failed"),
+      }),
+    );
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("[fwa match checklist] pin failed message=message-1"),
+    );
+    consoleError.mockRestore();
   });
 });
