@@ -432,7 +432,7 @@ export async function handleFwaBaseSwapReaction(
     client: Client;
     edit: (payload: {
       content: string;
-      allowedMentions: { users: string[]; roles?: string[] };
+      allowedMentions: { users?: string[]; roles?: string[] };
     }) => Promise<unknown>;
   },
 ): Promise<boolean> {
@@ -515,18 +515,12 @@ export async function handleFwaBaseSwapSplitPostButton(
       content: payload.splitContents[0],
       allowedMentions: {
         users: payload.mentionUserIds,
-        ...(payload.swapReminder && payload.clanRoleId
-          ? { roles: [payload.clanRoleId] }
-          : {}),
       },
     });
     const postedB = await mailChannel.send({
       content: payload.splitContents[1],
       allowedMentions: {
         users: payload.mentionUserIds,
-        ...(payload.swapReminder && payload.clanRoleId
-          ? { roles: [payload.clanRoleId] }
-          : {}),
       },
     });
 
@@ -591,6 +585,34 @@ export async function handleFwaBaseSwapSplitPostButton(
       );
     });
 
+    const clanRoleId = String(payload.clanRoleId ?? "").trim();
+    const reminderMessages: string[] = [postedA.url, postedB.url];
+    let reminderMessageUrl: string | null = null;
+    if (payload.swapReminder && clanRoleId) {
+      try {
+        const reminderMessage = await mailChannel.send({
+          content: buildFwaBaseSwapReminderLines({
+            clanRoleId,
+          }).join("\n"),
+          allowedMentions: {
+            roles: [clanRoleId],
+          },
+        });
+        reminderMessageUrl =
+          String(reminderMessage?.url ?? "").trim() ||
+          (reminderMessage
+            ? `https://discord.com/channels/${payload.guildId}/${mailChannelId}/${reminderMessage.id}`
+            : "");
+        reminderMessages.push(reminderMessageUrl);
+      } catch (err) {
+        console.warn(
+          `[fwa base-swap] reminder post failed guild=${payload.guildId} channel=${mailChannelId} clan=#${payload.clanTag} error=${formatError(
+            err,
+          )}`,
+        );
+      }
+    }
+
     await logFwaBaseSwapPublication({
       client: interaction.client,
       guildId: payload.guildId,
@@ -602,7 +624,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       clanTag: payload.clanTag,
       clanName: payload.clanName,
       commandText: payload.commandText,
-      messageUrls: [postedA.url, postedB.url],
+      messageUrls: reminderMessages,
     });
 
     await deliverFwaBaseSwapDmMessages({
@@ -619,7 +641,14 @@ export async function handleFwaBaseSwapSplitPostButton(
 
     fwaBaseSwapSplitPostPayloads.delete(parsed.key);
     await interaction.update({
-      content: `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).\n${postedA.url}\n${postedB.url}`,
+      content: [
+        `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).`,
+        postedA.url,
+        postedB.url,
+        reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
+      ]
+        .filter((line) => Boolean(String(line ?? "").trim()))
+        .join("\n"),
       components: [],
     });
   } catch (err) {
@@ -1392,13 +1421,13 @@ async function resolveFwaBaseSwapMailChannel(input: {
 }): Promise<
   | {
       channelId: string;
-      channel: {
-        send: (payload: {
-          content: string;
-          allowedMentions: { users: string[]; roles?: string[] };
-        }) => Promise<any>;
-      };
-    }
+    channel: {
+      send: (payload: {
+        content: string;
+        allowedMentions: { users?: string[]; roles?: string[] };
+      }) => Promise<any>;
+    };
+  }
   | { error: string }
 > {
   const clanDisplay = String(input.clanDisplay ?? "").trim() || "unknown clan";
@@ -1428,7 +1457,7 @@ async function resolveFwaBaseSwapMailChannel(input: {
     isTextBased?: () => boolean;
     send?: (payload: {
       content: string;
-      allowedMentions: { users: string[]; roles?: string[] };
+      allowedMentions: { users?: string[]; roles?: string[] };
     }) => Promise<any>;
   };
   if (input.guildId) {
@@ -1732,14 +1761,6 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   }
 
   if (fwaBaseLines.length > 0) {
-    const swapReminderLines =
-      state.swapReminder && String(state.clanRoleId ?? "").trim()
-        ? [
-            FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
-            FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
-            `<@&${String(state.clanRoleId).trim()}>`,
-          ]
-        : null;
     buildFwaBaseSwapAnnouncementSectionLines({
       lines,
       entries: state.entries,
@@ -1748,8 +1769,7 @@ function buildFwaBaseSwapAnnouncementLines(state: {
         clanKind,
         fwaAlertEmoji,
       ),
-      noteLine: swapReminderLines ? null : resolveFwaBaseSwapAnnouncementNote(clanKind),
-      noteLines: swapReminderLines,
+      noteLine: resolveFwaBaseSwapAnnouncementNote(clanKind),
       separatorBefore: true,
     });
   }
@@ -1779,6 +1799,23 @@ function buildFwaBaseSwapAnnouncementLines(state: {
 
   return lines;
 }
+
+function buildFwaBaseSwapReminderLines(input: {
+  clanRoleId: string;
+}): string[] {
+  const normalizedRoleId = normalizeDiscordRoleId(input.clanRoleId);
+  if (!normalizedRoleId) {
+    return [];
+  }
+
+  return [
+    FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
+    FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
+    `<@&${normalizedRoleId}>`,
+  ];
+}
+
+export const buildFwaBaseSwapReminderLinesForTest = buildFwaBaseSwapReminderLines;
 
 /** Purpose: score split boundaries to prefer separators/section starts while keeping output balanced and deterministic. */
 function scoreFwaBaseSwapSplitBoundary(input: {
@@ -13769,11 +13806,39 @@ export const Fwa: Command = {
         content: renderPlan.singleContent,
         allowedMentions: {
           users: mentionUserIds,
-          ...(swapReminder && trackedConfig?.clanRoleId
-            ? { roles: [trackedConfig.clanRoleId] }
-            : {}),
         },
       });
+      const clanRoleId = String(trackedConfig?.clanRoleId ?? "").trim();
+      const swapReminderContent =
+        swapReminder && clanRoleId
+          ? buildFwaBaseSwapReminderLines({
+              clanRoleId,
+            })
+          : [];
+      const reminderMessages: string[] = [posted.url];
+      let reminderMessageUrl: string | null = null;
+      if (swapReminderContent.length > 0) {
+        try {
+          const reminderMessage = await mailChannel.send({
+            content: swapReminderContent.join("\n"),
+            allowedMentions: {
+              roles: [clanRoleId],
+            },
+          });
+          reminderMessageUrl =
+            String(reminderMessage?.url ?? "").trim() ||
+            (reminderMessage
+              ? `https://discord.com/channels/${interaction.guildId}/${mailChannelId}/${reminderMessage.id}`
+              : "");
+          reminderMessages.push(reminderMessageUrl);
+        } catch (err) {
+          console.warn(
+            `[fwa base-swap] reminder post failed guild=${interaction.guildId} channel=${mailChannelId} clan=#${clanTag} error=${formatError(
+              err,
+            )}`,
+          );
+        }
+      }
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
@@ -13821,7 +13886,7 @@ export const Fwa: Command = {
         clanTag,
         clanName,
         commandText,
-        messageUrls: [posted.url],
+        messageUrls: reminderMessages,
       });
 
       await editReplySafe(
@@ -13831,6 +13896,7 @@ export const Fwa: Command = {
             ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
             : "All listed players have linked Discord users.",
           posted.url,
+          reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
         ].join("\n"),
       );
       await deliverFwaBaseSwapDmMessages({
