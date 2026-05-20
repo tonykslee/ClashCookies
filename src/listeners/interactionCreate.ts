@@ -44,6 +44,7 @@ import {
   handleFwaMailBackButton,
   handleFwaMailGateResumeButton,
   handleFwaMailRefreshButton,
+  handleFwaMatchChecklistRefreshButton,
   handleFwaMatchSendMailButton,
   handleFwaMatchTieBreakerButton,
   handleFwaBaseSwapSplitPostButton,
@@ -57,6 +58,7 @@ import {
   isFwaMailBackButtonCustomId,
   isFwaMailGateResumeButtonCustomId,
   isFwaMailRefreshButtonCustomId,
+  isFwaMatchChecklistRefreshButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTieBreakerButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
@@ -1621,6 +1623,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMatchChecklistRefreshButton(interaction);
+    } catch (err) {
+      console.error(`FWA match checklist refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh the checklist post.",
         });
       }
     }

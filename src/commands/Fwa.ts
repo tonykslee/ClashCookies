@@ -9344,11 +9344,16 @@ export const buildFwaMatchCompactCopyLineForTest =
 export {
   addFwaMatchChecklistReactionsForTest,
   buildFwaMatchChecklistContextKeyByTag,
+  buildFwaMatchChecklistComponents,
   buildFwaMatchChecklistExpiresAt,
   buildFwaMatchChecklistMessageContent,
   buildFwaMatchChecklistRowsFromCopyView,
   buildFwaMatchChecklistTrackedMessageInput,
+  handleFwaMatchChecklistRefreshButton,
 } from "../services/FwaMatchChecklistService";
+export {
+  isFwaMatchChecklistRefreshButtonCustomId,
+} from "./fwa/customIds";
 export const buildSingleClanMatchLinksForTest = buildSingleClanMatchLinks;
 export const resolveAllianceDropdownMatchStateEmojiForTest =
   resolveAllianceDropdownMatchStateEmoji;
