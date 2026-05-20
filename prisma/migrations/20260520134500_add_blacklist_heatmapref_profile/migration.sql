@@ -16,7 +16,7 @@ CREATE TABLE "BlacklistHeatMapRef" (
     "totalMissingWeightCount" INTEGER NOT NULL,
     "confidenceLabel" TEXT NOT NULL,
     "confidenceScore" INTEGER NOT NULL,
-    "generatedAt" DATETIME NOT NULL,
+    "generatedAt" TIMESTAMP(3) NOT NULL,
 
     PRIMARY KEY ("weightMinInclusive", "weightMaxInclusive")
 );
