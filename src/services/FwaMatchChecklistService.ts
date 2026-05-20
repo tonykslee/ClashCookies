@@ -163,6 +163,17 @@ async function addFwaMatchChecklistReactions(
   }
 }
 
+function summarizePinIssue(err: unknown): string {
+  const code = (err as { code?: number } | null | undefined)?.code;
+  if (code === 50013 || code === 50001) {
+    return "Checklist pin failed due to missing bot permissions in this channel.";
+  }
+  if (code) {
+    return `Checklist pin failed (Discord code: ${code}). Check bot permissions and logs.`;
+  }
+  return "Checklist pin failed. Check bot permissions and logs.";
+}
+
 /** Purpose: publish or preview the clan mail checklist using the current tracked-message state. */
 export async function postFwaMatchChecklistMessage(params: {
   interaction: ChatInputCommandInteraction;
@@ -197,6 +208,19 @@ export async function postFwaMatchChecklistMessage(params: {
     }),
   );
   await addFwaMatchChecklistReactions(postedMessage as any, params.rows);
+  try {
+    await postedMessage.pin();
+  } catch (err) {
+    console.error(
+      `[fwa match checklist] pin failed message=${postedMessage.id} channel=${params.interaction.channelId} guild=${params.interaction.guildId ?? ""} error=${formatError(err)}`,
+    );
+    await params.interaction
+      .followUp({
+        ephemeral: true,
+        content: summarizePinIssue(err),
+      })
+      .catch(() => undefined);
+  }
 }
 
 /** Purpose: refresh a public checklist message in place without touching reactions. */
