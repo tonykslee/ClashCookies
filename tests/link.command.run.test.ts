@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 
@@ -38,6 +38,7 @@ import {
   buildLinkEmbedAccountButtonCustomId,
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
+  buildLinkListDescriptionLinesForTest,
   buildLinkListSelectCustomId,
   buildLinkListSortButtonCustomId,
   handleReminderLinkButtonInteraction,
@@ -150,43 +151,45 @@ function makeValidTag(index: number): string {
 function getInlineRowSegments(row: string): {
   statusKind: "linked" | "unlinked" | "";
   statusToken: string;
-  th: string;
-  weight: string;
+  townHallIcon: string;
+  left: string;
+  tag: string;
   player: string;
-  third: string;
+  weight: string;
+  marker: string;
 } {
   const normalized = String(row ?? "");
   const prefixMatch = normalized.match(/^(\S+)\s/);
   const statusToken = String(prefixMatch?.[1] ?? "");
-  const statusKind = /:yes:\d+>$/i.test(statusToken) || statusToken === "✅"
+  const statusKind = statusToken.startsWith("<:yes:") || statusToken === "✅"
     ? "linked"
-    : /:no:\d+>$/i.test(statusToken) || statusToken === "❌"
+    : statusToken.startsWith("<:no:") || statusToken === "❌"
       ? "unlinked"
       : "";
-  const codeStart = normalized.indexOf("`");
-  const codeEnd = normalized.lastIndexOf("`");
-  const codeText =
-    codeStart >= 0 && codeEnd > codeStart
-      ? normalized.slice(codeStart + 1, codeEnd)
-      : "";
-  const [th = "", third = "", player = "", weight = ""] = codeText
+  const match = normalized.match(
+    /^(?<status>\S+)\s+(?<icon>\S+)\s+`(?<left>[^`]*)`\s+`(?<tag>[^`]*)`\s+`(?<player>[^`]*)`(?:\s+(?<marker>.*))?$/,
+  );
+  const playerBlock = String(match?.groups?.player ?? "");
+  const [player = "", weight = ""] = playerBlock
     .split(/\s{2,}/)
     .map((part) => part)
     .filter((part) => part.length > 0);
   return {
     statusKind,
     statusToken,
-    th: th.trim(),
-    weight,
+    townHallIcon: String(match?.groups?.icon ?? ""),
+    left: String(match?.groups?.left ?? ""),
+    tag: String(match?.groups?.tag ?? ""),
     player,
-    third,
+    weight,
+    marker: String(match?.groups?.marker ?? ""),
   };
 }
 
 function getInlineRows(description: string): string[] {
   return String(description ?? "")
     .split("\n")
-    .filter((line) => /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line));
+    .filter((line) => /^\S+\s+\S+\s+`/.test(line));
 }
 
 function makeReminderButtonInteraction(input: {
@@ -777,7 +780,7 @@ describe("/link run", () => {
       .split("\n")
       .filter(
         (line: string) =>
-          /^(?:✅|❌|<a?:yes:\d+>|<a?:no:\d+>) `/.test(line) &&
+          /^\S+\s+\S+\s+`/.test(line) &&
           line.endsWith("`"),
       );
     expect(rows).toHaveLength(3);
@@ -803,19 +806,25 @@ describe("/link run", () => {
     expect(linkedParts.statusKind).toBe("linked");
     expect(currentFallbackParts.statusKind).toBe("unlinked");
     expect(emptyFallbackParts.statusKind).toBe("unlinked");
-    expect(linkedParts.th).toBe("18");
-    expect(currentFallbackParts.th).toBe("15");
-    expect(emptyFallbackParts.th).toBe("14");
+    expect(linkedParts.townHallIcon.length).toBeGreaterThan(0);
+    expect(currentFallbackParts.townHallIcon.length).toBeGreaterThan(0);
+    expect(emptyFallbackParts.townHallIcon.length).toBeGreaterThan(0);
+    expect(linkedParts.left).toBe("Persisted Sin");
+    expect(linkedParts.tag).toBe("#PYLQ0289");
+    expect(currentFallbackParts.tag).toBe("#QGRJ2222");
+    expect(emptyFallbackParts.tag).toBe("#LCUV0289");
+    expect(linkedParts.player).toBe("Tilonius");
+    expect(currentFallbackParts.player).toBe("Unlinked Guy");
+    expect(emptyFallbackParts.player).toBe("Mystery Zero");
     expect(linkedParts.weight.trim()).toBe("145k");
     expect(currentFallbackParts.weight.trim()).toBe("166k");
     expect(emptyFallbackParts.weight.trim()).toBe("—");
-    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `/);
-    expect(currentFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
-    expect(emptyFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `/);
-    expect(linkedRow).toMatch(/^(?:✅|<a?:yes:\d+>) `\S/);
-    expect(currentFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
-    expect(emptyFallbackRow).toMatch(/^(?:❌|<a?:no:\d+>) `\S/);
-
+    expect(linkedRow).toMatch(/^.+ \S+ `/);
+    expect(currentFallbackRow).toMatch(/^.+ \S+ `/);
+    expect(emptyFallbackRow).toMatch(/^.+ \S+ `/);
+    expect(linkedRow).toContain("`#PYLQ0289`");
+    expect(currentFallbackRow).toContain("`#QGRJ2222`");
+    expect(emptyFallbackRow).toContain("`#LCUV0289`");
     const sortButton = payload.components[0].components[0].toJSON();
     expect(sortButton.label).toBe("Sort: Discord Name");
 
@@ -826,6 +835,45 @@ describe("/link run", () => {
         (opt: any) => opt.default && opt.value === "#PQL0289",
       ),
     ).toBe(true);
+  });
+
+  it("renders TH icons, tag spans, and far-right filler markers in link list rows", () => {
+    const lines = buildLinkListDescriptionLinesForTest({
+      linkedRows: [
+        {
+          townHall: 18,
+          leftLabel: "Sin Display",
+          playerTag: "#QR9R0LGJ9",
+          playerName: "Player One",
+          weight: "145k",
+          rightMarker: ":person_standing:",
+        },
+      ],
+      unlinkedRows: [
+        {
+          townHall: 14,
+          leftLabel: "",
+          playerTag: "#LCUV0289",
+          playerName: "Mystery Zero",
+          weight: "—",
+        },
+      ],
+      statusIcons: {
+        linked: "✅",
+        unlinked: "❌",
+      },
+      townHallEmojiByLevel: new Map([[18, "<:th18:1>"]]),
+    });
+
+    const linkedRow = lines.find((line) => line.includes("#QR9R0LGJ9"));
+    const unlinkedRow = lines.find((line) => line.includes("#LCUV0289"));
+
+    expect(linkedRow).toContain("✅ <:th18:1> `Sin Display` `#QR9R0LGJ9`");
+    expect(linkedRow).toContain("`#QR9R0LGJ9`");
+    expect(linkedRow).toContain(":person_standing:");
+    expect(unlinkedRow).toContain("❌");
+    expect(unlinkedRow).toContain("`#LCUV0289`");
+    expect(unlinkedRow).toContain("`Mystery Zero");
   });
 
   it("renders custom yes/no application emojis in /link list rows when available", async () => {
@@ -893,10 +941,10 @@ describe("/link run", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
-    expect(description).toContain("<:yes:1> `");
-    expect(description).toContain("<:no:2> `");
-    expect(description).not.toContain("✅ `");
-    expect(description).not.toContain("❌ `");
+    expect(description).toContain("<:yes:1> ❔ `");
+    expect(description).toContain("<:no:2> ❔ `");
+    expect(description).not.toContain("✅ ");
+    expect(description).not.toContain("❌ ");
   });
 
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
@@ -996,7 +1044,7 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toMatch(/(?:❌|<a?:no:\d+>) `15/);
+    expect(description).toContain("<:no:2> ❔ `` `#QGRJ2222`");
     expect(description).toContain("—`");
     expect(description).not.toContain("|");
     expect(description).toContain("#QGRJ2222");
@@ -1230,7 +1278,7 @@ describe("/link list select menu", () => {
     const firstEmbed = payload.embeds[0].toJSON();
     const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
-    expect(description).toMatch(/(?:✅|<a?:yes:\d+>) `15/);
+    expect(description).toContain("<:yes:1> ❔ `Persisted Select User` `#PQL0289`");
     expect(description).toContain("Persisted Select User");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");

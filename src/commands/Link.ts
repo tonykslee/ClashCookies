@@ -24,6 +24,7 @@ import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
+import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
@@ -98,7 +99,7 @@ const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
 type ClanMemberRow = {
   playerTag: string;
   playerName: string;
-  townHallText: string;
+  townHall: number | null;
   mapPosition: number | null;
   index: number;
 };
@@ -362,15 +363,14 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
       const name = sanitizeTableText(String(row?.name ?? "")) || playerTag;
       const mapPositionRaw = tryParseFiniteNumber(row?.mapPosition);
       const townHallRaw = tryParseFiniteNumber(row?.townHallLevel);
-      const townHallText =
-        townHallRaw !== null && townHallRaw >= 1
-          ? String(Math.floor(townHallRaw))
-          : "?";
 
       return {
         playerTag,
         playerName: name,
-        townHallText,
+        townHall:
+          townHallRaw !== null && townHallRaw >= 1
+            ? Math.floor(townHallRaw)
+            : null,
         mapPosition:
           mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
         index,
@@ -628,10 +628,11 @@ function rightAlign(value: string, width: number): string {
 }
 
 type LinkListRowInput = {
-  th: string;
+  townHall: number | null;
+  leftLabel: string;
+  playerTag: string;
   weight: string;
   playerName: string;
-  third: string;
   rightMarker?: string | null;
 };
 
@@ -739,13 +740,16 @@ function formatCompactWeightK(weight: number | null | undefined): string {
 
 function formatAlignedInlineRow(
   row: LinkListRowInput,
-  widths: { player: number; third: number; weight: number },
+  widths: { left: number; player: number; weight: number },
   statusPrefix: string,
+  townHallEmojiByLevel: TownHallEmojiMap,
 ): string {
+  const townHallIcon = renderTownHallIcon(row.townHall, townHallEmojiByLevel);
+  const leftLabel = rightAlign(row.leftLabel, widths.left);
   const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
-  const discordName = rightAlign(row.third, widths.third);
-  const base = `${statusPrefix} \`${row.th}  ${discordName}  ${playerName}  ${weight}\``;
+  const playerTag = normalizePlayerTag(row.playerTag) || row.playerTag;
+  const base = `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerTag}\` \`${playerName}  ${weight}\``;
   if (!row.rightMarker) return base;
   return `${base} ${row.rightMarker}`;
 }
@@ -754,12 +758,17 @@ function computeColumnWidths(
   linkedRows: LinkListRowInput[],
   unlinkedRows: LinkListRowInput[],
 ): {
+  left: number;
   player: number;
-  linkedThird: number;
-  unlinkedThird: number;
   weight: number;
 } {
   const allRows = [...linkedRows, ...unlinkedRows];
+  const left = Math.max(
+    0,
+    ...allRows
+      .map((row) => row.leftLabel.length)
+      .filter((value) => Number.isFinite(value)),
+  );
   const player = Math.max(
     6,
     ...allRows
@@ -767,18 +776,6 @@ function computeColumnWidths(
       .filter((value) => Number.isFinite(value)),
   );
 
-  const linkedThird = Math.max(
-    3,
-    ...linkedRows
-      .map((row) => row.third.length)
-      .filter((value) => Number.isFinite(value)),
-  );
-  const unlinkedThird = Math.max(
-    3,
-    ...unlinkedRows
-      .map((row) => row.third.length)
-      .filter((value) => Number.isFinite(value)),
-  );
   const weight = Math.max(
     WEIGHT_PLACEHOLDER.length,
     ...allRows
@@ -786,13 +783,14 @@ function computeColumnWidths(
       .filter((value) => Number.isFinite(value)),
   );
 
-  return { player, linkedThird, unlinkedThird, weight };
+  return { left, player, weight };
 }
 
 function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
+  townHallEmojiByLevel: TownHallEmojiMap;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
@@ -804,10 +802,10 @@ function buildLinkListDescriptionLines(input: {
     lines.push(
       ...linkedRows.map((row) =>
         formatAlignedInlineRow(row, {
+          left: widths.left,
           player: widths.player,
           weight: widths.weight,
-          third: widths.linkedThird,
-        }, input.statusIcons.linked),
+        }, input.statusIcons.linked, input.townHallEmojiByLevel),
       ),
     );
   }
@@ -817,16 +815,18 @@ function buildLinkListDescriptionLines(input: {
     lines.push(
       ...unlinkedRows.map((row) =>
         formatAlignedInlineRow(row, {
+          left: widths.left,
           player: widths.player,
           weight: widths.weight,
-          third: widths.unlinkedThird,
-        }, input.statusIcons.unlinked),
+        }, input.statusIcons.unlinked, input.townHallEmojiByLevel),
       ),
     );
   }
 
   return lines;
 }
+
+export const buildLinkListDescriptionLinesForTest = buildLinkListDescriptionLines;
 
 async function buildLinkListView(input: {
   interaction: LinkListInteraction;
@@ -879,18 +879,22 @@ async function buildLinkListView(input: {
     const weightValue = weightByTag.get(member.playerTag) ?? null;
     const weight = formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
-    const third = truncateWithEllipsis(
+    const leftLabel = link
+      ? truncateWithEllipsis(
+          resolveLinkedUserDisplayName(
+            input.interaction,
+            link.discordUserId,
+            link.discordUsername,
+          ),
+          MAX_IDENTITY_CHARS,
+        )
+      : "";
+    const discordSort =
       sortMode === "player-tags"
         ? member.playerTag
         : link
-          ? resolveLinkedUserDisplayName(
-              input.interaction,
-              link.discordUserId,
-              link.discordUsername,
-            )
-          : member.playerTag,
-      MAX_IDENTITY_CHARS,
-    );
+          ? leftLabel
+          : member.playerTag;
 
     resolvedRows.push({
       isLinked: Boolean(link),
@@ -898,12 +902,13 @@ async function buildLinkListView(input: {
       defaultIndex: index,
       weightValue,
       playerSort: sanitizeTableText(playerName),
-      discordSort: sanitizeTableText(third),
+      discordSort: sanitizeTableText(discordSort),
       row: {
-        th: member.townHallText,
+        townHall: member.townHall,
+        leftLabel,
+        playerTag: member.playerTag,
         weight,
         playerName,
-        third,
         rightMarker: null,
       },
     });
@@ -922,10 +927,12 @@ async function buildLinkListView(input: {
   }
 
   const statusIcons = await resolveLinkListStatusIcons(input.interaction.client);
+  const townHallEmojiByLevel = getCachedTownHallEmojiMap();
   const lines = buildLinkListDescriptionLines({
     linkedRows,
     unlinkedRows,
     statusIcons,
+    townHallEmojiByLevel,
   });
 
   if (lines.length === 0) {
