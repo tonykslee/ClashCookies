@@ -1552,7 +1552,7 @@ export class WarEventLogService {
       where: {
         guildId_clanTag: {
           guildId: params.guildId,
-          clanTag: normalizeTag(params.clanTag),
+          clanTag: normalizeTagBare(params.clanTag),
         },
       },
     });

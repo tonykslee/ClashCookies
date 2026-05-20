@@ -1995,7 +1995,7 @@ describe("WarEventLogService notify config ownership", () => {
     });
     prismaMock.clanNotifyConfig.findUnique.mockResolvedValue({
       guildId: "guild-42",
-      clanTag: "#C0CU2Q82",
+      clanTag: "C0CU2Q82",
       channelId: "notify-channel-42",
       roleId: "notify-role-42",
       pingEnabled: false,
