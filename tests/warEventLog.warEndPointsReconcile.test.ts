@@ -1598,6 +1598,14 @@ describe("War-ended sync and metadata canonicalization", () => {
       notifyRole: null,
       notifyEnabled: true,
     } as any);
+    vi.spyOn(prisma.clanNotifyConfig, "findUnique").mockResolvedValue({
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      channelId: "chan-1",
+      roleId: null,
+      pingEnabled: true,
+      embedEnabled: true,
+    } as any);
     (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(
       makeSubscription({
         guildId: "guild-1",

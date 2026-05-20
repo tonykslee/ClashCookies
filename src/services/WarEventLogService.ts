@@ -1537,33 +1537,87 @@ export class WarEventLogService {
     eventType: EventType;
     source: TestSource;
   }): Promise<NotifyWarPreviewResult> {
-    // Get config from trackedClan table
     const tracked = await prisma.trackedClan.findUnique({
       where: { tag: normalizeTag(params.clanTag) },
       select: {
+        name: true,
         notifyChannelId: true,
         notifyRole: true,
         notifyEnabled: true,
+        mailChannelId: true,
+        logChannelId: true,
+      },
+    });
+    const config = await prisma.clanNotifyConfig.findUnique({
+      where: {
+        guildId_clanTag: {
+          guildId: params.guildId,
+          clanTag: normalizeTag(params.clanTag),
+        },
       },
     });
 
-    if (!tracked)
-      return {
-        ok: false,
-        reason: "No notification configuration found for that clan.",
-      };
-    if (!tracked.notifyChannelId)
-      return { ok: false, reason: "Configuration has no channel set." };
-
-    // Get current war data for the payload
     const sub = await this.findSubscriptionByGuildAndTag(
       params.guildId,
       params.clanTag,
     );
-    if (!sub)
-      return { ok: false, reason: "No current war data found for that clan." };
+    const effectiveChannelId =
+      sub?.channelId ??
+      config?.channelId ??
+      tracked?.notifyChannelId ??
+      tracked?.mailChannelId ??
+      tracked?.logChannelId ??
+      null;
 
-    const payload = await this.buildTestEventPayload(sub, params);
+    if (!tracked && !config && !sub)
+      return {
+        ok: false,
+        reason: "No notification configuration found for that clan.",
+      };
+    if (!effectiveChannelId)
+      return { ok: false, reason: "Configuration has no channel set." };
+
+    const previewSub: SubscriptionRow = sub ?? {
+      guildId: params.guildId,
+      clanTag: normalizeTag(params.clanTag),
+      warId: null,
+      syncNum: null,
+      channelId: effectiveChannelId,
+      notify: config?.embedEnabled ?? tracked?.notifyEnabled ?? false,
+      pingRole: config?.pingEnabled ?? true,
+      embedEnabled: config?.embedEnabled ?? tracked?.notifyEnabled ?? false,
+      inferredMatchType: true,
+      notifyRole: config?.roleId ?? tracked?.notifyRole ?? null,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      outcome: null,
+      matchType: "FWA",
+      warStartFwaPoints: null,
+      warEndFwaPoints: null,
+      clanStars: null,
+      opponentStars: null,
+      state: "notInWar",
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      clanName:
+        String(tracked?.name ?? params.clanTag).trim() || params.clanTag,
+      clanRoleId: null,
+      pointsConfirmedByClanMail: null,
+      pointsNeedsValidation: null,
+      pointsLastSuccessfulFetchAt: null,
+      pointsLastKnownSyncNumber: null,
+      pointsLastKnownPoints: null,
+      pointsLastKnownMatchType: null,
+      pointsLastKnownOutcome: null,
+      pointsWarId: null,
+      pointsOpponentTag: null,
+      pointsWarStartTime: null,
+    };
+
+    const payload = await this.buildTestEventPayload(previewSub, params);
     const canonicalized =
       payload.eventType === "war_ended"
         ? await this.resolveCanonicalWarEndedPayloadContext(payload)
@@ -1589,7 +1643,7 @@ export class WarEventLogService {
       ok: true,
       clanName: payloadForPreview.clanName,
       clanTag: payloadForPreview.clanTag,
-      channelId: tracked.notifyChannelId,
+      channelId: effectiveChannelId,
       embeds: message.embeds,
     };
   }
@@ -2545,11 +2599,17 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          tc."notifyChannelId" AS "channelId",
-          COALESCE(tc."notifyEnabled", false) AS "notify",
-          COALESCE(cw."pingRole", true) AS "pingRole",
-          true AS "embedEnabled",
-          tc."notifyRole" AS "notifyRole",
+          COALESCE(
+            cnc."channelId",
+            cw."channelId",
+            tc."notifyChannelId",
+            tc."mailChannelId",
+            tc."logChannelId"
+          ) AS "channelId",
+          COALESCE(cnc."embedEnabled", cw."notify", COALESCE(tc."notifyEnabled", false), false) AS "notify",
+          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
+          COALESCE(cnc."embedEnabled", cw."notify", COALESCE(tc."notifyEnabled", false), false) AS "embedEnabled",
+          COALESCE(cnc."roleId", cw."notifyRole", tc."notifyRole") AS "notifyRole",
           cw."inferredMatchType",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
@@ -2568,6 +2628,9 @@ export class WarEventLogService {
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanNotifyConfig" cnc
+          ON cnc."guildId" = cw."guildId"
+          AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanPointsSync" cps
           ON cps."guildId" = cw."guildId"
           AND UPPER(REPLACE(cps."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
@@ -2737,11 +2800,17 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
-          tc."notifyChannelId" AS "channelId",
-          COALESCE(tc."notifyEnabled", false) AS "notify",
-          COALESCE(cw."pingRole", true) AS "pingRole",
-          true AS "embedEnabled",
-          tc."notifyRole" AS "notifyRole",
+          COALESCE(
+            cnc."channelId",
+            cw."channelId",
+            tc."notifyChannelId",
+            tc."mailChannelId",
+            tc."logChannelId"
+          ) AS "channelId",
+          COALESCE(cnc."embedEnabled", cw."notify", COALESCE(tc."notifyEnabled", false), false) AS "notify",
+          COALESCE(cnc."pingEnabled", cw."pingRole", true) AS "pingRole",
+          COALESCE(cnc."embedEnabled", cw."notify", COALESCE(tc."notifyEnabled", false), false) AS "embedEnabled",
+          COALESCE(cnc."roleId", cw."notifyRole", tc."notifyRole") AS "notifyRole",
           cw."inferredMatchType",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
@@ -2759,6 +2828,9 @@ export class WarEventLogService {
         FROM "CurrentWar" cw
         LEFT JOIN "TrackedClan" tc
           ON UPPER(REPLACE(tc."tag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
+        LEFT JOIN "ClanNotifyConfig" cnc
+          ON cnc."guildId" = cw."guildId"
+          AND UPPER(REPLACE(cnc."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
         LEFT JOIN "ClanPointsSync" cps
           ON cps."guildId" = cw."guildId"
           AND UPPER(REPLACE(cps."clanTag",'#','')) = UPPER(REPLACE(cw."clanTag",'#',''))
