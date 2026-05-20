@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
@@ -26,13 +26,26 @@ function buildRows() {
   return buildFwaMatchChecklistRowsFromCopyView({
     orderedTags: ["#PYPY", "#PYPL"],
     copyText:
-      "📬 | 🟢 | RR vs `Bravo` (`#B1`)\n📭 | 🔴 | TWC vs `Delta` (`#D2`)",
+      "ðŸ“¬ | ðŸŸ¢ | RR vs `Bravo` (`#B1`)\nðŸ“­ | ðŸ”´ | TWC vs `Delta` (`#D2`)",
     badgeByTag: new Map([
       ["#PYPY", "<:rr:111>"],
       ["#PYPL", "<:twc:222>"],
     ]),
   });
 }
+
+function buildMixedRows() {
+  return buildFwaMatchChecklistRowsFromCopyView({
+    orderedTags: ["#PYPY", "PYPL", "#MISS"],
+    copyText:
+      "ðŸ“¬ | ðŸŸ¢ | RR vs `Bravo` (`#B1`)\nðŸ“­ | ðŸ”´ | TWC vs `Delta` (`#D2`)\nðŸ“« | â | Missing badge (`#M9`)",
+    badgeByTag: new Map([
+      ["PYPY", "<:rr:111>"],
+      ["#PYPL", "<:twc:222>"],
+    ]),
+  });
+}
+
 
 describe("FWA match checklist service", () => {
   beforeEach(() => {
@@ -49,9 +62,28 @@ describe("FWA match checklist service", () => {
     expect(content).toContain(
       "React with your clan's badge to indicate that the in-game mails have been sent.",
     );
-    expect(content).toContain("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)");
-    expect(content).toContain("📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)");
+    expect(content).toContain("RR vs `Bravo` (`#B1`)");
+    expect(content).toContain("TWC vs `Delta` (`#D2`)");
   });
+
+  it("normalizes mixed badge tag formats and leaves missing badges empty", () => {
+    const rows = buildMixedRows();
+
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({
+      clanTag: "#PYPY",
+      badgeEmojiInline: "<:rr:111>",
+    });
+    expect(rows[1]).toMatchObject({
+      clanTag: "#PYPL",
+      badgeEmojiInline: "<:twc:222>",
+    });
+    expect(rows[2]).toMatchObject({
+      clanTag: "MISS",
+      badgeEmojiInline: "",
+    });
+  });
+
 
   it("publishes a public checklist with reactions and tracked-message persistence", async () => {
     const react = vi.fn().mockResolvedValue(undefined);
@@ -102,6 +134,35 @@ describe("FWA match checklist service", () => {
     expect(react).toHaveBeenCalledWith("<:twc:222>");
     expect(pin).toHaveBeenCalledTimes(1);
   });
+
+  it("reacts to each configured badge row even when badge keys use mixed tag formats", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const fetchReply = vi.fn().mockResolvedValue({ id: "message-1", react, pin });
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply,
+      fetchReply,
+    } as any;
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      rows: buildMixedRows(),
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: ["#PYPY"],
+    });
+
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(react).toHaveBeenCalledWith("<:twc:222>");
+    expect(react).toHaveBeenCalledTimes(2);
+    expect(pin).toHaveBeenCalledTimes(1);
+  });
+
 
   it("renders a private checklist snapshot without reactions or tracked-message writes", async () => {
     const react = vi.fn().mockResolvedValue(undefined);

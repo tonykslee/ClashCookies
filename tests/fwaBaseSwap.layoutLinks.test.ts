@@ -74,6 +74,7 @@ import {
   handleFwaBaseSwapSplitPostButton,
   Fwa,
   renderFwaBaseSwapAnnouncementForTest,
+  buildFwaBaseSwapReminderLinesForTest,
   setFwaBaseSwapSplitPostPayloadForTest,
   validateFwaBaseSwapSwapReminderOptionForTest,
 } from "../src/commands/Fwa";
@@ -849,8 +850,8 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
-  it("renders the swap-to-war reminder header and clan role mention when swap-reminder is enabled", () => {
-    const content = renderFwaBaseSwapAnnouncementForTest({
+  it("renders the swap-to-war reminder content separately when swap-reminder is enabled", () => {
+    const mainContent = renderFwaBaseSwapAnnouncementForTest({
       entries: [
         buildEntry({
           position: 1,
@@ -863,20 +864,25 @@ describe("FWA base-swap layout links", () => {
       ],
       layoutLinks: [],
       swapReminder: true,
-      clanRoleId: "role-1",
+      clanRoleId: "123456789012345678",
     });
+    const reminderContent = buildFwaBaseSwapReminderLinesForTest({
+      clanRoleId: "123456789012345678",
+    }).join("\n");
 
-    const lines = content.split("\n");
+    expect(mainContent).not.toContain("# Swap to WAR Bases");
+    expect(mainContent).not.toContain("<@&123456789012345678>");
+    const lines = reminderContent.split("\n");
     const headerIndex = lines.indexOf("# Swap to WAR Bases");
     const noteIndex = lines.indexOf(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
-    const roleIndex = lines.indexOf("<@&role-1>");
+    const roleIndex = lines.indexOf("<@&123456789012345678>");
 
     expect(headerIndex).toBeGreaterThan(-1);
     expect(noteIndex).toBeGreaterThan(headerIndex);
     expect(roleIndex).toBeGreaterThan(noteIndex);
-    expect(content).toContain("<@&role-1>");
+    expect(reminderContent).toContain("<@&123456789012345678>");
   });
 
   it("uses alert for war-bases and alert_blue for fwa-bases in mixed sections", () => {
@@ -1114,7 +1120,7 @@ describe("FWA base-swap layout links", () => {
     expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
   });
 
-  it("keeps the visible clan role mention in rerenders without re-allowing role pings", async () => {
+  it("keeps rerenders on the main announcement without re-allowing role pings", async () => {
     const metadata: FwaBaseSwapTrackedMetadata = {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
@@ -1160,10 +1166,8 @@ describe("FWA base-swap layout links", () => {
     expect(changed).toBe(true);
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
-    expect(String(editPayload.content)).toContain("# Swap to WAR Bases");
-    expect(String(editPayload.content)).toContain(
-      "<@&123456789012345678>",
-    );
+    expect(String(editPayload.content)).not.toContain("# Swap to WAR Bases");
+    expect(String(editPayload.content)).not.toContain("<@&123456789012345678>");
     expect(editPayload.allowedMentions.users).toEqual(["reactor-1"]);
     expect(editPayload.allowedMentions.roles).toBeUndefined();
   });
@@ -1794,7 +1798,128 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("adds a swap-to-war header and clan role mention when swap-reminder is enabled", async () => {
+  it("does not include the clan role allowedMention for base-errors only posts", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      baseErrors: "2",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 2,
+            playerTag: "#BBB222",
+            playerName: "Bravo",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "base_errors",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: "123456789012345678",
+      },
+    ]);
+    const posted = {
+      id: "msg-2",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-2",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(run.mailChannelSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.any(String),
+        allowedMentions: { users: ["111"] },
+      }),
+    );
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+  });
+
+  it("does not include the clan role allowedMention for fwa-bases main posts when swap-reminder is disabled", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: false,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: "123456789012345678",
+      },
+    ]);
+    const posted = {
+      id: "msg-3",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-3",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(run.mailChannelSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.any(String),
+        allowedMentions: { users: ["111"] },
+      }),
+    );
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+  });
+
+  it("posts the swap-back reminder separately and pings the clan role when swap-reminder is enabled", async () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       fwaBases: "1",
@@ -1843,21 +1968,24 @@ describe("FWA base-swap mail-channel routing", () => {
 
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
-    expect(run.mailChannelSend).toHaveBeenCalledWith(
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(2);
+    expect(run.mailChannelSend).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
         content: expect.any(String),
-        allowedMentions: { users: ["111"], roles: ["123456789012345678"] },
+        allowedMentions: { users: ["111"] },
       }),
     );
-    const content = String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "");
-    const headerIndex = content.indexOf("# Swap to WAR Bases");
-    const noteIndex = content.indexOf(
-      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
+    expect(run.mailChannelSend).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: expect.stringContaining("# Swap to WAR Bases"),
+        allowedMentions: { roles: ["123456789012345678"] },
+      }),
     );
-    const roleIndex = content.indexOf("<@&123456789012345678>");
-    expect(headerIndex).toBeGreaterThan(-1);
-    expect(noteIndex).toBeGreaterThan(headerIndex);
-    expect(roleIndex).toBeGreaterThan(noteIndex);
+    const mainContent = String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "");
+    expect(mainContent).not.toContain("# Swap to WAR Bases");
+    expect(mainContent).not.toContain("<@&123456789012345678>");
   });
 
   it("publishes both split base-swap posts to the clan mail channel", async () => {
@@ -1975,9 +2103,147 @@ describe("FWA base-swap mail-channel routing", () => {
     }
     expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
-    expect(interaction.update).toHaveBeenCalledWith(
+  expect(interaction.update).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining(postedA.url),
+        components: [],
+      }),
+    );
+  });
+
+  it("posts a separate clan-role reminder after split posts when swap-reminder is enabled", async () => {
+    const key = "split-mail-reminder-1";
+    setFwaBaseSwapSplitPostPayloadForTest(key, {
+      userId: "user-1",
+      username: "Requester",
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      mailChannelId: "mail-1",
+      clanRoleId: "123456789012345678",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "2",
+        baseErrors: null,
+        swapReminder: true,
+      }),
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "111",
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "fwa_bases",
+          discordUserId: "222",
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: null,
+      alertEmoji: null,
+      layoutBulletEmoji: null,
+      mentionUserIds: ["111", "222"],
+      swapReminder: true,
+      createdAtIso: "2026-03-20T00:00:00.000Z",
+      splitContents: ["Part 1 content", "Part 2 content"],
+    });
+
+    const postedA = {
+      id: "msg-1",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-1",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    const postedB = {
+      id: "msg-2",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-2",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    const reminderPosted = {
+      id: "msg-3",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-3",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    const mailChannelSend = vi
+      .fn()
+      .mockResolvedValueOnce(postedA)
+      .mockResolvedValueOnce(postedB)
+      .mockResolvedValueOnce(reminderPosted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      null,
+    );
+    const interaction = {
+      customId: buildFwaBaseSwapSplitPostCustomId({
+        userId: "user-1",
+        key,
+        action: "yes",
+      }),
+      user: {
+        id: "user-1",
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      client: {
+        channels: {
+          fetch: vi.fn().mockImplementation(async (channelId: string) => {
+            if (channelId === "mail-1") {
+              return {
+                id: "mail-1",
+                guildId: "guild-1",
+                isTextBased: () => true,
+                send: mailChannelSend,
+              };
+            }
+            return null;
+          }),
+        },
+      },
+      channel: {
+        isTextBased: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+      followUp: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFwaBaseSwapSplitPostButton(interaction as any);
+
+    expect(mailChannelSend).toHaveBeenCalledTimes(3);
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        content: "Part 1 content",
+        allowedMentions: { users: ["111", "222"] },
+      }),
+    );
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: "Part 2 content",
+        allowedMentions: { users: ["111", "222"] },
+      }),
+    );
+    expect(mailChannelSend).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        content: expect.stringContaining("# Swap to WAR Bases"),
+        allowedMentions: { roles: ["123456789012345678"] },
+      }),
+    );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
+    expect(reminderPosted.react).not.toHaveBeenCalled();
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(reminderPosted.url),
         components: [],
       }),
     );
