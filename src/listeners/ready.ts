@@ -11,6 +11,13 @@ import { ActivityService } from "../services/ActivityService";
 import { formatError } from "../helper/formatError";
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
+import {
+  parseFwaMatchChecklistMetadata,
+  parseSyncTimeMetadata,
+  trackedMessageService,
+  TRACKED_MESSAGE_FEATURE_TYPE,
+  TRACKED_MESSAGE_STATUS,
+} from "../services/TrackedMessageService";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { processDueRecruitmentReminders } from "../services/RecruitmentReminderService";
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
@@ -18,7 +25,11 @@ import { SettingsService } from "../services/SettingsService";
 import { WarEventLogService } from "../services/WarEventLogService";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
-import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
+import {
+  buildFwaMatchChecklistRenderStateForGuild,
+  getSourceOfTruthSync,
+  refreshAllTrackedWarMailPosts,
+} from "../commands/Fwa";
 import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
 import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
 import { AutoRoleSchedulerService } from "../services/AutoRoleSchedulerService";
@@ -39,7 +50,6 @@ import {
   setNextNotifyRefreshAtMs,
   setNextWarMailRefreshAtMs,
 } from "../services/refreshSchedule";
-import { trackedMessageService } from "../services/TrackedMessageService";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { cwlStateService } from "../services/CwlStateService";
@@ -68,7 +78,7 @@ import {
   resolveWarEventPollIntervalMsFromEnv,
 } from "../services/WarEventPollScheduleService";
 import { MirrorSyncService } from "../services/MirrorSyncService";
-
+import { publishFwaMatchChecklistMessageToChannel } from "../services/FwaMatchChecklistService";
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const RECRUITMENT_RULE_REMINDER_INTERVAL_MS = 60 * 1000;
@@ -593,6 +603,7 @@ export default (client: Client, cocService: CoCService): void => {
     const activePollingEnabled = isActivePollingMode(process.env);
     const mirrorSyncService = new MirrorSyncService();
     const heatMapRefRebuildService = new HeatMapRefRebuildService();
+    const warLookupCache: Map<string, Promise<unknown>> = new Map();
     dozzleLog.info(`[polling-mode] mode=${pollingMode}`);
 
     const observeTrackedClans = async (): Promise<{
@@ -974,6 +985,26 @@ export default (client: Client, cocService: CoCService): void => {
         console.error(`[tracked-messages] sweep failed: ${formatError(err)}`);
       }
       try {
+        if (!activePollingEnabled) {
+          console.log(
+            "[polling-mode] event=poller_skipped job=fwa_match_checklist_scheduler mode=mirror",
+          );
+        } else {
+          const checklistPostsPosted =
+            await runScheduledFwaMatchChecklistPosts(now);
+          if (checklistPostsPosted > 0) {
+            console.log(
+              `[tracked-messages] fwa match checklist scheduler posted=${checklistPostsPosted}`,
+            );
+          }
+        }
+      } catch (err) {
+        sweepError = err;
+        console.error(
+          `[tracked-messages] fwa match checklist scheduler failed: ${formatError(err)}`,
+        );
+      }
+      try {
         await markPollJobStarted({
           jobKey: BOT_POLL_STATUS_JOB_KEYS.heatmaprefRebuildCycle,
           displayName: BOT_POLL_STATUS_DISPLAY_NAMES.heatmaprefRebuildCycle,
@@ -1086,6 +1117,149 @@ export default (client: Client, cocService: CoCService): void => {
           },
         });
       }
+    };
+
+    type ScheduledFwaMatchChecklistSyncPost = {
+      guildId: string;
+      channelId: string;
+      messageId: string;
+      createdAt: Date;
+      metadata: unknown;
+    };
+
+    type ScheduledFwaMatchChecklistCandidate = ScheduledFwaMatchChecklistSyncPost & {
+      parsedMetadata: ReturnType<typeof parseSyncTimeMetadata>;
+    };
+
+    const selectLatestScheduledFwaMatchChecklistSyncPosts = (
+      syncPosts: ScheduledFwaMatchChecklistSyncPost[],
+    ): ScheduledFwaMatchChecklistCandidate[] => {
+      const selectedByGuild = new Map<string, ScheduledFwaMatchChecklistCandidate>();
+      for (const tracked of syncPosts) {
+        if (selectedByGuild.has(tracked.guildId)) continue;
+        selectedByGuild.set(tracked.guildId, {
+          ...tracked,
+          parsedMetadata: parseSyncTimeMetadata(tracked.metadata),
+        });
+      }
+      return [...selectedByGuild.values()];
+    };
+
+    const runScheduledFwaMatchChecklistPosts = async (
+      now: Date,
+    ): Promise<number> => {
+      const dueSyncPosts = await prisma.trackedMessage.findMany({
+        where: {
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          referenceId: null,
+        },
+        select: {
+          guildId: true,
+          channelId: true,
+          messageId: true,
+          createdAt: true,
+          metadata: true,
+        },
+        orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
+      });
+
+      const latestEligibleSyncPosts =
+        selectLatestScheduledFwaMatchChecklistSyncPosts(dueSyncPosts);
+
+      let postedCount = 0;
+      for (const tracked of latestEligibleSyncPosts) {
+        if (!tracked.parsedMetadata) {
+          console.warn(
+            `[tracked-message] fwa match checklist skipped sync_metadata_missing guild=${tracked.guildId} message=${tracked.messageId}`,
+          );
+          continue;
+        }
+
+        const dueAtMs = tracked.parsedMetadata.syncEpochSeconds * 1000 + 3 * 60 * 1000;
+        if (now.getTime() < dueAtMs) continue;
+
+        const sourceSync = await getSourceOfTruthSync(settings, tracked.guildId);
+        const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
+          cocService,
+          sourceSync,
+          guildId: tracked.guildId,
+          warLookupCache,
+          client,
+          mailStatusDebugEnabled: false,
+        });
+
+        if (checklistState.rows.length === 0) {
+          console.log(
+            `[tracked-message] fwa match checklist skipped no_tracked_clans guild=${tracked.guildId} sync_message=${tracked.messageId}`,
+          );
+          continue;
+        }
+
+        const existingChecklistRows = await prisma.trackedMessage.findMany({
+          where: {
+            guildId: tracked.guildId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          },
+          select: {
+            referenceId: true,
+            metadata: true,
+            messageId: true,
+          },
+        });
+        const duplicateChecklist = existingChecklistRows.find((row) => {
+          if (row.referenceId === tracked.messageId) return true;
+          const checklistMetadata = parseFwaMatchChecklistMetadata(row.metadata);
+          return checklistMetadata?.scopeKey === checklistState.scopeKey;
+        });
+        if (duplicateChecklist) {
+          console.log(
+            `[tracked-message] fwa match checklist skipped duplicate guild=${tracked.guildId} sync_message=${tracked.messageId} checklist_message=${duplicateChecklist.messageId} reference=${duplicateChecklist.referenceId ?? "none"}`,
+          );
+          continue;
+        }
+
+        const guild = await client.guilds.fetch(tracked.guildId).catch(() => null);
+        if (!guild) {
+          console.warn(
+            `[tracked-message] fwa match checklist skipped guild_missing guild=${tracked.guildId} sync_message=${tracked.messageId}`,
+          );
+          continue;
+        }
+        const channel = await guild.channels.fetch(tracked.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased() || !("send" in channel)) {
+          console.warn(
+            `[tracked-message] fwa match checklist skipped channel_unavailable guild=${tracked.guildId} channel=${tracked.channelId} sync_message=${tracked.messageId}`,
+          );
+          continue;
+        }
+
+        const postedMessageId = await publishFwaMatchChecklistMessageToChannel({
+          channel: channel as any,
+          guildId: tracked.guildId,
+          channelId: tracked.channelId,
+          rows: checklistState.rows,
+          clanTag: null,
+          scopeKey: checklistState.scopeKey,
+          checkedClanTags: checklistState.checkedClanTags,
+          createdByUserId: client.user?.id ?? "system",
+          referenceId: tracked.messageId,
+        });
+        if (!postedMessageId) {
+          console.error(
+            `[tracked-message] fwa match checklist post failed guild=${tracked.guildId} channel=${tracked.channelId} sync_message=${tracked.messageId}`,
+          );
+          continue;
+        }
+
+        console.log(
+          `[tracked-message] fwa match checklist posted guild=${tracked.guildId} channel=${tracked.channelId} message=${postedMessageId} sync_message=${tracked.messageId} sync_due_at=${new Date(dueAtMs).toISOString()}`,
+        );
+        postedCount += 1;
+      }
+
+      return postedCount;
     };
 
     startupPhase = "tracked_message_sweep";

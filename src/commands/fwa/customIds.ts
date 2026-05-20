@@ -13,6 +13,7 @@ const FWA_MAIL_CONFIRM_PREFIX = "fwa-mail-confirm";
 const FWA_MAIL_CONFIRM_NO_PING_PREFIX = "fwa-mail-confirm-no-ping";
 const FWA_MAIL_BACK_PREFIX = "fwa-mail-back";
 const FWA_MAIL_REFRESH_PREFIX = "fwa-mail-refresh";
+const FWA_MATCH_CHECKLIST_REFRESH_PREFIX = "fwa-match-checklist-refresh";
 const FWA_MATCH_SEND_MAIL_PREFIX = "fwa-match-send-mail";
 const FWA_MAIL_GATE_RESUME_PREFIX = "fwa-mail-gate-resume";
 const FWA_MATCH_TIEBREAKER_PREFIX = "fwa-match-tiebreaker";
@@ -371,6 +372,21 @@ export function parseFwaMailRefreshCustomId(customId: string): { key: string } |
 /** Purpose: detect manual war-mail refresh button prefix. */
 export function isFwaMailRefreshButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_MAIL_REFRESH_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for checklist refresh button. */
+export function buildFwaMatchChecklistRefreshCustomId(): string {
+  return FWA_MATCH_CHECKLIST_REFRESH_PREFIX;
+}
+
+/** Purpose: parse checklist refresh custom-id payload. */
+export function parseFwaMatchChecklistRefreshCustomId(customId: string): boolean {
+  return customId === FWA_MATCH_CHECKLIST_REFRESH_PREFIX;
+}
+
+/** Purpose: detect checklist refresh button custom-id prefix. */
+export function isFwaMatchChecklistRefreshButtonCustomId(customId: string): boolean {
+  return customId === FWA_MATCH_CHECKLIST_REFRESH_PREFIX;
 }
 
 /** Purpose: build custom-id for sending war-mail from the /fwa match card. */
