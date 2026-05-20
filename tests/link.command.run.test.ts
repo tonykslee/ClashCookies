@@ -2,6 +2,7 @@
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
+import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ import {
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
   buildLinkListDescriptionLinesForTest,
+  buildLinkListRefreshButtonCustomId,
   buildLinkListSelectCustomId,
   buildLinkListSortButtonCustomId,
   handleReminderLinkButtonInteraction,
@@ -54,6 +56,7 @@ import {
   handleReminderLinkConfirmButtonInteraction,
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
+  handleLinkListRefreshButton,
   handleLinkListSelectMenu,
   handleLinkListSortButton,
   isLinkEmbedAccountButtonCustomId,
@@ -730,16 +733,25 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
+        playerName: "Tilonius",
+        townHall: 18,
+        rank: 18,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
+        playerName: "Unlinked Guy",
+        townHall: 15,
+        rank: 17,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#LCUV0289",
+        playerName: "Mystery Zero",
+        townHall: 14,
+        rank: 16,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
@@ -808,41 +820,12 @@ describe("/link run", () => {
       guildMemberNames: { "111111111111111111": "Sin Display" },
       clientApplication: application,
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Tilonius",
-            townHallLevel: 18,
-            mapPosition: 1,
-            clanRank: 18,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Unlinked Guy",
-            townHallLevel: 15,
-            mapPosition: 2,
-            clanRank: 17,
-          },
-          {
-            tag: "#LCUV0289",
-            name: "Mystery Zero",
-            townHallLevel: 14,
-            mapPosition: 3,
-            clanRank: 16,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const firstEmbed = payload.embeds[0].toJSON();
 
-    expect(firstEmbed.title).toBe("<:badge:1> Alpha Clan #PQL0289");
+    expect(firstEmbed.title).toBe("<:badge:1> Tracked Alpha #PQL0289");
     expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
     const description = String(firstEmbed.description ?? "");
     expect(description).toContain("Linked Users: 1");
@@ -887,6 +870,8 @@ describe("/link run", () => {
     expect(currentFallbackParts.townHallIcon).toBe("<:th15:15>");
     expect(emptyFallbackParts.townHallIcon).toBe("<:th14:14>");
     expect(linkedParts.left).toBe("Persisted Sin");
+    expect(currentFallbackParts.left).toBe("—");
+    expect(emptyFallbackParts.left).toBe("—");
     expect(linkedParts.tag).toBe("#PYLQ0289");
     expect(currentFallbackParts.tag).toBe("#QGRJ2222");
     expect(emptyFallbackParts.tag).toBe("#LCUV0289");
@@ -907,16 +892,191 @@ describe("/link run", () => {
     expect(emptyFallbackRow).toContain("`#LCUV0289`");
     expect(currentFallbackRow).not.toContain("``");
     expect(emptyFallbackRow).not.toContain("``");
-    const sortButton = payload.components[0].components[0].toJSON();
+    const refreshButton = payload.components[0].components[0].toJSON();
+    const sortButton = payload.components[1].components[0].toJSON();
+    expect(refreshButton.label).toBe("Refresh Data");
     expect(sortButton.label).toBe("Sort: Discord Name");
 
-    const select = payload.components[1].components[0].toJSON();
+    const select = payload.components[2].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(
       select.options.some(
         (opt: any) => opt.default && opt.value === "#PQL0289",
       ),
     ).toBe(true);
+  });
+
+  it("refreshes the selected clan from live CoC and rerenders from DB", async () => {
+    const oldRows = [
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Old Player",
+        townHall: 15,
+        rank: 15,
+        weight: 0,
+        sourceSyncedAt: new Date("2026-03-20T09:07:00.000Z"),
+      },
+    ];
+    const refreshedRows = [
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Refreshed Player",
+        townHall: 18,
+        rank: 18,
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "New Unlinked",
+        townHall: 16,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ];
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "RefreshUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(oldRows as any);
+    const refreshSync = vi
+      .spyOn(
+        FwaClanMembersSyncService.prototype,
+        "refreshCurrentClanMembersForClanTags",
+      )
+      .mockImplementation(async () => {
+        prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+          refreshedRows as any,
+        );
+        return {
+          clanCount: 1,
+          rowCount: refreshedRows.length,
+          changedRowCount: refreshedRows.length,
+          failedClans: [],
+        };
+      });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Refreshed Player",
+            townHallLevel: 18,
+            clanRank: 18,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "New Unlinked",
+            townHallLevel: 16,
+            clanRank: 17,
+          },
+        ],
+      }),
+    };
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListRefreshButton(interaction as any, cocService as any);
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).toHaveBeenCalledWith("#PQL0289");
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(followUp).not.toHaveBeenCalled();
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    const description = String(embed.description ?? "");
+    expect(description).toContain("Refreshed Player");
+    expect(description).toContain("New Unlinked");
+    expect(description).not.toContain("Old Player");
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payload.components[1].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+    refreshSync.mockRestore();
+  });
+
+  it("keeps the DB-backed roster visible when refresh fetch fails", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "RefreshUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Saved Player",
+        townHall: 18,
+        rank: 18,
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClan: vi.fn().mockRejectedValue({
+        message: "rate limited",
+        status: 429,
+        code: "429",
+      }),
+    };
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListRefreshButton(interaction as any, cocService as any);
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "refresh_failed: CoC API failed for #PQL0289. Showing last saved roster.",
+    });
   });
 
   it("falls back to question-mark Town Hall icons when application emojis cannot be loaded", async () => {
@@ -932,11 +1092,17 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
+        playerName: "Fallback One",
+        townHall: 18,
+        rank: 18,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
+        playerName: "Fallback Two",
+        townHall: 15,
+        rank: 17,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
@@ -948,29 +1114,7 @@ describe("/link run", () => {
       subcommand: "list",
       clanTag: "#PQL0289",
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Fallback One",
-            townHallLevel: 18,
-            mapPosition: 1,
-            clanRank: 18,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Fallback Two",
-            townHallLevel: 15,
-            mapPosition: 2,
-            clanRank: 17,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
@@ -1016,6 +1160,7 @@ describe("/link run", () => {
     expect(linkedRow).toContain("`#QR9R0LGJ9`");
     expect(linkedRow).toContain(":person_standing:");
     expect(unlinkedRow).toContain("❌");
+    expect(unlinkedRow).toContain("—");
     expect(unlinkedRow).toContain("`#LCUV0289`");
     expect(unlinkedRow).toContain("`Mystery Zero");
   });
@@ -1027,6 +1172,24 @@ describe("/link run", () => {
         discordUserId: "111111111111111111",
         discordUsername: "Persisted Sin",
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Persisted Sin",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Unlinked Example",
+        townHall: 17,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
     ]);
     const application = {
@@ -1061,27 +1224,11 @@ describe("/link run", () => {
       clanTag: "#PQL0289",
       clientApplication: application,
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Tilonius",
-            townHallLevel: 18,
-            mapPosition: 1,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Unlinked Guy",
-            townHallLevel: 15,
-            mapPosition: 2,
-          },
-        ],
-      }),
-    };
+    const cocService = { getClan: vi.fn() };
 
     await Link.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getClan).not.toHaveBeenCalled();
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
@@ -1100,25 +1247,21 @@ describe("/link run", () => {
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Player",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Tilonius",
-            townHallLevel: 18,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
@@ -1135,25 +1278,21 @@ describe("/link run", () => {
         createdAt: new Date("2026-03-15T09:07:00.000Z"),
       },
     ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Player",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Tilonius",
-            townHallLevel: 18,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
@@ -1163,31 +1302,28 @@ describe("/link run", () => {
 
   it("renders only unlinked bucket when there are no linked users", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Player Two",
+        townHall: 15,
+        rank: 17,
+        weight: 0,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
 
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#QGRJ2222",
-            name: "Player Two",
-            townHallLevel: 15,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
+    expect(description).toContain("`—`");
     expect(description).toContain("`#QGRJ2222`");
     expect(description).toContain("Player Two");
     expect(description).toContain("❔");
@@ -1201,17 +1337,11 @@ describe("/link run", () => {
       subcommand: "list",
       clanTag: "#PQL0289",
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [],
-      }),
-    };
-
-    await Link.run({} as any, interaction as any, cocService as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    await Link.run({} as any, interaction as any, {} as any);
 
     expect(interaction.editReply).toHaveBeenCalledWith(
-      "empty_list: no current clan members for #PQL0289.",
+      "empty_list: no saved current clan members for #PQL0289. Use Refresh Data or wait for sync.",
     );
   });
 
@@ -1290,6 +1420,16 @@ describe("/link run", () => {
     prismaMock.currentWar.findMany.mockResolvedValue(
       tags.map((tag) => ({ clanTag: tag })),
     );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: currentTag,
+        playerName: "Current Player",
+        townHall: 16,
+        rank: 1,
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
     prismaMock.trackedClan.findMany.mockResolvedValue(
       tags.map((tag, idx) => ({
         tag,
@@ -1303,24 +1443,11 @@ describe("/link run", () => {
       subcommand: "list",
       clanTag: currentTag,
     });
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Current Clan",
-        members: [
-          {
-            tag: currentTag,
-            name: "Current Player",
-            townHallLevel: 16,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
 
-    await Link.run({} as any, interaction as any, cocService as any);
+    await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const select = payload.components[1].components[0].toJSON();
+    const select = payload.components[2].components[0].toJSON();
 
     expect(select.options).toHaveLength(25);
     expect(select.options.map((opt: any) => opt.value)).toContain(currentTag);
@@ -1363,7 +1490,16 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha Select",
+        townHall: 18,
+        rank: 18,
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
   });
@@ -1395,26 +1531,12 @@ describe("/link list select menu", () => {
       replied: false,
     };
 
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PQL0289",
-            name: "Player One",
-            townHallLevel: 15,
-            mapPosition: 1,
-          },
-        ],
-      }),
-    };
-
+    const cocService = { getClan: vi.fn() };
     await handleLinkListSelectMenu(interaction as any, cocService as any);
 
+    expect(cocService.getClan).not.toHaveBeenCalled();
+
     expect(deferUpdate).toHaveBeenCalledTimes(1);
-    expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
-      cocService.getClan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
     expect(editReply).toHaveBeenCalledTimes(1);
     expect(deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
       editReply.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
@@ -1432,6 +1554,9 @@ describe("/link list select menu", () => {
     expect(description).not.toContain("|");
     expect(firstEmbed.footer?.text).toBe("Sort: Weight Desc");
     expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payload.components[1].components[0].toJSON().label).toBe(
       "Sort: Weight Desc",
     );
     expect(reply).not.toHaveBeenCalled();
@@ -1517,16 +1642,25 @@ describe("/link list sort button", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
+        playerName: "Charlie",
+        townHall: 18,
+        rank: 18,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
+        playerName: "Alpha",
+        townHall: 17,
+        rank: 17,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#LCUV0289",
+        playerName: "Bravo",
+        townHall: 16,
+        rank: 16,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
@@ -1552,35 +1686,6 @@ describe("/link list sort button", () => {
   });
 
   it("cycles sort mode in stable order and rerenders rows", async () => {
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Charlie",
-            townHallLevel: 16,
-            mapPosition: 1,
-            clanRank: 18,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Alpha",
-            townHallLevel: 15,
-            mapPosition: 2,
-            clanRank: 17,
-          },
-          {
-            tag: "#LCUV0289",
-            name: "Bravo",
-            townHallLevel: 14,
-            mapPosition: 3,
-            clanRank: 16,
-          },
-        ],
-      }),
-    };
-
     const runSortClick = async (
       mode:
         | "discord"
@@ -1612,15 +1717,14 @@ describe("/link list sort button", () => {
         replied: false,
       };
 
+      const cocService = { getClan: vi.fn() };
       await handleLinkListSortButton(interaction as any, cocService as any);
+      expect(cocService.getClan).not.toHaveBeenCalled();
       return { deferUpdate, editReply, update, reply };
     };
 
     const fromDiscord = await runSortClick("discord");
     expect(fromDiscord.deferUpdate).toHaveBeenCalledTimes(1);
-    expect(fromDiscord.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
-      cocService.getClan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
     expect(fromDiscord.editReply).toHaveBeenCalledTimes(1);
     expect(fromDiscord.update).not.toHaveBeenCalled();
     const payloadWeight = fromDiscord.editReply.mock.calls[0]?.[0] as any;
@@ -1634,6 +1738,9 @@ describe("/link list sort button", () => {
       descriptionWeight.indexOf("ZedUser"),
     );
     expect(payloadWeight.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadWeight.components[1].components[0].toJSON().label).toBe(
       "Sort: Weight Desc",
     );
     expect(fromDiscord.reply).not.toHaveBeenCalled();
@@ -1653,6 +1760,9 @@ describe("/link list sort button", () => {
       descriptionPlayerTags.indexOf("#PYLQ0289"),
     );
     expect(payloadPlayerTags.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadPlayerTags.components[1].components[0].toJSON().label).toBe(
       "Sort: Player Tags",
     );
 
@@ -1679,6 +1789,9 @@ describe("/link list sort button", () => {
     const embedDiscord = payloadDiscord.embeds[0].toJSON();
     expect(embedDiscord.footer?.text).toBe("Sort: Clan Rank Desc");
     expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadDiscord.components[1].components[0].toJSON().label).toBe(
       "Sort: Clan Rank Desc",
     );
     const descriptionClanRank = String(embedDiscord.description ?? "");
@@ -1729,6 +1842,9 @@ describe("/link list sort button", () => {
     const embedClanRank = payloadClanRank.embeds[0].toJSON();
     expect(embedClanRank.footer?.text).toBe("Sort: Inactivity");
     expect(payloadClanRank.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadClanRank.components[1].components[0].toJSON().label).toBe(
       "Sort: Inactivity",
     );
     const descriptionInactivity = String(embedClanRank.description ?? "");
@@ -1758,6 +1874,9 @@ describe("/link list sort button", () => {
     const embedInactivity = payloadInactivity.embeds[0].toJSON();
     expect(embedInactivity.footer?.text).toBe("Sort: Discord Name");
     expect(payloadInactivity.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadInactivity.components[1].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
     );
   });
@@ -1786,46 +1905,29 @@ describe("/link list sort button", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
+        playerName: "Charlie",
+        townHall: 16,
+        rank: 18,
         weight: 120000,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
+        playerName: "Alpha",
+        townHall: 15,
+        rank: 17,
         weight: 120000,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
       {
         playerTag: "#LCUV0289",
+        playerName: "Bravo",
+        townHall: 14,
+        rank: 16,
         weight: 120000,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
     ]);
-
-    const cocService = {
-      getClan: vi.fn().mockResolvedValue({
-        name: "Alpha Clan",
-        members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Charlie",
-            townHallLevel: 16,
-            mapPosition: 1,
-          },
-          {
-            tag: "#QGRJ2222",
-            name: "Alpha",
-            townHallLevel: 15,
-            mapPosition: 2,
-          },
-          {
-            tag: "#LCUV0289",
-            name: "Bravo",
-            townHallLevel: 14,
-            mapPosition: 3,
-          },
-        ],
-      }),
-    };
 
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -1849,7 +1951,7 @@ describe("/link list sort button", () => {
       replied: false,
     };
 
-    await handleLinkListSortButton(interaction as any, cocService as any);
+    await handleLinkListSortButton(interaction as any, {} as any);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
@@ -2415,3 +2517,4 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
+

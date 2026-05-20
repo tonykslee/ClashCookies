@@ -103,6 +103,7 @@ import {
 import {
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
+  handleLinkListRefreshButton,
   handleReminderLinkButtonInteraction,
   handleReminderLinkCancelButtonInteraction,
   handleReminderLinkConfirmButtonInteraction,
@@ -113,6 +114,7 @@ import {
   isReminderLinkCancelButtonCustomId,
   isReminderLinkConfirmButtonCustomId,
   isLinkEmbedModalCustomId,
+  isLinkListRefreshButtonCustomId,
   isLinkListSelectCustomId,
   isLinkListSortButtonCustomId,
 } from "../commands/Link";
@@ -846,6 +848,21 @@ const handleSelectMenuInteraction = async (
         "Failed to update link list view.",
         err,
       );
+    }
+    return;
+  }
+
+  if (isLinkListRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleLinkListRefreshButton(interaction as any, cocService);
+    } catch (err) {
+      console.error(`Link list refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh link list data.",
+        });
+      }
     }
     return;
   }
