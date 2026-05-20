@@ -202,6 +202,10 @@ describe("command coverage", () => {
 
   it("documents the /link list clan rank sort mode in the link help detail text", () => {
     const linkHelpText = helpEmbedText("link");
+    expect(linkHelpText).toContain("Town Hall icon outside inline code");
+    expect(linkHelpText).toContain("player tag shown in its own inline-code segment");
+    expect(linkHelpText).toContain(":person_standing:");
+    expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Rank Desc -> Inactivity");
     expect(linkHelpText).toContain("Clan Rank Desc");
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
