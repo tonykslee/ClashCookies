@@ -585,7 +585,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`list` renders non-zero linked/unlinked count buckets with padded rows: linked rows start with a resolved `yes` status emoji, place the Town Hall icon outside inline code, and show separate inline-code segments for the linked display name, player tag, and player name/weight; unlinked rows use the same layout with a resolved `no` status emoji and player tag shown in its own inline-code segment.",
       "Weight (`Wt`) comes from `FwaClanMemberCurrent.weight` first, then `FwaPlayerCatalog.latestKnownWeight`, then `PlayerCurrent.currentWeight`, and is shown as compact lowercase `k` text (for example `145k`), with `—` when no resolved positive weight exists.",
       "`embed` is admin-gated and posts a reusable self-service Link Account embed with button + modal flow.",
-      "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name`) and updates the same message in place.",
+      "`list` includes a tracked-clan dropdown and a sort-cycle button (`Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Rank Desc`) and updates the same message in place. `Clan Rank Desc` shows the current in-game clan rank for each row instead of weight.",
       "`list` shows active sort mode in the embed footer.",
       "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],

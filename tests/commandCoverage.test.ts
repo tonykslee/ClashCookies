@@ -200,6 +200,12 @@ describe("command coverage", () => {
     expect(compoHelpText).toContain("remaining open slots");
   });
 
+  it("documents the /link list clan rank sort mode in the link help detail text", () => {
+    const linkHelpText = helpEmbedText("link");
+    expect(linkHelpText).toContain("Clan Rank Desc");
+    expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
+  });
+
   it("documents /compo heatmapref blacklist mode in the compo help detail text", () => {
     const compoHelpText = helpEmbedText("compo");
     expect(compoHelpText).toContain("/compo heatmapref mode:blacklist");

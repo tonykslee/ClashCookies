@@ -1410,25 +1410,28 @@ describe("/link list sort button", () => {
             name: "Charlie",
             townHallLevel: 16,
             mapPosition: 1,
+            role: "leader",
           },
           {
             tag: "#QGRJ2222",
             name: "Alpha",
             townHallLevel: 15,
             mapPosition: 2,
+            role: "coLeader",
           },
           {
             tag: "#LCUV0289",
             name: "Bravo",
             townHallLevel: 14,
             mapPosition: 3,
+            role: "member",
           },
         ],
       }),
     };
 
     const runSortClick = async (
-      mode: "discord" | "weight" | "player-tags" | "player",
+      mode: "discord" | "weight" | "player-tags" | "player" | "clan-rank",
     ) => {
       const deferUpdate = vi.fn().mockResolvedValue(undefined);
       const editReply = vi.fn().mockResolvedValue(undefined);
@@ -1517,8 +1520,31 @@ describe("/link list sort button", () => {
     expect(fromPlayer.update).not.toHaveBeenCalled();
     const payloadDiscord = fromPlayer.editReply.mock.calls[0]?.[0] as any;
     const embedDiscord = payloadDiscord.embeds[0].toJSON();
-    expect(embedDiscord.footer?.text).toBe("Sort: Discord Name");
+    expect(embedDiscord.footer?.text).toBe("Sort: Clan Rank Desc");
     expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
+      "Sort: Clan Rank Desc",
+    );
+    const descriptionClanRank = String(embedDiscord.description ?? "");
+    expect(descriptionClanRank.indexOf("ZedUser")).toBeLessThan(
+      descriptionClanRank.indexOf("AmyUser"),
+    );
+    expect(descriptionClanRank.indexOf("AmyUser")).toBeLessThan(
+      descriptionClanRank.indexOf("BobUser"),
+    );
+    const clanRankRows = getInlineRows(descriptionClanRank);
+    expect(clanRankRows).toHaveLength(3);
+    expect(getInlineRowSegments(clanRankRows[0] ?? "").weight).toBe("leader");
+    expect(getInlineRowSegments(clanRankRows[1] ?? "").weight).toBe("coLeader");
+    expect(getInlineRowSegments(clanRankRows[2] ?? "").weight).toBe("member");
+
+    const fromClanRank = await runSortClick("clan-rank");
+    expect(fromClanRank.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromClanRank.editReply).toHaveBeenCalledTimes(1);
+    expect(fromClanRank.update).not.toHaveBeenCalled();
+    const payloadCircle = fromClanRank.editReply.mock.calls[0]?.[0] as any;
+    const embedCircle = payloadCircle.embeds[0].toJSON();
+    expect(embedCircle.footer?.text).toBe("Sort: Discord Name");
+    expect(payloadCircle.components[0].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
     );
   });

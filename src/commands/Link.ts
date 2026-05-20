@@ -91,6 +91,7 @@ const LINK_LIST_SORT_MODE_CYCLE = [
   "weight",
   "player-tags",
   "player",
+  "clan-rank",
 ] as const;
 
 type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
@@ -101,6 +102,8 @@ type ClanMemberRow = {
   playerName: string;
   townHall: number | null;
   mapPosition: number | null;
+  clanRankLabel: string | null;
+  clanRankSortScore: number | null;
   index: number;
 };
 
@@ -149,7 +152,8 @@ function normalizeLinkListSortMode(
     value === "discord" ||
     value === "weight" ||
     value === "player-tags" ||
-    value === "player"
+    value === "player" ||
+    value === "clan-rank"
   ) {
     return value;
   }
@@ -160,6 +164,7 @@ function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "weight") return "Weight Desc";
   if (mode === "player-tags") return "Player Tags";
   if (mode === "player") return "Player Name";
+  if (mode === "clan-rank") return "Clan Rank Desc";
   return "Discord Name";
 }
 
@@ -356,6 +361,8 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
         name?: string;
         townHallLevel?: number | string | null;
         mapPosition?: number | null;
+        role?: string | null;
+        rank?: string | number | null;
       } | null;
       const playerTag = normalizePlayerTag(String(row?.tag ?? ""));
       if (!playerTag) return null;
@@ -363,6 +370,13 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
       const name = sanitizeTableText(String(row?.name ?? "")) || playerTag;
       const mapPositionRaw = tryParseFiniteNumber(row?.mapPosition);
       const townHallRaw = tryParseFiniteNumber(row?.townHallLevel);
+      const clanRankLabel = normalizeClanRankLabel(
+        row?.role ?? row?.rank ?? null,
+      );
+      const clanRankSortScore = getClanRankSortScore(
+        clanRankLabel,
+        mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
+      );
 
       return {
         playerTag,
@@ -373,6 +387,8 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
             : null,
         mapPosition:
           mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
+        clanRankLabel,
+        clanRankSortScore,
         index,
       } as ClanMemberRow;
     })
@@ -399,6 +415,43 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
     deduped.push(row);
   }
   return deduped;
+}
+
+const CLAN_ROLE_SORT_ORDER = new Map<string, number>([
+  ["leader", 4],
+  ["coleader", 3],
+  ["elder", 2],
+  ["member", 1],
+]);
+
+function normalizeClanRankLabel(input: unknown): string | null {
+  const text = sanitizeTableText(String(input ?? ""));
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (lower === "leader") return "leader";
+  if (lower === "coleader") return "coLeader";
+  if (lower === "elder") return "elder";
+  if (lower === "member") return "member";
+  return null;
+}
+
+function getClanRankSortScore(
+  clanRankLabel: string | null,
+  mapPosition: number | null,
+): number | null {
+  const roleScore =
+    clanRankLabel !== null
+      ? CLAN_ROLE_SORT_ORDER.get(clanRankLabel.toLowerCase()) ?? null
+      : null;
+  if (roleScore !== null) {
+    const positionScore =
+      mapPosition !== null ? Math.max(0, 1_000_000 - mapPosition) : 0;
+    return roleScore * 1_000_000 + positionScore;
+  }
+  if (mapPosition !== null) {
+    return 1_000_000 - mapPosition;
+  }
+  return null;
 }
 
 type DescriptionChunk = {
@@ -641,6 +694,7 @@ type LinkListResolvedMemberRow = {
   playerTag: string;
   defaultIndex: number;
   weightValue: number | null;
+  clanRankSortScore: number | null;
   playerSort: string;
   discordSort: string;
   row: LinkListRowInput;
@@ -697,6 +751,27 @@ function sortLinkListRows(
         a.weightValue !== b.weightValue
       ) {
         return b.weightValue - a.weightValue;
+      }
+      const byDiscord = compareSortText(a.discordSort, b.discordSort);
+      if (byDiscord !== 0) return byDiscord;
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      if (a.playerTag !== b.playerTag) {
+        return compareSortText(a.playerTag, b.playerTag);
+      }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
+    if (sortMode === "clan-rank") {
+      const aHasRank = a.clanRankSortScore !== null;
+      const bHasRank = b.clanRankSortScore !== null;
+      if (aHasRank !== bHasRank) return aHasRank ? -1 : 1;
+      if (
+        a.clanRankSortScore !== null &&
+        b.clanRankSortScore !== null &&
+        a.clanRankSortScore !== b.clanRankSortScore
+      ) {
+        return b.clanRankSortScore - a.clanRankSortScore;
       }
       const byDiscord = compareSortText(a.discordSort, b.discordSort);
       if (byDiscord !== 0) return byDiscord;
@@ -877,7 +952,13 @@ async function buildLinkListView(input: {
       MAX_PLAYER_NAME_CHARS,
     );
     const weightValue = weightByTag.get(member.playerTag) ?? null;
-    const weight = formatCompactWeightK(weightValue);
+    const rankLabel =
+      member.clanRankLabel ??
+      (member.mapPosition !== null ? `#${member.mapPosition}` : WEIGHT_PLACEHOLDER);
+    const weight =
+      sortMode === "clan-rank"
+        ? rankLabel
+        : formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
     const leftLabel = link
       ? truncateWithEllipsis(
@@ -901,6 +982,7 @@ async function buildLinkListView(input: {
       playerTag: member.playerTag,
       defaultIndex: index,
       weightValue,
+      clanRankSortScore: member.clanRankSortScore,
       playerSort: sanitizeTableText(playerName),
       discordSort: sanitizeTableText(discordSort),
       row: {
