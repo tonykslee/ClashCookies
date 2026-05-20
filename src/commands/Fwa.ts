@@ -52,6 +52,10 @@ import {
   postFwaMatchChecklistMessage,
 } from "../services/FwaMatchChecklistService";
 import { blacklistClanService } from "../services/BlacklistClanService";
+import {
+  blacklistMatchSampleService,
+  type BlacklistMatchSampleRebuildResult,
+} from "../services/BlacklistMatchSampleService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -2060,6 +2064,18 @@ function formatFwaPoliceStatusReport(report: FwaPoliceStatusReport): string {
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function formatBlacklistSampleRebuildReply(
+  result: BlacklistMatchSampleRebuildResult,
+): string {
+  const headline =
+    result.status === "success"
+      ? "Blacklist matchup samples rebuilt."
+      : result.status === "noop"
+        ? "No blacklist matchup samples were rebuilt."
+        : "Blacklist matchup sample rebuild skipped.";
+  return [headline, "", ...result.summaryLines].join("\n");
 }
 
 type ComplianceWarTarget =
@@ -12949,6 +12965,19 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "blacklist-samples",
+      description: "Manage persisted blacklist matchup samples",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "rebuild",
+          description:
+            "Rebuild persisted samples from stored FWA war history and blacklist registry rows",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "base-swap",
       description: "Post a base swap / base error acknowledgement announcement",
       type: ApplicationCommandOptionType.Subcommand,
@@ -13400,6 +13429,34 @@ export const Fwa: Command = {
         `Added: **${result.added.length}**  Updated: **${result.updated.length}**  Invalid: **${result.invalid.length}**  Duplicate in request: **${result.duplicateInRequest.length}**`,
       ];
       await editReplySafe(summaryLines.join("\n"));
+      return;
+    }
+
+    if (subcommandGroup === "blacklist-samples" && subcommand === "rebuild") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const permissionService = new CommandPermissionService();
+      const allowed = await permissionService.canUseCommand(
+        "fwa:blacklist-samples:rebuild",
+        interaction,
+      );
+      if (!allowed) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      try {
+        const result = await blacklistMatchSampleService.rebuildBlacklistMatchSamples();
+        await editReplySafe(formatBlacklistSampleRebuildReply(result));
+      } catch (error) {
+        console.error(
+          `[fwa blacklist-samples rebuild] failed guild=${interaction.guildId} user=${interaction.user.id} error=${formatError(error)}`,
+        );
+        await editReplySafe(
+          `Blacklist sample rebuild failed.\n${formatError(error)}`,
+        );
+      }
       return;
     }
 

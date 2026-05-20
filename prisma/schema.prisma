@@ -1613,6 +1613,36 @@ model BlacklistClan {
   @@index([sourceLabel, lastSeenAt])
 }
 
+model BlacklistMatchSample {
+  sourceClanTag         String
+  sourceClanName        String?
+  opponentBlacklistTag  String
+  opponentBlacklistName String?
+  warId                 String
+  warStartTime          DateTime
+  warEndTime            DateTime?
+  rosterSize            Int
+  totalRosterWeight     Int
+  missingWeightCount    Int
+  th18Count             Int
+  th17Count             Int
+  th16Count             Int
+  th15Count             Int
+  th14Count             Int
+  th13Count             Int
+  th12Count             Int
+  th11PlusCount         Int
+  sampleQuality         String
+  confidence            String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@id([sourceClanTag, opponentBlacklistTag, warId])
+  @@index([opponentBlacklistTag, warStartTime])
+  @@index([sourceClanTag, warStartTime])
+  @@index([warStartTime])
+}
+
 model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType
