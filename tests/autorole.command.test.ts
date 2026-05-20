@@ -358,6 +358,34 @@ describe("/autorole command", () => {
     });
   });
 
+  it("surfaces Discord member-fetch rate limits from /autorole refresh role", async () => {
+    autoRoleRefreshServiceMock.refreshRole.mockRejectedValueOnce(
+      new Error("Discord rate-limited member fetching. Try again in about 12 seconds."),
+    );
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+
+    const interaction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+      roles: {
+        role: { id: "333333333333333333" },
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalled();
+    expect(getEditReplyPayload(interaction).content).toContain(
+      "Discord rate-limited member fetching. Try again in about 12 seconds.",
+    );
+  });
+
   it("denies every /autorole refresh variant when command permissions deny it", async () => {
     commandPermissionServiceMock.canUseCommand.mockResolvedValue(false);
     const guild = {
