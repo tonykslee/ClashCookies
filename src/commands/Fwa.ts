@@ -11799,7 +11799,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     select: { tag: true, clanBadge: true },
   });
   const badgeByTag = new Map(
-    trackedClanRows.map((row) => [normalizeTag(row.tag), row.clanBadge ?? null]),
+    trackedClanRows.map((row) => [row.tag, row.clanBadge ?? null]),
   );
   const rows = buildFwaMatchChecklistRowsFromCopyView({
     orderedTags,
