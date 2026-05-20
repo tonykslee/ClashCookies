@@ -58,7 +58,26 @@ describe("/fwa base-swap command shape", () => {
     expect(copyPaste?.required).toBe(false);
   });
 
-  it("registers checklist on /fwa match as an optional boolean", () => {
+  it("registers /fwa match-checklist with a visibility option", () => {
+    const checklist = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "match-checklist",
+    );
+    expect(checklist).toBeTruthy();
+
+    const visibility = checklist?.options?.find(
+      (option: { name: string }) => option.name === "visibility",
+    );
+    expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
+    expect(visibility?.required).toBe(false);
+    const tag = checklist?.options?.find(
+      (option: { name: string }) => option.name === "tag",
+    );
+    expect(tag).toBeUndefined();
+  });
+
+  it("does not register checklist on /fwa match as an optional boolean", () => {
     const match = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -69,8 +88,7 @@ describe("/fwa base-swap command shape", () => {
     const checklist = match?.options?.find(
       (option: { name: string }) => option.name === "checklist",
     );
-    expect(checklist?.type).toBe(ApplicationCommandOptionType.Boolean);
-    expect(checklist?.required).toBe(false);
+    expect(checklist).toBeUndefined();
   });
 
   it("does not register a standalone mail send subcommand group", () => {

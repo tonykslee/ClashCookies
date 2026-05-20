@@ -126,6 +126,12 @@ describe("command coverage", () => {
     expect(fwaHelpText).not.toContain("command:fwa:mail:send");
   });
 
+  it("documents the standalone /fwa match-checklist command in FWA help detail text", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    expect(fwaHelpText).toContain("/fwa match-checklist");
+    expect(fwaHelpText).not.toContain("checklist:true");
+  });
+
   it("documents the /clan root in clan help detail text", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");
