@@ -33,11 +33,14 @@ export function buildFwaMatchChecklistRowsFromCopyView(params: {
     .split(/\r?\n/)
     .map((line) => String(line ?? "").trim())
     .filter(Boolean);
+  const normalizedBadgeByTag = normalizeFwaMatchChecklistBadgeByTag(
+    params.badgeByTag,
+  );
   return params.orderedTags.flatMap((tag, index) => {
     const compactCopyLine = stripFwaMatchChecklistColumn(lines[index] ?? "");
     const normalizedTag = normalizeChecklistClanTag(tag);
     if (!compactCopyLine) return [];
-    const badgeEmojiInline = params.badgeByTag.get(normalizedTag)?.trim() ?? "";
+    const badgeEmojiInline = normalizedBadgeByTag.get(normalizedTag)?.trim() ?? "";
     return [
       {
         clanTag: normalizedTag,
@@ -383,4 +386,16 @@ function normalizeTagBare(tag: string): string {
 function normalizeChecklistClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return normalized || normalizeTagBare(tag);
+}
+
+function normalizeFwaMatchChecklistBadgeByTag(
+  badgeByTag: Map<string, string | null>,
+): Map<string, string | null> {
+  const normalizedBadgeByTag = new Map<string, string | null>();
+  for (const [tag, badgeEmojiInline] of badgeByTag.entries()) {
+    const normalizedTag = normalizeChecklistClanTag(tag);
+    if (!normalizedTag) continue;
+    normalizedBadgeByTag.set(normalizedTag, badgeEmojiInline);
+  }
+  return normalizedBadgeByTag;
 }
