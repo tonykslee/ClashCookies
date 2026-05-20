@@ -24,8 +24,13 @@ import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { InactiveWarService } from "../services/InactiveWarService";
+import { listFillerAccountTagsForGuild } from "../services/FillerAccountService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
-import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
+import {
+  renderTownHallIcon,
+  resolveTownHallEmojiMap,
+  type TownHallEmojiMap,
+} from "../helper/townHallEmoji";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
@@ -106,7 +111,7 @@ type ClanMemberRow = {
   playerName: string;
   townHall: number | null;
   mapPosition: number | null;
-  clanRankLabel: string | null;
+  clanRank: number | null;
   clanRankSortScore: number | null;
   index: number;
 };
@@ -367,8 +372,7 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
         name?: string;
         townHallLevel?: number | string | null;
         mapPosition?: number | null;
-        role?: string | null;
-        rank?: string | number | null;
+        clanRank?: number | string | null;
       } | null;
       const playerTag = normalizePlayerTag(String(row?.tag ?? ""));
       if (!playerTag) return null;
@@ -376,13 +380,9 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
       const name = sanitizeTableText(String(row?.name ?? "")) || playerTag;
       const mapPositionRaw = tryParseFiniteNumber(row?.mapPosition);
       const townHallRaw = tryParseFiniteNumber(row?.townHallLevel);
-      const clanRankLabel = normalizeClanRankLabel(
-        row?.role ?? row?.rank ?? null,
-      );
-      const clanRankSortScore = getClanRankSortScore(
-        clanRankLabel,
-        mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
-      );
+      const clanRankRaw = tryParseFiniteNumber(row?.clanRank);
+      const clanRank = clanRankRaw !== null ? Math.floor(clanRankRaw) : null;
+      const clanRankSortScore = clanRank;
 
       return {
         playerTag,
@@ -393,7 +393,7 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
             : null,
         mapPosition:
           mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
-        clanRankLabel,
+        clanRank,
         clanRankSortScore,
         index,
       } as ClanMemberRow;
@@ -421,43 +421,6 @@ function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
     deduped.push(row);
   }
   return deduped;
-}
-
-const CLAN_ROLE_SORT_ORDER = new Map<string, number>([
-  ["leader", 4],
-  ["coleader", 3],
-  ["elder", 2],
-  ["member", 1],
-]);
-
-function normalizeClanRankLabel(input: unknown): string | null {
-  const text = sanitizeTableText(String(input ?? ""));
-  if (!text) return null;
-  const lower = text.toLowerCase();
-  if (lower === "leader") return "leader";
-  if (lower === "coleader") return "coLeader";
-  if (lower === "elder") return "elder";
-  if (lower === "member") return "member";
-  return null;
-}
-
-function getClanRankSortScore(
-  clanRankLabel: string | null,
-  mapPosition: number | null,
-): number | null {
-  const roleScore =
-    clanRankLabel !== null
-      ? CLAN_ROLE_SORT_ORDER.get(clanRankLabel.toLowerCase()) ?? null
-      : null;
-  if (roleScore !== null) {
-    const positionScore =
-      mapPosition !== null ? Math.max(0, 1_000_000 - mapPosition) : 0;
-    return roleScore * 1_000_000 + positionScore;
-  }
-  if (mapPosition !== null) {
-    return 1_000_000 - mapPosition;
-  }
-  return null;
 }
 
 type DescriptionChunk = {
@@ -994,6 +957,12 @@ async function buildLinkListView(input: {
   const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
     playerTagsInOrder: members.map((row) => row.playerTag),
   });
+  const fillerTags = input.interaction.guildId
+    ? await listFillerAccountTagsForGuild({
+        guildId: input.interaction.guildId,
+      }).catch(() => [])
+    : [];
+  const fillerTagSet = new Set(fillerTags);
   const inactivityDaysByTag = new Map<string, number | null>();
   const inactivityMissedWarsByTag = new Map<string, number | null>();
 
@@ -1055,8 +1024,7 @@ async function buildLinkListView(input: {
     );
     const weightValue = weightByTag.get(member.playerTag) ?? null;
     const rankLabel =
-      member.clanRankLabel ??
-      (member.mapPosition !== null ? `#${member.mapPosition}` : WEIGHT_PLACEHOLDER);
+      member.clanRank !== null ? `#${member.clanRank}` : WEIGHT_PLACEHOLDER;
     const inactivityDays = inactivityDaysByTag.get(member.playerTag) ?? null;
     const inactivityMissedWars = inactivityMissedWarsByTag.get(member.playerTag) ?? null;
     const weight =
@@ -1080,7 +1048,7 @@ async function buildLinkListView(input: {
         )
       : sortMode === "inactivity"
         ? truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS)
-        : "";
+        : " ";
     const discordSort =
       sortMode === "player-tags"
         ? member.playerTag
@@ -1110,7 +1078,9 @@ async function buildLinkListView(input: {
         weight,
         playerName,
         rowMode: sortMode,
-        rightMarker: null,
+        rightMarker: fillerTagSet.has(member.playerTag)
+          ? ":person_standing:"
+          : null,
       },
     });
   });
@@ -1128,7 +1098,7 @@ async function buildLinkListView(input: {
   }
 
   const statusIcons = await resolveLinkListStatusIcons(input.interaction.client);
-  const townHallEmojiByLevel = getCachedTownHallEmojiMap();
+  const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
   const lines = buildLinkListDescriptionLines({
     linkedRows,
     unlinkedRows,
