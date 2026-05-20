@@ -8,6 +8,10 @@ const blacklistMatchSampleServiceMock = vi.hoisted(() => ({
   rebuildBlacklistMatchSamples: vi.fn(),
 }));
 
+const blacklistHeatmapRefServiceMock = vi.hoisted(() => ({
+  rebuildBlacklistHeatmapRef: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
   clanPointsSync: {
@@ -40,6 +44,10 @@ vi.mock("../src/services/BlacklistMatchSampleService", () => ({
   blacklistMatchSampleService: blacklistMatchSampleServiceMock,
 }));
 
+vi.mock("../src/services/BlacklistHeatmapRefService", () => ({
+  blacklistHeatmapRefService: blacklistHeatmapRefServiceMock,
+}));
+
 import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
@@ -47,7 +55,7 @@ import {
 
 function makeMatchInteraction(params: {
   subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
-  subcommandGroup?: "blacklist-samples" | null;
+  subcommandGroup?: "blacklist-samples" | "blacklist-profile" | null;
   visibility?: "private" | "public";
   copyPaste?: boolean;
   tag?: string | null;
@@ -103,6 +111,7 @@ describe("/fwa match response normalization", () => {
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
     blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples.mockReset();
+    blacklistHeatmapRefServiceMock.rebuildBlacklistHeatmapRef.mockReset();
     blacklistClanServiceMock.upsertBlacklistClanTags.mockResolvedValue({
       sourceLabel: "manual-import",
       active: true,
@@ -123,6 +132,16 @@ describe("/fwa match response normalization", () => {
       addedCount: 1,
       updatedCount: 0,
       summaryLines: ["sample summary"],
+    });
+    blacklistHeatmapRefServiceMock.rebuildBlacklistHeatmapRef.mockResolvedValue({
+      status: "success",
+      reason: null,
+      usableSampleCount: 4,
+      bandCount: 2,
+      addedCount: 2,
+      updatedCount: 0,
+      removedCount: 0,
+      summaryLines: ["profile summary"],
     });
   });
 
@@ -267,6 +286,29 @@ describe("/fwa match response normalization", () => {
     );
   });
 
+  it("rebuilds the blacklist heatmapref profile through the new admin command path", async () => {
+    const run = makeMatchInteraction({
+      subcommandGroup: "blacklist-profile",
+      subcommand: "rebuild",
+      isAdmin: true,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(blacklistHeatmapRefServiceMock.rebuildBlacklistHeatmapRef).toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Blacklist heatmapref profile rebuilt."),
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("profile summary"),
+      }),
+    );
+  });
+
   it("rejects blacklist sample rebuild for non-admin users", async () => {
     const run = makeMatchInteraction({
       subcommandGroup: "blacklist-samples",
@@ -276,6 +318,22 @@ describe("/fwa match response normalization", () => {
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
     expect(blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Only administrators can use this command.",
+      }),
+    );
+  });
+
+  it("rejects blacklist heatmapref profile rebuild for non-admin users", async () => {
+    const run = makeMatchInteraction({
+      subcommandGroup: "blacklist-profile",
+      subcommand: "rebuild",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(blacklistHeatmapRefServiceMock.rebuildBlacklistHeatmapRef).not.toHaveBeenCalled();
     expect(run.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: "Only administrators can use this command.",

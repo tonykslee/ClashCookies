@@ -586,6 +586,7 @@ export function getHeatMapRefSeedRowCountsByBandKey(
 }
 
 export const getHeatMapRefBucketCountsForTest = getEmptyBucketCounts;
+export const normalizeHeatMapRefRoundedBucketCounts = normalizeRoundedBucketCounts;
 export const normalizeHeatMapRefRoundedBucketCountsForTest = normalizeRoundedBucketCounts;
 export const deriveHeatMapRefEffectiveWeightsForTest = deriveEffectiveWeights;
 export const normalizeHeatMapRefSourceMembersForTest = normalizeSourceMembers;
