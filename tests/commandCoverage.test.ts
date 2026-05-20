@@ -200,6 +200,13 @@ describe("command coverage", () => {
     expect(compoHelpText).toContain("remaining open slots");
   });
 
+  it("documents /compo heatmapref blacklist mode in the compo help detail text", () => {
+    const compoHelpText = helpEmbedText("compo");
+    expect(compoHelpText).toContain("/compo heatmapref mode:blacklist");
+    expect(compoHelpText).toContain("blacklist profile rows");
+    expect(compoHelpText).toContain("/fwa blacklist-profile rebuild");
+  });
+
   it("documents /autorole refresh in the autorole help detail text", () => {
     const autoroleHelpText = helpEmbedText("autorole");
     expect(autoroleHelpText).toContain("/autorole refresh");
