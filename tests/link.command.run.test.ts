@@ -1118,6 +1118,83 @@ describe("/link run", () => {
     });
   });
 
+  it("treats sync-service failed clans as refresh failures", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "RefreshUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Saved Player",
+        townHall: 18,
+        rank: 18,
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    const refreshSync = vi
+      .spyOn(
+        FwaClanMembersSyncService.prototype,
+        "refreshCurrentClanMembersForClanTags",
+      )
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 0,
+        changedRowCount: 0,
+        failedClans: ["#PQL0289"],
+      });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Saved Player",
+            townHallLevel: 18,
+            clanRank: 18,
+          },
+        ],
+      }),
+    };
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListRefreshButton(interaction as any, cocService as any);
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(refreshSync).toHaveBeenCalledTimes(1);
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "refresh_failed: CoC API failed for #PQL0289. Showing last saved roster.",
+    });
+    refreshSync.mockRestore();
+  });
+
   it("falls back to question-mark Town Hall icons when application emojis cannot be loaded", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {

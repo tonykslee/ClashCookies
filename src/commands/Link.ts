@@ -1593,7 +1593,7 @@ export async function handleLinkListRefreshButton(
 
   try {
     const members = Array.isArray(clan?.members) ? clan.members : [];
-    await linkListMembersSyncService.refreshCurrentClanMembersForClanTags(
+    const refreshResult = await linkListMembersSyncService.refreshCurrentClanMembersForClanTags(
       [clanTag],
       {
         cocService: {
@@ -1601,6 +1601,16 @@ export async function handleLinkListRefreshButton(
         } as unknown as CoCService,
       },
     );
+    if (refreshResult.failedClans.includes(clanTag)) {
+      console.warn(
+        `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=sync_failed code=sync_failed error=selected clan refresh failed`,
+      );
+      await interaction.followUp({
+        ephemeral: true,
+        content: `refresh_failed: CoC API failed for ${clanTag}. Showing last saved roster.`,
+      });
+      return;
+    }
     console.info(
       `[link-list] event=refresh_success guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} member_count=${members.length}`,
     );
