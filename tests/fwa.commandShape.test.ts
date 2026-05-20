@@ -104,6 +104,21 @@ describe("/fwa base-swap command shape", () => {
     expect(active?.required).toBe(false);
   });
 
+  it("registers /fwa blacklist-samples rebuild as an admin subcommand", () => {
+    const blacklistSamples = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "blacklist-samples",
+    );
+    expect(blacklistSamples).toBeTruthy();
+
+    const rebuild = blacklistSamples?.options?.find(
+      (option: { name: string }) => option.name === "rebuild",
+    );
+    expect(rebuild?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(rebuild?.options ?? []).toHaveLength(0);
+  });
+
   it("does not register checklist on /fwa match as an optional boolean", () => {
     const match = Fwa.options?.find(
       (option) =>

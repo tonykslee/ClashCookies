@@ -4,7 +4,12 @@ const blacklistClanServiceMock = vi.hoisted(() => ({
   upsertBlacklistClanTags: vi.fn(),
 }));
 
+const blacklistMatchSampleServiceMock = vi.hoisted(() => ({
+  rebuildBlacklistMatchSamples: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   clanPointsSync: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -31,13 +36,18 @@ vi.mock("../src/services/BlacklistClanService", () => ({
   blacklistClanService: blacklistClanServiceMock,
 }));
 
+vi.mock("../src/services/BlacklistMatchSampleService", () => ({
+  blacklistMatchSampleService: blacklistMatchSampleServiceMock,
+}));
+
 import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
 } from "../src/commands/Fwa";
 
 function makeMatchInteraction(params: {
-  subcommand?: "match" | "match-checklist" | "blacklist-import";
+  subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
+  subcommandGroup?: "blacklist-samples" | null;
   visibility?: "private" | "public";
   copyPaste?: boolean;
   tag?: string | null;
@@ -59,7 +69,7 @@ function makeMatchInteraction(params: {
     },
     inGuild: vi.fn(() => true),
     options: {
-      getSubcommandGroup: vi.fn(() => null),
+      getSubcommandGroup: vi.fn(() => params.subcommandGroup ?? null),
       getSubcommand: vi.fn(() => params.subcommand ?? "match"),
       getString: vi.fn((name: string) => {
         if (name === "visibility") return params.visibility ?? "private";
@@ -83,6 +93,7 @@ function makeMatchInteraction(params: {
 describe("/fwa match response normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$queryRaw.mockResolvedValue([]);
     prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
     prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findFirst.mockResolvedValue(null);
@@ -91,6 +102,7 @@ describe("/fwa match response normalization", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
+    blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples.mockReset();
     blacklistClanServiceMock.upsertBlacklistClanTags.mockResolvedValue({
       sourceLabel: "manual-import",
       active: true,
@@ -99,6 +111,18 @@ describe("/fwa match response normalization", () => {
       invalid: [],
       duplicateInRequest: [],
       totalRequested: 0,
+    });
+    blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples.mockResolvedValue({
+      status: "success",
+      reason: null,
+      activeBlacklistCount: 1,
+      fwaClanCount: 1,
+      candidateWarCount: 1,
+      qualifyingSampleCount: 1,
+      skippedCandidateCount: 0,
+      addedCount: 1,
+      updatedCount: 0,
+      summaryLines: ["sample summary"],
     });
   });
 
@@ -212,6 +236,46 @@ describe("/fwa match response normalization", () => {
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
     expect(blacklistClanServiceMock.upsertBlacklistClanTags).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Only administrators can use this command.",
+      }),
+    );
+  });
+
+  it("rebuilds blacklist matchup samples through the new admin command path", async () => {
+    const run = makeMatchInteraction({
+      subcommandGroup: "blacklist-samples",
+      subcommand: "rebuild",
+      isAdmin: true,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples).toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Blacklist matchup samples rebuilt."),
+        components: expect.any(Array),
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("sample summary"),
+      }),
+    );
+  });
+
+  it("rejects blacklist sample rebuild for non-admin users", async () => {
+    const run = makeMatchInteraction({
+      subcommandGroup: "blacklist-samples",
+      subcommand: "rebuild",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(blacklistMatchSampleServiceMock.rebuildBlacklistMatchSamples).not.toHaveBeenCalled();
     expect(run.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: "Only administrators can use this command.",
