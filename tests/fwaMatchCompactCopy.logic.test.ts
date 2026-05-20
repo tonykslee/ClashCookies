@@ -5,7 +5,6 @@ import {
   buildFwaMatchCompactCopyLineForTest,
   buildFwaMatchCompactCopyStateEmojiForTest,
   buildFwaMatchViewRenderPayload,
-  resolveFwaMatchChecklistEnabledForTest,
 } from "../src/commands/Fwa";
 
 function makeView(copyText: string, title: string) {
@@ -180,21 +179,6 @@ describe("fwa match compact copy view", () => {
 
     expect(uncheckedLine).toBe("📬 | 🟢 | RR vs `Bravo` (`#B1`)");
     expect(checkedLine).toBe("📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)");
-  });
-
-  it("ignores checklist unless copy_paste is enabled", () => {
-    expect(
-      resolveFwaMatchChecklistEnabledForTest({
-        copyPaste: false,
-        checklist: true,
-      }),
-    ).toBe(false);
-    expect(
-      resolveFwaMatchChecklistEnabledForTest({
-        copyPaste: true,
-        checklist: true,
-      }),
-    ).toBe(true);
   });
 
   it("prefers tracked clan short names in compact copy rows", () => {

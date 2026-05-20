@@ -31,6 +31,10 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("raids:roster:status");
   });
 
+  it("keeps fwa match checklist registered as an explicit permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("fwa:match-checklist");
+  });
+
   it("does not expose fwa mail send as a public permission target", () => {
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("fwa:mail:send");
   });
@@ -99,6 +103,24 @@ describe("link permission defaults", () => {
 
     await expect(
       service.canUseCommand("fwa:mail:send", interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("allows the default fwa leader role for fwa:match-checklist when no explicit whitelist exists", async () => {
+    const settings = {
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce("123456789012345678"),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({
+      isAdmin: false,
+      roleIds: ["123456789012345678"],
+    });
+
+    await expect(
+      service.canUseCommand("fwa:match-checklist", interaction),
     ).resolves.toBe(true);
   });
 });
