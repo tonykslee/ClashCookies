@@ -1,6 +1,7 @@
 ﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
+import { InactiveWarService } from "../src/services/InactiveWarService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -26,6 +27,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   playerCurrent: {
+    findMany: vi.fn(),
+  },
+  playerActivity: {
     findMany: vi.fn(),
   },
 }));
@@ -148,14 +152,19 @@ function makeValidTag(index: number): string {
   return `#PY${a}${b}${a}${b}`;
 }
 
-function getInlineRowSegments(row: string): {
+function getInlineRowSegments(
+  row: string,
+  mode: "default" | "inactivity" = "default",
+): {
   statusKind: "linked" | "unlinked" | "";
   statusToken: string;
   townHallIcon: string;
+  identity: string;
   left: string;
   tag: string;
   player: string;
   weight: string;
+  metric: string;
   marker: string;
 } {
   const normalized = String(row ?? "");
@@ -166,9 +175,14 @@ function getInlineRowSegments(row: string): {
     : statusToken.startsWith("<:no:") || statusToken === "❌"
       ? "unlinked"
       : "";
-  const match = normalized.match(
-    /^(?<status>\S+)\s+(?<icon>\S+)\s+`(?<left>[^`]*)`\s+`(?<tag>[^`]*)`\s+`(?<player>[^`]*)`(?:\s+(?<marker>.*))?$/,
-  );
+  const match =
+    mode === "inactivity"
+      ? normalized.match(
+          /^(?<status>\S+)\s+(?<icon>\S+)\s+`(?<identity>[^`]*)`\s+`(?<player>[^`]*)`\s+`(?<metric>[^`]*)`(?:\s+(?<marker>.*))?$/,
+        )
+      : normalized.match(
+          /^(?<status>\S+)\s+(?<icon>\S+)\s+`(?<left>[^`]*)`\s+`(?<tag>[^`]*)`\s+`(?<player>[^`]*)`(?:\s+(?<marker>.*))?$/,
+        );
   const playerBlock = String(match?.groups?.player ?? "");
   const [player = "", weight = ""] = playerBlock
     .split(/\s{2,}/)
@@ -177,12 +191,17 @@ function getInlineRowSegments(row: string): {
   return {
     statusKind,
     statusToken,
-    townHallIcon: String(match?.groups?.icon ?? ""),
-    left: String(match?.groups?.left ?? ""),
-    tag: String(match?.groups?.tag ?? ""),
-    player,
-    weight,
-    marker: String(match?.groups?.marker ?? ""),
+    townHallIcon: String(match?.groups?.icon ?? "").trim(),
+    identity:
+      mode === "inactivity"
+        ? String(match?.groups?.identity ?? "").trim()
+        : String(match?.groups?.left ?? "").trim(),
+    left: String(match?.groups?.left ?? "").trim(),
+    tag: String(match?.groups?.tag ?? "").trim(),
+    player: player.trim(),
+    weight: weight.trim(),
+    metric: String(match?.groups?.metric ?? "").trim(),
+    marker: String(match?.groups?.marker ?? "").trim(),
   };
 }
 
@@ -260,6 +279,8 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.playerActivity.findMany.mockReset();
+    prismaMock.playerActivity.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -1398,6 +1419,7 @@ describe("/link list sort button", () => {
         currentWeight: 166000,
       },
     ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
   });
 
   it("cycles sort mode in stable order and rerenders rows", async () => {
@@ -1537,14 +1559,70 @@ describe("/link list sort button", () => {
     expect(getInlineRowSegments(clanRankRows[1] ?? "").weight).toBe("coLeader");
     expect(getInlineRowSegments(clanRankRows[2] ?? "").weight).toBe("member");
 
+    const nowMs = Date.now();
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#PYLQ0289",
+        lastSeenAt: new Date(nowMs - 7 * 24 * 60 * 60 * 1000),
+      },
+      {
+        tag: "#QGRJ2222",
+        lastSeenAt: new Date(nowMs - 7 * 24 * 60 * 60 * 1000),
+      },
+      {
+        tag: "#LCUV0289",
+        lastSeenAt: new Date(nowMs - 9 * 24 * 60 * 60 * 1000),
+      },
+    ]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [
+        { playerTag: "#PYLQ0289", missedWars: 1 },
+        { playerTag: "#QGRJ2222", missedWars: 3 },
+      ],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    } as any);
+
     const fromClanRank = await runSortClick("clan-rank");
     expect(fromClanRank.deferUpdate).toHaveBeenCalledTimes(1);
     expect(fromClanRank.editReply).toHaveBeenCalledTimes(1);
     expect(fromClanRank.update).not.toHaveBeenCalled();
-    const payloadCircle = fromClanRank.editReply.mock.calls[0]?.[0] as any;
-    const embedCircle = payloadCircle.embeds[0].toJSON();
-    expect(embedCircle.footer?.text).toBe("Sort: Discord Name");
-    expect(payloadCircle.components[0].components[0].toJSON().label).toBe(
+    const payloadClanRank = fromClanRank.editReply.mock.calls[0]?.[0] as any;
+    const embedClanRank = payloadClanRank.embeds[0].toJSON();
+    expect(embedClanRank.footer?.text).toBe("Sort: Inactivity");
+    expect(payloadClanRank.components[0].components[0].toJSON().label).toBe(
+      "Sort: Inactivity",
+    );
+    const descriptionInactivity = String(embedClanRank.description ?? "");
+    expect(descriptionInactivity.indexOf("BobUser")).toBeLessThan(
+      descriptionInactivity.indexOf("AmyUser"),
+    );
+    expect(descriptionInactivity.indexOf("AmyUser")).toBeLessThan(
+      descriptionInactivity.indexOf("ZedUser"),
+    );
+    const inactivityRows = getInlineRows(descriptionInactivity);
+    expect(inactivityRows).toHaveLength(3);
+    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").metric).toBe(
+      "9d —",
+    );
+    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").metric).toBe(
+      "7d 3w",
+    );
+    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").metric).toBe(
+      "7d 1w",
+    );
+
+    const fromInactivity = await runSortClick("inactivity");
+    expect(fromInactivity.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromInactivity.editReply).toHaveBeenCalledTimes(1);
+    expect(fromInactivity.update).not.toHaveBeenCalled();
+    const payloadInactivity = fromInactivity.editReply.mock.calls[0]?.[0] as any;
+    const embedInactivity = payloadInactivity.embeds[0].toJSON();
+    expect(embedInactivity.footer?.text).toBe("Sort: Discord Name");
+    expect(payloadInactivity.components[0].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
     );
   });

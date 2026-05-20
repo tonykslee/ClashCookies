@@ -203,6 +203,7 @@ describe("command coverage", () => {
   it("documents the /link list clan rank sort mode in the link help detail text", () => {
     const linkHelpText = helpEmbedText("link");
     expect(linkHelpText).toContain("Clan Rank Desc");
+    expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
   });
 

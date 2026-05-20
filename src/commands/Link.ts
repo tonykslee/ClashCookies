@@ -23,6 +23,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
+import { InactiveWarService } from "../services/InactiveWarService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
 import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
 import {
@@ -53,6 +54,7 @@ import {
 } from "../services/reminders/ReminderLinkActions";
 
 const permissionService = new CommandPermissionService();
+const inactiveWarService = new InactiveWarService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
 const LINK_LIST_SORT_BUTTON_PREFIX = "link-list-sort-cycle";
 const LINK_EMBED_SETUP_MODAL_PREFIX = "link-embed-setup";
@@ -92,7 +94,9 @@ const LINK_LIST_SORT_MODE_CYCLE = [
   "player-tags",
   "player",
   "clan-rank",
+  "inactivity",
 ] as const;
+const LINK_LIST_INACTIVITY_WARS_WINDOW = 3;
 
 type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
 const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
@@ -153,7 +157,8 @@ function normalizeLinkListSortMode(
     value === "weight" ||
     value === "player-tags" ||
     value === "player" ||
-    value === "clan-rank"
+    value === "clan-rank" ||
+    value === "inactivity"
   ) {
     return value;
   }
@@ -165,6 +170,7 @@ function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "player-tags") return "Player Tags";
   if (mode === "player") return "Player Name";
   if (mode === "clan-rank") return "Clan Rank Desc";
+  if (mode === "inactivity") return "Inactivity";
   return "Discord Name";
 }
 
@@ -686,6 +692,7 @@ type LinkListRowInput = {
   playerTag: string;
   weight: string;
   playerName: string;
+  rowMode?: LinkListSortMode;
   rightMarker?: string | null;
 };
 
@@ -694,6 +701,9 @@ type LinkListResolvedMemberRow = {
   playerTag: string;
   defaultIndex: number;
   weightValue: number | null;
+  inactivitySortScore: number | null;
+  inactivityDays: number | null;
+  inactivityMissedWars: number | null;
   clanRankSortScore: number | null;
   playerSort: string;
   discordSort: string;
@@ -783,6 +793,27 @@ function sortLinkListRows(
       return a.defaultIndex - b.defaultIndex;
     }
 
+    if (sortMode === "inactivity") {
+      const aHasInactivity = a.inactivitySortScore !== null;
+      const bHasInactivity = b.inactivitySortScore !== null;
+      if (aHasInactivity !== bHasInactivity) return aHasInactivity ? -1 : 1;
+      if (
+        a.inactivitySortScore !== null &&
+        b.inactivitySortScore !== null &&
+        a.inactivitySortScore !== b.inactivitySortScore
+      ) {
+        return b.inactivitySortScore - a.inactivitySortScore;
+      }
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      const byDiscord = compareSortText(a.discordSort, b.discordSort);
+      if (byDiscord !== 0) return byDiscord;
+      if (a.playerTag !== b.playerTag) {
+        return compareSortText(a.playerTag, b.playerTag);
+      }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
     if (sortMode === "player") {
       const byPlayer = compareSortText(a.playerSort, b.playerSort);
       if (byPlayer !== 0) return byPlayer;
@@ -813,18 +844,37 @@ function formatCompactWeightK(weight: number | null | undefined): string {
   return `${Math.trunc(resolvedWeight / 1000)}k`;
 }
 
+function formatInactivityMetricLabel(input: {
+  daysInactive: number | null;
+  missedWars: number | null;
+}): string {
+  if (input.daysInactive === null && input.missedWars === null) {
+    return WEIGHT_PLACEHOLDER;
+  }
+  const daysText =
+    input.daysInactive !== null ? `${Math.max(0, Math.trunc(input.daysInactive))}d` : WEIGHT_PLACEHOLDER;
+  const warsText =
+    input.missedWars !== null ? `${Math.max(0, Math.trunc(input.missedWars))}w` : WEIGHT_PLACEHOLDER;
+  return `${daysText} ${warsText}`;
+}
+
 function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { left: number; player: number; weight: number },
   statusPrefix: string,
   townHallEmojiByLevel: TownHallEmojiMap,
+  sortMode: LinkListSortMode,
 ): string {
   const townHallIcon = renderTownHallIcon(row.townHall, townHallEmojiByLevel);
   const leftLabel = rightAlign(row.leftLabel, widths.left);
   const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
   const playerTag = normalizePlayerTag(row.playerTag) || row.playerTag;
-  const base = `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerTag}\` \`${playerName}  ${weight}\``;
+  const rowMode = row.rowMode ?? sortMode;
+  const base =
+    rowMode === "inactivity"
+      ? `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerName}\` \`${weight}\``
+      : `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerTag}\` \`${playerName}  ${weight}\``;
   if (!row.rightMarker) return base;
   return `${base} ${row.rightMarker}`;
 }
@@ -866,9 +916,11 @@ function buildLinkListDescriptionLines(input: {
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
   townHallEmojiByLevel: TownHallEmojiMap;
+  sortMode?: LinkListSortMode;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const sortMode = input.sortMode ?? "discord";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
@@ -880,7 +932,7 @@ function buildLinkListDescriptionLines(input: {
           left: widths.left,
           player: widths.player,
           weight: widths.weight,
-        }, input.statusIcons.linked, input.townHallEmojiByLevel),
+        }, input.statusIcons.linked, input.townHallEmojiByLevel, sortMode),
       ),
     );
   }
@@ -893,7 +945,7 @@ function buildLinkListDescriptionLines(input: {
           left: widths.left,
           player: widths.player,
           weight: widths.weight,
-        }, input.statusIcons.unlinked, input.townHallEmojiByLevel),
+        }, input.statusIcons.unlinked, input.townHallEmojiByLevel, sortMode),
       ),
     );
   }
@@ -942,6 +994,56 @@ async function buildLinkListView(input: {
   const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
     playerTagsInOrder: members.map((row) => row.playerTag),
   });
+  const inactivityDaysByTag = new Map<string, number | null>();
+  const inactivityMissedWarsByTag = new Map<string, number | null>();
+
+  if (sortMode === "inactivity") {
+    const memberTags = members.map((row) => row.playerTag);
+    const [activityRows, inactiveWarSummary] = await Promise.all([
+      prisma.playerActivity.findMany({
+        where: {
+          tag: { in: memberTags },
+        },
+        select: {
+          tag: true,
+          lastSeenAt: true,
+        },
+      }),
+      inactiveWarService
+        .listInactiveWarPlayers({
+          guildId: input.interaction.guildId,
+          wars: LINK_LIST_INACTIVITY_WARS_WINDOW,
+          clanTag: input.clanTag,
+        })
+        .catch(() => ({ results: [] })),
+    ]);
+
+    for (const row of activityRows) {
+      const normalizedTag = normalizePlayerTag(String(row.tag ?? ""));
+      if (!normalizedTag) continue;
+      const lastSeenAt = row.lastSeenAt instanceof Date ? row.lastSeenAt : null;
+      inactivityDaysByTag.set(
+        normalizedTag,
+        lastSeenAt
+          ? Math.max(
+              0,
+              Math.floor((Date.now() - lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)),
+            )
+          : null,
+      );
+    }
+
+    for (const row of inactiveWarSummary.results ?? []) {
+      const normalizedTag = normalizePlayerTag(String(row.playerTag ?? ""));
+      if (!normalizedTag) continue;
+      inactivityMissedWarsByTag.set(
+        normalizedTag,
+        Number.isFinite(Number(row.missedWars))
+          ? Math.max(0, Math.trunc(Number(row.missedWars)))
+          : null,
+      );
+    }
+  }
 
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const resolvedRows: LinkListResolvedMemberRow[] = [];
@@ -955,10 +1057,17 @@ async function buildLinkListView(input: {
     const rankLabel =
       member.clanRankLabel ??
       (member.mapPosition !== null ? `#${member.mapPosition}` : WEIGHT_PLACEHOLDER);
+    const inactivityDays = inactivityDaysByTag.get(member.playerTag) ?? null;
+    const inactivityMissedWars = inactivityMissedWarsByTag.get(member.playerTag) ?? null;
     const weight =
       sortMode === "clan-rank"
         ? rankLabel
-        : formatCompactWeightK(weightValue);
+        : sortMode === "inactivity"
+          ? formatInactivityMetricLabel({
+              daysInactive: inactivityDays,
+              missedWars: inactivityMissedWars,
+            })
+          : formatCompactWeightK(weightValue);
     const link = linkByTag.get(member.playerTag);
     const leftLabel = link
       ? truncateWithEllipsis(
@@ -969,19 +1078,28 @@ async function buildLinkListView(input: {
           ),
           MAX_IDENTITY_CHARS,
         )
-      : "";
+      : sortMode === "inactivity"
+        ? truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS)
+        : "";
     const discordSort =
       sortMode === "player-tags"
         ? member.playerTag
         : link
           ? leftLabel
           : member.playerTag;
+    const inactivitySortScore =
+      inactivityDays !== null
+        ? inactivityDays * 1_000_000 + Math.max(0, inactivityMissedWars ?? 0)
+        : null;
 
     resolvedRows.push({
       isLinked: Boolean(link),
       playerTag: member.playerTag,
       defaultIndex: index,
       weightValue,
+      inactivitySortScore,
+      inactivityDays,
+      inactivityMissedWars,
       clanRankSortScore: member.clanRankSortScore,
       playerSort: sanitizeTableText(playerName),
       discordSort: sanitizeTableText(discordSort),
@@ -991,6 +1109,7 @@ async function buildLinkListView(input: {
         playerTag: member.playerTag,
         weight,
         playerName,
+        rowMode: sortMode,
         rightMarker: null,
       },
     });
@@ -1015,6 +1134,7 @@ async function buildLinkListView(input: {
     unlinkedRows,
     statusIcons,
     townHallEmojiByLevel,
+    sortMode,
   });
 
   if (lines.length === 0) {
