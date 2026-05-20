@@ -43,6 +43,7 @@ export type AutoRoleTrackedClanScope = {
 
 export type AutoRoleTrackedClanLeadRole = {
   tag: string;
+  clanRoleId: string | null;
   leadRoleId: string | null;
 };
 
@@ -237,6 +238,10 @@ export class AutoRoleEvaluationService {
     if (input.config.familyRoleId) roleIds.add(input.config.familyRoleId);
     if (input.config.cwlClanRoleId) roleIds.add(input.config.cwlClanRoleId);
     for (const clan of input.trackedClans ?? []) {
+      const clanRoleId = String(clan.clanRoleId ?? "").trim();
+      if (clanRoleId) {
+        roleIds.add(clanRoleId);
+      }
       const leadRoleId = String(clan.leadRoleId ?? "").trim();
       if (leadRoleId) {
         roleIds.add(leadRoleId);
@@ -322,9 +327,21 @@ export class AutoRoleEvaluationService {
     }
 
     for (const trackedClan of trackedClans) {
+      const clanRoleId = String(trackedClan.clanRoleId ?? "").trim();
       const leadRoleId = String(trackedClan.leadRoleId ?? "").trim();
       const clanTag = normalizeClanTag(trackedClan.tag);
-      if (!leadRoleId || !clanTag || !input.managedRoleIds.has(leadRoleId)) {
+      if (!clanTag) {
+        continue;
+      }
+
+      if (clanRoleId && input.managedRoleIds.has(clanRoleId) && linkedAccounts.some((account) => {
+        const currentClanTag = resolveMemberSourceCurrentClanTag(account);
+        return currentClanTag === clanTag;
+      })) {
+        desiredManagedRoleIds.add(clanRoleId);
+      }
+
+      if (!leadRoleId || !input.managedRoleIds.has(leadRoleId)) {
         continue;
       }
 
