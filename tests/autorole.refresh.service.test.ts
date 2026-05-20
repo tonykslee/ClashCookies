@@ -954,6 +954,85 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
+  it("aborts guild refresh before applying roles when a tracked clan fetch fails", async () => {
+    const clanRoleId = "222222222222222222";
+    const staleHolderId = "111111111111111111";
+    const qualifyingUserId = "666666666666666666";
+    const staleHolder = makeMember(staleHolderId, [clanRoleId]);
+    const qualifyingMember = makeMember(qualifyingUserId);
+    const guild = makeGuild(new Map([
+      [staleHolderId, staleHolder],
+      [qualifyingUserId, qualifyingMember],
+    ]));
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => {
+        if (tag === "#2QG2C08UP") {
+          throw new Error("tracked clan fetch failed");
+        }
+        throw new Error(`unexpected clan lookup ${tag}`);
+      }),
+      getPlayer: vi.fn(async () => {
+        throw new Error("getPlayer should not be called during failed guild refresh");
+      }),
+    };
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      makeLinkedAccount({
+        playerTag: "#QGRJ2222",
+        discordUserId: staleHolderId,
+        playerName: "Stale Holder",
+      }),
+      makeLinkedAccount({
+        playerTag: "#PYLQ0289",
+        discordUserId: qualifyingUserId,
+        playerName: "Pending Clan",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Tracked FWA", shortName: "TF" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: "#2QG2C08UP",
+          discordRoleId: clanRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await expect(
+      autoRoleRefreshService.refreshGuild({
+        guild,
+        guildId: "111111111111111111",
+        cocService: cocService as any,
+      }),
+    ).rejects.toThrow("Tracked clan fetch failed");
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).not.toHaveBeenCalled();
+    expect(qualifyingMember.roles.add).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "run-1" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          error: expect.stringContaining("failed_clan_tags=#2QG2C08UP"),
+        }),
+      }),
+    );
+  });
+
   it("rejects an unmanaged role scope and records a failed run", async () => {
     const guild = makeGuild(new Map());
 
@@ -1183,6 +1262,61 @@ describe("AutoRoleRefreshService", () => {
       skippedCount: 0,
       failedCount: 0,
     });
+  });
+
+  it("aborts tracked-clan lead role refresh when one owning clan fetch fails", async () => {
+    const leadRoleId = "222222222222222222";
+    const clanTag = "#2QG2C08UP";
+    const currentHolderId = "111111111111111111";
+    const currentHolder = makeMember(currentHolderId, [leadRoleId]);
+    const guild = makeGuild(new Map([[currentHolderId, currentHolder]]));
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => {
+        if (tag === clanTag) {
+          throw new Error("tracked clan fetch failed");
+        }
+        throw new Error(`unexpected clan lookup ${tag}`);
+      }),
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: clanTag, name: "Lead Clan", shortName: "A", leadRoleId },
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await expect(
+      autoRoleRefreshService.refreshRole({
+        guild,
+        guildId: "111111111111111111",
+        discordRoleId: leadRoleId,
+        cocService: cocService as any,
+      }),
+    ).rejects.toThrow("Tracked clan fetch failed");
+
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getClan).toHaveBeenCalledWith(clanTag);
+    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
+    expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).not.toHaveBeenCalled();
+    expect(currentHolder.roles.remove).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "run-1" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          error: expect.stringContaining("failed_clan_tags=#2QG2C08UP"),
+        }),
+      }),
+    );
   });
 
   it("preserves a stale tracked-clan lead role during role refresh when stale removal is disabled", async () => {

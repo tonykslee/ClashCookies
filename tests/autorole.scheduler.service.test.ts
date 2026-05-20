@@ -317,4 +317,49 @@ describe("AutoRoleSchedulerService", () => {
       }),
     );
   });
+
+  it("counts a guild refresh failure as a failed scheduled run", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 1,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([]);
+    refreshServiceMock.refreshGuild.mockRejectedValueOnce(new Error("Tracked clan fetch failed"));
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 0,
+      skipped: 0,
+      failed: 1,
+    });
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "autorole_scheduler",
+      expect.objectContaining({
+        displayName: "Autorole scheduler",
+        intervalMs: 12_345,
+        metadata: expect.objectContaining({
+          scanned: 1,
+          due: 1,
+          started: 1,
+          completed: 0,
+          skipped: 0,
+          failed: 1,
+        }),
+      }),
+    );
+  });
 });
