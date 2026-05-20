@@ -1,5 +1,9 @@
 import { prisma } from "../prisma";
 import {
+  buildBlacklistHeatMapRefCopyText,
+  buildBlacklistHeatMapRefDisplayRows,
+} from "../helper/heatMapRefDisplay";
+import {
   normalizeHeatMapRefRoundedBucketCounts,
   type HeatMapRefBucketCounts,
 } from "../helper/heatMapRefRebuild";
@@ -15,23 +19,6 @@ export type BlacklistHeatmapRefRebuildResult = {
   updatedCount: number;
   removedCount: number;
   summaryLines: string[];
-};
-
-type BlacklistMatchSampleRow = {
-  sourceClanTag: string;
-  opponentBlacklistTag: string;
-  totalRosterWeight: number;
-  missingWeightCount: number;
-  th18Count: number;
-  th17Count: number;
-  th16Count: number;
-  th15Count: number;
-  th14Count: number;
-  th13Count: number;
-  th12Count: number;
-  th11PlusCount: number;
-  sampleQuality: string;
-  confidence: string;
 };
 
 type BandAggregate = {
@@ -202,6 +189,19 @@ function buildSummaryLines(input: {
 }
 
 export class BlacklistHeatmapRefService {
+  async readBlacklistHeatMapRefDisplayTable(): Promise<{
+    rows: string[][];
+    copyText: string;
+  }> {
+    const heatMapRefs = await prisma.blacklistHeatMapRef.findMany({
+      orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+    });
+    return {
+      rows: buildBlacklistHeatMapRefDisplayRows({ heatMapRefs }),
+      copyText: buildBlacklistHeatMapRefCopyText({ heatMapRefs }),
+    };
+  }
+
   async rebuildBlacklistHeatmapRef(input?: {
     now?: Date;
   }): Promise<BlacklistHeatmapRefRebuildResult> {

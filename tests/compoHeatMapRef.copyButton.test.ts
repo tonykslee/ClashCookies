@@ -4,6 +4,7 @@ import {
   buildCompoHeatMapRefCopyTextForTest,
   handleCompoHeatMapRefCopyButton,
 } from "../src/commands/Compo";
+import { BlacklistHeatmapRefService } from "../src/services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
 
 function makeInteraction(customId: string, userId = "user-1") {
@@ -43,6 +44,58 @@ describe("compo heatmapref copy button", () => {
     } as never);
 
     const interaction = makeInteraction(buildCompoHeatMapRefCopyCustomIdForTest("user-1"));
+
+    await handleCompoHeatMapRefCopyButton(interaction as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: buildCompoHeatMapRefCopyTextForTest(copyText),
+    });
+  });
+
+  it("returns blacklist copy-ready table text for the requester", async () => {
+    const copyText =
+      "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Samples,Src Clans,Opponents,Confidence,Generated\n" +
+      "0,100000,10,9,8,7,6,5,4,3,12,4,5,high (92),2026-05-20 12:34Z";
+    vi.spyOn(BlacklistHeatmapRefService.prototype, "readBlacklistHeatMapRefDisplayTable").mockResolvedValue({
+      rows: [
+        [
+          "Band",
+          "TH18",
+          "TH17",
+          "TH16",
+          "TH15",
+          "TH14",
+          "TH13",
+          "TH12",
+          "TH11+",
+          "Samples",
+          "Src Clans",
+          "Opponents",
+          "Confidence",
+          "Generated",
+        ],
+        [
+          "0 - 100000",
+          "10",
+          "9",
+          "8",
+          "7",
+          "6",
+          "5",
+          "4",
+          "3",
+          "12",
+          "4",
+          "5",
+          "high (92)",
+          "2026-05-20 12:34Z",
+        ],
+      ],
+      copyText,
+    } as never);
+
+    const interaction = makeInteraction(buildCompoHeatMapRefCopyCustomIdForTest("user-1", "blacklist"));
 
     await handleCompoHeatMapRefCopyButton(interaction as any);
 

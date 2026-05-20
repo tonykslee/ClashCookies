@@ -8,9 +8,15 @@ import {
   toGlyphSafeTextForTest,
 } from "../src/commands/Compo";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
+import { BlacklistHeatmapRefService } from "../src/services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
+import {
+  BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS,
+  buildBlacklistHeatMapRefCopyText,
+  buildBlacklistHeatMapRefDisplayRows,
+} from "../src/helper/heatMapRefDisplay";
 
-function makeInteraction() {
+function makeInteraction(mode: string | null = null) {
   const interaction: any = {
     commandName: "compo",
     guildId: "guild-1",
@@ -24,7 +30,7 @@ function makeInteraction() {
     reply: vi.fn().mockResolvedValue(undefined),
     options: {
       getSubcommand: vi.fn(() => "heatmapref"),
-      getString: vi.fn(() => null),
+      getString: vi.fn((name: string) => (name === "mode" ? mode : null)),
     },
   };
   return interaction;
@@ -69,6 +75,9 @@ describe("/compo heatmapref command", () => {
     );
 
     expect(heatmapref?.description).toContain("HeatMapRef");
+    expect(
+      heatmapref?.options?.some((option) => option.name === "mode"),
+    ).toBe(true);
   });
 
   it("reads persisted HeatMapRef rows and renders an attached PNG image", async () => {
@@ -108,6 +117,166 @@ describe("/compo heatmapref command", () => {
     expect(payload?.files?.[0]?.name).toBe("compo-heatmapref.png");
     expect(collectButtonCustomIds(payload)).toEqual([
       buildCompoHeatMapRefCopyCustomIdForTest("user-1"),
+    ]);
+  });
+
+  it("treats mode:fwa as the default HeatMapRef view", async () => {
+    vi.spyOn(GoogleSheetsService.prototype, "getCompoLinkedSheet").mockResolvedValue(null as never);
+    vi.spyOn(GoogleSheetsService.prototype, "readCompoLinkedValues").mockResolvedValue([] as never);
+    const blacklistSpy = vi
+      .spyOn(BlacklistHeatmapRefService.prototype, "readBlacklistHeatMapRefDisplayTable")
+      .mockResolvedValue({
+        rows: [],
+        copyText: "",
+      } as never);
+    vi.spyOn(HeatMapRefDisplayService.prototype, "readHeatMapRefDisplayTable").mockResolvedValue({
+      rows: [
+        [
+          "Band",
+          "TH18",
+          "TH17",
+          "TH16",
+          "TH15",
+          "TH14",
+          "TH13",
+          "TH12",
+          "TH11+",
+          "Match%",
+          "Clans",
+        ],
+        ["0 - 100", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
+      ],
+      copyText:
+        "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+        "0,100,3,6,7,9,9,8,5,2,83.42%,4",
+    } as never);
+
+    const interaction = makeInteraction("fwa");
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    expect(HeatMapRefDisplayService.prototype.readHeatMapRefDisplayTable).toHaveBeenCalledTimes(1);
+    expect(blacklistSpy).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(Array.isArray(payload?.files)).toBe(true);
+    expect(payload?.files?.[0]?.name).toBe("compo-heatmapref.png");
+    expect(collectButtonCustomIds(payload)).toEqual([
+      buildCompoHeatMapRefCopyCustomIdForTest("user-1"),
+    ]);
+  });
+
+  it("renders persisted blacklist HeatMapRef rows and a mode-aware copy button", async () => {
+    vi.spyOn(BlacklistHeatmapRefService.prototype, "readBlacklistHeatMapRefDisplayTable").mockResolvedValue({
+      rows: [
+        BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS,
+        [
+          "0 - 100000",
+          "10",
+          "9",
+          "8",
+          "7",
+          "6",
+          "5",
+          "4",
+          "1",
+          "3",
+          "2",
+          "4",
+          "high (92)",
+          "2026-05-20 12:34Z",
+        ],
+      ],
+      copyText:
+        buildBlacklistHeatMapRefCopyText({
+          heatMapRefs: [
+            {
+              weightMinInclusive: 0,
+              weightMaxInclusive: 100000,
+              th18Count: 10,
+              th17Count: 9,
+              th16Count: 8,
+              th15Count: 7,
+              th14Count: 6,
+              th13Count: 5,
+              th12Count: 4,
+              th11PlusCount: 1,
+              sampleCount: 3,
+              uniqueSourceClanCount: 2,
+              uniqueOpponentCount: 4,
+              confidenceLabel: "high",
+              confidenceScore: 92,
+              generatedAt: new Date("2026-05-20T12:34:00.000Z"),
+            } as never,
+          ],
+        }),
+    } as never);
+
+    const interaction = makeInteraction("blacklist");
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    expect(BlacklistHeatmapRefService.prototype.readBlacklistHeatMapRefDisplayTable).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(payload?.files?.[0]?.name).toBe("compo-heatmapref-blacklist.png");
+    expect(payload?.components).toBeDefined();
+    expect(collectButtonCustomIds(payload)).toEqual([
+      buildCompoHeatMapRefCopyCustomIdForTest("user-1", "blacklist"),
+    ]);
+  });
+
+  it("shows an actionable empty state when the blacklist profile has no rows", async () => {
+    vi.spyOn(BlacklistHeatmapRefService.prototype, "readBlacklistHeatMapRefDisplayTable").mockResolvedValue({
+      rows: [BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS],
+      copyText: "",
+    } as never);
+
+    const interaction = makeInteraction("blacklist");
+    await Compo.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(payload?.content).toContain("/fwa blacklist-profile rebuild");
+    expect(payload?.files).toBeUndefined();
+    expect(payload?.components).toEqual([]);
+  });
+
+  it("formats blacklist HeatMapRef rows with metadata columns", () => {
+    const rows = buildBlacklistHeatMapRefDisplayRows({
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 100000,
+          th18Count: 10,
+          th17Count: 9,
+          th16Count: 8,
+          th15Count: 7,
+          th14Count: 6,
+          th13Count: 5,
+          th12Count: 4,
+          th11PlusCount: 3,
+          sampleCount: 12,
+          uniqueSourceClanCount: 4,
+          uniqueOpponentCount: 5,
+          confidenceLabel: "medium",
+          confidenceScore: 68,
+          generatedAt: new Date("2026-05-20T12:34:00.000Z"),
+        } as never,
+      ],
+    });
+
+    expect(rows[0]).toEqual(BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS);
+    expect(rows[1]).toEqual([
+      "0 - 100,000",
+      "10",
+      "9",
+      "8",
+      "7",
+      "6",
+      "5",
+      "4",
+      "3",
+      "12",
+      "4",
+      "5",
+      "medium (68)",
+      "2026-05-20 12:34Z",
     ]);
   });
 

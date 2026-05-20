@@ -61,6 +61,7 @@ import {
 } from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
 import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
+import { blacklistHeatmapRefService } from "../services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
 import {
   GoogleSheetMode,
@@ -325,6 +326,22 @@ const STATE_HEADERS = [
   "<=TH13",
 ];
 const COMPO_HEATMAPREF_COPY_PREFIX = "compo-heatmapref-copy";
+const COMPO_HEATMAPREF_MODE_CHOICES = [
+  {
+    name: "fwa",
+    value: "fwa",
+  },
+  {
+    name: "blacklist",
+    value: "blacklist",
+  },
+] as const;
+
+type CompoHeatMapRefMode = "fwa" | "blacklist";
+
+function normalizeCompoHeatMapRefMode(value: string | null | undefined): CompoHeatMapRefMode {
+  return value === "blacklist" ? "blacklist" : "fwa";
+}
 const COMPO_REFRESH_PREFIX = "compo-refresh";
 const COMPO_REPLACEMENTS_PREFIX = "compo-replacements";
 const COMPO_REFRESH_LABEL = "Refresh Data";
@@ -1353,18 +1370,46 @@ function buildCompoHeatMapRefCopyText(copyText: string): string {
   return ["```text", copyText, "```"].join("\n");
 }
 
-function buildCompoHeatMapRefCopyCustomId(userId: string): string {
+function buildCompoHeatMapRefCopyCustomId(
+  userId: string,
+  mode: CompoHeatMapRefMode = "fwa",
+): string {
+  if (mode === "blacklist") {
+    return `${COMPO_HEATMAPREF_COPY_PREFIX}:${mode}:${userId}`;
+  }
   return `${COMPO_HEATMAPREF_COPY_PREFIX}:${userId}`;
 }
 
-export function isCompoHeatMapRefCopyButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${COMPO_HEATMAPREF_COPY_PREFIX}:`);
+function parseCompoHeatMapRefCopyCustomId(
+  customId: string,
+): { userId: string; mode: CompoHeatMapRefMode } | null {
+  if (!customId.startsWith(`${COMPO_HEATMAPREF_COPY_PREFIX}:`)) {
+    return null;
+  }
+  const parts = customId.split(":");
+  if (parts.length === 2) {
+    const userId = parts[1] ?? "";
+    return userId ? { userId, mode: "fwa" } : null;
+  }
+  if (parts.length === 3) {
+    const mode = parts[1] === "blacklist" ? "blacklist" : parts[1] === "fwa" ? "fwa" : null;
+    const userId = parts[2] ?? "";
+    return mode && userId ? { userId, mode } : null;
+  }
+  return null;
 }
 
-function buildCompoHeatMapRefCopyButtonRow(userId: string): ActionRowBuilder<ButtonBuilder> {
+export function isCompoHeatMapRefCopyButtonCustomId(customId: string): boolean {
+  return parseCompoHeatMapRefCopyCustomId(String(customId ?? "")) !== null;
+}
+
+function buildCompoHeatMapRefCopyButtonRow(
+  userId: string,
+  mode: CompoHeatMapRefMode = "fwa",
+): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(buildCompoHeatMapRefCopyCustomId(userId))
+      .setCustomId(buildCompoHeatMapRefCopyCustomId(userId, mode))
       .setLabel("Copy Table")
       .setStyle(ButtonStyle.Primary),
   );
@@ -1405,12 +1450,14 @@ function buildCompoStatePayloadFromRows(input: {
 function buildCompoHeatMapRefPayloadFromRows(input: {
   rows: string[][];
   components?: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
+  title?: string;
+  fileName?: string;
 }): CompoRenderPayload {
   return {
     files: [
       {
-        attachment: renderStatePng("HEATMAP REF", input.rows),
-        name: "compo-heatmapref.png",
+        attachment: renderStatePng(input.title ?? "HEATMAP REF", input.rows),
+        name: input.fileName ?? "compo-heatmapref.png",
       },
     ],
     components: input.components,
@@ -2639,7 +2686,18 @@ export async function handleCompoHeatMapRefCopyButton(
     return;
   }
 
-  const requesterId = customId.split(":")[1] ?? "";
+  const parsed = parseCompoHeatMapRefCopyCustomId(customId);
+  if (!parsed) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Invalid HeatMapRef copy action.",
+      });
+    }
+    return;
+  }
+
+  const requesterId = parsed.userId;
   if (interaction.user.id !== requesterId) {
     await interaction.reply({
       ephemeral: true,
@@ -2650,7 +2708,10 @@ export async function handleCompoHeatMapRefCopyButton(
 
   try {
     await interaction.deferReply({ ephemeral: true });
-    const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+    const display =
+      parsed.mode === "blacklist"
+        ? await blacklistHeatmapRefService.readBlacklistHeatMapRefDisplayTable()
+        : await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
     const copyText = buildCompoHeatMapRefCopyText(display.copyText);
     await interaction.editReply({
       content: copyText,
@@ -2893,6 +2954,15 @@ export const Compo: Command = {
       name: "heatmapref",
       description: "Show the persisted HeatMapRef table as an image with copyable table text",
       type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "mode",
+          description: "Use the default FWA reference rows or the persisted blacklist profile",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: COMPO_HEATMAPREF_MODE_CHOICES,
+        },
+      ],
     },
     {
       name: "place",
@@ -3146,23 +3216,70 @@ export const Compo: Command = {
       }
 
       if (resolvedSubcommand === "heatmapref") {
-        logCompoStage(interaction, "computation_start", { mode: resolvedMode });
+        const heatMapRefMode = normalizeCompoHeatMapRefMode(
+          interaction.options.getString("mode", false),
+        );
+        logCompoStage(interaction, "computation_start", {
+          mode: heatMapRefMode,
+        });
+        if (heatMapRefMode === "blacklist") {
+          const display = await blacklistHeatmapRefService.readBlacklistHeatMapRefDisplayTable();
+          logCompoStage(interaction, "db_fetch", {
+            entity: "blacklist_heat_map_ref",
+            mode: heatMapRefMode,
+            rows: Math.max(0, display.rows.length - 1),
+          });
+          if (display.rows.length <= 1) {
+            logCompoStage(interaction, "response_build", {
+              reason: "blacklist_heatmapref_empty",
+            });
+            await interaction.editReply({
+              content:
+                "No blacklist HeatMapRef profile rows exist yet. Run /fwa blacklist-profile rebuild first.",
+              components: [],
+            });
+            logCompoStage(interaction, "response_sent", {
+              reason: "blacklist_heatmapref_empty",
+            });
+            return;
+          }
+          logCompoStage(interaction, "computation_complete", {
+            result: "heatmapref_rendered",
+            mode: heatMapRefMode,
+            rows: Math.max(0, display.rows.length - 1),
+          });
+          logCompoStage(interaction, "response_build", {
+            reason: "blacklist_heatmapref_png",
+          });
+          await interaction.editReply({
+            ...buildCompoHeatMapRefPayloadFromRows({
+              rows: display.rows,
+              title: "HEATMAP REF (BLACKLIST)",
+              fileName: "compo-heatmapref-blacklist.png",
+              components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id, heatMapRefMode)],
+            }),
+          });
+          logCompoStage(interaction, "response_sent", {
+            reason: "blacklist_heatmapref_png",
+          });
+          return;
+        }
         const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
         logCompoStage(interaction, "db_fetch", {
           entity: "heat_map_ref",
-          mode: resolvedMode,
+          mode: heatMapRefMode,
           rows: Math.max(0, display.rows.length - 1),
         });
         logCompoStage(interaction, "computation_complete", {
           result: "heatmapref_rendered",
-          mode: resolvedMode,
+          mode: heatMapRefMode,
           rows: Math.max(0, display.rows.length - 1),
         });
         logCompoStage(interaction, "response_build", { reason: "heatmapref_png" });
         await interaction.editReply({
           ...buildCompoHeatMapRefPayloadFromRows({
             rows: display.rows,
-            components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id)],
+            components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id, heatMapRefMode)],
           }),
         });
         logCompoStage(interaction, "response_sent", { reason: "heatmapref_png" });
