@@ -359,7 +359,7 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
-const FWA_BASE_SWAP_SWAP_BACK_HEADER = "# Swap back to FWA layout";
+const FWA_BASE_SWAP_SWAP_TO_WAR_HEADER = "# Swap to WAR Bases";
 const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE IN CWL {emoji}";
 const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
@@ -1735,7 +1735,7 @@ function buildFwaBaseSwapAnnouncementLines(state: {
     const swapReminderLines =
       state.swapReminder && String(state.clanRoleId ?? "").trim()
         ? [
-            FWA_BASE_SWAP_SWAP_BACK_HEADER,
+            FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
             FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
             `<@&${String(state.clanRoleId).trim()}>`,
           ]

@@ -849,7 +849,7 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
-  it("renders the swap-back reminder header and clan role mention when swap-reminder is enabled", () => {
+  it("renders the swap-to-war reminder header and clan role mention when swap-reminder is enabled", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
         buildEntry({
@@ -867,7 +867,7 @@ describe("FWA base-swap layout links", () => {
     });
 
     const lines = content.split("\n");
-    const headerIndex = lines.indexOf("# Swap back to FWA layout");
+    const headerIndex = lines.indexOf("# Swap to WAR Bases");
     const noteIndex = lines.indexOf(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
@@ -1160,7 +1160,7 @@ describe("FWA base-swap layout links", () => {
     expect(changed).toBe(true);
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
-    expect(String(editPayload.content)).toContain("# Swap back to FWA layout");
+    expect(String(editPayload.content)).toContain("# Swap to WAR Bases");
     expect(String(editPayload.content)).toContain(
       "<@&123456789012345678>",
     );
@@ -1794,7 +1794,7 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("adds a swap-back header and clan role mention when swap-reminder is enabled", async () => {
+  it("adds a swap-to-war header and clan role mention when swap-reminder is enabled", async () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       fwaBases: "1",
@@ -1850,7 +1850,7 @@ describe("FWA base-swap mail-channel routing", () => {
       }),
     );
     const content = String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "");
-    const headerIndex = content.indexOf("# Swap back to FWA layout");
+    const headerIndex = content.indexOf("# Swap to WAR Bases");
     const noteIndex = content.indexOf(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
