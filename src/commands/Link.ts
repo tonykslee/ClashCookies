@@ -117,6 +117,16 @@ type LinkListCurrentMemberRow = {
   sourceSyncedAt: Date;
 };
 
+type LinkListTownHallRow = {
+  playerTag: string;
+  townHall: number | null;
+};
+
+type LinkListTownHallCatalogRow = {
+  playerTag: string;
+  latestTownHall: number | null;
+};
+
 type GuildTrackedClanOption = {
   tag: string;
   name: string;
@@ -785,6 +795,26 @@ function formatInactivityMetricLabel(input: {
   return `${daysText} ${warsText}`;
 }
 
+function normalizePositiveTownHall(input: number | null | undefined): number | null {
+  if (input === null || input === undefined) return null;
+  if (!Number.isFinite(input)) return null;
+  const normalized = Math.trunc(input);
+  return normalized > 0 ? normalized : null;
+}
+
+function resolveLinkListTownHall(input: {
+  memberTownHall: number | null;
+  catalogTownHall: number | null;
+  playerCurrentTownHall: number | null;
+}): number | null {
+  return (
+    normalizePositiveTownHall(input.memberTownHall) ??
+    normalizePositiveTownHall(input.catalogTownHall) ??
+    normalizePositiveTownHall(input.playerCurrentTownHall) ??
+    null
+  );
+}
+
 function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { left: number; player: number; weight: number },
@@ -801,10 +831,11 @@ function formatAlignedInlineRow(
   const playerName = rightAlign(row.playerName, widths.player);
   const playerTag = normalizePlayerTag(row.playerTag) || row.playerTag;
   const rowMode = row.rowMode ?? sortMode;
+  const playerTagSegment = rowMode === "player-tags" ? ` \`${playerTag}\`` : "";
   const base =
     rowMode === "inactivity"
-      ? `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerName}\` \`${weight}\``
-      : `${statusPrefix} ${townHallIcon} \`${leftLabel}\` \`${playerTag}\` \`${playerName}  ${weight}\``;
+      ? `${statusPrefix} ${townHallIcon} \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``
+      : `${statusPrefix} ${townHallIcon} \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``;
   if (!row.rightMarker) return base;
   return `${base} ${row.rightMarker}`;
 }
@@ -948,6 +979,36 @@ async function buildLinkListView(input: {
   const memberTags = currentMembers
     .map((row) => normalizePlayerTag(row.playerTag))
     .filter((tag): tag is string => Boolean(tag));
+  const [catalogRows, playerCurrentRows] = await Promise.all([
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: memberTags } },
+      select: { playerTag: true, latestTownHall: true },
+    }),
+    prisma.playerCurrent.findMany({
+      where: { playerTag: { in: memberTags } },
+      select: { playerTag: true, townHall: true },
+    }),
+  ]) as [
+    LinkListTownHallCatalogRow[],
+    LinkListTownHallRow[],
+  ];
+  const townHallByTag = new Map<string, number | null>();
+  for (const row of currentMembers) {
+    const normalizedTag = normalizePlayerTag(row.playerTag);
+    if (!normalizedTag) continue;
+    const catalogTownHall =
+      catalogRows.find((entry) => entry.playerTag === normalizedTag)?.latestTownHall ?? null;
+    const playerCurrentTownHall =
+      playerCurrentRows.find((entry) => entry.playerTag === normalizedTag)?.townHall ?? null;
+    townHallByTag.set(
+      normalizedTag,
+      resolveLinkListTownHall({
+        memberTownHall: row.townHall,
+        catalogTownHall,
+        playerCurrentTownHall,
+      }),
+    );
+  }
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: memberTags,
   });
@@ -1043,9 +1104,7 @@ async function buildLinkListView(input: {
           ),
           MAX_IDENTITY_CHARS,
         )
-      : sortMode === "inactivity"
-        ? truncateWithEllipsis(playerTag, MAX_IDENTITY_CHARS)
-        : WEIGHT_PLACEHOLDER;
+      : WEIGHT_PLACEHOLDER;
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
@@ -1069,7 +1128,7 @@ async function buildLinkListView(input: {
       playerSort: sanitizeTableText(playerName),
       discordSort: sanitizeTableText(discordSort),
       row: {
-        townHall: member.townHall,
+        townHall: townHallByTag.get(playerTag) ?? member.townHall ?? null,
         leftLabel,
         playerTag,
         weight,
