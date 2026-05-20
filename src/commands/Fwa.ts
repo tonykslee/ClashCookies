@@ -51,6 +51,7 @@ import {
   buildFwaMatchChecklistRowsFromCopyView,
   postFwaMatchChecklistMessage,
 } from "../services/FwaMatchChecklistService";
+import { blacklistClanService } from "../services/BlacklistClanService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -12921,6 +12922,33 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "blacklist-import",
+      description: "Import or update known blacklist clan tags",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "tags",
+          description:
+            "Comma-separated, space-separated, or mixed-separated clan tags (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+        {
+          name: "source-label",
+          description:
+            "Label stored with the import batch (defaults to manual-import)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "active",
+          description: "Mark imported clans active or inactive",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+      ],
+    },
+    {
       name: "base-swap",
       description: "Post a base swap / base error acknowledgement announcement",
       type: ApplicationCommandOptionType.Subcommand,
@@ -13331,6 +13359,47 @@ export const Fwa: Command = {
         checkedClanTags: checklistState.checkedClanTags,
         referenceId: checklistState.referenceId,
       });
+      return;
+    }
+
+    if (subcommand === "blacklist-import") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const isOwnerBypass = hasOwnerBypassUserId(interaction.user.id);
+      if (
+        !isOwnerBypass &&
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+      ) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      const rawTags = interaction.options.getString("tags", true);
+      const sourceLabel =
+        interaction.options.getString("source-label", false) ?? undefined;
+      const active = interaction.options.getBoolean("active", false);
+      const result = await blacklistClanService.upsertBlacklistClanTags({
+        rawTags,
+        sourceLabel,
+        active,
+      });
+      if (result.added.length + result.updated.length <= 0) {
+        const invalidText =
+          result.invalid.length > 0
+            ? ` Invalid tags: ${result.invalid.map((tag) => `\`${tag}\``).join(", ")}.`
+            : "";
+        await editReplySafe(
+          `No valid clan tags found.${invalidText || " Use comma-separated, space-separated, or mixed-separated clan tags with or without #."}`,
+        );
+        return;
+      }
+      const statusLabel = result.active ? "active" : "inactive";
+      const summaryLines = [
+        `Blacklist registry updated from \`${result.sourceLabel}\` (${statusLabel}).`,
+        `Added: **${result.added.length}**  Updated: **${result.updated.length}**  Invalid: **${result.invalid.length}**  Duplicate in request: **${result.duplicateInRequest.length}**`,
+      ];
+      await editReplySafe(summaryLines.join("\n"));
       return;
     }
 

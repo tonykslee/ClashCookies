@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
+const blacklistClanServiceMock = vi.hoisted(() => ({
+  upsertBlacklistClanTags: vi.fn(),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   clanPointsSync: {
     findFirst: vi.fn(),
@@ -23,16 +27,24 @@ vi.mock("../src/prisma", () => ({
   hasInitializedPrismaClient: () => false,
 }));
 
+vi.mock("../src/services/BlacklistClanService", () => ({
+  blacklistClanService: blacklistClanServiceMock,
+}));
+
 import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
 } from "../src/commands/Fwa";
 
 function makeMatchInteraction(params: {
-  subcommand?: "match" | "match-checklist";
+  subcommand?: "match" | "match-checklist" | "blacklist-import";
   visibility?: "private" | "public";
   copyPaste?: boolean;
   tag?: string | null;
+  tags?: string | null;
+  sourceLabel?: string | null;
+  active?: boolean | null;
+  isAdmin?: boolean;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
@@ -42,6 +54,9 @@ function makeMatchInteraction(params: {
     user: { id: "user-1" },
     deferReply,
     editReply,
+    memberPermissions: {
+      has: vi.fn(() => Boolean(params.isAdmin)),
+    },
     inGuild: vi.fn(() => true),
     options: {
       getSubcommandGroup: vi.fn(() => null),
@@ -49,11 +64,14 @@ function makeMatchInteraction(params: {
       getString: vi.fn((name: string) => {
         if (name === "visibility") return params.visibility ?? "private";
         if (name === "tag") return params.tag ?? "ABC123";
+        if (name === "tags") return params.tags ?? null;
+        if (name === "source-label") return params.sourceLabel ?? null;
         if (name === "debug-mail-status") return null;
         return null;
       }),
       getBoolean: vi.fn((name: string) => {
         if (name === "copy_paste") return params.copyPaste ?? false;
+        if (name === "active") return params.active ?? true;
         if (name === "debug-mail-status") return false;
         return null;
       }),
@@ -72,6 +90,16 @@ describe("/fwa match response normalization", () => {
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
+    blacklistClanServiceMock.upsertBlacklistClanTags.mockResolvedValue({
+      sourceLabel: "manual-import",
+      active: true,
+      added: [],
+      updated: [],
+      invalid: [],
+      duplicateInRequest: [],
+      totalRequested: 0,
+    });
   });
 
   it("normalizes copy-paste into public visibility", () => {
@@ -131,6 +159,62 @@ describe("/fwa match response normalization", () => {
         content: expect.stringContaining(
           "React with your clan's badge to indicate that the in-game mails have been sent.",
         ),
+      }),
+    );
+  });
+
+  it("imports blacklist clans through the new admin command path", async () => {
+    blacklistClanServiceMock.upsertBlacklistClanTags.mockResolvedValueOnce({
+      sourceLabel: "manual-import",
+      active: false,
+      added: ["#PYLQ0289", "#PYLQ0288", "#PYLQ0280"],
+      updated: [],
+      invalid: [],
+      duplicateInRequest: ["#PYLQ0289"],
+      totalRequested: 4,
+    });
+    const run = makeMatchInteraction({
+      subcommand: "blacklist-import",
+      tags: "#PYLQ0289, PYLQ0288 PYLQ0280 #PYLQ0289",
+      sourceLabel: "manual-import",
+      active: false,
+      isAdmin: true,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(blacklistClanServiceMock.upsertBlacklistClanTags).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawTags: "#PYLQ0289, PYLQ0288 PYLQ0280 #PYLQ0289",
+        sourceLabel: "manual-import",
+        active: false,
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Blacklist registry updated from `manual-import` (inactive)."),
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Added: **3**"),
+      }),
+    );
+  });
+
+  it("rejects blacklist import for non-admin users", async () => {
+    const run = makeMatchInteraction({
+      subcommand: "blacklist-import",
+      tags: "#AAA111",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(blacklistClanServiceMock.upsertBlacklistClanTags).not.toHaveBeenCalled();
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Only administrators can use this command.",
       }),
     );
   });

@@ -1599,6 +1599,20 @@ model FwaClanMatchStatsCurrent {
   @@index([lastComputedAt])
 }
 
+model BlacklistClan {
+  clanTag     String   @id
+  clanName    String?
+  sourceLabel String
+  active      Boolean  @default(true)
+  firstSeenAt DateTime
+  lastSeenAt  DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active, lastSeenAt])
+  @@index([sourceLabel, lastSeenAt])
+}
+
 model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType
