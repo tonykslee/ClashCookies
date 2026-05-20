@@ -289,7 +289,6 @@ describe("/link run", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
-    prismaMock.playerActivity.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -1583,7 +1582,13 @@ describe("/link list sort button", () => {
     };
 
     const runSortClick = async (
-      mode: "discord" | "weight" | "player-tags" | "player" | "clan-rank",
+      mode:
+        | "discord"
+        | "weight"
+        | "player-tags"
+        | "player"
+        | "clan-rank"
+        | "inactivity",
     ) => {
       const deferUpdate = vi.fn().mockResolvedValue(undefined);
       const editReply = vi.fn().mockResolvedValue(undefined);
