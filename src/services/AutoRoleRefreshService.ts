@@ -91,6 +91,65 @@ function normalizeMemberIds(memberIds: Iterable<string>): string[] {
   return [...new Set([...memberIds].map((id) => String(id ?? "").trim()).filter(Boolean))].sort();
 }
 
+function getGuildCachedMembersMap(guild: Guild): Map<string, AutoRoleGuildMemberLike> {
+  return memberCollectionToMap(guild.members.cache as unknown as AutoRoleMemberCollectionLike);
+}
+
+function isDiscordMemberFetchRateLimitError(error: unknown): boolean {
+  const message = formatError(error).toLowerCase();
+  return (
+    message.includes("opcode 8") ||
+    message.includes("request_guild_members") ||
+    message.includes("request guild members") ||
+    message.includes("rate limited")
+  );
+}
+
+function formatDiscordMemberFetchRateLimitMessage(error: unknown): string {
+  const message = formatError(error);
+  const match =
+    /retry after\s+([0-9]+(?:\.[0-9]+)?)\s*seconds?/i.exec(message) ??
+    /retry after\s+([0-9]+(?:\.[0-9]+)?)\s*s\b/i.exec(message);
+  const retrySeconds = match ? Math.max(1, Math.ceil(Number(match[1]))) : null;
+  return retrySeconds !== null
+    ? `Discord rate-limited member fetching. Try again in about ${retrySeconds} seconds.`
+    : "Discord rate-limited member fetching. Try again in about a minute.";
+}
+
+async function loadGuildMembersByIds(input: {
+  guild: Guild;
+  userIds: Iterable<string>;
+}): Promise<{
+  membersById: Map<string, AutoRoleGuildMemberLike>;
+}> {
+  const membersById = new Map<string, AutoRoleGuildMemberLike>();
+  const cachedMembers = getGuildCachedMembersMap(input.guild);
+  const userIds = normalizeMemberIds(input.userIds);
+
+  for (const userId of userIds) {
+    const cached = cachedMembers.get(userId) ?? null;
+    if (cached) {
+      membersById.set(userId, cached);
+      continue;
+    }
+
+    try {
+      const fetched = await input.guild.members.fetch(userId);
+      if (fetched) {
+        membersById.set(fetched.id, fetched as unknown as AutoRoleGuildMemberLike);
+      }
+    } catch (error) {
+      if (isDiscordMemberFetchRateLimitError(error)) {
+        throw new Error(formatDiscordMemberFetchRateLimitMessage(error));
+      }
+      // Missing or inaccessible members are intentionally ignored so tracked-clan
+      // role refreshes stay targeted and fail-closed for destructive removals.
+    }
+  }
+
+  return { membersById };
+}
+
 function normalizePlayerTags(playerTags: Iterable<string>): string[] {
   return [...new Set([...playerTags].map((tag) => normalizePlayerTag(String(tag ?? ""))).filter(Boolean))].sort();
 }
@@ -470,6 +529,7 @@ async function loadTrackedClansForAutorole(): Promise<AutoRoleTrackedClanLike[]>
       tag: true,
       name: true,
       shortName: true,
+      clanRoleId: true,
       leadRoleId: true,
     },
   });
@@ -479,6 +539,7 @@ async function loadTrackedClansForAutorole(): Promise<AutoRoleTrackedClanLike[]>
       tag: normalizeClanTag(row.tag),
       name: row.name ?? null,
       shortName: row.shortName ?? null,
+      clanRoleId: String(row.clanRoleId ?? "").trim() || null,
       leadRoleId: String(row.leadRoleId ?? "").trim() || null,
     }))
     .filter((row) => row.tag.length > 0);
@@ -511,6 +572,26 @@ type TrackedLeadRoleRefreshState = {
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   candidateUserIds: Set<string>;
+  clanFetchCount: number;
+  failedClanTags: string[];
+};
+
+type TrackedClanRoleRefreshState = {
+  requestedClanCount: number;
+  configuredClanTags: string[];
+  trackedClans: AutoRoleTrackedClanLike[];
+  clanMembershipIndex: AutoRoleClanMembershipIndex;
+  trackedMembershipScope: {
+    fwaClanTags: Set<string>;
+    cwlClanTags: Set<string>;
+    fwaMemberTags: Set<string>;
+    cwlMemberTags: Set<string>;
+    cwlClanFetchCount: number;
+  };
+  playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
+  candidateUserIds: Set<string>;
+  membersById: Map<string, AutoRoleGuildMemberLike>;
   clanFetchCount: number;
   failedClanTags: string[];
 };
@@ -651,10 +732,16 @@ async function loadTrackedLeadRoleRefreshState(input: {
       tag: true,
       name: true,
       shortName: true,
+      clanRoleId: true,
       leadRoleId: true,
     },
   });
   if (rows.length === 0) {
+    return null;
+  }
+
+  const matchingRows = rows.filter((row) => String(row.leadRoleId ?? "").trim() === roleId);
+  if (matchingRows.length === 0) {
     return null;
   }
 
@@ -667,7 +754,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
   const failedClanTags = new Set<string>();
   const configuredClanTags = new Set<string>();
   const clanLookups = await Promise.all(
-    rows.map(async (row) => {
+    matchingRows.map(async (row) => {
       const clanTag = normalizeClanTag(row.tag);
       if (!clanTag) {
         return null;
@@ -688,6 +775,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
           tag: clanTag,
           name: row.name,
           shortName: row.shortName,
+          clanRoleId: row.clanRoleId,
           leadRoleId: row.leadRoleId,
         },
         clan,
@@ -719,6 +807,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
       tag: clanTag,
       name: clanName,
       shortName,
+      clanRoleId: String(lookup.row.clanRoleId ?? "").trim() || null,
       leadRoleId: String(lookup.row.leadRoleId ?? "").trim() || null,
     });
 
@@ -791,7 +880,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
   });
 
   return {
-    requestedClanCount: rows.length,
+    requestedClanCount: matchingRows.length,
     configuredClanTags: [...configuredClanTags].sort(),
     trackedClans,
     clanMembershipIndex,
@@ -805,6 +894,214 @@ async function loadTrackedLeadRoleRefreshState(input: {
     playerCurrentByTag,
     linkedAccountsByUserId,
     candidateUserIds,
+    clanFetchCount,
+    failedClanTags: [...failedClanTags].sort(),
+  };
+}
+
+async function loadTrackedClanRoleRefreshState(input: {
+  roleId: string;
+  guild: Guild;
+  cocService?: CoCService | null;
+}): Promise<TrackedClanRoleRefreshState | null> {
+  const roleId = String(input.roleId ?? "").trim();
+  if (!roleId) {
+    return null;
+  }
+
+  const rows = await prisma.trackedClan.findMany({
+    where: { clanRoleId: roleId },
+    select: {
+      tag: true,
+      name: true,
+      shortName: true,
+      clanRoleId: true,
+      leadRoleId: true,
+    },
+  });
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const matchingRows = rows.filter((row) => String(row.clanRoleId ?? "").trim() === roleId);
+  if (matchingRows.length === 0) {
+    return null;
+  }
+
+  const cocService = input.cocService ?? null;
+  if (!cocService || typeof cocService.getClan !== "function") {
+    throw new Error("Tracked clan role refresh requires CoC clan data.");
+  }
+
+  const cachedMembersById = getGuildCachedMembersMap(input.guild);
+  const currentHolderIds = collectCurrentRoleHolders(cachedMembersById, new Set([roleId]));
+  const failedClanTags = new Set<string>();
+  const configuredClanTags = new Set<string>();
+  const clanLookups = await Promise.all(
+    matchingRows.map(async (row) => {
+      const clanTag = normalizeClanTag(row.tag);
+      if (!clanTag) {
+        return null;
+      }
+
+      configuredClanTags.add(clanTag);
+      let clan = null;
+      try {
+        clan = await cocService.getClan(clanTag);
+      } catch {
+        clan = null;
+      }
+      if (!clan) {
+        failedClanTags.add(clanTag);
+      }
+      return {
+        row: {
+          tag: clanTag,
+          name: row.name,
+          shortName: row.shortName,
+          clanRoleId: row.clanRoleId,
+          leadRoleId: row.leadRoleId,
+        },
+        clan,
+      };
+    }),
+  );
+
+  const successfulLookups = clanLookups.filter((lookup): lookup is NonNullable<typeof lookup> => Boolean(lookup?.clan));
+  const trackedClans: AutoRoleTrackedClanLike[] = [];
+  const clanMembershipIndex = new Map<string, AutoRoleClanMembershipIndexRow>();
+  const playerCurrentByTag = new Map<string, PlayerCurrentLike>();
+  const fwaClanTags = new Set<string>();
+  const fwaMemberTags = new Set<string>();
+  const candidatePlayerTags = new Set<string>();
+  let clanFetchCount = 0;
+
+  for (const lookup of successfulLookups) {
+    clanFetchCount += 1;
+    const clanTag = normalizeClanTag(lookup.row.tag);
+    if (!clanTag) {
+      continue;
+    }
+
+    fwaClanTags.add(clanTag);
+    const trackedClanName = normalizeText(lookup.row.name);
+    const shortName = normalizeText(lookup.row.shortName);
+    const clanName = normalizeText(lookup.clan?.name ?? trackedClanName);
+    trackedClans.push({
+      tag: clanTag,
+      name: clanName,
+      shortName,
+      clanRoleId: String(lookup.row.clanRoleId ?? "").trim() || null,
+      leadRoleId: String(lookup.row.leadRoleId ?? "").trim() || null,
+    });
+
+    const members = Array.isArray(lookup.clan?.members)
+      ? lookup.clan.members
+      : Array.isArray(lookup.clan?.memberList)
+        ? lookup.clan.memberList
+        : [];
+    const playerTags = new Set<string>();
+    for (const member of members) {
+      const clanMember = member as {
+        tag?: unknown;
+        name?: unknown;
+        townHallLevel?: unknown;
+        townhallLevel?: unknown;
+        townHall?: unknown;
+        role?: unknown;
+        league?: { name?: unknown } | null;
+      };
+      const playerTag = normalizePlayerTag(String(clanMember.tag ?? ""));
+      if (!playerTag) {
+        continue;
+      }
+
+      playerTags.add(playerTag);
+      fwaMemberTags.add(playerTag);
+      candidatePlayerTags.add(playerTag);
+
+      if (!playerCurrentByTag.has(playerTag)) {
+        const playerName = normalizePersistedPlayerName(String(clanMember.name ?? ""));
+        const townHall = normalizeTownHallLevel(
+          clanMember.townHallLevel ?? clanMember.townhallLevel ?? clanMember.townHall ?? null,
+        );
+        const role = normalizeClanMemberRole(clanMember.role ?? null);
+        const leagueName = normalizeText(clanMember.league?.name ?? null);
+        playerCurrentByTag.set(
+          playerTag,
+          createTrackedClanPlayerCurrent({
+            playerTag,
+            playerName,
+            townHall,
+            currentClanTag: clanTag,
+            currentClanName: clanName,
+            role,
+            leagueName,
+          }),
+        );
+      }
+    }
+
+    clanMembershipIndex.set(clanTag, {
+      source: "FWA",
+      playerTags,
+    });
+  }
+
+  const linkedAccountsByPlayerTag = await loadLinkedAccountsForPlayerTags({
+    playerTags: [...candidatePlayerTags],
+  });
+  const candidateUserIds = new Set<string>(currentHolderIds);
+  const linkedUserIds = new Set<string>();
+  for (const linkedAccounts of linkedAccountsByPlayerTag.values()) {
+    for (const account of linkedAccounts) {
+      const userId = normalizeDiscordUserId(account.discordUserId);
+      if (userId) {
+        linkedUserIds.add(userId);
+      }
+    }
+  }
+
+  const membersById = new Map<string, AutoRoleGuildMemberLike>();
+  for (const userId of candidateUserIds) {
+    const cached = cachedMembersById.get(userId) ?? null;
+    if (cached) {
+      membersById.set(userId, cached);
+    }
+  }
+
+  const fetchableUserIds = [...linkedUserIds].filter((userId) => !membersById.has(userId));
+  if (fetchableUserIds.length > 0) {
+    const fetchedMembers = await loadGuildMembersByIds({
+      guild: input.guild,
+      userIds: fetchableUserIds,
+    });
+    for (const [userId, member] of fetchedMembers.membersById.entries()) {
+      membersById.set(userId, member);
+      candidateUserIds.add(userId);
+    }
+  }
+
+  const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
+    guildMemberIds: [...candidateUserIds],
+  });
+
+  return {
+    requestedClanCount: matchingRows.length,
+    configuredClanTags: [...configuredClanTags].sort(),
+    trackedClans,
+    clanMembershipIndex,
+    trackedMembershipScope: {
+      fwaClanTags,
+      cwlClanTags: new Set<string>(),
+      fwaMemberTags,
+      cwlMemberTags: new Set<string>(),
+      cwlClanFetchCount: 0,
+    },
+    playerCurrentByTag,
+    linkedAccountsByUserId,
+    candidateUserIds,
+    membersById,
     clanFetchCount,
     failedClanTags: [...failedClanTags].sort(),
   };
@@ -1559,6 +1856,65 @@ export class AutoRoleRefreshService {
       }
 
       if (input.scope.kind === "role") {
+        const clanRoleState = await loadTrackedClanRoleRefreshState({
+          roleId: input.scope.discordRoleId,
+          guild: input.guild,
+          cocService: input.cocService ?? null,
+        });
+        if (clanRoleState) {
+          const missingClanTags = collectMissingTrackedClanTags(
+            clanRoleState.configuredClanTags,
+            clanRoleState.trackedClans,
+          );
+          const failedClanTags = formatTrackedClanFetchFailureTags([
+            ...clanRoleState.failedClanTags,
+            ...missingClanTags,
+          ]);
+          const hasFetchFailure =
+            input.cocService &&
+            (clanRoleState.requestedClanCount > clanRoleState.trackedClans.length ||
+              failedClanTags.length > 0);
+          if (hasFetchFailure) {
+            const error = buildTrackedClanFetchFailureError({
+              scope: input.scope,
+              failedClanTags: [...clanRoleState.failedClanTags, ...missingClanTags],
+            });
+            dozzleLog.warn(
+              `[autorole] event=tracked_clan_fetch_failed guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} failed_clan_tags=${failedClanTags} action=abort_before_apply removed=0`,
+            );
+            throw error;
+          }
+
+          const currentHolderCount = collectCurrentRoleHolders(
+            clanRoleState.membersById,
+            new Set([input.scope.discordRoleId]),
+          ).size;
+          dozzleLog.info(
+            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} clan_role_clans=${clanRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${clanRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} clan_member_tags=${clanRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${clanRoleState.clanFetchCount} player_current_tags=${clanRoleState.playerCurrentByTag.size} member_fetch_mode=targeted`,
+          );
+
+          return runRefreshPass({
+            guildId: input.guildId,
+            scope: input.scope,
+            guild: input.guild,
+            snapshot,
+            trackedClans: clanRoleState.trackedClans,
+            membersById: clanRoleState.membersById,
+            linkedAccountsByUserId: clanRoleState.linkedAccountsByUserId,
+            playerCurrentByTag: clanRoleState.playerCurrentByTag,
+            clanMembershipIndex: clanRoleState.clanMembershipIndex,
+            trackedMembershipScope: clanRoleState.trackedMembershipScope,
+            runId: run.id,
+            now: input.now,
+            candidateUserIdsOverride: clanRoleState.candidateUserIds,
+            suppressRemovalRoleIds,
+            preferCurrentClanTagForClanRules: true,
+          });
+        }
+
+        dozzleLog.info(
+          `[autorole] event=refresh_member_source guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} member_fetch_mode=full_guild_fetch reason=non_tracked_clan_role`,
+        );
         const roleMembersById = await fetchGuildMembersMap(input.guild, input.scope);
         const leadRoleState = await loadTrackedLeadRoleRefreshState({
           roleId: input.scope.discordRoleId,
@@ -1607,13 +1963,13 @@ export class AutoRoleRefreshService {
             linkedAccountsByUserId: leadRoleState.linkedAccountsByUserId,
             playerCurrentByTag: leadRoleState.playerCurrentByTag,
             clanMembershipIndex: leadRoleState.clanMembershipIndex,
-          trackedMembershipScope: leadRoleState.trackedMembershipScope,
-          runId: run.id,
-          now: input.now,
-          candidateUserIdsOverride: leadRoleState.candidateUserIds,
-          suppressRemovalRoleIds,
-        });
-      }
+            trackedMembershipScope: leadRoleState.trackedMembershipScope,
+            runId: run.id,
+            now: input.now,
+            candidateUserIdsOverride: leadRoleState.candidateUserIds,
+            suppressRemovalRoleIds,
+          });
+        }
       }
 
       if (input.scope.kind === "guild") {
