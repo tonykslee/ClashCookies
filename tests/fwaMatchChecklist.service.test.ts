@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
+  refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../src/services/TrackedMessageService", async () => {
@@ -17,6 +18,7 @@ vi.mock("../src/services/TrackedMessageService", async () => {
 import {
   buildFwaMatchChecklistMessageContent,
   buildFwaMatchChecklistRowsFromCopyView,
+  handleFwaMatchChecklistRefreshButton,
   postFwaMatchChecklistMessage,
 } from "../src/services/FwaMatchChecklistService";
 
@@ -72,11 +74,10 @@ describe("FWA match checklist service", () => {
       checkedClanTags: ["#PYPY"],
     });
 
-    expect(editReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: expect.stringContaining("# Clan Mail Checklist"),
-      }),
-    );
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(String(payload?.content ?? "")).toContain("# Clan Mail Checklist");
+    const refreshButton = payload?.components?.[0]?.toJSON?.().components?.[0];
+    expect(refreshButton?.label).toBe("Refresh");
     expect(fetchReply).toHaveBeenCalledTimes(1);
     expect(
       trackedMessageMock.createFwaMatchChecklistTrackedMessage,
@@ -131,5 +132,78 @@ describe("FWA match checklist service", () => {
       trackedMessageMock.createFwaMatchChecklistTrackedMessage,
     ).not.toHaveBeenCalled();
     expect(react).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a public checklist message in place without clearing reactions", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      deferUpdate,
+      followUp,
+      message: {
+        id: "message-1",
+        reactions: {
+          cache: {
+            values: () =>
+              [
+                {
+                  emoji: { id: "111", name: "rr" },
+                  count: 2,
+                },
+                {
+                  emoji: { id: "222", name: "twc" },
+                  count: 1,
+                },
+              ][Symbol.iterator](),
+          },
+        },
+        edit,
+        react,
+      },
+    } as any;
+
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(true);
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "message-1" }),
+    );
+    expect(react).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear failure response when a checklist refresh can no longer be applied", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      deferUpdate,
+      followUp,
+      message: {
+        id: "message-1",
+        reactions: {
+          cache: {
+            values: () => [].values(),
+          },
+        },
+      },
+    } as any;
+
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(false);
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist post can no longer be refreshed.",
+      }),
+    );
   });
 });

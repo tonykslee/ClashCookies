@@ -1,4 +1,10 @@
-import { ChatInputCommandInteraction } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChatInputCommandInteraction,
+  type ButtonInteraction,
+} from "discord.js";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
@@ -8,6 +14,10 @@ import {
   trackedMessageService,
   type FwaMatchChecklistTrackedRow,
 } from "./TrackedMessageService";
+import {
+  buildFwaMatchChecklistRefreshCustomId,
+  isFwaMatchChecklistRefreshButtonCustomId,
+} from "../commands/fwa/customIds";
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
@@ -122,6 +132,20 @@ export function buildFwaMatchChecklistMessageContent(input: {
   ].join("\n");
 }
 
+/** Purpose: build checklist components for the public post. */
+export function buildFwaMatchChecklistComponents(): Array<
+  ActionRowBuilder<ButtonBuilder>
+> {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildFwaMatchChecklistRefreshCustomId())
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
 /** Purpose: add clan badge reactions for a published checklist message. */
 async function addFwaMatchChecklistReactions(
   message: { id: string; react: (emoji: string) => Promise<unknown> },
@@ -155,7 +179,7 @@ export async function postFwaMatchChecklistMessage(params: {
   await params.interaction.editReply({
     content: truncateDiscordContent(content),
     embeds: [],
-    components: [],
+    components: params.isPublic ? buildFwaMatchChecklistComponents() : [],
   });
   if (!params.isPublic) return;
 
@@ -173,6 +197,30 @@ export async function postFwaMatchChecklistMessage(params: {
     }),
   );
   await addFwaMatchChecklistReactions(postedMessage as any, params.rows);
+}
+
+/** Purpose: refresh a public checklist message in place without touching reactions. */
+export async function handleFwaMatchChecklistRefreshButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  if (!isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) return;
+  await interaction.deferUpdate();
+  const refreshed = await trackedMessageService
+    .refreshFwaMatchChecklistMessage(interaction.message as any)
+    .catch((err) => {
+      console.error(
+        `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
+      );
+      return false;
+    });
+  if (!refreshed) {
+    await interaction
+      .followUp({
+        ephemeral: true,
+        content: "This checklist post can no longer be refreshed.",
+      })
+      .catch(() => undefined);
+  }
 }
 
 /** Purpose: expose checklist reaction logic for regression tests. */
