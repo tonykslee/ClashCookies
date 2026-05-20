@@ -40,24 +40,26 @@ describe("FwaClanMembersSyncService", () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
         members: [
-          {
-            tag: "#PYLQ0289",
-            name: "Alpha",
-            role: "leader",
-            expLevel: 10,
-            clanRank: 1,
-            donations: 3,
+        {
+          tag: "#PYLQ0289",
+          name: "Alpha",
+          role: "leader",
+          townHallLevel: 18,
+          expLevel: 10,
+          clanRank: 1,
+          donations: 3,
             donationsReceived: 4,
             trophies: 5000,
             league: { name: "Gold I" },
           },
-          {
-            tag: "#QGRJ2222",
-            name: "Bravo",
-            role: "coLeader",
-            expLevel: 9,
-            clanRank: 2,
-            donations: 1,
+        {
+          tag: "#QGRJ2222",
+          name: "Bravo",
+          role: "coLeader",
+          townHallLevel: 17,
+          expLevel: 9,
+          clanRank: 2,
+          donations: 1,
             donationsReceived: 2,
             trophies: 4800,
             league: { name: "Gold II" },
@@ -83,6 +85,20 @@ describe("FwaClanMembersSyncService", () => {
       },
     });
     expect(txMock.fwaClanMemberCurrent.upsert).toHaveBeenCalledTimes(2);
+    expect(txMock.fwaClanMemberCurrent.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        update: expect.objectContaining({ townHall: 18 }),
+        create: expect.objectContaining({ townHall: 18 }),
+      }),
+    );
+    expect(txMock.fwaClanMemberCurrent.upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        update: expect.objectContaining({ townHall: 17 }),
+        create: expect.objectContaining({ townHall: 17 }),
+      }),
+    );
     expect(result).toEqual({
       clanCount: 1,
       rowCount: 2,
