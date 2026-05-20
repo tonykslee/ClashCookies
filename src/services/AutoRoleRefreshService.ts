@@ -485,15 +485,20 @@ async function loadTrackedClansForAutorole(): Promise<AutoRoleTrackedClanLike[]>
 }
 
 type TrackedFwaClanRefreshState = {
+  requestedClanCount: number;
+  configuredClanTags: string[];
   fwaClanTags: Set<string>;
   fwaMemberTags: Set<string>;
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   trackedClans: AutoRoleNicknameTrackedClanLike[];
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   clanFetchCount: number;
+  failedClanTags: string[];
 };
 
 type TrackedLeadRoleRefreshState = {
+  requestedClanCount: number;
+  configuredClanTags: string[];
   trackedClans: AutoRoleTrackedClanLike[];
   clanMembershipIndex: AutoRoleClanMembershipIndex;
   trackedMembershipScope: {
@@ -507,6 +512,7 @@ type TrackedLeadRoleRefreshState = {
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   candidateUserIds: Set<string>;
   clanFetchCount: number;
+  failedClanTags: string[];
 };
 
 async function loadTrackedFwaClanRefreshState(input: {
@@ -525,6 +531,8 @@ async function loadTrackedFwaClanRefreshState(input: {
   const clanMembershipIndex = new Map<string, AutoRoleClanMembershipIndexRow>();
   const trackedClans: AutoRoleNicknameTrackedClanLike[] = [];
   const playerCurrentByTag = new Map<string, PlayerCurrentLike>();
+  const failedClanTags = new Set<string>();
+  const configuredClanTags = new Set<string>();
   let clanFetchCount = 0;
 
   for (const row of rows) {
@@ -533,12 +541,27 @@ async function loadTrackedFwaClanRefreshState(input: {
       continue;
     }
 
+    configuredClanTags.add(clanTag);
     fwaClanTags.add(clanTag);
     const trackedClanName = normalizeText(row.name);
     const shortName = normalizeText(row.shortName);
-    const clan = input.cocService ? await input.cocService.getClan(clanTag).catch(() => null) : null;
+    let clan = null;
+    if (input.cocService) {
+      try {
+        clan = await input.cocService.getClan(clanTag);
+      } catch {
+        clan = null;
+      }
+      if (!clan) {
+        failedClanTags.add(clanTag);
+      }
+    }
     if (input.cocService) {
       clanFetchCount += 1;
+    }
+
+    if (!clan) {
+      continue;
     }
 
     const clanName = normalizeText(clan?.name ?? trackedClanName);
@@ -600,12 +623,15 @@ async function loadTrackedFwaClanRefreshState(input: {
   }
 
   return {
+    requestedClanCount: rows.length,
+    configuredClanTags: [...configuredClanTags].sort(),
     fwaClanTags,
     fwaMemberTags,
     clanMembershipIndex,
     trackedClans,
     playerCurrentByTag,
     clanFetchCount,
+    failedClanTags: [...failedClanTags].sort(),
   };
 }
 
@@ -638,6 +664,8 @@ async function loadTrackedLeadRoleRefreshState(input: {
   }
 
   const currentHolderIds = collectCurrentRoleHolders(input.membersById, new Set([roleId]));
+  const failedClanTags = new Set<string>();
+  const configuredClanTags = new Set<string>();
   const clanLookups = await Promise.all(
     rows.map(async (row) => {
       const clanTag = normalizeClanTag(row.tag);
@@ -645,7 +673,16 @@ async function loadTrackedLeadRoleRefreshState(input: {
         return null;
       }
 
-      const clan = await cocService.getClan(clanTag).catch(() => null);
+      configuredClanTags.add(clanTag);
+      let clan = null;
+      try {
+        clan = await cocService.getClan(clanTag);
+      } catch {
+        clan = null;
+      }
+      if (!clan) {
+        failedClanTags.add(clanTag);
+      }
       return {
         row: {
           tag: clanTag,
@@ -659,10 +696,6 @@ async function loadTrackedLeadRoleRefreshState(input: {
   );
 
   const successfulLookups = clanLookups.filter((lookup): lookup is NonNullable<typeof lookup> => Boolean(lookup?.clan));
-  if (successfulLookups.length === 0) {
-    return null;
-  }
-
   const trackedClans: AutoRoleTrackedClanLike[] = [];
   const clanMembershipIndex = new Map<string, AutoRoleClanMembershipIndexRow>();
   const playerCurrentByTag = new Map<string, PlayerCurrentLike>();
@@ -758,6 +791,8 @@ async function loadTrackedLeadRoleRefreshState(input: {
   });
 
   return {
+    requestedClanCount: rows.length,
+    configuredClanTags: [...configuredClanTags].sort(),
     trackedClans,
     clanMembershipIndex,
     trackedMembershipScope: {
@@ -771,6 +806,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
     linkedAccountsByUserId,
     candidateUserIds,
     clanFetchCount,
+    failedClanTags: [...failedClanTags].sort(),
   };
 }
 
@@ -1020,6 +1056,38 @@ function collectConfiguredLeadRoleIds(trackedClans: AutoRoleTrackedClanLike[]): 
     }
   }
   return roleIds;
+}
+
+function formatTrackedClanFetchFailureTags(failedClanTags: Iterable<string>): string {
+  return [...new Set([...failedClanTags].map((tag) => normalizeClanTag(String(tag ?? ""))).filter(Boolean))].sort().join(",");
+}
+
+function collectMissingTrackedClanTags(
+  configuredClanTags: Iterable<string>,
+  trackedClans: Array<{ tag: string }>,
+): string[] {
+  const trackedClanTags = new Set(
+    trackedClans.map((clan) => normalizeClanTag(clan.tag)).filter((tag): tag is string => Boolean(tag)),
+  );
+  return [...new Set([...configuredClanTags].map((tag) => normalizeClanTag(String(tag ?? ""))).filter(Boolean))]
+    .sort()
+    .filter((tag) => !trackedClanTags.has(tag));
+}
+
+function buildTrackedClanFetchFailureError(input: {
+  scope: AutoRoleRefreshScope;
+  failedClanTags: Iterable<string>;
+}): Error {
+  const failedClanTags = formatTrackedClanFetchFailureTags(input.failedClanTags);
+  const scopeLabel =
+    input.scope.kind === "guild"
+      ? "guild"
+      : input.scope.kind === "user"
+        ? `user:${input.scope.discordUserId}`
+        : `role:${input.scope.discordRoleId}`;
+  return new Error(
+    `Tracked clan fetch failed for ${scopeLabel}${failedClanTags ? ` failed_clan_tags=${failedClanTags}` : ""}`,
+  );
 }
 
 function buildLeadRoleRemovalSuppression(input: {
@@ -1498,6 +1566,29 @@ export class AutoRoleRefreshService {
           cocService: input.cocService ?? null,
         });
         if (leadRoleState) {
+          const missingClanTags = collectMissingTrackedClanTags(
+            leadRoleState.configuredClanTags,
+            leadRoleState.trackedClans,
+          );
+          const failedClanTags = formatTrackedClanFetchFailureTags([
+            ...leadRoleState.failedClanTags,
+            ...missingClanTags,
+          ]);
+          const hasFetchFailure =
+            input.cocService &&
+            (leadRoleState.requestedClanCount > leadRoleState.trackedClans.length ||
+              failedClanTags.length > 0);
+          if (hasFetchFailure) {
+            const error = buildTrackedClanFetchFailureError({
+              scope: input.scope,
+              failedClanTags: [...leadRoleState.failedClanTags, ...missingClanTags],
+            });
+            dozzleLog.warn(
+              `[autorole] event=tracked_clan_fetch_failed guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} failed_clan_tags=${failedClanTags} action=abort_before_apply removed=0`,
+            );
+            throw error;
+          }
+
           const currentHolderCount = collectCurrentRoleHolders(
             roleMembersById,
             new Set([input.scope.discordRoleId]),
@@ -1535,6 +1626,29 @@ export class AutoRoleRefreshService {
         const trackedFwaRefresh = await loadTrackedFwaClanRefreshState({
           cocService: input.cocService ?? null,
         });
+        if (input.cocService) {
+          const missingClanTags = collectMissingTrackedClanTags(
+            trackedFwaRefresh.configuredClanTags,
+            trackedFwaRefresh.trackedClans,
+          );
+          const failedClanTags = formatTrackedClanFetchFailureTags([
+            ...trackedFwaRefresh.failedClanTags,
+            ...missingClanTags,
+          ]);
+          if (
+            trackedFwaRefresh.requestedClanCount > trackedFwaRefresh.trackedClans.length ||
+            failedClanTags.length > 0
+          ) {
+            const error = buildTrackedClanFetchFailureError({
+              scope: input.scope,
+              failedClanTags: [...trackedFwaRefresh.failedClanTags, ...missingClanTags],
+            });
+            dozzleLog.warn(
+              `[autorole] event=tracked_clan_fetch_failed guild_id=${input.guildId} scope=${input.scope.kind} failed_clan_tags=${failedClanTags} action=abort_before_apply removed=0`,
+            );
+            throw error;
+          }
+        }
         const trackedCandidateUserIds = await collectGuildCandidateUsersForTrackedMembership({
           membersById,
           managedRoleIds,
