@@ -128,8 +128,13 @@ describe("command coverage", () => {
 
   it("documents the standalone /fwa match-checklist command in FWA help detail text", () => {
     const fwaHelpText = helpEmbedText("fwa");
+    const normalized = fwaHelpText.toLowerCase();
     expect(fwaHelpText).toContain("/fwa match-checklist");
     expect(fwaHelpText).not.toContain("checklist:true");
+    expect(normalized).toContain("public checklist posts are auto-pinned");
+    expect(normalized).toContain("3 minutes after sync time");
+    expect(normalized).toContain("refreshing the checklist updates mailbox and match-type emoji status");
+    expect(normalized).toContain("snapshot without reactions");
   });
 
   it("documents the /clan root in clan help detail text", () => {

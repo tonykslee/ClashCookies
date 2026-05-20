@@ -1119,6 +1119,32 @@ export default (client: Client, cocService: CoCService): void => {
       }
     };
 
+    type ScheduledFwaMatchChecklistSyncPost = {
+      guildId: string;
+      channelId: string;
+      messageId: string;
+      createdAt: Date;
+      metadata: unknown;
+    };
+
+    type ScheduledFwaMatchChecklistCandidate = ScheduledFwaMatchChecklistSyncPost & {
+      parsedMetadata: ReturnType<typeof parseSyncTimeMetadata>;
+    };
+
+    const selectLatestScheduledFwaMatchChecklistSyncPosts = (
+      syncPosts: ScheduledFwaMatchChecklistSyncPost[],
+    ): ScheduledFwaMatchChecklistCandidate[] => {
+      const selectedByGuild = new Map<string, ScheduledFwaMatchChecklistCandidate>();
+      for (const tracked of syncPosts) {
+        if (selectedByGuild.has(tracked.guildId)) continue;
+        selectedByGuild.set(tracked.guildId, {
+          ...tracked,
+          parsedMetadata: parseSyncTimeMetadata(tracked.metadata),
+        });
+      }
+      return [...selectedByGuild.values()];
+    };
+
     const runScheduledFwaMatchChecklistPosts = async (
       now: Date,
     ): Promise<number> => {
@@ -1132,22 +1158,25 @@ export default (client: Client, cocService: CoCService): void => {
           guildId: true,
           channelId: true,
           messageId: true,
+          createdAt: true,
           metadata: true,
         },
-        orderBy: [{ remindAt: "asc" }, { createdAt: "asc" }],
+        orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
       });
 
+      const latestEligibleSyncPosts =
+        selectLatestScheduledFwaMatchChecklistSyncPosts(dueSyncPosts);
+
       let postedCount = 0;
-      for (const tracked of dueSyncPosts) {
-        const metadata = parseSyncTimeMetadata(tracked.metadata);
-        if (!metadata) {
+      for (const tracked of latestEligibleSyncPosts) {
+        if (!tracked.parsedMetadata) {
           console.warn(
             `[tracked-message] fwa match checklist skipped sync_metadata_missing guild=${tracked.guildId} message=${tracked.messageId}`,
           );
           continue;
         }
 
-        const dueAtMs = metadata.syncEpochSeconds * 1000 + 3 * 60 * 1000;
+        const dueAtMs = tracked.parsedMetadata.syncEpochSeconds * 1000 + 3 * 60 * 1000;
         if (now.getTime() < dueAtMs) continue;
 
         const sourceSync = await getSourceOfTruthSync(settings, tracked.guildId);
@@ -1225,7 +1254,7 @@ export default (client: Client, cocService: CoCService): void => {
         }
 
         console.log(
-          `[tracked-message] fwa match checklist posted guild=${tracked.guildId} channel=${tracked.channelId} message=${postedMessageId} sync_message=${tracked.messageId}`,
+          `[tracked-message] fwa match checklist posted guild=${tracked.guildId} channel=${tracked.channelId} message=${postedMessageId} sync_message=${tracked.messageId} sync_due_at=${new Date(dueAtMs).toISOString()}`,
         );
         postedCount += 1;
       }
