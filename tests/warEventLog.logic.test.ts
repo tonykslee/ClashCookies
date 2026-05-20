@@ -35,8 +35,18 @@ function dateAt(hour: number): Date {
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  trackedClan: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+  },
   currentWar: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
+  clanNotifyConfig: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
   warEvent: {
     create: vi.fn(),
@@ -54,7 +64,13 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.$queryRaw.mockResolvedValue([]);
+  prismaMock.trackedClan.findMany.mockResolvedValue([]);
+  prismaMock.trackedClan.findUnique.mockResolvedValue(null);
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
+  prismaMock.currentWar.findMany.mockResolvedValue([]);
+  prismaMock.currentWar.upsert.mockResolvedValue({});
+  prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
+  prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
   prismaMock.warEvent.create.mockResolvedValue({});
 });
 
@@ -1643,6 +1659,393 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("reason=no_reminder_candidate"),
     );
+  });
+});
+
+describe("WarEventLogService war-event poll targets", () => {
+  it("includes a tracked clan with ClanNotifyConfig even when no CurrentWar row exists", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#C0CU2Q82",
+        name: "Configured Clan",
+        notifyChannelId: null,
+        notifyRole: null,
+        notifyEnabled: false,
+        mailChannelId: null,
+        logChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.clanNotifyConfig.findMany.mockResolvedValue([
+      {
+        guildId: "guild-42",
+        clanTag: "c0cu2q82",
+        channelId: "notify-channel-42",
+        roleId: "notify-role-42",
+        pingEnabled: false,
+        embedEnabled: true,
+      },
+    ]);
+    const service = new WarEventLogService({} as any, {} as any);
+
+    const targets = await (service as any).listPollTargets();
+
+    expect(targets).toEqual([
+      {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        inferredMatchType: true,
+        notifyRole: "notify-role-42",
+        clanName: "Configured Clan",
+      },
+    ]);
+  });
+
+  it("uses the effective notify config when ensuring the CurrentWar baseline", async () => {
+    const service = new WarEventLogService({} as any, {} as any);
+    const target = {
+      guildId: "guild-42",
+      clanTag: "#C0CU2Q82",
+      channelId: "notify-channel-42",
+      notify: true,
+      pingRole: false,
+      inferredMatchType: true,
+      notifyRole: "notify-role-42",
+      clanName: "Configured Clan",
+    };
+
+    await (service as any).ensureCurrentWarBaseline(target);
+
+    expect(prismaMock.currentWar.upsert).toHaveBeenCalledWith({
+      where: {
+        clanTag_guildId: {
+          clanTag: "#C0CU2Q82",
+          guildId: "guild-42",
+        },
+      },
+      update: {
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        inferredMatchType: true,
+        notifyRole: "notify-role-42",
+        clanName: "Configured Clan",
+      },
+      create: {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        inferredMatchType: true,
+        notifyRole: "notify-role-42",
+        clanName: "Configured Clan",
+        state: "notInWar",
+      },
+    });
+  });
+
+  it("keeps legacy TrackedClan notify fallback working when no ClanNotifyConfig row exists", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QVGPQP0U",
+        name: "Legacy Clan",
+        notifyChannelId: "legacy-channel-42",
+        notifyRole: "legacy-role-42",
+        notifyEnabled: true,
+        mailChannelId: "mail-channel-42",
+        logChannelId: "log-channel-42",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "guild-77",
+        clanTag: "2qvgpqp0u",
+        channelId: null,
+        notify: null,
+        pingRole: null,
+        inferredMatchType: null,
+        notifyRole: null,
+        clanName: null,
+      },
+    ]);
+    prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
+    const service = new WarEventLogService({} as any, {} as any);
+
+    const targets = await (service as any).listPollTargets();
+
+    expect(targets).toEqual([
+      {
+        guildId: "guild-77",
+        clanTag: "#2QVGPQP0U",
+        channelId: "legacy-channel-42",
+        notify: true,
+        pingRole: true,
+        inferredMatchType: true,
+        notifyRole: "legacy-role-42",
+        clanName: "Legacy Clan",
+      },
+    ]);
+  });
+
+  it("corrects stale CurrentWar notify=false when ClanNotifyConfig enables embeds", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#C0CU2Q82",
+        name: "Configured Clan",
+        notifyChannelId: null,
+        notifyRole: null,
+        notifyEnabled: false,
+        mailChannelId: null,
+        logChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "guild-42",
+        clanTag: "#c0cu2q82",
+        channelId: "old-channel",
+        notify: false,
+        pingRole: false,
+        inferredMatchType: true,
+        notifyRole: "old-role",
+        clanName: "Old Clan Name",
+      },
+    ]);
+    prismaMock.clanNotifyConfig.findMany.mockResolvedValue([
+      {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        channelId: "notify-channel-42",
+        roleId: "notify-role-42",
+        pingEnabled: false,
+        embedEnabled: true,
+      },
+    ]);
+    const service = new WarEventLogService({} as any, {} as any);
+
+    const targets = await (service as any).listPollTargets();
+
+    expect(targets).toEqual([
+      {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        inferredMatchType: true,
+        notifyRole: "notify-role-42",
+        clanName: "Old Clan Name",
+      },
+    ]);
+  });
+});
+
+describe("WarEventLogService notify config ownership", () => {
+  it("resolves a subscription from ClanNotifyConfig routing without legacy notifyChannelId", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        warId: 1001,
+        syncNum: 10,
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        embedEnabled: true,
+        notifyRole: "notify-role-42",
+        inferredMatchType: true,
+        fwaPoints: 1200,
+        opponentFwaPoints: 1201,
+        outcome: "WIN",
+        matchType: "FWA",
+        warStartFwaPoints: 1200,
+        warEndFwaPoints: null,
+        clanStars: 100,
+        opponentStars: 99,
+        state: "inWar",
+        prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
+        startTime: new Date("2026-03-12T00:00:00.000Z"),
+        endTime: new Date("2026-03-12T01:00:00.000Z"),
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        clanName: "Configured Clan",
+        pointsConfirmedByClanMail: false,
+        pointsNeedsValidation: true,
+        pointsLastSuccessfulFetchAt: null,
+        pointsLastKnownSyncNumber: null,
+        pointsLastKnownPoints: null,
+        pointsLastKnownMatchType: null,
+        pointsLastKnownOutcome: null,
+        pointsWarId: null,
+        pointsOpponentTag: null,
+        pointsWarStartTime: null,
+      },
+    ]);
+    const service = new WarEventLogService({} as any, {} as any);
+
+    const sub = await (service as any).findSubscriptionByGuildAndTag(
+      "guild-42",
+      "#C0CU2Q82",
+    );
+
+    expect(sub).toMatchObject({
+      guildId: "guild-42",
+      clanTag: "#C0CU2Q82",
+      channelId: "notify-channel-42",
+      notify: true,
+      pingRole: false,
+      notifyRole: "notify-role-42",
+    });
+    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes dispatchDetectedEvent guard when the resolved subscription has notify and channel", async () => {
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {} as any);
+    const reserveSpy = vi.spyOn(service as any, "reserveEventDelivery").mockResolvedValue({
+      allowed: true,
+      existingMessage: null,
+      warId: 1001,
+    });
+    const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
+
+    await (service as any).dispatchDetectedEvent({
+      sub: {
+        guildId: "guild-42",
+        clanTag: "#C0CU2Q82",
+        channelId: "notify-channel-42",
+        notify: true,
+        pingRole: false,
+        embedEnabled: true,
+        notifyRole: "notify-role-42",
+        warId: null,
+        syncNum: null,
+        inferredMatchType: true,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "FWA",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        state: "notInWar",
+        prepStartTime: null,
+        startTime: null,
+        endTime: null,
+        opponentTag: null,
+        opponentName: null,
+        clanName: "Configured Clan",
+        pointsConfirmedByClanMail: null,
+        pointsNeedsValidation: null,
+        pointsLastSuccessfulFetchAt: null,
+        pointsLastKnownSyncNumber: null,
+        pointsLastKnownPoints: null,
+        pointsLastKnownMatchType: null,
+        pointsLastKnownOutcome: null,
+        pointsWarId: null,
+        pointsOpponentTag: null,
+        pointsWarStartTime: null,
+      },
+      payload: {
+        eventType: "battle_day",
+        clanTag: "#C0CU2Q82",
+        clanName: "Configured Clan",
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        syncNumber: 10,
+        notifyRole: "notify-role-42",
+        pingRole: false,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "FWA",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        prepStartTime: null,
+        warStartTime: null,
+        warEndTime: null,
+        clanAttacks: null,
+        opponentAttacks: null,
+        teamSize: null,
+        attacksPerMember: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      },
+      resolvedWarId: 1001,
+    });
+
+    expect(reserveSpy).toHaveBeenCalledTimes(1);
+    expect(emitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds a /notify preview using ClanNotifyConfig channel ownership when legacy notifyChannelId is missing", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      name: "Configured Clan",
+      notifyChannelId: null,
+      notifyRole: null,
+      notifyEnabled: false,
+      mailChannelId: null,
+      logChannelId: null,
+    });
+    prismaMock.clanNotifyConfig.findUnique.mockResolvedValue({
+      guildId: "guild-42",
+      clanTag: "C0CU2Q82",
+      channelId: "notify-channel-42",
+      roleId: "notify-role-42",
+      pingEnabled: false,
+      embedEnabled: true,
+    });
+    prismaMock.$queryRaw.mockResolvedValue([]);
+    const service = new WarEventLogService({} as any, {} as any);
+    vi.spyOn(service as any, "findSubscriptionByGuildAndTag").mockResolvedValue(null);
+    vi.spyOn(service as any, "buildTestEventPayload").mockResolvedValue({
+      eventType: "war_started",
+      clanTag: "#C0CU2Q82",
+      clanName: "Configured Clan",
+      opponentTag: "#OPP123",
+      opponentName: "Enemy",
+      syncNumber: 10,
+      notifyRole: "notify-role-42",
+      pingRole: false,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      outcome: null,
+      matchType: "FWA",
+      warStartFwaPoints: null,
+      warEndFwaPoints: null,
+      clanStars: null,
+      opponentStars: null,
+      prepStartTime: null,
+      warStartTime: null,
+      warEndTime: null,
+      clanAttacks: null,
+      opponentAttacks: null,
+      teamSize: null,
+      attacksPerMember: null,
+      clanDestruction: null,
+      opponentDestruction: null,
+      resolvedWarIdHint: null,
+    });
+    vi.spyOn(service as any, "buildEventMessage").mockResolvedValue({
+      embeds: [{ data: { title: "preview" } }],
+    });
+
+    const result = await service.buildTestEventPreviewForClan({
+      guildId: "guild-42",
+      clanTag: "#C0CU2Q82",
+      eventType: "war_started",
+      source: "current",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.channelId).toBe("notify-channel-42");
+    expect(result.clanName).toBe("Configured Clan");
   });
 });
 
