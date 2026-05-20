@@ -1643,6 +1643,29 @@ model BlacklistMatchSample {
   @@index([warStartTime])
 }
 
+model BlacklistHeatMapRef {
+  weightMinInclusive   Int
+  weightMaxInclusive   Int
+  th18Count            Int
+  th17Count            Int
+  th16Count            Int
+  th15Count            Int
+  th14Count            Int
+  th13Count            Int
+  th12Count            Int
+  th11PlusCount        Int
+  sampleCount          Int
+  uniqueSourceClanCount Int
+  uniqueOpponentCount  Int
+  totalMissingWeightCount Int
+  confidenceLabel      String
+  confidenceScore      Int
+  generatedAt          DateTime
+
+  @@id([weightMinInclusive, weightMaxInclusive])
+  @@index([generatedAt])
+}
+
 model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType

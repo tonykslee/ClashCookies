@@ -56,6 +56,10 @@ import {
   blacklistMatchSampleService,
   type BlacklistMatchSampleRebuildResult,
 } from "../services/BlacklistMatchSampleService";
+import {
+  blacklistHeatmapRefService,
+  type BlacklistHeatmapRefRebuildResult,
+} from "../services/BlacklistHeatmapRefService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -2075,6 +2079,18 @@ function formatBlacklistSampleRebuildReply(
       : result.status === "noop"
         ? "No blacklist matchup samples were rebuilt."
         : "Blacklist matchup sample rebuild skipped.";
+  return [headline, "", ...result.summaryLines].join("\n");
+}
+
+function formatBlacklistHeatmapRefRebuildReply(
+  result: BlacklistHeatmapRefRebuildResult,
+): string {
+  const headline =
+    result.status === "success"
+      ? "Blacklist heatmapref profile rebuilt."
+      : result.status === "noop"
+        ? "No blacklist heatmapref profile rows were rebuilt."
+        : "Blacklist heatmapref profile rebuild skipped.";
   return [headline, "", ...result.summaryLines].join("\n");
 }
 
@@ -12978,6 +12994,19 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "blacklist-profile",
+      description: "Manage persisted blacklist heatmapref profile rows",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "rebuild",
+          description:
+            "Rebuild persisted blacklist heatmapref rows from persisted blacklist matchup samples",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "base-swap",
       description: "Post a base swap / base error acknowledgement announcement",
       type: ApplicationCommandOptionType.Subcommand,
@@ -13456,6 +13485,32 @@ export const Fwa: Command = {
         await editReplySafe(
           `Blacklist sample rebuild failed.\n${formatError(error)}`,
         );
+      }
+      return;
+    }
+
+    if (subcommandGroup === "blacklist-profile" && subcommand === "rebuild") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const permissionService = new CommandPermissionService();
+      const allowed = await permissionService.canUseCommand(
+        "fwa:blacklist-profile:rebuild",
+        interaction,
+      );
+      if (!allowed) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      try {
+        const result = await blacklistHeatmapRefService.rebuildBlacklistHeatmapRef();
+        await editReplySafe(formatBlacklistHeatmapRefRebuildReply(result));
+      } catch (error) {
+        console.error(
+          `[fwa blacklist-profile rebuild] failed guild=${interaction.guildId} user=${interaction.user.id} error=${formatError(error)}`,
+        );
+        await editReplySafe(`Blacklist heatmapref profile rebuild failed.\n${formatError(error)}`);
       }
       return;
     }

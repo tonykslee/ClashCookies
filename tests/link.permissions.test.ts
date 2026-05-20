@@ -155,4 +155,16 @@ describe("link permission defaults", () => {
       service.canUseCommand("fwa:blacklist-samples:rebuild", interaction),
     ).resolves.toBe(true);
   });
+
+  it("allows admins for fwa:blacklist-profile:rebuild by default", async () => {
+    const settings = {
+      get: vi.fn().mockResolvedValue(null),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: true, roleIds: [] });
+
+    await expect(
+      service.canUseCommand("fwa:blacklist-profile:rebuild", interaction),
+    ).resolves.toBe(true);
+  });
 });
