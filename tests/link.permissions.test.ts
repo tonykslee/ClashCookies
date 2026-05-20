@@ -35,6 +35,14 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("fwa:match-checklist");
   });
 
+  it("keeps fwa blacklist import registered as an explicit permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("fwa:blacklist-import");
+  });
+
+  it("keeps fwa blacklist sample rebuild registered as an explicit permission target", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("fwa:blacklist-samples:rebuild");
+  });
+
   it("does not expose fwa mail send as a public permission target", () => {
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("fwa:mail:send");
   });
@@ -121,6 +129,42 @@ describe("link permission defaults", () => {
 
     await expect(
       service.canUseCommand("fwa:match-checklist", interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("allows admins for fwa:blacklist-import by default", async () => {
+    const settings = {
+      get: vi.fn().mockResolvedValue(null),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: true, roleIds: [] });
+
+    await expect(
+      service.canUseCommand("fwa:blacklist-import", interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("allows admins for fwa:blacklist-samples:rebuild by default", async () => {
+    const settings = {
+      get: vi.fn().mockResolvedValue(null),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: true, roleIds: [] });
+
+    await expect(
+      service.canUseCommand("fwa:blacklist-samples:rebuild", interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("allows admins for fwa:blacklist-profile:rebuild by default", async () => {
+    const settings = {
+      get: vi.fn().mockResolvedValue(null),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: true, roleIds: [] });
+
+    await expect(
+      service.canUseCommand("fwa:blacklist-profile:rebuild", interaction),
     ).resolves.toBe(true);
   });
 });

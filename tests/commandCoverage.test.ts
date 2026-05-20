@@ -137,6 +137,30 @@ describe("command coverage", () => {
     expect(normalized).toContain("snapshot without reactions");
   });
 
+  it("documents the blacklist import command in FWA help detail text", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    const normalized = fwaHelpText.toLowerCase();
+    expect(fwaHelpText).toContain("/fwa blacklist-import");
+    expect(normalized).toContain("bulk-registers known blacklist clans");
+    expect(normalized).toContain("admin-only by default");
+  });
+
+  it("documents the blacklist sample rebuild command in FWA help detail text", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    const normalized = fwaHelpText.toLowerCase();
+    expect(fwaHelpText).toContain("/fwa blacklist-samples rebuild");
+    expect(normalized).toContain("persisted blacklist matchup samples");
+    expect(normalized).toContain("admin-only by default");
+  });
+
+  it("documents the blacklist profile rebuild command in FWA help detail text", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    const normalized = fwaHelpText.toLowerCase();
+    expect(fwaHelpText).toContain("/fwa blacklist-profile rebuild");
+    expect(normalized).toContain("blacklist heatmapref profile");
+    expect(normalized).toContain("admin-only by default");
+  });
+
   it("documents the /clan root in clan help detail text", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");

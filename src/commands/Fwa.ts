@@ -51,6 +51,15 @@ import {
   buildFwaMatchChecklistRowsFromCopyView,
   postFwaMatchChecklistMessage,
 } from "../services/FwaMatchChecklistService";
+import { blacklistClanService } from "../services/BlacklistClanService";
+import {
+  blacklistMatchSampleService,
+  type BlacklistMatchSampleRebuildResult,
+} from "../services/BlacklistMatchSampleService";
+import {
+  blacklistHeatmapRefService,
+  type BlacklistHeatmapRefRebuildResult,
+} from "../services/BlacklistHeatmapRefService";
 import { wrapDiscordLink } from "../services/FwaLayoutService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -2059,6 +2068,30 @@ function formatFwaPoliceStatusReport(report: FwaPoliceStatusReport): string {
 
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
+}
+
+function formatBlacklistSampleRebuildReply(
+  result: BlacklistMatchSampleRebuildResult,
+): string {
+  const headline =
+    result.status === "success"
+      ? "Blacklist matchup samples rebuilt."
+      : result.status === "noop"
+        ? "No blacklist matchup samples were rebuilt."
+        : "Blacklist matchup sample rebuild skipped.";
+  return [headline, "", ...result.summaryLines].join("\n");
+}
+
+function formatBlacklistHeatmapRefRebuildReply(
+  result: BlacklistHeatmapRefRebuildResult,
+): string {
+  const headline =
+    result.status === "success"
+      ? "Blacklist heatmapref profile rebuilt."
+      : result.status === "noop"
+        ? "No blacklist heatmapref profile rows were rebuilt."
+        : "Blacklist heatmapref profile rebuild skipped.";
+  return [headline, "", ...result.summaryLines].join("\n");
 }
 
 type ComplianceWarTarget =
@@ -12921,6 +12954,59 @@ export const Fwa: Command = {
       ],
     },
     {
+      name: "blacklist-import",
+      description: "Import or update known blacklist clan tags",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "tags",
+          description:
+            "Comma-separated, space-separated, or mixed-separated clan tags (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+        {
+          name: "source-label",
+          description:
+            "Label stored with the import batch (defaults to manual-import)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "active",
+          description: "Mark imported clans active or inactive",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+      ],
+    },
+    {
+      name: "blacklist-samples",
+      description: "Manage persisted blacklist matchup samples",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "rebuild",
+          description:
+            "Rebuild persisted samples from stored FWA war history and blacklist registry rows",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
+      name: "blacklist-profile",
+      description: "Manage persisted blacklist heatmapref profile rows",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "rebuild",
+          description:
+            "Rebuild persisted blacklist heatmapref rows from persisted blacklist matchup samples",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "base-swap",
       description: "Post a base swap / base error acknowledgement announcement",
       type: ApplicationCommandOptionType.Subcommand,
@@ -13331,6 +13417,101 @@ export const Fwa: Command = {
         checkedClanTags: checklistState.checkedClanTags,
         referenceId: checklistState.referenceId,
       });
+      return;
+    }
+
+    if (subcommand === "blacklist-import") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const isOwnerBypass = hasOwnerBypassUserId(interaction.user.id);
+      if (
+        !isOwnerBypass &&
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+      ) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      const rawTags = interaction.options.getString("tags", true);
+      const sourceLabel =
+        interaction.options.getString("source-label", false) ?? undefined;
+      const active = interaction.options.getBoolean("active", false);
+      const result = await blacklistClanService.upsertBlacklistClanTags({
+        rawTags,
+        sourceLabel,
+        active,
+      });
+      if (result.added.length + result.updated.length <= 0) {
+        const invalidText =
+          result.invalid.length > 0
+            ? ` Invalid tags: ${result.invalid.map((tag) => `\`${tag}\``).join(", ")}.`
+            : "";
+        await editReplySafe(
+          `No valid clan tags found.${invalidText || " Use comma-separated, space-separated, or mixed-separated clan tags with or without #."}`,
+        );
+        return;
+      }
+      const statusLabel = result.active ? "active" : "inactive";
+      const summaryLines = [
+        `Blacklist registry updated from \`${result.sourceLabel}\` (${statusLabel}).`,
+        `Added: **${result.added.length}**  Updated: **${result.updated.length}**  Invalid: **${result.invalid.length}**  Duplicate in request: **${result.duplicateInRequest.length}**`,
+      ];
+      await editReplySafe(summaryLines.join("\n"));
+      return;
+    }
+
+    if (subcommandGroup === "blacklist-samples" && subcommand === "rebuild") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const permissionService = new CommandPermissionService();
+      const allowed = await permissionService.canUseCommand(
+        "fwa:blacklist-samples:rebuild",
+        interaction,
+      );
+      if (!allowed) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      try {
+        const result = await blacklistMatchSampleService.rebuildBlacklistMatchSamples();
+        await editReplySafe(formatBlacklistSampleRebuildReply(result));
+      } catch (error) {
+        console.error(
+          `[fwa blacklist-samples rebuild] failed guild=${interaction.guildId} user=${interaction.user.id} error=${formatError(error)}`,
+        );
+        await editReplySafe(
+          `Blacklist sample rebuild failed.\n${formatError(error)}`,
+        );
+      }
+      return;
+    }
+
+    if (subcommandGroup === "blacklist-profile" && subcommand === "rebuild") {
+      if (!interaction.inGuild() || !interaction.guildId) {
+        await editReplySafe("This command can only be used in a server.");
+        return;
+      }
+      const permissionService = new CommandPermissionService();
+      const allowed = await permissionService.canUseCommand(
+        "fwa:blacklist-profile:rebuild",
+        interaction,
+      );
+      if (!allowed) {
+        await editReplySafe("Only administrators can use this command.");
+        return;
+      }
+      try {
+        const result = await blacklistHeatmapRefService.rebuildBlacklistHeatmapRef();
+        await editReplySafe(formatBlacklistHeatmapRefRebuildReply(result));
+      } catch (error) {
+        console.error(
+          `[fwa blacklist-profile rebuild] failed guild=${interaction.guildId} user=${interaction.user.id} error=${formatError(error)}`,
+        );
+        await editReplySafe(`Blacklist heatmapref profile rebuild failed.\n${formatError(error)}`);
+      }
       return;
     }
 

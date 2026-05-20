@@ -77,6 +77,63 @@ describe("/fwa base-swap command shape", () => {
     expect(tag).toBeUndefined();
   });
 
+  it("registers /fwa blacklist-import with tags, source-label, and active options", () => {
+    const blacklistImport = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "blacklist-import",
+    );
+    expect(blacklistImport).toBeTruthy();
+
+    const tags = blacklistImport?.options?.find(
+      (option: { name: string }) => option.name === "tags",
+    );
+    expect(tags?.type).toBe(ApplicationCommandOptionType.String);
+    expect(tags?.required).toBe(true);
+
+    const sourceLabel = blacklistImport?.options?.find(
+      (option: { name: string }) => option.name === "source-label",
+    );
+    expect(sourceLabel?.type).toBe(ApplicationCommandOptionType.String);
+    expect(sourceLabel?.required).toBe(false);
+
+    const active = blacklistImport?.options?.find(
+      (option: { name: string }) => option.name === "active",
+    );
+    expect(active?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(active?.required).toBe(false);
+  });
+
+  it("registers /fwa blacklist-samples rebuild as an admin subcommand", () => {
+    const blacklistSamples = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "blacklist-samples",
+    );
+    expect(blacklistSamples).toBeTruthy();
+
+    const rebuild = blacklistSamples?.options?.find(
+      (option: { name: string }) => option.name === "rebuild",
+    );
+    expect(rebuild?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(rebuild?.options ?? []).toHaveLength(0);
+  });
+
+  it("registers /fwa blacklist-profile rebuild as an admin subcommand", () => {
+    const blacklistProfile = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "blacklist-profile",
+    );
+    expect(blacklistProfile).toBeTruthy();
+
+    const rebuild = blacklistProfile?.options?.find(
+      (option: { name: string }) => option.name === "rebuild",
+    );
+    expect(rebuild?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(rebuild?.options ?? []).toHaveLength(0);
+  });
+
   it("does not register checklist on /fwa match as an optional boolean", () => {
     const match = Fwa.options?.find(
       (option) =>
