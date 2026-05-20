@@ -906,6 +906,45 @@ describe("/link run", () => {
     ).toBe(true);
   });
 
+  it("renders an empty DB-backed roster with refresh and clan dropdown controls", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+        clanBadge: "<:badge:1>",
+        mailConfig: { displayOrder: 1 },
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      clanBadge: "<:badge:1>",
+      name: "Tracked Alpha",
+    });
+
+    const cocService = { getClan: vi.fn() };
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+
+    await Link.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.description ?? "")).toContain(
+      "empty_list: no saved current clan members for #PQL0289. Use Refresh Data or wait for sync.",
+    );
+    expect(payload.components).toHaveLength(2);
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payload.components[1].components[0].toJSON().placeholder).toBe(
+      "Select tracked clan",
+    );
+  });
+
   it("refreshes the selected clan from live CoC and rerenders from DB", async () => {
     const oldRows = [
       {
@@ -1333,6 +1372,19 @@ describe("/link run", () => {
   });
 
   it("returns deterministic empty-member response when clan has no members", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag: "#PQL0289" }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PQL0289",
+        name: "Alpha Clan",
+        clanBadge: "<:badge:1>",
+        mailConfig: { displayOrder: 1 },
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      clanBadge: "<:badge:1>",
+      name: "Tracked Alpha",
+    });
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
@@ -1340,8 +1392,14 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     await Link.run({} as any, interaction as any, {} as any);
 
-    expect(interaction.editReply).toHaveBeenCalledWith(
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    expect(String(embed.description ?? "")).toContain(
       "empty_list: no saved current clan members for #PQL0289. Use Refresh Data or wait for sync.",
+    );
+    expect(payload.components).toHaveLength(2);
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
     );
   });
 

@@ -1,6 +1,9 @@
 import type { ChatInputCommandInteraction, Client } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Command } from "../src/Command";
+import {
+  buildLinkListRefreshButtonCustomId,
+} from "../src/commands/Link";
 
 type ListenerHandler = (interaction: unknown) => Promise<void>;
 type CompoRun = (client: Client, interaction: ChatInputCommandInteraction, cocService: unknown) => Promise<void>;
@@ -214,5 +217,56 @@ describe("interactionCreate /compo dispatcher diagnostics", () => {
     } finally {
       vi.useRealTimers();
     }
+  }, 30000);
+});
+
+describe("interactionCreate /link list refresh button routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("routes refresh buttons to the button handler and not the select handler", async () => {
+    const LinkModule = await import("../src/commands/Link");
+    const refreshSpy = vi
+      .spyOn(LinkModule, "handleLinkListRefreshButton")
+      .mockResolvedValue(undefined);
+    const selectSpy = vi
+      .spyOn(LinkModule, "handleLinkListSelectMenu")
+      .mockResolvedValue(undefined);
+
+    const { handler } = await loadInteractionHandler(
+      vi.fn().mockResolvedValue(undefined),
+    );
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      isAutocomplete: () => false,
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      isUserSelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => false,
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferred: false,
+      replied: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handler(interaction as any);
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(selectSpy).not.toHaveBeenCalled();
   }, 30000);
 });

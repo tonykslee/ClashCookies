@@ -569,11 +569,14 @@ function buildLinkListControlRows(input: {
   currentClanTag: string;
   commandUserId: string;
   sortMode: LinkListSortMode;
+  includeSortButton?: boolean;
 }): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
   const rows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [
     buildLinkListRefreshRow(input),
-    buildLinkListSortRow(input),
   ];
+  if (input.includeSortButton !== false) {
+    rows.push(buildLinkListSortRow(input));
+  }
   const selectRows = buildClanSelectRows(input);
   rows.push(...selectRows);
   return rows;
@@ -913,11 +916,32 @@ async function buildLinkListView(input: {
   ]) as [LinkListCurrentMemberRow[], { clanBadge: string | null; name: string | null } | null];
 
   if (currentMembers.length === 0) {
+    const trackedClans = await getTrackedClansForGuild(input.interaction.guildId);
+    const components = buildLinkListControlRows({
+      trackedClans,
+      currentClanTag: input.clanTag,
+      commandUserId: input.commandUserId,
+      sortMode,
+      includeSortButton: false,
+    });
+    const clanName = sanitizeTableText(String(tracked?.name ?? "")) || input.clanTag;
+    const title = buildTitleWithBadge({
+      clanName,
+      clanTag: input.clanTag,
+      badge: tracked?.clanBadge?.trim() ?? null,
+    });
     return {
-      ok: false,
-      message:
-        `empty_list: no saved current clan members for ${input.clanTag}. ` +
-        "Use Refresh Data or wait for sync.",
+      ok: true,
+      payload: {
+        embeds: buildDescriptionEmbeds(
+          title,
+          [
+            `empty_list: no saved current clan members for ${input.clanTag}. Use Refresh Data or wait for sync.`,
+          ],
+          sortMode,
+        ),
+        components,
+      },
     };
   }
 
@@ -1102,6 +1126,7 @@ async function buildLinkListView(input: {
     currentClanTag: input.clanTag,
     commandUserId: input.commandUserId,
     sortMode,
+    includeSortButton: true,
   });
 
   return {
