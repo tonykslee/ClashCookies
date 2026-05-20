@@ -98,6 +98,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
   rows: FwaMatchChecklistTrackedRow[];
   scopeKey?: string | null;
   checkedClanTags?: Iterable<string>;
+  referenceId?: string | null;
   createdAtIso?: string;
 }): Parameters<typeof trackedMessageService.createFwaMatchChecklistTrackedMessage>[0] {
   const createdAtIso = params.createdAtIso ?? new Date().toISOString();
@@ -106,6 +107,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
     channelId: params.channelId,
     messageId: params.messageId,
     clanTag: params.clanTag,
+    referenceId: params.referenceId ?? null,
     expiresAt: buildFwaMatchChecklistExpiresAt(),
     metadata: {
       createdByUserId: params.createdByUserId,
@@ -174,6 +176,51 @@ function summarizePinIssue(err: unknown): string {
   return "Checklist pin failed. Check bot permissions and logs.";
 }
 
+type FwaMatchChecklistPublicationInput = {
+  guildId: string;
+  channelId: string;
+  message: {
+    id: string;
+    react: (emoji: string) => Promise<unknown>;
+    pin: () => Promise<unknown>;
+  };
+  rows: FwaMatchChecklistTrackedRow[];
+  clanTag: string | null;
+  scopeKey: string | null;
+  checkedClanTags: Iterable<string>;
+  createdByUserId: string;
+  referenceId?: string | null;
+  onPinFailure?: (err: unknown) => void | Promise<void>;
+};
+
+/** Purpose: finalize a public checklist publication after the message has been created. */
+export async function finalizeFwaMatchChecklistPublication(
+  params: FwaMatchChecklistPublicationInput,
+): Promise<void> {
+  await trackedMessageService.createFwaMatchChecklistTrackedMessage(
+    buildFwaMatchChecklistTrackedMessageInput({
+      guildId: params.guildId,
+      channelId: params.channelId,
+      messageId: params.message.id,
+      clanTag: params.clanTag,
+      createdByUserId: params.createdByUserId,
+      rows: params.rows,
+      scopeKey: params.scopeKey,
+      checkedClanTags: params.checkedClanTags,
+      referenceId: params.referenceId ?? null,
+    }),
+  );
+  await addFwaMatchChecklistReactions(params.message, params.rows);
+  try {
+    await params.message.pin();
+  } catch (err) {
+    console.error(
+      `[fwa match checklist] pin failed message=${params.message.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
+    );
+    await params.onPinFailure?.(err);
+  }
+}
+
 /** Purpose: publish or preview the clan mail checklist using the current tracked-message state. */
 export async function postFwaMatchChecklistMessage(params: {
   interaction: ChatInputCommandInteraction;
@@ -182,6 +229,7 @@ export async function postFwaMatchChecklistMessage(params: {
   clanTag: string | null;
   scopeKey: string | null;
   checkedClanTags: Iterable<string>;
+  referenceId?: string | null;
 }): Promise<void> {
   const content = buildFwaMatchChecklistMessageContent({
     rows: params.rows,
@@ -195,32 +243,81 @@ export async function postFwaMatchChecklistMessage(params: {
   if (!params.isPublic) return;
 
   const postedMessage = await params.interaction.fetchReply();
-  await trackedMessageService.createFwaMatchChecklistTrackedMessage(
-    buildFwaMatchChecklistTrackedMessageInput({
-      guildId: params.interaction.guildId ?? "",
-      channelId: params.interaction.channelId,
-      messageId: postedMessage.id,
-      clanTag: params.clanTag,
-      createdByUserId: params.interaction.user.id,
-      rows: params.rows,
-      scopeKey: params.scopeKey,
-      checkedClanTags: params.checkedClanTags,
-    }),
-  );
-  await addFwaMatchChecklistReactions(postedMessage as any, params.rows);
-  try {
-    await postedMessage.pin();
-  } catch (err) {
+  await finalizeFwaMatchChecklistPublication({
+    guildId: params.interaction.guildId ?? "",
+    channelId: params.interaction.channelId,
+    message: postedMessage as any,
+    clanTag: params.clanTag,
+    scopeKey: params.scopeKey,
+    checkedClanTags: params.checkedClanTags,
+    rows: params.rows,
+    createdByUserId: params.interaction.user.id,
+    referenceId: params.referenceId ?? null,
+    onPinFailure: async (err) => {
+      await params.interaction
+        .followUp({
+          ephemeral: true,
+          content: summarizePinIssue(err),
+        })
+        .catch(() => undefined);
+    },
+  }).catch((err) => {
     console.error(
-      `[fwa match checklist] pin failed message=${postedMessage.id} channel=${params.interaction.channelId} guild=${params.interaction.guildId ?? ""} error=${formatError(err)}`,
+      `[fwa match checklist] publish failed message=${postedMessage.id} channel=${params.interaction.channelId} guild=${params.interaction.guildId ?? ""} error=${formatError(err)}`,
     );
-    await params.interaction
-      .followUp({
-        ephemeral: true,
-        content: summarizePinIssue(err),
-      })
-      .catch(() => undefined);
-  }
+  });
+}
+
+/** Purpose: publish a checklist directly to a channel for scheduled runs. */
+export async function publishFwaMatchChecklistMessageToChannel(params: {
+  channel: {
+    send: (payload: {
+      content: string;
+      embeds: [];
+      components: Array<ActionRowBuilder<ButtonBuilder>>;
+    }) => Promise<unknown>;
+  };
+  guildId: string;
+  channelId: string;
+  rows: FwaMatchChecklistTrackedRow[];
+  clanTag: string | null;
+  scopeKey: string | null;
+  checkedClanTags: Iterable<string>;
+  createdByUserId: string;
+  referenceId?: string | null;
+}): Promise<string | null> {
+  const content = buildFwaMatchChecklistMessageContent({
+    rows: params.rows,
+    checkedClanTags: params.checkedClanTags,
+  });
+  const postedMessage = (await params.channel.send({
+    content: truncateDiscordContent(content),
+    embeds: [],
+    components: buildFwaMatchChecklistComponents(),
+  }).catch((err): any => {
+    console.error(
+      `[fwa match checklist] send failed guild=${params.guildId} channel=${params.channelId} error=${formatError(err)}`,
+    );
+    return null;
+  })) as { id: string } | null;
+  if (!postedMessage) return null;
+  await finalizeFwaMatchChecklistPublication({
+    guildId: params.guildId,
+    channelId: params.channelId,
+    message: postedMessage as any,
+    clanTag: params.clanTag,
+    scopeKey: params.scopeKey,
+    checkedClanTags: params.checkedClanTags,
+    rows: params.rows,
+    createdByUserId: params.createdByUserId,
+    referenceId: params.referenceId ?? null,
+  }).catch((err) => {
+    console.error(
+      `[fwa match checklist] finalize failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
+    );
+    return null;
+  });
+  return postedMessage.id;
 }
 
 /** Purpose: refresh a public checklist message in place without touching reactions. */

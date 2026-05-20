@@ -14,6 +14,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   trackedMessage: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
 }));
 
@@ -70,6 +71,7 @@ describe("/fwa match response normalization", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
   });
 
   it("normalizes copy-paste into public visibility", () => {
