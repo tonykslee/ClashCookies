@@ -2003,25 +2003,10 @@ describe("/link list sort button", () => {
     expect(getInlineRowSegments(clanRankRows[1] ?? "").weight).toBe("#17");
     expect(getInlineRowSegments(clanRankRows[2] ?? "").weight).toBe("#16");
 
-    const nowMs = Date.now();
-    prismaMock.playerActivity.findMany.mockResolvedValue([
-      {
-        tag: "#PYLQ0289",
-        lastSeenAt: new Date(nowMs - 7 * 24 * 60 * 60 * 1000),
-      },
-      {
-        tag: "#QGRJ2222",
-        lastSeenAt: new Date(nowMs - 7 * 24 * 60 * 60 * 1000),
-      },
-      {
-        tag: "#LCUV0289",
-        lastSeenAt: new Date(nowMs - 9 * 24 * 60 * 60 * 1000),
-      },
-    ]);
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [
-        { playerTag: "#PYLQ0289", missedWars: 1 },
-        { playerTag: "#QGRJ2222", missedWars: 3 },
+        { playerTag: "#PYLQ0289", playerName: "Charlie", missedWars: 1, participationWars: 3 },
+        { playerTag: "#QGRJ2222", playerName: "Alpha", missedWars: 3, participationWars: 4 },
       ],
       trackedTags: [],
       trackedNameByTag: new Map(),
@@ -2044,23 +2029,21 @@ describe("/link list sort button", () => {
       "Sort: Inactivity",
     );
     const descriptionInactivity = String(embedClanRank.description ?? "");
-    expect(descriptionInactivity.indexOf("BobUser")).toBeLessThan(
-      descriptionInactivity.indexOf("AmyUser"),
-    );
-    expect(descriptionInactivity.indexOf("AmyUser")).toBeLessThan(
-      descriptionInactivity.indexOf("ZedUser"),
-    );
     const inactivityRows = getInlineRows(descriptionInactivity);
     expect(inactivityRows).toHaveLength(3);
-    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").metric).toBe(
-      "9d —",
+    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").player).toBe(
+      "Alpha",
     );
-    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").metric).toBe(
-      "7d 3w",
+    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").metric).toBe("— 3w");
+    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").player).toBe(
+      "Charlie",
     );
-    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").metric).toBe(
-      "7d 1w",
+    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").metric).toBe("— 1w");
+    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").player).toBe(
+      "Bravo",
     );
+    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").metric).toBe("—");
+    expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
 
     const fromInactivity = await runSortClick("inactivity");
     expect(fromInactivity.deferUpdate).toHaveBeenCalledTimes(1);
