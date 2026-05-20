@@ -50,6 +50,7 @@ import {
 } from "../services/PlayerLinkService";
 import { PlayerLinkVerificationService } from "../services/PlayerLinkVerificationService";
 import { PlayerLinkSyncService } from "../services/PlayerLinkSyncService";
+import { FwaClanMembersSyncService } from "../services/fwa-feeds/FwaClanMembersSyncService";
 import {
   buildReminderLinkCancelCustomId,
   buildReminderLinkConfirmCustomId,
@@ -60,8 +61,10 @@ import {
 
 const permissionService = new CommandPermissionService();
 const inactiveWarService = new InactiveWarService();
+const linkListMembersSyncService = new FwaClanMembersSyncService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
 const LINK_LIST_SORT_BUTTON_PREFIX = "link-list-sort-cycle";
+const LINK_LIST_REFRESH_BUTTON_PREFIX = "link-list-refresh";
 const LINK_EMBED_SETUP_MODAL_PREFIX = "link-embed-setup";
 const LINK_EMBED_TAG_MODAL_PREFIX = "link-embed-tag";
 const LINK_EMBED_BUTTON_PREFIX = "link-embed-account";
@@ -106,14 +109,12 @@ const LINK_LIST_INACTIVITY_WARS_WINDOW = 3;
 type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
 const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
 
-type ClanMemberRow = {
+type LinkListCurrentMemberRow = {
   playerTag: string;
   playerName: string;
   townHall: number | null;
-  mapPosition: number | null;
-  clanRank: number | null;
-  clanRankSortScore: number | null;
-  index: number;
+  rank: number | null;
+  sourceSyncedAt: Date;
 };
 
 type GuildTrackedClanOption = {
@@ -364,65 +365,6 @@ function selectTrackedClanMenuOptions(
   return [current, ...remainder];
 }
 
-function normalizeClanMembers(rawMembers: unknown[]): ClanMemberRow[] {
-  const mapped = rawMembers
-    .map((member, index) => {
-      const row = member as {
-        tag?: string;
-        name?: string;
-        townHallLevel?: number | string | null;
-        mapPosition?: number | null;
-        clanRank?: number | string | null;
-      } | null;
-      const playerTag = normalizePlayerTag(String(row?.tag ?? ""));
-      if (!playerTag) return null;
-
-      const name = sanitizeTableText(String(row?.name ?? "")) || playerTag;
-      const mapPositionRaw = tryParseFiniteNumber(row?.mapPosition);
-      const townHallRaw = tryParseFiniteNumber(row?.townHallLevel);
-      const clanRankRaw = tryParseFiniteNumber(row?.clanRank);
-      const clanRank = clanRankRaw !== null ? Math.floor(clanRankRaw) : null;
-      const clanRankSortScore = clanRank;
-
-      return {
-        playerTag,
-        playerName: name,
-        townHall:
-          townHallRaw !== null && townHallRaw >= 1
-            ? Math.floor(townHallRaw)
-            : null,
-        mapPosition:
-          mapPositionRaw !== null ? Math.floor(mapPositionRaw) : null,
-        clanRank,
-        clanRankSortScore,
-        index,
-      } as ClanMemberRow;
-    })
-    .filter((row): row is ClanMemberRow => row !== null);
-
-  mapped.sort((a, b) => {
-    if (
-      a.mapPosition !== null &&
-      b.mapPosition !== null &&
-      a.mapPosition !== b.mapPosition
-    ) {
-      return a.mapPosition - b.mapPosition;
-    }
-    if (a.mapPosition !== null && b.mapPosition === null) return -1;
-    if (a.mapPosition === null && b.mapPosition !== null) return 1;
-    return a.index - b.index;
-  });
-
-  const deduped: ClanMemberRow[] = [];
-  const seen = new Set<string>();
-  for (const row of mapped) {
-    if (seen.has(row.playerTag)) continue;
-    seen.add(row.playerTag);
-    deduped.push(row);
-  }
-  return deduped;
-}
-
 type DescriptionChunk = {
   text: string;
   lineCount: number;
@@ -604,15 +546,37 @@ function buildLinkListSortRow(input: {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 }
 
+function buildLinkListRefreshRow(input: {
+  commandUserId: string;
+  currentClanTag: string;
+  sortMode: LinkListSortMode;
+}): ActionRowBuilder<ButtonBuilder> {
+  const button = new ButtonBuilder()
+    .setCustomId(
+      buildLinkListRefreshButtonCustomId(
+        input.commandUserId,
+        input.currentClanTag,
+        input.sortMode,
+      ),
+    )
+    .setLabel("Refresh Data")
+    .setStyle(ButtonStyle.Primary);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
+}
+
 function buildLinkListControlRows(input: {
   trackedClans: GuildTrackedClanOption[];
   currentClanTag: string;
   commandUserId: string;
   sortMode: LinkListSortMode;
+  includeSortButton?: boolean;
 }): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
   const rows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [
-    buildLinkListSortRow(input),
+    buildLinkListRefreshRow(input),
   ];
+  if (input.includeSortButton !== false) {
+    rows.push(buildLinkListSortRow(input));
+  }
   const selectRows = buildClanSelectRows(input);
   rows.push(...selectRows);
   return rows;
@@ -829,7 +793,10 @@ function formatAlignedInlineRow(
   sortMode: LinkListSortMode,
 ): string {
   const townHallIcon = renderTownHallIcon(row.townHall, townHallEmojiByLevel);
-  const leftLabel = rightAlign(row.leftLabel, widths.left);
+  const leftLabel = rightAlign(
+    row.leftLabel.trim().length > 0 ? row.leftLabel : WEIGHT_PLACEHOLDER,
+    widths.left,
+  );
   const weight = rightAlign(row.weight, widths.weight);
   const playerName = rightAlign(row.playerName, widths.player);
   const playerTag = normalizePlayerTag(row.playerTag) || row.playerTag;
@@ -920,7 +887,6 @@ export const buildLinkListDescriptionLinesForTest = buildLinkListDescriptionLine
 
 async function buildLinkListView(input: {
   interaction: LinkListInteraction;
-  cocService: CoCService;
   clanTag: string;
   commandUserId: string;
   sortMode?: LinkListSortMode;
@@ -931,31 +897,62 @@ async function buildLinkListView(input: {
     return { ok: false, message: "This command can only be used in a server." };
   }
 
-  let clan: Awaited<ReturnType<CoCService["getClan"]>>;
-  try {
-    clan = await input.cocService.getClan(input.clanTag);
-  } catch {
+  const [currentMembers, tracked] = await Promise.all([
+    prisma.fwaClanMemberCurrent.findMany({
+      where: { clanTag: input.clanTag },
+      orderBy: [{ rank: "asc" }, { playerTag: "asc" }],
+      select: {
+        playerTag: true,
+        playerName: true,
+        townHall: true,
+        rank: true,
+        sourceSyncedAt: true,
+      },
+    }),
+    prisma.trackedClan.findUnique({
+      where: { tag: input.clanTag },
+      select: { clanBadge: true, name: true },
+    }),
+  ]) as [LinkListCurrentMemberRow[], { clanBadge: string | null; name: string | null } | null];
+
+  if (currentMembers.length === 0) {
+    const trackedClans = await getTrackedClansForGuild(input.interaction.guildId);
+    const components = buildLinkListControlRows({
+      trackedClans,
+      currentClanTag: input.clanTag,
+      commandUserId: input.commandUserId,
+      sortMode,
+      includeSortButton: false,
+    });
+    const clanName = sanitizeTableText(String(tracked?.name ?? "")) || input.clanTag;
+    const title = buildTitleWithBadge({
+      clanName,
+      clanTag: input.clanTag,
+      badge: tracked?.clanBadge?.trim() ?? null,
+    });
     return {
-      ok: false,
-      message: `not_found: clan ${input.clanTag} could not be resolved.`,
+      ok: true,
+      payload: {
+        embeds: buildDescriptionEmbeds(
+          title,
+          [
+            `empty_list: no saved current clan members for ${input.clanTag}. Use Refresh Data or wait for sync.`,
+          ],
+          sortMode,
+        ),
+        components,
+      },
     };
   }
 
-  const members = normalizeClanMembers(
-    Array.isArray(clan?.members) ? clan.members : [],
-  );
-  if (members.length === 0) {
-    return {
-      ok: false,
-      message: `empty_list: no current clan members for ${input.clanTag}.`,
-    };
-  }
-
+  const memberTags = currentMembers
+    .map((row) => normalizePlayerTag(row.playerTag))
+    .filter((tag): tag is string => Boolean(tag));
   const links = await listPlayerLinksForClanMembers({
-    memberTagsInOrder: members.map((row) => row.playerTag),
+    memberTagsInOrder: memberTags,
   });
   const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
-    playerTagsInOrder: members.map((row) => row.playerTag),
+    playerTagsInOrder: memberTags,
   });
   const fillerTags = input.interaction.guildId
     ? await listFillerAccountTagsForGuild({
@@ -967,7 +964,6 @@ async function buildLinkListView(input: {
   const inactivityMissedWarsByTag = new Map<string, number | null>();
 
   if (sortMode === "inactivity") {
-    const memberTags = members.map((row) => row.playerTag);
     const [activityRows, inactiveWarSummary] = await Promise.all([
       prisma.playerActivity.findMany({
         where: {
@@ -1017,16 +1013,17 @@ async function buildLinkListView(input: {
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const resolvedRows: LinkListResolvedMemberRow[] = [];
 
-  members.forEach((member, index) => {
+  currentMembers.forEach((member, index) => {
+    const playerTag = normalizePlayerTag(member.playerTag);
+    if (!playerTag) return;
     const playerName = truncateWithEllipsis(
       member.playerName,
       MAX_PLAYER_NAME_CHARS,
     );
-    const weightValue = weightByTag.get(member.playerTag) ?? null;
-    const rankLabel =
-      member.clanRank !== null ? `#${member.clanRank}` : WEIGHT_PLACEHOLDER;
-    const inactivityDays = inactivityDaysByTag.get(member.playerTag) ?? null;
-    const inactivityMissedWars = inactivityMissedWarsByTag.get(member.playerTag) ?? null;
+    const weightValue = weightByTag.get(playerTag) ?? null;
+    const rankLabel = member.rank !== null ? `#${member.rank}` : WEIGHT_PLACEHOLDER;
+    const inactivityDays = inactivityDaysByTag.get(playerTag) ?? null;
+    const inactivityMissedWars = inactivityMissedWarsByTag.get(playerTag) ?? null;
     const weight =
       sortMode === "clan-rank"
         ? rankLabel
@@ -1036,7 +1033,7 @@ async function buildLinkListView(input: {
               missedWars: inactivityMissedWars,
             })
           : formatCompactWeightK(weightValue);
-    const link = linkByTag.get(member.playerTag);
+    const link = linkByTag.get(playerTag);
     const leftLabel = link
       ? truncateWithEllipsis(
           resolveLinkedUserDisplayName(
@@ -1047,14 +1044,14 @@ async function buildLinkListView(input: {
           MAX_IDENTITY_CHARS,
         )
       : sortMode === "inactivity"
-        ? truncateWithEllipsis(member.playerTag, MAX_IDENTITY_CHARS)
-        : " ";
+        ? truncateWithEllipsis(playerTag, MAX_IDENTITY_CHARS)
+        : WEIGHT_PLACEHOLDER;
     const discordSort =
       sortMode === "player-tags"
-        ? member.playerTag
+        ? playerTag
         : link
           ? leftLabel
-          : member.playerTag;
+          : playerTag;
     const inactivitySortScore =
       inactivityDays !== null
         ? inactivityDays * 1_000_000 + Math.max(0, inactivityMissedWars ?? 0)
@@ -1062,23 +1059,23 @@ async function buildLinkListView(input: {
 
     resolvedRows.push({
       isLinked: Boolean(link),
-      playerTag: member.playerTag,
+      playerTag,
       defaultIndex: index,
       weightValue,
       inactivitySortScore,
       inactivityDays,
       inactivityMissedWars,
-      clanRankSortScore: member.clanRankSortScore,
+      clanRankSortScore: member.rank,
       playerSort: sanitizeTableText(playerName),
       discordSort: sanitizeTableText(discordSort),
       row: {
         townHall: member.townHall,
         leftLabel,
-        playerTag: member.playerTag,
+        playerTag,
         weight,
         playerName,
         rowMode: sortMode,
-        rightMarker: fillerTagSet.has(member.playerTag)
+        rightMarker: fillerTagSet.has(playerTag)
           ? ":person_standing:"
           : null,
       },
@@ -1114,14 +1111,7 @@ async function buildLinkListView(input: {
     };
   }
 
-  const tracked = await prisma.trackedClan.findUnique({
-    where: { tag: input.clanTag },
-    select: { clanBadge: true, name: true },
-  });
-  const clanName =
-    sanitizeTableText(String(clan?.name ?? "")) ||
-    sanitizeTableText(tracked?.name ?? "") ||
-    input.clanTag;
+  const clanName = sanitizeTableText(String(tracked?.name ?? "")) || input.clanTag;
   const title = buildTitleWithBadge({
     clanName,
     clanTag: input.clanTag,
@@ -1136,6 +1126,7 @@ async function buildLinkListView(input: {
     currentClanTag: input.clanTag,
     commandUserId: input.commandUserId,
     sortMode,
+    includeSortButton: true,
   });
 
   return {
@@ -1242,6 +1233,35 @@ function parseLinkListSortButtonCustomId(
 ): { userId: string; clanTag: string; sortMode: LinkListSortMode } | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 4 || parts[0] !== LINK_LIST_SORT_BUTTON_PREFIX) {
+    return null;
+  }
+  const userId = parts[1]?.trim() ?? "";
+  const clanTag = normalizeClanTag(parts[2] ?? "");
+  if (!userId || !clanTag) return null;
+  return {
+    userId,
+    clanTag,
+    sortMode: normalizeLinkListSortMode(parts[3]),
+  };
+}
+
+export function buildLinkListRefreshButtonCustomId(
+  userId: string,
+  clanTag: string,
+  sortMode: LinkListSortMode,
+): string {
+  return `${LINK_LIST_REFRESH_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizeLinkListSortMode(sortMode)}`;
+}
+
+export function isLinkListRefreshButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${LINK_LIST_REFRESH_BUTTON_PREFIX}:`);
+}
+
+function parseLinkListRefreshButtonCustomId(
+  customId: string,
+): { userId: string; clanTag: string; sortMode: LinkListSortMode } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== LINK_LIST_REFRESH_BUTTON_PREFIX) {
     return null;
   }
   const userId = parts[1]?.trim() ?? "";
@@ -1466,7 +1486,7 @@ async function validateLinkEmbedTargetChannel(input: {
 
 export async function handleLinkListSelectMenu(
   interaction: StringSelectMenuInteraction,
-  cocService: CoCService,
+  _cocService: CoCService,
 ): Promise<void> {
   const parsed = parseLinkListSelectCustomId(interaction.customId);
   if (!parsed) return;
@@ -1492,7 +1512,6 @@ export async function handleLinkListSelectMenu(
   await interaction.deferUpdate();
   const result = await buildLinkListView({
     interaction,
-    cocService,
     clanTag: selectedTag,
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
@@ -1502,7 +1521,7 @@ export async function handleLinkListSelectMenu(
 
 export async function handleLinkListSortButton(
   interaction: ButtonInteraction,
-  cocService: CoCService,
+  _cocService: CoCService,
 ): Promise<void> {
   const parsed = parseLinkListSortButtonCustomId(interaction.customId);
   if (!parsed) return;
@@ -1519,10 +1538,100 @@ export async function handleLinkListSortButton(
   await interaction.deferUpdate();
   const result = await buildLinkListView({
     interaction,
-    cocService,
     clanTag: parsed.clanTag,
     commandUserId: parsed.userId,
     sortMode: nextSortMode,
+  });
+  await updateDeferredLinkListInteraction(interaction, result);
+}
+
+export async function handleLinkListRefreshButton(
+  interaction: ButtonInteraction,
+  cocService: CoCService,
+): Promise<void> {
+  const parsed = parseLinkListRefreshButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This button can only be used in a server.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+
+  const clanTag = parsed.clanTag;
+  let clan: Awaited<ReturnType<CoCService["getClan"]>> | null = null;
+  try {
+    clan = await cocService.getClan(clanTag);
+  } catch (err) {
+    const status =
+      (err as { status?: unknown; response?: { status?: unknown } } | null)?.status ??
+      (err as { response?: { status?: unknown } } | null)?.response?.status ??
+      null;
+    const code =
+      (err as { code?: unknown } | null)?.code ?? null;
+    console.warn(
+      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=${status ?? "unknown"} code=${code ?? "unknown"} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+    );
+    await interaction.followUp({
+      ephemeral: true,
+      content: `refresh_failed: CoC API failed for ${clanTag}. Showing last saved roster.`,
+    });
+    return;
+  }
+
+  try {
+    const members = Array.isArray(clan?.members) ? clan.members : [];
+    const refreshResult = await linkListMembersSyncService.refreshCurrentClanMembersForClanTags(
+      [clanTag],
+      {
+        cocService: {
+          getClan: async () => clan,
+        } as unknown as CoCService,
+      },
+    );
+    if (refreshResult.failedClans.includes(clanTag)) {
+      console.warn(
+        `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=sync_failed code=sync_failed error=selected clan refresh failed`,
+      );
+      await interaction.followUp({
+        ephemeral: true,
+        content: `refresh_failed: CoC API failed for ${clanTag}. Showing last saved roster.`,
+      });
+      return;
+    }
+    console.info(
+      `[link-list] event=refresh_success guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} member_count=${members.length}`,
+    );
+  } catch (err) {
+    const errorCode =
+      (err as { code?: unknown } | null)?.code ?? "unknown";
+    console.warn(
+      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=sync_failed code=${errorCode} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+    );
+    await interaction.followUp({
+      ephemeral: true,
+      content: `refresh_failed: CoC API failed for ${clanTag}. Showing last saved roster.`,
+    });
+    return;
+  }
+
+  const result = await buildLinkListView({
+    interaction,
+    clanTag,
+    commandUserId: parsed.userId,
+    sortMode: parsed.sortMode,
   });
   await updateDeferredLinkListInteraction(interaction, result);
 }
@@ -2366,7 +2475,6 @@ export const Link: Command = {
 
     const result = await buildLinkListView({
       interaction,
-      cocService,
       clanTag: normalizedClanTag,
       commandUserId: interaction.user.id,
       sortMode: LINK_LIST_DEFAULT_SORT_MODE,

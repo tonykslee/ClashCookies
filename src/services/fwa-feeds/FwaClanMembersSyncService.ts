@@ -64,6 +64,23 @@ export class FwaClanMembersSyncService {
             const level = Number.isFinite(Number((row as { expLevel?: unknown })?.expLevel))
               ? Math.trunc(Number((row as { expLevel?: unknown })?.expLevel))
               : null;
+            const townHall = Number.isFinite(
+              Number(
+                (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHallLevel ??
+                  (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townhallLevel ??
+                  (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHall ??
+                  null,
+              ),
+            )
+              ? Math.trunc(
+                  Number(
+                    (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHallLevel ??
+                      (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townhallLevel ??
+                      (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHall ??
+                      null,
+                  ),
+                )
+              : null;
             const donated = Number.isFinite(Number((row as { donations?: unknown })?.donations))
               ? Math.trunc(Number((row as { donations?: unknown })?.donations))
               : null;
@@ -97,6 +114,7 @@ export class FwaClanMembersSyncService {
                 rank,
                 trophies,
                 league: leagueName || null,
+                townHall,
                 sourceSyncedAt: now,
               },
               create: {
@@ -110,6 +128,7 @@ export class FwaClanMembersSyncService {
                 rank,
                 trophies,
                 league: leagueName || null,
+                townHall,
                 sourceSyncedAt: now,
               },
             });

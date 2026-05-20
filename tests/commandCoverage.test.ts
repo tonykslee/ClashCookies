@@ -202,6 +202,8 @@ describe("command coverage", () => {
 
   it("documents the /link list clan rank sort mode in the link help detail text", () => {
     const linkHelpText = helpEmbedText("link");
+    expect(linkHelpText).toContain("reads persisted current-member rows by default");
+    expect(linkHelpText).toContain("Refresh Data");
     expect(linkHelpText).toContain("Town Hall icon outside inline code");
     expect(linkHelpText).toContain("player tag shown in its own inline-code segment");
     expect(linkHelpText).toContain(":person_standing:");
