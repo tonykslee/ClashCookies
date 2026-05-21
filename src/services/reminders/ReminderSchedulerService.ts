@@ -526,9 +526,13 @@ export async function fireBattleDayTransitionWar24hRemindersForClan(input: {
       continue;
     }
 
+    const retryableFailure =
+      fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED
+        ? parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)
+        : null;
     const retryableFireLog =
       fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED &&
-      parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)?.isRetryable === true
+      retryableFailure?.isRetryable === true
         ? fireLog
         : null;
 
@@ -626,6 +630,17 @@ export async function fireBattleDayTransitionWar24hRemindersForClan(input: {
       deduped += 1;
       dozzleLog.info(
         `[reminders] event=deduped reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=no_firelog_id`,
+      );
+      continue;
+    }
+
+    if (
+      fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED &&
+      !retryableFireLog
+    ) {
+      failed += 1;
+      dozzleLog.warn(
+        `[reminders] event=failed reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=non_retryable_firelog status=${fireLog.dispatchStatus} error=${fireLog.errorMessage ?? "unknown"}`,
       );
       continue;
     }

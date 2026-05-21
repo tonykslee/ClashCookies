@@ -1113,6 +1113,56 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     });
   });
 
+  it("does not retry a failed 24h WAR_CWL fire log when the failure is non-retryable", async () => {
+    const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
+    const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 } as any],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
+    const fireLogs = installReminderFireLogStore();
+    prismaMock.reminderFireLog.findUnique.mockResolvedValue({
+      id: "fire-non-retryable",
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: "channel_unavailable_or_not_text_based",
+    } as any);
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-should-not-send",
+      }),
+    };
+
+    const counts = await fireBattleDayTransitionWar24hRemindersForClan({
+      client: {} as any,
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000269,
+      warStartTime: new Date("2026-04-28T14:03:35.852Z"),
+      warEndTime: eventEndsAt,
+      dispatch: dispatch as any,
+      nowMs,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(fireLogs.byId.size).toBe(0);
+  });
+
   it("does not retry a 12h attack_window_not_active reminder", async () => {
     const nowMs = Date.parse("2026-04-29T01:01:38.901Z");
     const eventEndsAt = new Date(nowMs + 12 * 60 * 60 * 1000);
