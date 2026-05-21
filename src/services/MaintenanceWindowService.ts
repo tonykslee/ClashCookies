@@ -7,6 +7,12 @@ export type MaintenanceFetchObservation =
   | { kind: "success" }
   | { kind: "failure"; statusCode: number | null };
 
+export type MaintenanceTransition = "detected" | "over" | null;
+
+export type MaintenanceObservationResult = {
+  maintenanceTransition: MaintenanceTransition;
+};
+
 export type MaintenanceWindowState = {
   guildId: string;
   active: boolean;
@@ -67,11 +73,11 @@ export class MaintenanceWindowService {
     clanTag: string;
     observation: MaintenanceFetchObservation;
     error?: unknown;
-  }): Promise<void> {
+  }): Promise<MaintenanceObservationResult> {
     try {
       const guildId = normalizeGuildId(input.guildId);
       const clanTag = normalizeClanTag(input.clanTag);
-      if (!guildId) return;
+      if (!guildId) return { maintenanceTransition: null };
       const statusCode =
         input.observation.kind === "failure" ? input.observation.statusCode : null;
 
@@ -94,7 +100,7 @@ export class MaintenanceWindowService {
             lastChannelId: current.lastChannelId,
             lastChannelSource: current.lastChannelSource,
           });
-          return;
+          return { maintenanceTransition: null };
         }
 
         const transitionAt = new Date();
@@ -114,7 +120,7 @@ export class MaintenanceWindowService {
           console.warn(
             `[maintenance-window] event=skipped_no_channel phase=detected guild=${guildId} clan=${clanTag} status=${statusCode ?? "unknown"}`,
           );
-          return;
+          return { maintenanceTransition: "detected" };
         }
 
         await this.sendNotice(channel.channel, {
@@ -129,11 +135,11 @@ export class MaintenanceWindowService {
         console.log(
           `[maintenance-window] event=detected guild=${guildId} clan=${clanTag} channel=${channel.channelId} source=${channel.source} status=${statusCode ?? "unknown"}`,
         );
-        return;
+        return { maintenanceTransition: "detected" };
       }
 
-      if (input.observation.kind !== "success") return;
-      if (!current?.active) return;
+      if (input.observation.kind !== "success") return { maintenanceTransition: null };
+      if (!current?.active) return { maintenanceTransition: null };
 
       const transitionAt = new Date();
       const channel = await this.resolveNoticeChannel(guildId);
@@ -145,27 +151,11 @@ export class MaintenanceWindowService {
         lastChannelId: channel.channelId,
         lastChannelSource: channel.source,
       });
-
-      await import("./reminders/ReminderSchedulerService")
-        .then(({ fireBattleDayTransitionWar24hRemindersForGuild }) =>
-          fireBattleDayTransitionWar24hRemindersForGuild({
-            client: this.client,
-            guildId,
-            nowMs: transitionAt.getTime(),
-            triggerSource: "maintenance_over",
-          }),
-        )
-        .catch((err) => {
-          console.error(
-            `[maintenance-window] event=handler_failed phase=over_retry guild=${guildId} clan=${clanTag} error=${formatError(err)}`,
-          );
-        });
-
       if (!channel.channelId) {
         console.warn(
           `[maintenance-window] event=skipped_no_channel phase=over guild=${guildId} clan=${clanTag}`,
         );
-        return;
+        return { maintenanceTransition: "over" };
       }
 
       await this.sendNotice(channel.channel, {
@@ -179,10 +169,12 @@ export class MaintenanceWindowService {
       console.log(
         `[maintenance-window] event=over guild=${guildId} clan=${clanTag} channel=${channel.channelId} source=${channel.source}`,
       );
+      return { maintenanceTransition: "over" };
     } catch (err) {
       console.error(
         `[maintenance-window] event=handler_failed error=${formatError(err)}`,
       );
+      return { maintenanceTransition: null };
     }
   }
 

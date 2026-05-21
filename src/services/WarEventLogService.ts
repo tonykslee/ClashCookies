@@ -2860,7 +2860,7 @@ export class WarEventLogService {
       sub.clanTag,
       warSnapshot.observation,
     );
-    await this.maintenanceWindowService.observeWarFetch({
+    const maintenanceObservation = await this.maintenanceWindowService.observeWarFetch({
       guildId: sub.guildId,
       clanTag: sub.clanTag,
       observation: warSnapshot.observation,
@@ -3387,6 +3387,31 @@ export class WarEventLogService {
       resolvedWarId,
       fallbackWarStartTime: nextWarStartTime,
     });
+    if (
+      maintenanceObservation.maintenanceTransition === "over" &&
+      currentState === "inWar" &&
+      resolvedWarId !== null &&
+      resolvedWarId !== undefined &&
+      Number.isFinite(Number(resolvedWarId)) &&
+      Math.trunc(Number(resolvedWarId)) > 0 &&
+      nextWarEndTime
+    ) {
+      await fireBattleDayTransitionWar24hRemindersForClan({
+        client: this.client,
+        guildId: sub.guildId,
+        clanTag: sub.clanTag,
+        clanName: nextClanName,
+        warId: Math.trunc(Number(resolvedWarId)),
+        warStartTime: nextWarStartTime,
+        warEndTime: nextWarEndTime,
+        nowMs: Date.now(),
+        triggerSource: "maintenance_over",
+      }).catch((err) => {
+        console.error(
+          `[reminders] battle_day_maintenance_over_failed guild=${sub.guildId} clan=${sub.clanTag} warId=${Math.trunc(Number(resolvedWarId))} error=${formatError(err)}`,
+        );
+      });
+    }
     if (
       currentState === "inWar" &&
       newAttackRowsObserved > 0 &&
