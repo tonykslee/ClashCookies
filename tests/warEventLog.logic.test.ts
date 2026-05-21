@@ -1083,7 +1083,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         clanRoleId: "123456789",
       }),
     ).toBe(
-      "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+      "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.\n<@&123456789>",
     );
     expect(
       buildFwaBaseSwapBattleDayReminderContentForTest({ clanRoleId: null }),
@@ -1136,7 +1136,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(reminderSend).toHaveBeenCalledTimes(1);
     expect(reminderSend).toHaveBeenCalledWith({
       content:
-        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+        "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.\n<@&123456789>",
       allowedMentions: { roles: ["123456789"] },
     });
     expect(botLogSend).toHaveBeenCalledTimes(1);
@@ -1521,7 +1521,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(reminderSend).toHaveBeenCalledTimes(1);
     expect(reminderSend).toHaveBeenCalledWith({
       content:
-        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+        "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.\n<@&123456789>",
       allowedMentions: { roles: ["123456789"] },
     });
     expect(botLogSend).toHaveBeenCalledTimes(1);
@@ -1666,7 +1666,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(reminderSend).toHaveBeenCalledTimes(1);
     expect(reminderSend).toHaveBeenCalledWith({
       content:
-        "<@&123456789>\n\nThanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
+        "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.\n<@&123456789>",
       allowedMentions: { roles: ["123456789"] },
     });
     expect(botLogSend).toHaveBeenCalledTimes(1);
