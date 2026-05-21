@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -84,6 +84,8 @@ function makeMember(input: {
 
 describe("CompoReplacementService", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
@@ -107,6 +109,10 @@ describe("CompoReplacementService", () => {
       { playerTag: "#P000002" },
       { playerTag: "#P000028" },
     ]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("resolves same-bucket replacement candidates from DB-only sources with stacked reasons", async () => {

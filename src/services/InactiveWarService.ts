@@ -63,6 +63,23 @@ export type InactiveWarSummary = {
   diagnosticNote: string | null;
 };
 
+export type InactiveWarMetricRow = Pick<
+  InactiveWarRow,
+  | "clanTag"
+  | "playerTag"
+  | "playerName"
+  | "townHall"
+  | "missedWars"
+  | "participationWars"
+  | "totalTrueStars"
+  | "avgAttackDelay"
+  | "lateAttacks"
+  | "warsAvailable"
+  | "missedWarStates"
+>;
+
+export type InactiveWarMetricMap = Map<string, InactiveWarMetricRow>;
+
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
 }
@@ -773,7 +790,33 @@ export class InactiveWarService {
 
     return { results, trackedTags, trackedNameByTag, trackedBadgeByTag, warnings, diagnosticNote };
   }
+
+  async buildInactiveWarMetricByPlayerTag(input: {
+    guildId: string;
+    wars: number;
+    clanTag?: string | null;
+  }): Promise<{
+    metricsByPlayerTag: InactiveWarMetricMap;
+    summary: InactiveWarSummary;
+  }> {
+    const summary = await this.listInactiveWarPlayers(input);
+    const metricsByPlayerTag = new Map<string, InactiveWarMetricRow>();
+    for (const row of summary.results) {
+      const normalizedPlayerTag = normalizePlayerTagInput(row.playerTag);
+      if (!normalizedPlayerTag) continue;
+      metricsByPlayerTag.set(`#${normalizedPlayerTag}`, row);
+    }
+    return { metricsByPlayerTag, summary };
+  }
 }
 
 export const buildRecentEndedWarSelectionForTest = buildRecentEndedWarSelection;
 export const aggregateInactiveWarRowsForTest = aggregateInactiveWarRows;
+export const buildInactiveWarMetricByPlayerTagForTest = (
+  service: InactiveWarService,
+  input: {
+    guildId: string;
+    wars: number;
+    clanTag?: string | null;
+  },
+) => service.buildInactiveWarMetricByPlayerTag(input);
