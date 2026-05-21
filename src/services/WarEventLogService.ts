@@ -26,6 +26,7 @@ import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import { BotLogChannelService } from "./BotLogChannelService";
+import { MaintenanceWindowService } from "./MaintenanceWindowService";
 import {
   chooseMatchTypeResolution,
   compareActiveWarIdentities,
@@ -1314,6 +1315,7 @@ export class WarEventLogService {
   private readonly fwaPolice: FwaPoliceService;
   private readonly postedMessages: PostedMessageService;
   private readonly botLogChannels = new BotLogChannelService();
+  private readonly maintenanceWindowService: MaintenanceWindowService;
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
   /** Purpose: initialize service dependencies. */
@@ -1334,6 +1336,10 @@ export class WarEventLogService {
     this.warCompliance = new WarComplianceService();
     this.fwaPolice = new FwaPoliceService();
     this.postedMessages = new PostedMessageService();
+    this.maintenanceWindowService = new MaintenanceWindowService(
+      client,
+      this.botLogChannels,
+    );
   }
 
   /** Purpose: poll. */
@@ -2694,13 +2700,15 @@ export class WarEventLogService {
   private async getCurrentWarSnapshot(clanTag: string): Promise<{
     war: Awaited<ReturnType<CoCService["getCurrentWar"]>> | null;
     observation: CocWarFetchObservation;
+    error: unknown | null;
   }> {
     try {
       const war = await this.coc.getCurrentWar(clanTag);
-      return { war, observation: { kind: "success" } };
+      return { war, observation: { kind: "success" }, error: null };
     } catch (error) {
       return {
         war: null,
+        error,
         observation: {
           kind: "failure",
           statusCode: parseCocApiStatusCode(error),
@@ -2849,6 +2857,12 @@ export class WarEventLogService {
       sub.clanTag,
       warSnapshot.observation,
     );
+    await this.maintenanceWindowService.observeWarFetch({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      observation: warSnapshot.observation,
+      error: warSnapshot.error,
+    });
     const resolvedState: WarState = war
       ? deriveState(String(war.state ?? ""))
       : "notInWar";

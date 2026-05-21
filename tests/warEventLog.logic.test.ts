@@ -2047,6 +2047,41 @@ describe("WarEventLogService notify config ownership", () => {
     expect(result.channelId).toBe("notify-channel-42");
     expect(result.clanName).toBe("Configured Clan");
   });
+
+  it("preserves the raw CoC maintenance response on current-war snapshot failures", async () => {
+    const maintenanceError = {
+      message: "CoC API error 503",
+      status: 503,
+      response: {
+        status: 503,
+        data: {
+          message: "Service temporarily unavailable because of maintenance.",
+        },
+      },
+    };
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as any,
+      {
+        getCurrentWar: vi.fn().mockRejectedValue(maintenanceError),
+      } as any,
+    );
+
+    const snapshot = await (service as any).getCurrentWarSnapshot("#ABC123");
+
+    expect(snapshot.observation).toEqual({
+      kind: "failure",
+      statusCode: 503,
+    });
+    expect(snapshot.error).toMatchObject({
+      message: "CoC API error 503",
+      response: {
+        status: 503,
+        data: {
+          message: "Service temporarily unavailable because of maintenance.",
+        },
+      },
+    });
+  });
 });
 
 describe("WarEventLogService war-end discrepancy content", () => {
