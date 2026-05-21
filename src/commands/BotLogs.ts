@@ -16,6 +16,7 @@ import {
 const BOT_LOGS_SET_CHANNEL_OPTION = "set-channel";
 const BOT_LOGS_TYPE_OPTION = "type";
 const BOT_LOGS_BASE_SWAP_TYPE: BotLogChannelType = "base-swap";
+const BOT_LOGS_MAINTENANCE_TYPE: BotLogChannelType = "maintenance";
 const BOT_LOGS_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
@@ -153,6 +154,19 @@ export const BotLogs: Command = {
         return;
       }
 
+      if (requestedType === BOT_LOGS_MAINTENANCE_TYPE) {
+        await botLogChannelService.setChannelIdForType(
+          interaction.guildId,
+          requestedType,
+          requestedChannel.id,
+        );
+        await interaction.reply({
+          ephemeral: true,
+          content: `Maintenance bot-log channel saved: <#${requestedChannel.id}>.`,
+        });
+        return;
+      }
+
       await botLogChannelService.setChannelId(
         interaction.guildId,
         requestedChannel.id,
@@ -164,7 +178,10 @@ export const BotLogs: Command = {
       return;
     }
 
-    if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
+    if (
+      requestedType === BOT_LOGS_BASE_SWAP_TYPE ||
+      requestedType === BOT_LOGS_MAINTENANCE_TYPE
+    ) {
       const configuredChannelId = await botLogChannelService.getChannelIdForType(
         interaction.guildId,
         requestedType,
@@ -172,7 +189,10 @@ export const BotLogs: Command = {
       if (!configuredChannelId) {
         await interaction.reply({
           ephemeral: true,
-          content: "No base-swap bot-log channel is configured yet.",
+          content:
+            requestedType === BOT_LOGS_BASE_SWAP_TYPE
+              ? "No base-swap bot-log channel is configured yet."
+              : "No maintenance bot-log channel is configured yet.",
         });
         return;
       }
@@ -184,7 +204,10 @@ export const BotLogs: Command = {
       if (channelState === "found") {
         await interaction.reply({
           ephemeral: true,
-          content: `Current base-swap bot-log channel: <#${configuredChannelId}>.`,
+          content:
+            requestedType === BOT_LOGS_BASE_SWAP_TYPE
+              ? `Current base-swap bot-log channel: <#${configuredChannelId}>.`
+              : `Current maintenance bot-log channel: <#${configuredChannelId}>.`,
         });
         return;
       }
@@ -197,8 +220,11 @@ export const BotLogs: Command = {
         await interaction.reply({
           ephemeral: true,
           content:
-            `Configured base-swap bot-log channel <#${configuredChannelId}> no longer exists. ` +
-            "I cleared the saved setting. Set a new one with `/bot-logs type:base-swap set-channel`.",
+            requestedType === BOT_LOGS_BASE_SWAP_TYPE
+              ? `Configured base-swap bot-log channel <#${configuredChannelId}> no longer exists. ` +
+                "I cleared the saved setting. Set a new one with `/bot-logs type:base-swap set-channel`."
+              : `Configured maintenance bot-log channel <#${configuredChannelId}> no longer exists. ` +
+                "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
         });
         return;
       }
@@ -206,8 +232,11 @@ export const BotLogs: Command = {
       await interaction.reply({
         ephemeral: true,
         content:
-          `Configured base-swap bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
-          "Set a new one with `/bot-logs type:base-swap set-channel`.",
+          requestedType === BOT_LOGS_BASE_SWAP_TYPE
+            ? `Configured base-swap bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+              "Set a new one with `/bot-logs type:base-swap set-channel`."
+            : `Configured maintenance bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+              "Set a new one with `/bot-logs type:maintenance set-channel`.",
       });
       return;
     }

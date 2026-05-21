@@ -796,9 +796,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Use `/bot-logs set-channel:<channel>` with no `type` to save the per-guild destination channel for important bot logs.",
       "Use `/bot-logs type:base-swap set-channel:<channel>` to save the channel used for `/fwa base-swap` audit logs.",
-      "Use `/bot-logs` with no arguments to view the currently configured generic channel mention, or `/bot-logs type:base-swap` to view the typed base-swap channel.",
+      "Use `/bot-logs type:maintenance set-channel:<channel>` to save the channel used for maintenance start/end notices.",
+      "Use `/bot-logs` with no arguments to view the currently configured generic channel mention, `/bot-logs type:base-swap` to view the typed base-swap channel, or `/bot-logs type:maintenance` to view the typed maintenance channel.",
       "If a saved channel no longer exists, the command reports stale config and clears it.",
       "If a typed base-swap channel no longer exists, the command reports stale config and clears only that typed setting.",
+      "If a typed maintenance channel no longer exists, the command reports stale config and clears only that typed setting.",
       "`/bot-logs` is admin-only by default unless role access is granted with `/permission add`.",
     ],
     examples: [
@@ -806,6 +808,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/bot-logs set-channel:#leadership-logs",
       "/bot-logs type:base-swap",
       "/bot-logs type:base-swap set-channel:#fwa-audit-logs",
+      "/bot-logs type:maintenance",
+      "/bot-logs type:maintenance set-channel:#maintenance-logs",
     ],
   },
   bot: {
