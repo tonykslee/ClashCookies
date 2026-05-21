@@ -161,6 +161,14 @@ describe("command coverage", () => {
     expect(normalized).toContain("admin-only by default");
   });
 
+  it("documents maintenance bot-log routing in the bot-logs help detail text", () => {
+    const botLogsHelpText = helpEmbedText("bot-logs");
+    const normalized = botLogsHelpText.toLowerCase();
+    expect(botLogsHelpText).toContain("type:maintenance");
+    expect(normalized).toContain("maintenance start/end notices");
+    expect(normalized).toContain("type:base-swap");
+  });
+
   it("documents the /clan root in clan help detail text", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");
