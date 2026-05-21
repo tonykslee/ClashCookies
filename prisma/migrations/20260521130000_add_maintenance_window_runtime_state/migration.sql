@@ -10,8 +10,6 @@ CREATE TABLE "MaintenanceWindowRuntimeState" (
     "lastChannelId" TEXT,
     "lastChannelSource" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "MaintenanceWindowRuntimeState_pkey" PRIMARY KEY ("guildId")
 );
-
--- CreateIndex
-CREATE UNIQUE INDEX "MaintenanceWindowRuntimeState_guildId_key" ON "MaintenanceWindowRuntimeState"("guildId");
