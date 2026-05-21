@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
@@ -194,6 +194,8 @@ function makeOpenDeferment(input: {
 
 describe("CompoPlaceService", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
@@ -220,6 +222,10 @@ describe("CompoPlaceService", () => {
       warnings: [],
       diagnosticNote: null,
     } as Awaited<ReturnType<InactiveWarService["listInactiveWarPlayers"]>>);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("reads ACTUAL placement suggestions from persisted tracked clans, current members, and HeatMapRef without sheet services", async () => {
