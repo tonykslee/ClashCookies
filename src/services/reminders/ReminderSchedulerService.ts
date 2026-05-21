@@ -10,7 +10,9 @@ import {
 import { runWithCoCQueueContext } from "../CoCQueueContext";
 import { resolveCurrentCwlSeasonKey } from "../CwlRegistryService";
 import { normalizeClanTag } from "../PlayerLinkService";
+import { MaintenanceWindowService } from "../MaintenanceWindowService";
 import { reminderDispatchService, type ReminderDispatchService } from "./ReminderDispatchService";
+import { deriveState } from "../war-events/core";
 
 const DEFAULT_REMINDER_SCHEDULER_INTERVAL_MS = 60 * 1000;
 const DEFAULT_REMINDER_SCHEDULER_CATCH_UP_GRACE_MS = 2 * 60 * 1000;
@@ -410,6 +412,389 @@ export async function runReminderSchedulerCycle(input: {
         `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
       );
     }
+  }
+
+  return { evaluated, fired, deduped, failed };
+}
+
+/** Purpose: fire only the 24h WAR_CWL reminder(s) when a battle-day transition is observed for one tracked clan. */
+export async function fireBattleDayTransitionWar24hRemindersForClan(input: {
+  client: Client;
+  dispatch?: ReminderDispatchService;
+  guildId: string;
+  clanTag: string;
+  clanName?: string | null;
+  warId?: number | null;
+  warStartTime?: Date | null;
+  warEndTime?: Date | null;
+  nowMs?: number;
+  triggerSource?: "battle_day_transition" | "maintenance_over";
+}): Promise<ReminderSchedulerCounts> {
+  const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now();
+  const clanTag = normalizeClanTag(input.clanTag);
+  const dispatch = input.dispatch ?? reminderDispatchService;
+  const warEndTime = input.warEndTime ?? null;
+  if (!input.guildId || !clanTag || !warEndTime) {
+    dozzleLog.info(
+      `[reminders] event=skipped_no_reminder reason=missing_transition_context guild=${input.guildId || "unknown"} clan=${clanTag || input.clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS}`,
+    );
+    return { evaluated: 0, fired: 0, deduped: 0, failed: 0 };
+  }
+
+  const maintenanceWindowService = new MaintenanceWindowService(input.client);
+  const maintenanceActive = await maintenanceWindowService
+    .isMaintenanceActive(input.guildId)
+    .catch(() => false);
+  const allowExpiredRetryAfterMaintenance =
+    input.triggerSource === "maintenance_over";
+
+  const reminders = await prisma.reminder.findMany({
+    where: {
+      guildId: input.guildId,
+      isEnabled: true,
+      type: ReminderType.WAR_CWL,
+      targetClans: {
+        some: {
+          clanTag,
+          clanType: ReminderTargetClanType.FWA,
+        },
+      },
+    },
+    include: {
+      times: {
+        select: { offsetSeconds: true },
+      },
+    },
+  });
+  const eligibleReminders = reminders.filter((reminder) =>
+    reminder.times.some((time) =>
+      isBattleDayTransitionWar24hOffsetDue({
+        offsetSeconds: time.offsetSeconds,
+        reminderCreatedAt: reminder.createdAt ?? null,
+        warEndTime,
+        nowMs,
+        maintenanceActive,
+        allowExpiredRetryAfterMaintenance,
+      }),
+    ),
+  );
+  if (eligibleReminders.length <= 0) {
+    dozzleLog.info(
+      `[reminders] event=skipped_no_reminder guild=${input.guildId} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} trigger=${input.triggerSource ?? "battle_day_transition"}`,
+    );
+    return { evaluated: 0, fired: 0, deduped: 0, failed: 0 };
+  }
+
+  const eventIdentity = `WAR:${buildWarReminderIdentity({
+    clanTag,
+    warId: input.warId ?? null,
+    warStartTime: input.warStartTime ?? null,
+    warEndTime,
+  })}`;
+
+  let evaluated = 0;
+  let fired = 0;
+  let deduped = 0;
+  let failed = 0;
+
+  for (const reminder of eligibleReminders) {
+    evaluated += 1;
+    dozzleLog.info(
+      `[reminders] event=transition_triggered reminder_id=${reminder.id} guild=${input.guildId} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} trigger=${input.triggerSource ?? "battle_day_transition"}`,
+    );
+
+    const dedupeKey = buildReminderDedupeKey({
+      reminderId: reminder.id,
+      clanTag,
+      clanType: ReminderTargetClanType.FWA,
+      eventIdentity,
+      offsetSeconds: RETRYABLE_WAR_24H_OFFSET_SECONDS,
+    });
+    const fireLog = await prisma.reminderFireLog.findUnique({
+      where: { dedupeKey },
+      select: {
+        id: true,
+        dispatchStatus: true,
+        errorMessage: true,
+      },
+    });
+    if (fireLog?.dispatchStatus === ReminderDispatchStatus.SENT) {
+      deduped += 1;
+      dozzleLog.info(
+        `[reminders] event=deduped reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} status=${fireLog.dispatchStatus}`,
+      );
+      continue;
+    }
+
+    const retryableFailure =
+      fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED
+        ? parseRetryableWar24hFireLogErrorMessage(fireLog.errorMessage)
+        : null;
+    const retryableFireLog =
+      fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED &&
+      retryableFailure?.isRetryable === true
+        ? fireLog
+        : null;
+
+    if (maintenanceActive && !allowExpiredRetryAfterMaintenance) {
+      if (!fireLog) {
+        const created = await createReminderFireLogIfFirst({
+          dedupeKey,
+          reminder: {
+            id: reminder.id,
+            guildId: reminder.guildId,
+            channelId: reminder.channelId,
+            type: reminder.type,
+            isEnabled: reminder.isEnabled,
+            createdAt: reminder.createdAt ?? null,
+            times: reminder.times,
+            targetClans: [],
+          },
+          context: {
+            clanTag,
+            clanType: ReminderTargetClanType.FWA,
+            clanName: input.clanName ?? null,
+            eventEndsAt: warEndTime,
+            eventIdentity,
+            eventLabel: "war end",
+          },
+          offsetSeconds: RETRYABLE_WAR_24H_OFFSET_SECONDS,
+        });
+        if (created.created) {
+          await finalizeReminderFireLogFailure({
+            fireLogId: created.id,
+            errorMessage: RETRYABLE_WAR_24H_ERROR_MESSAGE,
+            nowMs,
+          });
+        }
+      }
+      dozzleLog.warn(
+        `[reminders] event=skipped_maintenance_active reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=persisted_maintenance_active`,
+      );
+      continue;
+    }
+
+    let fireLogId: string | null = fireLog?.id ?? null;
+    if (!fireLogId) {
+      const created = await createReminderFireLogIfFirst({
+        dedupeKey,
+        reminder: {
+          id: reminder.id,
+          guildId: reminder.guildId,
+          channelId: reminder.channelId,
+          type: reminder.type,
+          isEnabled: reminder.isEnabled,
+          createdAt: reminder.createdAt ?? null,
+          times: reminder.times,
+          targetClans: [],
+        },
+        context: {
+          clanTag,
+          clanType: ReminderTargetClanType.FWA,
+          clanName: input.clanName ?? null,
+          eventEndsAt: warEndTime,
+          eventIdentity,
+          eventLabel: "war end",
+        },
+        offsetSeconds: RETRYABLE_WAR_24H_OFFSET_SECONDS,
+      });
+      if (!created.created) {
+        const existing = await prisma.reminderFireLog.findUnique({
+          where: { dedupeKey },
+          select: {
+            id: true,
+            dispatchStatus: true,
+            errorMessage: true,
+          },
+        });
+        if (existing?.dispatchStatus === ReminderDispatchStatus.SENT) {
+          deduped += 1;
+          dozzleLog.info(
+            `[reminders] event=deduped reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=existing_sent`,
+          );
+          continue;
+        }
+        if (
+          existing?.dispatchStatus === ReminderDispatchStatus.FAILED &&
+          parseRetryableWar24hFireLogErrorMessage(existing.errorMessage)
+            ?.isRetryable === true
+        ) {
+          fireLogId = existing.id;
+        }
+      } else {
+        fireLogId = created.id;
+      }
+    }
+
+    if (!fireLogId) {
+      deduped += 1;
+      dozzleLog.info(
+        `[reminders] event=deduped reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=no_firelog_id`,
+      );
+      continue;
+    }
+
+    if (
+      fireLog?.dispatchStatus === ReminderDispatchStatus.FAILED &&
+      !retryableFireLog
+    ) {
+      failed += 1;
+      dozzleLog.warn(
+        `[reminders] event=failed reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=non_retryable_firelog status=${fireLog.dispatchStatus} error=${fireLog.errorMessage ?? "unknown"}`,
+      );
+      continue;
+    }
+
+    if (retryableFireLog) {
+      const claimed = allowExpiredRetryAfterMaintenance
+        ? true
+        : await claimRetryableWar24hFireLog({
+            fireLog: retryableFireLog,
+            dedupeKey,
+            nowMs,
+          }).then((result) => result.claimed);
+      if (!claimed) {
+        deduped += 1;
+        dozzleLog.info(
+          `[reminders] event=deduped reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} reason=claim_failed`,
+        );
+        continue;
+      }
+    }
+
+    const dispatchResult = await dispatch.dispatchReminder(input.client, {
+      guildId: reminder.guildId,
+      channelId: reminder.channelId,
+      reminderId: reminder.id,
+      type: reminder.type,
+      clanTag,
+      clanName: input.clanName ?? null,
+      offsetSeconds: RETRYABLE_WAR_24H_OFFSET_SECONDS,
+      eventIdentity,
+      eventEndsAt: warEndTime,
+      eventLabel: "war end",
+    });
+    if (dispatchResult.status === "sent") {
+      fired += 1;
+      await finalizeReminderFireLogSuccess({
+        fireLogId,
+        messageId: dispatchResult.messageId,
+        nowMs,
+      });
+      dozzleLog.info(
+        `[reminders] event=sent reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} message_id=${dispatchResult.messageId}`,
+      );
+      continue;
+    }
+
+    failed += 1;
+    const isMaintenanceActive =
+      String(dispatchResult.errorMessage ?? "").trim() === RETRYABLE_WAR_24H_ERROR_MESSAGE;
+    await finalizeReminderFireLogFailure({
+      fireLogId,
+      errorMessage: isMaintenanceActive
+        ? RETRYABLE_WAR_24H_ERROR_MESSAGE
+        : String(dispatchResult.errorMessage ?? "").slice(0, 500),
+      nowMs,
+    });
+    if (isMaintenanceActive) {
+      dozzleLog.warn(
+        `[reminders] event=skipped_maintenance_active reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} error=${dispatchResult.errorMessage}`,
+      );
+    } else {
+      dozzleLog.error(
+        `[reminders] event=failed reminder_id=${reminder.id} clan=${clanTag} offset_s=${RETRYABLE_WAR_24H_OFFSET_SECONDS} identity=${eventIdentity} error=${dispatchResult.errorMessage}`,
+      );
+    }
+  }
+
+  return { evaluated, fired, deduped, failed };
+}
+
+/** Purpose: decide whether one 24h WAR reminder is eligible for battle-day / maintenance-over firing. */
+function isBattleDayTransitionWar24hOffsetDue(input: {
+  offsetSeconds: number;
+  reminderCreatedAt: Date | null;
+  warEndTime: Date | null;
+  nowMs: number;
+  maintenanceActive: boolean;
+  allowExpiredRetryAfterMaintenance: boolean;
+}): boolean {
+  if (Math.trunc(input.offsetSeconds) !== RETRYABLE_WAR_24H_OFFSET_SECONDS) {
+    return false;
+  }
+  if (!input.warEndTime) return false;
+  const dueAtMs = input.warEndTime.getTime() - input.offsetSeconds * 1000;
+  if (!Number.isFinite(dueAtMs)) return false;
+  if (input.nowMs < dueAtMs) return false;
+  const reminderCreatedAtMs = input.reminderCreatedAt?.getTime() ?? null;
+  if (
+    Number.isFinite(reminderCreatedAtMs) &&
+    dueAtMs < Number(reminderCreatedAtMs)
+  ) {
+    return false;
+  }
+  if (input.maintenanceActive) {
+    return true;
+  }
+  if (input.allowExpiredRetryAfterMaintenance) {
+    return true;
+  }
+  return input.nowMs <= dueAtMs + RETRYABLE_WAR_24H_RETRY_WINDOW_MS;
+}
+
+/** Purpose: fire only the 24h WAR_CWL reminder(s) for every in-war clan in one guild after maintenance ends. */
+export async function fireBattleDayTransitionWar24hRemindersForGuild(input: {
+  client: Client;
+  dispatch?: ReminderDispatchService;
+  guildId: string;
+  nowMs?: number;
+  triggerSource?: "maintenance_over";
+}): Promise<ReminderSchedulerCounts> {
+  const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now();
+  const activeWars = await prisma.currentWar.findMany({
+    where: {
+      guildId: input.guildId,
+    },
+    select: {
+      clanTag: true,
+      clanName: true,
+      warId: true,
+      state: true,
+      startTime: true,
+      endTime: true,
+      updatedAt: true,
+    },
+  });
+
+  let evaluated = 0;
+  let fired = 0;
+  let deduped = 0;
+  let failed = 0;
+
+  for (const war of activeWars) {
+    if (deriveState(String(war.state ?? "")) !== "inWar" || !war.endTime) {
+      continue;
+    }
+    const counts = await fireBattleDayTransitionWar24hRemindersForClan({
+      client: input.client,
+      dispatch: input.dispatch,
+      guildId: input.guildId,
+      clanTag: war.clanTag,
+      clanName: war.clanName,
+      warId:
+        Number.isFinite(Number(war.warId)) && Number(war.warId) > 0
+          ? Math.trunc(Number(war.warId))
+          : null,
+      warStartTime: war.startTime ?? null,
+      warEndTime: war.endTime,
+      nowMs,
+      triggerSource: input.triggerSource ?? "maintenance_over",
+    });
+    evaluated += counts.evaluated;
+    fired += counts.fired;
+    deduped += counts.deduped;
+    failed += counts.failed;
   }
 
   return { evaluated, fired, deduped, failed };
@@ -934,22 +1319,35 @@ function pickLatestWarByClanTag(
     const clanTag = normalizeClanTag(row.clanTag);
     if (!clanTag || !isActiveWarState(row.state) || !row.endTime) continue;
     if (row.endTime.getTime() <= nowMs) continue;
-    const warIdentity =
-      Number.isFinite(row.warId) && Number(row.warId) > 0
-        ? `war-id:${Number(row.warId)}`
-        : `derived:${clanTag}:${row.startTime?.getTime() ?? 0}:${row.endTime.getTime()}`;
-
     const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         clanName: row.clanName,
-        warIdentity,
+        warIdentity: buildWarReminderIdentity({
+          clanTag,
+          warId: row.warId ?? null,
+          warStartTime: row.startTime ?? null,
+          warEndTime: row.endTime ?? null,
+        }),
         warEndsAt: row.endTime,
         updatedAt: row.updatedAt,
       });
     }
   }
   return latest;
+}
+
+/** Purpose: derive stable WAR reminder identity from current-war fields for scheduler and transition-trigger dedupe. */
+function buildWarReminderIdentity(input: {
+  clanTag: string;
+  warId: number | null;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+}): string {
+  if (Number.isFinite(Number(input.warId)) && Number(input.warId) > 0) {
+    return `war-id:${Math.trunc(Number(input.warId))}`;
+  }
+  return `derived:${input.clanTag}:${input.warStartTime?.getTime() ?? 0}:${input.warEndTime?.getTime() ?? 0}`;
 }
 
 /** Purpose: keep latest active-CWL war-end context per clan from snapshot rows. */
@@ -989,12 +1387,11 @@ function pickLatestCwlByClanTag(
       ? new Date(phaseEndsAt.getTime() + 24 * 60 * 60 * 1000)
       : phaseEndsAt;
     if (warEndsAt.getTime() <= nowMs) continue;
-    const warIdentity = `${clanTag}:${warEndsAt.getTime()}`;
     const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         cwlClanName: row.cwlClanName,
-        warIdentity,
+        warIdentity: `${clanTag}:${warEndsAt.getTime()}`,
         warEndsAt,
         updatedAt: row.updatedAt,
       });
