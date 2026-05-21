@@ -82,7 +82,7 @@ const LINK_EMBED_SUPPORTED_CHANNEL_TYPES = [
 
 const EMBED_DESCRIPTION_LIMIT = 4096;
 const LINK_LIST_MAX_EMBEDS = 2;
-const LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS = 500;
+const LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS = 5200;
 const LINK_LIST_TRIM_SUFFIX_TEMPLATE =
   "...and {hiddenRows} more rows hidden. Use another sort/filter or Refresh Data.";
 const LINK_LIST_EMBED_COLOR = 0x5865f2;

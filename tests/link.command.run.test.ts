@@ -2076,6 +2076,66 @@ describe("/link list sort button", () => {
     );
   });
 
+  it("renders a realistic 50-member Player Tags view without aggressively trimming", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 50,
+      playerNamePrefix: "Player",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.slice(0, 40).map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(300000000000000000n + BigInt(index)),
+        discordUsername: `Linked ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds
+      .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
+      .join("\n");
+    const renderedRows = getInlineRows(description);
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
+    expect(description).toContain("Linked Users: 40");
+    expect(description).toContain("Unlinked users: 10");
+    expect(renderedRows).toHaveLength(50);
+    expect(
+      payload.embeds.reduce(
+        (sum: number, embed: { toJSON: () => any }) =>
+          sum + String(embed.toJSON().description ?? "").length,
+        0,
+      ),
+    ).toBeLessThanOrEqual(5200);
+    expect(description).not.toContain("...and");
+  }, 30000);
+
   it("trims oversized Player Tags views instead of throwing", async () => {
     const rows = makeLinkListClanMembers({
       clanTag: "#PQL0289",
@@ -2884,6 +2944,5 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
-
 
 
