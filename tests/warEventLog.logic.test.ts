@@ -58,6 +58,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
   },
+  clanPointsSync: {
+    findFirst: vi.fn(),
+  },
   warEvent: {
     create: vi.fn(),
   },
@@ -86,6 +89,7 @@ beforeEach(() => {
   prismaMock.reminderFireLog.update.mockResolvedValue({});
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
+  prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.warEvent.create.mockResolvedValue({});
 });
 
@@ -1871,6 +1875,70 @@ describe("WarEventLogService war-event poll targets", () => {
         clanName: "Legacy Clan",
       },
     ]);
+  });
+
+  it("collects maintenance-over guilds across poll targets and retries once per guild after the loop", async () => {
+    const service = new WarEventLogService({} as any, {} as any);
+    const targets = [
+      {
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        channelId: "channel-1",
+        notify: true,
+        pingRole: true,
+        inferredMatchType: true,
+        notifyRole: null,
+        clanName: "Clan A",
+      },
+      {
+        guildId: "guild-1",
+        clanTag: "#BBB222",
+        channelId: "channel-1",
+        notify: true,
+        pingRole: true,
+        inferredMatchType: true,
+        notifyRole: null,
+        clanName: "Clan B",
+      },
+    ];
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue(targets);
+    const ensureBaselineSpy = vi
+      .spyOn(service as any, "ensureCurrentWarBaseline")
+      .mockResolvedValue(undefined);
+    let observedMaintenanceOver = false;
+    const processSpy = vi
+      .spyOn(service as any, "processSubscription")
+      .mockImplementation(async (_guildId, _clanTag, _syncContext, options) => {
+        if (!observedMaintenanceOver) {
+          observedMaintenanceOver = true;
+          options?.maintenanceOverGuildIds?.add("guild-1");
+        }
+        return false;
+      });
+    const guildRetrySpy = vi
+      .spyOn(
+        reminderSchedulerService,
+        "fireBattleDayTransitionWar24hRemindersForGuild",
+      )
+      .mockResolvedValue({ evaluated: 0, fired: 0, deduped: 0, failed: 0 });
+
+    await service.poll({ sendBattleDaySwapReminders: false });
+
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(ensureBaselineSpy).toHaveBeenCalledTimes(2);
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    expect(guildRetrySpy).toHaveBeenCalledTimes(1);
+    expect(guildRetrySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        triggerSource: "maintenance_over",
+      }),
+    );
+    expect(processSpy.mock.invocationCallOrder[1]).toBeLessThan(
+      guildRetrySpy.mock.invocationCallOrder[0],
+    );
   });
 
   it("corrects stale CurrentWar notify=false when ClanNotifyConfig enables embeds", async () => {

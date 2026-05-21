@@ -44,6 +44,7 @@ import {
 import { FwaPoliceService } from "./FwaPoliceService";
 import {
   fireBattleDayTransitionWar24hRemindersForClan,
+  fireBattleDayTransitionWar24hRemindersForGuild,
 } from "./reminders/ReminderSchedulerService";
 import { buildFwaComplianceEmbedView } from "../commands/fwa/complianceEmbedView";
 import {
@@ -1357,18 +1358,34 @@ export class WarEventLogService {
       activeSync: previousSync === null ? null : previousSync + 1,
     };
     const targets = await this.listPollTargets();
+    const maintenanceOverGuildIds = new Set<string>();
     for (const target of targets) {
       await this.ensureCurrentWarBaseline(target);
       await this.processSubscription(
         target.guildId,
         target.clanTag,
         syncContext,
-        { sendBattleDaySwapReminders },
+        {
+          sendBattleDaySwapReminders,
+          maintenanceOverGuildIds,
+        },
       ).catch((err) => {
         console.error(
           `[war-events] process failed guild=${target.guildId} clan=${target.clanTag} error=${formatError(
             err,
           )}`,
+        );
+      });
+    }
+    for (const guildId of maintenanceOverGuildIds) {
+      await fireBattleDayTransitionWar24hRemindersForGuild({
+        client: this.client,
+        guildId,
+        nowMs: Date.now(),
+        triggerSource: "maintenance_over",
+      }).catch((err) => {
+        console.error(
+          `[reminders] battle_day_maintenance_over_failed guild=${guildId} trigger=maintenance_over error=${formatError(err)}`,
         );
       });
     }
@@ -2805,7 +2822,10 @@ export class WarEventLogService {
     guildId: string,
     clanTag: string,
     syncContext: PollSyncContext,
-    options?: { sendBattleDaySwapReminders?: boolean },
+    options?: {
+      sendBattleDaySwapReminders?: boolean;
+      maintenanceOverGuildIds?: Set<string>;
+    },
   ): Promise<boolean> {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
@@ -3387,30 +3407,8 @@ export class WarEventLogService {
       resolvedWarId,
       fallbackWarStartTime: nextWarStartTime,
     });
-    if (
-      maintenanceObservation.maintenanceTransition === "over" &&
-      currentState === "inWar" &&
-      resolvedWarId !== null &&
-      resolvedWarId !== undefined &&
-      Number.isFinite(Number(resolvedWarId)) &&
-      Math.trunc(Number(resolvedWarId)) > 0 &&
-      nextWarEndTime
-    ) {
-      await fireBattleDayTransitionWar24hRemindersForClan({
-        client: this.client,
-        guildId: sub.guildId,
-        clanTag: sub.clanTag,
-        clanName: nextClanName,
-        warId: Math.trunc(Number(resolvedWarId)),
-        warStartTime: nextWarStartTime,
-        warEndTime: nextWarEndTime,
-        nowMs: Date.now(),
-        triggerSource: "maintenance_over",
-      }).catch((err) => {
-        console.error(
-          `[reminders] battle_day_maintenance_over_failed guild=${sub.guildId} clan=${sub.clanTag} warId=${Math.trunc(Number(resolvedWarId))} error=${formatError(err)}`,
-        );
-      });
+    if (maintenanceObservation.maintenanceTransition === "over") {
+      options?.maintenanceOverGuildIds?.add(sub.guildId);
     }
     if (
       currentState === "inWar" &&
