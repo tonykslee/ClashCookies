@@ -42,6 +42,9 @@ import {
   type WarComplianceIssue,
 } from "./WarComplianceService";
 import { FwaPoliceService } from "./FwaPoliceService";
+import {
+  fireBattleDayTransitionWar24hRemindersForClan,
+} from "./reminders/ReminderSchedulerService";
 import { buildFwaComplianceEmbedView } from "../commands/fwa/complianceEmbedView";
 import {
   buildComplianceWarPlanText,
@@ -3580,6 +3583,22 @@ export class WarEventLogService {
   }): Promise<void> {
     let payloadForDelivery = params.payload;
     let resolvedWarIdForDelivery = params.resolvedWarId;
+    if (payloadForDelivery.eventType === "battle_day") {
+      await fireBattleDayTransitionWar24hRemindersForClan({
+        client: this.client,
+        guildId: params.sub.guildId,
+        clanTag: params.sub.clanTag,
+        clanName: params.sub.clanName ?? payloadForDelivery.clanName,
+        warId: resolvedWarIdForDelivery,
+        warStartTime: payloadForDelivery.warStartTime ?? params.sub.startTime ?? null,
+        warEndTime: payloadForDelivery.warEndTime ?? params.sub.endTime ?? null,
+        nowMs: Date.now(),
+      }).catch((err) => {
+        console.error(
+          `[reminders] battle_day_transition_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`,
+        );
+      });
+    }
     if (params.payload.eventType === "war_ended") {
       await this.history
         .persistWarEndHistory({

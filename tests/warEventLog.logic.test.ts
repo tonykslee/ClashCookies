@@ -28,6 +28,7 @@ import {
   WarEventHistoryService,
 } from "../src/services/war-events/history";
 import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
+import * as reminderSchedulerService from "../src/services/reminders/ReminderSchedulerService";
 
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
@@ -43,6 +44,15 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
     upsert: vi.fn(),
+  },
+  reminder: {
+    findMany: vi.fn(),
+  },
+  reminderFireLog: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    updateMany: vi.fn(),
+    update: vi.fn(),
   },
   clanNotifyConfig: {
     findMany: vi.fn(),
@@ -69,6 +79,11 @@ beforeEach(() => {
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
   prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.currentWar.upsert.mockResolvedValue({});
+  prismaMock.reminder.findMany.mockResolvedValue([]);
+  prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
+  prismaMock.reminderFireLog.create.mockResolvedValue({ id: "fire-1" });
+  prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
+  prismaMock.reminderFireLog.update.mockResolvedValue({});
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
   prismaMock.warEvent.create.mockResolvedValue({});
@@ -1506,6 +1521,73 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       allowedMentions: { roles: ["123456789"] },
     });
     expect(botLogSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("triggers 24h WAR reminder fire on battle-day transition", async () => {
+    const transitionSpy = vi
+      .spyOn(
+        reminderSchedulerService,
+        "fireBattleDayTransitionWar24hRemindersForClan",
+      )
+      .mockResolvedValue({ evaluated: 1, fired: 1, deduped: 0, failed: 0 });
+    const client = makeReminderClient({});
+    const service = new WarEventLogService(client, {} as any);
+    const battleDayEndTime = new Date(Date.UTC(2026, 0, 2, 1, 0, 0));
+    const battleDayStartTime = new Date(Date.UTC(2026, 0, 1, 1, 0, 0));
+
+    await (service as any).dispatchDetectedEvent({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        notify: false,
+        channelId: null,
+        warId: 123,
+      },
+      payload: {
+        eventType: "battle_day",
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        opponentTag: "#OPP",
+        opponentName: "Enemy",
+        syncNumber: 1,
+        notifyRole: null,
+        pingRole: false,
+        pointsNeedsValidation: null,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "BL",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        prepStartTime: battleDayStartTime,
+        warStartTime: battleDayStartTime,
+        warEndTime: battleDayEndTime,
+        clanAttacks: null,
+        opponentAttacks: null,
+        teamSize: null,
+        attacksPerMember: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      },
+      resolvedWarId: 123,
+    });
+
+    expect(transitionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client,
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        warId: 123,
+        warStartTime: battleDayStartTime,
+        warEndTime: battleDayEndTime,
+        nowMs: expect.any(Number),
+      }),
+    );
   });
 
   it("sends the reminder even when notify reservation is blocked", async () => {
