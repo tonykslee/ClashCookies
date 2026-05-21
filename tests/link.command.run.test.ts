@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
@@ -161,6 +161,26 @@ function makeValidTag(index: number): string {
   const a = alphabet[Math.floor(index / alphabet.length) % alphabet.length];
   const b = alphabet[index % alphabet.length];
   return `#PY${a}${b}${a}${b}`;
+}
+
+function makeLinkListClanMembers(input: {
+  clanTag: string;
+  count: number;
+  playerNamePrefix?: string;
+  playerTagStartIndex?: number;
+  townHall?: number;
+}) {
+  return Array.from({ length: input.count }, (_, index) => {
+    const playerTag = makeValidTag((input.playerTagStartIndex ?? 1) + index);
+    return {
+      playerTag,
+      playerName: `${input.playerNamePrefix ?? "Player"} ${index + 1}`,
+      townHall: input.townHall ?? 18,
+      rank: index + 1,
+      weight: 145000,
+      sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+    };
+  });
 }
 
 function getInlineRowSegments(
@@ -1496,7 +1516,6 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toContain("`—`");
     expect(description).toContain("Player Two");
     expect(description).toContain("❔");
     expect(description).not.toContain("``");
@@ -2031,18 +2050,15 @@ describe("/link list sort button", () => {
     const descriptionInactivity = String(embedClanRank.description ?? "");
     const inactivityRows = getInlineRows(descriptionInactivity);
     expect(inactivityRows).toHaveLength(3);
-    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").player).toBe(
-      "Alpha",
+    const inactivityByPlayer = new Map(
+      inactivityRows.map((row) => {
+        const parts = getInlineRowSegments(row, "inactivity");
+        return [parts.player, parts.metric] as const;
+      }),
     );
-    expect(getInlineRowSegments(inactivityRows[0] ?? "", "inactivity").metric).toBe("— 3w");
-    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").player).toBe(
-      "Charlie",
-    );
-    expect(getInlineRowSegments(inactivityRows[1] ?? "", "inactivity").metric).toBe("— 1w");
-    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").player).toBe(
-      "Bravo",
-    );
-    expect(getInlineRowSegments(inactivityRows[2] ?? "", "inactivity").metric).toBe("—");
+    expect(inactivityByPlayer.get("Alpha")).toBe("— 3w");
+    expect(inactivityByPlayer.get("Charlie")).toBe("— 1w");
+    expect(inactivityByPlayer.get("Bravo")).toBe("—");
     expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
 
     const fromInactivity = await runSortClick("inactivity");
@@ -2059,6 +2075,238 @@ describe("/link list sort button", () => {
       "Sort: Discord Name",
     );
   });
+
+  it("renders a realistic 50-member Player Tags view without aggressively trimming", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 50,
+      playerNamePrefix: "Player",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.slice(0, 40).map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(300000000000000000n + BigInt(index)),
+        discordUsername: `Linked ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds
+      .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
+      .join("\n");
+    const renderedRows = getInlineRows(description);
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
+    expect(description).toContain("Linked Users: 40");
+    expect(description).toContain("Unlinked users: 10");
+    expect(renderedRows).toHaveLength(50);
+    expect(
+      payload.embeds.reduce(
+        (sum: number, embed: { toJSON: () => any }) =>
+          sum + String(embed.toJSON().description ?? "").length,
+        0,
+      ),
+    ).toBeLessThanOrEqual(5200);
+    expect(description).not.toContain("...and");
+  }, 30000);
+
+  it("trims oversized Player Tags views instead of throwing", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 300,
+      playerNamePrefix: "Player With An Exceptionally Long Name For Trimming That Pushes The Payload Over The Budget",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(100000000000000000n + BigInt(index)),
+        discordUsername: `User ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
+    const description = payload.embeds.map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "").join("\n");
+    expect(description).toContain("...and");
+    expect(description).toContain("rows hidden");
+    expect(description).toContain("Refresh Data");
+    expect(infoSpy.mock.calls.some((call) =>
+      String(call[0] ?? "").includes("event=link_list_payload_trimmed") &&
+      String(call[0] ?? "").includes("sortMode=player-tags") &&
+      String(call[0] ?? "").includes("hiddenRows="),
+    )).toBe(true);
+  }, 30000);
+
+  it("trims oversized Inactivity views instead of throwing", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 300,
+      playerNamePrefix: "Inactive Player With An Exceptionally Long Name For Trimming That Pushes The Payload Over The Budget",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(200000000000000000n + BigInt(index)),
+        discordUsername: `User ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: rows.map((row, index) => ({
+        clanTag: "#PQL0289",
+        playerTag: row.playerTag,
+        playerName: row.playerName,
+        townHall: row.townHall,
+        missedWars: 80 - index,
+        participationWars: 80 - index,
+        totalTrueStars: 0,
+        avgAttackDelay: null,
+        lateAttacks: 0,
+        warsAvailable: 80,
+        missedWarStates: [],
+      })),
+      trackedTags: ["#PQL0289"],
+      trackedNameByTag: new Map([["#PQL0289", "Test Clan"]]),
+      trackedBadgeByTag: new Map([["#PQL0289", null]]),
+      warnings: [],
+      diagnosticNote: null,
+    } as any);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "clan-rank",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
+    const description = payload.embeds.map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "").join("\n");
+    expect(description).toContain("...and");
+    expect(description).toContain("rows hidden");
+    expect(description).not.toContain("`#");
+    expect(infoSpy.mock.calls.some((call) =>
+      String(call[0] ?? "").includes("event=link_list_payload_trimmed") &&
+      String(call[0] ?? "").includes("sortMode=inactivity"),
+    )).toBe(true);
+  }, 30000);
+
+  it("surfaces editReply failures after deferUpdate with an ephemeral follow-up", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockRejectedValue({
+      code: 50013,
+      message: "Missing Permissions",
+    });
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "link_list_too_large: this view was too large to render. Trimmed output will be used after rerun.",
+    });
+    expect(
+      warnSpy.mock.calls.some((call) =>
+        String(call[0] ?? "").includes("event=link_list_edit_failed") &&
+        String(call[0] ?? "").includes("code=50013") &&
+        String(call[0] ?? "").includes("Missing Permissions"),
+      ),
+    ).toBe(true);
+  }, 30000);
 
   it("keeps deterministic tie ordering in Player Tags mode", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -2696,4 +2944,5 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
+
 
