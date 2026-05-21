@@ -81,7 +81,10 @@ const LINK_EMBED_SUPPORTED_CHANNEL_TYPES = [
 ] as const;
 
 const EMBED_DESCRIPTION_LIMIT = 4096;
-const EMBED_MESSAGE_LIMIT = 10;
+const LINK_LIST_MAX_EMBEDS = 2;
+const LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS = 500;
+const LINK_LIST_TRIM_SUFFIX_TEMPLATE =
+  "...and {hiddenRows} more rows hidden. Use another sort/filter or Refresh Data.";
 const LINK_LIST_EMBED_COLOR = 0x5865f2;
 const LINK_EMBED_POST_COLOR = 0x5865f2;
 const EMBED_TITLE_LIMIT = 256;
@@ -145,6 +148,12 @@ type LinkListRenderResult =
       };
     }
   | { ok: false; message: string };
+
+type LinkListRenderContext = {
+  guildId: string;
+  clanTag: string;
+  sortMode: LinkListSortMode;
+};
 
 type LinkListInteraction =
   | ChatInputCommandInteraction
@@ -378,80 +387,162 @@ function selectTrackedClanMenuOptions(
 type DescriptionChunk = {
   text: string;
   lineCount: number;
+  rowCount: number;
+  lines: string[];
 };
+
+function isLinkListRowLine(line: string): boolean {
+  return /^\S+\s+\S+\s+`/.test(String(line ?? ""));
+}
 
 function chunkDescriptionLines(lines: string[]): DescriptionChunk[] {
   const chunks: DescriptionChunk[] = [];
-  let current = "";
+  let currentLines: string[] = [];
   let currentCount = 0;
+  let currentRowCount = 0;
 
   for (const rawLine of lines) {
     const line =
       rawLine.length <= EMBED_DESCRIPTION_LIMIT
         ? rawLine
         : `${rawLine.slice(0, EMBED_DESCRIPTION_LIMIT - 12)}...truncated`;
-    const candidate = current.length > 0 ? `${current}\n${line}` : line;
+    const candidate = currentLines.length > 0 ? [...currentLines, line].join("\n") : line;
 
     if (candidate.length <= EMBED_DESCRIPTION_LIMIT) {
-      current = candidate;
+      currentLines.push(line);
       currentCount += 1;
+      if (isLinkListRowLine(line)) currentRowCount += 1;
       continue;
     }
 
-    if (current.length > 0) {
-      chunks.push({ text: current, lineCount: currentCount });
+    if (currentLines.length > 0) {
+      chunks.push({
+        text: currentLines.join("\n"),
+        lineCount: currentCount,
+        rowCount: currentRowCount,
+        lines: [...currentLines],
+      });
     }
-    current = line;
+    currentLines = [line];
     currentCount = 1;
+    currentRowCount = isLinkListRowLine(line) ? 1 : 0;
   }
 
-  if (current.length > 0) {
-    chunks.push({ text: current, lineCount: currentCount });
+  if (currentLines.length > 0) {
+    chunks.push({
+      text: currentLines.join("\n"),
+      lineCount: currentCount,
+      rowCount: currentRowCount,
+      lines: [...currentLines],
+    });
   }
 
   return chunks;
 }
 
-function appendDroppedSuffix(chunkText: string, droppedCount: number): string {
-  const suffix = `\n...and ${droppedCount} more`;
-  if (chunkText.length + suffix.length <= EMBED_DESCRIPTION_LIMIT) {
-    return `${chunkText}${suffix}`;
+type LinkListDescriptionRenderResult = {
+  embeds: EmbedBuilder[];
+  renderedRows: number;
+  hiddenRows: number;
+  embedCount: number;
+  totalDescriptionChars: number;
+  trimmed: boolean;
+};
+
+function trimLinkListDescriptionChunks(chunks: DescriptionChunk[]): {
+  chunks: DescriptionChunk[];
+  hiddenRows: number;
+  trimmed: boolean;
+} {
+  const kept = chunks.slice(0, LINK_LIST_MAX_EMBEDS).map((chunk) => ({
+    ...chunk,
+    lines: [...chunk.lines],
+  }));
+  let hiddenRows = chunks.slice(LINK_LIST_MAX_EMBEDS).reduce((sum, chunk) => sum + chunk.rowCount, 0);
+  let trimmed = chunks.length > LINK_LIST_MAX_EMBEDS;
+
+  const suffixText = (count: number) =>
+    LINK_LIST_TRIM_SUFFIX_TEMPLATE.replace("{hiddenRows}", String(count));
+
+  const totalChars = (value: DescriptionChunk[]): number =>
+    value.reduce((sum, chunk) => sum + chunk.text.length, 0);
+
+  const rebuildChunk = (chunk: DescriptionChunk): void => {
+    chunk.text = chunk.lines.join("\n");
+    chunk.lineCount = chunk.lines.length;
+    chunk.rowCount = chunk.lines.filter((line) => isLinkListRowLine(line)).length;
+  };
+
+  const dropLastLine = (): boolean => {
+    for (let index = kept.length - 1; index >= 0; index -= 1) {
+      const chunk = kept[index];
+      if (chunk.lines.length === 0) continue;
+      const removed = chunk.lines.pop();
+      if (removed && isLinkListRowLine(removed)) {
+        hiddenRows += 1;
+      }
+      rebuildChunk(chunk);
+      while (kept.length > 0 && kept[kept.length - 1].lines.length === 0) {
+        kept.pop();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  while (kept.length > 0) {
+    const suffix = hiddenRows > 0 ? suffixText(hiddenRows) : "";
+    const nextTotal = totalChars(kept) + suffix.length;
+    const last = kept[kept.length - 1];
+    const nextLastLength = last.text.length + suffix.length + (last.text.length > 0 ? 1 : 0);
+    if (
+      nextTotal <= LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS &&
+      nextLastLength <= EMBED_DESCRIPTION_LIMIT
+    ) {
+      break;
+    }
+    if (!dropLastLine()) break;
+    trimmed = true;
   }
-  const keepLength = Math.max(0, EMBED_DESCRIPTION_LIMIT - suffix.length);
-  return `${chunkText.slice(0, keepLength)}${suffix}`;
+
+  if (hiddenRows > 0 && kept.length > 0) {
+    const suffix = suffixText(hiddenRows);
+    const last = kept[kept.length - 1];
+    last.text = last.text.length > 0 ? `${last.text}\n${suffix}` : suffix;
+    last.lineCount = last.lines.length + 1;
+  }
+
+  return { chunks: kept, hiddenRows, trimmed };
 }
 
 function buildDescriptionEmbeds(
   title: string,
   lines: string[],
   sortMode: LinkListSortMode,
-): EmbedBuilder[] {
+): LinkListDescriptionRenderResult {
   const sortLabel = getLinkListSortModeLabel(sortMode);
   const chunks = chunkDescriptionLines(lines);
   if (chunks.length === 0) {
-    return [
+    const embeds = [
       new EmbedBuilder()
         .setColor(LINK_LIST_EMBED_COLOR)
         .setTitle(title)
         .setFooter({ text: `Sort: ${sortLabel}` })
         .setDescription("empty_list: no rows to render."),
     ];
-  }
-
-  let workingChunks = [...chunks];
-  if (workingChunks.length > EMBED_MESSAGE_LIMIT) {
-    const kept = workingChunks.slice(0, EMBED_MESSAGE_LIMIT);
-    const droppedLineCount = workingChunks
-      .slice(EMBED_MESSAGE_LIMIT)
-      .reduce((sum, chunk) => sum + chunk.lineCount, 0);
-    kept[kept.length - 1] = {
-      text: appendDroppedSuffix(kept[kept.length - 1].text, droppedLineCount),
-      lineCount: kept[kept.length - 1].lineCount,
+    return {
+      embeds,
+      renderedRows: 0,
+      hiddenRows: 0,
+      embedCount: embeds.length,
+      totalDescriptionChars: embeds[0]?.data?.description?.length ?? 0,
+      trimmed: false,
     };
-    workingChunks = kept;
   }
 
-  return workingChunks.map((chunk, index) => {
+  const totalRows = lines.filter((line) => isLinkListRowLine(line)).length;
+  const trimmedChunks = trimLinkListDescriptionChunks(chunks);
+  const embeds = trimmedChunks.chunks.map((chunk, index) => {
     const embedTitle = index === 0 ? title : `${title} (cont. ${index + 1})`;
     return new EmbedBuilder()
       .setColor(LINK_LIST_EMBED_COLOR)
@@ -459,6 +550,32 @@ function buildDescriptionEmbeds(
       .setFooter({ text: `Sort: ${sortLabel}` })
       .setDescription(chunk.text);
   });
+
+  if (embeds.length === 0) {
+    const suffix = LINK_LIST_TRIM_SUFFIX_TEMPLATE.replace(
+      "{hiddenRows}",
+      String(trimmedChunks.hiddenRows),
+    );
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(LINK_LIST_EMBED_COLOR)
+        .setTitle(title)
+        .setFooter({ text: `Sort: ${sortLabel}` })
+        .setDescription(suffix),
+    );
+  }
+
+  return {
+    embeds,
+    renderedRows: Math.max(0, totalRows - trimmedChunks.hiddenRows),
+    hiddenRows: trimmedChunks.hiddenRows,
+    embedCount: embeds.length,
+    totalDescriptionChars: embeds.reduce(
+      (sum, embed) => sum + String(embed.data?.description ?? "").length,
+      0,
+    ),
+    trimmed: trimmedChunks.trimmed,
+  };
 }
 
 async function getTrackedClansForGuild(
@@ -981,7 +1098,7 @@ async function buildLinkListView(input: {
             `empty_list: no saved current clan members for ${input.clanTag}. Use Refresh Data or wait for sync.`,
           ],
           sortMode,
-        ),
+        ).embeds,
         components,
       },
     };
@@ -1147,7 +1264,12 @@ async function buildLinkListView(input: {
     badge: tracked?.clanBadge?.trim() ?? null,
   });
 
-  const embeds = buildDescriptionEmbeds(title, lines, sortMode);
+  const descriptionRender = buildDescriptionEmbeds(title, lines, sortMode);
+  if (descriptionRender.trimmed) {
+    console.info(
+      `[link-list] event=link_list_payload_trimmed guildId=${input.interaction.guildId} clanTag=${input.clanTag} sortMode=${sortMode} renderedRows=${descriptionRender.renderedRows} hiddenRows=${descriptionRender.hiddenRows} embedCount=${descriptionRender.embedCount} totalDescriptionChars=${descriptionRender.totalDescriptionChars}`,
+    );
+  }
 
   const trackedClans = await getTrackedClansForGuild(input.interaction.guildId);
   const components = buildLinkListControlRows({
@@ -1160,7 +1282,7 @@ async function buildLinkListView(input: {
 
   return {
     ok: true,
-    payload: { embeds, components },
+    payload: { embeds: descriptionRender.embeds, components },
   };
 }
 
@@ -1199,20 +1321,38 @@ async function buildLinkStatusMessage(input: {
 async function updateDeferredLinkListInteraction(
   interaction: StringSelectMenuInteraction | ButtonInteraction,
   result: LinkListRenderResult,
+  context: LinkListRenderContext,
 ): Promise<void> {
-  if (!result.ok) {
-    await interaction.editReply({
-      content: result.message,
-      embeds: [],
-      components: [],
-    });
-    return;
-  }
+  try {
+    if (!result.ok) {
+      await interaction.editReply({
+        content: result.message,
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
 
-  await interaction.editReply({
-    content: null,
-    ...result.payload,
-  });
+    await interaction.editReply({
+      content: null,
+      ...result.payload,
+    });
+  } catch (err) {
+    const code =
+      (err as { code?: unknown; status?: unknown; response?: { status?: unknown } } | null)?.code ??
+      (err as { status?: unknown } | null)?.status ??
+      (err as { response?: { status?: unknown } } | null)?.response?.status ??
+      "unknown";
+    const message = String((err as { message?: unknown })?.message ?? err).slice(0, 200);
+    console.warn(
+      `[link-list] event=link_list_edit_failed guildId=${context.guildId} clanTag=${context.clanTag} sortMode=${context.sortMode} code=${code} message=${message}`,
+    );
+    await interaction.followUp({
+      ephemeral: true,
+      content:
+        "link_list_too_large: this view was too large to render. Trimmed output will be used after rerun.",
+    });
+  }
 }
 
 export function buildLinkListSelectCustomId(
@@ -1545,7 +1685,11 @@ export async function handleLinkListSelectMenu(
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
   });
-  await updateDeferredLinkListInteraction(interaction, result);
+  await updateDeferredLinkListInteraction(interaction, result, {
+    guildId: interaction.guildId ?? "",
+    clanTag: selectedTag,
+    sortMode: parsed.sortMode,
+  });
 }
 
 export async function handleLinkListSortButton(
@@ -1571,7 +1715,11 @@ export async function handleLinkListSortButton(
     commandUserId: parsed.userId,
     sortMode: nextSortMode,
   });
-  await updateDeferredLinkListInteraction(interaction, result);
+  await updateDeferredLinkListInteraction(interaction, result, {
+    guildId: interaction.guildId ?? "",
+    clanTag: parsed.clanTag,
+    sortMode: nextSortMode,
+  });
 }
 
 export async function handleLinkListRefreshButton(
@@ -1662,7 +1810,11 @@ export async function handleLinkListRefreshButton(
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
   });
-  await updateDeferredLinkListInteraction(interaction, result);
+  await updateDeferredLinkListInteraction(interaction, result, {
+    guildId: interaction.guildId ?? "",
+    clanTag,
+    sortMode: parsed.sortMode,
+  });
 }
 
 export async function handleLinkEmbedButtonInteraction(
@@ -2548,3 +2700,6 @@ export const Link: Command = {
     await interaction.respond(choices);
   },
 };
+
+
+
