@@ -227,7 +227,19 @@ export class CoCService {
         errorCode: failure.errorCode,
         timeout: failure.timeout,
       });
-      if (status) throw new Error(`CoC API error ${status}`);
+      if (status) {
+        const wrapped = new Error(`CoC API error ${status}`) as Error & {
+          status?: number;
+          response?: AxiosError["response"];
+          code?: string | number;
+          cause?: unknown;
+        };
+        wrapped.status = status;
+        wrapped.response = (err as AxiosError).response;
+        wrapped.code = (err as AxiosError).code;
+        wrapped.cause = err;
+        throw wrapped;
+      }
       throw err;
     }
   }
