@@ -221,7 +221,7 @@ function buildFwaBaseSwapBattleDayReminderContent(input: {
   const clanRoleId = String(input.clanRoleId ?? "").trim();
   const body =
     "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.";
-  return clanRoleId ? `<@&${clanRoleId}>\n\n${body}` : body;
+  return clanRoleId ? `${body}\n<@&${clanRoleId}>` : body;
 }
 
 export const buildFwaBaseSwapBattleDayReminderContentForTest =
@@ -3800,9 +3800,7 @@ export class WarEventLogService {
     const reminderContent = buildFwaBaseSwapBattleDayReminderContent({
       clanRoleId: clanRoleId || null,
     });
-    const allowedMentions = clanRoleId
-      ? { roles: [clanRoleId] }
-      : { parse: [] as [] };
+    const allowedMentions = clanRoleId ? { roles: [clanRoleId] } : { parse: [] as [] };
     const sent = (await channel
       .send({ content: reminderContent, allowedMentions })
       .catch(async (err: unknown) => {
