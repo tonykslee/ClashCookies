@@ -1666,6 +1666,20 @@ model BlacklistHeatMapRef {
   @@index([generatedAt])
 }
 
+model MaintenanceWindowRuntimeState {
+  guildId           String   @id
+  active            Boolean  @default(false)
+  detectedAt        DateTime?
+  lastObservedAt    DateTime?
+  lastOverAt        DateTime?
+  detectedClanTag   String?
+  detectedStatusCode Int?
+  lastChannelId     String?
+  lastChannelSource String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
 model FwaFeedSyncState {
   id                  String            @id @default(cuid())
   feedType            FwaFeedType
