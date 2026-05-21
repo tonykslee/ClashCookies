@@ -69,6 +69,7 @@ Queue observability now includes:
 - stale background skip counts and logs
 - degraded-delay and 429 recovery logs from the shared CoC pacing owner
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
+- maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 
 ## External Droplet Observability
 

@@ -28,6 +28,7 @@ import {
   WarEventHistoryService,
 } from "../src/services/war-events/history";
 import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
+import * as reminderSchedulerService from "../src/services/reminders/ReminderSchedulerService";
 
 function dateAt(hour: number): Date {
   return new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
@@ -44,9 +45,21 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
+  reminder: {
+    findMany: vi.fn(),
+  },
+  reminderFireLog: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    updateMany: vi.fn(),
+    update: vi.fn(),
+  },
   clanNotifyConfig: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
+  },
+  clanPointsSync: {
+    findFirst: vi.fn(),
   },
   warEvent: {
     create: vi.fn(),
@@ -69,8 +82,14 @@ beforeEach(() => {
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
   prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.currentWar.upsert.mockResolvedValue({});
+  prismaMock.reminder.findMany.mockResolvedValue([]);
+  prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
+  prismaMock.reminderFireLog.create.mockResolvedValue({ id: "fire-1" });
+  prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
+  prismaMock.reminderFireLog.update.mockResolvedValue({});
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
+  prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.warEvent.create.mockResolvedValue({});
 });
 
@@ -1508,6 +1527,73 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     expect(botLogSend).toHaveBeenCalledTimes(1);
   });
 
+  it("triggers 24h WAR reminder fire on battle-day transition", async () => {
+    const transitionSpy = vi
+      .spyOn(
+        reminderSchedulerService,
+        "fireBattleDayTransitionWar24hRemindersForClan",
+      )
+      .mockResolvedValue({ evaluated: 1, fired: 1, deduped: 0, failed: 0 });
+    const client = makeReminderClient({});
+    const service = new WarEventLogService(client, {} as any);
+    const battleDayEndTime = new Date(Date.UTC(2026, 0, 2, 1, 0, 0));
+    const battleDayStartTime = new Date(Date.UTC(2026, 0, 1, 1, 0, 0));
+
+    await (service as any).dispatchDetectedEvent({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        clanRoleId: "123456789",
+        notify: false,
+        channelId: null,
+        warId: 123,
+      },
+      payload: {
+        eventType: "battle_day",
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        opponentTag: "#OPP",
+        opponentName: "Enemy",
+        syncNumber: 1,
+        notifyRole: null,
+        pingRole: false,
+        pointsNeedsValidation: null,
+        fwaPoints: null,
+        opponentFwaPoints: null,
+        outcome: null,
+        matchType: "BL",
+        warStartFwaPoints: null,
+        warEndFwaPoints: null,
+        clanStars: null,
+        opponentStars: null,
+        prepStartTime: battleDayStartTime,
+        warStartTime: battleDayStartTime,
+        warEndTime: battleDayEndTime,
+        clanAttacks: null,
+        opponentAttacks: null,
+        teamSize: null,
+        attacksPerMember: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+      },
+      resolvedWarId: 123,
+    });
+
+    expect(transitionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client,
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Test Clan",
+        warId: 123,
+        warStartTime: battleDayStartTime,
+        warEndTime: battleDayEndTime,
+        nowMs: expect.any(Number),
+      }),
+    );
+  });
+
   it("sends the reminder even when notify reservation is blocked", async () => {
     prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
     const reminderSend = vi.fn().mockResolvedValue({
@@ -1791,6 +1877,70 @@ describe("WarEventLogService war-event poll targets", () => {
     ]);
   });
 
+  it("collects maintenance-over guilds across poll targets and retries once per guild after the loop", async () => {
+    const service = new WarEventLogService({} as any, {} as any);
+    const targets = [
+      {
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        channelId: "channel-1",
+        notify: true,
+        pingRole: true,
+        inferredMatchType: true,
+        notifyRole: null,
+        clanName: "Clan A",
+      },
+      {
+        guildId: "guild-1",
+        clanTag: "#BBB222",
+        channelId: "channel-1",
+        notify: true,
+        pingRole: true,
+        inferredMatchType: true,
+        notifyRole: null,
+        clanName: "Clan B",
+      },
+    ];
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue(targets);
+    const ensureBaselineSpy = vi
+      .spyOn(service as any, "ensureCurrentWarBaseline")
+      .mockResolvedValue(undefined);
+    let observedMaintenanceOver = false;
+    const processSpy = vi
+      .spyOn(service as any, "processSubscription")
+      .mockImplementation(async (_guildId, _clanTag, _syncContext, options) => {
+        if (!observedMaintenanceOver) {
+          observedMaintenanceOver = true;
+          options?.maintenanceOverGuildIds?.add("guild-1");
+        }
+        return false;
+      });
+    const guildRetrySpy = vi
+      .spyOn(
+        reminderSchedulerService,
+        "fireBattleDayTransitionWar24hRemindersForGuild",
+      )
+      .mockResolvedValue({ evaluated: 0, fired: 0, deduped: 0, failed: 0 });
+
+    await service.poll({ sendBattleDaySwapReminders: false });
+
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(ensureBaselineSpy).toHaveBeenCalledTimes(2);
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    expect(guildRetrySpy).toHaveBeenCalledTimes(1);
+    expect(guildRetrySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        triggerSource: "maintenance_over",
+      }),
+    );
+    expect(processSpy.mock.invocationCallOrder[1]).toBeLessThan(
+      guildRetrySpy.mock.invocationCallOrder[0],
+    );
+  });
+
   it("corrects stale CurrentWar notify=false when ClanNotifyConfig enables embeds", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
@@ -2046,6 +2196,41 @@ describe("WarEventLogService notify config ownership", () => {
     expect(result.ok).toBe(true);
     expect(result.channelId).toBe("notify-channel-42");
     expect(result.clanName).toBe("Configured Clan");
+  });
+
+  it("preserves the raw CoC maintenance response on current-war snapshot failures", async () => {
+    const maintenanceError = {
+      message: "CoC API error 503",
+      status: 503,
+      response: {
+        status: 503,
+        data: {
+          message: "Service temporarily unavailable because of maintenance.",
+        },
+      },
+    };
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as any,
+      {
+        getCurrentWar: vi.fn().mockRejectedValue(maintenanceError),
+      } as any,
+    );
+
+    const snapshot = await (service as any).getCurrentWarSnapshot("#ABC123");
+
+    expect(snapshot.observation).toEqual({
+      kind: "failure",
+      statusCode: 503,
+    });
+    expect(snapshot.error).toMatchObject({
+      message: "CoC API error 503",
+      response: {
+        status: 503,
+        data: {
+          message: "Service temporarily unavailable because of maintenance.",
+        },
+      },
+    });
   });
 });
 
