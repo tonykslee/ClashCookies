@@ -146,6 +146,21 @@ export class MaintenanceWindowService {
         lastChannelSource: channel.source,
       });
 
+      await import("./reminders/ReminderSchedulerService")
+        .then(({ fireBattleDayTransitionWar24hRemindersForGuild }) =>
+          fireBattleDayTransitionWar24hRemindersForGuild({
+            client: this.client,
+            guildId,
+            nowMs: transitionAt.getTime(),
+            triggerSource: "maintenance_over",
+          }),
+        )
+        .catch((err) => {
+          console.error(
+            `[maintenance-window] event=handler_failed phase=over_retry guild=${guildId} clan=${clanTag} error=${formatError(err)}`,
+          );
+        });
+
       if (!channel.channelId) {
         console.warn(
           `[maintenance-window] event=skipped_no_channel phase=over guild=${guildId} clan=${clanTag}`,
@@ -172,12 +187,18 @@ export class MaintenanceWindowService {
   }
 
   /** Purpose: read one guild's persisted maintenance runtime state. */
-  private async getRuntimeState(
+  async getRuntimeState(
     guildId: string,
   ): Promise<MaintenanceWindowState | null> {
     return (await prisma.maintenanceWindowRuntimeState.findUnique({
       where: { guildId },
     })) as MaintenanceWindowState | null;
+  }
+
+  /** Purpose: return whether one guild is currently marked inside a persisted maintenance window. */
+  async isMaintenanceActive(guildId: string): Promise<boolean> {
+    const state = await this.getRuntimeState(normalizeGuildId(guildId));
+    return Boolean(state?.active);
   }
 
   /** Purpose: persist one guild's maintenance runtime state. */

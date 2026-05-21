@@ -11,6 +11,10 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     update: vi.fn(),
   },
+  maintenanceWindowRuntimeState: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
   currentWar: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
@@ -79,6 +83,8 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
     prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.reminderFireLog.update.mockResolvedValue({});
+    prismaMock.maintenanceWindowRuntimeState.findUnique.mockResolvedValue(null);
+    prismaMock.maintenanceWindowRuntimeState.upsert.mockResolvedValue({});
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
@@ -1344,6 +1350,8 @@ describe("ReminderSchedulerService battle-day transition trigger", () => {
     prismaMock.reminderFireLog.findUnique.mockResolvedValue(null);
     prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.reminderFireLog.update.mockResolvedValue({});
+    prismaMock.maintenanceWindowRuntimeState.findUnique.mockResolvedValue(null);
+    prismaMock.maintenanceWindowRuntimeState.upsert.mockResolvedValue({});
     prismaMock.currentWar.findFirst.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
@@ -1351,10 +1359,154 @@ describe("ReminderSchedulerService battle-day transition trigger", () => {
     setTodoSnapshotRows({});
   });
 
-  it("re-fires a 24h WAR_CWL reminder after maintenance clears and dedupes once sent", async () => {
+  it("defers a 24h WAR_CWL reminder while maintenance is active and still sends once after maintenance over", async () => {
     const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
     const battleDayStartMs = nowMs - 20 * 60 * 1000;
     const eventEndsAt = new Date(nowMs + 23 * 60 * 60 * 1000 + 40 * 60 * 1000);
+    const warStartTime = new Date(battleDayStartMs - 6 * 60 * 60 * 1000);
+    const reminder = {
+      id: "rem-war-transition-maintenance",
+      guildId: "guild-1",
+      channelId: "channel-war",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-04-28T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      state: "inWar",
+      startTime: warStartTime,
+      endTime: eventEndsAt,
+      updatedAt: new Date(nowMs),
+    });
+
+    const fireLogs = installReminderFireLogStore();
+    const dedupeKey =
+      "rem-war-transition-maintenance|FWA|#R80L8VYG|WAR:war-id:1000267|86400";
+    const seedRecord: SchedulerFireLogRecord = {
+      id: "fire-seeded-maintenance",
+      dedupeKey,
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: "attack_window_not_active",
+      messageId: null,
+      dispatchedAt: new Date(nowMs - 30 * 60 * 1000),
+    };
+    fireLogs.byId.set(seedRecord.id, seedRecord);
+    fireLogs.byDedupeKey.set(dedupeKey, seedRecord);
+
+    const maintenanceRow = {
+      guildId: "guild-1",
+      active: true,
+      detectedAt: new Date(nowMs - 35 * 60 * 1000),
+      lastObservedAt: new Date(nowMs - 10 * 60 * 1000),
+      lastOverAt: null,
+      detectedClanTag: "#R80L8VYG",
+      detectedStatusCode: 503,
+      lastChannelId: "maintenance-channel",
+      lastChannelSource: "maintenance" as const,
+      createdAt: new Date(nowMs - 35 * 60 * 1000),
+      updatedAt: new Date(nowMs - 10 * 60 * 1000),
+    };
+    let maintenanceActive = true;
+    prismaMock.maintenanceWindowRuntimeState.findUnique.mockImplementation(async () =>
+      maintenanceActive ? maintenanceRow : null,
+    );
+
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-retry",
+      }),
+    };
+    const warnSpy = vi.spyOn(dozzleConsoleSink, "warn").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(dozzleConsoleSink, "error").mockImplementation(() => undefined);
+
+    const firstCounts = await fireBattleDayTransitionWar24hRemindersForClan({
+      client: {} as any,
+      dispatch: dispatch as any,
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      warStartTime,
+      warEndTime: eventEndsAt,
+      nowMs,
+    });
+
+    maintenanceActive = false;
+    const secondCounts = await fireBattleDayTransitionWar24hRemindersForClan({
+      client: {} as any,
+      dispatch: dispatch as any,
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      warStartTime,
+      warEndTime: eventEndsAt,
+      nowMs: nowMs + 20 * 60_000,
+      triggerSource: "maintenance_over",
+    });
+
+    const thirdCounts = await fireBattleDayTransitionWar24hRemindersForClan({
+      client: {} as any,
+      dispatch: dispatch as any,
+      guildId: "guild-1",
+      clanTag: "#R80L8VYG",
+      clanName: "Tracked Clan",
+      warId: 1000267,
+      warStartTime,
+      warEndTime: eventEndsAt,
+      nowMs: nowMs + 21 * 60_000,
+      triggerSource: "maintenance_over",
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(thirdCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(
+      warnSpy.mock.calls.some(([message]) =>
+        String(message).includes("event=skipped_maintenance_active"),
+      ),
+    ).toBe(true);
+    expect(
+      warnSpy.mock.calls.some(([message]) =>
+        String(message).includes("reason=persisted_maintenance_active"),
+      ),
+    ).toBe(true);
+    expect(errorSpy.mock.calls.some(([message]) => String(message).includes("event=failed"))).toBe(
+      false,
+    );
+    expect(fireLogs.byId.get("fire-seeded-maintenance")?.dispatchStatus).toBe(
+      ReminderDispatchStatus.SENT,
+    );
+    expect(fireLogs.byId.get("fire-seeded-maintenance")?.messageId).toBe("msg-retry");
+  });
+
+  it("re-fires a 24h WAR_CWL reminder after maintenance clears and dedupes once sent", async () => {
+    const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
+    const battleDayStartMs = nowMs - 10 * 60 * 1000;
+    const eventEndsAt = new Date(nowMs + 23 * 60 * 60 * 1000 + 50 * 60 * 1000);
     const warStartTime = new Date(battleDayStartMs - 6 * 60 * 60 * 1000);
     const reminder = {
       id: "rem-war-transition",
