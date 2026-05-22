@@ -385,7 +385,7 @@ type DescriptionChunk = {
 };
 
 function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+\u{1F9CD})?$/u.test(
+  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
     String(line ?? "").trim(),
   );
 }
@@ -737,7 +737,8 @@ function rightAlign(value: string, width: number): string {
 
 type LinkListRowInput = {
   townHall: number | null;
-  displayValue: string;
+  playerName: string;
+  displayValue: string | null;
   rightMarker?: string | null;
 };
 
@@ -956,34 +957,49 @@ function resolveLinkListTownHall(input: {
 
 function formatAlignedInlineRow(
   row: LinkListRowInput,
-  widths: { value: number },
+  widths: { playerName: number; value: number },
   statusPrefix: string,
 ): string {
   const townHallLabel = formatLinkListTownHallLabel(row.townHall);
+  const playerName = rightAlign(
+    truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
+    widths.playerName,
+  );
+  const base = `${statusPrefix} \`${townHallLabel}\` \`${playerName}\``;
+  if (row.displayValue === null) {
+    return row.rightMarker ? `${base} ${row.rightMarker}` : base;
+  }
   const displayValue = rightAlign(
     row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
     widths.value,
   );
-  const base = `${statusPrefix} \`${townHallLabel}\` \`${displayValue}\``;
-  if (!row.rightMarker) return base;
-  return `${base} ${row.rightMarker}`;
+  const line = `${base} \`${displayValue}\``;
+  if (!row.rightMarker) return line;
+  return `${line} ${row.rightMarker}`;
 }
 
 function computeColumnWidths(
   linkedRows: LinkListRowInput[],
   unlinkedRows: LinkListRowInput[],
 ): {
+  playerName: number;
   value: number;
 } {
   const allRows = [...linkedRows, ...unlinkedRows];
+  const playerName = Math.max(
+    1,
+    ...allRows
+      .map((row) => row.playerName.length)
+      .filter((resolved) => Number.isFinite(resolved)),
+  );
   const value = Math.max(
     1,
     ...allRows
-      .map((row) => row.displayValue.length)
+      .map((row) => row.displayValue?.length ?? 0)
       .filter((resolved) => Number.isFinite(resolved)),
   );
 
-  return { value };
+  return { playerName, value };
 }
 
 function buildLinkListDescriptionLines(input: {
@@ -1004,6 +1020,7 @@ function buildLinkListDescriptionLines(input: {
         formatAlignedInlineRow(
           row,
           {
+            playerName: widths.playerName,
             value: widths.value,
           },
           input.statusIcons.linked,
@@ -1019,6 +1036,7 @@ function buildLinkListDescriptionLines(input: {
         formatAlignedInlineRow(
           row,
           {
+            playerName: widths.playerName,
             value: widths.value,
           },
           input.statusIcons.unlinked,
@@ -1174,7 +1192,7 @@ async function buildLinkListView(input: {
           MAX_IDENTITY_CHARS,
         )
       : null;
-    const displayValue =
+    const displayValue: string | null =
       sortMode === "discord"
         ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
         : sortMode === "weight"
@@ -1182,7 +1200,7 @@ async function buildLinkListView(input: {
           : sortMode === "player-tags"
             ? playerTag
             : sortMode === "player"
-              ? playerName
+              ? null
               : sortMode === "clan-rank"
                 ? formatLinkListClanRole(member.role)
                 : formatInactivityMetricLabel({
@@ -1209,8 +1227,9 @@ async function buildLinkListView(input: {
       discordSort: sanitizeTableText(discordSort),
       row: {
         townHall: townHallByTag.get(playerTag) ?? member.townHall ?? null,
+        playerName,
         displayValue,
-        rightMarker: fillerTagSet.has(playerTag) ? "🧍" : null,
+        rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
       },
     });
   });
@@ -2685,6 +2704,8 @@ export const Link: Command = {
     await interaction.respond(choices);
   },
 };
+
+
 
 
 

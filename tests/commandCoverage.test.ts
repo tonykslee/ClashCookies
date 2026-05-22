@@ -212,7 +212,9 @@ describe("command coverage", () => {
     const linkHelpText = helpEmbedText("link");
     expect(linkHelpText).toContain("reads persisted current-member rows by default");
     expect(linkHelpText).toContain("Refresh Data");
-    expect(linkHelpText).toContain("Town Hall as a compact `18` / `?` label inside inline code");
+    expect(linkHelpText).toContain("Town Hall as a bare `18` / `?` label inside inline code");
+    expect(linkHelpText).toContain("always show the player name");
+    expect(linkHelpText).toContain("one optional mode-specific value block");
     expect(linkHelpText).toContain("only mode that shows the player tag");
     expect(linkHelpText).toContain("while filler rows can show a trailing `\u{1F9CD}` marker outside inline code");
     expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Role -> Inactivity");
