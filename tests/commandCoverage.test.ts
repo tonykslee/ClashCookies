@@ -208,20 +208,26 @@ describe("command coverage", () => {
     expect(compoHelpText).toContain("remaining open slots");
   });
 
-  it("documents the /link list clan rank sort mode in the link help detail text", () => {
+  it("documents the /link list Columns dropdown in the link help detail text", () => {
     const linkHelpText = helpEmbedText("link");
     expect(linkHelpText).toContain("reads persisted current-member rows by default");
+    expect(linkHelpText).toContain("Columns dropdown");
+    expect(linkHelpText).toContain("choose 1-5 visible fields");
     expect(linkHelpText).toContain("Refresh Data");
-    expect(linkHelpText).toContain("Town Hall as a bare `18` / `?` label inside inline code");
-    expect(linkHelpText).toContain("always show the player name");
-    expect(linkHelpText).toContain("one optional mode-specific value block");
+    expect(linkHelpText).toContain("Town Hall as a bare number or `?` label inside inline code");
+    expect(linkHelpText).toContain("keep the player name visible");
+    expect(linkHelpText).toContain("selected columns are preserved across Refresh Data, sort cycling, and tracked-clan switching");
     expect(linkHelpText).toContain("only mode that shows the player tag");
-    expect(linkHelpText).toContain("while filler rows can show a trailing `\u{1F9CD}` marker outside inline code");
+    expect(linkHelpText).toContain("`Player Tag` stays in its own inline-code cell");
+    expect(linkHelpText).toContain("while filler rows can show a trailing");
+    expect(linkHelpText).toContain("marker outside inline code");
+    expect(linkHelpText).toContain("Sort controls row order while columns control visible fields");
+    expect(linkHelpText).toContain("Available columns are Town Hall, Player Name, Discord Display, Discord Username, Weight, Inactivity, Clan Role, and Player Tag");
     expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Role -> Inactivity");
     expect(linkHelpText).toContain("Clan Role");
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
-    expect(linkHelpText).toContain("days are shown as `\u2014` unless a reliable shared days source is available");
+    expect(linkHelpText).toContain("unless a reliable shared days source is available");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
   });
 
