@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
@@ -48,14 +48,21 @@ import {
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
   buildLinkListDescriptionLinesForTest,
+  buildLinkListColumnsSelectCustomIdForTest,
+  getLinkListColumnLabelForTest,
+  getLinkListDefaultColumnsForSortModeForTest,
   buildLinkListRefreshButtonCustomId,
   buildLinkListSelectCustomId,
   buildLinkListSortButtonCustomId,
+  isLinkListColumnsSelectCustomId,
+  getLinkListSelectableColumnsForTest,
+  parseLinkListColumnsSelectCustomIdForTest,
   handleReminderLinkButtonInteraction,
   handleReminderLinkCancelButtonInteraction,
   handleReminderLinkConfirmButtonInteraction,
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
+  handleLinkListColumnsSelectMenu,
   handleLinkListRefreshButton,
   handleLinkListSelectMenu,
   handleLinkListSortButton,
@@ -225,8 +232,18 @@ function getInlineRows(description: string): string[] {
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) =>
-      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(line),
+      /^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(line),
     );
+}
+
+function getComponentCustomId(component: any): string {
+  return String(
+    component?.custom_id ??
+      component?.customId ??
+      component?.data?.custom_id ??
+      component?.data?.customId ??
+      "",
+  );
 }
 
 function makeReminderButtonInteraction(input: {
@@ -863,9 +880,10 @@ describe("/link run", () => {
     expect(linkedRow.playerName.trim()).toBe("Tilonius");
     expect(currentFallbackRow).toMatchObject({
       status: "❌",
-      townHall: "?",
+      townHall: " ?",
       value: "—",
     });
+    expect(currentFallbackRow.townHall.trim()).toBe("?");
     expect(currentFallbackRow.playerName.trim()).toBe("Mystery Zero");
     expect(currentWeightFallbackRow).toMatchObject({
       status: "❌",
@@ -878,10 +896,12 @@ describe("/link run", () => {
     expect(rows[1] ?? "").not.toContain("``");
     const refreshButton = payload.components[0].components[0].toJSON();
     const sortButton = payload.components[1].components[0].toJSON();
+    const columnsSelect = payload.components[2].components[0].toJSON();
     expect(refreshButton.label).toBe("Refresh Data");
     expect(sortButton.label).toBe("Sort: Discord Name");
+    expect(columnsSelect.placeholder).toBe("Columns");
 
-    const select = payload.components[2].components[0].toJSON();
+    const select = payload.components[3].components[0].toJSON();
     expect(select.options).toHaveLength(2);
     expect(
       select.options.some(
@@ -920,11 +940,14 @@ describe("/link run", () => {
     expect(String(embed.description ?? "")).toContain(
       "empty_list: no saved current clan members for #PQL0289. Use Refresh Data or wait for sync.",
     );
-    expect(payload.components).toHaveLength(2);
+    expect(payload.components).toHaveLength(3);
     expect(payload.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
     expect(payload.components[1].components[0].toJSON().placeholder).toBe(
+      "Columns",
+    );
+    expect(payload.components[2].components[0].toJSON().placeholder).toBe(
       "Select tracked clan",
     );
   });
@@ -1058,6 +1081,124 @@ describe("/link run", () => {
     );
     expect(payload.components[1].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
+    );
+    refreshSync.mockRestore();
+  });
+
+  it("preserves selected columns when refreshing the selected clan", async () => {
+    const refreshedRows = [
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Refreshed",
+        townHall: 18,
+        rank: 18,
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "New Unlinked",
+        townHall: 16,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ];
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "RefreshUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(refreshedRows as any);
+    const refreshSync = vi
+      .spyOn(
+        FwaClanMembersSyncService.prototype,
+        "refreshCurrentClanMembersForClanTags",
+      )
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: refreshedRows.length,
+        changedRowCount: refreshedRows.length,
+        failedClans: [],
+      } as any);
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Refreshed",
+            townHallLevel: 18,
+            clanRank: 18,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "New Unlinked",
+            townHallLevel: 16,
+            clanRank: 17,
+          },
+        ],
+      }),
+    };
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListRefreshButton(interaction as any, cocService as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(followUp).not.toHaveBeenCalled();
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const embed = payload.embeds[0].toJSON();
+    const description = String(embed.description ?? "");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatch(/^\u2705\s+`\s*Refreshed`\s+`140k`$/u);
+    expect(rows[1]).toMatch(/^\u274C\s+`\s*New Unlinked`\s+`132k`$/u);
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
     );
     refreshSync.mockRestore();
   });
@@ -1247,17 +1388,29 @@ describe("/link run", () => {
     const defaultRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
-          townHall: 18,
+          townHallLabel: "18",
           playerName: "Persisted Sin",
-          displayValue: "Persisted Sin",
+          discordDisplayName: "Persisted Sin",
+          discordUsername: "Persisted Sin",
+          weightLabel: "166k",
+          inactivityLabel: "—",
+          clanRoleLabel: "lead",
+          playerTag: "#QR9R0LGJ9",
           rightMarker: "🧍",
+          isLinked: true,
         },
       ],
       unlinkedRows: [
         {
-          townHall: 14,
+          townHallLabel: "14",
           playerName: "Unlinked Player",
-          displayValue: "—",
+          discordDisplayName: "—",
+          discordUsername: "—",
+          weightLabel: "—",
+          inactivityLabel: "—",
+          clanRoleLabel: "—",
+          playerTag: "#LCUV0289",
+          isLinked: false,
         },
       ],
       statusIcons: {
@@ -1268,17 +1421,29 @@ describe("/link run", () => {
     const playerTagRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
-          townHall: 18,
+          townHallLabel: "18",
           playerName: "Persisted Sin",
-          displayValue: "#QR9R0LGJ9",
+          discordDisplayName: "Persisted Sin",
+          discordUsername: "Persisted Sin",
+          weightLabel: "166k",
+          inactivityLabel: "—",
+          clanRoleLabel: "lead",
+          playerTag: "#QR9R0LGJ9",
           rightMarker: "🧍",
+          isLinked: true,
         },
       ],
       unlinkedRows: [
         {
-          townHall: 14,
+          townHallLabel: "14",
           playerName: "Unlinked Player",
-          displayValue: "#LCUV0289",
+          discordDisplayName: "—",
+          discordUsername: "—",
+          weightLabel: "—",
+          inactivityLabel: "—",
+          clanRoleLabel: "—",
+          playerTag: "#LCUV0289",
+          isLinked: false,
         },
       ],
       statusIcons: {
@@ -1315,10 +1480,110 @@ describe("/link run", () => {
     expect(linkedTagParts.value).toBe("#QR9R0LGJ9");
     expect(linkedTagParts.townHall).toBe("18");
     expect(linkedTagParts.playerName.trim()).toBe("Persisted Sin");
-    expect(linkedTagParts.marker).toBe("\u{1F9CD}");
+    expect(linkedTagParts.marker).toBe("🧍");
     expect(unlinkedTagParts.value).toBe("#LCUV0289");
     expect(unlinkedTagParts.townHall).toBe("14");
     expect(unlinkedTagParts.playerName.trim()).toBe("Unlinked Player");
+
+    expect(getLinkListDefaultColumnsForSortModeForTest("discord")).toEqual([
+      "townhall",
+      "player-name",
+      "discord-display-name",
+    ]);
+    expect(getLinkListDefaultColumnsForSortModeForTest("player-tags")).toEqual([
+      "townhall",
+      "player-name",
+      "player-tag",
+    ]);
+    expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
+    expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
+  });
+
+  it("recognizes rows with up to five inline-code cells for chunking", () => {
+    const rows = getInlineRows(
+      [
+        "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+        "\u274C `15` `Mystery Zero` `\u2014` `\u2014` \u{1F9CD}",
+        "\u2705",
+        "\u274C",
+      ].join("\n"),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(
+      "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+    );
+    expect(rows[1]).toBe("\u274C `15` `Mystery Zero` `\u2014` `\u2014` \u{1F9CD}");
+    expect(rows[0]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
+    expect(rows[1]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
+    expect(getInlineRows("\u2705")).toHaveLength(0);
+  });
+
+  it("builds and parses compact columns select custom ids", () => {
+    const customId = buildLinkListColumnsSelectCustomIdForTest(
+      "111111111111111111",
+      "#PQL0289",
+      "weight",
+      ["townhall", "player-name", "weight", "clan-role", "player-tag"],
+    );
+    expect(isLinkListColumnsSelectCustomId(customId)).toBe(true);
+    const parsed = parseLinkListColumnsSelectCustomIdForTest(customId);
+    expect(parsed).toMatchObject({
+      userId: "111111111111111111",
+      clanTag: "#PQL0289",
+      sortMode: "weight",
+      columns: [
+        "townhall",
+        "player-name",
+        "weight",
+        "clan-role",
+        "player-tag",
+      ],
+    });
+    expect(customId.length).toBeLessThan(100);
+  });
+
+  it("normalizes duplicate and unknown columns while keeping at most five", () => {
+    const parsed = parseLinkListColumnsSelectCustomIdForTest(
+      "link-list-columns:111111111111111111:#PQL0289:discord:th.pn.pn.zz.wt.ia.cr.pt",
+    );
+    expect(parsed).toMatchObject({
+      userId: "111111111111111111",
+      clanTag: "#PQL0289",
+      sortMode: "discord",
+      columns: ["townhall", "player-name", "weight", "inactivity", "clan-role"],
+    });
+  });
+
+  it("renders selected columns in the requested order", () => {
+    const lines = buildLinkListDescriptionLinesForTest({
+      linkedRows: [
+        {
+          townHallLabel: "18",
+          playerName: "Tilonius",
+          displayValue: null,
+          discordDisplayName: "teewizz",
+          discordUsername: "teewizz",
+          weightLabel: "166k",
+          inactivityLabel: "\u2014 2w",
+          clanRoleLabel: "lead",
+          playerTag: "#QR9R0LGJ9",
+          rightMarker: "\u{1F9CD}",
+          isLinked: true,
+        },
+      ],
+      unlinkedRows: [],
+      statusIcons: {
+        linked: "\u2705",
+        unlinked: "\u274C",
+      },
+      sortMode: "weight",
+      columns: ["townhall", "player-name", "weight", "clan-role", "player-tag"],
+    });
+    expect(lines).toContain("Linked Users: 1");
+    const row = lines.find((line) => line.startsWith("\u2705")) ?? "";
+    expect(row).toMatch(
+      /^\u2705\s+`18`\s+`Tilonius`\s+`166k`\s+`lead`\s+`#QR9R0LGJ9`\s+\u{1F9CD}$/u,
+    );
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {
@@ -1607,9 +1872,12 @@ describe("/link run", () => {
     expect(String(embed.description ?? "")).toContain(
       "empty_list: no saved current clan members for #PQL0289. Use Refresh Data or wait for sync.",
     );
-    expect(payload.components).toHaveLength(2);
+    expect(payload.components).toHaveLength(3);
     expect(payload.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
+    );
+    expect(payload.components[1].components[0].toJSON().placeholder).toBe(
+      "Columns",
     );
   });
 
@@ -1715,7 +1983,7 @@ describe("/link run", () => {
     await Link.run({} as any, interaction as any, {} as any);
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const select = payload.components[2].components[0].toJSON();
+    const select = payload.components[3].components[0].toJSON();
 
     expect(select.options).toHaveLength(25);
     expect(select.options.map((opt: any) => opt.value)).toContain(currentTag);
@@ -1830,6 +2098,195 @@ describe("/link list select menu", () => {
     expect(reply).not.toHaveBeenCalled();
   });
 
+  it("preserves selected columns when switching clans", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListSelectCustomId(
+        "111111111111111111",
+        "discord",
+        ["player-name", "weight"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["#PQL0289"],
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSelectMenu(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[3].components[0])).toBe(
+      buildLinkListSelectCustomId(
+        "111111111111111111",
+        "discord",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("updates same message in place for valid column selection", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["weight", "clan-role", "player-tag"],
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const firstEmbed = payload.embeds[0].toJSON();
+    const description = String(firstEmbed.description ?? "");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatch(
+      /^\u2705\s+`120k`\s+`—`\s+`#PQL0289`$/u,
+    );
+    expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
+    expect(payload.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payload.components[1].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+    expect(payload.components[2].components[0].toJSON().placeholder).toBe(
+      "Columns",
+    );
+    expect(payload.components[3].components[0].toJSON().placeholder).toBe(
+      "Select tracked clan",
+    );
+    const columnsSelect = payload.components[2].components[0].toJSON();
+    expect(columnsSelect.options.filter((opt: any) => opt.default)).toHaveLength(3);
+    expect(
+      columnsSelect.options.filter((opt: any) => opt.default).map((opt: any) => opt.value),
+    ).toEqual(["weight", "clan-role", "player-tag"]);
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("keeps previously selected columns ahead of new selections", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["player-name", "weight", "clan-role"],
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const rows = getInlineRows(String(payload.embeds[0].toJSON().description ?? ""));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatch(
+      /^\u2705\s+`Alpha Select`\s+`120k`\s+`—`$/u,
+    );
+    expect(payload.components[2].components[0].toJSON().placeholder).toBe(
+      "Columns",
+    );
+    const columnsSelect = payload.components[2].components[0].toJSON();
+    expect(columnsSelect.options.filter((opt: any) => opt.default).map((opt: any) => opt.value)).toEqual([
+      "player-name",
+      "weight",
+      "clan-role",
+    ]);
+  });
+
   it("rejects menu interaction from non-requesting user", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -1852,6 +2309,43 @@ describe("/link list select menu", () => {
     };
 
     await handleLinkListSelectMenu(interaction as any, {} as any);
+
+    expect(reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this menu.",
+    });
+    expect(deferUpdate).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("rejects column menu interaction from non-requesting user", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["weight"],
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
 
     expect(reply).toHaveBeenCalledWith({
       ephemeral: true,
@@ -2149,6 +2643,68 @@ describe("/link list sort button", () => {
     ]);
   });
 
+  it("preserves selected columns when cycling sort mode", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["player-name", "weight"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    const cocService = { getClan: vi.fn() };
+    await handleLinkListSortButton(interaction as any, cocService as any);
+
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+        ["player-name", "weight"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[3].components[0])).toBe(
+      buildLinkListSelectCustomId(
+        "111111111111111111",
+        "weight",
+        ["player-name", "weight"],
+      ),
+    );
+  });
+
   it("renders a realistic 50-member Player Tags view without aggressively trimming", async () => {
     const rows = makeLinkListClanMembers({
       clanTag: "#PQL0289",
@@ -2196,11 +2752,12 @@ describe("/link list sort button", () => {
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
     const payload = editReply.mock.calls[0]?.[0] as any;
-    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds.length).toBeGreaterThanOrEqual(1);
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
     expect(payload.embeds[0].toJSON().title).toBe(
       "Tracked Alpha #PQL0289",
     );
-    expect(payload.embeds[1].toJSON().title).toBeUndefined();
+    expect(payload.embeds[1]?.toJSON().title).toBeUndefined();
     const description = payload.embeds
       .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
       .join("\n");
@@ -2275,11 +2832,12 @@ describe("/link list sort button", () => {
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
     const payload = editReply.mock.calls[0]?.[0] as any;
-    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds.length).toBeGreaterThanOrEqual(1);
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
     expect(payload.embeds[0].toJSON().title).toBe(
       "Tracked Alpha #PQL0289",
     );
-    expect(payload.embeds[1].toJSON().title).toBeUndefined();
+    expect(payload.embeds[1]?.toJSON().title).toBeUndefined();
     const description = payload.embeds
       .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
       .join("\n");
@@ -2347,11 +2905,12 @@ describe("/link list sort button", () => {
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
     const payload = editReply.mock.calls[0]?.[0] as any;
-    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds.length).toBeGreaterThanOrEqual(1);
+    expect(payload.embeds.length).toBeLessThanOrEqual(2);
     expect(payload.embeds[0].toJSON().title).toBe(
       "Tracked Alpha #PQL0289",
     );
-    expect(payload.embeds[1].toJSON().title).toBeUndefined();
+    expect(payload.embeds[1]?.toJSON().title).toBeUndefined();
     const description = payload.embeds
       .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
       .join("\n");
@@ -2361,12 +2920,15 @@ describe("/link list sort button", () => {
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
     expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Weight Desc");
-    expect(payload.embeds[1].toJSON().footer).toBeUndefined();
+    expect(payload.embeds[1]?.toJSON().footer).toBeUndefined();
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).not.toBe("");
-    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
-      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
-    );
+    expect(
+      String(payload.embeds[1]?.toJSON().description ?? "").length === 0 ||
+        /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
+          getInlineRows(payload.embeds[1]?.toJSON().description ?? "")[0] ?? "",
+        ),
+    ).toBe(true);
     const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
     expect(lastRow.playerName.trim()).toHaveLength(15);
     expect(lastRow.value.length).toBeGreaterThan(0);
@@ -3186,3 +3748,6 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
+
+
+

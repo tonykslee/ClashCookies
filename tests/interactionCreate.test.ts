@@ -238,6 +238,9 @@ describe("interactionCreate /link list refresh button routing", () => {
     const selectSpy = vi
       .spyOn(LinkModule, "handleLinkListSelectMenu")
       .mockResolvedValue(undefined);
+    const columnsSpy = vi
+      .spyOn(LinkModule, "handleLinkListColumnsSelectMenu")
+      .mockResolvedValue(undefined);
 
     const { handler } = await loadInteractionHandler(
       vi.fn().mockResolvedValue(undefined),
@@ -267,6 +270,60 @@ describe("interactionCreate /link list refresh button routing", () => {
     await handler(interaction as any);
 
     expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(selectSpy).not.toHaveBeenCalled();
+    expect(columnsSpy).not.toHaveBeenCalled();
+  }, 30000);
+});
+
+describe("interactionCreate /link list columns select menu routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("routes columns select menus to the button handler and not the clan select handler", async () => {
+    const LinkModule = await import("../src/commands/Link");
+    const columnsSpy = vi
+      .spyOn(LinkModule, "handleLinkListColumnsSelectMenu")
+      .mockResolvedValue(undefined);
+    const selectSpy = vi
+      .spyOn(LinkModule, "handleLinkListSelectMenu")
+      .mockResolvedValue(undefined);
+
+    const { handler } = await loadInteractionHandler(
+      vi.fn().mockResolvedValue(undefined),
+    );
+    const interaction = {
+      customId: LinkModule.buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      isAutocomplete: () => false,
+      isButton: () => false,
+      isStringSelectMenu: () => true,
+      isUserSelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => false,
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferred: false,
+      replied: false,
+      values: ["weight"],
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handler(interaction as any);
+
+    expect(columnsSpy).toHaveBeenCalledTimes(1);
     expect(selectSpy).not.toHaveBeenCalled();
   }, 30000);
 });

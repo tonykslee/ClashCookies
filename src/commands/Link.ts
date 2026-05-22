@@ -59,6 +59,7 @@ const linkListMembersSyncService = new FwaClanMembersSyncService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
 const LINK_LIST_SORT_BUTTON_PREFIX = "link-list-sort-cycle";
 const LINK_LIST_REFRESH_BUTTON_PREFIX = "link-list-refresh";
+const LINK_LIST_COLUMNS_SELECT_PREFIX = "link-list-columns";
 const LINK_EMBED_SETUP_MODAL_PREFIX = "link-embed-setup";
 const LINK_EMBED_TAG_MODAL_PREFIX = "link-embed-tag";
 const LINK_EMBED_BUTTON_PREFIX = "link-embed-account";
@@ -391,7 +392,7 @@ type DescriptionChunk = {
 };
 
 function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
+  return /^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(
     String(line ?? "").trim(),
   );
 }
@@ -626,6 +627,7 @@ function buildClanSelectRows(input: {
   currentClanTag: string;
   commandUserId: string;
   sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
 }): ActionRowBuilder<StringSelectMenuBuilder>[] {
   if (input.trackedClans.length === 0) return [];
   const selectedSet = selectTrackedClanMenuOptions(
@@ -648,7 +650,11 @@ function buildClanSelectRows(input: {
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(
-      buildLinkListSelectCustomId(input.commandUserId, input.sortMode),
+      buildLinkListSelectCustomId(
+        input.commandUserId,
+        input.sortMode,
+        input.columns,
+      ),
     )
     .setPlaceholder("Select tracked clan")
     .addOptions(options);
@@ -662,6 +668,7 @@ function buildLinkListSortRow(input: {
   commandUserId: string;
   currentClanTag: string;
   sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
 }): ActionRowBuilder<ButtonBuilder> {
   const sortLabel = getLinkListSortModeLabel(input.sortMode);
   const button = new ButtonBuilder()
@@ -670,6 +677,7 @@ function buildLinkListSortRow(input: {
         input.commandUserId,
         input.currentClanTag,
         input.sortMode,
+        input.columns,
       ),
     )
     .setLabel(`Sort: ${sortLabel}`)
@@ -681,6 +689,7 @@ function buildLinkListRefreshRow(input: {
   commandUserId: string;
   currentClanTag: string;
   sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
 }): ActionRowBuilder<ButtonBuilder> {
   const button = new ButtonBuilder()
     .setCustomId(
@@ -688,6 +697,7 @@ function buildLinkListRefreshRow(input: {
         input.commandUserId,
         input.currentClanTag,
         input.sortMode,
+        input.columns,
       ),
     )
     .setLabel("Refresh Data")
@@ -695,11 +705,41 @@ function buildLinkListRefreshRow(input: {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 }
 
+function buildLinkListColumnsRow(input: {
+  commandUserId: string;
+  currentClanTag: string;
+  sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
+}): ActionRowBuilder<StringSelectMenuBuilder> {
+  const selectedSet = new Set(input.columns);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(
+      buildLinkListColumnsSelectCustomId(
+        input.commandUserId,
+        input.currentClanTag,
+        input.sortMode,
+        input.columns,
+      ),
+    )
+    .setPlaceholder("Columns")
+    .setMinValues(1)
+    .setMaxValues(5)
+    .addOptions(
+      getLinkListSelectableColumns().map((columnId) => ({
+        label: getLinkListColumnLabel(columnId),
+        value: columnId,
+        default: selectedSet.has(columnId),
+      })),
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
 function buildLinkListControlRows(input: {
   trackedClans: GuildTrackedClanOption[];
   currentClanTag: string;
   commandUserId: string;
   sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
   includeSortButton?: boolean;
 }): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
   const rows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [
@@ -708,6 +748,7 @@ function buildLinkListControlRows(input: {
   if (input.includeSortButton !== false) {
     rows.push(buildLinkListSortRow(input));
   }
+  rows.push(buildLinkListColumnsRow(input));
   const selectRows = buildClanSelectRows(input);
   rows.push(...selectRows);
   return rows;
@@ -744,12 +785,240 @@ function rightAlign(value: string, width: number): string {
   return `${" ".repeat(width - value.length)}${value}`;
 }
 
-type LinkListRowInput = {
-  townHall: number | null;
+type LinkListColumnId =
+  | "townhall"
+  | "player-name"
+  | "discord-display-name"
+  | "discord-username"
+  | "weight"
+  | "inactivity"
+  | "clan-role"
+  | "player-tag";
+
+const LINK_LIST_SELECTABLE_COLUMNS: readonly LinkListColumnId[] = [
+  "townhall",
+  "player-name",
+  "discord-display-name",
+  "discord-username",
+  "weight",
+  "inactivity",
+  "clan-role",
+  "player-tag",
+];
+
+const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
+  townhall: "Town Hall",
+  "player-name": "Player Name",
+  "discord-display-name": "Discord Display",
+  "discord-username": "Discord Username",
+  weight: "Weight",
+  inactivity: "Inactivity",
+  "clan-role": "Clan Role",
+  "player-tag": "Player Tag",
+};
+
+const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
+  townhall: "th",
+  "player-name": "pn",
+  "discord-display-name": "dd",
+  "discord-username": "du",
+  weight: "wt",
+  inactivity: "ia",
+  "clan-role": "cr",
+  "player-tag": "pt",
+};
+
+const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
+  th: "townhall",
+  pn: "player-name",
+  dd: "discord-display-name",
+  du: "discord-username",
+  wt: "weight",
+  ia: "inactivity",
+  cr: "clan-role",
+  pt: "player-tag",
+};
+
+type LinkListRowViewModel = {
+  townHallLabel: string;
   playerName: string;
   displayValue: string | null;
+  discordDisplayName: string;
+  discordUsername: string;
+  weightLabel: string;
+  inactivityLabel: string;
+  clanRoleLabel: string;
+  playerTag: string;
   rightMarker?: string | null;
+  isLinked: boolean;
 };
+
+type LinkListRowInput = LinkListRowViewModel;
+
+function getLinkListSelectableColumns(): LinkListColumnId[] {
+  return [...LINK_LIST_SELECTABLE_COLUMNS];
+}
+
+function getLinkListColumnLabel(columnId: LinkListColumnId): string {
+  return LINK_LIST_COLUMN_LABELS[columnId];
+}
+
+function normalizeLinkListColumnId(
+  input: string | null | undefined,
+): LinkListColumnId | null {
+  const normalized = sanitizeTableText(String(input ?? "")).toLowerCase();
+  if (!normalized) return null;
+  if (Object.prototype.hasOwnProperty.call(LINK_LIST_COLUMN_LABELS, normalized)) {
+    return normalized as LinkListColumnId;
+  }
+  const alias = normalized.replace(/[\s\-_]+/g, "");
+  return LINK_LIST_COLUMN_ALIAS_TO_ID[alias] ?? null;
+}
+
+function normalizeLinkListColumns(
+  input: readonly string[] | null | undefined,
+  sortMode: LinkListSortMode = LINK_LIST_DEFAULT_SORT_MODE,
+): LinkListColumnId[] {
+  const result: LinkListColumnId[] = [];
+  const seen = new Set<LinkListColumnId>();
+  for (const rawColumn of input ?? []) {
+    const columnId = normalizeLinkListColumnId(rawColumn);
+    if (!columnId || seen.has(columnId)) continue;
+    seen.add(columnId);
+    result.push(columnId);
+    if (result.length >= 5) break;
+  }
+  if (result.length === 0) {
+    return getLinkListDefaultColumnsForSortMode(sortMode);
+  }
+  return result;
+}
+
+function isLinkListDefaultColumnsForSortMode(
+  columns: readonly LinkListColumnId[],
+  sortMode: LinkListSortMode,
+): boolean {
+  const normalizedColumns = normalizeLinkListColumns(columns, sortMode);
+  const defaultColumns = getLinkListDefaultColumnsForSortMode(sortMode);
+  return (
+    normalizedColumns.length === defaultColumns.length &&
+    normalizedColumns.every((columnId, index) => columnId === defaultColumns[index])
+  );
+}
+
+function encodeLinkListColumns(columns: readonly LinkListColumnId[]): string {
+  return normalizeLinkListColumns(columns).map((columnId) => LINK_LIST_COLUMN_ALIASES[columnId]).join(".");
+}
+
+function parseLinkListColumnsField(
+  input: string | null | undefined,
+  sortMode: LinkListSortMode = LINK_LIST_DEFAULT_SORT_MODE,
+): LinkListColumnId[] {
+  const parts = String(input ?? "")
+    .split(".")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  return normalizeLinkListColumns(parts, sortMode);
+}
+
+function buildLinkListOrderedColumnsFromSelection(input: {
+  previousColumns: readonly LinkListColumnId[];
+  selectedColumns: readonly string[];
+  sortMode: LinkListSortMode;
+}): LinkListColumnId[] {
+  const previousColumns = normalizeLinkListColumns(input.previousColumns, input.sortMode);
+  const selectedColumns = normalizeLinkListColumns(input.selectedColumns, input.sortMode);
+  const selectedSet = new Set(selectedColumns);
+  const ordered: LinkListColumnId[] = [];
+
+  for (const columnId of previousColumns) {
+    if (!selectedSet.has(columnId) || ordered.includes(columnId)) continue;
+    ordered.push(columnId);
+    if (ordered.length >= 5) return ordered;
+  }
+
+  for (const columnId of selectedColumns) {
+    if (ordered.includes(columnId)) continue;
+    ordered.push(columnId);
+    if (ordered.length >= 5) break;
+  }
+
+  return ordered.length > 0
+    ? ordered
+    : getLinkListDefaultColumnsForSortMode(input.sortMode);
+}
+
+function getLinkListDefaultColumnsForSortMode(
+  sortMode: LinkListSortMode,
+): LinkListColumnId[] {
+  if (sortMode === "discord") {
+    return ["townhall", "player-name", "discord-display-name"];
+  }
+  if (sortMode === "weight") {
+    return ["townhall", "player-name", "weight"];
+  }
+  if (sortMode === "player-tags") {
+    return ["townhall", "player-name", "player-tag"];
+  }
+  if (sortMode === "player") {
+    return ["townhall", "player-name"];
+  }
+  if (sortMode === "clan-rank") {
+    return ["townhall", "player-name", "clan-role"];
+  }
+  if (sortMode === "inactivity") {
+    return ["townhall", "player-name", "inactivity"];
+  }
+  return ["townhall", "player-name", "discord-display-name"];
+}
+
+function getLinkListRowColumnValue(
+  row: LinkListRowInput,
+  columnId: LinkListColumnId,
+): string {
+  if (columnId === "townhall") return row.townHallLabel;
+  if (columnId === "player-name") return row.playerName;
+  if (columnId === "discord-display-name") return row.discordDisplayName;
+  if (columnId === "discord-username") return row.discordUsername;
+  if (columnId === "weight") return row.weightLabel;
+  if (columnId === "inactivity") return row.inactivityLabel;
+  if (columnId === "clan-role") return row.clanRoleLabel;
+  return row.playerTag;
+}
+
+function computeColumnWidths(
+  linkedRows: LinkListRowInput[],
+  unlinkedRows: LinkListRowInput[],
+  columns: LinkListColumnId[],
+): Record<LinkListColumnId, number> {
+  const widths = Object.fromEntries(columns.map((columnId) => [columnId, 1])) as Record<
+    LinkListColumnId,
+    number
+  >;
+  for (const row of [...linkedRows, ...unlinkedRows]) {
+    for (const columnId of columns) {
+      const value = getLinkListRowColumnValue(row, columnId);
+      widths[columnId] = Math.max(widths[columnId] ?? 1, value.length);
+    }
+  }
+  return widths;
+}
+
+function renderLinkListRow(input: {
+  row: LinkListRowInput;
+  columns: LinkListColumnId[];
+  widths: Record<LinkListColumnId, number>;
+  statusPrefix: string;
+}): string {
+  const cells = input.columns.map((columnId) => {
+    const value = sanitizeInlineCodeCell(getLinkListRowColumnValue(input.row, columnId));
+    const width = input.widths[columnId] ?? value.length;
+    return ` \`${rightAlign(value, width)}\``;
+  });
+  const base = `${input.statusPrefix}${cells.join("")}`;
+  if (!input.row.rightMarker) return base;
+  return `${base} ${input.row.rightMarker}`;
+}
 
 type LinkListResolvedMemberRow = {
   isLinked: boolean;
@@ -964,65 +1233,18 @@ function resolveLinkListTownHall(input: {
   );
 }
 
-function formatAlignedInlineRow(
-  row: LinkListRowInput,
-  widths: { playerName: number; value: number },
-  statusPrefix: string,
-): string {
-  const townHallLabel = sanitizeInlineCodeCell(formatLinkListTownHallLabel(row.townHall));
-  const playerName = rightAlign(
-    sanitizeInlineCodeCell(
-      truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
-    ),
-    widths.playerName,
-  );
-  const base = `${statusPrefix} \`${townHallLabel}\` \`${playerName}\``;
-  if (row.displayValue === null) {
-    return row.rightMarker ? `${base} ${row.rightMarker}` : base;
-  }
-  const displayValue = rightAlign(
-    sanitizeInlineCodeCell(
-      row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
-    ),
-    widths.value,
-  );
-  const line = `${base} \`${displayValue}\``;
-  if (!row.rightMarker) return line;
-  return `${line} ${row.rightMarker}`;
-}
-
-function computeColumnWidths(
-  linkedRows: LinkListRowInput[],
-  unlinkedRows: LinkListRowInput[],
-): {
-  playerName: number;
-  value: number;
-} {
-  const allRows = [...linkedRows, ...unlinkedRows];
-  const playerName = Math.max(
-    1,
-    ...allRows
-      .map((row) => row.playerName.length)
-      .filter((resolved) => Number.isFinite(resolved)),
-  );
-  const value = Math.max(
-    1,
-    ...allRows
-      .map((row) => row.displayValue?.length ?? 0)
-      .filter((resolved) => Number.isFinite(resolved)),
-  );
-
-  return { playerName, value };
-}
-
 function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
   sortMode?: LinkListSortMode;
+  columns?: LinkListColumnId[];
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
-  const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const columns =
+    input.columns ??
+    getLinkListDefaultColumnsForSortMode(input.sortMode ?? LINK_LIST_DEFAULT_SORT_MODE);
+  const widths = computeColumnWidths(linkedRows, unlinkedRows, columns);
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
@@ -1030,14 +1252,12 @@ function buildLinkListDescriptionLines(input: {
 
     lines.push(
       ...linkedRows.map((row) =>
-        formatAlignedInlineRow(
+        renderLinkListRow({
           row,
-          {
-            playerName: widths.playerName,
-            value: widths.value,
-          },
-          input.statusIcons.linked,
-        ),
+          columns,
+          widths,
+          statusPrefix: input.statusIcons.linked,
+        }),
       ),
     );
   }
@@ -1046,14 +1266,12 @@ function buildLinkListDescriptionLines(input: {
     lines.push(`Unlinked users: ${unlinkedRows.length}`);
     lines.push(
       ...unlinkedRows.map((row) =>
-        formatAlignedInlineRow(
+        renderLinkListRow({
           row,
-          {
-            playerName: widths.playerName,
-            value: widths.value,
-          },
-          input.statusIcons.unlinked,
-        ),
+          columns,
+          widths,
+          statusPrefix: input.statusIcons.unlinked,
+        }),
       ),
     );
   }
@@ -1062,14 +1280,21 @@ function buildLinkListDescriptionLines(input: {
 }
 
 export const buildLinkListDescriptionLinesForTest = buildLinkListDescriptionLines;
+export const getLinkListDefaultColumnsForSortModeForTest = getLinkListDefaultColumnsForSortMode;
+export const getLinkListSelectableColumnsForTest = getLinkListSelectableColumns;
+export const getLinkListColumnLabelForTest = getLinkListColumnLabel;
+export const buildLinkListColumnsSelectCustomIdForTest = buildLinkListColumnsSelectCustomId;
+export const parseLinkListColumnsSelectCustomIdForTest = parseLinkListColumnsSelectCustomId;
 
 async function buildLinkListView(input: {
   interaction: LinkListInteraction;
   clanTag: string;
   commandUserId: string;
   sortMode?: LinkListSortMode;
+  columns?: LinkListColumnId[];
 }): Promise<LinkListRenderResult> {
   const sortMode = normalizeLinkListSortMode(input.sortMode);
+  const activeColumns = normalizeLinkListColumns(input.columns, sortMode);
 
   if (!input.interaction.guildId) {
     return { ok: false, message: "This command can only be used in a server." };
@@ -1100,6 +1325,7 @@ async function buildLinkListView(input: {
       currentClanTag: input.clanTag,
       commandUserId: input.commandUserId,
       sortMode,
+      columns: activeColumns,
       includeSortButton: false,
     });
     const clanName = sanitizeTableText(String(tracked?.name ?? "")) || input.clanTag;
@@ -1197,7 +1423,7 @@ async function buildLinkListView(input: {
     const inactivityMissedWars = inactivityRow?.missedWars ?? null;
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
     const link = linkByTag.get(playerTag);
-    const linkedDisplayName = link
+    const discordDisplayName = link
       ? sanitizeInlineCodeCell(
           truncateWithEllipsis(
             sanitizeInlineCodeCell(
@@ -1210,27 +1436,28 @@ async function buildLinkListView(input: {
             MAX_IDENTITY_CHARS,
           ),
         )
-      : null;
-    const displayValue: string | null =
-      sortMode === "discord"
-        ? sanitizeInlineCodeCell(linkedDisplayName ?? WEIGHT_PLACEHOLDER)
-        : sortMode === "weight"
-          ? sanitizeInlineCodeCell(formatCompactWeightK(weightValue))
-          : sortMode === "player-tags"
-            ? sanitizeInlineCodeCell(playerTag)
-            : sortMode === "player"
-              ? null
-              : sortMode === "clan-rank"
-                ? sanitizeInlineCodeCell(formatLinkListClanRole(member.role))
-                : sanitizeInlineCodeCell(formatInactivityMetricLabel({
-                    daysInactive: inactivityDays,
-                    missedWars: inactivityMissedWars,
-                  }));
+      : sanitizeInlineCodeCell(WEIGHT_PLACEHOLDER);
+    const discordUsername = link
+      ? sanitizeInlineCodeCell(
+          truncateWithEllipsis(
+            sanitizeInlineCodeCell(normalizePersistedDiscordUsername(link.discordUsername) ?? WEIGHT_PLACEHOLDER),
+            MAX_IDENTITY_CHARS,
+          ),
+        )
+      : sanitizeInlineCodeCell(WEIGHT_PLACEHOLDER);
+    const weightLabel = sanitizeInlineCodeCell(formatCompactWeightK(weightValue));
+    const inactivityLabel = sanitizeInlineCodeCell(
+      formatInactivityMetricLabel({
+        daysInactive: inactivityDays,
+        missedWars: inactivityMissedWars,
+      }),
+    );
+    const clanRoleLabel = sanitizeInlineCodeCell(formatLinkListClanRole(member.role));
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
         : link
-          ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
+          ? discordDisplayName
           : playerTag;
 
     resolvedRows.push({
@@ -1245,10 +1472,19 @@ async function buildLinkListView(input: {
       playerSort: sanitizeTableText(member.playerName) || "Unknown",
       discordSort: sanitizeTableText(discordSort),
       row: {
-        townHall: townHallByTag.get(playerTag) ?? member.townHall ?? null,
+        townHallLabel: formatLinkListTownHallLabel(
+          townHallByTag.get(playerTag) ?? member.townHall ?? null,
+        ),
         playerName,
-        displayValue,
+        displayValue: null,
+        discordDisplayName,
+        discordUsername,
+        weightLabel,
+        inactivityLabel,
+        clanRoleLabel,
+        playerTag,
         rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
+        isLinked: Boolean(link),
       },
     });
   });
@@ -1256,6 +1492,7 @@ async function buildLinkListView(input: {
   const sortedRows = sortLinkListRows(resolvedRows, sortMode);
   const linkedRows: LinkListRowInput[] = [];
   const unlinkedRows: LinkListRowInput[] = [];
+  const columns = activeColumns;
 
   for (const row of sortedRows) {
     if (row.isLinked) {
@@ -1271,6 +1508,7 @@ async function buildLinkListView(input: {
     unlinkedRows,
     statusIcons,
     sortMode,
+    columns,
   });
 
   if (lines.length === 0) {
@@ -1300,6 +1538,7 @@ async function buildLinkListView(input: {
     currentClanTag: input.clanTag,
     commandUserId: input.commandUserId,
     sortMode,
+    columns: activeColumns,
     includeSortButton: true,
   });
 
@@ -1381,9 +1620,13 @@ async function updateDeferredLinkListInteraction(
 export function buildLinkListSelectCustomId(
   userId: string,
   sortMode: LinkListSortMode = LINK_LIST_DEFAULT_SORT_MODE,
+  columns?: LinkListColumnId[],
 ): string {
   const normalizedSort = normalizeLinkListSortMode(sortMode);
-  return `${LINK_LIST_SELECT_PREFIX}:${userId}:${normalizedSort}`;
+  const encodedColumns = encodeLinkListColumns(
+    columns ?? getLinkListDefaultColumnsForSortMode(normalizedSort),
+  );
+  return `${LINK_LIST_SELECT_PREFIX}:${userId}:${normalizedSort}:${encodedColumns}`;
 }
 
 export function isLinkListSelectCustomId(customId: string): boolean {
@@ -1392,19 +1635,18 @@ export function isLinkListSelectCustomId(customId: string): boolean {
 
 function parseLinkListSelectCustomId(
   customId: string,
-): { userId: string; sortMode: LinkListSortMode } | null {
+): { userId: string; sortMode: LinkListSortMode; columns: LinkListColumnId[] } | null {
   const parts = customId.split(":");
-  if (
-    (parts.length !== 2 && parts.length !== 3) ||
-    parts[0] !== LINK_LIST_SELECT_PREFIX
-  ) {
+  if ((parts.length !== 4 && parts.length !== 3) || parts[0] !== LINK_LIST_SELECT_PREFIX) {
     return null;
   }
   const userId = parts[1]?.trim() ?? "";
   if (!userId) return null;
+  const sortMode = normalizeLinkListSortMode(parts[2]);
   return {
     userId,
-    sortMode: normalizeLinkListSortMode(parts[2]),
+    sortMode,
+    columns: parseLinkListColumnsField(parts[3], sortMode),
   };
 }
 
@@ -1412,8 +1654,13 @@ export function buildLinkListSortButtonCustomId(
   userId: string,
   clanTag: string,
   sortMode: LinkListSortMode,
+  columns?: LinkListColumnId[],
 ): string {
-  return `${LINK_LIST_SORT_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizeLinkListSortMode(sortMode)}`;
+  const normalizedSort = normalizeLinkListSortMode(sortMode);
+  const encodedColumns = encodeLinkListColumns(
+    columns ?? getLinkListDefaultColumnsForSortMode(normalizedSort),
+  );
+  return `${LINK_LIST_SORT_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizedSort}:${encodedColumns}`;
 }
 
 export function isLinkListSortButtonCustomId(customId: string): boolean {
@@ -1422,18 +1669,20 @@ export function isLinkListSortButtonCustomId(customId: string): boolean {
 
 function parseLinkListSortButtonCustomId(
   customId: string,
-): { userId: string; clanTag: string; sortMode: LinkListSortMode } | null {
+): { userId: string; clanTag: string; sortMode: LinkListSortMode; columns: LinkListColumnId[] } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 4 || parts[0] !== LINK_LIST_SORT_BUTTON_PREFIX) {
+  if ((parts.length !== 5 && parts.length !== 4) || parts[0] !== LINK_LIST_SORT_BUTTON_PREFIX) {
     return null;
   }
   const userId = parts[1]?.trim() ?? "";
   const clanTag = normalizeClanTag(parts[2] ?? "");
   if (!userId || !clanTag) return null;
+  const sortMode = normalizeLinkListSortMode(parts[3]);
   return {
     userId,
     clanTag,
-    sortMode: normalizeLinkListSortMode(parts[3]),
+    sortMode,
+    columns: parseLinkListColumnsField(parts[4], sortMode),
   };
 }
 
@@ -1441,8 +1690,13 @@ export function buildLinkListRefreshButtonCustomId(
   userId: string,
   clanTag: string,
   sortMode: LinkListSortMode,
+  columns?: LinkListColumnId[],
 ): string {
-  return `${LINK_LIST_REFRESH_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizeLinkListSortMode(sortMode)}`;
+  const normalizedSort = normalizeLinkListSortMode(sortMode);
+  const encodedColumns = encodeLinkListColumns(
+    columns ?? getLinkListDefaultColumnsForSortMode(normalizedSort),
+  );
+  return `${LINK_LIST_REFRESH_BUTTON_PREFIX}:${userId}:${clanTag}:${normalizedSort}:${encodedColumns}`;
 }
 
 export function isLinkListRefreshButtonCustomId(customId: string): boolean {
@@ -1451,18 +1705,61 @@ export function isLinkListRefreshButtonCustomId(customId: string): boolean {
 
 function parseLinkListRefreshButtonCustomId(
   customId: string,
-): { userId: string; clanTag: string; sortMode: LinkListSortMode } | null {
+): { userId: string; clanTag: string; sortMode: LinkListSortMode; columns: LinkListColumnId[] } | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 4 || parts[0] !== LINK_LIST_REFRESH_BUTTON_PREFIX) {
+  if ((parts.length !== 5 && parts.length !== 4) || parts[0] !== LINK_LIST_REFRESH_BUTTON_PREFIX) {
     return null;
   }
   const userId = parts[1]?.trim() ?? "";
   const clanTag = normalizeClanTag(parts[2] ?? "");
   if (!userId || !clanTag) return null;
+  const sortMode = normalizeLinkListSortMode(parts[3]);
   return {
     userId,
     clanTag,
-    sortMode: normalizeLinkListSortMode(parts[3]),
+    sortMode,
+    columns: parseLinkListColumnsField(parts[4], sortMode),
+  };
+}
+
+export function buildLinkListColumnsSelectCustomId(
+  userId: string,
+  clanTag: string,
+  sortMode: LinkListSortMode,
+  columns?: LinkListColumnId[],
+): string {
+  const normalizedSort = normalizeLinkListSortMode(sortMode);
+  const encodedColumns = encodeLinkListColumns(
+    columns ?? getLinkListDefaultColumnsForSortMode(normalizedSort),
+  );
+  return `${LINK_LIST_COLUMNS_SELECT_PREFIX}:${userId}:${clanTag}:${normalizedSort}:${encodedColumns}`;
+}
+
+export function isLinkListColumnsSelectCustomId(customId: string): boolean {
+  return customId.startsWith(`${LINK_LIST_COLUMNS_SELECT_PREFIX}:`);
+}
+
+function parseLinkListColumnsSelectCustomId(
+  customId: string,
+): {
+  userId: string;
+  clanTag: string;
+  sortMode: LinkListSortMode;
+  columns: LinkListColumnId[];
+} | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 5 || parts[0] !== LINK_LIST_COLUMNS_SELECT_PREFIX) {
+    return null;
+  }
+  const userId = parts[1]?.trim() ?? "";
+  const clanTag = normalizeClanTag(parts[2] ?? "");
+  if (!userId || !clanTag) return null;
+  const sortMode = normalizeLinkListSortMode(parts[3]);
+  return {
+    userId,
+    clanTag,
+    sortMode,
+    columns: parseLinkListColumnsField(parts[4], sortMode),
   };
 }
 
@@ -1707,10 +2004,55 @@ export async function handleLinkListSelectMenu(
     clanTag: selectedTag,
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
+    columns: parsed.columns,
   });
   await updateDeferredLinkListInteraction(interaction, result, {
     guildId: interaction.guildId ?? "",
     clanTag: selectedTag,
+    sortMode: parsed.sortMode,
+  });
+}
+
+export async function handleLinkListColumnsSelectMenu(
+  interaction: StringSelectMenuInteraction,
+  _cocService: CoCService,
+): Promise<void> {
+  const parsed = parseLinkListColumnsSelectCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this menu.",
+    });
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command can only be used in a server.",
+    });
+    return;
+  }
+
+  const selectedColumns = buildLinkListOrderedColumnsFromSelection({
+    previousColumns: parsed.columns,
+    selectedColumns: interaction.values,
+    sortMode: parsed.sortMode,
+  });
+
+  await interaction.deferUpdate();
+  const result = await buildLinkListView({
+    interaction,
+    clanTag: parsed.clanTag,
+    commandUserId: parsed.userId,
+    sortMode: parsed.sortMode,
+    columns: selectedColumns,
+  });
+  await updateDeferredLinkListInteraction(interaction, result, {
+    guildId: interaction.guildId,
+    clanTag: parsed.clanTag,
     sortMode: parsed.sortMode,
   });
 }
@@ -1731,12 +2073,16 @@ export async function handleLinkListSortButton(
   }
 
   const nextSortMode = getNextLinkListSortMode(parsed.sortMode);
+  const nextColumns = isLinkListDefaultColumnsForSortMode(parsed.columns, parsed.sortMode)
+    ? getLinkListDefaultColumnsForSortMode(nextSortMode)
+    : parsed.columns;
   await interaction.deferUpdate();
   const result = await buildLinkListView({
     interaction,
     clanTag: parsed.clanTag,
     commandUserId: parsed.userId,
     sortMode: nextSortMode,
+    columns: nextColumns,
   });
   await updateDeferredLinkListInteraction(interaction, result, {
     guildId: interaction.guildId ?? "",
@@ -1832,6 +2178,7 @@ export async function handleLinkListRefreshButton(
     clanTag,
     commandUserId: parsed.userId,
     sortMode: parsed.sortMode,
+    columns: parsed.columns,
   });
   await updateDeferredLinkListInteraction(interaction, result, {
     guildId: interaction.guildId ?? "",
