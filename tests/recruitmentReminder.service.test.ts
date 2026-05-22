@@ -232,7 +232,7 @@ describe("recruitment reminder service", () => {
         timezone: "America/Los_Angeles",
         nextReminderAt: new Date("2026-04-08T17:45:00-07:00"),
         isActive: true,
-        lastSentAt: null,
+        lastSentAt: new Date("2026-04-07T17:45:00-07:00"),
         clanNameSnapshot: "Alpha",
         templateSubject: "Snapshot Subject",
         templateBody: "Snapshot Body",
@@ -263,13 +263,14 @@ describe("recruitment reminder service", () => {
     expect(recruitmentPreferenceMock.isEnabled).toHaveBeenCalledWith("guild-1", "user-1");
     expect(fetchUser).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
-    expect(prismaMock.recruitmentReminderRule.update).toHaveBeenCalledWith({
-      where: { id: "rule-1" },
-      data: expect.objectContaining({
-        lastSentAt: null,
+    const updateCall = prismaMock.recruitmentReminderRule.update.mock.calls[0]?.[0];
+    expect(updateCall?.where).toEqual({ id: "rule-1" });
+    expect(updateCall?.data).toEqual(
+      expect.objectContaining({
         nextReminderAt: new Date("2026-04-08T18:30:00-07:00"),
       }),
-    });
+    );
+    expect(updateCall?.data).not.toHaveProperty("lastSentAt");
     expect(prismaMock.recruitmentReminderDelivery.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         reminderRuleId: "rule-1",

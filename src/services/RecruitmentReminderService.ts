@@ -602,7 +602,6 @@ export async function processDueRecruitmentReminders(input: {
       await prisma.recruitmentReminderRule.update({
         where: { id: rule.id },
         data: {
-          lastSentAt: null,
           nextReminderAt,
         },
       });
