@@ -391,7 +391,7 @@ type DescriptionChunk = {
 };
 
 function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
+  return /^(?:[\u2705\u274C])(?:\s+`[^`]+`){2,}(?:\s+\u{1F9CD})?$/u.test(
     String(line ?? "").trim(),
   );
 }

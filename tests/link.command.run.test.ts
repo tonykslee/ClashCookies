@@ -228,7 +228,7 @@ function getInlineRows(description: string): string[] {
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) =>
-      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(line),
+      /^(?:[\u2705\u274C])(?:\s+`[^`]+`){2,}(?:\s+\u{1F9CD})?$/u.test(line),
     );
 }
 
@@ -1360,6 +1360,26 @@ describe("/link run", () => {
     ]);
     expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
     expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
+  });
+
+  it("recognizes rows with up to five inline-code cells for chunking", () => {
+    const rows = getInlineRows(
+      [
+        "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+        "\u274C `15` `Mystery Zero` `\u2014` `\u2014`",
+        "\u2705 `18`",
+        "\u274C",
+      ].join("\n"),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(
+      "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+    );
+    expect(rows[1]).toBe("\u274C `15` `Mystery Zero` `\u2014` `\u2014`");
+    expect(rows[0]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
+    expect(rows[1]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
+    expect(getInlineRows("\u2705")).toHaveLength(0);
+    expect(getInlineRows("\u2705 `18`")).toHaveLength(0);
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {
@@ -3227,5 +3247,6 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
+
 
 
