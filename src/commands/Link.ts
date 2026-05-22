@@ -159,6 +159,11 @@ function sanitizeTableText(input: string): string {
     .trim();
 }
 
+function sanitizeInlineCodeCell(input: string): string {
+  const normalized = sanitizeTableText(input);
+  return normalized.replace(/`/g, "ʼ").replace(/\u200B/g, "").trim();
+}
+
 function truncateWithEllipsis(input: string, maxLength: number): string {
   const normalized = sanitizeTableText(input);
   if (normalized.length <= maxLength) return normalized;
@@ -960,9 +965,11 @@ function formatAlignedInlineRow(
   widths: { playerName: number; value: number },
   statusPrefix: string,
 ): string {
-  const townHallLabel = formatLinkListTownHallLabel(row.townHall);
+  const townHallLabel = sanitizeInlineCodeCell(formatLinkListTownHallLabel(row.townHall));
   const playerName = rightAlign(
-    truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
+    sanitizeInlineCodeCell(
+      truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
+    ),
     widths.playerName,
   );
   const base = `${statusPrefix} \`${townHallLabel}\` \`${playerName}\``;
@@ -970,7 +977,9 @@ function formatAlignedInlineRow(
     return row.rightMarker ? `${base} ${row.rightMarker}` : base;
   }
   const displayValue = rightAlign(
-    row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
+    sanitizeInlineCodeCell(
+      row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
+    ),
     widths.value,
   );
   const line = `${base} \`${displayValue}\``;
@@ -1172,9 +1181,11 @@ async function buildLinkListView(input: {
   currentMembers.forEach((member, index) => {
     const playerTag = normalizePlayerTag(member.playerTag);
     if (!playerTag) return;
-    const playerName = truncateWithEllipsis(
-      sanitizeTableText(member.playerName) || "Unknown",
-      MAX_PLAYER_NAME_CHARS,
+    const playerName = sanitizeInlineCodeCell(
+      truncateWithEllipsis(
+        sanitizeInlineCodeCell(member.playerName) || "Unknown",
+        MAX_PLAYER_NAME_CHARS,
+      ),
     );
     const weightValue = weightByTag.get(playerTag) ?? null;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
@@ -1183,30 +1194,34 @@ async function buildLinkListView(input: {
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
     const link = linkByTag.get(playerTag);
     const linkedDisplayName = link
-      ? truncateWithEllipsis(
-          resolveLinkedUserDisplayName(
-            input.interaction,
-            link.discordUserId,
-            link.discordUsername,
+      ? sanitizeInlineCodeCell(
+          truncateWithEllipsis(
+            sanitizeInlineCodeCell(
+              resolveLinkedUserDisplayName(
+                input.interaction,
+                link.discordUserId,
+                link.discordUsername,
+              ),
+            ),
+            MAX_IDENTITY_CHARS,
           ),
-          MAX_IDENTITY_CHARS,
         )
       : null;
     const displayValue: string | null =
       sortMode === "discord"
-        ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
+        ? sanitizeInlineCodeCell(linkedDisplayName ?? WEIGHT_PLACEHOLDER)
         : sortMode === "weight"
-          ? formatCompactWeightK(weightValue)
+          ? sanitizeInlineCodeCell(formatCompactWeightK(weightValue))
           : sortMode === "player-tags"
-            ? playerTag
+            ? sanitizeInlineCodeCell(playerTag)
             : sortMode === "player"
               ? null
               : sortMode === "clan-rank"
-                ? formatLinkListClanRole(member.role)
-                : formatInactivityMetricLabel({
+                ? sanitizeInlineCodeCell(formatLinkListClanRole(member.role))
+                : sanitizeInlineCodeCell(formatInactivityMetricLabel({
                     daysInactive: inactivityDays,
                     missedWars: inactivityMissedWars,
-                  });
+                  }));
     const discordSort =
       sortMode === "player-tags"
         ? playerTag

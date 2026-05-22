@@ -1387,6 +1387,58 @@ describe("/link run", () => {
     expect(description).not.toContain("``");
   });
 
+  it("escapes backticks in /link list inline-code cells", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Discord ` Nick",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "WIZEX`",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Plain Member",
+        townHall: 17,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rows = getInlineRows(description);
+
+    expect(rows).toHaveLength(2);
+    rows.forEach((row) => {
+      expect(row).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/u);
+      const segments = getInlineRowSegments(row);
+      expect(segments.playerName).not.toContain("`");
+      expect(segments.value).not.toContain("`");
+    });
+    expect(description).toContain("WIZEXʼ");
+    expect(description).toContain("Discord ʼ Nick");
+    expect(description).toContain("Plain Member");
+    expect(description).not.toContain("`WIZEX`");
+    expect(description).not.toContain("`Discord ` Nick`");
+  });
+
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
