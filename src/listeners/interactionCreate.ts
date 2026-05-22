@@ -104,6 +104,7 @@ import {
   handleLinkEmbedButtonInteraction,
   handleLinkEmbedModalSubmit,
   handleLinkListRefreshButton,
+  handleLinkListColumnsSelectMenu,
   handleReminderLinkButtonInteraction,
   handleReminderLinkCancelButtonInteraction,
   handleReminderLinkConfirmButtonInteraction,
@@ -114,6 +115,7 @@ import {
   isReminderLinkCancelButtonCustomId,
   isReminderLinkConfirmButtonCustomId,
   isLinkEmbedModalCustomId,
+  isLinkListColumnsSelectCustomId,
   isLinkListRefreshButtonCustomId,
   isLinkListSelectCustomId,
   isLinkListSortButtonCustomId,
@@ -832,6 +834,20 @@ const handleSelectMenuInteraction = async (
         interaction,
         "Raids intel select menu",
         "Failed to update the raids intel view.",
+        err,
+      );
+    }
+    return;
+  }
+
+  if (isLinkListColumnsSelectCustomId(interaction.customId)) {
+    try {
+      await handleLinkListColumnsSelectMenu(interaction, cocService);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Link list columns select menu",
+        "Failed to update link list columns.",
         err,
       );
     }
