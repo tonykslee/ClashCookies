@@ -17,6 +17,9 @@ const recruitmentServiceMock = vi.hoisted(() => ({
   getRecruitmentCooldown: vi.fn(),
   getRecruitmentTemplate: vi.fn(),
 }));
+const recruitmentPreferenceMock = vi.hoisted(() => ({
+  isEnabled: vi.fn(),
+}));
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -30,6 +33,10 @@ vi.mock("../src/services/RecruitmentService", async () => {
     getRecruitmentTemplate: recruitmentServiceMock.getRecruitmentTemplate,
   };
 });
+
+vi.mock("../src/services/RecruitmentCountdownReminderPreferenceService", () => ({
+  recruitmentCountdownReminderPreferenceService: recruitmentPreferenceMock,
+}));
 
 import {
   autocompleteRecruitmentTimeZones,
@@ -45,6 +52,7 @@ describe("recruitment reminder service", () => {
     vi.clearAllMocks();
     recruitmentServiceMock.getRecruitmentCooldown.mockResolvedValue(null);
     recruitmentServiceMock.getRecruitmentTemplate.mockResolvedValue(null);
+    recruitmentPreferenceMock.isEnabled.mockResolvedValue(true);
     prismaMock.recruitmentReminderRule.findFirst.mockResolvedValue(null);
     prismaMock.recruitmentReminderRule.create.mockResolvedValue({
       id: "rule-1",
@@ -209,6 +217,65 @@ describe("recruitment reminder service", () => {
         scheduledFor: new Date("2026-04-08T17:45:00-07:00"),
         status: "SENT",
         sentAt: new Date("2026-04-08T17:45:00-07:00"),
+      }),
+    });
+  });
+
+  it("skips muted recruitment reminders and advances the schedule", async () => {
+    prismaMock.recruitmentReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-1",
+        guildId: "guild-1",
+        discordUserId: "user-1",
+        clanTag: "#PYLQ0289",
+        platform: "discord",
+        timezone: "America/Los_Angeles",
+        nextReminderAt: new Date("2026-04-08T17:45:00-07:00"),
+        isActive: true,
+        lastSentAt: null,
+        clanNameSnapshot: "Alpha",
+        templateSubject: "Snapshot Subject",
+        templateBody: "Snapshot Body",
+        templateImageUrls: ["https://img.example/snapshot.png"],
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    recruitmentPreferenceMock.isEnabled.mockResolvedValueOnce(false);
+    recruitmentServiceMock.getRecruitmentCooldown.mockResolvedValue({
+      expiresAt: new Date("2026-04-08T18:10:00-07:00"),
+    });
+    recruitmentServiceMock.getRecruitmentTemplate.mockResolvedValue({
+      subject: "Live Subject",
+      body: "Live Body",
+      imageUrls: ["https://img.example/live.png"],
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const fetchUser = vi.fn().mockResolvedValue({ send });
+    const client = { users: { fetch: fetchUser } } as any;
+
+    const counts = await processDueRecruitmentReminders({
+      client,
+      now: new Date("2026-04-08T17:45:00-07:00"),
+    });
+
+    expect(counts).toEqual({ evaluated: 1, sent: 0, failed: 0 });
+    expect(recruitmentPreferenceMock.isEnabled).toHaveBeenCalledWith("guild-1", "user-1");
+    expect(fetchUser).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(prismaMock.recruitmentReminderRule.update).toHaveBeenCalledWith({
+      where: { id: "rule-1" },
+      data: expect.objectContaining({
+        lastSentAt: null,
+        nextReminderAt: new Date("2026-04-08T18:30:00-07:00"),
+      }),
+    });
+    expect(prismaMock.recruitmentReminderDelivery.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        reminderRuleId: "rule-1",
+        scheduledFor: new Date("2026-04-08T17:45:00-07:00"),
+        status: "SKIPPED",
+        errorDetails: "RECRUITMENT_REMINDER_MUTED",
       }),
     });
   });

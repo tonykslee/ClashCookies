@@ -689,7 +689,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`show` renders platform-specific recruitment output for a tracked clan.",
       "`edit` now requires platform and opens a platform-specific modal (discord/band/reddit fields differ).",
       "`countdown start` begins exact platform cooldown timers; `countdown status` shows your timers.",
-      "`countdown settings reminders:true|false` mutes or unmutes recruitment cooldown reminder pings for your countdown timers without deleting them; muted timers still appear in status/dashboard.",
+      "`countdown settings reminders:true|false` mutes or unmutes recruitment reminder pings for your countdown timers and dashboard-scheduled reminders without deleting them; muted timers still appear in status/dashboard.",
       "`dashboard` accepts an optional IANA `timezone`, remembers your last dashboard timezone from `/sync time post`, and opens an interactive alliance/clan dashboard with timers, scripts, optimize guidance, timezone controls, a Start countdown button, and reminder scheduling.",
     ],
     examples: [

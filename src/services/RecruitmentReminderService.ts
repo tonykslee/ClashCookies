@@ -2,6 +2,7 @@ import { Client } from "discord.js";
 import { prisma } from "../prisma";
 import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "./syncTimeZone";
 import { formatError } from "../helper/formatError";
+import { recruitmentCountdownReminderPreferenceService } from "./RecruitmentCountdownReminderPreferenceService";
 import { getRecruitmentCooldown, getRecruitmentTemplate } from "./RecruitmentService";
 import { normalizeClanTag } from "./PlayerLinkService";
 
@@ -574,6 +575,10 @@ export async function processDueRecruitmentReminders(input: {
 
   for (const rule of dueRules) {
     evaluated += 1;
+    const remindersEnabled = await recruitmentCountdownReminderPreferenceService.isEnabled(
+      rule.guildId,
+      rule.discordUserId,
+    );
     const cooldown = await getRecruitmentCooldown(rule.guildId, rule.discordUserId, rule.clanTag, rule.platform as any);
     const template = await getRecruitmentTemplate(rule.guildId, rule.clanTag, rule.platform as any);
     const content = buildRecruitmentReminderDmContent({
@@ -585,6 +590,33 @@ export async function processDueRecruitmentReminders(input: {
       templateBody: rule.templateBody || template?.body || "",
       templateImageUrls: rule.templateImageUrls.length > 0 ? rule.templateImageUrls : template?.imageUrls ?? [],
     });
+
+    if (!remindersEnabled) {
+      const nextReminderAt =
+        getNextRecruitmentReminderSlot({
+          platform: rule.platform,
+          timezone: rule.timezone,
+          after: now,
+          cooldownExpiresAt: cooldown?.expiresAt ?? null,
+        }) ?? new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      await prisma.recruitmentReminderRule.update({
+        where: { id: rule.id },
+        data: {
+          lastSentAt: null,
+          nextReminderAt,
+        },
+      });
+      await createRecruitmentReminderDelivery({
+        reminderRuleId: rule.id,
+        scheduledFor: rule.nextReminderAt,
+        status: "SKIPPED",
+        errorDetails: "RECRUITMENT_REMINDER_MUTED",
+      });
+      console.info(
+        `[recruitment-reminder] skipped guild=${rule.guildId} user=${rule.discordUserId} clan=${rule.clanTag} platform=${rule.platform} reason=RECRUITMENT_REMINDER_MUTED`,
+      );
+      continue;
+    }
 
     try {
       const user = await input.client.users.fetch(rule.discordUserId);
