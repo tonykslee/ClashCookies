@@ -24,26 +24,6 @@ const trackedMessageSyncRemindersMock = vi.hoisted(() => vi.fn().mockResolvedVal
 const warEventPollMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const warEventRefreshMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mirrorSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-const fwaChecklistRenderMock = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({
-    rows: [
-      {
-        clanTag: "RR",
-        compactCopyLine: "📬 | 🟢 | RR vs `Bravo` (`#B1`)",
-        badgeEmojiId: "111",
-        badgeEmojiName: "rr",
-        badgeEmojiInline: "<:rr:111>",
-        contextKey: "ctx-rr",
-      },
-    ],
-    scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
-    checkedClanTags: [],
-    referenceId: "sync-message-1",
-    emptyMessage: null,
-  }),
-);
-const fwaChecklistPublishMock = vi.hoisted(() => vi.fn().mockResolvedValue("checklist-message-1"));
-const fwaSourceSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn().mockResolvedValue([]),
@@ -169,8 +149,6 @@ vi.mock("../src/services/WarEventLogService", () => ({
 
 vi.mock("../src/commands/Fwa", () => ({
   refreshAllTrackedWarMailPosts: vi.fn().mockResolvedValue(undefined),
-  buildFwaMatchChecklistRenderStateForGuild: fwaChecklistRenderMock,
-  getSourceOfTruthSync: fwaSourceSyncMock,
 }));
 
 vi.mock("../src/services/TelemetryIngestService", () => ({
@@ -209,10 +187,6 @@ vi.mock("../src/services/TrackedMessageService", async () => {
     },
   };
 });
-
-vi.mock("../src/services/FwaMatchChecklistService", () => ({
-  publishFwaMatchChecklistMessageToChannel: fwaChecklistPublishMock,
-}));
 
 vi.mock("../src/services/HeatMapRefRebuildService", () => ({
   HeatMapRefRebuildService: vi.fn().mockImplementation(() => ({
@@ -493,9 +467,6 @@ describe("ready listener startup", () => {
 
     await runStartup();
 
-    expect(fwaChecklistRenderMock).not.toHaveBeenCalled();
-    expect(fwaChecklistPublishMock).not.toHaveBeenCalled();
-    expect(fwaSourceSyncMock).not.toHaveBeenCalled();
   });
 
   it("marks active-only poll jobs disabled in mirror mode", async () => {
@@ -530,7 +501,6 @@ describe("ready listener startup", () => {
         displayName: "User activity reminder scheduler",
       }),
     );
-    expect(fwaChecklistPublishMock).not.toHaveBeenCalled();
   });
 
   it("keeps startup working when a poll-status write fails", async () => {

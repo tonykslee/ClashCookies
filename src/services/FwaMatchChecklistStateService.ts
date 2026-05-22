@@ -2,7 +2,7 @@ import { Client } from "discord.js";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag } from "./PlayerLinkService";
-import { sanitizeClanName, parseCocApiTime } from "../commands/fwa/dataParsers";
+import { sanitizeClanName, parseCocApiTime } from "./fwaChecklistParsers";
 import {
   buildFwaMatchChecklistRowContextKey,
   buildFwaMatchChecklistScopeKey,

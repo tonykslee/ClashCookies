@@ -37,10 +37,6 @@ vi.mock("../src/services/CoCService", () => ({
   CoCService: vi.fn().mockImplementation(() => ({})),
 }));
 
-vi.mock("../src/commands/Fwa", () => ({
-  refreshAllTrackedWarMailPosts: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
   buildFwaMatchChecklistRenderStateForGuild:
     fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,

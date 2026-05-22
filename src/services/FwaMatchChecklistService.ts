@@ -18,7 +18,7 @@ import {
 import {
   buildFwaMatchChecklistRefreshCustomId,
   isFwaMatchChecklistRefreshButtonCustomId,
-} from "../commands/fwa/customIds";
+} from "./fwaCustomIds";
 import {
   buildFwaMatchChecklistRenderStateForGuild,
 } from "./FwaMatchChecklistStateService";

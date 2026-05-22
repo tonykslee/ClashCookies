@@ -1,6 +1,6 @@
 import { Client, EmbedBuilder } from "discord.js";
 import { normalizeClanTag } from "./PlayerLinkService";
-import { resolveFwaMatchStateEmoji } from "../commands/fwa/matchStateEmoji";
+import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 
