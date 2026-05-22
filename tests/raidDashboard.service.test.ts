@@ -519,6 +519,9 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("- 🏘️");
     expect(overview).not.toContain("🛡️");
     expect(overview).not.toContain("GM, SP, GQ");
+    expect(overview).toContain("🗡");
+    expect(overview).toMatch(/🏠.*\/9/);
+    expect(overview).toContain("att/raid");
   });
 
   it("omits the defense shield metric when the active season defense counts are unknown", () => {
@@ -562,6 +565,181 @@ describe("RaidDashboardService", () => {
     const titleLine = overview.split("\n").find((line) => line.includes("[Alpha Raid]"));
     expect(titleLine).toContain("🛡️46");
     expect(titleLine).toContain("`#2QG2C08UP`");
+  });
+
+  it("renders offensive overview metrics from the active raid attack log and hides intel after the first clear", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 5 }],
+      attackLog: [
+        {
+          defender: { name: "Open One", tag: "#OPEN1" },
+          attackCount: 24,
+          districtCount: 9,
+          districtsDestroyed: 9,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 24,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+        {
+          defender: { name: "Open Two", tag: "#OPEN2" },
+          attacksUsed: 25,
+          districtCount: 9,
+          districtsDestroyed: 9,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 25,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 42,
+          districtCount: 9,
+          districtsDestroyed: 7,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Wizard Valley",
+              districtHallLevel: 4,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Balloon Lagoon",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Barbarian Camp",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Golem Quarry",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Dragon Cliffs",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Skeleton Park",
+              districtHallLevel: 4,
+              attackCount: 3,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Builders Workshop",
+              districtHallLevel: 5,
+              attackCount: 3,
+              destructionPercent: 50,
+              stars: 1,
+            },
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 3,
+              destructionPercent: 0,
+              stars: 0,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      raidsCompleted: null,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    expect(rows[0]?.offensiveDistrictsDestroyed).toBe(7);
+    expect(rows[0]?.offensiveAverageAttacksPerCompletedRaid).toBe(24.5);
+    expect(rows[0]?.raidsCompleted).toBe(2);
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    expect(overview).toContain("🗡 11");
+    expect(overview).toMatch(/🏠.*7\/9/);
+    expect(overview).toContain("📈 24.5 att/raid");
+    expect(overview).not.toContain("- 🏘️");
+  });
+
+  it("renders the offensive overview line when intel is hidden after the first completed raid", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 1,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: null,
+        offensiveAverageAttacksPerCompletedRaid: null,
+        raidIntelMarks: [
+          { districtName: "Dragon Cliffs", layoutGrade: "CUSTOM_EASY" },
+          { districtName: "Balloon Lagoon", layoutGrade: "CUSTOM_MEDIUM" },
+          { districtName: "Wizard Valley", layoutGrade: "CUSTOM_HARD" },
+        ],
+      } as any,
+    ]);
+
+    expect(overview).not.toContain("- 🏘️");
+    expect(overview).toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
+    expect(overview).not.toContain("GM, SP, GQ");
   });
 
   it("sorts overview rows by ongoing status, raids completed, and default layout count", async () => {
