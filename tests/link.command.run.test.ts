@@ -1276,7 +1276,6 @@ describe("/link run", () => {
         linked: "✅",
         unlinked: "❌",
       },
-      townHallEmojiByLevel: new Map([[18, "<:th18:1>"]]),
     });
     const playerTagLines = buildLinkListDescriptionLinesForTest({
       linkedRows: [
@@ -1304,7 +1303,6 @@ describe("/link run", () => {
         linked: "✅",
         unlinked: "❌",
       },
-      townHallEmojiByLevel: new Map([[18, "<:th18:1>"]]),
       sortMode: "player-tags",
     });
 
@@ -1420,6 +1418,48 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("persisted");
     expect(description).not.toContain("<@111111111111111111>");
+  });
+
+  it("truncates displayed Discord and player names to 15 characters in /link list rows", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Persisted Discord Username Is Very Long",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Player Name Is Also Much Longer Than Limit",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+      guildMemberNames: {
+        "111111111111111111": "Discord Display Name Is Extremely Long",
+      },
+    });
+    await Link.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const row = getInlineRowSegments(getInlineRows(description)[0] ?? "");
+    const expectedDiscordDisplay = "Persisted Discord Username Is Very Long".slice(0, 12) + "...";
+    const expectedPlayerName = "Player Name Is Also Much Longer Than Limit".slice(0, 12) + "...";
+    expect(row.left).toBe(expectedDiscordDisplay);
+    expect(row.left).toHaveLength(15);
+    expect(row.player).toBe(expectedPlayerName);
+    expect(row.player).toHaveLength(15);
+    expect(description).not.toContain("Discord Display Name Is Extremely Long");
+    expect(description).not.toContain("Player Name Is Also Much Longer Than Limit");
   });
 
   it("falls back to deterministic placeholder when user cannot be resolved", async () => {
