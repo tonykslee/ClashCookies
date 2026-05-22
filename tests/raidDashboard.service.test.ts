@@ -337,7 +337,7 @@ describe("RaidDashboardService", () => {
                 {
                   defender: { name: "Defender Clan", tag: "#2DEFEND1" },
                   districtCount: 2,
-                  districtsDestroyed: 1,
+                  districtsDestroyed: 0,
                   districts: [
                     {
                       name: "Capital Hall",
@@ -349,7 +349,23 @@ describe("RaidDashboardService", () => {
                   ],
                 },
               ],
-              defenseLog: [],
+              defenseLog: [
+                {
+                  attacker: { name: "Defender Clan", tag: "#2DEFEND1" },
+                  attackCount: 46,
+                  districtCount: 7,
+                  districtsDestroyed: 4,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      attackCount: 46,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                  ],
+                },
+              ],
               raidsCompleted: null,
             },
           ];
@@ -370,7 +386,7 @@ describe("RaidDashboardService", () => {
 
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
-    expect(overview).toContain("- ⚔️ 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
+    expect(overview).toContain("- 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
     expect(overview).not.toContain("- ⚔️ 🏘️ 2210 | defaults: 3 | GM, SP, GQ");
 
     const drilldown = buildRaidDashboardSingleClanDescription(sourceRow as any, {
@@ -441,7 +457,23 @@ describe("RaidDashboardService", () => {
                   ],
                 },
               ],
-              defenseLog: [],
+              defenseLog: [
+                {
+                  attacker: { name: "Defender Clan", tag: "#2DEFEND1" },
+                  attackCount: 46,
+                  districtCount: 7,
+                  districtsDestroyed: 4,
+                  districts: [
+                    {
+                      name: "Capital Hall",
+                      districtHallLevel: 5,
+                      attackCount: 46,
+                      destructionPercent: 100,
+                      stars: 3,
+                    },
+                  ],
+                },
+              ],
               raidsCompleted: null,
             },
           ];
@@ -458,10 +490,6 @@ describe("RaidDashboardService", () => {
 
     const sourceRow = rows.find((row) => row.clanTag === "2QG2C08UP");
     expect(sourceRow?.raidIntelDefenderUpgrades).toBe(1444);
-
-    const overview = buildRaidDashboardOverviewDescription(rows);
-    expect(overview).toContain("- ⚔️ 🏘️ 1444 | defaults: 1 | GM");
-    expect(overview).not.toContain("- ⚔️ 🏘️ 2210 | defaults: 1 | GM");
   });
 
   it("renders zero defaults in the overview intel line when only non-default marks exist", () => {
@@ -479,6 +507,7 @@ describe("RaidDashboardService", () => {
         raidsCompleted: 1,
         defaultLayoutCount: 0,
         intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
         raidIntelMarks: [
           { districtName: "Dragon Cliffs", layoutGrade: "CUSTOM_EASY" },
           { districtName: "Balloon Lagoon", layoutGrade: "CUSTOM_MEDIUM" },
@@ -487,8 +516,52 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- ⚔️ 🏘️ — | defaults: 0 | —");
+    expect(overview).not.toContain("- 🏘️");
+    expect(overview).not.toContain("🛡️");
     expect(overview).not.toContain("GM, SP, GQ");
+  });
+
+  it("omits the defense shield metric when the active season defense counts are unknown", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2XYZ12345",
+        clanName: "Charlie Raid",
+        upgrades: 400,
+        joinType: "open",
+        createdAt: new Date("2026-05-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: null,
+        maxDefenseAttacksUsed: null,
+      } as any,
+    ]);
+
+    expect(overview).toContain("Charlie Raid");
+    expect(overview).not.toContain("🛡️");
+  });
+
+  it("renders the defense shield metric in the overview title when a max defense count is known", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 11,
+        attacksMax: 12,
+        hasOngoingRaid: true,
+        raidsCompleted: 0,
+        maxDefenseAttacksUsed: 46,
+      } as any,
+    ]);
+
+    const titleLine = overview.split("\n").find((line) => line.includes("[Alpha Raid]"));
+    expect(titleLine).toContain("🛡️46");
+    expect(titleLine).toContain("`#2QG2C08UP`");
   });
 
   it("sorts overview rows by ongoing status, raids completed, and default layout count", async () => {
@@ -559,7 +632,23 @@ describe("RaidDashboardService", () => {
           ],
         },
       ],
-      defenseLog: [],
+      defenseLog: [
+        {
+          attacker: { name: "Thunder Squad", tag: "#THUNDER" },
+          attackCount: 46,
+          districtCount: 9,
+          districtsDestroyed: 3,
+          districts: [
+            {
+              name: "Capital Hall",
+              districtHallLevel: 5,
+              attackCount: 46,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
       raidsCompleted: null,
     };
 
@@ -603,6 +692,7 @@ describe("RaidDashboardService", () => {
         attacksMax: null,
         hasOngoingRaid: false,
         raidsCompleted: null,
+        maxDefenseAttacksUsed: null,
       } as any,
     ]);
 
@@ -1162,6 +1252,7 @@ describe("RaidDashboardService", () => {
         attacksCompleted: null,
         attacksMax: null,
         raidsCompleted: null,
+        maxDefenseAttacksUsed: null,
         openDefenseSections: [
           {
             attackerName: "Completed Clan",
