@@ -21,7 +21,6 @@ const fwaChecklistRenderStateMock = vi.hoisted(() => ({
     referenceId: "sync-message-1",
     emptyMessage: null,
   }),
-  getSourceOfTruthSync: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../src/services/TrackedMessageService", async () => {
@@ -40,9 +39,11 @@ vi.mock("../src/services/CoCService", () => ({
 
 vi.mock("../src/commands/Fwa", () => ({
   refreshAllTrackedWarMailPosts: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
   buildFwaMatchChecklistRenderStateForGuild:
     fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
-  getSourceOfTruthSync: fwaChecklistRenderStateMock.getSourceOfTruthSync,
 }));
 
 import {
@@ -284,12 +285,10 @@ describe("FWA match checklist service", () => {
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(
-      fwaChecklistRenderStateMock.getSourceOfTruthSync,
-    ).toHaveBeenCalledWith(expect.any(Object), "guild-1");
-    expect(
       fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
     ).toHaveBeenCalledWith(
       expect.objectContaining({
+        cocService: expect.any(Object),
         guildId: "guild-1",
         client: expect.any(Object),
         warLookupCache: expect.any(Map),

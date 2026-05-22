@@ -9,7 +9,6 @@ import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
-import { SettingsService } from "./SettingsService";
 import {
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistRowContextKey,
@@ -20,6 +19,9 @@ import {
   buildFwaMatchChecklistRefreshCustomId,
   isFwaMatchChecklistRefreshButtonCustomId,
 } from "../commands/fwa/customIds";
+import {
+  buildFwaMatchChecklistRenderStateForGuild,
+} from "./FwaMatchChecklistStateService";
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
@@ -335,17 +337,11 @@ export async function handleFwaMatchChecklistRefreshButton(
   const refreshed = await (async () => {
     try {
       if (!guildId) return false;
-      const { buildFwaMatchChecklistRenderStateForGuild, getSourceOfTruthSync } =
-        await import("../commands/Fwa");
-      const settings = new SettingsService();
-      const sourceSync = await getSourceOfTruthSync(settings, guildId);
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService: new CoCService(),
-        sourceSync,
         guildId,
         warLookupCache: new Map(),
         client: interaction.client,
-        mailStatusDebugEnabled: false,
       });
       const updated = await trackedMessageService
         .refreshFwaMatchChecklistMessage(
