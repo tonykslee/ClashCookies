@@ -22,15 +22,9 @@ import { toPositiveCompoWeight } from "../helper/compoActualWeight";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
-import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { InactiveWarService, type InactiveWarMetricRow } from "../services/InactiveWarService";
 import { listFillerAccountTagsForGuild } from "../services/FillerAccountService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
-import {
-  renderTownHallIcon,
-  resolveTownHallEmojiMap,
-  type TownHallEmojiMap,
-} from "../helper/townHallEmoji";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
@@ -92,12 +86,11 @@ const LINK_EMBED_SETUP_MODAL_TITLE = "Link Account Embed";
 const LINK_EMBED_TAG_MODAL_TITLE = "Link Account";
 const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 
-const MAX_PLAYER_NAME_CHARS = 28;
-const MAX_IDENTITY_CHARS = 30;
-const LINK_LIST_LINKED_EMOJI_NAME = "yes";
-const LINK_LIST_UNLINKED_EMOJI_NAME = "no";
-const LINK_LIST_LINKED_FALLBACK_EMOJI = "✅";
-const LINK_LIST_UNLINKED_FALLBACK_EMOJI = "❌";
+const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
+const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
+const MAX_IDENTITY_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
+const LINK_LIST_LINKED_STATUS_EMOJI = "✅";
+const LINK_LIST_UNLINKED_STATUS_EMOJI = "❌";
 const WEIGHT_PLACEHOLDER = "—";
 const LINK_LIST_SORT_MODE_CYCLE = [
   "discord",
@@ -769,30 +762,10 @@ type LinkListStatusIcons = {
   unlinked: string;
 };
 
-async function resolveLinkListStatusIcons(
-  client: LinkListInteraction["client"],
-): Promise<LinkListStatusIcons> {
-  const fallback: LinkListStatusIcons = {
-    linked: LINK_LIST_LINKED_FALLBACK_EMOJI,
-    unlinked: LINK_LIST_UNLINKED_FALLBACK_EMOJI,
-  };
-
-  const inventory = await emojiResolverService
-    .fetchApplicationEmojiInventory(client as Client)
-    .catch(() => null);
-  if (!inventory?.ok) return fallback;
-
-  const resolveByName = (name: string): string | null => {
-    const exact = inventory.snapshot.exactByName.get(name);
-    if (exact?.rendered) return exact.rendered;
-    const lower = inventory.snapshot.lowercaseByName.get(name.toLowerCase());
-    if (lower?.rendered) return lower.rendered;
-    return null;
-  };
-
+function resolveLinkListStatusIcons(): LinkListStatusIcons {
   return {
-    linked: resolveByName(LINK_LIST_LINKED_EMOJI_NAME) ?? fallback.linked,
-    unlinked: resolveByName(LINK_LIST_UNLINKED_EMOJI_NAME) ?? fallback.unlinked,
+    linked: LINK_LIST_LINKED_STATUS_EMOJI,
+    unlinked: LINK_LIST_UNLINKED_STATUS_EMOJI,
   };
 }
 
@@ -909,6 +882,12 @@ function formatCompactWeightK(weight: number | null | undefined): string {
   return `${Math.trunc(resolvedWeight / 1000)}k`;
 }
 
+function formatLinkListTownHallLabel(townHall: number | null | undefined): string {
+  const resolvedTownHall = normalizePositiveTownHall(townHall);
+  if (resolvedTownHall === null) return "TH?";
+  return `TH${resolvedTownHall}`;
+}
+
 function formatInactivityMetricLabel(input: {
   daysInactive: number | null;
   missedWars: number | null;
@@ -947,10 +926,9 @@ function formatAlignedInlineRow(
   row: LinkListRowInput,
   widths: { left: number; player: number; weight: number },
   statusPrefix: string,
-  townHallEmojiByLevel: TownHallEmojiMap,
   sortMode: LinkListSortMode,
 ): string {
-  const townHallIcon = renderTownHallIcon(row.townHall, townHallEmojiByLevel);
+  const townHallLabel = formatLinkListTownHallLabel(row.townHall);
   const leftLabel = rightAlign(
     row.leftLabel.trim().length > 0 ? row.leftLabel : WEIGHT_PLACEHOLDER,
     widths.left,
@@ -962,8 +940,8 @@ function formatAlignedInlineRow(
   const playerTagSegment = rowMode === "player-tags" ? ` \`${playerTag}\`` : "";
   const base =
     rowMode === "inactivity"
-      ? `${statusPrefix} ${townHallIcon} \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``
-      : `${statusPrefix} ${townHallIcon} \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``;
+      ? `${statusPrefix} \`${townHallLabel}\` \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``
+      : `${statusPrefix} \`${townHallLabel}\` \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``;
   if (!row.rightMarker) return base;
   return `${base} ${row.rightMarker}`;
 }
@@ -1004,7 +982,7 @@ function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
-  townHallEmojiByLevel: TownHallEmojiMap;
+  townHallEmojiByLevel?: unknown;
   sortMode?: LinkListSortMode;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
@@ -1021,7 +999,7 @@ function buildLinkListDescriptionLines(input: {
           left: widths.left,
           player: widths.player,
           weight: widths.weight,
-        }, input.statusIcons.linked, input.townHallEmojiByLevel, sortMode),
+        }, input.statusIcons.linked, sortMode),
       ),
     );
   }
@@ -1034,7 +1012,7 @@ function buildLinkListDescriptionLines(input: {
           left: widths.left,
           player: widths.player,
           weight: widths.weight,
-        }, input.statusIcons.unlinked, input.townHallEmojiByLevel, sortMode),
+        }, input.statusIcons.unlinked, sortMode),
       ),
     );
   }
@@ -1221,9 +1199,7 @@ async function buildLinkListView(input: {
         weight,
         playerName,
         rowMode: sortMode,
-        rightMarker: fillerTagSet.has(playerTag)
-          ? ":person_standing:"
-          : null,
+        rightMarker: fillerTagSet.has(playerTag) ? "🧍" : null,
       },
     });
   });
@@ -1240,13 +1216,11 @@ async function buildLinkListView(input: {
     unlinkedRows.push(row.row);
   }
 
-  const statusIcons = await resolveLinkListStatusIcons(input.interaction.client);
-  const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
+  const statusIcons = resolveLinkListStatusIcons();
   const lines = buildLinkListDescriptionLines({
     linkedRows,
     unlinkedRows,
     statusIcons,
-    townHallEmojiByLevel,
     sortMode,
   });
 
