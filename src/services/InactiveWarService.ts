@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import { resolveFwaMatchStateEmoji } from "../commands/fwa/matchStateEmoji";
+import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 
 type TrackedClanRow = {
   tag: string;

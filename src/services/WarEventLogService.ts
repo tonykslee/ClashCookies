@@ -46,7 +46,7 @@ import {
   fireBattleDayTransitionWar24hRemindersForClan,
   fireBattleDayTransitionWar24hRemindersForGuild,
 } from "./reminders/ReminderSchedulerService";
-import { buildFwaComplianceEmbedView } from "../commands/fwa/complianceEmbedView";
+import { buildFwaComplianceEmbedView } from "./FwaComplianceEmbedViewService";
 import {
   buildComplianceWarPlanText,
   sanitizeWarPlanForEmbed,

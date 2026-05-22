@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import { buildAccountsRows } from "../commands/Accounts";
+import { buildAccountsRows } from "./AccountRowsService";
 import {
   getPlayerLinksForDiscordUserWithTrust,
   listPlayerLinksForDiscordUser,

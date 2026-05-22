@@ -41,8 +41,6 @@ import {
 import { GoogleSheetsService } from "../services/GoogleSheetsService";
 import { SettingsService } from "../services/SettingsService";
 import {
-  buildFwaMatchChecklistScopeKey,
-  findLatestFwaMatchChecklistCheckedClanTags,
   trackedMessageService,
   type FwaMatchChecklistTrackedRow,
 } from "../services/TrackedMessageService";
@@ -51,6 +49,10 @@ import {
   buildFwaMatchChecklistRowsFromCopyView,
   postFwaMatchChecklistMessage,
 } from "../services/FwaMatchChecklistService";
+import {
+  buildFwaMatchChecklistRenderStateForGuild,
+} from "../services/FwaMatchChecklistStateService";
+import { getSourceOfTruthSync as getSourceOfTruthSyncService } from "../services/FwaSourceOfTruthService";
 import { blacklistClanService } from "../services/BlacklistClanService";
 import {
   blacklistMatchSampleService,
@@ -110,7 +112,6 @@ import {
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
 import {
-  ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
   resolveActiveWarSyncNumber,
@@ -267,9 +268,6 @@ const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const warMailLifecycleService = new WarMailLifecycleService();
 const pointsSyncService = new PointsSyncService();
-const activeWarSyncResolutionService = new ActiveWarSyncResolutionService(
-  pointsSyncService,
-);
 const warComplianceService = new WarComplianceService();
 const fwaStatsWeightService = new FwaStatsWeightService();
 const fwaStatsWeightCookieService = new FwaStatsWeightCookieService();
@@ -8732,10 +8730,7 @@ export async function getSourceOfTruthSync(
   _settings: SettingsService,
   _guildId?: string | null,
 ): Promise<number | null> {
-  void _settings;
-  return activeWarSyncResolutionService.getLatestPersistedSyncBaseline({
-    guildId: _guildId ?? null,
-  });
+  return getSourceOfTruthSyncService(_settings, _guildId ?? null);
 }
 
 function getWarStartDateForSync(
@@ -11747,84 +11742,7 @@ async function buildTrackedMatchOverview(
     copyText: limitDiscordContent(copyLines.join("\n")),
     singleViews,
   };
-}
-
-export type FwaMatchChecklistRenderState = {
-  rows: FwaMatchChecklistTrackedRow[];
-  scopeKey: string;
-  checkedClanTags: string[];
-  referenceId: string | null;
-  emptyMessage: string | null;
-};
-
-export async function buildFwaMatchChecklistRenderStateForGuild(params: {
-  cocService: CoCService;
-  sourceSync: number | null;
-  guildId: string;
-  warLookupCache?: any;
-  client: Client;
-  mailStatusDebugEnabled?: boolean;
-}): Promise<FwaMatchChecklistRenderState> {
-  const overview = await buildTrackedMatchOverview(
-    params.cocService,
-    params.sourceSync,
-    params.guildId,
-    params.warLookupCache,
-    params.client,
-    {
-      includeActualSheet: false,
-      mailStatusDebugEnabled: params.mailStatusDebugEnabled ?? false,
-      compactChecklist: true,
-    },
-  );
-  const orderedTags = Object.keys(overview.singleViews);
-  const latestActiveSyncPost =
-    await trackedMessageService.resolveLatestActiveSyncPost(params.guildId).catch(() => null);
-  if (orderedTags.length === 0) {
-    return {
-      rows: [],
-      scopeKey: buildFwaMatchChecklistScopeKey({
-        guildId: params.guildId,
-        clanTag: null,
-        rows: [],
-      }),
-      checkedClanTags: [],
-      referenceId: latestActiveSyncPost?.messageId ?? null,
-      emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
-    };
-  }
-
-  const trackedClanRows = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { tag: true, clanBadge: true },
-  });
-  const badgeByTag = new Map(
-    trackedClanRows.map((row) => [row.tag, row.clanBadge ?? null]),
-  );
-  const rows = buildFwaMatchChecklistRowsFromCopyView({
-    orderedTags,
-    copyText: overview.copyText,
-    badgeByTag,
-    contextKeyByTag: buildFwaMatchChecklistContextKeyByTag(overview.singleViews),
-  });
-  const scopeKey = buildFwaMatchChecklistScopeKey({
-    guildId: params.guildId,
-    clanTag: null,
-    rows,
-  });
-  const checkedClanTags = await findLatestFwaMatchChecklistCheckedClanTags({
-    guildId: params.guildId,
-    clanTag: null,
-    scopeKey,
-  });
-  return {
-    rows,
-    scopeKey,
-    checkedClanTags,
-    referenceId: latestActiveSyncPost?.messageId ?? null,
-    emptyMessage: null,
-  };
-}
+} 
 
 export async function runForceSyncDataCommand(
   interaction: ChatInputCommandInteraction,
@@ -13439,11 +13357,9 @@ export const Fwa: Command = {
       }
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService,
-        sourceSync,
         guildId: interaction.guildId ?? "",
         warLookupCache,
         client: interaction.client,
-        mailStatusDebugEnabled: matchMailStatusDebugEnabled,
       });
       await postFwaMatchChecklistMessage({
         interaction,

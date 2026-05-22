@@ -132,8 +132,8 @@ describe("command coverage", () => {
     expect(fwaHelpText).toContain("/fwa match-checklist");
     expect(fwaHelpText).not.toContain("checklist:true");
     expect(normalized).toContain("public checklist posts are auto-pinned");
-    expect(normalized).toContain("3 minutes after sync time");
-    expect(normalized).toContain("refreshing the checklist updates mailbox and match-type emoji status");
+    expect(normalized).toContain("persistent reaction-driven checklist");
+    expect(normalized).toContain("can be refreshed to rebuild the current match state");
     expect(normalized).toContain("snapshot without reactions");
   });
 
@@ -221,6 +221,14 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
     expect(linkHelpText).toContain("days are shown as `—`");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
+  });
+
+  it("documents recruitment countdown reminder settings in the recruitment help detail text", () => {
+    const recruitmentHelpText = helpEmbedText("recruitment");
+    const normalized = recruitmentHelpText.toLowerCase();
+    expect(recruitmentHelpText).toContain("/recruitment countdown settings reminders:false");
+    expect(normalized).toContain("reminders:true|false");
+    expect(normalized).toContain("muted timers still appear");
   });
 
   it("documents /compo heatmapref blacklist mode in the compo help detail text", () => {

@@ -34,6 +34,7 @@ import {
   toImageUrlsCsv,
   upsertRecruitmentTemplate,
 } from "../services/RecruitmentService";
+import { recruitmentCountdownReminderPreferenceService } from "../services/RecruitmentCountdownReminderPreferenceService";
 import {
   autocompleteRecruitmentTimeZones,
   getDateKeyInTimeZone,
@@ -1165,6 +1166,33 @@ async function handleCountdownStatusSubcommand(
   await interaction.editReply(truncateDiscordContent(lines.join("\n")));
 }
 
+async function handleCountdownSettingsSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command can only be used in a server.",
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const remindersEnabled = interaction.options.getBoolean("reminders", true);
+  await recruitmentCountdownReminderPreferenceService.setEnabled({
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    enabled: remindersEnabled,
+  });
+
+  await interaction.editReply(
+    remindersEnabled
+      ? "Recruitment reminder pings are now enabled for your cooldown timers."
+      : "Recruitment reminder pings are now disabled for your cooldown timers.",
+  );
+}
+
 async function handleDashboardSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.guildId) {
     await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
@@ -1596,6 +1624,19 @@ export const Recruitment: Command = {
           description: "Show your recruitment cooldown status",
           type: ApplicationCommandOptionType.Subcommand,
         },
+        {
+          name: "settings",
+          description: "Mute or unmute recruitment cooldown reminder pings",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "reminders",
+              description: "Enable or disable recruitment reminder pings",
+              type: ApplicationCommandOptionType.Boolean,
+              required: true,
+            },
+          ],
+        },
       ],
     },
     {
@@ -1627,6 +1668,10 @@ export const Recruitment: Command = {
     }
     if (group === "countdown" && sub === "status") {
       await handleCountdownStatusSubcommand(interaction);
+      return;
+    }
+    if (group === "countdown" && sub === "settings") {
+      await handleCountdownSettingsSubcommand(interaction);
       return;
     }
     if (group) {

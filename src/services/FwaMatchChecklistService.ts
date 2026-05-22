@@ -8,6 +8,7 @@ import {
 import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
+import { CoCService } from "./CoCService";
 import {
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistRowContextKey,
@@ -17,7 +18,10 @@ import {
 import {
   buildFwaMatchChecklistRefreshCustomId,
   isFwaMatchChecklistRefreshButtonCustomId,
-} from "../commands/fwa/customIds";
+} from "./fwaCustomIds";
+import {
+  buildFwaMatchChecklistRenderStateForGuild,
+} from "./FwaMatchChecklistStateService";
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
@@ -329,14 +333,39 @@ export async function handleFwaMatchChecklistRefreshButton(
 ): Promise<void> {
   if (!isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) return;
   await interaction.deferUpdate();
-  const refreshed = await trackedMessageService
-    .refreshFwaMatchChecklistMessage(interaction.message as any)
-    .catch((err) => {
+  const guildId = interaction.guildId ?? null;
+  const refreshed = await (async () => {
+    try {
+      if (!guildId) return false;
+      const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService: new CoCService(),
+        guildId,
+        warLookupCache: new Map(),
+        client: interaction.client,
+      });
+      const updated = await trackedMessageService
+        .refreshFwaMatchChecklistMessage(
+          interaction.message as any,
+          null,
+          {
+            rows: checklistState.rows,
+            scopeKey: checklistState.scopeKey,
+          },
+        )
+        .catch((err) => {
+          console.error(
+            `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
+          );
+          return false;
+        });
+      return updated;
+    } catch (err) {
       console.error(
         `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
       );
       return false;
-    });
+    }
+  })();
   if (!refreshed) {
     await interaction
       .followUp({
