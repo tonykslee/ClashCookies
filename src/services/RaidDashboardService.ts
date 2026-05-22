@@ -84,6 +84,9 @@ export type RaidDashboardCountRow = {
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
   defaultLayoutCount: number | null;
   raidIntelDefenderUpgrades: number | null;
+  maxDefenseAttacksUsed: number | null;
+  offensiveDistrictsDestroyed: number | null;
+  offensiveAverageAttacksPerCompletedRaid: number | null;
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
@@ -495,6 +498,107 @@ function calculateCompletedRaidsFromAttackLog(
   }
 
   return sawUsableLog ? completed : null;
+}
+
+function calculateAttackCountFromRaidLogEntry(
+  entry: Record<string, unknown>,
+  districts: RaidDashboardDistrictRow[],
+): number | null {
+  const aggregateAttackCount = normalizeNonNegativeInt(
+    entry.attackCount ?? entry.attacks ?? entry.attacksUsed,
+  );
+  if (aggregateAttackCount !== null) {
+    return aggregateAttackCount;
+  }
+
+  const districtAttackCounts = districts
+    .map((district) => district.attackCount)
+    .filter((attackCount): attackCount is number => attackCount !== null);
+  if (districtAttackCounts.length > 0) {
+    return districtAttackCounts.reduce((sum, attackCount) => sum + attackCount, 0);
+  }
+
+  return null;
+}
+
+function calculateCurrentOffensiveDistrictsDestroyed(
+  attackLog: ClanCapitalRaidSeason["attackLog"],
+): number | null {
+  if (!Array.isArray(attackLog) || attackLog.length <= 0) {
+    return null;
+  }
+
+  let sawCompletedRaid = false;
+  for (const entry of attackLog) {
+    const state = normalizeRaidAttackLogEntryState(entry);
+    if (!state.started) continue;
+    if (state.complete === false) {
+      const value = entry as Record<string, unknown>;
+      const districts = Array.isArray(value.districts)
+        ? value.districts
+            .map((district: unknown) => normalizeRaidDistrictRow(district))
+            .filter((district: RaidDashboardDistrictRow | null): district is RaidDashboardDistrictRow => district !== null)
+        : [];
+      return districts.reduce(
+        (sum: number, district: RaidDashboardDistrictRow) =>
+          sum + (isDistrictFullyDestroyed(district) === true ? 1 : 0),
+        0,
+      );
+    }
+    if (state.complete === true) {
+      sawCompletedRaid = true;
+    }
+  }
+
+  return sawCompletedRaid ? 9 : null;
+}
+
+function calculateAverageAttacksPerCompletedRaid(
+  attackLog: ClanCapitalRaidSeason["attackLog"],
+): number | null {
+  if (!Array.isArray(attackLog) || attackLog.length <= 0) {
+    return null;
+  }
+
+  let completedCount = 0;
+  let totalAttacks = 0;
+  let sawUsableRaid = false;
+  for (const entry of attackLog) {
+    const state = normalizeRaidAttackLogEntryState(entry);
+    if (!state.usable || state.complete !== true) continue;
+    sawUsableRaid = true;
+    const value = entry as Record<string, unknown>;
+    const districts = Array.isArray(value.districts)
+      ? value.districts
+          .map((district: unknown) => normalizeRaidDistrictRow(district))
+          .filter((district: RaidDashboardDistrictRow | null): district is RaidDashboardDistrictRow => district !== null)
+      : [];
+    const attackCount = calculateAttackCountFromRaidLogEntry(value, districts);
+    if (attackCount === null) continue;
+    completedCount += 1;
+    totalAttacks += attackCount;
+  }
+
+  return sawUsableRaid && completedCount > 0 ? totalAttacks / completedCount : null;
+}
+
+function formatRaidDashboardAverageAttacksPerCompletedRaid(value: number | null): string {
+  if (value === null) {
+    return "—";
+  }
+
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function buildRaidDashboardOverviewOffenseLine(row: RaidDashboardClanRow): string {
+  const totalAttacks = row.attacksCompleted === null ? "—" : String(row.attacksCompleted);
+  const destroyedDistricts =
+    row.offensiveDistrictsDestroyed === null ? "—" : String(row.offensiveDistrictsDestroyed);
+  const averageAttacks = formatRaidDashboardAverageAttacksPerCompletedRaid(
+    row.offensiveAverageAttacksPerCompletedRaid,
+  );
+  return `- 🗡 ${totalAttacks} 🏠 ${destroyedDistricts}/9 📈 ${averageAttacks} att/raid`;
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
@@ -1354,6 +1458,27 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       (sum, mark) => sum + calculateRaidIntelLayoutGradeScore(mark.layoutGrade),
       0,
     );
+    const maxDefenseAttacksUsed = (() => {
+      const values = [
+        ...snapshot.defenseSections.map((section) => section.attacksUsed),
+        ...(snapshot.activeSeason?.defenseLog ?? []).map((entry) =>
+          normalizeNonNegativeInt((entry as Record<string, unknown>).attackCount ??
+            (entry as Record<string, unknown>).attacks ??
+            (entry as Record<string, unknown>).attacksUsed),
+        ),
+      ]
+        .filter((value): value is number => Number.isFinite(value));
+      if (values.length <= 0) {
+        return null;
+      }
+      return Math.max(...values);
+    })();
+    const offensiveDistrictsDestroyed = calculateCurrentOffensiveDistrictsDestroyed(
+      snapshot.activeSeason?.attackLog,
+    );
+    const offensiveAverageAttacksPerCompletedRaid = calculateAverageAttacksPerCompletedRaid(
+      snapshot.activeSeason?.attackLog,
+    );
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1365,6 +1490,9 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       attacksMax: snapshot.counts.attacksMax,
       defaultLayoutCount,
       raidIntelDefenderUpgrades,
+      maxDefenseAttacksUsed,
+      offensiveDistrictsDestroyed,
+      offensiveAverageAttacksPerCompletedRaid,
       intelGradeScore,
       raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
@@ -1484,15 +1612,21 @@ function buildRaidDashboardOverviewClanTitle(input: {
   clanName: string | null;
   hasOngoingRaid: boolean;
   raidsCompleted: number | null;
+  maxDefenseAttacksUsed: number | null;
 }): string {
   const clanTag = formatRaidTrackedClanTag(input.clanTag);
   const clanName = input.clanName?.trim() || clanTag;
   const link = buildClanProfileMarkdownLink(clanName, clanTag);
   const prefix = input.hasOngoingRaid ? "⚔️ " : (input.raidsCompleted ?? 0) > 0 ? "🌄 " : "";
-  return `${prefix}${link} \`${clanTag}\``;
+  const shieldText = input.maxDefenseAttacksUsed === null ? "" : ` 🛡️${input.maxDefenseAttacksUsed}`;
+  return `${prefix}${link} \`${clanTag}\`${shieldText}`;
 }
 
 function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string | null {
+  if ((row.raidsCompleted ?? 0) >= 1) {
+    return null;
+  }
+
   const marks = row.raidIntelMarks ?? [];
   if (marks.length <= 0) {
     return null;
@@ -1507,7 +1641,7 @@ function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string 
       : String(row.raidIntelDefenderUpgrades);
   const defaultLayoutCount =
     row.defaultLayoutCount ?? marks.filter((mark) => mark.layoutGrade === "DEFAULT").length;
-  return `- ⚔️ 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
+  return `- 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
 }
 
 function buildRaidDashboardIntelSummaryLine(
@@ -1557,6 +1691,7 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
     if (intelLine) {
       lines.push(intelLine);
     }
+    lines.push(buildRaidDashboardOverviewOffenseLine(row));
     for (const section of row.openDefenseSections ?? []) {
       const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
       if (text) {
