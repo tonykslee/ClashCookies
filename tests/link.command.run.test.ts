@@ -1387,6 +1387,58 @@ describe("/link run", () => {
     expect(description).not.toContain("``");
   });
 
+  it("escapes backticks in /link list inline-code cells", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Discord ` Nick",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "WIZEX`",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Plain Member",
+        townHall: 17,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    const interaction = makeInteraction({
+      subcommand: "list",
+      clanTag: "#PQL0289",
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rows = getInlineRows(description);
+
+    expect(rows).toHaveLength(2);
+    rows.forEach((row) => {
+      expect(row).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/u);
+      const segments = getInlineRowSegments(row);
+      expect(segments.playerName).not.toContain("`");
+      expect(segments.value).not.toContain("`");
+    });
+    expect(description).toContain("WIZEXʼ");
+    expect(description).toContain("Discord ʼ Nick");
+    expect(description).toContain("Plain Member");
+    expect(description).not.toContain("`WIZEX`");
+    expect(description).not.toContain("`Discord ` Nick`");
+  });
+
   it("falls back to persisted discord username when guild display name is unavailable", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -2101,7 +2153,12 @@ describe("/link list sort button", () => {
     const rows = makeLinkListClanMembers({
       clanTag: "#PQL0289",
       count: 50,
-      playerNamePrefix: "Player",
+      playerNamePrefix: "Player With A Moderately Long Name For Chunking",
+    });
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: "#PQL0289",
+      name: "Tracked Alpha",
+      clanBadge: null,
     });
     prismaMock.playerLink.findMany.mockResolvedValue(
       rows.slice(0, 40).map((row, index) => ({
@@ -2139,6 +2196,11 @@ describe("/link list sort button", () => {
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
     const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds[0].toJSON().title).toBe(
+      "Tracked Alpha #PQL0289",
+    );
+    expect(payload.embeds[1].toJSON().title).toBeUndefined();
     const description = payload.embeds
       .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
       .join("\n");
@@ -2147,6 +2209,12 @@ describe("/link list sort button", () => {
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
     expect(renderedRows).toHaveLength(50);
+    expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
+    expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
+    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toMatch(/^#[A-Z0-9]+$/u);
+    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
+      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
+    );
     expect(
       payload.embeds.reduce(
         (sum: number, embed: { toJSON: () => any }) =>
@@ -2155,6 +2223,153 @@ describe("/link list sort button", () => {
       ),
     ).toBeLessThanOrEqual(5200);
     expect(description).not.toContain("...and");
+    const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
+    expect(lastRow.playerName.trim()).toHaveLength(15);
+    expect(lastRow.value.trim()).toMatch(/^#[A-Z0-9]+$/u);
+  }, 30000);
+
+  it("renders a realistic 50-member Discord Name view without aggressively trimming", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 50,
+      playerNamePrefix: "Player With A Moderately Long Name For Chunking",
+    });
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: "#PQL0289",
+      name: "Tracked Alpha",
+      clanBadge: null,
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.slice(0, 40).map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(300000000000000000n + BigInt(index)),
+        discordUsername: `Linked ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "inactivity",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds[0].toJSON().title).toBe(
+      "Tracked Alpha #PQL0289",
+    );
+    expect(payload.embeds[1].toJSON().title).toBeUndefined();
+    const description = payload.embeds
+      .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
+      .join("\n");
+    const renderedRows = getInlineRows(description);
+    expect(renderedRows).toHaveLength(50);
+    expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
+    expect(description).toContain("Linked Users: 40");
+    expect(description).toContain("Unlinked users: 10");
+    expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Discord Name");
+    expect(payload.embeds[1].toJSON().footer).toBeUndefined();
+    expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
+    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
+    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
+      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
+    );
+    const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
+    expect(lastRow.playerName.trim()).toHaveLength(15);
+    expect(lastRow.value.length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("renders a realistic 50-member Weight view without aggressively trimming", async () => {
+    const rows = makeLinkListClanMembers({
+      clanTag: "#PQL0289",
+      count: 50,
+      playerNamePrefix: "Player With A Moderately Long Name For Chunking",
+    });
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: "#PQL0289",
+      name: "Tracked Alpha",
+      clanBadge: null,
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue(
+      rows.slice(0, 40).map((row, index) => ({
+        playerTag: row.playerTag,
+        discordUserId: String(300000000000000000n + BigInt(index)),
+        discordUsername: `Linked ${index + 1}`,
+      })),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds.length).toBe(2);
+    expect(payload.embeds[0].toJSON().title).toBe(
+      "Tracked Alpha #PQL0289",
+    );
+    expect(payload.embeds[1].toJSON().title).toBeUndefined();
+    const description = payload.embeds
+      .map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "")
+      .join("\n");
+    const renderedRows = getInlineRows(description);
+    expect(renderedRows).toHaveLength(50);
+    expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
+    expect(description).toContain("Linked Users: 40");
+    expect(description).toContain("Unlinked users: 10");
+    expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Weight Desc");
+    expect(payload.embeds[1].toJSON().footer).toBeUndefined();
+    expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
+    expect(getInlineRowSegments(renderedRows[0] ?? "").value).not.toBe("");
+    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
+      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
+    );
+    const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
+    expect(lastRow.playerName.trim()).toHaveLength(15);
+    expect(lastRow.value.length).toBeGreaterThan(0);
   }, 30000);
 
   it("trims oversized Player Tags views instead of throwing", async () => {
