@@ -132,8 +132,8 @@ describe("command coverage", () => {
     expect(fwaHelpText).toContain("/fwa match-checklist");
     expect(fwaHelpText).not.toContain("checklist:true");
     expect(normalized).toContain("public checklist posts are auto-pinned");
-    expect(normalized).toContain("3 minutes after sync time");
-    expect(normalized).toContain("refreshing the checklist updates mailbox and match-type emoji status");
+    expect(normalized).toContain("persistent reaction-driven checklist");
+    expect(normalized).toContain("can be refreshed to rebuild the current match state");
     expect(normalized).toContain("snapshot without reactions");
   });
 
