@@ -1056,6 +1056,16 @@ model RecruitmentCooldown {
   @@index([guildId, expiresAt, reminded])
 }
 
+model RecruitmentCountdownReminderPreference {
+  guildId         String
+  userId          String
+  remindersEnabled Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@id([guildId, userId])
+}
+
 model RecruitmentReminderRule {
   id               String                    @id @default(cuid())
   guildId          String

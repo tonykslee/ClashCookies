@@ -11,6 +11,10 @@ const recruitmentServiceMock = vi.hoisted(() => ({
   getRecruitmentTemplate: vi.fn(),
   upsertRecruitmentTemplate: vi.fn(),
 }));
+const recruitmentPreferenceMock = vi.hoisted(() => ({
+  isEnabled: vi.fn(),
+  setEnabled: vi.fn(),
+}));
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -25,6 +29,10 @@ vi.mock("../src/services/RecruitmentService", async () => {
     upsertRecruitmentTemplate: recruitmentServiceMock.upsertRecruitmentTemplate,
   };
 });
+
+vi.mock("../src/services/RecruitmentCountdownReminderPreferenceService", () => ({
+  recruitmentCountdownReminderPreferenceService: recruitmentPreferenceMock,
+}));
 
 import { Recruitment, handleRecruitmentModalSubmit } from "../src/commands/Recruitment";
 
@@ -101,6 +109,8 @@ describe("/recruitment command", () => {
     recruitmentServiceMock.getRecruitmentCooldown.mockResolvedValue(null);
     recruitmentServiceMock.getRecruitmentTemplate.mockResolvedValue(null);
     recruitmentServiceMock.upsertRecruitmentTemplate.mockResolvedValue(undefined);
+    recruitmentPreferenceMock.isEnabled.mockResolvedValue(true);
+    recruitmentPreferenceMock.setEnabled.mockResolvedValue(undefined);
   });
 
   it("opens band edit modal when no guild-scoped template exists yet", async () => {
@@ -201,5 +211,45 @@ describe("/recruitment command", () => {
     const bandPayload = bandInteraction.editReply.mock.calls[0]?.[0] as string;
     expect(bandPayload).toContain("https://www.band.us/band/67130116/post");
     expect(bandPayload).toContain("``Band body``");
+  });
+
+  it("exposes countdown reminder settings under the countdown group", async () => {
+    const countdownGroup = Recruitment.options.find((option) => option.name === "countdown") as any;
+    expect(countdownGroup).toBeTruthy();
+    const settings = (countdownGroup?.options ?? []).find(
+      (option: { name?: string }) => option.name === "settings",
+    ) as any;
+    expect(settings).toBeTruthy();
+    expect(
+      (settings?.options ?? []).some((option: { name?: string }) => option.name === "reminders"),
+    ).toBe(true);
+  });
+
+  it("persists countdown reminder preferences from the settings subcommand", async () => {
+    const interaction = {
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue("countdown"),
+        getSubcommand: vi.fn().mockReturnValue("settings"),
+        getBoolean: vi.fn().mockReturnValue(false),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await Recruitment.run({} as any, interaction as any, {} as any);
+
+    expect(recruitmentPreferenceMock.setEnabled).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      userId: "user-1",
+      enabled: false,
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "Recruitment reminder pings are now disabled for your cooldown timers.",
+    );
   });
 });

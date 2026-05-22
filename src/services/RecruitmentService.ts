@@ -2,6 +2,7 @@ import { Client } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { recruitmentCountdownReminderPreferenceService } from "./RecruitmentCountdownReminderPreferenceService";
 
 export type RecruitmentPlatform = "discord" | "reddit" | "band";
 
@@ -285,6 +286,25 @@ export async function processRecruitmentCooldownReminders(
   for (const row of dueRows) {
     const tag = normalizeClanTag(row.clanTag);
     const clanLabel = clanNameByTag.get(tag) ?? formatClanTag(tag);
+    const remindersEnabled = await recruitmentCountdownReminderPreferenceService.isEnabled(
+      guildId,
+      row.userId,
+    );
+    if (!remindersEnabled) {
+      console.info(
+        `[recruitment] reminder skipped guild=${guildId} user=${row.userId} platform=${row.platform} clan=${formatClanTag(
+          tag,
+        )} reason=RECRUITMENT_REMINDER_MUTED`,
+      );
+      await prisma.$executeRaw(
+        Prisma.sql`
+          UPDATE "RecruitmentCooldown"
+          SET "reminded" = true, "updatedAt" = NOW()
+          WHERE "id" = ${row.id}
+        `,
+      );
+      continue;
+    }
     const message = `Your ${row.platform} recruitment cooldown for ${clanLabel} (${formatClanTag(
       tag
     )}) has expired.`;

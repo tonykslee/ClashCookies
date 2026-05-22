@@ -223,6 +223,14 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
   });
 
+  it("documents recruitment countdown reminder settings in the recruitment help detail text", () => {
+    const recruitmentHelpText = helpEmbedText("recruitment");
+    const normalized = recruitmentHelpText.toLowerCase();
+    expect(recruitmentHelpText).toContain("/recruitment countdown settings reminders:false");
+    expect(normalized).toContain("reminders:true|false");
+    expect(normalized).toContain("muted timers still appear");
+  });
+
   it("documents /compo heatmapref blacklist mode in the compo help detail text", () => {
     const compoHelpText = helpEmbedText("compo");
     expect(compoHelpText).toContain("/compo heatmapref mode:blacklist");
