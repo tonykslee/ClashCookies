@@ -212,14 +212,14 @@ describe("command coverage", () => {
     const linkHelpText = helpEmbedText("link");
     expect(linkHelpText).toContain("reads persisted current-member rows by default");
     expect(linkHelpText).toContain("Refresh Data");
-    expect(linkHelpText).toContain("Town Hall icon outside inline code");
+    expect(linkHelpText).toContain("Town Hall as compact `TH<n>` text inside inline code");
     expect(linkHelpText).toContain("player tag only in `Player Tags` sort mode");
-    expect(linkHelpText).toContain(":person_standing:");
+    expect(linkHelpText).toContain("while filler rows can show a trailing `\u{1f9cd}` marker outside inline code");
     expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Rank Desc -> Inactivity");
     expect(linkHelpText).toContain("Clan Rank Desc");
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
-    expect(linkHelpText).toContain("days are shown as `—`");
+    expect(linkHelpText).toContain("days are shown as `\u2014` unless a reliable shared days source is available");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
   });
 
