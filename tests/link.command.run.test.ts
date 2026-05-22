@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
@@ -48,9 +48,12 @@ import {
   buildLinkEmbedSetupModalCustomId,
   buildLinkEmbedTagModalCustomId,
   buildLinkListDescriptionLinesForTest,
+  getLinkListColumnLabelForTest,
+  getLinkListDefaultColumnsForSortModeForTest,
   buildLinkListRefreshButtonCustomId,
   buildLinkListSelectCustomId,
   buildLinkListSortButtonCustomId,
+  getLinkListSelectableColumnsForTest,
   handleReminderLinkButtonInteraction,
   handleReminderLinkCancelButtonInteraction,
   handleReminderLinkConfirmButtonInteraction,
@@ -863,9 +866,10 @@ describe("/link run", () => {
     expect(linkedRow.playerName.trim()).toBe("Tilonius");
     expect(currentFallbackRow).toMatchObject({
       status: "❌",
-      townHall: "?",
+      townHall: " ?",
       value: "—",
     });
+    expect(currentFallbackRow.townHall.trim()).toBe("?");
     expect(currentFallbackRow.playerName.trim()).toBe("Mystery Zero");
     expect(currentWeightFallbackRow).toMatchObject({
       status: "❌",
@@ -1247,17 +1251,29 @@ describe("/link run", () => {
     const defaultRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
-          townHall: 18,
+          townHallLabel: "18",
           playerName: "Persisted Sin",
-          displayValue: "Persisted Sin",
+          discordDisplayName: "Persisted Sin",
+          discordUsername: "Persisted Sin",
+          weightLabel: "166k",
+          inactivityLabel: "—",
+          clanRoleLabel: "lead",
+          playerTag: "#QR9R0LGJ9",
           rightMarker: "🧍",
+          isLinked: true,
         },
       ],
       unlinkedRows: [
         {
-          townHall: 14,
+          townHallLabel: "14",
           playerName: "Unlinked Player",
-          displayValue: "—",
+          discordDisplayName: "—",
+          discordUsername: "—",
+          weightLabel: "—",
+          inactivityLabel: "—",
+          clanRoleLabel: "—",
+          playerTag: "#LCUV0289",
+          isLinked: false,
         },
       ],
       statusIcons: {
@@ -1268,17 +1284,29 @@ describe("/link run", () => {
     const playerTagRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
-          townHall: 18,
+          townHallLabel: "18",
           playerName: "Persisted Sin",
-          displayValue: "#QR9R0LGJ9",
+          discordDisplayName: "Persisted Sin",
+          discordUsername: "Persisted Sin",
+          weightLabel: "166k",
+          inactivityLabel: "—",
+          clanRoleLabel: "lead",
+          playerTag: "#QR9R0LGJ9",
           rightMarker: "🧍",
+          isLinked: true,
         },
       ],
       unlinkedRows: [
         {
-          townHall: 14,
+          townHallLabel: "14",
           playerName: "Unlinked Player",
-          displayValue: "#LCUV0289",
+          discordDisplayName: "—",
+          discordUsername: "—",
+          weightLabel: "—",
+          inactivityLabel: "—",
+          clanRoleLabel: "—",
+          playerTag: "#LCUV0289",
+          isLinked: false,
         },
       ],
       statusIcons: {
@@ -1315,10 +1343,23 @@ describe("/link run", () => {
     expect(linkedTagParts.value).toBe("#QR9R0LGJ9");
     expect(linkedTagParts.townHall).toBe("18");
     expect(linkedTagParts.playerName.trim()).toBe("Persisted Sin");
-    expect(linkedTagParts.marker).toBe("\u{1F9CD}");
+    expect(linkedTagParts.marker).toBe("🧍");
     expect(unlinkedTagParts.value).toBe("#LCUV0289");
     expect(unlinkedTagParts.townHall).toBe("14");
     expect(unlinkedTagParts.playerName.trim()).toBe("Unlinked Player");
+
+    expect(getLinkListDefaultColumnsForSortModeForTest("discord")).toEqual([
+      "townhall",
+      "player-name",
+      "discord-display-name",
+    ]);
+    expect(getLinkListDefaultColumnsForSortModeForTest("player-tags")).toEqual([
+      "townhall",
+      "player-name",
+      "player-tag",
+    ]);
+    expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
+    expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {
@@ -3186,3 +3227,5 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
+
+
