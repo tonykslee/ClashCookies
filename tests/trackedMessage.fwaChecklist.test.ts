@@ -18,6 +18,7 @@ import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
   buildFwaMatchChecklistContent,
+  buildFwaMatchChecklistMessageContent,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
 import {
@@ -171,15 +172,87 @@ describe("fwa checklist tracked messages", () => {
 
     const payload = edit.mock.calls[0]?.[0] as any;
     expect(payload.content).toBe(
-      buildFwaMatchChecklistContent({
+      buildFwaMatchChecklistMessageContent({
         rows: makeTrackedChecklistRow().metadata.rows,
         checkedClanTags: ["#RR"],
       }),
+    );
+    expect(payload.content).toContain("# Clan Mail Checklist");
+    expect(payload.content).toContain(
+      "React with your clan's badge to indicate that the in-game mails have been sent.",
     );
     expect(payload.content).toContain("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)");
     expect(payload.content).toContain("📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)");
   });
 
+  it("rebuilds refreshed checklist content from supplied current match rows", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const currentRows = [
+      {
+        clanTag: "RR",
+        compactCopyLine: "📬 | 🟢 | RR vs `Charlie` (`#C3`)",
+        badgeEmojiId: "111",
+        badgeEmojiName: "rr",
+        badgeEmojiInline: "<:rr:111>",
+        contextKey: "ctx-rr-current",
+      },
+      {
+        clanTag: "TWC",
+        compactCopyLine: "📭 | 🔴 | TWC vs `Delta` (`#D2`)",
+        badgeEmojiId: "222",
+        badgeEmojiName: "twc",
+        badgeEmojiInline: "<:twc:222>",
+        contextKey: "ctx-twc-current",
+      },
+    ];
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 2,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(
+        message as any,
+        null,
+        { rows: currentRows as any, scopeKey: "scope-key-current" },
+      ),
+    ).resolves.toBe(true);
+
+    const payload = edit.mock.calls[0]?.[0] as any;
+    expect(payload.content).toBe(
+      buildFwaMatchChecklistMessageContent({
+        rows: currentRows as any,
+        checkedClanTags: ["#RR"],
+      }),
+    );
+    expect(payload.content).toContain("# Clan Mail Checklist");
+    expect(payload.content).toContain("Charlie");
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            scopeKey: "scope-key-current",
+            rows: currentRows,
+            checkedClanTags: ["RR"],
+          }),
+        }),
+      }),
+    );
+  });
   it("persists checked state when a clan badge is reacted to", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
 
@@ -264,7 +337,7 @@ describe("fwa checklist tracked messages", () => {
 
     const payload = edit.mock.calls[0]?.[0] as any;
     expect(payload.content).toBe(
-      buildFwaMatchChecklistContent({
+      buildFwaMatchChecklistMessageContent({
         rows: makeTrackedChecklistRow().metadata.rows,
         checkedClanTags: ["RR", "TWC"],
       }),
@@ -322,7 +395,7 @@ describe("fwa checklist tracked messages", () => {
 
     const payload = edit.mock.calls[0]?.[0] as any;
     expect(payload.content).toBe(
-      buildFwaMatchChecklistContent({
+      buildFwaMatchChecklistMessageContent({
         rows: makeTrackedChecklistRow().metadata.rows,
         checkedClanTags: ["TWC"],
       }),
@@ -374,7 +447,7 @@ describe("fwa checklist tracked messages", () => {
 
     const payload = edit.mock.calls[0]?.[0] as any;
     expect(payload.content).toBe(
-      buildFwaMatchChecklistContent({
+      buildFwaMatchChecklistMessageContent({
         rows: makeTrackedChecklistRow().metadata.rows,
         checkedClanTags: ["RR"],
       }),
@@ -512,3 +585,4 @@ describe("fwa checklist tracked messages", () => {
     expect(recordSync).not.toHaveBeenCalled();
   });
 });
+

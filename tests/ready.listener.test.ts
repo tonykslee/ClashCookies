@@ -467,231 +467,35 @@ describe("ready listener startup", () => {
     );
   });
 
-  it("posts the scheduled checklist after sync time when no duplicate exists", async () => {
-    const now = Date.now();
-    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
-      if (where?.featureType === "SYNC_TIME_POST") {
-        return [
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-1",
-            metadata: {
-              syncTimeIso: new Date(now - 10 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) - 180,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
-            },
-          },
-        ];
-      }
-      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
-        return [];
-      }
-      return [];
-    });
-
-    await runStartup();
-
-    expect(fwaSourceSyncMock).toHaveBeenCalledWith(expect.any(Object), "guild-1");
-    expect(fwaChecklistRenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        guildId: "guild-1",
-      }),
-    );
-    expect(fwaChecklistPublishMock).toHaveBeenCalledWith(
-      expect.objectContaining({
+  it("does not auto-post the checklist after sync time", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
         guildId: "guild-1",
         channelId: "channel-1",
-        referenceId: "sync-message-1",
-        rows: expect.any(Array),
-        scopeKey: expect.any(String),
-      }),
-    );
-  });
-
-  it("posts only the latest eligible missed checklist when multiple sync windows are due", async () => {
-    const now = Date.now();
-    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
-      if (where?.featureType === "SYNC_TIME_POST") {
-        return [
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-2",
-            createdAt: new Date(now - 2 * 60 * 1000),
-            metadata: {
-              syncTimeIso: new Date(now - 7 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) - 360,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
+        messageId: "sync-message-1",
+        metadata: {
+          syncTimeIso: new Date().toISOString(),
+          syncEpochSeconds: Math.trunc(Date.now() / 1000) - 180,
+          roleId: "role-1",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#RR",
+              clanName: "Rocky Road",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
             },
-          },
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-1",
-            createdAt: new Date(now - 10 * 60 * 1000),
-            metadata: {
-              syncTimeIso: new Date(now - 12 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) - 600,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
-            },
-          },
-        ];
-      }
-      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
-        return [];
-      }
-      return [];
-    });
-
-    await runStartup();
-
-    expect(fwaChecklistRenderMock).toHaveBeenCalledTimes(1);
-    expect(fwaChecklistPublishMock).toHaveBeenCalledTimes(1);
-    expect(fwaChecklistPublishMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        guildId: "guild-1",
-        channelId: "channel-1",
-        referenceId: "sync-message-2",
-      }),
-    );
-  });
-
-  it("does not backfill an older checklist when a newer sync window is not yet due", async () => {
-    const now = Date.now();
-    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
-      if (where?.featureType === "SYNC_TIME_POST") {
-        return [
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-2",
-            createdAt: new Date(now - 1 * 60 * 1000),
-            metadata: {
-              syncTimeIso: new Date(now + 6 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) + 300,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
-            },
-          },
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-1",
-            createdAt: new Date(now - 10 * 60 * 1000),
-            metadata: {
-              syncTimeIso: new Date(now - 12 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) - 600,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
-            },
-          },
-        ];
-      }
-      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
-        return [];
-      }
-      return [];
-    });
+          ],
+        },
+      },
+    ]);
 
     await runStartup();
 
     expect(fwaChecklistRenderMock).not.toHaveBeenCalled();
     expect(fwaChecklistPublishMock).not.toHaveBeenCalled();
-  });
-
-  it("skips the scheduled checklist when a duplicate already exists", async () => {
-    const now = Date.now();
-    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
-      if (where?.featureType === "SYNC_TIME_POST") {
-        return [
-          {
-            guildId: "guild-1",
-            channelId: "channel-1",
-            messageId: "sync-message-1",
-            metadata: {
-              syncTimeIso: new Date(now - 10 * 60 * 1000).toISOString(),
-              syncEpochSeconds: Math.trunc(now / 1000) - 180,
-              roleId: "role-1",
-              clans: [
-                {
-                  code: "RR",
-                  clanTag: "#RR",
-                  clanName: "Rocky Road",
-                  emojiId: "111",
-                  emojiName: "rr",
-                  emojiInline: "<:rr:111>",
-                },
-              ],
-            },
-          },
-        ];
-      }
-      if (where?.featureType === "FWA_MATCH_CHECKLIST") {
-        return [
-          {
-            referenceId: "sync-message-1",
-            metadata: {
-              scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
-            },
-          },
-        ];
-      }
-      return [];
-    });
-
-    await runStartup();
-
-    expect(fwaChecklistRenderMock).toHaveBeenCalledTimes(1);
-    expect(fwaChecklistPublishMock).not.toHaveBeenCalled();
+    expect(fwaSourceSyncMock).not.toHaveBeenCalled();
   });
 
   it("marks active-only poll jobs disabled in mirror mode", async () => {

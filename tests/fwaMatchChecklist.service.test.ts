@@ -4,6 +4,25 @@ const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
   refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
 }));
+const fwaChecklistRenderStateMock = vi.hoisted(() => ({
+  buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
+    rows: [
+      {
+        clanTag: "#PYPY",
+        compactCopyLine: "ðŸ“¬ | ðŸŸ¢ | RR vs `Bravo` (`#B1`)",
+        badgeEmojiId: "111",
+        badgeEmojiName: "rr",
+        badgeEmojiInline: "<:rr:111>",
+        contextKey: "ctx-rr",
+      },
+    ],
+    scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
+    checkedClanTags: ["#PYPY"],
+    referenceId: "sync-message-1",
+    emptyMessage: null,
+  }),
+  getSourceOfTruthSync: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock("../src/services/TrackedMessageService", async () => {
   const actual = await vi.importActual<any>(
@@ -14,6 +33,17 @@ vi.mock("../src/services/TrackedMessageService", async () => {
     trackedMessageService: trackedMessageMock,
   };
 });
+
+vi.mock("../src/services/CoCService", () => ({
+  CoCService: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock("../src/commands/Fwa", () => ({
+  refreshAllTrackedWarMailPosts: vi.fn().mockResolvedValue(undefined),
+  buildFwaMatchChecklistRenderStateForGuild:
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+  getSourceOfTruthSync: fwaChecklistRenderStateMock.getSourceOfTruthSync,
+}));
 
 import {
   buildFwaMatchChecklistMessageContent,
@@ -204,8 +234,10 @@ describe("FWA match checklist service", () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
       deferUpdate,
       followUp,
+      client: {} as any,
       message: {
         id: "message-1",
         reactions: {
@@ -228,13 +260,52 @@ describe("FWA match checklist service", () => {
       },
     } as any;
 
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce(
+      {
+        rows: [
+          {
+            clanTag: "#PYPY",
+            compactCopyLine: "ðŸ“¬ | ðŸŸ¢ | RR vs `Charlie` (`#C3`)",
+            badgeEmojiId: "111",
+            badgeEmojiName: "rr",
+            badgeEmojiInline: "<:rr:111>",
+            contextKey: "ctx-rr",
+          },
+        ],
+        scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
+        checkedClanTags: ["#PYPY"],
+        referenceId: "sync-message-1",
+        emptyMessage: null,
+      },
+    );
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(true);
 
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(
+      fwaChecklistRenderStateMock.getSourceOfTruthSync,
+    ).toHaveBeenCalledWith(expect.any(Object), "guild-1");
+    expect(
+      fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        client: expect.any(Object),
+        warLookupCache: expect.any(Map),
+      }),
+    );
     expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledWith(
       expect.objectContaining({ id: "message-1" }),
+      null,
+      expect.objectContaining({
+        rows: [
+          expect.objectContaining({
+            compactCopyLine: expect.stringContaining("Charlie"),
+          }),
+        ],
+        scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
+      }),
     );
     expect(react).not.toHaveBeenCalled();
     expect(followUp).not.toHaveBeenCalled();

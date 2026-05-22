@@ -111,6 +111,11 @@ export type FwaMatchChecklistReactionChange = {
   };
 };
 
+export type FwaMatchChecklistRefreshOptions = {
+  rows?: FwaMatchChecklistTrackedRow[];
+  scopeKey?: string | null;
+};
+
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
@@ -189,6 +194,20 @@ export function buildFwaMatchChecklistContent(input: {
       insertFwaMatchChecklistColumn(row.compactCopyLine, checkedSet.has(normalizeChecklistClanTag(row.clanTag))),
     )
     .join("\n");
+}
+
+/** Purpose: build the full visible checklist message content. */
+export function buildFwaMatchChecklistMessageContent(input: {
+  rows: Iterable<FwaMatchChecklistTrackedRow>;
+  checkedClanTags: Iterable<string>;
+}): string {
+  return [
+    "# Clan Mail Checklist",
+    "",
+    "React with your clan's badge to indicate that the in-game mails have been sent.",
+    "",
+    buildFwaMatchChecklistContent(input),
+  ].join("\n");
 }
 
 function insertFwaMatchChecklistColumn(line: string, checked: boolean): string {
@@ -1366,6 +1385,7 @@ export class TrackedMessageService {
     }) => Promise<unknown>;
   },
   change?: FwaMatchChecklistReactionChange | null,
+  options?: FwaMatchChecklistRefreshOptions,
   ): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({
       where: { messageId: message.id },
@@ -1412,8 +1432,9 @@ export class TrackedMessageService {
       }
     }
 
-    const content = buildFwaMatchChecklistContent({
-      rows: metadata.rows,
+    const effectiveRows = options?.rows ?? metadata.rows;
+    const content = buildFwaMatchChecklistMessageContent({
+      rows: effectiveRows,
       checkedClanTags: reactedTags,
     });
     await message.edit({
@@ -1426,9 +1447,9 @@ export class TrackedMessageService {
         metadata: {
           createdByUserId: metadata.createdByUserId,
           createdAtIso: metadata.createdAtIso,
-          scopeKey: metadata.scopeKey ?? null,
+          scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
           checkedClanTags: [...reactedTags],
-          rows: metadata.rows.map((row) => ({ ...row })),
+          rows: effectiveRows.map((row) => ({ ...row })),
         } as any,
       },
     });
