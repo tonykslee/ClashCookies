@@ -391,7 +391,7 @@ type DescriptionChunk = {
 };
 
 function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
+  return /^(?:[\u2705\u274C])(?:\s+`[^`]+`){2,}(?:\s+\u{1F9CD})?$/u.test(
     String(line ?? "").trim(),
   );
 }
@@ -744,12 +744,132 @@ function rightAlign(value: string, width: number): string {
   return `${" ".repeat(width - value.length)}${value}`;
 }
 
-type LinkListRowInput = {
-  townHall: number | null;
-  playerName: string;
-  displayValue: string | null;
-  rightMarker?: string | null;
+type LinkListColumnId =
+  | "townhall"
+  | "player-name"
+  | "discord-display-name"
+  | "discord-username"
+  | "weight"
+  | "inactivity"
+  | "clan-role"
+  | "player-tag";
+
+const LINK_LIST_SELECTABLE_COLUMNS: readonly LinkListColumnId[] = [
+  "townhall",
+  "player-name",
+  "discord-display-name",
+  "discord-username",
+  "weight",
+  "inactivity",
+  "clan-role",
+  "player-tag",
+];
+
+const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
+  townhall: "Town Hall",
+  "player-name": "Player Name",
+  "discord-display-name": "Discord Display",
+  "discord-username": "Discord Username",
+  weight: "Weight",
+  inactivity: "Inactivity",
+  "clan-role": "Clan Role",
+  "player-tag": "Player Tag",
 };
+
+type LinkListRowViewModel = {
+  townHallLabel: string;
+  playerName: string;
+  discordDisplayName: string;
+  discordUsername: string;
+  weightLabel: string;
+  inactivityLabel: string;
+  clanRoleLabel: string;
+  playerTag: string;
+  rightMarker?: string | null;
+  isLinked: boolean;
+};
+
+type LinkListRowInput = LinkListRowViewModel;
+
+function getLinkListSelectableColumns(): LinkListColumnId[] {
+  return [...LINK_LIST_SELECTABLE_COLUMNS];
+}
+
+function getLinkListColumnLabel(columnId: LinkListColumnId): string {
+  return LINK_LIST_COLUMN_LABELS[columnId];
+}
+
+function getLinkListDefaultColumnsForSortMode(
+  sortMode: LinkListSortMode,
+): LinkListColumnId[] {
+  if (sortMode === "discord") {
+    return ["townhall", "player-name", "discord-display-name"];
+  }
+  if (sortMode === "weight") {
+    return ["townhall", "player-name", "weight"];
+  }
+  if (sortMode === "player-tags") {
+    return ["townhall", "player-name", "player-tag"];
+  }
+  if (sortMode === "player") {
+    return ["townhall", "player-name"];
+  }
+  if (sortMode === "clan-rank") {
+    return ["townhall", "player-name", "clan-role"];
+  }
+  if (sortMode === "inactivity") {
+    return ["townhall", "player-name", "inactivity"];
+  }
+  return ["townhall", "player-name", "discord-display-name"];
+}
+
+function getLinkListRowColumnValue(
+  row: LinkListRowInput,
+  columnId: LinkListColumnId,
+): string {
+  if (columnId === "townhall") return row.townHallLabel;
+  if (columnId === "player-name") return row.playerName;
+  if (columnId === "discord-display-name") return row.discordDisplayName;
+  if (columnId === "discord-username") return row.discordUsername;
+  if (columnId === "weight") return row.weightLabel;
+  if (columnId === "inactivity") return row.inactivityLabel;
+  if (columnId === "clan-role") return row.clanRoleLabel;
+  return row.playerTag;
+}
+
+function computeColumnWidths(
+  linkedRows: LinkListRowInput[],
+  unlinkedRows: LinkListRowInput[],
+  columns: LinkListColumnId[],
+): Record<LinkListColumnId, number> {
+  const widths = Object.fromEntries(columns.map((columnId) => [columnId, 1])) as Record<
+    LinkListColumnId,
+    number
+  >;
+  for (const row of [...linkedRows, ...unlinkedRows]) {
+    for (const columnId of columns) {
+      const value = getLinkListRowColumnValue(row, columnId);
+      widths[columnId] = Math.max(widths[columnId] ?? 1, value.length);
+    }
+  }
+  return widths;
+}
+
+function renderLinkListRow(input: {
+  row: LinkListRowInput;
+  columns: LinkListColumnId[];
+  widths: Record<LinkListColumnId, number>;
+  statusPrefix: string;
+}): string {
+  const cells = input.columns.map((columnId) => {
+    const value = sanitizeInlineCodeCell(getLinkListRowColumnValue(input.row, columnId));
+    const width = input.widths[columnId] ?? value.length;
+    return ` \`${rightAlign(value, width)}\``;
+  });
+  const base = `${input.statusPrefix}${cells.join("")}`;
+  if (!input.row.rightMarker) return base;
+  return `${base} ${input.row.rightMarker}`;
+}
 
 type LinkListResolvedMemberRow = {
   isLinked: boolean;
@@ -964,65 +1084,18 @@ function resolveLinkListTownHall(input: {
   );
 }
 
-function formatAlignedInlineRow(
-  row: LinkListRowInput,
-  widths: { playerName: number; value: number },
-  statusPrefix: string,
-): string {
-  const townHallLabel = sanitizeInlineCodeCell(formatLinkListTownHallLabel(row.townHall));
-  const playerName = rightAlign(
-    sanitizeInlineCodeCell(
-      truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
-    ),
-    widths.playerName,
-  );
-  const base = `${statusPrefix} \`${townHallLabel}\` \`${playerName}\``;
-  if (row.displayValue === null) {
-    return row.rightMarker ? `${base} ${row.rightMarker}` : base;
-  }
-  const displayValue = rightAlign(
-    sanitizeInlineCodeCell(
-      row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
-    ),
-    widths.value,
-  );
-  const line = `${base} \`${displayValue}\``;
-  if (!row.rightMarker) return line;
-  return `${line} ${row.rightMarker}`;
-}
-
-function computeColumnWidths(
-  linkedRows: LinkListRowInput[],
-  unlinkedRows: LinkListRowInput[],
-): {
-  playerName: number;
-  value: number;
-} {
-  const allRows = [...linkedRows, ...unlinkedRows];
-  const playerName = Math.max(
-    1,
-    ...allRows
-      .map((row) => row.playerName.length)
-      .filter((resolved) => Number.isFinite(resolved)),
-  );
-  const value = Math.max(
-    1,
-    ...allRows
-      .map((row) => row.displayValue?.length ?? 0)
-      .filter((resolved) => Number.isFinite(resolved)),
-  );
-
-  return { playerName, value };
-}
-
 function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
   sortMode?: LinkListSortMode;
+  columns?: LinkListColumnId[];
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
-  const widths = computeColumnWidths(linkedRows, unlinkedRows);
+  const columns =
+    input.columns ??
+    getLinkListDefaultColumnsForSortMode(input.sortMode ?? LINK_LIST_DEFAULT_SORT_MODE);
+  const widths = computeColumnWidths(linkedRows, unlinkedRows, columns);
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
@@ -1030,14 +1103,12 @@ function buildLinkListDescriptionLines(input: {
 
     lines.push(
       ...linkedRows.map((row) =>
-        formatAlignedInlineRow(
+        renderLinkListRow({
           row,
-          {
-            playerName: widths.playerName,
-            value: widths.value,
-          },
-          input.statusIcons.linked,
-        ),
+          columns,
+          widths,
+          statusPrefix: input.statusIcons.linked,
+        }),
       ),
     );
   }
@@ -1046,14 +1117,12 @@ function buildLinkListDescriptionLines(input: {
     lines.push(`Unlinked users: ${unlinkedRows.length}`);
     lines.push(
       ...unlinkedRows.map((row) =>
-        formatAlignedInlineRow(
+        renderLinkListRow({
           row,
-          {
-            playerName: widths.playerName,
-            value: widths.value,
-          },
-          input.statusIcons.unlinked,
-        ),
+          columns,
+          widths,
+          statusPrefix: input.statusIcons.unlinked,
+        }),
       ),
     );
   }
@@ -1062,6 +1131,9 @@ function buildLinkListDescriptionLines(input: {
 }
 
 export const buildLinkListDescriptionLinesForTest = buildLinkListDescriptionLines;
+export const getLinkListDefaultColumnsForSortModeForTest = getLinkListDefaultColumnsForSortMode;
+export const getLinkListSelectableColumnsForTest = getLinkListSelectableColumns;
+export const getLinkListColumnLabelForTest = getLinkListColumnLabel;
 
 async function buildLinkListView(input: {
   interaction: LinkListInteraction;
@@ -1197,7 +1269,7 @@ async function buildLinkListView(input: {
     const inactivityMissedWars = inactivityRow?.missedWars ?? null;
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
     const link = linkByTag.get(playerTag);
-    const linkedDisplayName = link
+    const discordDisplayName = link
       ? sanitizeInlineCodeCell(
           truncateWithEllipsis(
             sanitizeInlineCodeCell(
@@ -1210,27 +1282,28 @@ async function buildLinkListView(input: {
             MAX_IDENTITY_CHARS,
           ),
         )
-      : null;
-    const displayValue: string | null =
-      sortMode === "discord"
-        ? sanitizeInlineCodeCell(linkedDisplayName ?? WEIGHT_PLACEHOLDER)
-        : sortMode === "weight"
-          ? sanitizeInlineCodeCell(formatCompactWeightK(weightValue))
-          : sortMode === "player-tags"
-            ? sanitizeInlineCodeCell(playerTag)
-            : sortMode === "player"
-              ? null
-              : sortMode === "clan-rank"
-                ? sanitizeInlineCodeCell(formatLinkListClanRole(member.role))
-                : sanitizeInlineCodeCell(formatInactivityMetricLabel({
-                    daysInactive: inactivityDays,
-                    missedWars: inactivityMissedWars,
-                  }));
+      : sanitizeInlineCodeCell(WEIGHT_PLACEHOLDER);
+    const discordUsername = link
+      ? sanitizeInlineCodeCell(
+          truncateWithEllipsis(
+            sanitizeInlineCodeCell(normalizePersistedDiscordUsername(link.discordUsername) ?? WEIGHT_PLACEHOLDER),
+            MAX_IDENTITY_CHARS,
+          ),
+        )
+      : sanitizeInlineCodeCell(WEIGHT_PLACEHOLDER);
+    const weightLabel = sanitizeInlineCodeCell(formatCompactWeightK(weightValue));
+    const inactivityLabel = sanitizeInlineCodeCell(
+      formatInactivityMetricLabel({
+        daysInactive: inactivityDays,
+        missedWars: inactivityMissedWars,
+      }),
+    );
+    const clanRoleLabel = sanitizeInlineCodeCell(formatLinkListClanRole(member.role));
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
         : link
-          ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
+          ? discordDisplayName
           : playerTag;
 
     resolvedRows.push({
@@ -1245,10 +1318,18 @@ async function buildLinkListView(input: {
       playerSort: sanitizeTableText(member.playerName) || "Unknown",
       discordSort: sanitizeTableText(discordSort),
       row: {
-        townHall: townHallByTag.get(playerTag) ?? member.townHall ?? null,
+        townHallLabel: formatLinkListTownHallLabel(
+          townHallByTag.get(playerTag) ?? member.townHall ?? null,
+        ),
         playerName,
-        displayValue,
+        discordDisplayName,
+        discordUsername,
+        weightLabel,
+        inactivityLabel,
+        clanRoleLabel,
+        playerTag,
         rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
+        isLinked: Boolean(link),
       },
     });
   });
@@ -1256,6 +1337,7 @@ async function buildLinkListView(input: {
   const sortedRows = sortLinkListRows(resolvedRows, sortMode);
   const linkedRows: LinkListRowInput[] = [];
   const unlinkedRows: LinkListRowInput[] = [];
+  const columns = getLinkListDefaultColumnsForSortMode(sortMode);
 
   for (const row of sortedRows) {
     if (row.isLinked) {
@@ -1271,6 +1353,7 @@ async function buildLinkListView(input: {
     unlinkedRows,
     statusIcons,
     sortMode,
+    columns,
   });
 
   if (lines.length === 0) {
