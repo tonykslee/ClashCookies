@@ -84,6 +84,7 @@ export type RaidDashboardCountRow = {
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
   defaultLayoutCount: number | null;
   raidIntelDefenderUpgrades: number | null;
+  maxDefenseAttacksUsed: number | null;
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
@@ -1354,6 +1355,21 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       (sum, mark) => sum + calculateRaidIntelLayoutGradeScore(mark.layoutGrade),
       0,
     );
+    const maxDefenseAttacksUsed = (() => {
+      const values = [
+        ...snapshot.defenseSections.map((section) => section.attacksUsed),
+        ...(snapshot.activeSeason?.defenseLog ?? []).map((entry) =>
+          normalizeNonNegativeInt((entry as Record<string, unknown>).attackCount ??
+            (entry as Record<string, unknown>).attacks ??
+            (entry as Record<string, unknown>).attacksUsed),
+        ),
+      ]
+        .filter((value): value is number => Number.isFinite(value));
+      if (values.length <= 0) {
+        return null;
+      }
+      return Math.max(...values);
+    })();
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1365,6 +1381,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       attacksMax: snapshot.counts.attacksMax,
       defaultLayoutCount,
       raidIntelDefenderUpgrades,
+      maxDefenseAttacksUsed,
       intelGradeScore,
       raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
@@ -1484,15 +1501,21 @@ function buildRaidDashboardOverviewClanTitle(input: {
   clanName: string | null;
   hasOngoingRaid: boolean;
   raidsCompleted: number | null;
+  maxDefenseAttacksUsed: number | null;
 }): string {
   const clanTag = formatRaidTrackedClanTag(input.clanTag);
   const clanName = input.clanName?.trim() || clanTag;
   const link = buildClanProfileMarkdownLink(clanName, clanTag);
   const prefix = input.hasOngoingRaid ? "⚔️ " : (input.raidsCompleted ?? 0) > 0 ? "🌄 " : "";
-  return `${prefix}${link} \`${clanTag}\``;
+  const shieldText = input.maxDefenseAttacksUsed === null ? "" : ` 🛡️${input.maxDefenseAttacksUsed}`;
+  return `${prefix}${link} \`${clanTag}\`${shieldText}`;
 }
 
 function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string | null {
+  if ((row.raidsCompleted ?? 0) >= 1) {
+    return null;
+  }
+
   const marks = row.raidIntelMarks ?? [];
   if (marks.length <= 0) {
     return null;
@@ -1507,7 +1530,7 @@ function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string 
       : String(row.raidIntelDefenderUpgrades);
   const defaultLayoutCount =
     row.defaultLayoutCount ?? marks.filter((mark) => mark.layoutGrade === "DEFAULT").length;
-  return `- ⚔️ 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
+  return `- 🏘️ ${upgradesText} | defaults: ${defaultLayoutCount} | ${defaultText}`;
 }
 
 function buildRaidDashboardIntelSummaryLine(
