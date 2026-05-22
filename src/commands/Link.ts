@@ -77,6 +77,7 @@ const LINK_EMBED_SUPPORTED_CHANNEL_TYPES = [
 const EMBED_DESCRIPTION_LIMIT = 4096;
 const LINK_LIST_MAX_EMBEDS = 2;
 const LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS = 5200;
+const LINK_LIST_EMBED_DESCRIPTION_SAFE_LIMIT = 1500;
 const LINK_LIST_TRIM_SUFFIX_TEMPLATE =
   "...and {hiddenRows} more rows hidden. Use another sort/filter or Refresh Data.";
 const LINK_LIST_EMBED_COLOR = 0x5865f2;
@@ -157,6 +158,11 @@ function sanitizeTableText(input: string): string {
   return String(input ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function sanitizeInlineCodeCell(input: string): string {
+  const normalized = sanitizeTableText(input);
+  return normalized.replace(/`/g, "ʼ").replace(/\u200B/g, "").trim();
 }
 
 function truncateWithEllipsis(input: string, maxLength: number): string {
@@ -390,11 +396,15 @@ function isLinkListRowLine(line: string): boolean {
   );
 }
 
-function chunkDescriptionLines(lines: string[]): DescriptionChunk[] {
+function chunkDescriptionLines(
+  lines: string[],
+  safeLimit = EMBED_DESCRIPTION_LIMIT,
+): DescriptionChunk[] {
   const chunks: DescriptionChunk[] = [];
   let currentLines: string[] = [];
   let currentCount = 0;
   let currentRowCount = 0;
+  const effectiveLimit = Math.max(1, Math.min(safeLimit, EMBED_DESCRIPTION_LIMIT));
 
   for (const rawLine of lines) {
     const line =
@@ -403,7 +413,7 @@ function chunkDescriptionLines(lines: string[]): DescriptionChunk[] {
         : `${rawLine.slice(0, EMBED_DESCRIPTION_LIMIT - 12)}...truncated`;
     const candidate = currentLines.length > 0 ? [...currentLines, line].join("\n") : line;
 
-    if (candidate.length <= EMBED_DESCRIPTION_LIMIT) {
+    if (candidate.length <= effectiveLimit) {
       currentLines.push(line);
       currentCount += 1;
       if (isLinkListRowLine(line)) currentRowCount += 1;
@@ -516,7 +526,7 @@ function buildDescriptionEmbeds(
   sortMode: LinkListSortMode,
 ): LinkListDescriptionRenderResult {
   const sortLabel = getLinkListSortModeLabel(sortMode);
-  const chunks = chunkDescriptionLines(lines);
+  const chunks = chunkDescriptionLines(lines, LINK_LIST_EMBED_DESCRIPTION_SAFE_LIMIT);
   if (chunks.length === 0) {
     const embeds = [
       new EmbedBuilder()
@@ -538,12 +548,11 @@ function buildDescriptionEmbeds(
   const totalRows = lines.filter((line) => isLinkListRowLine(line)).length;
   const trimmedChunks = trimLinkListDescriptionChunks(chunks);
   const embeds = trimmedChunks.chunks.map((chunk, index) => {
-    const embedTitle = index === 0 ? title : `${title} (cont. ${index + 1})`;
-    return new EmbedBuilder()
-      .setColor(LINK_LIST_EMBED_COLOR)
-      .setTitle(embedTitle)
-      .setFooter({ text: `Sort: ${sortLabel}` })
-      .setDescription(chunk.text);
+    const embed = new EmbedBuilder().setColor(LINK_LIST_EMBED_COLOR).setDescription(chunk.text);
+    if (index === 0) {
+      embed.setTitle(title).setFooter({ text: `Sort: ${sortLabel}` });
+    }
+    return embed;
   });
 
   if (embeds.length === 0) {
@@ -960,9 +969,11 @@ function formatAlignedInlineRow(
   widths: { playerName: number; value: number },
   statusPrefix: string,
 ): string {
-  const townHallLabel = formatLinkListTownHallLabel(row.townHall);
+  const townHallLabel = sanitizeInlineCodeCell(formatLinkListTownHallLabel(row.townHall));
   const playerName = rightAlign(
-    truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
+    sanitizeInlineCodeCell(
+      truncateWithEllipsis(row.playerName, MAX_PLAYER_NAME_CHARS),
+    ),
     widths.playerName,
   );
   const base = `${statusPrefix} \`${townHallLabel}\` \`${playerName}\``;
@@ -970,7 +981,9 @@ function formatAlignedInlineRow(
     return row.rightMarker ? `${base} ${row.rightMarker}` : base;
   }
   const displayValue = rightAlign(
-    row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
+    sanitizeInlineCodeCell(
+      row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
+    ),
     widths.value,
   );
   const line = `${base} \`${displayValue}\``;
@@ -1172,9 +1185,11 @@ async function buildLinkListView(input: {
   currentMembers.forEach((member, index) => {
     const playerTag = normalizePlayerTag(member.playerTag);
     if (!playerTag) return;
-    const playerName = truncateWithEllipsis(
-      sanitizeTableText(member.playerName) || "Unknown",
-      MAX_PLAYER_NAME_CHARS,
+    const playerName = sanitizeInlineCodeCell(
+      truncateWithEllipsis(
+        sanitizeInlineCodeCell(member.playerName) || "Unknown",
+        MAX_PLAYER_NAME_CHARS,
+      ),
     );
     const weightValue = weightByTag.get(playerTag) ?? null;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
@@ -1183,30 +1198,34 @@ async function buildLinkListView(input: {
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
     const link = linkByTag.get(playerTag);
     const linkedDisplayName = link
-      ? truncateWithEllipsis(
-          resolveLinkedUserDisplayName(
-            input.interaction,
-            link.discordUserId,
-            link.discordUsername,
+      ? sanitizeInlineCodeCell(
+          truncateWithEllipsis(
+            sanitizeInlineCodeCell(
+              resolveLinkedUserDisplayName(
+                input.interaction,
+                link.discordUserId,
+                link.discordUsername,
+              ),
+            ),
+            MAX_IDENTITY_CHARS,
           ),
-          MAX_IDENTITY_CHARS,
         )
       : null;
     const displayValue: string | null =
       sortMode === "discord"
-        ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
+        ? sanitizeInlineCodeCell(linkedDisplayName ?? WEIGHT_PLACEHOLDER)
         : sortMode === "weight"
-          ? formatCompactWeightK(weightValue)
+          ? sanitizeInlineCodeCell(formatCompactWeightK(weightValue))
           : sortMode === "player-tags"
-            ? playerTag
+            ? sanitizeInlineCodeCell(playerTag)
             : sortMode === "player"
               ? null
               : sortMode === "clan-rank"
-                ? formatLinkListClanRole(member.role)
-                : formatInactivityMetricLabel({
+                ? sanitizeInlineCodeCell(formatLinkListClanRole(member.role))
+                : sanitizeInlineCodeCell(formatInactivityMetricLabel({
                     daysInactive: inactivityDays,
                     missedWars: inactivityMissedWars,
-                  });
+                  }));
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
