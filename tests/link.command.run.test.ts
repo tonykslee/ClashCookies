@@ -163,12 +163,22 @@ function makeValidTag(index: number): string {
   return `#PY${a}${b}${a}${b}`;
 }
 
+function makeLongValidTag(index: number): string {
+  const alphabet = "PYLQGRJCUV0289";
+  let suffix = "";
+  for (let offset = 0; offset < 15; offset += 1) {
+    suffix += alphabet[(index + offset) % alphabet.length];
+  }
+  return `#${suffix}`;
+}
+
 function makeLinkListClanMembers(input: {
   clanTag: string;
   count: number;
   playerNamePrefix?: string;
   playerTagStartIndex?: number;
   townHall?: number;
+  role?: string | ((index: number) => string);
 }) {
   return Array.from({ length: input.count }, (_, index) => {
     const playerTag = makeValidTag((input.playerTagStartIndex ?? 1) + index);
@@ -176,6 +186,10 @@ function makeLinkListClanMembers(input: {
       playerTag,
       playerName: `${input.playerNamePrefix ?? "Player"} ${index + 1}`,
       townHall: input.townHall ?? 18,
+      role:
+        typeof input.role === "function"
+          ? input.role(index)
+          : input.role ?? "member",
       rank: index + 1,
       weight: 145000,
       sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
@@ -183,60 +197,34 @@ function makeLinkListClanMembers(input: {
   });
 }
 
-function getInlineRowSegments(
-  row: string,
-  mode: "default" | "player-tags" | "inactivity" = "default",
-): {
-  statusKind: "linked" | "unlinked" | "";
-  statusToken: string;
-  townHallIcon: string;
-  identity: string;
-  left: string;
-  tag: string;
-  player: string;
-  weight: string;
-  metric: string;
+function getInlineRowSegments(row: string): {
+  status: string;
+  townHall: string;
+  value: string;
   marker: string;
 } {
-  const normalized = String(row ?? "");
-  const prefixMatch = normalized.match(/^(\S+)\s/);
-  const statusToken = String(prefixMatch?.[1] ?? "");
-  const statusKind = statusToken === "✅" ? "linked" : statusToken === "❌" ? "unlinked" : "";
-  const match =
-    normalized.match(
-      /^(?<status>\S+)\s+(?<icon>\S+)\s+`(?<left>[^`]*)`(?:\s+`(?<tag>[^`]*)`)?\s+`(?<player>[^`]*)`(?:\s+(?<marker>.*))?$/,
-    );
-  const playerBlock = String(match?.groups?.player ?? "");
-  const [player = "", weight = ""] = playerBlock
-    .split(/\s{2,}/)
-    .map((part) => part)
-    .filter((part) => part.length > 0);
-    return {
-      statusKind,
-      statusToken,
-      townHallIcon: String(match?.groups?.icon ?? "")
-        .trim()
-        .replace(/^`|`$/g, ""),
-      identity:
-        mode === "inactivity"
-          ? String(match?.groups?.left ?? "").trim()
-        : String(match?.groups?.left ?? "").trim(),
-    left: String(match?.groups?.left ?? "").trim(),
-    tag: String(match?.groups?.tag ?? "").trim(),
-    player: player.trim(),
-    weight: weight.trim(),
-    metric:
-      mode === "inactivity"
-        ? weight.trim()
-        : String(match?.groups?.metric ?? "").trim(),
-    marker: String(match?.groups?.marker ?? "").trim(),
+  const normalized = String(row ?? "").trimEnd();
+  const match = normalized.match(
+    /^(?<status>[\u2705\u274C])\s+`(?<townHall>[^`]*)`\s+`(?<value>[^`]*)`(?:\s+(?<marker>.*))?$/u,
+  );
+  if (!match?.groups) {
+    return { status: "", townHall: "", value: "", marker: "" };
+  }
+  return {
+    status: String(match.groups.status ?? ""),
+    townHall: String(match.groups.townHall ?? ""),
+    value: String(match.groups.value ?? "").trim(),
+    marker: String(match.groups.marker ?? "").trim(),
   };
 }
 
 function getInlineRows(description: string): string[] {
   return String(description ?? "")
     .split("\n")
-    .filter((line) => /^\S+\s+\S+\s+`/.test(line));
+    .map((line) => line.trimEnd())
+    .filter((line) =>
+      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+\u{1F9CD})?$/u.test(line),
+    );
 }
 
 function makeReminderButtonInteraction(input: {
@@ -858,49 +846,31 @@ describe("/link run", () => {
     expect(description).not.toContain("(111111111111111111)");
     expect(firstEmbed.fields ?? []).toHaveLength(0);
 
-    const rows = description
-      .split("\n")
-      .filter(
-        (line: string) =>
-          /^\S+\s+\S+\s+`/.test(line) &&
-          (line.endsWith("`") || line.endsWith("??")),
-      );
-    expect(rows.length).toBeGreaterThanOrEqual(2);
-
-    const linkedRow = rows.find((line: string) => line.includes("Tilonius"));
-    const currentFallbackRow = rows.find((line: string) =>
-      line.includes("Unlinked Guy"),
-    );
-    expect(linkedRow).toBeTruthy();
-    expect(currentFallbackRow).toBeTruthy();
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("|");
-
-    const linkedParts = getInlineRowSegments(linkedRow as string);
-    const currentFallbackParts = getInlineRowSegments(
-      currentFallbackRow as string,
-    );
-    expect(linkedParts.statusKind).toBe("linked");
-    expect(currentFallbackParts.statusKind).toBe("unlinked");
-    expect(linkedParts.townHallIcon.length).toBeGreaterThan(0);
-    expect(currentFallbackParts.townHallIcon.length).toBeGreaterThan(0);
-    expect(linkedParts.townHallIcon).toBe("TH18");
-    expect(currentFallbackParts.townHallIcon).toBe("TH15");
-    expect(linkedParts.left).toBe("Persisted Sin");
-    expect(currentFallbackParts.left).toBe("—");
-    expect(linkedParts.tag).toBe("");
-    expect(currentFallbackParts.tag).toBe("");
-    expect(linkedParts.player).toBe("Tilonius");
-    expect(currentFallbackParts.player).toBe("Unlinked Guy");
-    expect(linkedParts.weight.trim()).toBe("145k");
-    expect(currentFallbackParts.weight.trim()).toBe("166k");
-    expect(linkedParts.marker).toBe("");
-    expect(currentFallbackParts.marker).toBe("");
-    expect(linkedRow).toMatch(/^.+ \S+ `/);
-    expect(currentFallbackRow).toMatch(/^.+ \S+ `/);
-    expect(linkedRow).not.toContain("`#PYLQ0289`");
-    expect(currentFallbackRow).not.toContain("`#QGRJ2222`");
-    expect(currentFallbackRow).not.toContain("``");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(3);
+    const linkedRow = getInlineRowSegments(rows[0] ?? "");
+    const currentFallbackRow = getInlineRowSegments(rows[1] ?? "");
+    const currentWeightFallbackRow = getInlineRowSegments(rows[2] ?? "");
+    expect(linkedRow).toMatchObject({
+      status: "✅",
+      townHall: "18",
+      value: "Persisted Sin",
+    });
+    expect(currentFallbackRow).toMatchObject({
+      status: "❌",
+      townHall: "?",
+      value: "—",
+    });
+    expect(currentWeightFallbackRow).toMatchObject({
+      status: "❌",
+      townHall: "15",
+      value: "—",
+    });
+    expect(rows[0] ?? "").not.toContain("`#PYLQ0289`");
+    expect(rows[1] ?? "").not.toContain("`#QGRJ2222`");
+    expect(rows[1] ?? "").not.toContain("``");
     const refreshButton = payload.components[0].components[0].toJSON();
     const sortButton = payload.components[1].components[0].toJSON();
     expect(refreshButton.label).toBe("Refresh Data");
@@ -1057,9 +1027,23 @@ describe("/link run", () => {
     const payload = editReply.mock.calls[0]?.[0] as any;
     const embed = payload.embeds[0].toJSON();
     const description = String(embed.description ?? "");
-    expect(description).toContain("Refreshed");
-    expect(description).toContain("New Unlinked");
+    expect(description).toContain("RefreshUser");
+    expect(description).toContain("Unlinked users: 1");
+    expect(description).not.toContain("Refreshed");
+    expect(description).not.toContain("New Unlinked");
     expect(description).not.toContain("Old Player");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(2);
+    expect(getInlineRowSegments(rows[0] ?? "")).toMatchObject({
+      status: "✅",
+      townHall: "18",
+      value: "RefreshUser",
+    });
+    expect(getInlineRowSegments(rows[1] ?? "")).toMatchObject({
+      status: "❌",
+      townHall: "16",
+      value: "—",
+    });
     expect(payload.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
@@ -1243,33 +1227,26 @@ describe("/link run", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
-    expect(description).toContain("Fallback One");
-    expect(description).toContain("Fallback Two");
-    expect(description).toContain("TH18");
-    expect(description).toContain("TH15");
+    expect(description).toContain("Fallback User");
+    expect(description).toContain("18");
+    expect(description).toContain("15");
     expect(description).not.toContain("<:th18:18>");
     expect(description).not.toContain("<:th15:15>");
   });
 
-  it("renders compact TH labels, keeps tags only in Player Tags mode, and places filler markers at the far right", () => {
-    const defaultLines = buildLinkListDescriptionLinesForTest({
+  it("renders compact values, keeps tags only in Player Tags mode, and places filler markers at the far right", () => {
+    const defaultRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
           townHall: 18,
-          leftLabel: "Sin Display With A Very Long Alias",
-          playerTag: "#QR9R0LGJ9",
-          playerName: "Player One With A Very Long Alias",
-          weight: "145k",
+          displayValue: "Persisted Sin",
           rightMarker: "🧍",
         },
       ],
       unlinkedRows: [
         {
           townHall: 14,
-          leftLabel: "",
-          playerTag: "#LCUV0289",
-          playerName: "Mystery Zero With Another Very Long Alias",
-          weight: "—",
+          displayValue: "—",
         },
       ],
       statusIcons: {
@@ -1277,26 +1254,18 @@ describe("/link run", () => {
         unlinked: "❌",
       },
     });
-    const playerTagLines = buildLinkListDescriptionLinesForTest({
+    const playerTagRows = buildLinkListDescriptionLinesForTest({
       linkedRows: [
         {
           townHall: 18,
-          leftLabel: "Sin Display With A Very Long Alias",
-          playerTag: "#QR9R0LGJ9",
-          playerName: "Player One With A Very Long Alias",
-          weight: "145k",
+          displayValue: "#QR9R0LGJ9",
           rightMarker: "🧍",
-          rowMode: "player-tags",
         },
       ],
       unlinkedRows: [
         {
           townHall: 14,
-          leftLabel: "",
-          playerTag: "#LCUV0289",
-          playerName: "Mystery Zero With Another Very Long Alias",
-          weight: "—",
-          rowMode: "player-tags",
+          displayValue: "#LCUV0289",
         },
       ],
       statusIcons: {
@@ -1306,39 +1275,33 @@ describe("/link run", () => {
       sortMode: "player-tags",
     });
 
-    const linkedDefaultRow = defaultLines.find((line) => line.includes("Player One"));
-    const unlinkedDefaultRow = defaultLines.find((line) => line.includes("Mystery Zero"));
-    const linkedTagRow = playerTagLines.find((line) => line.includes("#QR9R0LGJ9"));
-    const unlinkedTagRow = playerTagLines.find((line) => line.includes("#LCUV0289"));
+    const defaultRowsOnly = getInlineRows(defaultRows.join("\n"));
+    const playerTagRowsOnly = getInlineRows(playerTagRows.join("\n"));
+    const linkedDefaultRow = defaultRowsOnly[0] ?? "";
+    const unlinkedDefaultRow = defaultRowsOnly[1] ?? "";
+    const linkedTagRow = playerTagRowsOnly[0] ?? "";
+    const unlinkedTagRow = playerTagRowsOnly[1] ?? "";
 
-    const linkedDefaultParts = getInlineRowSegments(linkedDefaultRow ?? "");
-    const unlinkedDefaultParts = getInlineRowSegments(unlinkedDefaultRow ?? "");
-    expect(linkedDefaultParts.statusToken).toBe("✅");
-    expect(linkedDefaultParts.townHallIcon).toBe("TH18");
-    expect(linkedDefaultParts.tag).toBe("");
-    expect(linkedDefaultParts.left).toBe("Sin Display With A Very Long Alias");
-    expect(linkedDefaultParts.player).toBe("Player One With A Very Long Alias");
-    expect(linkedDefaultParts.weight.trim()).toBe("145k");
-    expect(linkedDefaultRow).toContain("🧍");
-    expect(unlinkedDefaultParts.statusKind).toBe("unlinked");
-    expect(unlinkedDefaultParts.townHallIcon).toBe("TH14");
-    expect(unlinkedDefaultParts.tag).toBe("");
-    expect(unlinkedDefaultParts.left).toBe("—");
-    expect(unlinkedDefaultParts.player).toBe("Mystery Zero With Another Very Long Alias");
-    expect(unlinkedDefaultParts.weight.trim()).toBe("—");
-    expect(unlinkedDefaultRow).not.toContain("`#LCUV0289`");
+    const linkedDefaultParts = getInlineRowSegments(linkedDefaultRow);
+    const unlinkedDefaultParts = getInlineRowSegments(unlinkedDefaultRow);
+    expect(linkedDefaultParts.status).toBe("✅");
+    expect(linkedDefaultParts.townHall).toBe("18");
+    expect(linkedDefaultParts.value).toBe("Persisted Sin");
+    expect(linkedDefaultParts.marker).toBe("🧍");
+    expect(unlinkedDefaultParts.status).toBe("❌");
+    expect(unlinkedDefaultParts.townHall).toBe("14");
+    expect(unlinkedDefaultParts.value).toBe("—");
+    expect(unlinkedDefaultParts.marker).toBe("");
+    expect(linkedDefaultRow).not.toContain("#");
+    expect(unlinkedDefaultRow).not.toContain("#");
 
-    const linkedTagParts = getInlineRowSegments(linkedTagRow ?? "");
-    const unlinkedTagParts = getInlineRowSegments(unlinkedTagRow ?? "");
-    expect(linkedTagParts.tag).toBe("#QR9R0LGJ9");
-    expect(linkedTagParts.player).toBe("Player One With A Very Long Alias");
-    expect(linkedTagParts.weight.trim()).toBe("145k");
-    expect(linkedTagParts.townHallIcon).toBe("TH18");
-    expect(linkedTagRow).toContain("🧍");
-    expect(unlinkedTagParts.tag).toBe("#LCUV0289");
-    expect(unlinkedTagParts.player).toBe("Mystery Zero With Another Very Long Alias");
-    expect(unlinkedTagParts.weight.trim()).toBe("—");
-    expect(unlinkedTagParts.townHallIcon).toBe("TH14");
+    const linkedTagParts = getInlineRowSegments(linkedTagRow);
+    const unlinkedTagParts = getInlineRowSegments(unlinkedTagRow);
+    expect(linkedTagParts.value).toBe("#QR9R0LGJ9");
+    expect(linkedTagParts.townHall).toBe("18");
+    expect(linkedTagParts.marker).toBe("🧍");
+    expect(unlinkedTagParts.value).toBe("#LCUV0289");
+    expect(unlinkedTagParts.townHall).toBe("14");
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {
@@ -1380,12 +1343,26 @@ describe("/link run", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("Linked Users: 1");
+    expect(description).toContain("Unlinked users: 1");
     expect(description).toContain("Persisted Sin");
-    expect(description).toContain("Unlinked");
     expect(description).toContain("✅");
     expect(description).toContain("❌");
     expect(description).not.toContain("`#PYLQ0289`");
     expect(description).not.toContain("`#QGRJ2222`");
+    expect(description).not.toContain("``");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(2);
+    expect(getInlineRowSegments(rows[0] ?? "")).toMatchObject({
+      status: "✅",
+      townHall: "18",
+      value: "Persisted Sin",
+    });
+    expect(getInlineRowSegments(rows[1] ?? "")).toMatchObject({
+      status: "❌",
+      townHall: "17",
+      value: "—",
+    });
     expect(description).not.toContain("``");
   });
 
@@ -1453,11 +1430,10 @@ describe("/link run", () => {
     const description = String(payload.embeds[0].toJSON().description ?? "");
     const row = getInlineRowSegments(getInlineRows(description)[0] ?? "");
     const expectedDiscordDisplay = "Persisted Discord Username Is Very Long".slice(0, 12) + "...";
-    const expectedPlayerName = "Player Name Is Also Much Longer Than Limit".slice(0, 12) + "...";
-    expect(row.left).toBe(expectedDiscordDisplay);
-    expect(row.left).toHaveLength(15);
-    expect(row.player).toBe(expectedPlayerName);
-    expect(row.player).toHaveLength(15);
+    expect(row.status).toBe("✅");
+    expect(row.townHall).toBe("18");
+    expect(row.value).toBe(expectedDiscordDisplay);
+    expect(row.value).toHaveLength(15);
     expect(description).not.toContain("Discord Display Name Is Extremely Long");
     expect(description).not.toContain("Player Name Is Also Much Longer Than Limit");
   });
@@ -1516,16 +1492,17 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("Unlinked users: 1");
     expect(description).not.toContain("Linked Users:");
-    expect(description).toContain("Player Two");
-    expect(description).toContain("TH15");
+    expect(description).not.toContain("Player Two");
+    expect(description).toContain("15");
     expect(description).not.toContain("``");
     expect(description).not.toContain("|");
     expect(description).not.toContain("#QGRJ2222");
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(1);
     const row = getInlineRowSegments(rows[0] ?? "");
-    expect(row.tag).toBe("");
-    expect(row.player).toBe("Player Two");
+    expect(row.status).toBe("❌");
+    expect(row.townHall).toBe("15");
+    expect(row.value).toBe("—");
   });
 
   it("returns deterministic empty-member response when clan has no members", async () => {
@@ -1762,7 +1739,7 @@ describe("/link list select menu", () => {
     const firstEmbed = payload.embeds[0].toJSON();
     const description = firstEmbed.description as string;
     expect(description).toContain("Linked Users: 1");
-    expect(description).toContain("Persisted Sel");
+    expect(description).toContain("120k");
     expect(description).not.toContain("`#PQL0289`");
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("Unlinked users:");
@@ -1859,6 +1836,7 @@ describe("/link list sort button", () => {
         playerTag: "#PYLQ0289",
         playerName: "Charlie",
         townHall: 18,
+        role: "leader",
         rank: 18,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
@@ -1867,6 +1845,7 @@ describe("/link list sort button", () => {
         playerTag: "#QGRJ2222",
         playerName: "Alpha",
         townHall: 17,
+        role: "co",
         rank: 17,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
@@ -1875,6 +1854,7 @@ describe("/link list sort button", () => {
         playerTag: "#LCUV0289",
         playerName: "Bravo",
         townHall: 16,
+        role: "elder",
         rank: 16,
         weight: 0,
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
@@ -1946,12 +1926,13 @@ describe("/link list sort button", () => {
     const embedWeight = payloadWeight.embeds[0].toJSON();
     const descriptionWeight = String(embedWeight.description ?? "");
     expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
-    expect(descriptionWeight.indexOf("BobUser")).toBeLessThan(
-      descriptionWeight.indexOf("AmyUser"),
-    );
-    expect(descriptionWeight.indexOf("AmyUser")).toBeLessThan(
-      descriptionWeight.indexOf("ZedUser"),
-    );
+    const weightRows = getInlineRows(descriptionWeight);
+    expect(weightRows).toHaveLength(3);
+    expect(weightRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "166k",
+      "145k",
+      "120k",
+    ]);
     expect(payloadWeight.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
@@ -1968,12 +1949,13 @@ describe("/link list sort button", () => {
     const embedPlayerTags = payloadPlayerTags.embeds[0].toJSON();
     const descriptionPlayerTags = String(embedPlayerTags.description ?? "");
     expect(embedPlayerTags.footer?.text).toBe("Sort: Player Tags");
-    expect(descriptionPlayerTags.indexOf("#LCUV0289")).toBeLessThan(
-      descriptionPlayerTags.indexOf("#QGRJ2222"),
-    );
-    expect(descriptionPlayerTags.indexOf("#QGRJ2222")).toBeLessThan(
-      descriptionPlayerTags.indexOf("#PYLQ0289"),
-    );
+    const playerTagRows = getInlineRows(descriptionPlayerTags);
+    expect(playerTagRows).toHaveLength(3);
+    expect(playerTagRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "#LCUV0289",
+      "#QGRJ2222",
+      "#PYLQ0289",
+    ]);
     expect(payloadPlayerTags.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
@@ -1989,12 +1971,13 @@ describe("/link list sort button", () => {
     const embedPlayer = payloadPlayer.embeds[0].toJSON();
     const descriptionPlayer = String(embedPlayer.description ?? "");
     expect(embedPlayer.footer?.text).toBe("Sort: Player Name");
-    expect(descriptionPlayer.indexOf("Alpha")).toBeLessThan(
-      descriptionPlayer.indexOf("Bravo"),
-    );
-    expect(descriptionPlayer.indexOf("Bravo")).toBeLessThan(
-      descriptionPlayer.indexOf("Charlie"),
-    );
+    const playerRows = getInlineRows(descriptionPlayer);
+    expect(playerRows).toHaveLength(3);
+    expect(playerRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "Alpha",
+      "Bravo",
+      "Charlie",
+    ]);
 
     const fromPlayer = await runSortClick("player");
     expect(fromPlayer.deferUpdate).toHaveBeenCalledTimes(1);
@@ -2002,25 +1985,21 @@ describe("/link list sort button", () => {
     expect(fromPlayer.update).not.toHaveBeenCalled();
     const payloadDiscord = fromPlayer.editReply.mock.calls[0]?.[0] as any;
     const embedDiscord = payloadDiscord.embeds[0].toJSON();
-    expect(embedDiscord.footer?.text).toBe("Sort: Clan Rank Desc");
+    expect(embedDiscord.footer?.text).toBe("Sort: Clan Role");
     expect(payloadDiscord.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
     expect(payloadDiscord.components[1].components[0].toJSON().label).toBe(
-      "Sort: Clan Rank Desc",
+      "Sort: Clan Role",
     );
     const descriptionClanRank = String(embedDiscord.description ?? "");
-    expect(descriptionClanRank.indexOf("ZedUser")).toBeLessThan(
-      descriptionClanRank.indexOf("AmyUser"),
-    );
-    expect(descriptionClanRank.indexOf("AmyUser")).toBeLessThan(
-      descriptionClanRank.indexOf("BobUser"),
-    );
-    const clanRankRows = getInlineRows(descriptionClanRank);
-    expect(clanRankRows).toHaveLength(3);
-    expect(getInlineRowSegments(clanRankRows[0] ?? "").weight).toBe("#18");
-    expect(getInlineRowSegments(clanRankRows[1] ?? "").weight).toBe("#17");
-    expect(getInlineRowSegments(clanRankRows[2] ?? "").weight).toBe("#16");
+    const clanRoleRows = getInlineRows(descriptionClanRank);
+    expect(clanRoleRows).toHaveLength(3);
+    expect(clanRoleRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "lead",
+      "co",
+      "eld",
+    ]);
 
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [
@@ -2050,15 +2029,11 @@ describe("/link list sort button", () => {
     const descriptionInactivity = String(embedClanRank.description ?? "");
     const inactivityRows = getInlineRows(descriptionInactivity);
     expect(inactivityRows).toHaveLength(3);
-    const inactivityByPlayer = new Map(
-      inactivityRows.map((row) => {
-        const parts = getInlineRowSegments(row, "inactivity");
-        return [parts.player, parts.metric] as const;
-      }),
-    );
-    expect(inactivityByPlayer.get("Alpha")).toBe("— 3w");
-    expect(inactivityByPlayer.get("Charlie")).toBe("— 1w");
-    expect(inactivityByPlayer.get("Bravo")).toBe("—");
+    expect(inactivityRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "\u2014 3w",
+      "\u2014 1w",
+      "\u2014",
+    ]);
     expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
 
     const fromInactivity = await runSortClick("inactivity");
@@ -2141,7 +2116,10 @@ describe("/link list sort button", () => {
       clanTag: "#PQL0289",
       count: 300,
       playerNamePrefix: "Player With An Exceptionally Long Name For Trimming That Pushes The Payload Over The Budget",
-    });
+    }).map((row, index) => ({
+      ...row,
+      playerTag: makeLongValidTag(index),
+    }));
     prismaMock.playerLink.findMany.mockResolvedValue(
       rows.map((row, index) => ({
         playerTag: row.playerTag,
@@ -2180,7 +2158,7 @@ describe("/link list sort button", () => {
     const payload = editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds.length).toBeLessThanOrEqual(2);
     const description = payload.embeds.map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "").join("\n");
-    expect(description).toContain("...and");
+    expect(description).toContain("more rows hidden");
     expect(description).toContain("rows hidden");
     expect(description).toContain("Refresh Data");
     expect(infoSpy.mock.calls.some((call) =>
@@ -2195,7 +2173,10 @@ describe("/link list sort button", () => {
       clanTag: "#PQL0289",
       count: 300,
       playerNamePrefix: "Inactive Player With An Exceptionally Long Name For Trimming That Pushes The Payload Over The Budget",
-    });
+    }).map((row, index) => ({
+      ...row,
+      playerTag: makeLongValidTag(index),
+    }));
     prismaMock.playerLink.findMany.mockResolvedValue(
       rows.map((row, index) => ({
         playerTag: row.playerTag,
@@ -2210,12 +2191,12 @@ describe("/link list sort button", () => {
         playerTag: row.playerTag,
         playerName: row.playerName,
         townHall: row.townHall,
-        missedWars: 80 - index,
-        participationWars: 80 - index,
+        missedWars: 12345 - index,
+        participationWars: 12345 - index,
         totalTrueStars: 0,
         avgAttackDelay: null,
         lateAttacks: 0,
-        warsAvailable: 80,
+        warsAvailable: 12345,
         missedWarStates: [],
       })),
       trackedTags: ["#PQL0289"],
@@ -2254,7 +2235,7 @@ describe("/link list sort button", () => {
     const payload = editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds.length).toBeLessThanOrEqual(2);
     const description = payload.embeds.map((embed: { toJSON: () => any }) => embed.toJSON().description ?? "").join("\n");
-    expect(description).toContain("...and");
+    expect(description).toContain("more rows hidden");
     expect(description).toContain("rows hidden");
     expect(description).not.toContain("`#");
     expect(infoSpy.mock.calls.some((call) =>

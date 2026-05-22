@@ -89,9 +89,9 @@ const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
 const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
 const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
 const MAX_IDENTITY_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
-const LINK_LIST_LINKED_STATUS_EMOJI = "✅";
-const LINK_LIST_UNLINKED_STATUS_EMOJI = "❌";
-const WEIGHT_PLACEHOLDER = "—";
+const LINK_LIST_LINKED_STATUS_EMOJI = "\u2705";
+const LINK_LIST_UNLINKED_STATUS_EMOJI = "\u274C";
+const WEIGHT_PLACEHOLDER = "\u2014";
 const LINK_LIST_SORT_MODE_CYCLE = [
   "discord",
   "weight",
@@ -109,7 +109,7 @@ type LinkListCurrentMemberRow = {
   playerTag: string;
   playerName: string;
   townHall: number | null;
-  rank: number | null;
+  role: string | null;
   sourceSyncedAt: Date;
 };
 
@@ -187,7 +187,7 @@ function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "weight") return "Weight Desc";
   if (mode === "player-tags") return "Player Tags";
   if (mode === "player") return "Player Name";
-  if (mode === "clan-rank") return "Clan Rank Desc";
+  if (mode === "clan-rank") return "Clan Role";
   if (mode === "inactivity") return "Inactivity";
   return "Discord Name";
 }
@@ -385,7 +385,9 @@ type DescriptionChunk = {
 };
 
 function isLinkListRowLine(line: string): boolean {
-  return /^\S+\s+\S+\s+`/.test(String(line ?? ""));
+  return /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+\u{1F9CD})?$/u.test(
+    String(line ?? "").trim(),
+  );
 }
 
 function chunkDescriptionLines(lines: string[]): DescriptionChunk[] {
@@ -735,11 +737,7 @@ function rightAlign(value: string, width: number): string {
 
 type LinkListRowInput = {
   townHall: number | null;
-  leftLabel: string;
-  playerTag: string;
-  weight: string;
-  playerName: string;
-  rowMode?: LinkListSortMode;
+  displayValue: string;
   rightMarker?: string | null;
 };
 
@@ -751,7 +749,7 @@ type LinkListResolvedMemberRow = {
   inactivityDays: number | null;
   inactivityMissedWars: number | null;
   inactivityParticipationWars: number | null;
-  clanRankSortScore: number | null;
+  clanRoleSortScore: number;
   playerSort: string;
   discordSort: string;
   row: LinkListRowInput;
@@ -800,15 +798,8 @@ function sortLinkListRows(
     }
 
     if (sortMode === "clan-rank") {
-      const aHasRank = a.clanRankSortScore !== null;
-      const bHasRank = b.clanRankSortScore !== null;
-      if (aHasRank !== bHasRank) return aHasRank ? -1 : 1;
-      if (
-        a.clanRankSortScore !== null &&
-        b.clanRankSortScore !== null &&
-        a.clanRankSortScore !== b.clanRankSortScore
-      ) {
-        return b.clanRankSortScore - a.clanRankSortScore;
+      if (a.clanRoleSortScore !== b.clanRoleSortScore) {
+        return b.clanRoleSortScore - a.clanRoleSortScore;
       }
       const byDiscord = compareSortText(a.discordSort, b.discordSort);
       if (byDiscord !== 0) return byDiscord;
@@ -842,10 +833,18 @@ function sortLinkListRows(
       ) {
         return b.inactivityParticipationWars - a.inactivityParticipationWars;
       }
+      const aHasDays = a.inactivityDays !== null;
+      const bHasDays = b.inactivityDays !== null;
+      if (aHasDays !== bHasDays) return aHasDays ? -1 : 1;
+      if (
+        a.inactivityDays !== null &&
+        b.inactivityDays !== null &&
+        a.inactivityDays !== b.inactivityDays
+      ) {
+        return b.inactivityDays - a.inactivityDays;
+      }
       const byPlayer = compareSortText(a.playerSort, b.playerSort);
       if (byPlayer !== 0) return byPlayer;
-      const byDiscord = compareSortText(a.discordSort, b.discordSort);
-      if (byDiscord !== 0) return byDiscord;
       if (a.playerTag !== b.playerTag) {
         return compareSortText(a.playerTag, b.playerTag);
       }
@@ -884,8 +883,41 @@ function formatCompactWeightK(weight: number | null | undefined): string {
 
 function formatLinkListTownHallLabel(townHall: number | null | undefined): string {
   const resolvedTownHall = normalizePositiveTownHall(townHall);
-  if (resolvedTownHall === null) return "TH?";
-  return `TH${resolvedTownHall}`;
+  if (resolvedTownHall === null) return "?";
+  return String(resolvedTownHall);
+}
+
+function normalizeLinkListClanRole(
+  input: string | null | undefined,
+): "leader" | "co" | "elder" | "member" | null {
+  const normalized = String(input ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_]+/g, "");
+  if (!normalized) return null;
+  if (normalized === "leader") return "leader";
+  if (normalized === "coleader" || normalized === "co") return "co";
+  if (normalized === "admin" || normalized === "elder") return "elder";
+  if (normalized === "member") return "member";
+  return null;
+}
+
+function formatLinkListClanRole(input: string | null | undefined): string {
+  const role = normalizeLinkListClanRole(input);
+  if (role === "leader") return "lead";
+  if (role === "co") return "co";
+  if (role === "elder") return "eld";
+  if (role === "member") return "mem";
+  return WEIGHT_PLACEHOLDER;
+}
+
+function getLinkListClanRoleSortScore(input: string | null | undefined): number {
+  const role = normalizeLinkListClanRole(input);
+  if (role === "leader") return 4;
+  if (role === "co") return 3;
+  if (role === "elder") return 2;
+  if (role === "member") return 1;
+  return 0;
 }
 
 function formatInactivityMetricLabel(input: {
@@ -924,24 +956,15 @@ function resolveLinkListTownHall(input: {
 
 function formatAlignedInlineRow(
   row: LinkListRowInput,
-  widths: { left: number; player: number; weight: number },
+  widths: { value: number },
   statusPrefix: string,
-  sortMode: LinkListSortMode,
 ): string {
   const townHallLabel = formatLinkListTownHallLabel(row.townHall);
-  const leftLabel = rightAlign(
-    row.leftLabel.trim().length > 0 ? row.leftLabel : WEIGHT_PLACEHOLDER,
-    widths.left,
+  const displayValue = rightAlign(
+    row.displayValue.trim().length > 0 ? row.displayValue : WEIGHT_PLACEHOLDER,
+    widths.value,
   );
-  const weight = rightAlign(row.weight, widths.weight);
-  const playerName = rightAlign(row.playerName, widths.player);
-  const playerTag = normalizePlayerTag(row.playerTag) || row.playerTag;
-  const rowMode = row.rowMode ?? sortMode;
-  const playerTagSegment = rowMode === "player-tags" ? ` \`${playerTag}\`` : "";
-  const base =
-    rowMode === "inactivity"
-      ? `${statusPrefix} \`${townHallLabel}\` \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``
-      : `${statusPrefix} \`${townHallLabel}\` \`${leftLabel}\`${playerTagSegment} \`${playerName}  ${weight}\``;
+  const base = `${statusPrefix} \`${townHallLabel}\` \`${displayValue}\``;
   if (!row.rightMarker) return base;
   return `${base} ${row.rightMarker}`;
 }
@@ -950,44 +973,27 @@ function computeColumnWidths(
   linkedRows: LinkListRowInput[],
   unlinkedRows: LinkListRowInput[],
 ): {
-  left: number;
-  player: number;
-  weight: number;
+  value: number;
 } {
   const allRows = [...linkedRows, ...unlinkedRows];
-  const left = Math.max(
-    0,
+  const value = Math.max(
+    1,
     ...allRows
-      .map((row) => row.leftLabel.length)
-      .filter((value) => Number.isFinite(value)),
-  );
-  const player = Math.max(
-    6,
-    ...allRows
-      .map((row) => row.playerName.length)
-      .filter((value) => Number.isFinite(value)),
+      .map((row) => row.displayValue.length)
+      .filter((resolved) => Number.isFinite(resolved)),
   );
 
-  const weight = Math.max(
-    WEIGHT_PLACEHOLDER.length,
-    ...allRows
-      .map((row) => row.weight.length)
-      .filter((value) => Number.isFinite(value)),
-  );
-
-  return { left, player, weight };
+  return { value };
 }
 
 function buildLinkListDescriptionLines(input: {
   linkedRows: LinkListRowInput[];
   unlinkedRows: LinkListRowInput[];
   statusIcons: LinkListStatusIcons;
-  townHallEmojiByLevel?: unknown;
   sortMode?: LinkListSortMode;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const widths = computeColumnWidths(linkedRows, unlinkedRows);
-  const sortMode = input.sortMode ?? "discord";
   const lines: string[] = [];
 
   if (linkedRows.length > 0) {
@@ -995,11 +1001,13 @@ function buildLinkListDescriptionLines(input: {
 
     lines.push(
       ...linkedRows.map((row) =>
-        formatAlignedInlineRow(row, {
-          left: widths.left,
-          player: widths.player,
-          weight: widths.weight,
-        }, input.statusIcons.linked, sortMode),
+        formatAlignedInlineRow(
+          row,
+          {
+            value: widths.value,
+          },
+          input.statusIcons.linked,
+        ),
       ),
     );
   }
@@ -1008,11 +1016,13 @@ function buildLinkListDescriptionLines(input: {
     lines.push(`Unlinked users: ${unlinkedRows.length}`);
     lines.push(
       ...unlinkedRows.map((row) =>
-        formatAlignedInlineRow(row, {
-          left: widths.left,
-          player: widths.player,
-          weight: widths.weight,
-        }, input.statusIcons.unlinked, sortMode),
+        formatAlignedInlineRow(
+          row,
+          {
+            value: widths.value,
+          },
+          input.statusIcons.unlinked,
+        ),
       ),
     );
   }
@@ -1042,7 +1052,7 @@ async function buildLinkListView(input: {
         playerTag: true,
         playerName: true,
         townHall: true,
-        rank: true,
+        role: true,
         sourceSyncedAt: true,
       },
     }),
@@ -1145,26 +1155,16 @@ async function buildLinkListView(input: {
     const playerTag = normalizePlayerTag(member.playerTag);
     if (!playerTag) return;
     const playerName = truncateWithEllipsis(
-      member.playerName,
+      sanitizeTableText(member.playerName) || "Unknown",
       MAX_PLAYER_NAME_CHARS,
     );
     const weightValue = weightByTag.get(playerTag) ?? null;
-    const rankLabel = member.rank !== null ? `#${member.rank}` : WEIGHT_PLACEHOLDER;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
     const inactivityDays = null;
     const inactivityMissedWars = inactivityRow?.missedWars ?? null;
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
-    const weight =
-      sortMode === "clan-rank"
-        ? rankLabel
-      : sortMode === "inactivity"
-          ? formatInactivityMetricLabel({
-              daysInactive: inactivityDays,
-              missedWars: inactivityMissedWars,
-            })
-          : formatCompactWeightK(weightValue);
     const link = linkByTag.get(playerTag);
-    const leftLabel = link
+    const linkedDisplayName = link
       ? truncateWithEllipsis(
           resolveLinkedUserDisplayName(
             input.interaction,
@@ -1173,12 +1173,27 @@ async function buildLinkListView(input: {
           ),
           MAX_IDENTITY_CHARS,
         )
-      : WEIGHT_PLACEHOLDER;
+      : null;
+    const displayValue =
+      sortMode === "discord"
+        ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
+        : sortMode === "weight"
+          ? formatCompactWeightK(weightValue)
+          : sortMode === "player-tags"
+            ? playerTag
+            : sortMode === "player"
+              ? playerName
+              : sortMode === "clan-rank"
+                ? formatLinkListClanRole(member.role)
+                : formatInactivityMetricLabel({
+                    daysInactive: inactivityDays,
+                    missedWars: inactivityMissedWars,
+                  });
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
         : link
-          ? leftLabel
+          ? linkedDisplayName ?? WEIGHT_PLACEHOLDER
           : playerTag;
 
     resolvedRows.push({
@@ -1189,16 +1204,12 @@ async function buildLinkListView(input: {
       inactivityDays,
       inactivityMissedWars,
       inactivityParticipationWars,
-      clanRankSortScore: member.rank,
-      playerSort: sanitizeTableText(playerName),
+      clanRoleSortScore: getLinkListClanRoleSortScore(member.role),
+      playerSort: sanitizeTableText(member.playerName) || "Unknown",
       discordSort: sanitizeTableText(discordSort),
       row: {
         townHall: townHallByTag.get(playerTag) ?? member.townHall ?? null,
-        leftLabel,
-        playerTag,
-        weight,
-        playerName,
-        rowMode: sortMode,
+        displayValue,
         rightMarker: fillerTagSet.has(playerTag) ? "🧍" : null,
       },
     });
