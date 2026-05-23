@@ -96,17 +96,19 @@ type InteractionInput = {
   userId?: string;
   isAdmin?: boolean;
   guildMemberNames?: Record<string, string>;
+  guildMembers?: Record<string, any>;
   cachedUserNames?: Record<string, string>;
   clientApplication?: any;
 };
 
 function makeInteraction(input: InteractionInput) {
-  const guildMemberCache = new Map(
-    Object.entries(input.guildMemberNames ?? {}).map(([id, displayName]) => [
+  const guildMemberCache = new Map([
+    ...Object.entries(input.guildMemberNames ?? {}).map(([id, displayName]) => [
       id,
       { displayName },
     ]),
-  );
+    ...Object.entries(input.guildMembers ?? {}),
+  ]);
   const userCache = new Map(
     Object.entries(input.cachedUserNames ?? {}).map(([id, username]) => [
       id,
@@ -210,20 +212,25 @@ function getInlineRowSegments(row: string): {
   playerName: string;
   value: string;
   marker: string;
+  cells: string[];
 } {
   const normalized = String(row ?? "").trimEnd();
-  const match = normalized.match(
-    /^(?<status>[\u2705\u274C])\s+`(?<townHall>[^`]*)`\s+`(?<playerName>[^`]*)`(?:\s+`(?<value>[^`]*)`)?(?:\s+(?<marker>.*))?$/u,
-  );
-  if (!match?.groups) {
-    return { status: "", townHall: "", playerName: "", value: "", marker: "" };
+  const statusMatch = normalized.match(/^(?<status>[\u2705\u274C])/u);
+  const cellMatches = [...normalized.matchAll(/`(?<cell>[^`]*)`/gu)];
+  const cells = cellMatches.map((match) => String(match.groups?.cell ?? ""));
+  const markerMatch = normalized.match(/(?<marker>\u{1F9CD})$/u);
+  if (!statusMatch?.groups || cells.length < 2) {
+    return { status: "", townHall: "", playerName: "", value: "", marker: "", cells: [] };
   }
+  const [townHall = "", playerName = "", ...rest] = cells;
+  const value = rest.length > 0 ? rest[rest.length - 1] : "";
   return {
-    status: String(match.groups.status ?? ""),
-    townHall: String(match.groups.townHall ?? ""),
-    playerName: String(match.groups.playerName ?? ""),
-    value: String(match.groups.value ?? "").trim(),
-    marker: String(match.groups.marker ?? "").trim(),
+    status: String(statusMatch.groups.status ?? ""),
+    townHall,
+    playerName,
+    value: String(value).trim(),
+    marker: String(markerMatch?.groups?.marker ?? "").trim(),
+    cells,
   };
 }
 
@@ -875,7 +882,7 @@ describe("/link run", () => {
     expect(linkedRow).toMatchObject({
       status: "✅",
       townHall: "18",
-      value: "Persisted Sin",
+      value: "Sin Display",
     });
     expect(linkedRow.playerName.trim()).toBe("Tilonius");
     expect(currentFallbackRow).toMatchObject({
@@ -1735,6 +1742,127 @@ describe("/link run", () => {
     expect(description).not.toContain("<@111111111111111111>");
   });
 
+  it("renders Discord display and username as different columns when both are available", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "persistedname",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Player",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            [
+              "111111111111111111",
+              {
+                displayName: "Nickname",
+                user: {
+                  username: "realusername",
+                  globalName: "Global Nick",
+                },
+              },
+            ],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["discord-display-name", "discord-username"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const row = getInlineRowSegments(getInlineRows(description)[0] ?? "");
+
+    expect(row.cells).toEqual(["Nickname", "realusername"]);
+    expect(description).toContain("Nickname");
+    expect(description).toContain("realusername");
+    expect(description).not.toContain("persistedname");
+  });
+
+  it("falls back to persisted discord username for both display and username when guild cache is missing", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "persistedname",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Player",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["discord-display-name", "discord-username"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const row = getInlineRowSegments(getInlineRows(description)[0] ?? "");
+
+    expect(row.cells).toEqual(["persistedname", "persistedname"]);
+    expect(description).toContain("persistedname");
+  });
+
   it("truncates displayed Discord and player names to 15 characters in /link list rows", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -1767,7 +1895,7 @@ describe("/link run", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
     const row = getInlineRowSegments(getInlineRows(description)[0] ?? "");
-    const expectedDiscordDisplay = "Persisted Discord Username Is Very Long".slice(0, 12) + "...";
+    const expectedDiscordDisplay = "Discord Display Name Is Extremely Long".slice(0, 12) + "...";
     const expectedPlayerName = "Player Name Is Also Much Longer Than Limit".slice(0, 12) + "...";
     expect(row.status).toBe("✅");
     expect(row.townHall).toBe("18");
