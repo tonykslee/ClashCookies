@@ -120,6 +120,11 @@ type LinkListTownHallRow = {
   townHall: number | null;
 };
 
+type LinkListPlayerActivityRow = {
+  tag: string;
+  lastSeenAt: Date | null;
+};
+
 type LinkListTownHallCatalogRow = {
   playerTag: string;
   latestTownHall: number | null;
@@ -795,6 +800,12 @@ function resolveLinkedDiscordUsername(
   return "—";
 }
 
+function calculateLinkListDaysInactive(lastSeenAt: Date | null): number | null {
+  if (!lastSeenAt) return null;
+  const diffMs = Date.now() - lastSeenAt.getTime();
+  return Math.max(0, Math.floor(diffMs / 86400000));
+}
+
 function rightAlign(value: string, width: number): string {
   if (value.length >= width) return value;
   return `${" ".repeat(width - value.length)}${value}`;
@@ -1367,7 +1378,8 @@ async function buildLinkListView(input: {
   const memberTags = currentMembers
     .map((row) => normalizePlayerTag(row.playerTag))
     .filter((tag): tag is string => Boolean(tag));
-  const [catalogRows, playerCurrentRows] = await Promise.all([
+  const inactivityNeeded = sortMode === "inactivity" || activeColumns.includes("inactivity");
+  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: memberTags } },
       select: { playerTag: true, latestTownHall: true },
@@ -1376,9 +1388,27 @@ async function buildLinkListView(input: {
       where: { playerTag: { in: memberTags } },
       select: { playerTag: true, townHall: true },
     }),
+    inactivityNeeded
+      ? prisma.playerActivity.findMany({
+        where: {
+          guildId: input.interaction.guildId,
+          tag: { in: memberTags },
+        },
+        select: { tag: true, lastSeenAt: true },
+      })
+      : Promise.resolve([]),
+    inactivityNeeded
+      ? inactiveWarService.buildInactiveWarMetricByPlayerTag({
+          guildId: input.interaction.guildId,
+          wars: LINK_LIST_INACTIVITY_WARS_WINDOW,
+          clanTag: input.clanTag,
+        }).then((result) => result.metricsByPlayerTag)
+      : Promise.resolve(new Map<string, InactiveWarMetricRow>()),
   ]) as [
     LinkListTownHallCatalogRow[],
     LinkListTownHallRow[],
+    LinkListPlayerActivityRow[],
+    Map<string, InactiveWarMetricRow>,
   ];
   const townHallByTag = new Map<string, number | null>();
   for (const row of currentMembers) {
@@ -1409,16 +1439,16 @@ async function buildLinkListView(input: {
       }).catch(() => [])
     : [];
   const fillerTagSet = new Set(fillerTags);
-  const inactivityByTag: Map<string, InactiveWarMetricRow> =
-    sortMode === "inactivity"
-      ? (
-          await inactiveWarService.buildInactiveWarMetricByPlayerTag({
-            guildId: input.interaction.guildId,
-            wars: LINK_LIST_INACTIVITY_WARS_WINDOW,
-            clanTag: input.clanTag,
-          })
-        ).metricsByPlayerTag
-      : new Map();
+  const inactivityDaysByTag = new Map<string, number | null>();
+  for (const row of playerActivityRows) {
+    const normalizedTag = normalizePlayerTag(row.tag);
+    if (!normalizedTag) continue;
+    inactivityDaysByTag.set(
+      normalizedTag,
+      calculateLinkListDaysInactive(row.lastSeenAt),
+    );
+  }
+  const inactivityByTag = inactivityMetricRows;
 
   const linkByTag = new Map(links.map((row) => [row.playerTag, row]));
   const resolvedRows: LinkListResolvedMemberRow[] = [];
@@ -1434,7 +1464,7 @@ async function buildLinkListView(input: {
     );
     const weightValue = weightByTag.get(playerTag) ?? null;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
-    const inactivityDays = null;
+    const inactivityDays = inactivityDaysByTag.get(playerTag) ?? null;
     const inactivityMissedWars = inactivityRow?.missedWars ?? null;
     const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
     const link = linkByTag.get(playerTag);
