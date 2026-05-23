@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
@@ -82,6 +82,10 @@ import {
 
 beforeEach(() => {
   emojiResolverService.invalidateCache();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 type InteractionInput = {
@@ -1863,6 +1867,85 @@ describe("/link run", () => {
     expect(description).toContain("persistedname");
   });
 
+  it("renders real inactivity days when Inactivity is selected as a visible column", async () => {
+    const now = new Date("2026-05-20T12:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "persistedname",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha Player",
+        townHall: 18,
+        rank: 18,
+        weight: 145000,
+        role: "leader",
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#PYLQ0289",
+        lastSeenAt: new Date(now.getTime() - 7 * 86400000),
+      },
+    ]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Alpha Player",
+          missedWars: 3,
+          participationWars: 4,
+        },
+      ],
+      trackedTags: [],
+      trackedNameByTag: new Map(),
+      trackedBadgeByTag: new Map(),
+      warnings: [],
+      diagnosticNote: null,
+    } as any);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["townhall", "player-name", "inactivity"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(1);
+    const row = getInlineRowSegments(rows[0] ?? "");
+    expect(row.cells).toEqual(["18", "Alpha Player", "7d 3w"]);
+    expect(row.value).toBe("7d 3w");
+    expect(description).toContain("7d 3w");
+    expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
+  });
+
   it("truncates displayed Discord and player names to 15 characters in /link list rows", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -2579,6 +2662,9 @@ describe("/link list sort button", () => {
   });
 
   it("cycles sort mode in stable order and rerenders rows", async () => {
+    const now = new Date("2026-05-20T12:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
     const runSortClick = async (
       mode:
         | "discord"
@@ -2615,6 +2701,17 @@ describe("/link list sort button", () => {
       expect(cocService.getClan).not.toHaveBeenCalled();
       return { deferUpdate, editReply, update, reply };
     };
+
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#PYLQ0289",
+        lastSeenAt: new Date(now.getTime() - 7 * 86400000),
+      },
+      {
+        tag: "#QGRJ2222",
+        lastSeenAt: new Date(now.getTime() - 7 * 86400000),
+      },
+    ]);
 
     const fromDiscord = await runSortClick("discord");
     expect(fromDiscord.deferUpdate).toHaveBeenCalledTimes(1);
@@ -2744,12 +2841,12 @@ describe("/link list sort button", () => {
     const descriptionInactivity = String(embedClanRank.description ?? "");
     const inactivityRows = getInlineRows(descriptionInactivity);
     expect(inactivityRows).toHaveLength(3);
+    expect(prismaMock.playerActivity.findMany).toHaveBeenCalledTimes(1);
     expect(inactivityRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
-      "\u2014 3w",
-      "\u2014 1w",
+      "7d 3w",
+      "7d 1w",
       "\u2014",
     ]);
-    expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
 
     const fromInactivity = await runSortClick("inactivity");
     expect(fromInactivity.deferUpdate).toHaveBeenCalledTimes(1);
