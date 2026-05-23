@@ -1934,6 +1934,14 @@ describe("/link run", () => {
     };
 
     await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+    expect(prismaMock.playerActivity.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          tag: { in: ["#PYLQ0289"] },
+        }),
+      }),
+    );
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = String(payload.embeds[0].toJSON().description ?? "");
