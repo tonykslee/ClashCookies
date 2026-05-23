@@ -551,7 +551,10 @@ function buildDescriptionEmbeds(
   const embeds = trimmedChunks.chunks.map((chunk, index) => {
     const embed = new EmbedBuilder().setColor(LINK_LIST_EMBED_COLOR).setDescription(chunk.text);
     if (index === 0) {
-      embed.setTitle(title).setFooter({ text: `Sort: ${sortLabel}` });
+      embed.setTitle(title);
+    }
+    if (index === trimmedChunks.chunks.length - 1) {
+      embed.setFooter({ text: `Sort: ${sortLabel}` });
     }
     return embed;
   });
