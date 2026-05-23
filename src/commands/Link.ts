@@ -757,19 +757,17 @@ function buildLinkListControlRows(input: {
   return rows;
 }
 
-function resolveLinkedUserDisplayName(
+function resolveLinkedDiscordDisplayName(
   interaction: LinkListInteraction,
   discordUserId: string,
   persistedDiscordUsername: string | null,
 ): string {
   const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
+  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
+  if (memberDisplay.length > 0) return memberDisplay;
 
-  console.log("link-list identity", {
-    discordUserId,
-    memberDisplay: member?.displayName,
-    username: member?.user?.username,
-    persistedDiscordUsername,
-  });
+  const globalName = sanitizeTableText(member?.user?.globalName ?? "");
+  if (globalName.length > 0) return globalName;
 
   const username = sanitizeTableText(member?.user?.username ?? "");
   if (username.length > 0) return username;
@@ -777,10 +775,24 @@ function resolveLinkedUserDisplayName(
   const persisted = sanitizeTableText(persistedDiscordUsername ?? "");
   if (persisted.length > 0) return persisted;
 
-  const memberDisplay = sanitizeTableText(member?.displayName ?? "");
-  if (memberDisplay.length > 0) return memberDisplay;
-
   return "Unknown User";
+}
+
+function resolveLinkedDiscordUsername(
+  interaction: LinkListInteraction,
+  discordUserId: string,
+  persistedDiscordUsername: string | null,
+): string {
+  const member = interaction.guild?.members?.cache.get(discordUserId) ?? null;
+  const username = sanitizeTableText(member?.user?.username ?? "");
+  if (username.length > 0) return username;
+
+  const persisted = sanitizeTableText(
+    normalizePersistedDiscordUsername(persistedDiscordUsername) ?? "",
+  );
+  if (persisted.length > 0) return persisted;
+
+  return "—";
 }
 
 function rightAlign(value: string, width: number): string {
@@ -1430,7 +1442,7 @@ async function buildLinkListView(input: {
       ? sanitizeInlineCodeCell(
           truncateWithEllipsis(
             sanitizeInlineCodeCell(
-              resolveLinkedUserDisplayName(
+              resolveLinkedDiscordDisplayName(
                 input.interaction,
                 link.discordUserId,
                 link.discordUsername,
@@ -1443,7 +1455,13 @@ async function buildLinkListView(input: {
     const discordUsername = link
       ? sanitizeInlineCodeCell(
           truncateWithEllipsis(
-            sanitizeInlineCodeCell(normalizePersistedDiscordUsername(link.discordUsername) ?? WEIGHT_PLACEHOLDER),
+            sanitizeInlineCodeCell(
+              resolveLinkedDiscordUsername(
+                input.interaction,
+                link.discordUserId,
+                link.discordUsername,
+              ) ?? WEIGHT_PLACEHOLDER,
+            ),
             MAX_IDENTITY_CHARS,
           ),
         )
