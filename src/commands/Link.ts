@@ -1390,9 +1390,12 @@ async function buildLinkListView(input: {
     }),
     inactivityNeeded
       ? prisma.playerActivity.findMany({
-          where: { tag: { in: memberTags } },
-          select: { tag: true, lastSeenAt: true },
-        })
+        where: {
+          guildId: input.interaction.guildId,
+          tag: { in: memberTags },
+        },
+        select: { tag: true, lastSeenAt: true },
+      })
       : Promise.resolve([]),
     inactivityNeeded
       ? inactiveWarService.buildInactiveWarMetricByPlayerTag({
