@@ -2846,8 +2846,8 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Discord Name");
-    expect(payload.embeds[1].toJSON().footer).toBeUndefined();
+    expect(payload.embeds[0].toJSON().footer).toBeUndefined();
+    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Discord Name");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
     expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
@@ -2919,8 +2919,8 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Weight Desc");
-    expect(payload.embeds[1]?.toJSON().footer).toBeUndefined();
+    expect(payload.embeds[0].toJSON().footer).toBeUndefined();
+    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Weight Desc");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).not.toBe("");
     expect(
