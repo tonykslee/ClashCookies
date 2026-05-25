@@ -20,6 +20,7 @@ import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
   type TodoTrackedCurrentWarRow,
+  type TodoTrackedWarRosterRow,
 } from "./TodoTrackedWarStateService";
 
 export const TODO_TYPES = ["WAR", "CWL", "RAIDS", "GAMES"] as const;
@@ -560,8 +561,25 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : [];
+  const trackedWarRosterRows: TodoTrackedWarRosterRow[] =
+    activeTrackedClanTags.length > 0
+      ? await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+          where: {
+            clanTag: { in: activeTrackedClanTags },
+            playerTag: { in: linkedTags },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            position: true,
+            playerName: true,
+            townHall: true,
+          },
+        })
+      : [];
   const trackedWarMemberByClanAndPlayer = buildTrackedWarMemberStateByClanAndPlayer({
     currentWarByClanTag: activeTrackedCurrentWarByClanTag,
+    rosterRows: trackedWarRosterRows,
     warAttackRows: trackedWarAttackRows,
   });
 
@@ -588,12 +606,27 @@ export async function buildTodoPagesForUser(input: {
     const resolvedTownHall = (() => {
       if (warMemberKey) {
         const clanScoped = townHallByClanAndPlayer.get(warMemberKey);
-        if (clanScoped !== undefined) return clanScoped;
+        if (clanScoped !== undefined && clanScoped > 0) return clanScoped;
       }
       const playerScoped = townHallByPlayerTag.get(normalizedTag);
-      if (playerScoped !== undefined) return playerScoped;
+      if (playerScoped !== undefined && playerScoped > 0) return playerScoped;
       const catalogScoped = townHallByPlayerCatalogTag.get(normalizedTag);
-      if (catalogScoped !== undefined) return catalogScoped;
+      if (catalogScoped !== undefined && catalogScoped > 0) return catalogScoped;
+      const trackedWarTownHall = trackedWarMember?.townHall;
+      if (
+        trackedWarTownHall !== null &&
+        trackedWarTownHall !== undefined &&
+        trackedWarTownHall > 0
+      ) {
+        return trackedWarTownHall;
+      }
+      if (
+        snapshot?.townHall !== null &&
+        snapshot?.townHall !== undefined &&
+        snapshot.townHall > 0
+      ) {
+        return snapshot.townHall;
+      }
       return null;
     })();
     const currentCwlRound = resolvedCwlClanTag
