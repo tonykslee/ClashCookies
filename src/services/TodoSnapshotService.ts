@@ -1087,7 +1087,12 @@ export class TodoSnapshotService {
         trackedClanActive && activeRosterRow && warMemberKey
           ? activeTrackedWarMemberByClanAndTag.get(warMemberKey) ?? null
           : null;
-      const warMember = trackedWarMember ?? allowedFallbackWarMember ?? null;
+      const allowedFallbackWarMemberForResolvedClan =
+        allowedFallbackWarMember &&
+        warMemberKey === `${allowedFallbackWarMember.clanTag}:${playerTag}`
+          ? allowedFallbackWarMember
+          : null;
+      const warMember = trackedWarMember ?? allowedFallbackWarMemberForResolvedClan ?? null;
       const warActive = warStateActive && warMember !== null;
       const warPhase = warActive
         ? normalizeWarPhaseLabel(currentWar?.state ?? "")
@@ -1099,8 +1104,8 @@ export class TodoSnapshotService {
           ? 0
           : trackedWarMember
             ? clampInt(trackedWarMember.attacksUsed, 0, 2)
-            : allowedFallbackWarMember
-              ? clampInt(allowedFallbackWarMember.attacks, 0, 2)
+            : allowedFallbackWarMemberForResolvedClan
+              ? clampInt(allowedFallbackWarMemberForResolvedClan.attacks, 0, 2)
               : 0;
       const resolvedTownHall = (() => {
         if (livePlayer.townHall !== null && livePlayer.townHall !== undefined && livePlayer.townHall > 0) {
@@ -1114,11 +1119,11 @@ export class TodoSnapshotService {
           return activeRosterRow.townHall;
         }
         if (
-          allowedFallbackWarMember?.townHall !== null &&
-          allowedFallbackWarMember?.townHall !== undefined &&
-          allowedFallbackWarMember.townHall > 0
+          allowedFallbackWarMemberForResolvedClan?.townHall !== null &&
+          allowedFallbackWarMemberForResolvedClan?.townHall !== undefined &&
+          allowedFallbackWarMemberForResolvedClan.townHall > 0
         ) {
-          return allowedFallbackWarMember.townHall;
+          return allowedFallbackWarMemberForResolvedClan.townHall;
         }
         const existingTownHall = normalizeRosterInt(existing?.townHall ?? null);
         return existingTownHall !== null && existingTownHall > 0 ? existingTownHall : null;
