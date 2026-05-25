@@ -47,6 +47,16 @@ function formatInactivePlayerTag(tag: string): string {
   return normalized ? `#${normalized}` : tag.trim();
 }
 
+function filterConsecutiveInactiveRows<T extends { lastSeenAt: Date }>(
+  rows: T[],
+  cutoff: Date,
+  consecutive?: boolean,
+): T[] {
+  if (!consecutive) return rows;
+  const cutoffMs = cutoff.getTime();
+  return rows.filter((row) => row.lastSeenAt.getTime() < cutoffMs);
+}
+
 function formatInactivePlayerIdentity(input: {
   townHallIcon: string;
   playerName: string;
@@ -378,6 +388,7 @@ async function fetchInactiveDaysEntries(
   cocService: CoCService,
   days: number,
   clanTag?: string | null,
+  consecutive?: boolean,
 ): Promise<{
   entries: InactiveDaysEntry[];
   roster: RosterSnapshot | null;
@@ -517,8 +528,13 @@ async function fetchInactiveDaysEntries(
     },
     orderBy: { lastSeenAt: "asc" },
   });
+  const filteredInactivePlayers = filterConsecutiveInactiveRows(
+    inactivePlayers,
+    cutoff,
+    consecutive,
+  );
 
-  const entries = inactivePlayers.map((p) => {
+  const entries = filteredInactivePlayers.map((p) => {
     const clanTag =
       roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? "");
     const normalizedClanTag = clanTag ? `#${normalizeClanTagInput(clanTag)}` : "Unknown Clan";
@@ -552,6 +568,7 @@ async function fetchInactiveWarEntries(
   interaction: ChatInputCommandInteraction,
   wars: number,
   clanTag?: string | null,
+  consecutive?: boolean,
 ): Promise<InactiveWarSummary> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
@@ -560,6 +577,7 @@ async function fetchInactiveWarEntries(
     guildId: interaction.guildId,
     wars,
     clanTag,
+    consecutive,
   });
 }
 
@@ -688,6 +706,7 @@ async function runDaysMode(
   townHallEmojiByLevel: TownHallEmojiMap,
   days: number,
   clanTag?: string | null,
+  consecutive?: boolean,
 ): Promise<void> {
   if (!interaction.guildId) {
     await interaction.editReply("This command can only be used in a server.");
@@ -789,8 +808,9 @@ async function runDaysMode(
     },
     orderBy: { lastSeenAt: "asc" },
   });
+  const filteredInactivePlayers = filterConsecutiveInactiveRows(inactivePlayers, cutoff, consecutive);
 
-  if (inactivePlayers.length === 0) {
+  if (filteredInactivePlayers.length === 0) {
     await interaction.editReply(
       clanTag && scopeClanName
         ? `No inactive players for ${days}+ days in ${scopeClanName}.`
@@ -806,7 +826,7 @@ async function runDaysMode(
     if (!clanOrder.has(clanName)) clanOrder.set(clanName, index++);
   }
 
-  const inactiveWithClan = inactivePlayers.map((p) => ({
+  const inactiveWithClan = filteredInactivePlayers.map((p) => ({
     player: p,
     clan: roster.liveMemberClanByTag.get(p.tag) ?? p.clanTag ?? "Unknown Clan",
     clanTag: roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? ""),
@@ -824,7 +844,7 @@ async function runDaysMode(
   });
 
   const daysDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
-    inactivePlayers.map((player) => player.tag)
+    filteredInactivePlayers.map((player) => player.tag)
   );
   const pages = buildGroupedPages(
     inactiveWithClan,
@@ -850,7 +870,7 @@ async function runDaysMode(
   const summary = ` • Scope: ${roster.trackedTags.length} tracked clan(s), ${roster.liveMemberTags.size} live member(s), ${activitySnapshot._count.tag} observed record(s), ${freshObservedCount} fresh in last ${staleHours}h`;
   await renderEmbedsWithPager(
     interaction,
-    `Inactive for ${days}+ days (${inactivePlayers.length})`,
+    `Inactive for ${days}+ days (${filteredInactivePlayers.length})`,
     pages,
     summary
   );
@@ -861,9 +881,10 @@ async function runWarsMode(
   townHallEmojiByLevel: TownHallEmojiMap,
   wars: number,
   clanTag?: string | null,
+  consecutive?: boolean,
 ): Promise<void> {
   const { results, trackedTags, trackedNameByTag, trackedBadgeByTag, warnings, diagnosticNote } =
-    await fetchInactiveWarEntries(interaction, wars, clanTag);
+    await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive);
 
   if (trackedTags.length === 0) {
     if (diagnosticNote || warnings.length > 0) {
@@ -922,9 +943,10 @@ async function runCombinedMode(
   days: number,
   wars: number,
   clanTag?: string | null,
+  consecutive?: boolean,
 ): Promise<void> {
-  const daysResult = await fetchInactiveDaysEntries(interaction, cocService, days, clanTag);
-  const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag);
+  const daysResult = await fetchInactiveDaysEntries(interaction, cocService, days, clanTag, consecutive);
+  const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive);
 
   if (!daysResult.roster || daysResult.roster.trackedTags.length === 0 || warsResult.trackedTags.length === 0) {
     if (clanTag && warsResult.diagnosticNote) {
@@ -1089,6 +1111,12 @@ export const Inactive: Command = {
       required: false,
     },
     {
+      name: "consecutive",
+      description: "Only include players inactive across the full requested window",
+      type: ApplicationCommandOptionType.Boolean,
+      required: false,
+    },
+    {
       name: "clan",
       description: "Filter inactive players to one tracked clan",
       type: ApplicationCommandOptionType.String,
@@ -1107,6 +1135,7 @@ export const Inactive: Command = {
 
     const daysValue = interaction.options.getInteger("days", false) ?? undefined;
     const warsValue = interaction.options.getInteger("wars", false) ?? undefined;
+    const consecutiveValue = interaction.options.getBoolean("consecutive", false) ?? undefined;
     const clanValue = interaction.options.getString("clan", false) ?? undefined;
 
     if (!daysValue && !warsValue) {
@@ -1131,14 +1160,22 @@ export const Inactive: Command = {
         daysValue,
         warsValue,
         clanValue,
+        consecutiveValue,
       );
       return;
     }
     if (daysValue) {
-      await runDaysMode(interaction, cocService, townHallEmojiByLevel, daysValue, clanValue);
+      await runDaysMode(
+        interaction,
+        cocService,
+        townHallEmojiByLevel,
+        daysValue,
+        clanValue,
+        consecutiveValue,
+      );
       return;
     }
-    await runWarsMode(interaction, townHallEmojiByLevel, warsValue!, clanValue);
+    await runWarsMode(interaction, townHallEmojiByLevel, warsValue!, clanValue, consecutiveValue);
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);

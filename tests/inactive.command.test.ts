@@ -62,6 +62,7 @@ import { Inactive } from "../src/commands/Inactive";
 function makeInteraction(values: {
   days?: number | null;
   wars?: number | null;
+  consecutive?: boolean | null;
   clan?: string | null;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -74,6 +75,10 @@ function makeInteraction(values: {
       getInteger: vi.fn((name: string) => {
         if (name === "wars") return values.wars ?? null;
         if (name === "days") return values.days ?? null;
+        return null;
+      }),
+      getBoolean: vi.fn((name: string) => {
+        if (name === "consecutive") return values.consecutive ?? null;
         return null;
       }),
       getString: vi.fn((name: string) => {
@@ -123,6 +128,29 @@ describe("/inactive command", () => {
       guildId: "guild-1",
       wars: 3,
       clanTag: "#AAA111",
+    });
+  });
+
+  it("passes consecutive:true through to the inactive war service", async () => {
+    inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
+      results: [],
+      trackedTags: ["AAA111"],
+      trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const interaction = makeInteraction({ wars: 3, consecutive: true });
+    const cocService = {} as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(inactiveWarServiceMock.listInactiveWarPlayers).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      wars: 3,
+      clanTag: undefined,
+      consecutive: true,
     });
   });
 
@@ -417,6 +445,57 @@ describe("/inactive command", () => {
     expect(embed.description).toContain("- <:th17:117> Alpha One `#A1` <@111111111111111111> - 8d");
     expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
     expect(emojiResolverServiceMock.fetchApplicationEmojiInventory).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts consecutive:true in days mode and preserves the persisted inactivity rows", async () => {
+    const getClan = vi.fn(async (tag: string) => {
+      if (tag === "#AAA111") {
+        return {
+          name: "Alpha",
+          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
+        };
+      }
+      throw new Error(`unexpected clan fetch: ${tag}`);
+    });
+
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 2 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(2);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      { playerTag: "#A1", discordUserId: "111111111111111111" },
+    ]);
+
+    const interaction = makeInteraction({ days: 7, consecutive: true });
+    const cocService = { getClan } as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(getClan).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("- <:th17:117> Alpha One `#A1` <@111111111111111111> - 8d");
+    expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
   });
 
   it("renders days mode rows from alternate live member town hall fields", async () => {
