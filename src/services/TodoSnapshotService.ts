@@ -559,8 +559,6 @@ export class TodoSnapshotService {
     const latestClanMemberByTag = pickLatestClanMemberByPlayerTag(clanMemberRows);
     const fwaWarMemberFallbackByClanAndPlayer =
       pickLatestWarMemberByClanAndPlayer(warMemberRows);
-    const fwaWarMemberFallbackByPlayerTag =
-      pickLatestWarMemberByPlayerTag(fwaWarMemberFallbackByClanAndPlayer);
     const settingValueByKey = new Map(
       settingRows.map((row) => [String(row.key), String(row.value)]),
     );
@@ -637,7 +635,7 @@ export class TodoSnapshotService {
         trackedWarRosterRows
           .map((row) => normalizeClanTag(row.clanTag))
           .filter(Boolean),
-      ),
+        ),
     ];
     const fallbackWarClanTags = [
       ...new Set(
@@ -772,6 +770,46 @@ export class TodoSnapshotService {
     const rosterCurrentClanTagSet = new Set(
       rosterCurrentRows.map((row) => normalizeClanTag(row.clanTag)).filter(Boolean),
     );
+    const allowedFwaWarMemberFallbackByPlayerTag = new Map<string, WarMemberCurrentRow>();
+    for (const row of fwaWarMemberFallbackByClanAndPlayer.values()) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const clanTag = normalizeClanTag(row.clanTag);
+      if (!playerTag || !clanTag) continue;
+      if (!activeTrackedCurrentWarByClanTag.has(clanTag)) continue;
+      if (rosterCurrentClanTagSet.has(clanTag)) continue;
+
+      const existing = allowedFwaWarMemberFallbackByPlayerTag.get(playerTag);
+      if (!existing) {
+        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
+        continue;
+      }
+
+      const existingSyncedAt = existing.sourceSyncedAt.getTime();
+      const nextSyncedAt = row.sourceSyncedAt.getTime();
+      if (nextSyncedAt > existingSyncedAt) {
+        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
+        continue;
+      }
+      if (nextSyncedAt < existingSyncedAt) continue;
+
+      const existingPosition =
+        existing.position !== null && existing.position > 0
+          ? existing.position
+          : Number.MAX_SAFE_INTEGER;
+      const nextPosition =
+        row.position !== null && row.position > 0
+          ? row.position
+          : Number.MAX_SAFE_INTEGER;
+      if (nextPosition < existingPosition) {
+        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
+        continue;
+      }
+      if (nextPosition > existingPosition) continue;
+
+      if (clanTag.localeCompare(existing.clanTag) < 0) {
+        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
+      }
+    }
     const activeTrackedWarRosterRows = trackedWarRosterRows.filter((row) => {
       const clanTag = normalizeClanTag(row.clanTag);
       return Boolean(
@@ -937,12 +975,8 @@ export class TodoSnapshotService {
             activeRosterWarKey as `${string}:${string}`,
           ) ?? null
         : null;
-      const fallbackWarMember = fwaWarMemberFallbackByPlayerTag.get(playerTag) ?? null;
       const allowedFallbackWarMember =
-        fallbackWarMember &&
-        !rosterCurrentClanTagSet.has(fallbackWarMember.clanTag)
-          ? fallbackWarMember
-          : null;
+        allowedFwaWarMemberFallbackByPlayerTag.get(playerTag) ?? null;
       const resolvedClanTag =
         activeRosterClanTag ??
         (allowedFallbackWarMember ? allowedFallbackWarMember.clanTag : null) ??
@@ -1053,11 +1087,7 @@ export class TodoSnapshotService {
         trackedClanActive && activeRosterRow && warMemberKey
           ? activeTrackedWarMemberByClanAndTag.get(warMemberKey) ?? null
           : null;
-      const fallbackWarMemberForClan =
-        allowedFallbackWarMember && warMemberKey === `${allowedFallbackWarMember.clanTag}:${playerTag}`
-          ? allowedFallbackWarMember
-          : null;
-      const warMember = trackedWarMember ?? fallbackWarMemberForClan ?? null;
+      const warMember = trackedWarMember ?? allowedFallbackWarMember ?? null;
       const warActive = warStateActive && warMember !== null;
       const warPhase = warActive
         ? normalizeWarPhaseLabel(currentWar?.state ?? "")
@@ -1069,8 +1099,8 @@ export class TodoSnapshotService {
           ? 0
           : trackedWarMember
             ? clampInt(trackedWarMember.attacksUsed, 0, 2)
-            : fallbackWarMemberForClan
-              ? clampInt(fallbackWarMemberForClan.attacks, 0, 2)
+            : allowedFallbackWarMember
+              ? clampInt(allowedFallbackWarMember.attacks, 0, 2)
               : 0;
       const resolvedTownHall = (() => {
         if (livePlayer.townHall !== null && livePlayer.townHall !== undefined && livePlayer.townHall > 0) {
@@ -1084,11 +1114,11 @@ export class TodoSnapshotService {
           return activeRosterRow.townHall;
         }
         if (
-          fallbackWarMemberForClan?.townHall !== null &&
-          fallbackWarMemberForClan?.townHall !== undefined &&
-          fallbackWarMemberForClan.townHall > 0
+          allowedFallbackWarMember?.townHall !== null &&
+          allowedFallbackWarMember?.townHall !== undefined &&
+          allowedFallbackWarMember.townHall > 0
         ) {
-          return fallbackWarMemberForClan.townHall;
+          return allowedFallbackWarMember.townHall;
         }
         const existingTownHall = normalizeRosterInt(existing?.townHall ?? null);
         return existingTownHall !== null && existingTownHall > 0 ? existingTownHall : null;
@@ -1463,20 +1493,6 @@ function pickLatestWarMemberByClanAndPlayer(
         attacks: normalizeRosterInt(row.attacks),
         sourceSyncedAt: row.sourceSyncedAt,
       });
-    }
-  }
-  return latest;
-}
-
-/** Purpose: keep only the most recent war-member row per player tag across clans by source sync time. */
-function pickLatestWarMemberByPlayerTag(
-  rows: Map<string, WarMemberCurrentRow>,
-): Map<string, WarMemberCurrentRow> {
-  const latest = new Map<string, WarMemberCurrentRow>();
-  for (const row of rows.values()) {
-    const existing = latest.get(row.playerTag);
-    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
-      latest.set(row.playerTag, row);
     }
   }
   return latest;
