@@ -584,6 +584,96 @@ describe("InactiveWarService", () => {
     expect(summary.results.some((row) => row.playerTag === "C")).toBe(false);
   });
 
+  it("keeps the default wars filter broad but consecutive:true requires misses in every selected war", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
+    const historyRows = [
+      makeHistoryRow({
+        warId: 503,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-05T00:00:00.000Z",
+        matchType: "FWA",
+        actualOutcome: "WIN",
+      }),
+      makeHistoryRow({
+        warId: 502,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-04T00:00:00.000Z",
+        matchType: "BL",
+      }),
+      makeHistoryRow({
+        warId: 501,
+        clanTag: "#AAA111",
+        endedAt: "2026-04-03T00:00:00.000Z",
+        matchType: "MM",
+      }),
+    ];
+    prismaMock.clanWarHistory.findMany.mockImplementation(async (args: any) =>
+      filterHistoryRows(historyRows, args)
+    );
+    const participationRows = [
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#A",
+        playerName: "Alpha Partial",
+        warId: "503",
+        missedBoth: true,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#A",
+        playerName: "Alpha Partial",
+        warId: "502",
+        missedBoth: true,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#B",
+        playerName: "Alpha Full",
+        warId: "503",
+        missedBoth: true,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#B",
+        playerName: "Alpha Full",
+        warId: "502",
+        missedBoth: true,
+      }),
+      makeParticipationRow({
+        clanTag: "#AAA111",
+        playerTag: "#B",
+        playerName: "Alpha Full",
+        warId: "501",
+        missedBoth: true,
+      }),
+    ];
+    prismaMock.clanWarParticipation.findMany.mockImplementation(async (args: any) =>
+      filterParticipationRows(participationRows, args)
+    );
+
+    const service = new InactiveWarService();
+    const defaultSummary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 3,
+    });
+    const consecutiveSummary = await service.listInactiveWarPlayers({
+      guildId: "guild-1",
+      wars: 3,
+      consecutive: true,
+    });
+
+    expect(defaultSummary.results.map((row) => row.playerTag).sort()).toEqual(["A", "B"]);
+    expect(defaultSummary.results.find((row) => row.playerTag === "A")).toMatchObject({
+      missedWars: 2,
+      participationWars: 2,
+    });
+    expect(consecutiveSummary.results.map((row) => row.playerTag)).toEqual(["B"]);
+    expect(consecutiveSummary.results[0]).toMatchObject({
+      missedWars: 3,
+      participationWars: 3,
+    });
+  });
+
   it("returns an empty tracked scope and diagnostic when the clan filter misses", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha" }]);
 

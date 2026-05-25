@@ -260,6 +260,7 @@ function buildRecentEndedWarSelection(input: {
     clanName: string;
     warsAvailable: number;
     selectedWarIds: string[];
+    selectedWarCount: number;
   }
 > {
   const trackedNameByTag = buildTrackedNameMap(input.trackedClans);
@@ -270,6 +271,7 @@ function buildRecentEndedWarSelection(input: {
       clanName: string;
       warsAvailable: number;
       selectedWarIds: string[];
+      selectedWarCount: number;
     }
   >();
 
@@ -281,6 +283,7 @@ function buildRecentEndedWarSelection(input: {
       clanName: trackedNameByTag.get(clanTag) ?? clanTag,
       warsAvailable: 0,
       selectedWarIds: [],
+      selectedWarCount: 0,
     });
   }
 
@@ -305,6 +308,7 @@ function buildRecentEndedWarSelection(input: {
     if (selection.selectedWarIds.length < input.wars) {
       selection.selectedWarIds.push(String(row.warId));
     }
+    selection.selectedWarCount = selection.selectedWarIds.length;
     const resolvedClanName = String(row.clanName ?? "").trim();
     if (resolvedClanName && selection.clanName === clanTag) {
       selection.clanName = resolvedClanName;
@@ -322,10 +326,12 @@ function aggregateInactiveWarRows(input: {
       clanName: string;
       warsAvailable: number;
       selectedWarIds: string[];
+      selectedWarCount: number;
     }
   >;
   historyByWarId: Map<string, ClanWarHistoryRow>;
   participationRows: ClanWarParticipationRow[];
+  consecutive?: boolean;
 }): InactiveWarRow[] {
   const rowsByKey = new Map<
     string,
@@ -336,6 +342,7 @@ function aggregateInactiveWarRows(input: {
       townHall: number | null;
       missedWars: number;
       participationWars: number;
+      requiredWars: number;
       totalTrueStars: number;
       avgAttackDelaySum: number;
       avgAttackDelayCount: number;
@@ -361,6 +368,7 @@ function aggregateInactiveWarRows(input: {
       townHall: row.townHall ?? null,
       missedWars: 0,
       participationWars: 0,
+      requiredWars: clanSelection.selectedWarCount,
       totalTrueStars: 0,
       avgAttackDelaySum: 0,
       avgAttackDelayCount: 0,
@@ -413,7 +421,15 @@ function aggregateInactiveWarRows(input: {
   }
 
   return [...rowsByKey.values()]
-    .filter((row) => row.participationWars > 0 && row.missedWars > 0)
+    .filter((row) => {
+      if (row.participationWars <= 0 || row.missedWars <= 0) return false;
+      if (!input.consecutive) return true;
+      return (
+        row.requiredWars > 0 &&
+        row.participationWars === row.requiredWars &&
+        row.missedWars === row.requiredWars
+      );
+    })
     .map((row) => ({
       clanTag: row.clanTag,
       playerTag: row.playerTag,
@@ -644,6 +660,7 @@ export class InactiveWarService {
     guildId: string;
     wars: number;
     clanTag?: string | null;
+    consecutive?: boolean;
   }): Promise<InactiveWarSummary> {
     const trackedClans = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
@@ -752,6 +769,7 @@ export class InactiveWarService {
       selectionByClan,
       historyByWarId,
       participationRows,
+      consecutive: input.consecutive === true,
     });
     const missingTownHallRows = results
       .filter((row) => row.townHall === null)
@@ -795,6 +813,7 @@ export class InactiveWarService {
     guildId: string;
     wars: number;
     clanTag?: string | null;
+    consecutive?: boolean;
   }): Promise<{
     metricsByPlayerTag: InactiveWarMetricMap;
     summary: InactiveWarSummary;

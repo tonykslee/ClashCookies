@@ -231,6 +231,14 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
   });
 
+  it("documents consecutive filtering in the /inactive help detail text", () => {
+    const inactiveHelpText = helpEmbedText("inactive");
+    expect(inactiveHelpText).toContain("in-clan:false");
+    expect(inactiveHelpText).toContain("/inactive days:7 consecutive:true");
+    expect(inactiveHelpText).toContain("/inactive wars:3 consecutive:true");
+    expect(inactiveHelpText).toContain("toggles between player tags and compact weights");
+  });
+
   it("documents recruitment countdown reminder settings in the recruitment help detail text", () => {
     const recruitmentHelpText = helpEmbedText("recruitment");
     const normalized = recruitmentHelpText.toLowerCase();
