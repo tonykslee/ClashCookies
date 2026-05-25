@@ -18,6 +18,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaWarMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaTrackedClanWarRosterCurrent: {
+    findMany: vi.fn(),
+  },
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -333,6 +336,10 @@ describe("/todo command", () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#PQL0289" },
+      { clanTag: "#2QG2C08UP" },
+    ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1746,6 +1753,7 @@ describe("/todo command", () => {
         townHall: 15,
       },
     ]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1826,6 +1834,9 @@ describe("/todo command", () => {
         stars: 2,
         attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#Q2V8P9L2" },
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
       {

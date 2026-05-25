@@ -37,6 +37,8 @@ export type TodoTrackedWarMemberState = {
   playerTag: string;
   clanTag: string;
   position: number | null;
+  playerName: string | null;
+  townHall: number | null;
   attacksUsed: number;
   attackDetails: TodoTrackedWarAttackDetail[];
 };
@@ -45,6 +47,8 @@ type MutableTrackedWarMemberState = {
   playerTag: string;
   clanTag: string;
   position: number | null;
+  playerName: string | null;
+  townHall: number | null;
   attacksUsed: number;
   attackDetails: Array<{
     order: number;
@@ -84,6 +88,8 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
         playerTag,
         clanTag,
         position: null,
+        playerName: normalizeDisplayName(row.playerName) || null,
+        townHall: toFiniteIntOrNull(row.townHall),
         attacksUsed: 0,
         attackDetails: [],
       } satisfies MutableTrackedWarMemberState);
@@ -98,6 +104,12 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
       candidatePosition > 0
     ) {
       existing.position = candidatePosition;
+    }
+    if (!existing.playerName) {
+      existing.playerName = normalizeDisplayName(row.playerName) || null;
+    }
+    if (existing.townHall === null) {
+      existing.townHall = toFiniteIntOrNull(row.townHall);
     }
   }
 
@@ -163,6 +175,8 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
       playerTag: value.playerTag,
       clanTag: value.clanTag,
       position: value.position,
+      playerName: value.playerName,
+      townHall: value.townHall,
       attacksUsed,
       attackDetails: orderedAttackDetails,
     });
@@ -244,4 +258,9 @@ function toFiniteIntOrNull(input: unknown): number | null {
   const value = Number(input);
   if (!Number.isFinite(value)) return null;
   return Math.trunc(value);
+}
+
+/** Purpose: normalize player names before storing roster-backed fallback values. */
+function normalizeDisplayName(input: unknown): string {
+  return String(input ?? "").trim();
 }
