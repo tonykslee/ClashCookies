@@ -833,17 +833,20 @@ async function renderEmbedsWithPager(
   const pageByMode: Record<InactiveDisplayMode, number> = { tag: 0, weight: 0 };
   const customIdPrefix = `inactive:${interaction.id}`;
   const usePagination = pagesByMode.tag.length > 1 || pagesByMode.weight.length > 1;
+  const hasDisplayToggle = pagesByMode.tag.length > 0 && pagesByMode.weight.length > 0;
   const getCurrentPages = () => pagesByMode[displayMode];
   const getCurrentPage = () =>
     Math.min(pageByMode[displayMode], Math.max(0, getCurrentPages().length - 1));
   const buildComponents = () =>
-    usePagination ? [buildPaginationRow(customIdPrefix, displayMode, getCurrentPage(), getCurrentPages().length)] : [];
+    hasDisplayToggle || usePagination
+      ? [buildPaginationRow(customIdPrefix, displayMode, getCurrentPage(), getCurrentPages().length)]
+      : [];
   const reply = await interaction.editReply({
     embeds: [embedsByMode[displayMode][getCurrentPage()]],
     components: buildComponents(),
   });
 
-  if (!usePagination) return;
+  if (!hasDisplayToggle && !usePagination) return;
 
   const collector = reply.createMessageComponentCollector({
     componentType: ComponentType.Button,

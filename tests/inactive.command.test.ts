@@ -399,6 +399,80 @@ describe("/inactive command", () => {
     expect(embed.description).not.toContain("Beta");
   });
 
+  it("shows the display toggle on single-page days results and flips to weights", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+        weight: null,
+      }),
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 1 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(1);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
+
+    await Inactive.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.replyMessage.createMessageComponentCollector).toHaveBeenCalledTimes(1);
+    const initialPayload = interaction.editReply.mock.calls.at(0)?.[0];
+    const initialEmbed = initialPayload.embeds[0].toJSON();
+    expect(initialEmbed.description).toContain("`#A1`");
+    expect(initialEmbed.description).not.toContain("145k");
+    const initialButtons = initialPayload.components[0].components.map((button: any) => button.toJSON());
+    expect(initialButtons.map((button: any) => button.label)).toEqual([
+      "Show weights",
+      "Prev",
+      "Next",
+    ]);
+    expect(initialButtons[1].disabled).toBe(true);
+    expect(initialButtons[2].disabled).toBe(true);
+
+    const toggleButton = makeCollectorButton(`inactive:${interaction.id}:toggle`);
+    await interaction.collectorHandlers.collect(toggleButton);
+    expect(toggleButton.update).toHaveBeenCalledTimes(1);
+    const togglePayload = toggleButton.update.mock.calls[0]?.[0];
+    const toggleEmbed = togglePayload.embeds[0].toJSON();
+    expect(toggleEmbed.description).toContain("`—`");
+    expect(toggleEmbed.description).not.toContain("`#A1`");
+    const toggleButtons = togglePayload.components[0].components.map((button: any) => button.toJSON());
+    expect(toggleButtons.map((button: any) => button.label)).toEqual([
+      "Show tags",
+      "Prev",
+      "Next",
+    ]);
+    expect(toggleButtons[1].disabled).toBe(true);
+    expect(toggleButtons[2].disabled).toBe(true);
+
+    const toggleBackButton = makeCollectorButton(`inactive:${interaction.id}:toggle`);
+    await interaction.collectorHandlers.collect(toggleBackButton);
+    expect(toggleBackButton.update).toHaveBeenCalledTimes(1);
+    const toggleBackPayload = toggleBackButton.update.mock.calls[0]?.[0];
+    const toggleBackEmbed = toggleBackPayload.embeds[0].toJSON();
+    expect(toggleBackEmbed.description).toContain("`#A1`");
+    expect(toggleBackEmbed.description).not.toContain("`—`");
+  });
+
   it("filters days mode to former clan members when in-clan:false", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
