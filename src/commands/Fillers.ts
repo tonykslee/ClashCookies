@@ -58,8 +58,10 @@ type FillersEditorStage =
   | "fillers_set_editor_select_persistence_before"
   | "fillers_set_editor_select_persistence_succeeded"
   | "fillers_set_editor_select_persistence_failed"
-  | "fillers_set_editor_message_edit_before"
-  | "fillers_set_editor_message_edit_failed"
+  | "fillers_set_editor_component_update_before"
+  | "fillers_set_editor_component_update_failed"
+  | "fillers_set_editor_component_edit_reply_before"
+  | "fillers_set_editor_component_edit_reply_failed"
   | "fillers_set_editor_follow_up_failed";
 
 type FillersEditorOperation = "editor_button_next" | "editor_button_prev" | "editor_select";
@@ -1008,12 +1010,12 @@ async function renderEditorReply(input: {
   const totalPages = Math.max(1, pages.length);
   let page = 0;
 
-  const buildRenderPayload = () => {
+  const buildRenderPayload = (pageIndex = page) => {
     const renderRows = sortedRows.map((row) => ({
       ...row,
       isFiller: selectedTags.has(row.tag),
     }));
-    const visiblePageRows = pages[page] ?? [];
+    const visiblePageRows = pages[pageIndex] ?? [];
     const pageRows = visiblePageRows.map((row) => ({
       ...row,
       isFiller: selectedTags.has(row.tag),
@@ -1025,7 +1027,7 @@ async function renderEditorReply(input: {
       actorUserId: input.interaction.user.id,
       sortedRowsLength: sortedRows.length,
       totalPages,
-      page,
+      page: pageIndex,
       selectedTagsSize: selectedTags.size,
       renderRowsLength: renderRows.length,
       pageRowsLength: pageRows.length,
@@ -1040,7 +1042,7 @@ async function renderEditorReply(input: {
         selectedCount: selectedTags.size,
         totalCount: sortedRows.length,
         townHallEmojiByLevel,
-        page,
+        page: pageIndex,
         totalPages,
       });
     } catch (error) {
@@ -1053,7 +1055,7 @@ async function renderEditorReply(input: {
           actorUserId: input.interaction.user.id,
           sortedRowsLength: sortedRows.length,
           totalPages,
-          page,
+          page: pageIndex,
           selectedTagsSize: selectedTags.size,
           renderRowsLength: renderRows.length,
           pageRowsLength: pageRows.length,
@@ -1065,7 +1067,7 @@ async function renderEditorReply(input: {
 
     let editorRows: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[];
     try {
-      editorRows = buildEditorRows(sessionId, page, pageRows, selectedTags);
+      editorRows = buildEditorRows(sessionId, pageIndex, pageRows, selectedTags);
     } catch (error) {
       logFillersEditorDiagnostic(
         "fillers_set_render_payload",
@@ -1076,7 +1078,7 @@ async function renderEditorReply(input: {
           actorUserId: input.interaction.user.id,
           sortedRowsLength: sortedRows.length,
           totalPages,
-          page,
+          page: pageIndex,
           selectedTagsSize: selectedTags.size,
           renderRowsLength: renderRows.length,
           pageRowsLength: pageRows.length,
@@ -1086,7 +1088,7 @@ async function renderEditorReply(input: {
       throw error;
     }
 
-    const pagerRow = buildPagerRow(`fillers:editor:${sessionId}`, page, totalPages);
+    const pagerRow = buildPagerRow(`fillers:editor:${sessionId}`, pageIndex, totalPages);
     const components = [...editorRows, ...(pagerRow ? [pagerRow] : [])];
     const embedJson = embed.toJSON() as { title?: string; description?: string | null };
     const componentJson = components.map((component) => component.toJSON() as {
@@ -1124,7 +1126,7 @@ async function renderEditorReply(input: {
       actorUserId: input.interaction.user.id,
       sortedRowsLength: sortedRows.length,
       totalPages,
-      page,
+      page: pageIndex,
       selectedTagsSize: selectedTags.size,
       renderRowsLength: renderRows.length,
       pageRowsLength: pageRows.length,
@@ -1234,51 +1236,37 @@ async function renderEditorReply(input: {
           operation === "editor_button_next"
             ? Math.min(totalPages - 1, page + 1)
             : Math.max(0, page - 1);
-        page = pageAfter;
         baseDiagnostics.operation = operation;
         baseDiagnostics.pageAfter = pageAfter;
-      }
-
-      try {
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_defer_update_before",
-          baseDiagnostics,
-        );
-        failureStage = "fillers_set_editor_defer_update_failed";
-        failureDiagnostics = baseDiagnostics;
-        if (!component.deferred && !component.replied) {
-          await component.deferUpdate();
-        }
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_defer_update_after",
-          baseDiagnostics,
-        );
-      } catch (error) {
-        throw error;
-      }
-
-      if (component.isButton()) {
-        const renderPayload = buildRenderPayload();
+        const renderPayload = buildRenderPayload(pageAfter);
         const payloadMetrics = summarizeFillersEditorPayloadMetrics(renderPayload);
-        failureStage = "fillers_set_editor_message_edit_failed";
-        failureDiagnostics = {
-          ...baseDiagnostics,
-          ...payloadMetrics,
-        };
+        failureStage = "fillers_set_editor_component_update_failed";
+        failureDiagnostics = { ...baseDiagnostics, ...payloadMetrics };
         logFillersEditorDiagnostic(
-          "fillers_set_editor_message_edit_before",
+          "fillers_set_editor_component_update_before",
           {
             ...baseDiagnostics,
             ...payloadMetrics,
           },
         );
-        try {
-          await message.edit(renderPayload);
-        } catch (error) {
-          throw error;
-        }
+        await component.update(renderPayload);
+        page = pageAfter;
         return;
       }
+
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_defer_update_before",
+        baseDiagnostics,
+      );
+      failureStage = "fillers_set_editor_defer_update_failed";
+      failureDiagnostics = baseDiagnostics;
+      if (!component.deferred && !component.replied) {
+        await component.deferUpdate();
+      }
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_defer_update_after",
+        baseDiagnostics,
+      );
 
       const parts = component.customId.split(":");
       const pageIndex = Number(parts[4] ?? "0");
@@ -1302,40 +1290,32 @@ async function renderEditorReply(input: {
         selectedTags.add(tag);
       }
 
-      try {
-        await replaceFillerAccountsForLinkedUser({
-          guildId,
-          actorDiscordUserId: actorUserId,
-          linkedPlayerTags: sortedRows.map((row) => row.tag),
-          selectedPlayerTags: [...selectedTags],
-        });
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_select_persistence_succeeded",
-          baseDiagnostics,
-        );
-      } catch (error) {
-        throw error;
-      }
+      await replaceFillerAccountsForLinkedUser({
+        guildId,
+        actorDiscordUserId: actorUserId,
+        linkedPlayerTags: sortedRows.map((row) => row.tag),
+        selectedPlayerTags: [...selectedTags],
+      });
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_select_persistence_succeeded",
+        baseDiagnostics,
+      );
 
       const renderPayload = buildRenderPayload();
       const payloadMetrics = summarizeFillersEditorPayloadMetrics(renderPayload);
-      failureStage = "fillers_set_editor_message_edit_failed";
+      failureStage = "fillers_set_editor_component_edit_reply_failed";
       failureDiagnostics = {
         ...baseDiagnostics,
         ...payloadMetrics,
       };
-      try {
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_message_edit_before",
-          {
-            ...baseDiagnostics,
-            ...payloadMetrics,
-          },
-        );
-        await message.edit(renderPayload);
-      } catch (error) {
-        throw error;
-      }
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_component_edit_reply_before",
+        {
+          ...baseDiagnostics,
+          ...payloadMetrics,
+        },
+      );
+      await component.editReply(renderPayload);
     } catch (error) {
       if (failureStage !== null) {
         logFillersEditorDiagnostic(failureStage, failureDiagnostics, error);
