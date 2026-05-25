@@ -1254,23 +1254,19 @@ async function renderEditorReply(input: {
         return;
       }
 
-      try {
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_defer_update_before",
-          baseDiagnostics,
-        );
-        failureStage = "fillers_set_editor_defer_update_failed";
-        failureDiagnostics = baseDiagnostics;
-        if (!component.deferred && !component.replied) {
-          await component.deferUpdate();
-        }
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_defer_update_after",
-          baseDiagnostics,
-        );
-      } catch (error) {
-        throw error;
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_defer_update_before",
+        baseDiagnostics,
+      );
+      failureStage = "fillers_set_editor_defer_update_failed";
+      failureDiagnostics = baseDiagnostics;
+      if (!component.deferred && !component.replied) {
+        await component.deferUpdate();
       }
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_defer_update_after",
+        baseDiagnostics,
+      );
 
       const parts = component.customId.split(":");
       const pageIndex = Number(parts[4] ?? "0");
@@ -1294,20 +1290,16 @@ async function renderEditorReply(input: {
         selectedTags.add(tag);
       }
 
-      try {
-        await replaceFillerAccountsForLinkedUser({
-          guildId,
-          actorDiscordUserId: actorUserId,
-          linkedPlayerTags: sortedRows.map((row) => row.tag),
-          selectedPlayerTags: [...selectedTags],
-        });
-        logFillersEditorDiagnostic(
-          "fillers_set_editor_select_persistence_succeeded",
-          baseDiagnostics,
-        );
-      } catch (error) {
-        throw error;
-      }
+      await replaceFillerAccountsForLinkedUser({
+        guildId,
+        actorDiscordUserId: actorUserId,
+        linkedPlayerTags: sortedRows.map((row) => row.tag),
+        selectedPlayerTags: [...selectedTags],
+      });
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_select_persistence_succeeded",
+        baseDiagnostics,
+      );
 
       const renderPayload = buildRenderPayload();
       const payloadMetrics = summarizeFillersEditorPayloadMetrics(renderPayload);
