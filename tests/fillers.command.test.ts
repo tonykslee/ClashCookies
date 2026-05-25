@@ -339,6 +339,7 @@ function makeSelectInteraction(input: {
     isButton: () => false,
     update: vi.fn().mockResolvedValue(undefined),
     deferUpdate: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     replied: false,
     deferred: false,
@@ -355,6 +356,7 @@ function makeButtonInteraction(input: {
     isButton: () => true,
     update: vi.fn().mockResolvedValue(undefined),
     deferUpdate: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     replied: false,
     deferred: false,
@@ -366,8 +368,12 @@ function getLastEditPayload(interaction: any): any {
   return interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
 }
 
-function getLastMessageEditPayload(interaction: any): any {
-  return interaction.__message.edit.mock.calls.at(-1)?.[0] ?? {};
+function getLastInteractionUpdatePayload(interaction: any): any {
+  return interaction.update.mock.calls.at(-1)?.[0] ?? {};
+}
+
+function getLastInteractionEditReplyPayload(interaction: any): any {
+  return interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
 }
 
 function getEmbedJson(payload: any): any {
@@ -517,8 +523,13 @@ describe("/fillers command", () => {
 
     expect(prismaMock.fillerAccount.upsert).toHaveBeenCalledTimes(1);
     expect(fillerState.has(makeValidPlayerTag(0))).toBe(true);
+    expect(select.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(select.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      select.editReply.mock.invocationCallOrder[0],
+    );
+    expect(select.editReply).toHaveBeenCalledTimes(1);
 
-    const rerenderPayload = getLastMessageEditPayload(interaction);
+    const rerenderPayload = getLastInteractionEditReplyPayload(select);
     const rerenderComponents = getComponentJson(rerenderPayload);
     const rerenderMenu = rerenderComponents[0].components[0];
     expect(rerenderMenu.options[0].default).toBe(true);
@@ -659,18 +670,16 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(nextInteraction);
 
-    expect(nextInteraction.deferUpdate).toHaveBeenCalledTimes(1);
-    expect(nextInteraction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
-      interaction.__message.edit.mock.invocationCallOrder[0],
-    );
+    expect(nextInteraction.update).toHaveBeenCalledTimes(1);
+    expect(nextInteraction.deferUpdate).not.toHaveBeenCalled();
 
-    const nextPayload = getLastMessageEditPayload(interaction);
+    const nextPayload = getLastInteractionUpdatePayload(nextInteraction);
     const nextEmbed = getEmbedJson(nextPayload);
     const nextVisibleTags = extractVisibleTags(String(nextEmbed.description));
     expect(nextVisibleTags[0]).toBe(seededOrder[visibleTags.length]);
   });
 
-  it("logs the page edit failure with navigation context when message.edit rejects", async () => {
+  it("logs the page update failure with navigation context when component.update rejects", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     emojiResolverMock.fetchApplicationEmojiInventory.mockResolvedValueOnce(
       buildEmojiInventory("<:town_hall_custom_"),
@@ -706,14 +715,14 @@ describe("/fillers command", () => {
     const nextInteraction = makeButtonInteraction({
       customId: nextButton.custom_id ?? nextButton.customId,
     });
-    interaction.__message.edit.mockRejectedValueOnce(
+    nextInteraction.update.mockRejectedValueOnce(
       Object.assign(new Error("Unknown Message"), { code: 10008, status: 404 }),
     );
 
     await interaction.__collectorHandlers.collect(nextInteraction);
 
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('"stage": "fillers_set_editor_message_edit_failed"'),
+      expect.stringContaining('"stage": "fillers_set_editor_component_update_failed"'),
     );
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('"operation": "editor_button_next"'),
@@ -808,7 +817,7 @@ describe("/fillers command", () => {
     expect(prismaMock.fillerAccount.upsert).toHaveBeenCalledTimes(1);
     expect(fillerState.has(makeValidPlayerTag(0))).toBe(true);
     expect(fillerState.has(makeValidPlayerTag(1))).toBe(false);
-    const selectAlphaPayload = getLastMessageEditPayload(interaction);
+    const selectAlphaPayload = getLastInteractionEditReplyPayload(selectAlpha);
     const selectAlphaEmbed = getEmbedJson(selectAlphaPayload);
     expect(String(selectAlphaEmbed.description)).toContain("Alpha");
     expect(String(selectAlphaEmbed.footer?.text)).toContain("1/26 filler accounts selected");
@@ -907,7 +916,7 @@ describe("/fillers command", () => {
     });
     await secondSession.__collectorHandlers.collect(nextInteraction);
 
-    const nextPayload = getLastMessageEditPayload(secondSession);
+    const nextPayload = getLastInteractionUpdatePayload(nextInteraction);
     const nextComponents = getComponentJson(nextPayload);
     const nextMenu = nextComponents[0].components[0];
     const secondSelection = [
@@ -1044,7 +1053,7 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(nextInteraction);
 
-    const nextPayload = nextInteraction.update.mock.calls.at(-1)?.[0] ?? {};
+    const nextPayload = getLastInteractionUpdatePayload(nextInteraction);
     const nextEmbed = getEmbedJson(nextPayload);
     expect(String(nextEmbed.description)).toContain(
       "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
@@ -1061,7 +1070,7 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(prevInteraction);
 
-    const prevPayload = prevInteraction.update.mock.calls.at(-1)?.[0] ?? {};
+    const prevPayload = getLastInteractionUpdatePayload(prevInteraction);
     const prevEmbed = getEmbedJson(prevPayload);
     expect(String(prevEmbed.description)).toContain(
       "Clan membership uses saved account data. If accounts are missing after moving clans, run /accounts and Refresh.",
