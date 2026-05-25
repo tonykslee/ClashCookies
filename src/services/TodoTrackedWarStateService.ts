@@ -1,3 +1,4 @@
+import type { FwaTrackedClanWarRosterMemberCurrent } from "@prisma/client";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 
 export type TodoTrackedCurrentWarRow = {
@@ -20,6 +21,11 @@ export type TodoTrackedWarAttackRow = {
   stars: number;
   attackSeenAt: Date;
 };
+
+export type TodoTrackedWarRosterRow = Pick<
+  FwaTrackedClanWarRosterMemberCurrent,
+  "clanTag" | "playerTag" | "position" | "playerName" | "townHall"
+>;
 
 export type TodoTrackedWarAttackDetail = {
   defenderPosition: number | null;
@@ -55,12 +61,45 @@ export function isTodoWarStateActive(state: unknown): boolean {
   return normalized.includes("preparation") || normalized.includes("inwar");
 }
 
-/** Purpose: build tracked-war member state from CurrentWar identity + WarAttacks rows. */
+/** Purpose: build tracked-war member state from CurrentWar identity + roster rows + WarAttacks rows. */
 export function buildTrackedWarMemberStateByClanAndPlayer(input: {
   currentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
+  rosterRows: TodoTrackedWarRosterRow[];
   warAttackRows: TodoTrackedWarAttackRow[];
 }): Map<string, TodoTrackedWarMemberState> {
   const mapped = new Map<string, MutableTrackedWarMemberState>();
+
+  for (const row of input.rosterRows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+
+    const currentWar = input.currentWarByClanTag.get(clanTag);
+    if (!currentWar || !isTodoWarStateActive(currentWar.state)) continue;
+
+    const key = `${clanTag}:${playerTag}`;
+    const existing =
+      mapped.get(key) ??
+      ({
+        playerTag,
+        clanTag,
+        position: null,
+        attacksUsed: 0,
+        attackDetails: [],
+      } satisfies MutableTrackedWarMemberState);
+    if (!mapped.has(key)) {
+      mapped.set(key, existing);
+    }
+
+    const candidatePosition = toFiniteIntOrNull(row.position);
+    if (
+      existing.position === null &&
+      candidatePosition !== null &&
+      candidatePosition > 0
+    ) {
+      existing.position = candidatePosition;
+    }
+  }
 
   for (const row of input.warAttackRows) {
     const clanTag = normalizeClanTag(row.clanTag);
@@ -73,29 +112,18 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
 
     const key = `${clanTag}:${playerTag}`;
     const existing = mapped.get(key);
-    const mutable =
-      existing ??
-      ({
-        playerTag,
-        clanTag,
-        position: null,
-        attacksUsed: 0,
-        attackDetails: [],
-      } satisfies MutableTrackedWarMemberState);
-    if (!existing) {
-      mapped.set(key, mutable);
-    }
+    if (!existing) continue;
 
     const candidatePosition = toFiniteIntOrNull(row.playerPosition);
     if (
-      mutable.position === null &&
+      existing.position === null &&
       candidatePosition !== null &&
       candidatePosition > 0
     ) {
-      mutable.position = candidatePosition;
+      existing.position = candidatePosition;
     }
-    mutable.attacksUsed = Math.max(
-      mutable.attacksUsed,
+    existing.attacksUsed = Math.max(
+      existing.attacksUsed,
       clampInt(row.attacksUsed, 0, 2),
     );
 
@@ -104,7 +132,7 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
     if (attackOrder <= 0 && attackNumber <= 0) {
       continue;
     }
-    mutable.attackDetails.push({
+    existing.attackDetails.push({
       order: attackOrder > 0 ? attackOrder : attackNumber,
       attackNumber,
       seenAtMs: row.attackSeenAt.getTime(),

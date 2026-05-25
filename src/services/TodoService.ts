@@ -20,6 +20,7 @@ import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
   type TodoTrackedCurrentWarRow,
+  type TodoTrackedWarRosterRow,
 } from "./TodoTrackedWarStateService";
 
 export const TODO_TYPES = ["WAR", "CWL", "RAIDS", "GAMES"] as const;
@@ -560,8 +561,25 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : [];
+  const trackedWarRosterRows: TodoTrackedWarRosterRow[] =
+    activeTrackedClanTags.length > 0
+      ? await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+          where: {
+            clanTag: { in: activeTrackedClanTags },
+            playerTag: { in: linkedTags },
+          },
+          select: {
+            clanTag: true,
+            playerTag: true,
+            position: true,
+            playerName: true,
+            townHall: true,
+          },
+        })
+      : [];
   const trackedWarMemberByClanAndPlayer = buildTrackedWarMemberStateByClanAndPlayer({
     currentWarByClanTag: activeTrackedCurrentWarByClanTag,
+    rosterRows: trackedWarRosterRows,
     warAttackRows: trackedWarAttackRows,
   });
 

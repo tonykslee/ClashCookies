@@ -29,6 +29,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaWarMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaTrackedClanWarRosterMemberCurrent: {
+    findMany: vi.fn(),
+  },
   currentWar: {
     findMany: vi.fn(),
   },
@@ -161,6 +164,22 @@ describe("TodoSnapshotService", () => {
         clanTag: "#PQL0289",
         attacks: 2,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 1,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#QGRJ2222",
+        position: 2,
+        playerName: "Bravo",
+        townHall: 14,
       },
     ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
@@ -1600,6 +1619,15 @@ describe("TodoSnapshotService", () => {
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
     ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -1620,18 +1648,28 @@ describe("TodoSnapshotService", () => {
     ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        clan: { tag: "#NEWCLAN" },
+        townHallLevel: 15,
+      }),
+    } as any;
 
     await todoSnapshotService.refreshSnapshotsForPlayerTags({
       playerTags: ["#PYLQ0289"],
+      cocService,
       nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
     });
 
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
+          clanTag: "#PQL0289",
+          clanName: "Clan One",
           warActive: true,
           warPhase: "preparation",
           warAttacksUsed: 0,
+          warEndsAt: new Date("2026-03-26T12:00:00.000Z"),
         }),
       }),
     );
@@ -1784,6 +1822,7 @@ describe("TodoSnapshotService", () => {
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",

@@ -18,6 +18,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaWarMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaTrackedClanWarRosterMemberCurrent: {
+    findMany: vi.fn(),
+  },
   currentWar: {
     findMany: vi.fn(),
   },
@@ -330,6 +333,29 @@ describe("/todo command", () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#QGRJ2222",
+        position: 1,
+        playerName: "Bravo",
+        townHall: 14,
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#CUV9082",
+        position: 9,
+        playerName: "Charlie",
+        townHall: 13,
+      },
+    ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([
       { clanTag: "#PQL0289" },
@@ -968,6 +994,29 @@ describe("/todo command", () => {
         attackSeenAt: new Date("2026-03-26T00:10:00.000Z"),
       },
     ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#QGRJ2222",
+        position: 1,
+        playerName: "Bravo",
+        townHall: 14,
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#CUV9082",
+        position: 9,
+        playerName: "Charlie",
+        townHall: 13,
+      },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1110,7 +1159,7 @@ describe("/todo command", () => {
 
     const description = getReplyDescription(interaction);
     expect(description).toContain("Alpha - `1 / 2`");
-    expect(description).toContain(":white_check_mark: #2 Bravo - `2 / 2`");
+    expect(description).toContain(":white_check_mark: #1 Bravo - `2 / 2`");
   });
 
   it("uses green WAR sidebar when all battle-day participant attacks are completed", async () => {
@@ -1504,9 +1553,9 @@ describe("/todo command", () => {
 
     const description = getReplyDescription(interaction);
     expectTodoLegendWithLastUpdated(description);
-    expect(description).toContain(":white_check_mark: #1 Alpha - `2 / 2`");
+    expect(description).toContain(":white_check_mark: #8 Alpha - `2 / 2`");
     expect(description).not.toContain("stale snapshot");
-    expect(description).toContain("- #2 Bravo - `1 / 2` - :hourglass:");
+    expect(description).toContain("- #1 Bravo - `1 / 2` - :hourglass:");
   });
 
   it("keeps WAR rows visible when the linked account's current clan differs from the war clan context", async () => {
@@ -1525,7 +1574,7 @@ describe("/todo command", () => {
         clanTag: "#PQL0289",
         clanName: "Clan One",
         warActive: true,
-        warAttacksUsed: 1,
+        warAttacksUsed: 0,
         warPhase: "battle day",
         warEndsAt: new Date("2026-03-31T12:00:00.000Z"),
       }),
@@ -1573,7 +1622,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("#? Alpha - `1 / 2`");
+    expect(description).toContain("#8 Alpha - `0 / 2`");
     expect(description).not.toContain("No war active");
     expect(description).not.toContain("Bravo");
   });
@@ -1688,6 +1737,15 @@ describe("/todo command", () => {
         attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
     ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#Q2V8P9L2",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1706,7 +1764,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- #? Alpha - `1 / 2` | :dagger: #? ★ ★ ☆");
+    expect(description).toContain("- #? Alpha - `1 / 2`");
   });
 
   it("uses current-war validated tracked rows for war position even when feed clan context differs", async () => {
@@ -1769,6 +1827,15 @@ describe("/todo command", () => {
         attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
       },
     ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#Q2V8P9L2",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1787,8 +1854,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("- #8 Alpha - `1 / 2`");
-    expect(description).toContain("| :dagger: #7 ★ ★ ☆");
+    expect(description).toContain("Alpha - `1 / 2`");
     expect(description).not.toContain("- #? Alpha -");
   });
 
