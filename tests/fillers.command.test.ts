@@ -297,6 +297,7 @@ function makeInteraction(input: {
     }),
   };
   const message = {
+    id: `message-${Math.random().toString(36).slice(2)}`,
     edit: vi.fn().mockResolvedValue(undefined),
     createMessageComponentCollector: vi.fn(() => collector),
   };
@@ -658,10 +659,74 @@ describe("/fillers command", () => {
     });
     await interaction.__collectorHandlers.collect(nextInteraction);
 
+    expect(nextInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(nextInteraction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      interaction.__message.edit.mock.invocationCallOrder[0],
+    );
+
     const nextPayload = getLastMessageEditPayload(interaction);
     const nextEmbed = getEmbedJson(nextPayload);
     const nextVisibleTags = extractVisibleTags(String(nextEmbed.description));
     expect(nextVisibleTags[0]).toBe(seededOrder[visibleTags.length]);
+  });
+
+  it("logs the page edit failure with navigation context when message.edit rejects", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    emojiResolverMock.fetchApplicationEmojiInventory.mockResolvedValueOnce(
+      buildEmojiInventory("<:town_hall_custom_"),
+    );
+
+    for (let index = 0; index < 59; index += 1) {
+      const tag = makeValidPlayerTag(index);
+      seedAccount({
+        playerTag: tag,
+        discordUserId: "222222222222222222",
+        playerName: `Player ${String(index + 1).padStart(3, "0")}`,
+        townHall: 18,
+        clanTag: "#PQL0289",
+        clanName: "Alpha Clan",
+        weight: 12000 - index * 17,
+      });
+    }
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      targetUserId: "222222222222222222",
+    });
+
+    await runFillers(interaction);
+
+    const payload = getLastEditPayload(interaction);
+    const pagerRow = getComponentJson(payload).at(-1);
+    const nextButton = pagerRow?.components?.find((component: any) =>
+      String(component.custom_id ?? component.customId ?? "").endsWith(":next"),
+    );
+    expect(nextButton).toBeTruthy();
+
+    const nextInteraction = makeButtonInteraction({
+      customId: nextButton.custom_id ?? nextButton.customId,
+    });
+    interaction.__message.edit.mockRejectedValueOnce(
+      Object.assign(new Error("Unknown Message"), { code: 10008, status: 404 }),
+    );
+
+    await interaction.__collectorHandlers.collect(nextInteraction);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"stage": "fillers_set_editor_message_edit_failed"'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"operation": "editor_button_next"'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"discordErrorCode": 10008'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"componentCustomId":'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"messageId":'),
+    );
   });
 
   it("keeps clan sections together when they fit on the same editor page", async () => {
