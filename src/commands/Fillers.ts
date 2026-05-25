@@ -51,7 +51,18 @@ type FillersEditorStage =
   | "fillers_set_build_embed"
   | "fillers_set_build_components"
   | "fillers_set_render_payload"
-  | "fillers_set_edit_reply";
+  | "fillers_set_edit_reply"
+  | "fillers_set_editor_defer_update_before"
+  | "fillers_set_editor_defer_update_after"
+  | "fillers_set_editor_defer_update_failed"
+  | "fillers_set_editor_select_persistence_before"
+  | "fillers_set_editor_select_persistence_succeeded"
+  | "fillers_set_editor_select_persistence_failed"
+  | "fillers_set_editor_message_edit_before"
+  | "fillers_set_editor_message_edit_failed"
+  | "fillers_set_editor_follow_up_failed";
+
+type FillersEditorOperation = "editor_button_next" | "editor_button_prev" | "editor_select";
 
 const FILLERS_EDITOR_FAILURE_MESSAGE =
   "Could not render the filler editor. The failure was logged with diagnostic details.";
@@ -161,6 +172,27 @@ function summarizeErrorForDiagnostics(error: unknown): Record<string, unknown> {
   };
 }
 
+function summarizeDiscordErrorForDiagnostics(error: unknown): Record<string, unknown> {
+  const raw = error as {
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: unknown };
+    message?: unknown;
+  };
+  const status =
+    typeof raw?.status === "number"
+      ? raw.status
+      : typeof raw?.response?.status === "number"
+        ? raw.response.status
+        : null;
+  return {
+    discordErrorCode: getDiscordErrorCode(error),
+    discordErrorStatus: status,
+    discordErrorMessage:
+      typeof raw?.message === "string" ? truncateDiagnosticText(raw.message, 300) : null,
+  };
+}
+
 function logFillersEditorDiagnostic(
   stage: FillersEditorStage,
   details: Record<string, unknown>,
@@ -169,7 +201,12 @@ function logFillersEditorDiagnostic(
   const payload = {
     stage,
     ...details,
-    ...(error ? { error: summarizeErrorForDiagnostics(error) } : {}),
+    ...(error
+      ? {
+          ...summarizeDiscordErrorForDiagnostics(error),
+          error: summarizeErrorForDiagnostics(error),
+        }
+      : {}),
   };
   const line = `[fillers:set] ${safeDiagnosticJson(payload, 6000)}`;
   if (error) {
@@ -177,6 +214,74 @@ function logFillersEditorDiagnostic(
     return;
   }
   console.debug(line);
+}
+
+function summarizeFillersEditorPayloadMetrics(payload: {
+  embeds: Array<{ toJSON?: () => unknown }>;
+  components: Array<{ toJSON?: () => unknown }>;
+}): Record<string, unknown> {
+  const embedJson = payload.embeds[0]?.toJSON?.() as
+    | {
+        title?: string;
+        description?: string | null;
+      }
+    | undefined;
+  const componentJson = payload.components.map((component) => component.toJSON?.() as {
+    components?: Array<{
+      options?: Array<{ label?: string; value?: string; description?: string | null }>;
+      custom_id?: string;
+      placeholder?: string | null;
+      min_values?: number;
+      max_values?: number;
+    }>;
+  });
+  const flatComponents = componentJson.flatMap((row) => row.components ?? []);
+  const selectMenus = flatComponents.filter((component) => Array.isArray(component.options));
+  const buttonCount = flatComponents.length - selectMenus.length;
+  return {
+    embedTitleLength: String(embedJson?.title ?? "").length,
+    embedDescriptionLength: String(embedJson?.description ?? "").length,
+    componentRowCount: componentJson.length,
+    selectMenuCount: selectMenus.length,
+    buttonCount,
+    selectMenus: selectMenus.map((menu) =>
+      summarizeSelectMenuDiagnostics({
+        customId: menu.custom_id,
+        placeholder: menu.placeholder,
+        minValues: menu.min_values,
+        maxValues: menu.max_values,
+        options: menu.options,
+      }),
+    ),
+  };
+}
+
+function buildFillersEditorCollectorDiagnostics(input: {
+  operation: FillersEditorOperation;
+  componentCustomId: string;
+  interactionId: string;
+  messageId: string | null;
+  pageBefore: number;
+  pageAfter: number;
+  totalPages: number;
+  guildId: string;
+  targetUserId: string;
+  actorUserId: string;
+  payloadMetrics?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    operation: input.operation,
+    componentCustomId: input.componentCustomId,
+    interactionId: input.interactionId,
+    messageId: input.messageId,
+    pageBefore: input.pageBefore,
+    pageAfter: input.pageAfter,
+    totalPages: input.totalPages,
+    guildId: input.guildId,
+    targetUserId: input.targetUserId,
+    actorUserId: input.actorUserId,
+    ...(input.payloadMetrics ?? {}),
+  };
 }
 
 function summarizeSelectMenuDiagnostics(menu: {
@@ -1098,18 +1203,80 @@ async function renderEditorReply(input: {
   });
 
   collector.on("collect", async (component: ButtonInteraction | StringSelectMenuInteraction) => {
+    const componentCustomId = component.customId;
+    const interactionId = component.id;
+    const messageId = message.id ?? null;
+    const guildId = input.interaction.guildId ?? "";
+    const targetUserId = input.targetUserId;
+    const actorUserId = input.interaction.user.id;
+    const pageBefore = page;
+    let pageAfter = page;
+    let operation: FillersEditorOperation = "editor_select";
+    const baseDiagnostics = buildFillersEditorCollectorDiagnostics({
+      operation,
+      componentCustomId,
+      interactionId,
+      messageId,
+      pageBefore,
+      pageAfter,
+      totalPages,
+      guildId,
+      targetUserId,
+      actorUserId,
+    });
+    let failureStage: FillersEditorStage | null = null;
+    let failureDiagnostics: Record<string, unknown> = baseDiagnostics;
+
     try {
-      if (!component.deferred && !component.replied) {
-        await component.deferUpdate();
+      if (component.isButton()) {
+        operation = componentCustomId.endsWith(":next") ? "editor_button_next" : "editor_button_prev";
+        pageAfter =
+          operation === "editor_button_next"
+            ? Math.min(totalPages - 1, page + 1)
+            : Math.max(0, page - 1);
+        page = pageAfter;
+        baseDiagnostics.operation = operation;
+        baseDiagnostics.pageAfter = pageAfter;
+      }
+
+      try {
+        logFillersEditorDiagnostic(
+          "fillers_set_editor_defer_update_before",
+          baseDiagnostics,
+        );
+        failureStage = "fillers_set_editor_defer_update_failed";
+        failureDiagnostics = baseDiagnostics;
+        if (!component.deferred && !component.replied) {
+          await component.deferUpdate();
+        }
+        logFillersEditorDiagnostic(
+          "fillers_set_editor_defer_update_after",
+          baseDiagnostics,
+        );
+      } catch (error) {
+        throw error;
       }
 
       if (component.isButton()) {
-        if (component.customId.endsWith(":prev")) {
-          page = Math.max(0, page - 1);
-        } else if (component.customId.endsWith(":next")) {
-          page = Math.min(totalPages - 1, page + 1);
+        const renderPayload = buildRenderPayload();
+        const payloadMetrics = summarizeFillersEditorPayloadMetrics(renderPayload);
+        failureStage = "fillers_set_editor_message_edit_failed";
+        failureDiagnostics = {
+          ...baseDiagnostics,
+          ...payloadMetrics,
+        };
+        logFillersEditorDiagnostic(
+          "fillers_set_editor_message_edit_before",
+          {
+            ...baseDiagnostics,
+            ...payloadMetrics,
+          },
+        );
+        try {
+          await message.edit(renderPayload);
+        } catch (error) {
+          throw error;
         }
-        await message.edit(buildRenderPayload());
         return;
       }
 
@@ -1121,6 +1288,13 @@ async function renderEditorReply(input: {
       const bucketTagSet = new Set(bucket.map((row) => row.tag));
       const selectedValues = new Set(component.values.map((value) => normalizePlayerTag(value)).filter(Boolean));
 
+      logFillersEditorDiagnostic(
+        "fillers_set_editor_select_persistence_before",
+        baseDiagnostics,
+      );
+      failureStage = "fillers_set_editor_select_persistence_failed";
+      failureDiagnostics = baseDiagnostics;
+
       for (const tag of bucketTagSet) {
         selectedTags.delete(tag);
       }
@@ -1128,14 +1302,44 @@ async function renderEditorReply(input: {
         selectedTags.add(tag);
       }
 
-      await replaceFillerAccountsForLinkedUser({
-        guildId: input.interaction.guildId ?? "",
-        actorDiscordUserId: input.interaction.user.id,
-        linkedPlayerTags: sortedRows.map((row) => row.tag),
-        selectedPlayerTags: [...selectedTags],
-      });
-      await message.edit(buildRenderPayload());
+      try {
+        await replaceFillerAccountsForLinkedUser({
+          guildId,
+          actorDiscordUserId: actorUserId,
+          linkedPlayerTags: sortedRows.map((row) => row.tag),
+          selectedPlayerTags: [...selectedTags],
+        });
+        logFillersEditorDiagnostic(
+          "fillers_set_editor_select_persistence_succeeded",
+          baseDiagnostics,
+        );
+      } catch (error) {
+        throw error;
+      }
+
+      const renderPayload = buildRenderPayload();
+      const payloadMetrics = summarizeFillersEditorPayloadMetrics(renderPayload);
+      failureStage = "fillers_set_editor_message_edit_failed";
+      failureDiagnostics = {
+        ...baseDiagnostics,
+        ...payloadMetrics,
+      };
+      try {
+        logFillersEditorDiagnostic(
+          "fillers_set_editor_message_edit_before",
+          {
+            ...baseDiagnostics,
+            ...payloadMetrics,
+          },
+        );
+        await message.edit(renderPayload);
+      } catch (error) {
+        throw error;
+      }
     } catch (error) {
+      if (failureStage !== null) {
+        logFillersEditorDiagnostic(failureStage, failureDiagnostics, error);
+      }
       if (isIgnorableCollectorInteractionError(error)) {
         console.warn(`fillers editor collector ignored interaction error: ${formatError(error)}`);
         return;
@@ -1148,6 +1352,11 @@ async function renderEditorReply(input: {
         })
         .catch((followUpError) => {
           if (!isIgnorableCollectorInteractionError(followUpError)) {
+            logFillersEditorDiagnostic(
+              "fillers_set_editor_follow_up_failed",
+              baseDiagnostics,
+              followUpError,
+            );
             console.error(`fillers editor collector follow-up failed: ${formatError(followUpError)}`);
           }
         });
