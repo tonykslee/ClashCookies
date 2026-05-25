@@ -112,7 +112,7 @@ async function loadInactiveDiscordLinksForTags(tags: string[]): Promise<Map<stri
   const orderedTags = [...new Set(tags.map((tag) => formatInactivePlayerTag(tag)))];
   const links = await listPlayerLinksForClanMembers({ memberTagsInOrder: orderedTags });
   const discordUserIdByPlayerTag = new Map<string, string>();
-  for (const link of links) {
+  for (const link of links ?? []) {
     const normalizedTag = normalizeClanTagInput(link.playerTag);
     if (!normalizedTag) continue;
     discordUserIdByPlayerTag.set(normalizedTag, link.discordUserId);
@@ -297,6 +297,16 @@ type RosterSnapshot = {
   liveMemberTownHallByTag: Map<string, number | null>;
 };
 
+type InactiveCurrentMembershipSnapshot = {
+  trackedTags: string[];
+  trackedNameByTag: Map<string, string>;
+  trackedBadgeByTag: Map<string, string | null>;
+  currentSnapshotAvailableClanTags: Set<string>;
+  currentMemberPlayerTagsByClanTag: Map<string, Set<string>>;
+  currentMemberNameByClanAndPlayerTag: Map<string, string>;
+  currentMemberTownHallByClanAndPlayerTag: Map<string, number | null>;
+};
+
 function buildPaginationRow(customIdPrefix: string, page: number, totalPages: number) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -371,6 +381,108 @@ async function getRosterSnapshot(
   };
 }
 
+function buildTrackedClanTagQueryValues(trackedTags: string[]): string[] {
+  return [...new Set(trackedTags.flatMap((tag) => [tag, `#${tag}`]))];
+}
+
+async function loadInactiveCurrentMembershipSnapshot(
+  clanTag?: string | null,
+): Promise<InactiveCurrentMembershipSnapshot> {
+  const dbTracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true, clanBadge: true },
+  });
+  const normalizedClanFilter = normalizeClanTagInput(clanTag ?? "");
+  const scopedTracked = normalizedClanFilter
+    ? dbTracked.filter((c) => normalizeClanTagInput(c.tag) === normalizedClanFilter)
+    : dbTracked;
+  const trackedTags = scopedTracked.map((c) => c.tag);
+  const trackedNameByTag = new Map<string, string>();
+  const trackedBadgeByTag = new Map<string, string | null>();
+  for (const clan of scopedTracked) {
+    const clanTag = normalizeClanTagInput(clan.tag);
+    if (!clanTag) continue;
+    const clanName = clan.name?.trim() || clanTag;
+    const clanBadge = formatInactiveClanBadge(clan.clanBadge);
+    trackedNameByTag.set(clan.tag, clanName);
+    trackedNameByTag.set(clanTag, clanName);
+    trackedNameByTag.set(`#${clanTag}`, clanName);
+    trackedBadgeByTag.set(clan.tag, clanBadge);
+    trackedBadgeByTag.set(clanTag, clanBadge);
+    trackedBadgeByTag.set(`#${clanTag}`, clanBadge);
+  }
+
+  if (trackedTags.length === 0) {
+    return {
+      trackedTags: [],
+      trackedNameByTag,
+      trackedBadgeByTag,
+      currentSnapshotAvailableClanTags: new Set(),
+      currentMemberPlayerTagsByClanTag: new Map(),
+      currentMemberNameByClanAndPlayerTag: new Map(),
+      currentMemberTownHallByClanAndPlayerTag: new Map(),
+    };
+  }
+
+  const currentMemberRows = await prisma.fwaClanMemberCurrent.findMany({
+    where: {
+      clanTag: { in: buildTrackedClanTagQueryValues(trackedTags) },
+    },
+    orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
+    select: {
+      clanTag: true,
+      playerTag: true,
+      playerName: true,
+      townHall: true,
+      sourceSyncedAt: true,
+    },
+  });
+
+  const currentSnapshotAvailableClanTags = new Set<string>();
+  const currentMemberPlayerTagsByClanTag = new Map<string, Set<string>>();
+  const currentMemberNameByClanAndPlayerTag = new Map<string, string>();
+  const currentMemberTownHallByClanAndPlayerTag = new Map<string, number | null>();
+  const latestSourceByClanAndPlayer = new Map<string, Date>();
+
+  for (const row of currentMemberRows as Array<{
+    clanTag: string;
+    playerTag: string;
+    playerName: string | null;
+    townHall: number | null;
+    sourceSyncedAt: Date;
+  }>) {
+    const clanTagValue = normalizeClanTagInput(row.clanTag);
+    const playerTagValue = normalizeClanTagInput(row.playerTag);
+    if (!clanTagValue || !playerTagValue) continue;
+    currentSnapshotAvailableClanTags.add(clanTagValue);
+    const key = `${clanTagValue}:${playerTagValue}`;
+    const existingSource = latestSourceByClanAndPlayer.get(key) ?? null;
+    if (existingSource && existingSource >= row.sourceSyncedAt) continue;
+    latestSourceByClanAndPlayer.set(key, row.sourceSyncedAt);
+    const currentPlayerTags = currentMemberPlayerTagsByClanTag.get(clanTagValue) ?? new Set<string>();
+    currentPlayerTags.add(playerTagValue);
+    currentMemberPlayerTagsByClanTag.set(clanTagValue, currentPlayerTags);
+    currentMemberNameByClanAndPlayerTag.set(
+      key,
+      String(row.playerName ?? "").trim() || playerTagValue,
+    );
+    currentMemberTownHallByClanAndPlayerTag.set(
+      key,
+      Number.isFinite(Number(row.townHall)) ? Math.trunc(Number(row.townHall)) : null,
+    );
+  }
+
+  return {
+    trackedTags,
+    trackedNameByTag,
+    trackedBadgeByTag,
+    currentSnapshotAvailableClanTags,
+    currentMemberPlayerTagsByClanTag,
+    currentMemberNameByClanAndPlayerTag,
+    currentMemberTownHallByClanAndPlayerTag,
+  };
+}
+
 type InactiveDaysEntry = {
   clanTag: string;
   clanName: string;
@@ -385,13 +497,13 @@ const inactiveWarService = new InactiveWarService();
 
 async function fetchInactiveDaysEntries(
   interaction: ChatInputCommandInteraction,
-  cocService: CoCService,
   days: number,
   clanTag?: string | null,
   consecutive?: boolean,
+  inClan?: boolean,
 ): Promise<{
   entries: InactiveDaysEntry[];
-  roster: RosterSnapshot | null;
+  roster: InactiveCurrentMembershipSnapshot;
   staleHours: number;
   freshObservedCount: number;
   observedRecordCount: number;
@@ -402,20 +514,9 @@ async function fetchInactiveDaysEntries(
     throw new Error("This command can only be used in a server.");
   }
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const roster = await getRosterSnapshot(cocService, clanTag);
+  const roster = await loadInactiveCurrentMembershipSnapshot(clanTag);
 
   if (roster.trackedTags.length === 0) {
-    return {
-      entries: [],
-      roster,
-      staleHours: DEFAULT_STALE_HOURS,
-      freshObservedCount: 0,
-      observedRecordCount: 0,
-      scopeClanTag: null,
-      scopeClanName: null,
-    };
-  }
-  if (roster.liveMemberTags.size === 0) {
     return {
       entries: [],
       roster,
@@ -447,28 +548,14 @@ async function fetchInactiveDaysEntries(
     };
   }
 
-  const scopedClanTagSet = new Set(scopedTrackedTags.map((tag) => normalizeClanTagInput(tag)));
-  const scopedLiveMemberTags = [...roster.liveMemberTags].filter((tag) => {
-    const trackedClanTag = roster.liveMemberTrackedClanByTag.get(tag) ?? "";
-    return scopedClanTagSet.has(normalizeClanTagInput(trackedClanTag));
-  });
-  if (scopedLiveMemberTags.length === 0) {
-    return {
-      entries: [],
-      roster,
-      staleHours: DEFAULT_STALE_HOURS,
-      freshObservedCount: 0,
-      observedRecordCount: 0,
-      scopeClanTag,
-      scopeClanName,
-    };
-  }
-
-  const liveMemberTagList = scopedLiveMemberTags;
+  const scopedClanTagValues = buildTrackedClanTagQueryValues(scopedTrackedTags);
+  const currentMemberTagList = [...new Set(
+    [...roster.currentMemberPlayerTagsByClanTag.values()].flatMap((set) => [...set])
+  )];
   const activitySnapshot = await prisma.playerActivity.aggregate({
     where: {
       guildId: interaction.guildId,
-      tag: { in: liveMemberTagList },
+      tag: { in: currentMemberTagList },
     },
     _max: { updatedAt: true },
     _count: { tag: true },
@@ -494,7 +581,7 @@ async function fetchInactiveDaysEntries(
   const freshObservedCount = await prisma.playerActivity.count({
     where: {
       guildId: interaction.guildId,
-      tag: { in: liveMemberTagList },
+      tag: { in: currentMemberTagList },
       updatedAt: { gte: staleCutoff },
     },
   });
@@ -506,7 +593,11 @@ async function fetchInactiveDaysEntries(
     Number.isFinite(minCoverageRaw) && minCoverageRaw > 0 && minCoverageRaw <= 1
       ? minCoverageRaw
       : DEFAULT_MIN_COVERAGE;
-  const observationCoverage = freshObservedCount / liveMemberTagList.length;
+  const currentMemberCount = [...roster.currentMemberPlayerTagsByClanTag.values()].reduce(
+    (total, set) => total + set.size,
+    0,
+  );
+  const observationCoverage = currentMemberCount > 0 ? freshObservedCount / currentMemberCount : 0;
   if (observationCoverage < minCoverage) {
     return {
       entries: [],
@@ -524,34 +615,42 @@ async function fetchInactiveDaysEntries(
       guildId: interaction.guildId,
       lastSeenAt: { lt: cutoff },
       updatedAt: { gte: staleCutoff },
-      tag: { in: liveMemberTagList },
+      clanTag: { in: scopedClanTagValues },
     },
-    orderBy: { lastSeenAt: "asc" },
+    orderBy: [{ clanTag: "asc" }, { lastSeenAt: "asc" }, { tag: "asc" }],
   });
   const filteredInactivePlayers = filterConsecutiveInactiveRows(
     inactivePlayers,
     cutoff,
     consecutive,
   );
+  const currentMemberNameByClanAndPlayerTag = roster.currentMemberNameByClanAndPlayerTag;
+  const currentMemberTownHallByClanAndPlayerTag = roster.currentMemberTownHallByClanAndPlayerTag;
 
-  const entries = filteredInactivePlayers.map((p) => {
-    const clanTag =
-      roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? "");
-    const normalizedClanTag = clanTag ? `#${normalizeClanTagInput(clanTag)}` : "Unknown Clan";
-    return {
-      clanTag: normalizedClanTag,
-      clanName:
-        roster.trackedNameByTag.get(normalizedClanTag) ??
-        roster.liveMemberClanByTag.get(p.tag) ??
-        p.clanTag ??
-        "Unknown Clan",
-      clanBadge: roster.trackedBadgeByTag.get(normalizedClanTag) ?? null,
-      playerTag: p.tag,
-      playerName: p.name,
-      townHall: roster.liveMemberTownHallByTag.get(p.tag) ?? null,
-      daysAgo: Math.floor((Date.now() - p.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)),
-    };
-  });
+  const entries = filteredInactivePlayers
+    .map((p) => {
+      const clanTag = normalizeClanTagInput(p.clanTag ?? "");
+      const normalizedClanTag = clanTag ? `#${normalizeClanTagInput(clanTag)}` : "Unknown Clan";
+      const playerTag = normalizeClanTagInput(p.tag);
+      const membershipKey = `${clanTag}:${playerTag}`;
+      const snapshotAvailable = roster.currentSnapshotAvailableClanTags.has(clanTag);
+      const isCurrentMember =
+        snapshotAvailable &&
+        (roster.currentMemberPlayerTagsByClanTag.get(clanTag)?.has(playerTag) ?? false);
+      const shouldInclude = inClan === false ? snapshotAvailable && !isCurrentMember : isCurrentMember;
+      if (!shouldInclude) return null;
+      return {
+        clanTag: normalizedClanTag,
+        clanName:
+          roster.trackedNameByTag.get(normalizedClanTag) ?? p.clanName ?? p.clanTag ?? "Unknown Clan",
+        clanBadge: roster.trackedBadgeByTag.get(normalizedClanTag) ?? null,
+        playerTag: p.tag,
+        playerName: currentMemberNameByClanAndPlayerTag.get(membershipKey) ?? p.name ?? p.tag,
+        townHall: currentMemberTownHallByClanAndPlayerTag.get(membershipKey) ?? null,
+        daysAgo: Math.floor((Date.now() - p.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000)),
+      };
+    })
+    .filter((entry): entry is InactiveDaysEntry => entry !== null);
 
   return {
     entries,
@@ -569,16 +668,36 @@ async function fetchInactiveWarEntries(
   wars: number,
   clanTag?: string | null,
   consecutive?: boolean,
+  inClan?: boolean,
 ): Promise<InactiveWarSummary> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
   }
-  return inactiveWarService.listInactiveWarPlayers({
+  const summary = await inactiveWarService.listInactiveWarPlayers({
     guildId: interaction.guildId,
     wars,
     clanTag,
     consecutive,
   });
+  const membership = await loadInactiveCurrentMembershipSnapshot(clanTag);
+  if (summary.results.length === 0) {
+    return summary;
+  }
+
+  const filteredResults = summary.results.filter((row) => {
+    const clanTagValue = normalizeClanTagInput(row.clanTag);
+    const playerTagValue = normalizeClanTagInput(row.playerTag);
+    const snapshotAvailable = membership.currentSnapshotAvailableClanTags.has(clanTagValue);
+    const isCurrentMember =
+      snapshotAvailable &&
+      (membership.currentMemberPlayerTagsByClanTag.get(clanTagValue)?.has(playerTagValue) ?? false);
+    return inClan === false ? snapshotAvailable && !isCurrentMember : isCurrentMember;
+  });
+
+  return {
+    ...summary,
+    results: filteredResults,
+  };
 }
 
 async function renderEmbedsWithPager(
@@ -707,19 +826,10 @@ async function runDaysMode(
   days: number,
   clanTag?: string | null,
   consecutive?: boolean,
+  inClan?: boolean,
 ): Promise<void> {
-  if (!interaction.guildId) {
-    await interaction.editReply("This command can only be used in a server.");
-    return;
-  }
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const roster = await getRosterSnapshot(cocService, clanTag);
-
-  const scopeClanTag = roster.trackedTags[0] ?? null;
-  const scopeClanName = scopeClanTag
-    ? roster.trackedNameByTag.get(scopeClanTag) ?? scopeClanTag
-    : null;
-
+  const daysResult = await fetchInactiveDaysEntries(interaction, days, clanTag, consecutive, inClan);
+  const { entries, roster } = daysResult;
   if (roster.trackedTags.length === 0) {
     if (clanTag) {
       await interaction.editReply(
@@ -732,88 +842,11 @@ async function runDaysMode(
     );
     return;
   }
-  if (roster.liveMemberTags.size === 0) {
+
+  if (entries.length === 0) {
     await interaction.editReply(
-      clanTag && scopeClanName
-        ? `Tracked clan ${scopeClanName} is configured, but live rosters could not be read from CoC API. Try again shortly.`
-        : "Tracked clans are configured, but live rosters could not be read from CoC API. Try again shortly."
-    );
-    return;
-  }
-
-  const liveMemberTagList = [...roster.liveMemberTags];
-  const activitySnapshot = await prisma.playerActivity.aggregate({
-    where: {
-      guildId: interaction.guildId,
-      tag: { in: liveMemberTagList },
-    },
-    _max: { updatedAt: true },
-    _count: { tag: true },
-  });
-
-  const staleHoursRaw = Number(process.env.INACTIVE_STALE_HOURS ?? DEFAULT_STALE_HOURS);
-  const staleHours =
-    Number.isFinite(staleHoursRaw) && staleHoursRaw > 0 ? staleHoursRaw : DEFAULT_STALE_HOURS;
-  const latestObservedAt = activitySnapshot._max.updatedAt ?? null;
-  const staleCutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
-
-  if (!latestObservedAt || latestObservedAt < staleCutoff) {
-    const snapshotAge = latestObservedAt
-      ? `<t:${Math.floor(latestObservedAt.getTime() / 1000)}:R>`
-      : "unavailable";
-    await interaction.editReply(
-      clanTag && scopeClanName
-        ? `Inactive data for ${scopeClanName} is stale (latest observation: ${snapshotAge}). Wait for observation refresh and retry.`
-        : `Inactive data is stale (latest observation: ${snapshotAge}). Wait for observation refresh and retry.`
-    );
-    return;
-  }
-
-  const freshObservedCount = await prisma.playerActivity.count({
-    where: {
-      guildId: interaction.guildId,
-      tag: { in: liveMemberTagList },
-      updatedAt: { gte: staleCutoff },
-    },
-  });
-
-  const minCoverageRaw = Number(
-    process.env.INACTIVE_MIN_OBSERVATION_COVERAGE ?? DEFAULT_MIN_COVERAGE
-  );
-  const minCoverage =
-    Number.isFinite(minCoverageRaw) && minCoverageRaw > 0 && minCoverageRaw <= 1
-      ? minCoverageRaw
-      : DEFAULT_MIN_COVERAGE;
-  const observationCoverage = freshObservedCount / liveMemberTagList.length;
-
-  if (observationCoverage < minCoverage) {
-    await interaction.editReply(
-      clanTag && scopeClanName
-        ? `Inactive data for ${scopeClanName} is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
-            observationCoverage * 100
-          )}% coverage). Wait for observation refresh and retry.`
-        : `Inactive data is incomplete: only ${freshObservedCount}/${liveMemberTagList.length} live members were observed in the last ${staleHours}h (${Math.floor(
-            observationCoverage * 100
-          )}% coverage). Wait for observation refresh and retry.`
-    );
-    return;
-  }
-
-  const inactivePlayers = await prisma.playerActivity.findMany({
-    where: {
-      guildId: interaction.guildId,
-      lastSeenAt: { lt: cutoff },
-      updatedAt: { gte: staleCutoff },
-      tag: { in: liveMemberTagList },
-    },
-    orderBy: { lastSeenAt: "asc" },
-  });
-  const filteredInactivePlayers = filterConsecutiveInactiveRows(inactivePlayers, cutoff, consecutive);
-
-  if (filteredInactivePlayers.length === 0) {
-    await interaction.editReply(
-      clanTag && scopeClanName
-        ? `No inactive players for ${days}+ days in ${scopeClanName}.`
+      clanTag && daysResult.scopeClanName
+        ? `No inactive players for ${days}+ days in ${daysResult.scopeClanName}.`
         : `No inactive players for ${days}+ days.`
     );
     return;
@@ -826,51 +859,42 @@ async function runDaysMode(
     if (!clanOrder.has(clanName)) clanOrder.set(clanName, index++);
   }
 
-  const inactiveWithClan = filteredInactivePlayers.map((p) => ({
-    player: p,
-    clan: roster.liveMemberClanByTag.get(p.tag) ?? p.clanTag ?? "Unknown Clan",
-    clanTag: roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? ""),
-    clanBadge: roster.trackedBadgeByTag.get(
-      roster.liveMemberTrackedClanByTag.get(p.tag) ?? normalizeClanTagInput(p.clanTag ?? ""),
-    ) ?? null,
-    townHall: roster.liveMemberTownHallByTag.get(p.tag) ?? null,
-  }));
-  inactiveWithClan.sort((a, b) => {
-    const orderA = clanOrder.get(a.clan) ?? Number.MAX_SAFE_INTEGER;
-    const orderB = clanOrder.get(b.clan) ?? Number.MAX_SAFE_INTEGER;
+  const sortedEntries = [...entries].sort((a, b) => {
+    const orderA = clanOrder.get(a.clanName) ?? Number.MAX_SAFE_INTEGER;
+    const orderB = clanOrder.get(b.clanName) ?? Number.MAX_SAFE_INTEGER;
     if (orderA !== orderB) return orderA - orderB;
-    if (a.clan !== b.clan) return a.clan.localeCompare(b.clan);
-    return a.player.lastSeenAt.getTime() - b.player.lastSeenAt.getTime();
+    if (a.clanName !== b.clanName) return a.clanName.localeCompare(b.clanName);
+    return a.daysAgo - b.daysAgo;
   });
 
   const daysDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
-    filteredInactivePlayers.map((player) => player.tag)
+    sortedEntries.map((player) => player.playerTag)
   );
   const pages = buildGroupedPages(
-    inactiveWithClan,
+    sortedEntries,
     (e) => e.clanTag,
-    (e) => e.clan,
+    (e) => e.clanName,
     (e) => e.clanBadge,
     (e) => {
-      const daysAgo = Math.floor((Date.now() - e.player.lastSeenAt.getTime()) / (24 * 60 * 60 * 1000));
-      const discordText = buildInactivePlayerDiscordText(
-        daysDiscordUserIdByPlayerTag,
-        e.player.tag
-      );
+      const discordText = buildInactivePlayerDiscordText(daysDiscordUserIdByPlayerTag, e.playerTag);
       const townHallIcon = renderTownHallIcon(e.townHall, townHallEmojiByLevel);
       return `- ${formatInactivePlayerIdentity({
         townHallIcon,
-        playerName: e.player.name,
-        playerTag: e.player.tag,
+        playerName: e.playerName,
+        playerTag: e.playerTag,
         discordText,
-      })} - ${daysAgo}d`;
+      })} - ${e.daysAgo}d`;
     }
   );
 
-  const summary = ` • Scope: ${roster.trackedTags.length} tracked clan(s), ${roster.liveMemberTags.size} live member(s), ${activitySnapshot._count.tag} observed record(s), ${freshObservedCount} fresh in last ${staleHours}h`;
+  const currentMemberCount = [...roster.currentMemberPlayerTagsByClanTag.values()].reduce(
+    (total, set) => total + set.size,
+    0,
+  );
+  const summary = ` • Scope: ${roster.trackedTags.length} tracked clan(s), ${currentMemberCount} current member(s), ${daysResult.observedRecordCount} observed record(s), ${daysResult.freshObservedCount} fresh in last ${daysResult.staleHours}h`;
   await renderEmbedsWithPager(
     interaction,
-    `Inactive for ${days}+ days (${filteredInactivePlayers.length})`,
+    `Inactive for ${days}+ days (${entries.length})`,
     pages,
     summary
   );
@@ -882,9 +906,10 @@ async function runWarsMode(
   wars: number,
   clanTag?: string | null,
   consecutive?: boolean,
+  inClan?: boolean,
 ): Promise<void> {
   const { results, trackedTags, trackedNameByTag, trackedBadgeByTag, warnings, diagnosticNote } =
-    await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive);
+    await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive, inClan);
 
   if (trackedTags.length === 0) {
     if (diagnosticNote || warnings.length > 0) {
@@ -944,9 +969,10 @@ async function runCombinedMode(
   wars: number,
   clanTag?: string | null,
   consecutive?: boolean,
+  inClan?: boolean,
 ): Promise<void> {
-  const daysResult = await fetchInactiveDaysEntries(interaction, cocService, days, clanTag, consecutive);
-  const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive);
+  const daysResult = await fetchInactiveDaysEntries(interaction, days, clanTag, consecutive, inClan);
+  const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive, inClan);
 
   if (!daysResult.roster || daysResult.roster.trackedTags.length === 0 || warsResult.trackedTags.length === 0) {
     if (clanTag && warsResult.diagnosticNote) {
@@ -1117,6 +1143,12 @@ export const Inactive: Command = {
       required: false,
     },
     {
+      name: "in-clan",
+      description: "Only include players currently in the tracked clan",
+      type: ApplicationCommandOptionType.Boolean,
+      required: false,
+    },
+    {
       name: "clan",
       description: "Filter inactive players to one tracked clan",
       type: ApplicationCommandOptionType.String,
@@ -1136,6 +1168,7 @@ export const Inactive: Command = {
     const daysValue = interaction.options.getInteger("days", false) ?? undefined;
     const warsValue = interaction.options.getInteger("wars", false) ?? undefined;
     const consecutiveValue = interaction.options.getBoolean("consecutive", false) ?? undefined;
+    const inClanValue = interaction.options.getBoolean("in-clan", false);
     const clanValue = interaction.options.getString("clan", false) ?? undefined;
 
     if (!daysValue && !warsValue) {
@@ -1161,6 +1194,7 @@ export const Inactive: Command = {
         warsValue,
         clanValue,
         consecutiveValue,
+        inClanValue ?? true,
       );
       return;
     }
@@ -1172,10 +1206,18 @@ export const Inactive: Command = {
         daysValue,
         clanValue,
         consecutiveValue,
+        inClanValue ?? true,
       );
       return;
     }
-    await runWarsMode(interaction, townHallEmojiByLevel, warsValue!, clanValue, consecutiveValue);
+    await runWarsMode(
+      interaction,
+      townHallEmojiByLevel,
+      warsValue!,
+      clanValue,
+      consecutiveValue,
+      inClanValue ?? true,
+    );
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);

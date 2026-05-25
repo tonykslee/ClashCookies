@@ -16,6 +16,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
   playerActivity: {
     aggregate: vi.fn(),
     count: vi.fn(),
@@ -63,6 +66,7 @@ function makeInteraction(values: {
   days?: number | null;
   wars?: number | null;
   consecutive?: boolean | null;
+  inClan?: boolean | null;
   clan?: string | null;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -79,6 +83,7 @@ function makeInteraction(values: {
       }),
       getBoolean: vi.fn((name: string) => {
         if (name === "consecutive") return values.consecutive ?? null;
+        if (name === "in-clan") return values.inClan ?? null;
         return null;
       }),
       getString: vi.fn((name: string) => {
@@ -89,9 +94,27 @@ function makeInteraction(values: {
   };
 }
 
+function makeCurrentMemberRow(input: {
+  clanTag: string;
+  playerTag: string;
+  playerName: string;
+  townHall: number | null;
+  sourceSyncedAt?: Date;
+}) {
+  return {
+    clanTag: input.clanTag,
+    playerTag: input.playerTag,
+    playerName: input.playerName,
+    townHall: input.townHall,
+    sourceSyncedAt: input.sourceSyncedAt ?? new Date(),
+  };
+}
+
 describe("/inactive command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     emojiResolverServiceMock.fetchApplicationEmojiInventory.mockResolvedValue({
       ok: true,
       snapshot: {
@@ -154,19 +177,155 @@ describe("/inactive command", () => {
     });
   });
 
-  it("scopes days mode to the selected clan", async () => {
-    const getClan = vi.fn(async (tag: string) => {
-      if (tag === "#AAA111") {
-        return {
-          name: "Alpha",
-          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
-        };
-      }
-      throw new Error(`unexpected clan fetch: ${tag}`);
-    });
-
+  it("shows only current in-clan members by default in wars mode", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 18,
+      }),
+    ]);
+    inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
+      results: [
+        {
+          clanTag: "AAA111",
+          playerTag: "A1",
+          playerName: "Alpha One",
+          townHall: 18,
+          missedWars: 3,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [
+            { warId: "503", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "WIN", emoji: "ðŸŸ¢" },
+          ],
+        },
+        {
+          clanTag: "AAA111",
+          playerTag: "A2",
+          playerName: "Alpha Two",
+          townHall: 17,
+          missedWars: 3,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [
+            { warId: "503", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "WIN", emoji: "ðŸŸ¢" },
+          ],
+        },
+      ],
+      trackedTags: ["AAA111"],
+      trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const interaction = makeInteraction({ wars: 3 });
+    const cocService = {} as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("Alpha One `#A1`");
+    expect(embed.description).not.toContain("Alpha Two `#A2`");
+  });
+
+  it("composes consecutive:true with in-clan:false in wars mode", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 18,
+      }),
+    ]);
+    inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
+      results: [
+        {
+          clanTag: "AAA111",
+          playerTag: "A1",
+          playerName: "Alpha One",
+          townHall: 18,
+          missedWars: 3,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [
+            { warId: "503", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "WIN", emoji: "ðŸŸ¢" },
+          ],
+        },
+        {
+          clanTag: "AAA111",
+          playerTag: "A2",
+          playerName: "Alpha Two",
+          townHall: 17,
+          missedWars: 3,
+          participationWars: 3,
+          totalTrueStars: 0,
+          avgAttackDelay: null,
+          lateAttacks: 0,
+          warsAvailable: 3,
+          missedWarStates: [
+            { warId: "503", warStartTime: null, warEndTime: null, matchType: "FWA", outcome: "WIN", emoji: "ðŸŸ¢" },
+          ],
+        },
+      ],
+      trackedTags: ["AAA111"],
+      trackedNameByTag: new Map([["AAA111", "Alpha"]]),
+      trackedBadgeByTag: new Map([["AAA111", "<:badge:1>"]]),
+      warnings: [],
+      diagnosticNote: null,
+    });
+
+    const interaction = makeInteraction({ wars: 3, consecutive: true, inClan: false });
+    const cocService = {} as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    expect(inactiveWarServiceMock.listInactiveWarPlayers).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      wars: 3,
+      clanTag: undefined,
+      consecutive: true,
+    });
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("Alpha Two `#A2`");
+    expect(embed.description).not.toContain("Alpha One `#A1`");
+  });
+
+  it("scopes days mode to the selected clan", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 16,
+      }),
     ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
@@ -194,12 +353,10 @@ describe("/inactive command", () => {
     ]);
 
     const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
-    const cocService = { getClan } as any;
+    const cocService = {} as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
 
-    expect(getClan).toHaveBeenCalledTimes(1);
-    expect(getClan).toHaveBeenCalledWith("#AAA111");
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
     expect(embed.description).toContain("<:badge:1> Alpha (2)");
@@ -209,19 +366,69 @@ describe("/inactive command", () => {
     expect(embed.description).not.toContain("Beta");
   });
 
-  it("scopes combined mode to the selected clan", async () => {
-    const getClan = vi.fn(async (tag: string) => {
-      if (tag === "#AAA111") {
-        return {
-          name: "Alpha",
-          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
-        };
-      }
-      throw new Error(`unexpected clan fetch: ${tag}`);
-    });
-
+  it("filters days mode to former clan members when in-clan:false", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: 2 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(2);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      {
+        tag: "#A1",
+        name: "Alpha One",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+      {
+        tag: "#A2",
+        name: "Alpha Two",
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      },
+    ]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7, inClan: false });
+    const cocService = {} as any;
+
+    await Inactive.run({} as any, interaction as any, cocService);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    const embed = payload.embeds[0].toJSON();
+    expect(embed.description).toContain("- ❔ Alpha Two `#A2`");
+    expect(embed.description).not.toContain("Alpha One `#A1`");
+  });
+
+  it("scopes combined mode to the selected clan", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 16,
+      }),
     ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
@@ -276,7 +483,7 @@ describe("/inactive command", () => {
     ]);
 
     const interaction = makeInteraction({ days: 7, wars: 3, clan: "#AAA111" });
-    const cocService = { getClan } as any;
+    const cocService = {} as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
 
@@ -285,7 +492,6 @@ describe("/inactive command", () => {
       wars: 3,
       clanTag: "#AAA111",
     });
-    expect(getClan).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
     expect(embed.description).toContain("Alpha");
@@ -296,6 +502,30 @@ describe("/inactive command", () => {
   });
 
   it("renders grouped wars output with linked Discord users, ratios, and missed-war emojis", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+      { tag: "#BBB222", name: "Beta", clanBadge: "<:badge:2>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 18,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#BBB222",
+        playerTag: "#B1",
+        playerName: "Beta One",
+        townHall: 16,
+      }),
+    ]);
     inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
       results: [
         {
@@ -398,18 +628,22 @@ describe("/inactive command", () => {
     expect(embed.description).not.toContain("3/3 wars missed");
   });
   it("renders days mode rows with backticked tags and Discord mentions", async () => {
-    const getClan = vi.fn(async (tag: string) => {
-      if (tag === "#AAA111") {
-        return {
-          name: "Alpha",
-          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
-        };
-      }
-      throw new Error(`unexpected clan fetch: ${tag}`);
-    });
-
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 16,
+      }),
     ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
@@ -437,7 +671,7 @@ describe("/inactive command", () => {
     ]);
 
     const interaction = makeInteraction({ days: 7 });
-    const cocService = { getClan } as any;
+    const cocService = {} as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
@@ -448,18 +682,22 @@ describe("/inactive command", () => {
   });
 
   it("accepts consecutive:true in days mode and preserves the persisted inactivity rows", async () => {
-    const getClan = vi.fn(async (tag: string) => {
-      if (tag === "#AAA111") {
-        return {
-          name: "Alpha",
-          members: [{ tag: "#A1", townHall: 17 }, { tag: "#A2", townHall: 16 }],
-        };
-      }
-      throw new Error(`unexpected clan fetch: ${tag}`);
-    });
-
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 16,
+      }),
     ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
@@ -487,34 +725,39 @@ describe("/inactive command", () => {
     ]);
 
     const interaction = makeInteraction({ days: 7, consecutive: true });
-    const cocService = { getClan } as any;
+    const cocService = {} as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
 
-    expect(getClan).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     const embed = payload.embeds[0].toJSON();
     expect(embed.description).toContain("- <:th17:117> Alpha One `#A1` <@111111111111111111> - 8d");
     expect(embed.description).toContain("- <:th16:116> Alpha Two `#A2`");
   });
 
-  it("renders days mode rows from alternate live member town hall fields", async () => {
-    const getClan = vi.fn(async (tag: string) => {
-      if (tag === "#AAA111") {
-        return {
-          name: "Alpha",
-          members: [
-            { tag: "#A1", townHallLevel: 17 },
-            { tag: "#A2", townhallLevel: 16 },
-            { tag: "#A3" },
-          ],
-        };
-      }
-      throw new Error(`unexpected clan fetch: ${tag}`);
-    });
-
+  it("renders days mode rows from current-member town hall fields", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A1",
+        playerName: "Alpha One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A2",
+        playerName: "Alpha Two",
+        townHall: 16,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#A3",
+        playerName: "Alpha Three",
+        townHall: null,
+      }),
     ]);
     prismaMock.playerActivity.aggregate.mockResolvedValue({
       _max: { updatedAt: new Date() },
@@ -547,7 +790,7 @@ describe("/inactive command", () => {
     playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
 
     const interaction = makeInteraction({ days: 7 });
-    const cocService = { getClan } as any;
+    const cocService = {} as any;
 
     await Inactive.run({} as any, interaction as any, cocService);
 
@@ -560,6 +803,29 @@ describe("/inactive command", () => {
   });
 
   it("shows ratios for other missed-war count combinations", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#C1",
+        playerName: "Charlie One",
+        townHall: 17,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#C2",
+        playerName: "Charlie Two",
+        townHall: 16,
+      }),
+      makeCurrentMemberRow({
+        clanTag: "#AAA111",
+        playerTag: "#C3",
+        playerName: "Charlie Three",
+        townHall: 15,
+      }),
+    ]);
     inactiveWarServiceMock.listInactiveWarPlayers.mockResolvedValue({
       results: [
         {

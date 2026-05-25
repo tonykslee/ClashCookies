@@ -153,6 +153,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Shows oldest inactive players first.",
       "Supports `clan` autocomplete to scope days mode, wars mode, and the combined days+wars mode to one tracked clan.",
+      "Add `in-clan:false` to only show inactive players who have left the tracked clan; the default is `in-clan:true`.",
       "Add `consecutive:true` to only include players inactive for the full requested days window or every selected ended war.",
       "Wars mode groups results by clan and missed-war count, then shows the linked Discord user, player tag, and missed-war emoji sequence.",
       "When wars mode finds no rows, the bot includes a short diagnostic note about ended-war and participation-row coverage.",
@@ -160,11 +161,15 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
     examples: [
       "/inactive days:7",
+      "/inactive days:7 in-clan:false",
       "/inactive days:7 consecutive:true",
+      "/inactive days:7 consecutive:true in-clan:false",
       "/inactive days:30",
       "/inactive days:7 clan:#AAA111",
       "/inactive wars:3",
+      "/inactive wars:3 in-clan:false",
       "/inactive wars:3 consecutive:true",
+      "/inactive wars:3 consecutive:true in-clan:false",
       "/inactive wars:3 clan:#AAA111",
     ],
   },

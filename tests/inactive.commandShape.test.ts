@@ -7,13 +7,16 @@ describe("/inactive command shape", () => {
     const daysOption = Inactive.options?.find((option) => option.name === "days");
     const warsOption = Inactive.options?.find((option) => option.name === "wars");
     const consecutiveOption = Inactive.options?.find((option) => option.name === "consecutive");
+    const inClanOption = Inactive.options?.find((option) => option.name === "in-clan");
     const clanOption = Inactive.options?.find((option) => option.name === "clan");
 
     expect(daysOption?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(warsOption?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(consecutiveOption?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(inClanOption?.type).toBe(ApplicationCommandOptionType.Boolean);
     expect(clanOption?.type).toBe(ApplicationCommandOptionType.String);
     expect(consecutiveOption?.required).toBe(false);
+    expect(inClanOption?.required).toBe(false);
     expect(clanOption?.autocomplete).toBe(true);
     expect(clanOption?.required).toBe(false);
   });

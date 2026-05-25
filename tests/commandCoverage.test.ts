@@ -233,6 +233,7 @@ describe("command coverage", () => {
 
   it("documents consecutive filtering in the /inactive help detail text", () => {
     const inactiveHelpText = helpEmbedText("inactive");
+    expect(inactiveHelpText).toContain("in-clan:false");
     expect(inactiveHelpText).toContain("/inactive days:7 consecutive:true");
     expect(inactiveHelpText).toContain("/inactive wars:3 consecutive:true");
   });
