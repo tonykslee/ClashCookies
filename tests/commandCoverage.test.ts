@@ -236,6 +236,7 @@ describe("command coverage", () => {
     expect(inactiveHelpText).toContain("in-clan:false");
     expect(inactiveHelpText).toContain("/inactive days:7 consecutive:true");
     expect(inactiveHelpText).toContain("/inactive wars:3 consecutive:true");
+    expect(inactiveHelpText).toContain("toggles between player tags and compact weights");
   });
 
   it("documents recruitment countdown reminder settings in the recruitment help detail text", () => {

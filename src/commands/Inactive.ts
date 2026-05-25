@@ -28,6 +28,7 @@ const DEFAULT_STALE_HOURS = 6;
 const DEFAULT_MIN_COVERAGE = 0.8;
 const MAX_LINES_PER_PAGE = 24;
 const MAX_DESCRIPTION_LENGTH = 3900;
+type InactiveDisplayMode = "tag" | "weight";
 
 function normalizeClanTagInput(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -47,6 +48,18 @@ function formatInactivePlayerTag(tag: string): string {
   return normalized ? `#${normalized}` : tag.trim();
 }
 
+function normalizePositiveInteger(input: unknown): number | null {
+  const parsed = Math.trunc(Number(input));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function formatCompactWeightK(weight: number | null | undefined): string {
+  const normalized = normalizePositiveInteger(weight);
+  if (normalized === null) return "\u2014";
+  if (normalized < 1000) return String(normalized);
+  return `${Math.trunc(normalized / 1000)}k`;
+}
+
 function filterConsecutiveInactiveRows<T extends { lastSeenAt: Date }>(
   rows: T[],
   cutoff: Date,
@@ -60,11 +73,11 @@ function filterConsecutiveInactiveRows<T extends { lastSeenAt: Date }>(
 function formatInactivePlayerIdentity(input: {
   townHallIcon: string;
   playerName: string;
-  playerTag: string;
+  displayValue: string;
   discordText: string;
 }): string {
-  const normalizedName = String(input.playerName ?? "").trim() || input.playerTag;
-  return `${input.townHallIcon} ${normalizedName} \`${formatInactivePlayerTag(input.playerTag)}\` ${input.discordText}`;
+  const normalizedName = String(input.playerName ?? "").trim() || input.displayValue;
+  return `${input.townHallIcon} ${normalizedName} \`${input.displayValue}\` ${input.discordText}`;
 }
 
 function buildInactiveWarRatioText(input: {
@@ -83,6 +96,75 @@ function buildInactiveWarRatioText(input: {
 
 function buildInactiveWarEmojiSequence(missedWarStates: { emoji: string }[]): string {
   return missedWarStates.map((state) => state.emoji).join(" ");
+}
+
+async function loadInactiveDisplayWeightsByTags(tags: string[]): Promise<Map<string, number>> {
+  const normalizedTags = [...new Set(tags.map((tag) => normalizeClanTagInput(tag)).filter(Boolean))];
+  if (normalizedTags.length === 0) return new Map();
+
+  const [memberRows, catalogRows, currentRows] = await Promise.all([
+    prisma.fwaClanMemberCurrent.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      orderBy: [{ playerTag: "asc" }, { sourceSyncedAt: "desc" }, { clanTag: "asc" }],
+      select: {
+        playerTag: true,
+        weight: true,
+        sourceSyncedAt: true,
+      },
+    }),
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      orderBy: [{ playerTag: "asc" }],
+      select: {
+        playerTag: true,
+        latestKnownWeight: true,
+        lastSyncedAt: true,
+      },
+    }),
+    prisma.playerCurrent.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      orderBy: [{ playerTag: "asc" }],
+      select: {
+        playerTag: true,
+        currentWeight: true,
+        updatedAt: true,
+      },
+    }),
+  ]);
+
+  const weightByTag = new Map<string, number>();
+  for (const row of memberRows) {
+    const playerTag = normalizeClanTagInput(row.playerTag);
+    if (!playerTag || weightByTag.has(playerTag)) continue;
+    const weight = normalizePositiveInteger(row.weight);
+    if (weight !== null) weightByTag.set(playerTag, weight);
+  }
+
+  for (const row of catalogRows) {
+    const playerTag = normalizeClanTagInput(row.playerTag);
+    if (!playerTag || weightByTag.has(playerTag)) continue;
+    const weight = normalizePositiveInteger(row.latestKnownWeight);
+    if (weight !== null) weightByTag.set(playerTag, weight);
+  }
+
+  for (const row of currentRows) {
+    const playerTag = normalizeClanTagInput(row.playerTag);
+    if (!playerTag || weightByTag.has(playerTag)) continue;
+    const weight = normalizePositiveInteger(row.currentWeight);
+    if (weight !== null) weightByTag.set(playerTag, weight);
+  }
+
+  return weightByTag;
+}
+
+function buildInactivePlayerDisplayValue(
+  mode: InactiveDisplayMode,
+  playerTag: string,
+  weightByTag: Map<string, number>,
+): string {
+  if (mode === "tag") return formatInactivePlayerTag(playerTag);
+  const normalizedTag = normalizeClanTagInput(playerTag);
+  return formatCompactWeightK(weightByTag.get(normalizedTag) ?? null);
 }
 
 function sortInactiveWarRowsForDisplay(
@@ -195,6 +277,8 @@ function buildInactiveWarGroupedPages(input: {
   discordUserIdByPlayerTag: Map<string, string>;
   townHallEmojiByLevel: TownHallEmojiMap;
   requestedWars: number;
+  displayMode: InactiveDisplayMode;
+  weightByPlayerTag: Map<string, number>;
 }): string[] {
   const rowsByClan = new Map<string, InactiveWarSummary["results"]>();
   for (const row of input.rows) {
@@ -245,19 +329,23 @@ function buildInactiveWarGroupedPages(input: {
           row.playerTag,
         );
         const emojiSequence = buildInactiveWarEmojiSequence(row.missedWarStates);
-        const playerTag = formatInactivePlayerTag(row.playerTag);
         const townHallIcon = renderTownHallIcon(row.townHall, input.townHallEmojiByLevel);
+        const displayValue = buildInactivePlayerDisplayValue(
+          input.displayMode,
+          row.playerTag,
+          input.weightByPlayerTag,
+        );
         const rowText = ratioText
           ? `  - ${formatInactivePlayerIdentity({
               townHallIcon,
               playerName: row.playerName,
-              playerTag,
+              displayValue,
               discordText,
             })} - ${ratioText} - ${emojiSequence}`
           : `  - ${formatInactivePlayerIdentity({
               townHallIcon,
               playerName: row.playerName,
-              playerTag,
+              displayValue,
               discordText,
             })} - ${emojiSequence}`;
         lines.push(rowText);
@@ -307,8 +395,18 @@ type InactiveCurrentMembershipSnapshot = {
   currentMemberTownHallByClanAndPlayerTag: Map<string, number | null>;
 };
 
-function buildPaginationRow(customIdPrefix: string, page: number, totalPages: number) {
+function buildPaginationRow(
+  customIdPrefix: string,
+  displayMode: InactiveDisplayMode,
+  page: number,
+  totalPages: number,
+) {
+  const toggleLabel = displayMode === "tag" ? "Show weights" : "Show tags";
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${customIdPrefix}:toggle`)
+      .setLabel(toggleLabel)
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`${customIdPrefix}:prev`)
       .setLabel("Prev")
@@ -703,26 +801,46 @@ async function fetchInactiveWarEntries(
 async function renderEmbedsWithPager(
   interaction: ChatInputCommandInteraction,
   title: string,
-  pages: string[],
+  pagesByMode: Record<InactiveDisplayMode, string[]>,
   footerSuffix = ""
 ): Promise<void> {
-  const embeds = pages.map((content, idx) =>
-    new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(
-        content.length > MAX_DESCRIPTION_LENGTH
-          ? `${content.slice(0, MAX_DESCRIPTION_LENGTH - 20)}\n...truncated`
-          : content
-      )
-      .setFooter({ text: `Page ${idx + 1}/${pages.length}${footerSuffix}` })
-  );
+  const embedsByMode = {
+    tag: pagesByMode.tag.map(
+      (content, idx) =>
+        new EmbedBuilder()
+          .setTitle(title)
+          .setDescription(
+            content.length > MAX_DESCRIPTION_LENGTH
+              ? `${content.slice(0, MAX_DESCRIPTION_LENGTH - 20)}\n...truncated`
+              : content,
+          )
+          .setFooter({ text: `Page ${idx + 1}/${pagesByMode.tag.length}${footerSuffix}` }),
+    ),
+    weight: pagesByMode.weight.map(
+      (content, idx) =>
+        new EmbedBuilder()
+          .setTitle(title)
+          .setDescription(
+            content.length > MAX_DESCRIPTION_LENGTH
+              ? `${content.slice(0, MAX_DESCRIPTION_LENGTH - 20)}\n...truncated`
+              : content,
+          )
+          .setFooter({ text: `Page ${idx + 1}/${pagesByMode.weight.length}${footerSuffix}` }),
+    ),
+  };
 
-  let page = 0;
+  let displayMode: InactiveDisplayMode = "tag";
+  const pageByMode: Record<InactiveDisplayMode, number> = { tag: 0, weight: 0 };
   const customIdPrefix = `inactive:${interaction.id}`;
-  const usePagination = embeds.length > 1;
+  const usePagination = pagesByMode.tag.length > 1 || pagesByMode.weight.length > 1;
+  const getCurrentPages = () => pagesByMode[displayMode];
+  const getCurrentPage = () =>
+    Math.min(pageByMode[displayMode], Math.max(0, getCurrentPages().length - 1));
+  const buildComponents = () =>
+    usePagination ? [buildPaginationRow(customIdPrefix, displayMode, getCurrentPage(), getCurrentPages().length)] : [];
   const reply = await interaction.editReply({
-    embeds: [embeds[page]],
-    components: usePagination ? [buildPaginationRow(customIdPrefix, page, embeds.length)] : [],
+    embeds: [embedsByMode[displayMode][getCurrentPage()]],
+    components: buildComponents(),
   });
 
   if (!usePagination) return;
@@ -732,23 +850,36 @@ async function renderEmbedsWithPager(
     time: 5 * 60 * 1000,
     filter: (btn) =>
       btn.user.id === interaction.user.id &&
-      (btn.customId === `${customIdPrefix}:prev` || btn.customId === `${customIdPrefix}:next`),
+      [
+        `${customIdPrefix}:prev`,
+        `${customIdPrefix}:next`,
+        `${customIdPrefix}:toggle`,
+      ].includes(btn.customId),
   });
 
   collector.on("collect", async (btn) => {
-    if (btn.customId.endsWith(":prev")) page = Math.max(0, page - 1);
-    if (btn.customId.endsWith(":next")) page = Math.min(embeds.length - 1, page + 1);
+    if (btn.customId.endsWith(":toggle")) {
+      displayMode = displayMode === "tag" ? "weight" : "tag";
+      pageByMode[displayMode] = Math.min(
+        pageByMode[displayMode],
+        Math.max(0, getCurrentPages().length - 1),
+      );
+    } else if (btn.customId.endsWith(":prev")) {
+      pageByMode[displayMode] = Math.max(0, getCurrentPage() - 1);
+    } else if (btn.customId.endsWith(":next")) {
+      pageByMode[displayMode] = Math.min(getCurrentPages().length - 1, getCurrentPage() + 1);
+    }
 
     await btn.update({
-      embeds: [embeds[page]],
-      components: [buildPaginationRow(customIdPrefix, page, embeds.length)],
+      embeds: [embedsByMode[displayMode][getCurrentPage()]],
+      components: buildComponents(),
     });
   });
 
   collector.on("end", async () => {
     await interaction
       .editReply({
-        embeds: [embeds[page]],
+        embeds: [embedsByMode[displayMode][getCurrentPage()]],
         components: [],
       })
       .catch(() => undefined);
@@ -870,7 +1001,10 @@ async function runDaysMode(
   const daysDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
     sortedEntries.map((player) => player.playerTag)
   );
-  const pages = buildGroupedPages(
+  const daysDisplayWeightByPlayerTag = await loadInactiveDisplayWeightsByTags(
+    sortedEntries.map((player) => player.playerTag),
+  );
+  const tagPages = buildGroupedPages(
     sortedEntries,
     (e) => e.clanTag,
     (e) => e.clanName,
@@ -881,7 +1015,23 @@ async function runDaysMode(
       return `- ${formatInactivePlayerIdentity({
         townHallIcon,
         playerName: e.playerName,
-        playerTag: e.playerTag,
+        displayValue: buildInactivePlayerDisplayValue("tag", e.playerTag, daysDisplayWeightByPlayerTag),
+        discordText,
+      })} - ${e.daysAgo}d`;
+    }
+  );
+  const weightPages = buildGroupedPages(
+    sortedEntries,
+    (e) => e.clanTag,
+    (e) => e.clanName,
+    (e) => e.clanBadge,
+    (e) => {
+      const discordText = buildInactivePlayerDiscordText(daysDiscordUserIdByPlayerTag, e.playerTag);
+      const townHallIcon = renderTownHallIcon(e.townHall, townHallEmojiByLevel);
+      return `- ${formatInactivePlayerIdentity({
+        townHallIcon,
+        playerName: e.playerName,
+        displayValue: buildInactivePlayerDisplayValue("weight", e.playerTag, daysDisplayWeightByPlayerTag),
         discordText,
       })} - ${e.daysAgo}d`;
     }
@@ -895,7 +1045,7 @@ async function runDaysMode(
   await renderEmbedsWithPager(
     interaction,
     `Inactive for ${days}+ days (${entries.length})`,
-    pages,
+    { tag: tagPages, weight: weightPages },
     summary
   );
 }
@@ -942,7 +1092,10 @@ async function runWarsMode(
 
   const sortedResults = sortInactiveWarRowsForDisplay(results, trackedTags);
   const discordUserIdByPlayerTag = await loadInactiveWarDiscordLinks(sortedResults);
-  const pages = buildInactiveWarGroupedPages({
+  const weightByPlayerTag = await loadInactiveDisplayWeightsByTags(
+    sortedResults.map((row) => row.playerTag),
+  );
+  const tagPages = buildInactiveWarGroupedPages({
     rows: sortedResults,
     trackedTags,
     trackedNameByTag,
@@ -950,13 +1103,26 @@ async function runWarsMode(
     discordUserIdByPlayerTag,
     townHallEmojiByLevel,
     requestedWars: wars,
+    displayMode: "tag",
+    weightByPlayerTag,
+  });
+  const weightPages = buildInactiveWarGroupedPages({
+    rows: sortedResults,
+    trackedTags,
+    trackedNameByTag,
+    trackedBadgeByTag,
+    discordUserIdByPlayerTag,
+    townHallEmojiByLevel,
+    requestedWars: wars,
+    displayMode: "weight",
+    weightByPlayerTag,
   });
 
   const footerSuffix = warnings.length > 0 ? ` � Partial data: ${warnings.length} clan(s)` : "";
   await renderEmbedsWithPager(
     interaction,
     `Missed Both Attacks - Last ${wars} War(s) (${results.length})`,
-    pages,
+    { tag: tagPages, weight: weightPages },
     footerSuffix
   );
 }
@@ -1080,7 +1246,10 @@ async function runCombinedMode(
   const warsDiscordUserIdByPlayerTag = await loadInactiveDiscordLinksForTags(
     rows.map((row) => row.playerTag)
   );
-  const pages = buildGroupedPages(
+  const displayWeightByPlayerTag = await loadInactiveDisplayWeightsByTags(
+    rows.map((row) => row.playerTag),
+  );
+  const tagPages = buildGroupedPages(
     rows,
     (e) => e.clanTag,
     (e) => e.clanName,
@@ -1105,9 +1274,43 @@ async function runCombinedMode(
       return `- ${formatInactivePlayerIdentity({
         townHallIcon,
         playerName: e.playerName,
-        playerTag: e.playerTag,
+        displayValue: buildInactivePlayerDisplayValue("tag", e.playerTag, displayWeightByPlayerTag),
         discordText,
       })}${reasonText}${emojiText}`;
+    }
+  );
+  const weightPages = buildGroupedPages(
+    rows,
+    (e) => e.clanTag,
+    (e) => e.clanName,
+    (e) => e.clanBadge,
+    (e) => {
+      const reasons: string[] = [];
+      if (e.daysAgo !== null) reasons.push(`${e.daysAgo}d inactive`);
+      if (e.missedWars !== null) {
+        reasons.push(`missed both in ${e.missedWars}/${e.participationWars ?? 0} war(s)`);
+      }
+      const warsRow = warsResult.results.find(
+        (row) => normalizeClanTagInput(row.playerTag) === normalizeClanTagInput(e.playerTag),
+      );
+      const discordText = buildInactivePlayerDiscordText(
+        warsDiscordUserIdByPlayerTag,
+        e.playerTag
+      );
+      const emojiSequence = warsRow ? ` - ${buildInactiveWarEmojiSequence(warsRow.missedWarStates)}` : "";
+      const townHallIcon = renderTownHallIcon(e.townHall, townHallEmojiByLevel);
+      const reasonText = reasons.length > 0 ? ` - ${reasons.join(" | ")}` : "";
+      const weightDisplayValue = buildInactivePlayerDisplayValue(
+        "weight",
+        e.playerTag,
+        displayWeightByPlayerTag,
+      );
+      return `- ${formatInactivePlayerIdentity({
+        townHallIcon,
+        playerName: e.playerName,
+        displayValue: weightDisplayValue,
+        discordText,
+      })}${reasonText}${emojiSequence}`;
     }
   );
 
@@ -1115,7 +1318,7 @@ async function runCombinedMode(
   await renderEmbedsWithPager(
     interaction,
     `Inactive Players - Days ${days} + Wars ${wars} (${rows.length})`,
-    pages,
+    { tag: tagPages, weight: weightPages },
     footerSuffix
   );
 }

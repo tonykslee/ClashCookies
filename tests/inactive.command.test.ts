@@ -19,6 +19,12 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   playerActivity: {
     aggregate: vi.fn(),
     count: vi.fn(),
@@ -69,12 +75,27 @@ function makeInteraction(values: {
   inClan?: boolean | null;
   clan?: string | null;
 }) {
+  const collectorHandlers: Record<string, (btn: any) => Promise<void> | void> = {};
+  const collector = {
+    on: vi.fn((event: string, handler: (btn: any) => Promise<void> | void) => {
+      collectorHandlers[event] = handler;
+      return collector;
+    }),
+  };
+  const replyMessage = {
+    createMessageComponentCollector: vi.fn(() => collector),
+  };
   const deferReply = vi.fn().mockResolvedValue(undefined);
-  const editReply = vi.fn().mockResolvedValue(undefined);
+  const editReply = vi.fn().mockResolvedValue(replyMessage);
   return {
+    id: "inactive-interaction-1",
     guildId: "guild-1",
+    user: { id: "user-1" },
     deferReply,
     editReply,
+    replyMessage,
+    collector,
+    collectorHandlers,
     options: {
       getInteger: vi.fn((name: string) => {
         if (name === "wars") return values.wars ?? null;
@@ -99,6 +120,7 @@ function makeCurrentMemberRow(input: {
   playerTag: string;
   playerName: string;
   townHall: number | null;
+  weight?: number | null;
   sourceSyncedAt?: Date;
 }) {
   return {
@@ -106,7 +128,16 @@ function makeCurrentMemberRow(input: {
     playerTag: input.playerTag,
     playerName: input.playerName,
     townHall: input.townHall,
+    weight: input.weight ?? null,
     sourceSyncedAt: input.sourceSyncedAt ?? new Date(),
+  };
+}
+
+function makeCollectorButton(customId: string) {
+  return {
+    customId,
+    user: { id: "user-1" },
+    update: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -115,6 +146,8 @@ describe("/inactive command", () => {
     vi.clearAllMocks();
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     emojiResolverServiceMock.fetchApplicationEmojiInventory.mockResolvedValue({
       ok: true,
       snapshot: {
@@ -499,6 +532,93 @@ describe("/inactive command", () => {
     expect(embed.description).toContain("<@111111111111111111>");
     expect(embed.description).toContain("🟢");
     expect(embed.description).not.toContain("Beta");
+  });
+
+  it("toggles between tag and weight display while keeping pagination controls working", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+
+    const playerRows = Array.from({ length: 25 }, (_, index) => {
+      const suffix = String(index + 1).padStart(2, "0");
+      return {
+        tag: `#A${suffix}`,
+        name: `Alpha Player ${suffix}`,
+        clanTag: "#AAA111",
+        lastSeenAt: new Date(Date.now() - (8 + index) * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      };
+    });
+
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      playerRows.map((row, index) =>
+        makeCurrentMemberRow({
+          clanTag: row.clanTag,
+          playerTag: row.tag,
+          playerName: row.name,
+          townHall: 18 - (index % 3),
+          weight: index === 0 ? 145000 : null,
+        }),
+      ),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      { playerTag: "#A02", latestKnownWeight: 150000, lastSyncedAt: new Date() },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      { playerTag: "#A03", currentWeight: 160000, updatedAt: new Date() },
+    ]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: new Date() },
+      _count: { tag: playerRows.length },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(playerRows.length);
+    prismaMock.playerActivity.findMany.mockResolvedValue(playerRows);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
+
+    await Inactive.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.replyMessage.createMessageComponentCollector).toHaveBeenCalledTimes(1);
+    const initialPayload = interaction.editReply.mock.calls.at(0)?.[0];
+    const initialEmbed = initialPayload.embeds[0].toJSON();
+    expect(initialEmbed.description).toContain("`#A01`");
+    expect(initialPayload.components[0].components.map((button: any) => button.toJSON().label)).toEqual([
+      "Show weights",
+      "Prev",
+      "Next",
+    ]);
+
+    const toggleButton = makeCollectorButton(`inactive:${interaction.id}:toggle`);
+    await interaction.collectorHandlers.collect(toggleButton);
+    expect(toggleButton.update).toHaveBeenCalledTimes(1);
+    const togglePayload = toggleButton.update.mock.calls[0]?.[0];
+    const toggleEmbed = togglePayload.embeds[0].toJSON();
+    expect(toggleEmbed.description).toContain("145k");
+    expect(toggleEmbed.description).toContain("150k");
+    expect(toggleEmbed.description).toContain("160k");
+    expect(toggleEmbed.description).toContain("`—`");
+    expect(togglePayload.components[0].components.map((button: any) => button.toJSON().label)).toEqual([
+      "Show tags",
+      "Prev",
+      "Next",
+    ]);
+
+    const nextButton = makeCollectorButton(`inactive:${interaction.id}:next`);
+    await interaction.collectorHandlers.collect(nextButton);
+    expect(nextButton.update).toHaveBeenCalledTimes(1);
+    const nextPayload = nextButton.update.mock.calls[0]?.[0];
+    const nextEmbed = nextPayload.embeds[0].toJSON();
+    expect(nextEmbed.footer?.text).toContain("Page 2/2");
+    expect(nextEmbed.description).toContain("`—`");
+
+    const toggleBackButton = makeCollectorButton(`inactive:${interaction.id}:toggle`);
+    await interaction.collectorHandlers.collect(toggleBackButton);
+    expect(toggleBackButton.update).toHaveBeenCalledTimes(1);
+    const toggleBackPayload = toggleBackButton.update.mock.calls[0]?.[0];
+    const toggleBackEmbed = toggleBackPayload.embeds[0].toJSON();
+    expect(toggleBackEmbed.description).toContain("`#A01`");
+    expect(toggleBackEmbed.description).not.toContain("145k");
   });
 
   it("renders grouped wars output with linked Discord users, ratios, and missed-war emojis", async () => {
