@@ -170,6 +170,120 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
+  it("stores and resolves bases completion for the current war identity", async () => {
+    const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
+    await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      createdByUserId: "user-1",
+      clanTag: "#PYPY",
+      clanName: "Alpha",
+      warId: 1001,
+      warStartTime: currentWarStartTime,
+      opponentTag: "#OPP1",
+      checked: true,
+    });
+
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          messageId:
+            "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z",
+        }),
+        update: expect.objectContaining({
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+        create: expect.objectContaining({
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+      }),
+    );
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce({
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: null,
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T18:00:01.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T18:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: "1001",
+        opponentTag: "OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+      },
+    });
+
+    await expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: currentWarStartTime,
+        opponentTag: "OPP1",
+      }),
+    ).resolves.toMatchObject({
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z",
+      metadata: expect.objectContaining({
+        kind: "bases_completion",
+        checked: true,
+        clanTag: "#PYPY",
+      }),
+    });
+  });
+
+  it("clears bases completion for the current war identity", async () => {
+    await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      createdByUserId: "user-1",
+      clanTag: "#PYPY",
+      clanName: "Alpha",
+      warId: 1001,
+      warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "OPP1",
+      checked: false,
+    });
+
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: TRACKED_MESSAGE_STATUS.REPLACED,
+        }),
+        create: expect.objectContaining({
+          status: TRACKED_MESSAGE_STATUS.REPLACED,
+        }),
+      }),
+    );
+  });
+
+  it("ignores bases completion rows for a different war identity", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
+
+    await expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 2002,
+        warStartTime: new Date("2026-05-14T18:00:00.000Z"),
+        opponentTag: "#OPP2",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("ignores expired base-swap rows when resolving the latest active tracked message", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
 

@@ -12894,6 +12894,18 @@ export const Fwa: Command = {
             { name: "public", value: "public" },
           ],
         },
+        {
+          name: "clan",
+          description: "Tracked clan tag or short name for Bases completion",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "checked",
+          description: "Mark the clan as bases checked and all good",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
       ],
     },
     {
@@ -13278,7 +13290,25 @@ export const Fwa: Command = {
       });
     };
 
-    await interaction.deferReply({ ephemeral: !isPublic });
+    const checklistTypeOption =
+      subcommand === "match-checklist"
+        ? ((interaction.options.getString("type", false) as "Mail" | "Bases" | null) ?? "Mail")
+        : null;
+    const checklistClanOption =
+      subcommand === "match-checklist"
+        ? interaction.options.getString("clan", false)
+        : null;
+    const checklistCheckedOption =
+      subcommand === "match-checklist"
+        ? interaction.options.getBoolean("checked", false)
+        : null;
+    const checklistStateChangeRequested =
+      subcommand === "match-checklist" &&
+      checklistTypeOption === "Bases" &&
+      checklistClanOption !== null &&
+      checklistCheckedOption !== null;
+
+    await interaction.deferReply({ ephemeral: !isPublic || checklistStateChangeRequested });
     const settings = new SettingsService();
     const warLookupCache: WarLookupCache = new Map();
     const sourceSync = await getSourceOfTruthSync(
@@ -13343,9 +13373,103 @@ export const Fwa: Command = {
         await editReplySafe("This command can only be used in a server.");
         return;
       }
-      const checklistType =
-        (interaction.options.getString("type", false) as "Mail" | "Bases" | null) ??
-        "Mail";
+      const checklistType = checklistTypeOption ?? "Mail";
+      if (
+        checklistType === "Mail" &&
+        (checklistClanOption !== null || checklistCheckedOption !== null)
+      ) {
+        await editReplySafe("`clan` and `checked` only apply to `type:Bases`.");
+        return;
+      }
+      if (
+        checklistType === "Bases" &&
+        (checklistClanOption !== null || checklistCheckedOption !== null) &&
+        !checklistStateChangeRequested
+      ) {
+        await editReplySafe(
+          "When using `type:Bases`, provide both `clan` and `checked` to update completion state, or omit both to render the snapshot.",
+        );
+        return;
+      }
+      if (checklistStateChangeRequested) {
+        const inputClan = String(checklistClanOption ?? "").trim();
+        const trackedClans = await prisma.trackedClan.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { tag: true, name: true, shortName: true },
+        });
+        const normalizedInputClan = normalizeTag(inputClan);
+        const resolvedClan =
+          trackedClans.find((clan) => {
+            const normalizedTag = normalizeTag(clan.tag);
+            const shortName = String(clan.shortName ?? "").trim().toLowerCase();
+            const normalizedShortName = shortName ? shortName : null;
+            return (
+              normalizedTag === normalizedInputClan ||
+              (normalizedShortName !== null &&
+                normalizedShortName === inputClan.toLowerCase())
+            );
+          }) ?? null;
+        if (!resolvedClan) {
+          await editReplySafe(`Clan ${inputClan} is not in tracked clans.`);
+          return;
+        }
+        const normalizedResolvedClanTag = normalizeTag(resolvedClan.tag);
+        const currentWar = await prisma.currentWar.findFirst({
+          where: {
+            guildId: interaction.guildId,
+            OR: [
+              { clanTag: normalizedResolvedClanTag },
+              {
+                clanTag: normalizedResolvedClanTag
+                  ? `#${normalizedResolvedClanTag}`
+                  : normalizedResolvedClanTag,
+              },
+              { clanTag: resolvedClan.tag },
+            ],
+          },
+          select: {
+            warId: true,
+            startTime: true,
+            opponentTag: true,
+            state: true,
+          },
+        });
+        if (
+          !currentWar ||
+          String(currentWar.state ?? "").trim().toLowerCase() === "notinwar"
+        ) {
+          await editReplySafe(`Clan ${resolvedClan.tag} is not in an active war.`);
+          return;
+        }
+        const updated = await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+          guildId: interaction.guildId ?? "",
+          channelId: interaction.channelId,
+          createdByUserId: interaction.user.id,
+          clanTag: resolvedClan.tag,
+          clanName:
+            sanitizeClanName(resolvedClan.shortName) ??
+            sanitizeClanName(resolvedClan.name) ??
+            `#${normalizeTag(resolvedClan.tag)}`,
+          warId: currentWar.warId ?? null,
+          warStartTime: currentWar.startTime ?? null,
+          opponentTag: currentWar.opponentTag ?? null,
+          checked: Boolean(checklistCheckedOption),
+        });
+        if (!updated) {
+          await editReplySafe("Unable to update bases completion state.");
+          return;
+        }
+        const clanLabel =
+          sanitizeClanName(resolvedClan.shortName) ??
+          sanitizeClanName(resolvedClan.name) ??
+          `#${normalizeTag(resolvedClan.tag)}`;
+        await editReplySafe(
+          checklistCheckedOption
+            ? `✅ Bases checked and all good saved for ${clanLabel} (${normalizeTag(resolvedClan.tag)}) for the current war.`
+            : `Cleared all-good bases state for ${clanLabel} (${normalizeTag(resolvedClan.tag)}) for the current war.`,
+        );
+        return;
+      }
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService,
         guildId: interaction.guildId ?? "",

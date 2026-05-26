@@ -136,6 +136,8 @@ describe("command coverage", () => {
     expect(normalized).toContain("type:bases");
     expect(normalized).toContain("read-only bases checklist snapshot");
     expect(normalized).toContain("no reactions or pinning lifecycle");
+    expect(normalized).toContain("clan:<tag-or-short-name>");
+    expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
     expect(normalized).toContain("snapshot without reactions");
   });
