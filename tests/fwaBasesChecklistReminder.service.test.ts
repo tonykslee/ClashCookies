@@ -1,0 +1,236 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const prismaMock = vi.hoisted(() => ({
+  trackedClan: {
+    findMany: vi.fn(),
+  },
+  currentWar: {
+    findMany: vi.fn(),
+  },
+  trackedMessage: {
+    findUnique: vi.fn(),
+  },
+}));
+
+const renderStateMock = vi.hoisted(() => ({
+  build: vi.fn(),
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
+vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
+  buildFwaMatchChecklistRenderStateForGuild: renderStateMock.build,
+}));
+
+import { trackedMessageService } from "../src/services/TrackedMessageService";
+import {
+  BASES_CHECKLIST_REMINDER_OFFSETS_HOURS,
+  findPendingFwaBasesChecklistReminderCandidates,
+  resolveDueFwaBasesChecklistDueOffsets,
+  resolveRemainingFwaBasesChecklistDueOffsets,
+} from "../src/services/fwa/basesChecklistReminderService";
+
+describe("fwa bases checklist reminder service", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(trackedMessageService, "getActiveByMessageId").mockResolvedValue(null as any);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYPY",
+        name: "Alpha Clan",
+        shortName: "Alpha",
+        leaderChannelId: "leader-channel-1",
+        notifyChannelId: "notify-channel-1",
+        logChannelId: "log-channel-1",
+        clanRoleId: "role-1",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        state: "preparation",
+      },
+    ]);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
+    renderStateMock.build.mockResolvedValue({
+      viewType: "Bases",
+      rows: [],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("resolves due and remaining reminder buckets", () => {
+    const battleDayStart = new Date("2026-05-26T18:00:00.000Z");
+    const now = new Date("2026-05-26T14:00:00.000Z");
+
+    expect(
+      resolveDueFwaBasesChecklistDueOffsets({
+        now,
+        battleDayStart,
+        offsets: BASES_CHECKLIST_REMINDER_OFFSETS_HOURS,
+      }),
+    ).toEqual([12, 6]);
+    expect(
+      resolveRemainingFwaBasesChecklistDueOffsets({
+        now,
+        battleDayStart,
+        offsets: BASES_CHECKLIST_REMINDER_OFFSETS_HOURS,
+      }),
+    ).toEqual([3, 1]);
+  });
+
+  it("returns only the latest due unsent bucket for an unchecked clan", async () => {
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      clanName: "Alpha Clan",
+      clanShortName: "Alpha",
+      destinationChannelId: "leader-channel-1",
+      destinationChannelKind: "leader",
+      clanRoleId: "role-1",
+      dueBucketHours: 3,
+      remainingBucketHours: [1],
+      warId: 1001,
+      opponentTag: "#OPP1",
+    });
+    expect(candidates[0]?.reminderMessageId).toBe(
+      "fwa_match_checklist_bases_reminder|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-26T18:00:00.000Z|bucket=3",
+    );
+    expect(trackedMessageService.getActiveByMessageId).toHaveBeenCalledWith(
+      candidates[0]?.reminderMessageId,
+    );
+  });
+
+  it("skips clans that already have active base issues or an all-good completion", async () => {
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u26a0\ufe0f Bases checked - issues found`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: ["  War bases:", "    - #12 Player One"],
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T15:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u2705 Bases checked and all good`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T15:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("does not backfill reminders after battle day starts", async () => {
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T19:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("skips an already-claimed reminder marker for the same clan war bucket", async () => {
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+    vi.mocked(trackedMessageService.getActiveByMessageId).mockResolvedValueOnce({
+      id: "marker-1",
+    } as any);
+
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T15:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+  });
+});

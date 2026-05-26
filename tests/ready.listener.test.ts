@@ -6,6 +6,7 @@ const reminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const userActivityReminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaFeedStart = vi.hoisted(() => vi.fn());
 const fwaBaseSwapDmReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
+const fwaBasesChecklistReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const statusServiceMock = vi.hoisted(() => ({
   markStarted: vi.fn(),
   markSucceeded: vi.fn(),
@@ -275,6 +276,19 @@ vi.mock("../src/services/fwa/baseSwapDmReminderSchedulerService", () => ({
   })),
 }));
 
+vi.mock("../src/services/fwa/basesChecklistReminderService", () => ({
+  DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS: 60_000,
+  findPendingFwaBasesChecklistReminderCandidates: vi.fn().mockResolvedValue([]),
+  buildFwaBasesChecklistReminderContent: vi.fn(() => "Bases reminder"),
+}));
+
+vi.mock("../src/services/fwa/basesChecklistReminderSchedulerService", () => ({
+  DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS: 60_000,
+  FwaBasesChecklistReminderSchedulerService: vi.fn().mockImplementation(() => ({
+    start: fwaBasesChecklistReminderSchedulerStart,
+  })),
+}));
+
 vi.mock("../src/services/MirrorSyncService", () => ({
   MirrorSyncService: vi.fn().mockImplementation(() => ({
     syncNow: mirrorSyncMock,
@@ -426,6 +440,7 @@ describe("ready listener startup", () => {
       }),
     );
     expect(fwaBaseSwapDmReminderSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(fwaBasesChecklistReminderSchedulerStart).toHaveBeenCalledTimes(1);
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
@@ -439,6 +454,24 @@ describe("ready listener startup", () => {
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
         displayName: "FWA base-swap DM reminder scheduler",
+        metadata: expect.objectContaining({
+          started: true,
+        }),
+      }),
+    );
+    expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
+      "fwa_bases_checklist_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA bases checklist reminder scheduler",
+        metadata: expect.objectContaining({
+          started: true,
+        }),
+      }),
+    );
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "fwa_bases_checklist_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA bases checklist reminder scheduler",
         metadata: expect.objectContaining({
           started: true,
         }),
@@ -527,6 +560,12 @@ describe("ready listener startup", () => {
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
         displayName: "FWA base-swap DM reminder scheduler",
+      }),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "fwa_bases_checklist_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA bases checklist reminder scheduler",
       }),
     );
     expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(

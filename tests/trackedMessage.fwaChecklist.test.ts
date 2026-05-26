@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
+    create: vi.fn(),
   },
   trackedClan: {
     findMany: vi.fn(),
@@ -125,6 +126,7 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.create.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
   });
@@ -474,6 +476,58 @@ describe("fwa checklist tracked messages", () => {
         }),
       }),
     );
+  });
+
+  it("creates and dedupes a bases checklist reminder marker per clan war bucket", async () => {
+    prismaMock.trackedMessage.create.mockResolvedValueOnce(undefined);
+
+    await expect(
+      trackedMessageService.claimFwaBasesChecklistReminderMarker({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        bucketHours: 6,
+        destinationChannelId: "leader-channel-1",
+        destinationChannelKind: "leader",
+        clanRoleId: "role-1",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-06-13T12:00:00.000Z",
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          messageId:
+            "fwa_match_checklist_bases_reminder|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-06-13T18:00:00.000Z|bucket=6",
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          metadata: expect.objectContaining({
+            kind: "bases_check_reminder",
+            clanTag: "#PYPY",
+            bucketHours: 6,
+            destinationChannelKind: "leader",
+          }),
+        }),
+      }),
+    );
+
+    prismaMock.trackedMessage.create.mockRejectedValueOnce({ code: "P2002" });
+    await expect(
+      trackedMessageService.claimFwaBasesChecklistReminderMarker({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        bucketHours: 6,
+      }),
+    ).resolves.toBe(false);
   });
 
   it("builds checklist rows from compact copy text without duplicating the checklist column", () => {
