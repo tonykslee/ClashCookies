@@ -1173,7 +1173,75 @@ describe("fwa checklist tracked messages", () => {
     );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅ Bases checked and all good");
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("A |");
-    expect(prismaMock.trackedMessage.update).not.toHaveBeenCalled();
+  });
+
+
+  it("persists refreshed bases checklist metadata for later reactions", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeBasesTrackedChecklistRow());
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYPY",
+        clanBadge: "<:alpha:111>",
+        name: "Alpha",
+        shortName: "A",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: "BL",
+        outcome: null,
+        state: "battle",
+      },
+    ]);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(null);
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestFwaMatchChecklistBasesCompletionForClan",
+    ).mockResolvedValue(null);
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "bases-message-1",
+      client: {} as any,
+      reactions: {
+        cache: new Map(),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            kind: "bases_checklist",
+            scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+            checkedClanTags: [],
+            rows: expect.arrayContaining([
+              expect.objectContaining({
+                clanTag: "#PYPY",
+                warId: 1001,
+                opponentTag: "#OPP1",
+                warStartTimeIso: "2026-06-13T18:00:00.000Z",
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Bases not checked");
   });
 
   it("clears a public bases checklist clan when the last user reaction is removed", async () => {
