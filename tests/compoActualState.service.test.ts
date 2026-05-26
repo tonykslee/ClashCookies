@@ -87,14 +87,14 @@ function makeMember(input: {
   };
 }
 
-function makeCatalog(input: { playerTag: string; latestKnownWeight: number }) {
+function makeCatalog(input: { playerTag: string; latestKnownWeight: number | null }) {
   return {
     playerTag: input.playerTag,
     latestKnownWeight: input.latestKnownWeight,
   };
 }
 
-function makePlayerCurrent(input: { playerTag: string; currentWeight: number }) {
+function makePlayerCurrent(input: { playerTag: string; currentWeight: number | null }) {
   return {
     playerTag: input.playerTag,
     currentWeight: input.currentWeight,
@@ -304,6 +304,62 @@ describe("CompoActualStateService", () => {
     expect(clan?.members.find((member) => member.playerTag === "#P000020")?.resolvedWeightSource).toBe("war");
     expect(clan?.members.find((member) => member.playerTag === "#P000028")?.resolvedWeightSource).toBe("war");
     expect(clan?.members.find((member) => member.playerTag === "#P000088")?.resolvedWeightSource).toBeNull();
+  });
+
+  it("counts DF only when the open deferment is the resolved source and lets PlayerCurrent win when no defer exists", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000008", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000009", weight: 0 }),
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000020", weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: "#P000002", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000008", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000009", latestKnownWeight: 0 }),
+      makeCatalog({ playerTag: "#P000020", latestKnownWeight: 0 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: "#P000002", currentWeight: 145000 }),
+      makePlayerCurrent({ playerTag: "#P000008", currentWeight: 145000 }),
+      makePlayerCurrent({ playerTag: "#P000009", currentWeight: 145000 }),
+      makePlayerCurrent({ playerTag: "#P000020", currentWeight: 155000 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000002",
+        deferredWeight: 140000,
+      }),
+      makeOpenDeferment({
+        scopeKey: "guild:guild-1|clan:AAA111",
+        playerTag: "#P000009",
+        deferredWeight: 145000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 1,
+        th17Count: 1,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
+
+    expect(result.stateRows?.[1]?.[3]).toBe("1");
+    const clan = await loadCompoActualStateContext("guild-1");
+    expect(clan.clans[0]?.members.find((member) => member.playerTag === "#P000002")?.resolvedWeightSource).toBe("member");
+    expect(clan.clans[0]?.members.find((member) => member.playerTag === "#P000008")?.resolvedWeightSource).toBe("current");
+    expect(clan.clans[0]?.members.find((member) => member.playerTag === "#P000009")?.resolvedWeightSource).toBe("defer");
+    expect(clan.clans[0]?.members.find((member) => member.playerTag === "#P000020")?.resolvedWeightSource).toBe("current");
   });
 
   it("renders ACTUAL state from persisted current-member data without sheet reads and still counts unresolved missing weights", async () => {
