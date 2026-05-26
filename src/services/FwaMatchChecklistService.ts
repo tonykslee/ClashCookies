@@ -144,17 +144,19 @@ export function buildFwaMatchChecklistMessageContent(input: {
 
 /** Purpose: build checklist components for the public post. */
 export function buildFwaMatchChecklistComponents(params?: {
-  refreshing?: boolean;
+  state?: "refresh" | "refreshing" | "expired";
 }): Array<
   ActionRowBuilder<ButtonBuilder>
 > {
-  const refreshing = Boolean(params?.refreshing);
+  const state = params?.state ?? "refresh";
+  const refreshing = state === "refreshing";
+  const expired = state === "expired";
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(buildFwaMatchChecklistRefreshCustomId())
-        .setLabel(refreshing ? "Refreshing..." : "Refresh")
-        .setDisabled(refreshing)
+        .setLabel(refreshing ? "Refreshing..." : expired ? "Expired" : "Refresh")
+        .setDisabled(refreshing || expired)
         .setStyle(ButtonStyle.Secondary),
     ),
   ];
@@ -348,14 +350,14 @@ export async function handleFwaMatchChecklistRefreshButton(
   const disableRefreshButton = async (): Promise<void> => {
     await interaction.message
       .edit({
-        components: buildFwaMatchChecklistComponents({ refreshing: true }),
+        components: buildFwaMatchChecklistComponents({ state: "refreshing" }),
       })
       .catch(() => undefined);
   };
-  const restoreRefreshButton = async (): Promise<void> => {
+  const restoreRefreshButton = async (state: "refresh" | "expired"): Promise<void> => {
     await interaction.message
       .edit({
-        components: buildFwaMatchChecklistComponents(),
+        components: buildFwaMatchChecklistComponents({ state }),
       })
       .catch(() => undefined);
   };
@@ -397,7 +399,9 @@ export async function handleFwaMatchChecklistRefreshButton(
     .getActiveByMessageId(interaction.message.id)
     .catch(() => null);
   if (trackedAfterRefresh?.status === "ACTIVE") {
-    await restoreRefreshButton();
+    await restoreRefreshButton("refresh");
+  } else {
+    await restoreRefreshButton("expired");
   }
   if (!refreshed) {
     await interaction

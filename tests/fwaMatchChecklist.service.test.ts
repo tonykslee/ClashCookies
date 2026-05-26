@@ -367,7 +367,7 @@ describe("FWA match checklist service", () => {
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refreshing...",
+      "Expired",
     );
     expect(followUp).toHaveBeenCalledWith(
       expect.objectContaining({
