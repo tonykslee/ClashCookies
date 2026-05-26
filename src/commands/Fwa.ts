@@ -13413,13 +13413,19 @@ export const Fwa: Command = {
           await editReplySafe(`Clan ${inputClan} is not in tracked clans.`);
           return;
         }
+        const normalizedResolvedClanTag = normalizeTag(resolvedClan.tag);
         const currentWar = await prisma.currentWar.findFirst({
           where: {
             guildId: interaction.guildId,
-            clanTag: {
-              equals: resolvedClan.tag,
-              mode: "insensitive",
-            },
+            OR: [
+              { clanTag: normalizedResolvedClanTag },
+              {
+                clanTag: normalizedResolvedClanTag
+                  ? `#${normalizedResolvedClanTag}`
+                  : normalizedResolvedClanTag,
+              },
+              { clanTag: resolvedClan.tag },
+            ],
           },
           select: {
             warId: true,

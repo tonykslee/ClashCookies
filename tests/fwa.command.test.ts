@@ -295,11 +295,19 @@ describe("/fwa match response normalization", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", name: "Alpha", shortName: "A" },
     ]);
-    prismaMock.currentWar.findFirst.mockResolvedValue({
-      warId: 1001,
-      startTime: new Date("2026-05-13T18:00:00.000Z"),
-      opponentTag: "#OPP1",
-      state: "preparation",
+    prismaMock.currentWar.findFirst.mockImplementation(async ({ where }) => {
+      const candidates = Array.isArray(where?.OR) ? where.OR : [];
+      const found = candidates.some(
+        (candidate: { clanTag?: string | null }) => candidate?.clanTag === "PYPY",
+      );
+      return found
+        ? {
+            warId: 1001,
+            startTime: new Date("2026-05-13T18:00:00.000Z"),
+            opponentTag: "#OPP1",
+            state: "preparation",
+          }
+        : null;
     });
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
@@ -326,6 +334,17 @@ describe("/fwa match response normalization", () => {
         warId: 1001,
         warStartTime: new Date("2026-05-13T18:00:00.000Z"),
         opponentTag: "#OPP1",
+      }),
+    );
+    expect(prismaMock.currentWar.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          OR: expect.arrayContaining([
+            { clanTag: "PYPY" },
+            { clanTag: "#PYPY" },
+          ]),
+        }),
       }),
     );
     expect(run.editReply).toHaveBeenCalledWith(
