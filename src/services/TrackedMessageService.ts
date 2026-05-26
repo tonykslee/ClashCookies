@@ -1371,6 +1371,69 @@ export class TrackedMessageService {
     });
   }
 
+  async replaceOlderFwaMatchChecklistMessages(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    resolveMessageForCleanup?: (input: {
+      channelId: string;
+      messageId: string;
+    }) => Promise<
+      | {
+          pinned?: boolean | null;
+          unpin: () => Promise<unknown>;
+        }
+      | null
+    >;
+  }): Promise<number> {
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId: String(params.guildId ?? "").trim(),
+        channelId: String(params.channelId ?? "").trim(),
+        messageId: { not: String(params.messageId ?? "").trim() },
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      },
+      orderBy: [{ createdAt: "asc" }],
+    });
+
+    let replacedCount = 0;
+    for (const row of rows) {
+      if (resolveFwaMatchChecklistViewType(row.metadata) !== "Bases") continue;
+      const currentMessage =
+        params.resolveMessageForCleanup
+          ? await params.resolveMessageForCleanup({
+              channelId: row.channelId,
+              messageId: row.messageId,
+            }).catch((err) => {
+              console.error(
+                `[tracked-message] fwa checklist cleanup fetch failed guild=${params.guildId} channel=${params.channelId} message=${row.messageId} error=${formatError(err)}`,
+              );
+              return null;
+            })
+          : null;
+      if (!currentMessage) {
+        console.error(
+          `[tracked-message] fwa checklist cleanup missing message guild=${params.guildId} channel=${params.channelId} message=${row.messageId}`,
+        );
+      } else if (currentMessage.pinned !== false) {
+        await currentMessage.unpin().catch((err) => {
+          console.error(
+            `[tracked-message] fwa checklist cleanup unpin failed guild=${params.guildId} channel=${params.channelId} message=${row.messageId} error=${formatError(err)}`,
+          );
+        });
+      }
+
+      await prisma.trackedMessage.update({
+        where: { messageId: row.messageId },
+        data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+      });
+      replacedCount += 1;
+    }
+
+    return replacedCount;
+  }
+
   async setFwaMatchChecklistBasesCompletion(params: {
     guildId: string;
     channelId: string;

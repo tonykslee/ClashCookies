@@ -4,6 +4,7 @@ const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
   refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
   getActiveByMessageId: vi.fn().mockResolvedValue({ status: "ACTIVE" }),
+  replaceOlderFwaMatchChecklistMessages: vi.fn().mockResolvedValue(0),
 }));
 const fwaChecklistRenderStateMock = vi.hoisted(() => ({
   buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
@@ -84,6 +85,7 @@ describe("FWA match checklist service", () => {
     );
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValue(true);
     trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
+    trackedMessageMock.replaceOlderFwaMatchChecklistMessages.mockResolvedValue(0);
   });
 
   it("builds checklist content with the mail checklist header and body", () => {
@@ -227,6 +229,9 @@ describe("FWA match checklist service", () => {
     expect(react).toHaveBeenCalledWith("<:twc:222>");
     expect(react).toHaveBeenCalledTimes(2);
     expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).not.toHaveBeenCalled();
   });
 
 
@@ -500,7 +505,11 @@ describe("FWA match checklist service", () => {
       channelId: "channel-1",
       user: { id: "user-1" },
       editReply: vi.fn().mockResolvedValue(undefined),
-      fetchReply: vi.fn().mockResolvedValue({ id: "message-1", react, pin }),
+      fetchReply: vi.fn().mockResolvedValue({
+        id: "message-1",
+        react,
+        pin,
+      }),
       followUp: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -542,6 +551,16 @@ describe("FWA match checklist service", () => {
     );
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+        resolveMessageForCleanup: expect.any(Function),
+      }),
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),

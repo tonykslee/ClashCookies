@@ -275,6 +275,33 @@ export async function finalizeFwaMatchChecklistPublication(
       `[fwa match checklist] pin failed message=${params.message.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
     );
     await params.onPinFailure?.(err);
+    return;
+  }
+
+  if ((params.viewType ?? "Mail") === "Bases") {
+    const resolveMessageForCleanup = async ({
+      channelId,
+      messageId,
+    }: {
+      channelId: string;
+      messageId: string;
+    }) => {
+      const messageAny = params.message as any;
+      const channel = messageAny?.channel;
+      if (channel && String(channel.id ?? "").trim() === String(channelId ?? "").trim()) {
+        return channel.messages?.fetch?.(messageId).catch(() => null) ?? null;
+      }
+      const client = messageAny?.client;
+      if (!client?.channels?.fetch) return null;
+      const fetchedChannel = await client.channels.fetch(channelId).catch(() => null);
+      return fetchedChannel?.messages?.fetch?.(messageId).catch(() => null) ?? null;
+    };
+    await trackedMessageService.replaceOlderFwaMatchChecklistMessages({
+      guildId: params.guildId,
+      channelId: params.channelId,
+      messageId: params.message.id,
+      resolveMessageForCleanup,
+    });
   }
 }
 
