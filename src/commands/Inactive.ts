@@ -483,6 +483,10 @@ function buildTrackedClanTagQueryValues(trackedTags: string[]): string[] {
   return [...new Set(trackedTags.flatMap((tag) => [tag, `#${tag}`]))];
 }
 
+function buildPlayerActivityTagQueryValues(playerTags: string[]): string[] {
+  return [...new Set(playerTags.map((tag) => formatInactivePlayerTag(tag)))];
+}
+
 async function loadInactiveCurrentMembershipSnapshot(
   clanTag?: string | null,
 ): Promise<InactiveCurrentMembershipSnapshot> {
@@ -591,6 +595,13 @@ type InactiveDaysEntry = {
   daysAgo: number;
 };
 
+type InactiveDaysDiagnosticNote =
+  | "no_current_membership"
+  | "no_activity_rows"
+  | "stale_activity"
+  | "incomplete_coverage"
+  | null;
+
 const inactiveWarService = new InactiveWarService();
 
 async function fetchInactiveDaysEntries(
@@ -607,6 +618,7 @@ async function fetchInactiveDaysEntries(
   observedRecordCount: number;
   scopeClanTag: string | null;
   scopeClanName: string | null;
+  diagnosticNote: string | null;
 }> {
   if (!interaction.guildId) {
     throw new Error("This command can only be used in a server.");
@@ -623,6 +635,7 @@ async function fetchInactiveDaysEntries(
       observedRecordCount: 0,
       scopeClanTag: null,
       scopeClanName: null,
+      diagnosticNote: null,
     };
   }
 
@@ -643,13 +656,28 @@ async function fetchInactiveDaysEntries(
       observedRecordCount: 0,
       scopeClanTag: null,
       scopeClanName: null,
+      diagnosticNote: null,
     };
   }
 
   const scopedClanTagValues = buildTrackedClanTagQueryValues(scopedTrackedTags);
-  const currentMemberTagList = [...new Set(
+  const currentMemberBareTagList = [...new Set(
     [...roster.currentMemberPlayerTagsByClanTag.values()].flatMap((set) => [...set])
   )];
+  const currentMemberTagList = buildPlayerActivityTagQueryValues(currentMemberBareTagList);
+  if (currentMemberTagList.length === 0) {
+    return {
+      entries: [],
+      roster,
+      staleHours: DEFAULT_STALE_HOURS,
+      freshObservedCount: 0,
+      observedRecordCount: 0,
+      scopeClanTag,
+      scopeClanName,
+      diagnosticNote:
+        "Inactive days could not find any current membership rows for the tracked clan(s), so PlayerActivity coverage could not be evaluated yet.",
+    };
+  }
   const activitySnapshot = await prisma.playerActivity.aggregate({
     where: {
       guildId: interaction.guildId,
@@ -673,6 +701,9 @@ async function fetchInactiveDaysEntries(
       observedRecordCount: activitySnapshot._count.tag,
       scopeClanTag,
       scopeClanName,
+      diagnosticNote: !latestObservedAt
+        ? "Inactive days could not find any PlayerActivity rows for the tracked current members yet."
+        : `Inactive days activity data is stale. Latest observed activity is older than ${staleHours}h.`,
     };
   }
 
@@ -705,6 +736,12 @@ async function fetchInactiveDaysEntries(
       observedRecordCount: activitySnapshot._count.tag,
       scopeClanTag,
       scopeClanName,
+      diagnosticNote:
+        currentMemberCount === 0
+          ? "Inactive days could not find any current membership rows for the tracked clan(s), so PlayerActivity coverage could not be evaluated yet."
+          : `Inactive days activity coverage is incomplete. Observed ${freshObservedCount}/${currentMemberCount} current member(s), below the minimum ${Math.round(
+              minCoverage * 100,
+            )}% threshold.`,
     };
   }
 
@@ -758,6 +795,7 @@ async function fetchInactiveDaysEntries(
     observedRecordCount: activitySnapshot._count.tag,
     scopeClanTag,
     scopeClanName,
+    diagnosticNote: null,
   };
 }
 
@@ -963,7 +1001,7 @@ async function runDaysMode(
   inClan?: boolean,
 ): Promise<void> {
   const daysResult = await fetchInactiveDaysEntries(interaction, days, clanTag, consecutive, inClan);
-  const { entries, roster } = daysResult;
+  const { entries, roster, diagnosticNote } = daysResult;
   if (roster.trackedTags.length === 0) {
     if (clanTag) {
       await interaction.editReply(
@@ -978,6 +1016,10 @@ async function runDaysMode(
   }
 
   if (entries.length === 0) {
+    if (diagnosticNote) {
+      await interaction.editReply(diagnosticNote);
+      return;
+    }
     await interaction.editReply(
       clanTag && daysResult.scopeClanName
         ? `No inactive players for ${days}+ days in ${daysResult.scopeClanName}.`
