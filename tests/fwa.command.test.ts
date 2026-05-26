@@ -48,6 +48,7 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -95,6 +96,13 @@ function makeMatchInteraction(params: {
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
+  const react = vi.fn().mockResolvedValue(undefined);
+  const pin = vi.fn().mockResolvedValue(undefined);
+  const fetchReply = vi.fn().mockResolvedValue({
+    id: "message-1",
+    react,
+    pin,
+  });
   const interaction = {
     id: "interaction-1",
     guildId: "guild-1",
@@ -102,6 +110,8 @@ function makeMatchInteraction(params: {
     user: { id: "user-1" },
     deferReply,
     editReply,
+    fetchReply,
+    followUp: vi.fn().mockResolvedValue(undefined),
     memberPermissions: {
       has: vi.fn(() => Boolean(params.isAdmin)),
     },
@@ -243,6 +253,24 @@ describe("/fwa match response normalization", () => {
         ),
       }),
     );
+  });
+
+  it("defaults /fwa match-checklist to Mail when type is omitted", async () => {
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+      }),
+    );
+    const payload = run.editReply.mock.calls.at(-1)?.[0] as any;
+    const refreshButton = payload?.components?.[0]?.toJSON?.().components?.[0];
+    expect(refreshButton?.label).toBe("Refresh");
   });
 
   it("renders the bases checklist snapshot command as read-only text", async () => {

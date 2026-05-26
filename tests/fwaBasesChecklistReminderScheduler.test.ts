@@ -142,6 +142,12 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
         allowedMentions: { roles: ["role-1"], parse: [] },
       }),
     );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("bucketHours=3"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("destinationChannelId=channel-1"),
+    );
     expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: "guild-1",
@@ -189,6 +195,9 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(dozzleLogMock.warn).toHaveBeenCalledWith(
       expect.stringContaining("reason=missing_channel"),
     );
+    expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+      expect.stringContaining("bucketHours=3"),
+    );
   });
 
   it("skips a candidate when the configured channel is unavailable", async () => {
@@ -211,6 +220,9 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(dozzleLogMock.warn).toHaveBeenCalledWith(
       expect.stringContaining("reason=unavailable_channel"),
     );
+    expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+      expect.stringContaining("destinationChannelId="),
+    );
   });
 
   it("counts a failed send when Discord rejects the reminder", async () => {
@@ -231,6 +243,35 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(dozzleLogMock.error).toHaveBeenCalledWith(
       expect.stringContaining("reason=missing_permissions"),
     );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("bucketHours=3"),
+    );
+  });
+
+  it("skips cycle execution in mirror and staging modes", async () => {
+    const { client } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    pollingModeMock.isMirrorPollingMode.mockReturnValueOnce(true);
+    await expect(scheduler.runCycle()).resolves.toEqual({
+      evaluated: 0,
+      sent: 0,
+      deduped: 0,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(plannerMocks.findPending).not.toHaveBeenCalled();
+
+    pollingModeMock.isMirrorPollingMode.mockReturnValueOnce(false);
+    pollingModeMock.resolveRuntimeEnvironment.mockReturnValueOnce("staging");
+    await expect(scheduler.runCycle()).resolves.toEqual({
+      evaluated: 0,
+      sent: 0,
+      deduped: 0,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(plannerMocks.findPending).not.toHaveBeenCalled();
   });
 
   it("prevents overlapping cycles with an in-flight guard", async () => {
