@@ -136,6 +136,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("persistent reaction-driven mail checklist");
     expect(normalized).toContain("type:bases");
     expect(normalized).toContain("reaction-driven bases checklist");
+    expect(normalized).toContain("with `refresh`");
     expect(normalized).toContain("private is snapshot-only");
     expect(normalized).toContain("clan:<tag-or-short-name> checked:true|false");
     expect(normalized).toContain("bases reminders go to the clan's configured leader/notify/log channel at 12h, 6h, 3h, and 1h left");
