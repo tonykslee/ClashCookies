@@ -111,7 +111,6 @@ describe("FWA match checklist service", () => {
           badgeEmojiId: null,
           badgeEmojiName: null,
           badgeEmojiInline: "",
-          detailLines: ["  War bases:", "    - #12 PlayerOne", "  Base errors:", "    - #23 PlayerTwo"],
         },
         {
           clanTag: "#PYPL",
@@ -125,11 +124,10 @@ describe("FWA match checklist service", () => {
 
     expect(content).toContain("# Clan Bases Checklist");
     expect(content).toContain("Alpha | ⚫ | ⚠️ Bases checked - issues found");
-    expect(content).toContain("  War bases:");
-    expect(content).toContain("    - #12 PlayerOne");
-    expect(content).toContain("  Base errors:");
-    expect(content).toContain("    - #23 PlayerTwo");
     expect(content).toContain("Beta | 🔘 | ❌ Bases not checked");
+    expect(content).not.toContain("War bases:");
+    expect(content).not.toContain("Base errors:");
+    expect(content.split("\n").filter((line) => line.length === 0)).toHaveLength(1);
   });
 
   it("normalizes mixed badge tag formats and leaves missing badges empty", () => {

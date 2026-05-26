@@ -149,10 +149,6 @@ export function buildFwaMatchBasesMessageContent(input: {
   const lines: string[] = ["# Clan Bases Checklist", ""];
   for (const row of input.rows) {
     lines.push(row.compactCopyLine);
-    if (Array.isArray(row.detailLines) && row.detailLines.length > 0) {
-      lines.push(...row.detailLines);
-    }
-    lines.push("");
   }
   return lines.join("\n").trimEnd();
 }

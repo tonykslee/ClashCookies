@@ -1368,7 +1368,9 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBe(true);
 
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("⚠️ Bases checked - issues found");
-    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Base errors:");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("[base-swap post](");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("War bases:");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("Base errors:");
   });
 
   it("wires checklist reaction removals to checklist refresh without touching sync tracking", async () => {

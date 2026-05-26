@@ -50,6 +50,18 @@ function normalizeChecklistClanTag(tag: string): string {
   return normalized || normalizeTagBare(tag);
 }
 
+function buildDiscordMessageLink(input: {
+  guildId: string | null | undefined;
+  channelId: string | null | undefined;
+  messageId: string | null | undefined;
+}): string | null {
+  const guildId = String(input.guildId ?? "").trim();
+  const channelId = String(input.channelId ?? "").trim();
+  const messageId = String(input.messageId ?? "").trim();
+  if (!guildId || !channelId || !messageId) return null;
+  return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+}
+
 function parseTrackedClanBadge(
   badge: string | null | undefined,
 ): {
@@ -272,6 +284,13 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       sanitizeClanName(clan.name) ??
       `#${clanTag}`;
     const clanBadge = parseTrackedClanBadge(clan.clanBadge);
+    const issueLink = activeBaseSwap
+      ? buildDiscordMessageLink({
+          guildId: activeBaseSwap.guildId,
+          channelId: activeBaseSwap.channelId,
+          messageId: activeBaseSwap.messageId,
+        })
+      : null;
     const allGoodCompletion = issueSummary.hasIssues
       ? null
       : await trackedMessageService
@@ -284,10 +303,10 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           })
           .catch(() => null);
     const statusText = issueSummary.hasIssues
-      ? issueSummary.statusText
+      ? `${issueSummary.statusText}${issueLink ? `: [base-swap post](${issueLink})` : ""}`
       : allGoodCompletion
-        ? "✅ Bases checked and all good"
-        : "❌ Bases not checked";
+        ? "\u2705 Bases checked and all good"
+        : "\u274c Bases not checked";
     rows.push({
       clanTag,
       compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}`,
@@ -304,7 +323,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
             opponentTag: activeCurrentWar.opponentTag ?? null,
           })
         : null,
-      detailLines: issueSummary.detailLines.length > 0 ? issueSummary.detailLines : null,
+      detailLines: null,
     });
   }
 
