@@ -5,6 +5,7 @@ const observeLoopStart = vi.hoisted(() => vi.fn(() => new Promise<void>(() => un
 const reminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const userActivityReminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaFeedStart = vi.hoisted(() => vi.fn());
+const fwaBaseSwapDmReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const statusServiceMock = vi.hoisted(() => ({
   markStarted: vi.fn(),
   markSucceeded: vi.fn(),
@@ -267,6 +268,13 @@ vi.mock("../src/services/fwa-feeds/FwaFeedSchedulerService", () => ({
   })),
 }));
 
+vi.mock("../src/services/fwa/baseSwapDmReminderSchedulerService", () => ({
+  DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS: 60_000,
+  FwaBaseSwapDmReminderSchedulerService: vi.fn().mockImplementation(() => ({
+    start: fwaBaseSwapDmReminderSchedulerStart,
+  })),
+}));
+
 vi.mock("../src/services/MirrorSyncService", () => ({
   MirrorSyncService: vi.fn().mockImplementation(() => ({
     syncNow: mirrorSyncMock,
@@ -417,6 +425,25 @@ describe("ready listener startup", () => {
         displayName: "Tracked message sweep",
       }),
     );
+    expect(fwaBaseSwapDmReminderSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
+      "fwa_base_swap_dm_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA base-swap DM reminder scheduler",
+        metadata: expect.objectContaining({
+          started: true,
+        }),
+      }),
+    );
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "fwa_base_swap_dm_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA base-swap DM reminder scheduler",
+        metadata: expect.objectContaining({
+          started: true,
+        }),
+      }),
+    );
   });
 
   it("records tracked message sweep and war event poll failures without throwing", async () => {
@@ -480,6 +507,7 @@ describe("ready listener startup", () => {
       expect.arrayContaining([
         "war_event_poll_cycle",
         "fwa_feed_scheduler",
+        "fwa_base_swap_dm_reminder_scheduler",
         "user_activity_reminder_scheduler",
       ]),
     );
@@ -493,6 +521,12 @@ describe("ready listener startup", () => {
       "fwa_feed_scheduler",
       expect.objectContaining({
         displayName: "FWA feed scheduler",
+      }),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "fwa_base_swap_dm_reminder_scheduler",
+      expect.objectContaining({
+        displayName: "FWA base-swap DM reminder scheduler",
       }),
     );
     expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(

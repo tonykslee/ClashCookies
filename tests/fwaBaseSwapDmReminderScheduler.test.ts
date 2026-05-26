@@ -1,0 +1,411 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FwaBaseSwapDmReminderCandidate } from "../src/services/fwa/baseSwapDmReminderService";
+
+const plannerMocks = vi.hoisted(() => ({
+  findPending: vi.fn(),
+  claim: vi.fn(),
+  buildContent: vi.fn(() => "DM CONTENT"),
+}));
+
+const dozzleLogMock = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
+
+const prismaMock = vi.hoisted(() => {
+  const state = {
+    guildRows: [{ guildId: "guild-1" }],
+    trackedClanRow: null as null | {
+      tag: string;
+      name: string | null;
+      leaderChannelId: string | null;
+    },
+  };
+
+  return {
+    state,
+    trackedMessageFindMany: vi.fn((args: any) => {
+      if (args?.select?.guildId) {
+        return Promise.resolve([...state.guildRows]);
+      }
+      return Promise.resolve([]);
+    }),
+    trackedClanFindFirst: vi.fn(() => Promise.resolve(state.trackedClanRow)),
+  };
+});
+
+vi.mock("../src/prisma", () => ({
+  prisma: {
+    trackedMessage: {
+      findMany: prismaMock.trackedMessageFindMany,
+    },
+    trackedClan: {
+      findFirst: prismaMock.trackedClanFindFirst,
+    },
+    trackedMessageClaim: {
+      findFirst: prismaMock.trackedMessageClaimFindFirst,
+      createMany: prismaMock.trackedMessageClaimCreateMany,
+    },
+  },
+}));
+
+vi.mock("../src/helper/dozzleLogger", () => ({
+  dozzleLog: dozzleLogMock,
+}));
+
+type ClientLike = {
+  users: {
+    fetch: ReturnType<typeof vi.fn>;
+  };
+  channels: {
+    fetch: ReturnType<typeof vi.fn>;
+  };
+};
+
+function makeCandidate(overrides: Partial<FwaBaseSwapDmReminderCandidate> & { discordUserId: string }): FwaBaseSwapDmReminderCandidate {
+  return {
+    guildId: "guild-1",
+    clanTag: "#ABC",
+    clanName: "Alpha Clan",
+    matchType: "BL",
+    trackedMessageId: "tracked-1",
+    referenceId: "reference-1",
+    channelId: "channel-1",
+    messageId: "message-1",
+    postUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    discordUserId: overrides.discordUserId,
+    battleDayStart: new Date("2026-05-26T18:00:00.000Z"),
+    dueOffsetHours: 6,
+    remainingOffsetHours: [3, 1],
+    entries: [
+      {
+        position: 12,
+        playerTag: "#P1",
+        playerName: "Player One",
+        section: "fwa_bases",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const pendingUserIds = new Set<string>();
+
+function setPendingUserIds(userIds: string[]): void {
+  pendingUserIds.clear();
+  for (const userId of userIds) {
+    pendingUserIds.add(userId);
+  }
+}
+
+function makeClient(input?: {
+  userSendFailures?: Record<string, Error>;
+  leaderChannelId?: string | null;
+}): {
+  client: ClientLike;
+  userSendSpies: Map<string, ReturnType<typeof vi.fn>>;
+  leaderChannelSend: ReturnType<typeof vi.fn>;
+  resolveLeaderChannel: ReturnType<typeof vi.fn>;
+} {
+  const userSendSpies = new Map<string, ReturnType<typeof vi.fn>>();
+  const leaderChannelSend = vi.fn().mockResolvedValue(undefined);
+  const resolveLeaderChannel = vi.fn(async ({ clanTag }: { clanTag: string }) => {
+    if (input?.leaderChannelId === null) return null;
+    return {
+      clanName: "Alpha Clan",
+      clanTag,
+      channelId: input?.leaderChannelId ?? "leader-channel-1",
+      send: async (payload: unknown) => {
+        await leaderChannelSend(payload);
+      },
+    };
+  });
+
+  const client: ClientLike = {
+    users: {
+      fetch: vi.fn(async (discordUserId: string) => {
+        const send = vi.fn(async () => {
+          const failure = input?.userSendFailures?.[discordUserId] ?? null;
+          if (failure) throw failure;
+        });
+        userSendSpies.set(discordUserId, send);
+        return {
+          id: discordUserId,
+          send,
+        };
+      }),
+    },
+    channels: {
+      fetch: vi.fn(async () => {
+        if (input?.leaderChannelId === null) return null;
+        return {
+          isTextBased: () => true,
+          send: leaderChannelSend,
+        };
+      }),
+    },
+  };
+
+  return { client, userSendSpies, leaderChannelSend, resolveLeaderChannel };
+}
+
+async function createScheduler(
+  client: ClientLike,
+  resolveLeaderChannel?: ReturnType<typeof vi.fn>,
+  intervalMs = 60_000,
+) {
+  vi.resetModules();
+  const { FwaBaseSwapDmReminderSchedulerService } = await import(
+    "../src/services/fwa/baseSwapDmReminderSchedulerService"
+  );
+  return new FwaBaseSwapDmReminderSchedulerService(client as any, intervalMs, {
+    findPendingCandidates: plannerMocks.findPending,
+    claimCandidate: plannerMocks.claim,
+    buildDmContent: plannerMocks.buildContent,
+    stillPending: async ({ candidate }) => pendingUserIds.has(candidate.discordUserId),
+    ...(resolveLeaderChannel ? { resolveLeaderChannel } : {}),
+  });
+}
+
+describe("FwaBaseSwapDmReminderSchedulerService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.state.guildRows = [{ guildId: "guild-1" }];
+    prismaMock.state.trackedClanRow = {
+      tag: "#ABC",
+      name: "Alpha Clan",
+      leaderChannelId: "leader-channel-1",
+    };
+    pendingUserIds.clear();
+    plannerMocks.findPending.mockReset();
+    plannerMocks.claim.mockReset();
+    plannerMocks.buildContent.mockReset();
+    plannerMocks.buildContent.mockReturnValue("DM CONTENT");
+    plannerMocks.findPending.mockResolvedValue([]);
+    plannerMocks.claim.mockResolvedValue(true);
+  });
+
+  it("sends a DM and posts a grouped leader log for a due candidate", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const { client, userSendSpies, leaderChannelSend, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T12:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
+    expect(userSendSpies.get("111")).toHaveBeenCalledWith({ content: "DM CONTENT" });
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        allowedMentions: { parse: [] },
+        content: expect.stringContaining("Base-swap DM reminders"),
+      }),
+    );
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("Clan: Alpha Clan");
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("Sent:");
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("<@111>");
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("#12 Player One");
+  });
+
+  it("resolves the real tracked clan leader channel without double-prefixing the tag", async () => {
+    const clanTag = "#PQL0289";
+    const candidate = makeCandidate({ discordUserId: "111", clanTag });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const { client, userSendSpies, leaderChannelSend } = makeClient();
+    prismaMock.trackedClanFindFirst.mockImplementation(async (args: any) => {
+      const tags = Array.isArray(args?.where?.OR)
+        ? args.where.OR.flatMap((clause: any) => String(clause?.tag?.equals ?? "").trim())
+        : [String(args?.where?.tag?.equals ?? "").trim()];
+      if (tags.includes(clanTag) || tags.includes(clanTag.replace(/^#/, ""))) {
+        return {
+          tag: clanTag,
+          name: "Alpha Clan",
+          leaderChannelId: "leader-channel-1",
+        };
+      }
+      return null;
+    });
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T12:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(client.channels.fetch).toHaveBeenCalledWith("leader-channel-1");
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    expect(userSendSpies.get("111")).toHaveBeenCalledWith({ content: "DM CONTENT" });
+    expect(prismaMock.trackedClanFindFirst).toHaveBeenCalledTimes(1);
+    const firstCallWhere = prismaMock.trackedClanFindFirst.mock.calls[0]?.[0]?.where ?? {};
+    const queriedTags = Array.isArray(firstCallWhere.OR)
+      ? firstCallWhere.OR.map((clause: any) => String(clause?.tag?.equals ?? "").trim())
+      : [String(firstCallWhere.tag?.equals ?? "").trim()];
+    expect(queriedTags).toContain(clanTag);
+    expect(queriedTags).toContain(clanTag.replace(/^#/, ""));
+    expect(queriedTags).not.toContain(`##${clanTag.replace(/^#/, "")}`);
+  });
+
+  it("skips a candidate that is already claimed", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    plannerMocks.claim.mockResolvedValue(false);
+    setPendingUserIds(["111"]);
+    const { client, userSendSpies, leaderChannelSend, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle();
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(userSendSpies.size).toBe(0);
+    expect(client.users.fetch).not.toHaveBeenCalled();
+    expect(leaderChannelSend).not.toHaveBeenCalled();
+  });
+
+  it("counts a DM failure and still posts a leader-channel log", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userSendFailures: {
+        "111": new Error("DMs disabled"),
+      },
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle();
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("Failed:");
+    expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("DMs disabled");
+  });
+
+  it("keeps sending DMs when no leader channel is configured", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    prismaMock.state.trackedClanRow = {
+      tag: "#ABC",
+      name: "Alpha Clan",
+      leaderChannelId: null,
+    };
+    const { client, userSendSpies, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      leaderChannelId: null,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle();
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 1,
+    });
+    expect(userSendSpies.get("111")).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  it("groups multiple users for the same clan/reference/offset into one leader log", async () => {
+    const candidateOne = makeCandidate({ discordUserId: "111" });
+    const candidateTwo = makeCandidate({
+      discordUserId: "222",
+      trackedMessageId: "tracked-2",
+      messageId: "message-2",
+      entries: [
+        {
+          position: 19,
+          playerTag: "#P2",
+          playerName: "Player Two",
+          section: "fwa_bases",
+        },
+      ],
+    });
+    plannerMocks.findPending.mockResolvedValue([candidateOne, candidateTwo]);
+    setPendingUserIds(["111", "222"]);
+    const { client, leaderChannelSend, userSendSpies, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle();
+
+    expect(counts).toEqual({
+      evaluated: 2,
+      sent: 2,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(userSendSpies.get("111")).toHaveBeenCalledTimes(1);
+    expect(userSendSpies.get("222")).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    const content = String(leaderChannelSend.mock.calls[0]?.[0].content ?? "");
+    expect(content).toContain("<@111>");
+    expect(content).toContain("<@222>");
+    expect(content).toContain("#12 Player One");
+    expect(content).toContain("#19 Player Two");
+  });
+
+  it("prevents overlapping cycles with an in-flight guard", async () => {
+    let resolvePending: ((value: FwaBaseSwapDmReminderCandidate[]) => void) | null = null;
+    plannerMocks.findPending.mockImplementation(
+      () =>
+        new Promise<FwaBaseSwapDmReminderCandidate[]>((resolve) => {
+          resolvePending = resolve;
+        }),
+    );
+    const { client, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const firstRun = scheduler.runCycle();
+    const secondRun = scheduler.runCycle();
+
+    await expect(secondRun).resolves.toEqual({
+      evaluated: 0,
+      sent: 0,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+
+    resolvePending?.([]);
+    await expect(firstRun).resolves.toEqual({
+      evaluated: 0,
+      sent: 0,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+  });
+});
