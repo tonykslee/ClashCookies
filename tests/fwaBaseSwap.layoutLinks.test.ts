@@ -74,7 +74,6 @@ import {
   handleFwaBaseSwapSplitPostButton,
   Fwa,
   renderFwaBaseSwapAnnouncementForTest,
-  buildFwaBaseSwapReminderLinesForTest,
   setFwaBaseSwapSplitPostPayloadForTest,
   validateFwaBaseSwapSwapReminderOptionForTest,
 } from "../src/commands/Fwa";
@@ -850,7 +849,7 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
-  it("renders the swap-to-war reminder content separately when swap-reminder is enabled", () => {
+  it("keeps the main announcement free of swap-back reminder content when swap-reminder is enabled", () => {
     const mainContent = renderFwaBaseSwapAnnouncementForTest({
       entries: [
         buildEntry({
@@ -866,23 +865,9 @@ describe("FWA base-swap layout links", () => {
       swapReminder: true,
       clanRoleId: "123456789012345678",
     });
-    const reminderContent = buildFwaBaseSwapReminderLinesForTest({
-      clanRoleId: "123456789012345678",
-    }).join("\n");
 
     expect(mainContent).not.toContain("# Swap to WAR Bases");
     expect(mainContent).not.toContain("<@&123456789012345678>");
-    const lines = reminderContent.split("\n");
-    const headerIndex = lines.indexOf("# Swap to WAR Bases");
-    const noteIndex = lines.indexOf(
-      "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
-    );
-    const roleIndex = lines.indexOf("<@&123456789012345678>");
-
-    expect(headerIndex).toBeGreaterThan(-1);
-    expect(noteIndex).toBeGreaterThan(headerIndex);
-    expect(roleIndex).toBeGreaterThan(noteIndex);
-    expect(reminderContent).toContain("<@&123456789012345678>");
   });
 
   it("uses alert for war-bases and alert_blue for fwa-bases in mixed sections", () => {
@@ -1919,7 +1904,7 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("posts the swap-back reminder separately and pings the clan role when swap-reminder is enabled", async () => {
+  it("posts only the main tracked base-swap message during command execution when swap-reminder is enabled", async () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       fwaBases: "1",
@@ -1968,24 +1953,20 @@ describe("FWA base-swap mail-channel routing", () => {
 
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
-    expect(run.mailChannelSend).toHaveBeenCalledTimes(2);
-    expect(run.mailChannelSend).toHaveBeenNthCalledWith(
-      1,
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(run.mailChannelSend).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.any(String),
         allowedMentions: { users: ["111"] },
       }),
     );
-    expect(run.mailChannelSend).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        content: expect.stringContaining("# Swap to WAR Bases"),
-        allowedMentions: { roles: ["123456789012345678"] },
-      }),
-    );
     const mainContent = String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "");
     expect(mainContent).not.toContain("# Swap to WAR Bases");
     expect(mainContent).not.toContain("<@&123456789012345678>");
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(true);
+    expect(upsertCall.create.metadata.clanRoleId).toBe("123456789012345678");
   });
 
   it("publishes both split base-swap posts to the clan mail channel", async () => {
@@ -2111,7 +2092,7 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("posts a separate clan-role reminder after split posts when swap-reminder is enabled", async () => {
+  it("posts only the split base-swap messages during command execution when swap-reminder is enabled", async () => {
     const key = "split-mail-reminder-1";
     setFwaBaseSwapSplitPostPayloadForTest(key, {
       userId: "user-1",
@@ -2165,16 +2146,10 @@ describe("FWA base-swap mail-channel routing", () => {
       url: "https://discord.com/channels/guild-1/mail-1/msg-2",
       react: vi.fn().mockResolvedValue(undefined),
     };
-    const reminderPosted = {
-      id: "msg-3",
-      url: "https://discord.com/channels/guild-1/mail-1/msg-3",
-      react: vi.fn().mockResolvedValue(undefined),
-    };
     const mailChannelSend = vi
       .fn()
       .mockResolvedValueOnce(postedA)
-      .mockResolvedValueOnce(postedB)
-      .mockResolvedValueOnce(reminderPosted);
+      .mockResolvedValueOnce(postedB);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       null,
     );
@@ -2216,7 +2191,7 @@ describe("FWA base-swap mail-channel routing", () => {
 
     await handleFwaBaseSwapSplitPostButton(interaction as any);
 
-    expect(mailChannelSend).toHaveBeenCalledTimes(3);
+    expect(mailChannelSend).toHaveBeenCalledTimes(2);
     expect(mailChannelSend).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -2231,19 +2206,20 @@ describe("FWA base-swap mail-channel routing", () => {
         allowedMentions: { users: ["111", "222"] },
       }),
     );
-    expect(mailChannelSend).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        content: expect.stringContaining("# Swap to WAR Bases"),
-        allowedMentions: { roles: ["123456789012345678"] },
-      }),
-    );
     expect(interaction.channel.send).not.toHaveBeenCalled();
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
-    expect(reminderPosted.react).not.toHaveBeenCalled();
+    const updatedContent = String(
+      interaction.update.mock.calls[0]?.[0]?.content ?? "",
+    );
+    expect(updatedContent).toContain(
+      "Posted split base swap announcements for **Test Clan** (#2QG2C08UP).",
+    );
+    expect(updatedContent).toContain(postedA.url);
+    expect(updatedContent).toContain(postedB.url);
+    expect(updatedContent).not.toContain("# Swap to WAR Bases");
+    expect(updatedContent).not.toContain("<@&123456789012345678>");
     expect(interaction.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining(reminderPosted.url),
         components: [],
       }),
     );
