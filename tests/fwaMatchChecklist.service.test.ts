@@ -217,6 +217,13 @@ describe("FWA match checklist service", () => {
         content: expect.stringContaining("# Clan Mail Checklist"),
       }),
     );
+    expect(editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(
+          `${buildRows()[0].compactCopyLine.split(" | ").slice(0, 2).join(" | ")} | ✅ | RR vs \`Bravo\` (\`#B1\`)`,
+        ),
+      }),
+    );
     expect(fetchReply).not.toHaveBeenCalled();
     expect(
       trackedMessageMock.createFwaMatchChecklistTrackedMessage,
