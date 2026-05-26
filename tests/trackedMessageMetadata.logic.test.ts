@@ -125,6 +125,7 @@ describe("tracked message metadata parsing", () => {
           compactCopyLine: "row-1",
           badgeEmojiInline: "<:rr:111>",
           contextKey: "ctx-1",
+          detailLines: null,
         },
       ],
     });
@@ -142,6 +143,7 @@ describe("tracked message metadata parsing", () => {
           badgeEmojiName: null,
           badgeEmojiInline: "<:rr:111>",
           contextKey: "ctx-1",
+          detailLines: null,
         },
       ],
     });

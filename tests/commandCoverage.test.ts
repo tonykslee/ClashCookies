@@ -131,8 +131,11 @@ describe("command coverage", () => {
     const normalized = fwaHelpText.toLowerCase();
     expect(fwaHelpText).toContain("/fwa match-checklist");
     expect(fwaHelpText).not.toContain("checklist:true");
-    expect(normalized).toContain("public checklist posts are auto-pinned");
-    expect(normalized).toContain("persistent reaction-driven checklist");
+    expect(normalized).toContain("public mail checklist posts are auto-pinned");
+    expect(normalized).toContain("persistent reaction-driven mail checklist");
+    expect(normalized).toContain("type:bases");
+    expect(normalized).toContain("read-only bases checklist snapshot");
+    expect(normalized).toContain("no reactions or pinning lifecycle");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
     expect(normalized).toContain("snapshot without reactions");
   });

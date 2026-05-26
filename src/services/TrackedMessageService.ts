@@ -93,6 +93,7 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiName: string | null;
   badgeEmojiInline: string;
   contextKey?: string | null;
+  detailLines?: string[] | null;
 };
 
 export type FwaMatchChecklistTrackedMetadata = {
@@ -101,6 +102,24 @@ export type FwaMatchChecklistTrackedMetadata = {
   scopeKey?: string | null;
   checkedClanTags?: string[];
   rows: FwaMatchChecklistTrackedRow[];
+};
+
+export type FwaBaseSwapTrackedMessageSnapshot = {
+  id: string;
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  referenceId: string | null;
+  clanTag: string | null;
+  createdAt: Date;
+  expiresAt: Date | null;
+  metadata: FwaBaseSwapTrackedMetadata;
+};
+
+export type FwaBaseSwapIssueSummary = {
+  hasIssues: boolean;
+  statusText: string;
+  detailLines: string[];
 };
 
 export type FwaMatchChecklistReactionChange = {
@@ -272,6 +291,48 @@ function resolveExtendedChecklistExpiresAt(
   if (refreshedTime === null) return currentTime !== null ? currentExpiresAt ?? null : null;
   if (currentTime === null) return refreshedExpiresAt ?? null;
   return refreshedTime > currentTime ? refreshedExpiresAt ?? null : currentExpiresAt ?? null;
+}
+
+export function buildFwaBaseSwapIssueSummary(
+  metadata: FwaBaseSwapTrackedMetadata,
+): FwaBaseSwapIssueSummary {
+  const activeIssueEntries = metadata.entries.filter(
+    (entry) =>
+      !entry.acknowledged &&
+      (entry.section === "war_bases" || entry.section === "base_errors"),
+  );
+  if (activeIssueEntries.length === 0) {
+    return {
+      hasIssues: false,
+      statusText: "❌ Bases not checked",
+      detailLines: [],
+    };
+  }
+
+  const detailLines: string[] = [];
+  const sections: Array<{
+    section: "war_bases" | "base_errors";
+    label: string;
+  }> = [
+    { section: "war_bases", label: "War bases" },
+    { section: "base_errors", label: "Base errors" },
+  ];
+  for (const { section, label } of sections) {
+    const sectionEntries = activeIssueEntries
+      .filter((entry) => entry.section === section)
+      .sort((a, b) => a.position - b.position);
+    if (sectionEntries.length === 0) continue;
+    detailLines.push(`  ${label}:`);
+    for (const entry of sectionEntries) {
+      detailLines.push(`    - #${entry.position} ${entry.playerName}`);
+    }
+  }
+
+  return {
+    hasIssues: true,
+    statusText: "⚠️ Bases checked - issues found",
+    detailLines,
+  };
 }
 
 /** Purpose: build a stable identity fragment for a checklist row when a live match/sync context exists. */
@@ -549,6 +610,11 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
   if (!clanTag || !compactCopyLine) return null;
   const badgeEmojiId = String(value.badgeEmojiId ?? "").trim();
   const badgeEmojiName = String(value.badgeEmojiName ?? "").trim();
+  const detailLines = Array.isArray(value.detailLines)
+    ? value.detailLines
+        .map((line) => String(line ?? "").trimEnd())
+        .filter((line) => Boolean(line.trim()))
+    : null;
   return {
     clanTag,
     compactCopyLine,
@@ -556,6 +622,7 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiName: badgeEmojiName || null,
     badgeEmojiInline: badgeEmojiInline || "",
     contextKey: String(value.contextKey ?? "").trim() || null,
+    detailLines: detailLines && detailLines.length > 0 ? detailLines : null,
   };
 }
 
@@ -777,6 +844,69 @@ export class TrackedMessageService {
         },
       ],
     });
+  }
+
+  async findLatestActiveFwaBaseSwapTrackedMessageForClan(params: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
+    const guildId = String(params.guildId ?? "").trim();
+    const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+    if (!guildId || !normalizedClanTag) return null;
+    const now = new Date();
+
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: now },
+        OR: [
+          { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+          {
+            clanTag: {
+              equals: normalizedClanTag.replace(/^#/, ""),
+              mode: "insensitive",
+            },
+          },
+          {
+            clanTag: {
+              equals: `#${normalizedClanTag.replace(/^#/, "")}`,
+              mode: "insensitive",
+            },
+          },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        id: true,
+        guildId: true,
+        channelId: true,
+        messageId: true,
+        referenceId: true,
+        clanTag: true,
+        createdAt: true,
+        expiresAt: true,
+        metadata: true,
+      },
+    });
+
+    for (const row of rows) {
+      const metadata = parseFwaBaseSwapMetadata(row.metadata);
+      if (!metadata) continue;
+      return {
+        id: row.id,
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        referenceId: row.referenceId ?? null,
+        clanTag: row.clanTag ?? null,
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt ?? null,
+        metadata,
+      };
+    }
+    return null;
   }
 
   async getActiveByMessageId(messageId: string) {
