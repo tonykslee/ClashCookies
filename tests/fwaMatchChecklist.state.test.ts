@@ -236,12 +236,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows).toHaveLength(2);
     expect(state.rows[0].compactCopyLine).toContain("A |");
     expect(state.rows[0].compactCopyLine).toContain("⚠️ Bases checked - issues found");
-    expect(state.rows[0].detailLines).toEqual([
-      "  War bases:",
-      "    - #12 PlayerOne",
-      "  Base errors:",
-      "    - #23 PlayerTwo",
-    ]);
+    expect(state.rows[0].compactCopyLine).toContain("[base-swap post](");
+    expect(state.rows[0].detailLines).toBeNull();
     expect(state.rows[1].compactCopyLine).toContain("Bravo |");
     expect(state.rows[1].compactCopyLine).toContain("✅ Bases checked and all good");
     expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).toHaveBeenCalledWith(
