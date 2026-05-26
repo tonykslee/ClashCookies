@@ -434,6 +434,20 @@ describe("/inactive command", () => {
 
     await Inactive.run({} as any, interaction as any, {} as any);
 
+    expect(prismaMock.playerActivity.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tag: { in: ["#A1"] },
+        }),
+      }),
+    );
+    expect(prismaMock.playerActivity.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tag: { in: ["#A1"] },
+        }),
+      }),
+    );
     expect(interaction.replyMessage.createMessageComponentCollector).toHaveBeenCalledTimes(1);
     const initialPayload = interaction.editReply.mock.calls.at(0)?.[0];
     const initialEmbed = initialPayload.embeds[0].toJSON();
@@ -693,6 +707,33 @@ describe("/inactive command", () => {
     const toggleBackEmbed = toggleBackPayload.embeds[0].toJSON();
     expect(toggleBackEmbed.description).toContain("`#A01`");
     expect(toggleBackEmbed.description).not.toContain("145k");
+  });
+
+  it("shows a diagnostic message when current membership is unavailable for days mode", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#AAA111", name: "Alpha", clanBadge: "<:badge:1>" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.aggregate.mockResolvedValue({
+      _max: { updatedAt: null },
+      _count: { tag: 0 },
+    });
+    prismaMock.playerActivity.count.mockResolvedValue(0);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([]);
+
+    const interaction = makeInteraction({ days: 7, clan: "#AAA111" });
+
+    await Inactive.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("PlayerActivity coverage could not be evaluated yet"),
+    );
+    expect(interaction.editReply).not.toHaveBeenCalledWith(
+      expect.stringContaining("No inactive players"),
+    );
   });
 
   it("renders grouped wars output with linked Discord users, ratios, and missed-war emojis", async () => {
