@@ -12871,9 +12871,19 @@ export const Fwa: Command = {
     },
     {
       name: "match-checklist",
-      description: "Post or preview the clan mail checklist",
+      description: "Post or preview the clan mail or bases checklist",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
+        {
+          name: "type",
+          description: "Checklist view type",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Mail", value: "Mail" },
+            { name: "Bases", value: "Bases" },
+          ],
+        },
         {
           name: "visibility",
           description: "Response visibility",
@@ -13333,15 +13343,20 @@ export const Fwa: Command = {
         await editReplySafe("This command can only be used in a server.");
         return;
       }
+      const checklistType =
+        (interaction.options.getString("type", false) as "Mail" | "Bases" | null) ??
+        "Mail";
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService,
         guildId: interaction.guildId ?? "",
         warLookupCache,
         client: interaction.client,
+        viewType: checklistType,
       });
       await postFwaMatchChecklistMessage({
         interaction,
         isPublic,
+        viewType: checklistType,
         rows: checklistState.rows,
         clanTag: null,
         scopeKey: checklistState.scopeKey,

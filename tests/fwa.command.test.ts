@@ -81,6 +81,7 @@ function makeMatchInteraction(params: {
   subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
   subcommandGroup?: "blacklist-samples" | "blacklist-profile" | null;
   visibility?: "private" | "public";
+  type?: "Mail" | "Bases";
   copyPaste?: boolean;
   tag?: string | null;
   tags?: string | null;
@@ -105,6 +106,7 @@ function makeMatchInteraction(params: {
       getSubcommand: vi.fn(() => params.subcommand ?? "match"),
       getString: vi.fn((name: string) => {
         if (name === "visibility") return params.visibility ?? "private";
+        if (name === "type") return params.type ?? null;
         if (name === "tag") return params.tag ?? "ABC123";
         if (name === "tags") return params.tags ?? null;
         if (name === "source-label") return params.sourceLabel ?? null;
@@ -231,6 +233,52 @@ describe("/fwa match response normalization", () => {
         content: expect.stringContaining(
           "React with your clan's badge to indicate that the in-game mails have been sent.",
         ),
+      }),
+    );
+  });
+
+  it("renders the bases checklist snapshot command as read-only text", async () => {
+    fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+      checkedClanTags: [],
+      referenceId: null,
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    } as any);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "private",
+      type: "Bases",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Bases",
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Bases Checklist"),
+        components: [],
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("❌ Bases not checked"),
       }),
     );
   });

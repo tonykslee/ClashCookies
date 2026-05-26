@@ -45,6 +45,7 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 
 import {
   buildFwaMatchChecklistMessageContent,
+  buildFwaMatchBasesMessageContent,
   buildFwaMatchChecklistRowsFromCopyView,
   handleFwaMatchChecklistRefreshButton,
   postFwaMatchChecklistMessage,
@@ -97,6 +98,36 @@ describe("FWA match checklist service", () => {
     );
     expect(content).toContain("RR vs `Bravo` (`#B1`)");
     expect(content).toContain("TWC vs `Delta` (`#D2`)");
+  });
+
+  it("builds bases content with issue details", () => {
+    const content = buildFwaMatchBasesMessageContent({
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ⚠️ Bases checked - issues found",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+          detailLines: ["  War bases:", "    - #12 PlayerOne", "  Base errors:", "    - #23 PlayerTwo"],
+        },
+        {
+          clanTag: "#PYPL",
+          compactCopyLine: "Beta | 🔘 | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+    });
+
+    expect(content).toContain("# Clan Bases Checklist");
+    expect(content).toContain("Alpha | ⚫ | ⚠️ Bases checked - issues found");
+    expect(content).toContain("  War bases:");
+    expect(content).toContain("    - #12 PlayerOne");
+    expect(content).toContain("  Base errors:");
+    expect(content).toContain("    - #23 PlayerTwo");
+    expect(content).toContain("Beta | 🔘 | ❌ Bases not checked");
   });
 
   it("normalizes mixed badge tag formats and leaves missing badges empty", () => {
@@ -459,5 +490,44 @@ describe("FWA match checklist service", () => {
       expect.stringContaining("[fwa match checklist] pin failed message=message-1"),
     );
     consoleError.mockRestore();
+  });
+
+  it("publishes a public bases checklist without reactions or tracked-message writes", async () => {
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply: vi.fn().mockResolvedValue(undefined),
+      fetchReply: vi.fn().mockResolvedValue({ id: "message-1", pin }),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: [],
+    });
+
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).not.toHaveBeenCalled();
+    expect(pin).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Bases Checklist"),
+        components: [],
+      }),
+    );
   });
 });
