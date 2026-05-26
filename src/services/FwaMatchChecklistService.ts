@@ -376,6 +376,7 @@ export async function handleFwaMatchChecklistRefreshButton(
           {
             rows: checklistState.rows,
             scopeKey: checklistState.scopeKey,
+            expiresAt: checklistState.expiresAt,
           },
         )
         .catch((err) => {
@@ -390,10 +391,14 @@ export async function handleFwaMatchChecklistRefreshButton(
         `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
       );
       return false;
-    } finally {
-      await restoreRefreshButton();
     }
   })();
+  const trackedAfterRefresh = await trackedMessageService
+    .getActiveByMessageId(interaction.message.id)
+    .catch(() => null);
+  if (trackedAfterRefresh?.status === "ACTIVE") {
+    await restoreRefreshButton();
+  }
   if (!refreshed) {
     await interaction
       .followUp({

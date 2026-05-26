@@ -3,6 +3,7 @@
 const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
   refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
+  getActiveByMessageId: vi.fn().mockResolvedValue({ status: "ACTIVE" }),
 }));
 const fwaChecklistRenderStateMock = vi.hoisted(() => ({
   buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
@@ -77,6 +78,11 @@ function buildMixedRows() {
 describe("FWA match checklist service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    trackedMessageMock.createFwaMatchChecklistTrackedMessage.mockResolvedValue(
+      undefined,
+    );
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValue(true);
+    trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
   });
 
   it("builds checklist content with the mail checklist header and body", () => {
@@ -281,10 +287,14 @@ describe("FWA match checklist service", () => {
         scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
         checkedClanTags: ["#PYPY"],
         referenceId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T22:00:00.000Z"),
         emptyMessage: null,
       },
     );
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(true);
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "ACTIVE",
+    });
 
     await handleFwaMatchChecklistRefreshButton(interaction);
 
@@ -321,6 +331,7 @@ describe("FWA match checklist service", () => {
           }),
         ],
         scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
+        expiresAt: new Date("2026-05-13T22:00:00.000Z"),
       }),
     );
     expect(react).not.toHaveBeenCalled();
@@ -333,6 +344,7 @@ describe("FWA match checklist service", () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
       deferUpdate,
       followUp,
       message: {
@@ -347,10 +359,58 @@ describe("FWA match checklist service", () => {
     } as any;
 
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(false);
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "EXPIRED",
+    });
 
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
+      "Refreshing...",
+    );
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist post can no longer be refreshed.",
+      }),
+    );
+  });
+
+  it("restores the refresh button after a transient refresh error", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "message-1",
+        edit,
+        reactions: {
+          cache: {
+            values: () => [].values(),
+          },
+        },
+      },
+    } as any;
+
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockRejectedValueOnce(
+      new Error("temporary render failure"),
+    );
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "ACTIVE",
+    });
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
+      "Refreshing...",
+    );
     expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
       "Refresh",
     );

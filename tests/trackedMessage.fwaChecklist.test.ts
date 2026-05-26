@@ -133,6 +133,41 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
+  it("extends checklist expiry when refresh computes a later prep-day expiry", async () => {
+    const currentExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const refreshedExpiresAt = new Date(Date.now() + 18 * 60 * 60 * 1000);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeTrackedChecklistRow(),
+      expiresAt: currentExpiresAt,
+    });
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map(),
+      },
+      edit,
+    };
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        expiresAt: refreshedExpiresAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          expiresAt: refreshedExpiresAt,
+          metadata: expect.objectContaining({
+            rows: expect.any(Array),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("builds checklist rows from compact copy text without duplicating the checklist column", () => {
     const rows = makeTrackedChecklistRow().metadata.rows;
 
