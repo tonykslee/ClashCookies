@@ -13347,6 +13347,7 @@ export const Fwa: Command = {
         scopeKey: checklistState.scopeKey,
         checkedClanTags: checklistState.checkedClanTags,
         referenceId: checklistState.referenceId,
+        expiresAt: checklistState.expiresAt,
       });
       return;
     }

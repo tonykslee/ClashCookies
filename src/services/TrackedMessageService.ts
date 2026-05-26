@@ -1392,6 +1392,13 @@ export class TrackedMessageService {
     });
     if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
     if ((tracked.featureType as string) !== TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) return false;
+    if (tracked.expiresAt instanceof Date && tracked.expiresAt.getTime() <= Date.now()) {
+      await prisma.trackedMessage.update({
+        where: { messageId: message.id },
+        data: { status: TRACKED_MESSAGE_STATUS.EXPIRED },
+      });
+      return false;
+    }
 
     const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
     if (!metadata) {

@@ -117,6 +117,7 @@ describe("FWA match checklist service", () => {
     const pin = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
     const fetchReply = vi.fn().mockResolvedValue({ id: "message-1", react, pin });
+    const expiresAt = new Date("2026-05-13T00:30:00.000Z");
     const interaction = {
       guildId: "guild-1",
       channelId: "channel-1",
@@ -132,6 +133,7 @@ describe("FWA match checklist service", () => {
       clanTag: null,
       scopeKey: "scope-key",
       checkedClanTags: ["#PYPY"],
+      expiresAt,
     });
 
     const payload = editReply.mock.calls[0]?.[0] as any;
@@ -147,7 +149,7 @@ describe("FWA match checklist service", () => {
         channelId: "channel-1",
         messageId: "message-1",
         clanTag: null,
-        expiresAt: expect.any(Date),
+        expiresAt,
         metadata: expect.objectContaining({
           scopeKey: "scope-key",
           checkedClanTags: ["#PYPY"],
@@ -287,6 +289,18 @@ describe("FWA match checklist service", () => {
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(edit).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        components: expect.any(Array),
+      }),
+    );
+    expect(
+      edit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label,
+    ).toBe("Refreshing...");
+    expect(
+      edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label,
+    ).toBe("Refresh");
     expect(
       fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
     ).toHaveBeenCalledWith(
@@ -316,12 +330,14 @@ describe("FWA match checklist service", () => {
   it("returns a clear failure response when a checklist refresh can no longer be applied", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       customId: "fwa-match-checklist-refresh",
       deferUpdate,
       followUp,
       message: {
         id: "message-1",
+        edit,
         reactions: {
           cache: {
             values: () => [].values(),
@@ -335,6 +351,9 @@ describe("FWA match checklist service", () => {
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
+      "Refresh",
+    );
     expect(followUp).toHaveBeenCalledWith(
       expect.objectContaining({
         ephemeral: true,
