@@ -168,7 +168,10 @@ async function resolveLeaderChannelForClanTag(input: {
 
   const trackedClan = (await prisma.trackedClan.findFirst({
     where: {
-      tag: { equals: `#${clanTag}`, mode: "insensitive" },
+      OR: [
+        { tag: { equals: clanTag, mode: "insensitive" } },
+        { tag: { equals: clanTag.replace(/^#/, ""), mode: "insensitive" } },
+      ],
     },
     select: {
       tag: true,
@@ -207,6 +210,8 @@ async function resolveLeaderChannelForClanTag(input: {
     send: (payload) => textChannel.send!(payload),
   };
 }
+
+export const resolveLeaderChannelForClanTagForTest = resolveLeaderChannelForClanTag;
 
 async function stillPendingForCandidate(input: {
   candidate: FwaBaseSwapDmReminderCandidate;

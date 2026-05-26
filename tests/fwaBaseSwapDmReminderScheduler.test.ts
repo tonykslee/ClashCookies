@@ -155,7 +155,7 @@ function makeClient(input?: {
 
 async function createScheduler(
   client: ClientLike,
-  resolveLeaderChannel: ReturnType<typeof vi.fn>,
+  resolveLeaderChannel?: ReturnType<typeof vi.fn>,
   intervalMs = 60_000,
 ) {
   vi.resetModules();
@@ -167,7 +167,7 @@ async function createScheduler(
     claimCandidate: plannerMocks.claim,
     buildDmContent: plannerMocks.buildContent,
     stillPending: async ({ candidate }) => pendingUserIds.has(candidate.discordUserId),
-    resolveLeaderChannel,
+    ...(resolveLeaderChannel ? { resolveLeaderChannel } : {}),
   });
 }
 
@@ -218,6 +218,49 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("Sent:");
     expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("<@111>");
     expect(leaderChannelSend.mock.calls[0]?.[0].content).toContain("#12 Player One");
+  });
+
+  it("resolves the real tracked clan leader channel without double-prefixing the tag", async () => {
+    const clanTag = "#PQL0289";
+    const candidate = makeCandidate({ discordUserId: "111", clanTag });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const { client, userSendSpies, leaderChannelSend } = makeClient();
+    prismaMock.trackedClanFindFirst.mockImplementation(async (args: any) => {
+      const tags = Array.isArray(args?.where?.OR)
+        ? args.where.OR.flatMap((clause: any) => String(clause?.tag?.equals ?? "").trim())
+        : [String(args?.where?.tag?.equals ?? "").trim()];
+      if (tags.includes(clanTag) || tags.includes(clanTag.replace(/^#/, ""))) {
+        return {
+          tag: clanTag,
+          name: "Alpha Clan",
+          leaderChannelId: "leader-channel-1",
+        };
+      }
+      return null;
+    });
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T12:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(client.channels.fetch).toHaveBeenCalledWith("leader-channel-1");
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    expect(userSendSpies.get("111")).toHaveBeenCalledWith({ content: "DM CONTENT" });
+    expect(prismaMock.trackedClanFindFirst).toHaveBeenCalledTimes(1);
+    const firstCallWhere = prismaMock.trackedClanFindFirst.mock.calls[0]?.[0]?.where ?? {};
+    const queriedTags = Array.isArray(firstCallWhere.OR)
+      ? firstCallWhere.OR.map((clause: any) => String(clause?.tag?.equals ?? "").trim())
+      : [String(firstCallWhere.tag?.equals ?? "").trim()];
+    expect(queriedTags).toContain(clanTag);
+    expect(queriedTags).toContain(clanTag.replace(/^#/, ""));
+    expect(queriedTags).not.toContain(`##${clanTag.replace(/^#/, "")}`);
   });
 
   it("skips a candidate that is already claimed", async () => {
