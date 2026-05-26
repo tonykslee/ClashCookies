@@ -4,6 +4,7 @@ const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
   refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
   getActiveByMessageId: vi.fn().mockResolvedValue({ status: "ACTIVE" }),
+  replaceOlderFwaMatchChecklistMessages: vi.fn().mockResolvedValue(0),
 }));
 const fwaChecklistRenderStateMock = vi.hoisted(() => ({
   buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
@@ -45,6 +46,7 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 
 import {
   buildFwaMatchChecklistMessageContent,
+  buildFwaMatchBasesMessageContent,
   buildFwaMatchChecklistRowsFromCopyView,
   handleFwaMatchChecklistRefreshButton,
   postFwaMatchChecklistMessage,
@@ -83,6 +85,7 @@ describe("FWA match checklist service", () => {
     );
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValue(true);
     trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
+    trackedMessageMock.replaceOlderFwaMatchChecklistMessages.mockResolvedValue(0);
   });
 
   it("builds checklist content with the mail checklist header and body", () => {
@@ -97,6 +100,36 @@ describe("FWA match checklist service", () => {
     );
     expect(content).toContain("RR vs `Bravo` (`#B1`)");
     expect(content).toContain("TWC vs `Delta` (`#D2`)");
+  });
+
+  it("builds bases content with issue details", () => {
+    const content = buildFwaMatchBasesMessageContent({
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ⚠️ Bases checked - issues found",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+          detailLines: ["  War bases:", "    - #12 PlayerOne", "  Base errors:", "    - #23 PlayerTwo"],
+        },
+        {
+          clanTag: "#PYPL",
+          compactCopyLine: "Beta | 🔘 | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+    });
+
+    expect(content).toContain("# Clan Bases Checklist");
+    expect(content).toContain("Alpha | ⚫ | ⚠️ Bases checked - issues found");
+    expect(content).toContain("  War bases:");
+    expect(content).toContain("    - #12 PlayerOne");
+    expect(content).toContain("  Base errors:");
+    expect(content).toContain("    - #23 PlayerTwo");
+    expect(content).toContain("Beta | 🔘 | ❌ Bases not checked");
   });
 
   it("normalizes mixed badge tag formats and leaves missing badges empty", () => {
@@ -196,6 +229,9 @@ describe("FWA match checklist service", () => {
     expect(react).toHaveBeenCalledWith("<:twc:222>");
     expect(react).toHaveBeenCalledTimes(2);
     expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).not.toHaveBeenCalled();
   });
 
 
@@ -459,5 +495,79 @@ describe("FWA match checklist service", () => {
       expect.stringContaining("[fwa match checklist] pin failed message=message-1"),
     );
     consoleError.mockRestore();
+  });
+
+  it("publishes a public bases checklist with reactions and tracked-message persistence", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply: vi.fn().mockResolvedValue(undefined),
+      fetchReply: vi.fn().mockResolvedValue({
+        id: "message-1",
+        react,
+        pin,
+      }),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-13T18:00:00.000Z",
+        },
+      ],
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: [],
+    });
+
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          kind: "bases_checklist",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              badgeEmojiInline: "<:rr:111>",
+              warId: 1001,
+              opponentTag: "#OPP1",
+              warStartTimeIso: "2026-05-13T18:00:00.000Z",
+            }),
+          ]),
+        }),
+      }),
+    );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.components).toEqual([]);
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+        resolveMessageForCleanup: expect.any(Function),
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Bases Checklist"),
+        components: [],
+      }),
+    );
   });
 });

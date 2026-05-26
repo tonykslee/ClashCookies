@@ -142,12 +142,29 @@ export function buildFwaMatchChecklistMessageContent(input: {
   ].join("\n");
 }
 
+/** Purpose: build the read-only bases checklist content. */
+export function buildFwaMatchBasesMessageContent(input: {
+  rows: Iterable<FwaMatchChecklistTrackedRow>;
+}): string {
+  const lines: string[] = ["# Clan Bases Checklist", ""];
+  for (const row of input.rows) {
+    lines.push(row.compactCopyLine);
+    if (Array.isArray(row.detailLines) && row.detailLines.length > 0) {
+      lines.push(...row.detailLines);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
 /** Purpose: build checklist components for the public post. */
 export function buildFwaMatchChecklistComponents(params?: {
   state?: "refresh" | "refreshing" | "expired";
+  viewType?: "Mail" | "Bases";
 }): Array<
   ActionRowBuilder<ButtonBuilder>
 > {
+  if ((params?.viewType ?? "Mail") === "Bases") return [];
   const state = params?.state ?? "refresh";
   const refreshing = state === "refreshing";
   const expired = state === "expired";
@@ -205,6 +222,7 @@ type FwaMatchChecklistPublicationInput = {
   createdByUserId: string;
   referenceId?: string | null;
   expiresAt?: Date | null;
+  viewType?: "Mail" | "Bases";
   onPinFailure?: (err: unknown) => void | Promise<void>;
 };
 
@@ -212,20 +230,43 @@ type FwaMatchChecklistPublicationInput = {
 export async function finalizeFwaMatchChecklistPublication(
   params: FwaMatchChecklistPublicationInput,
 ): Promise<void> {
-  await trackedMessageService.createFwaMatchChecklistTrackedMessage(
-    buildFwaMatchChecklistTrackedMessageInput({
+  if ((params.viewType ?? "Mail") === "Bases") {
+    await trackedMessageService.createFwaMatchChecklistTrackedMessage({
       guildId: params.guildId,
       channelId: params.channelId,
       messageId: params.message.id,
       clanTag: params.clanTag,
-      createdByUserId: params.createdByUserId,
-      rows: params.rows,
-      scopeKey: params.scopeKey,
-      checkedClanTags: params.checkedClanTags,
       referenceId: params.referenceId ?? null,
-      expiresAt: params.expiresAt ?? null,
-    }),
-  );
+      expiresAt: params.expiresAt ?? buildFwaMatchChecklistExpiresAt(),
+      metadata: {
+        kind: "bases_checklist",
+        createdByUserId: params.createdByUserId,
+        createdAtIso: new Date().toISOString(),
+        scopeKey: params.scopeKey ?? null,
+        checkedClanTags: [],
+        rows: params.rows.map((row) => ({ ...row })),
+        guildId: params.guildId,
+        channelId: params.channelId,
+        messageId: params.message.id,
+        clanTag: params.clanTag,
+      } as any,
+    });
+  } else {
+    await trackedMessageService.createFwaMatchChecklistTrackedMessage(
+      buildFwaMatchChecklistTrackedMessageInput({
+        guildId: params.guildId,
+        channelId: params.channelId,
+        messageId: params.message.id,
+        clanTag: params.clanTag,
+        createdByUserId: params.createdByUserId,
+        rows: params.rows,
+        scopeKey: params.scopeKey,
+        checkedClanTags: params.checkedClanTags,
+        referenceId: params.referenceId ?? null,
+        expiresAt: params.expiresAt ?? null,
+      }),
+    );
+  }
   await addFwaMatchChecklistReactions(params.message, params.rows);
   try {
     await params.message.pin();
@@ -234,6 +275,33 @@ export async function finalizeFwaMatchChecklistPublication(
       `[fwa match checklist] pin failed message=${params.message.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
     );
     await params.onPinFailure?.(err);
+    return;
+  }
+
+  if ((params.viewType ?? "Mail") === "Bases") {
+    const resolveMessageForCleanup = async ({
+      channelId,
+      messageId,
+    }: {
+      channelId: string;
+      messageId: string;
+    }) => {
+      const messageAny = params.message as any;
+      const channel = messageAny?.channel;
+      if (channel && String(channel.id ?? "").trim() === String(channelId ?? "").trim()) {
+        return channel.messages?.fetch?.(messageId).catch(() => null) ?? null;
+      }
+      const client = messageAny?.client;
+      if (!client?.channels?.fetch) return null;
+      const fetchedChannel = await client.channels.fetch(channelId).catch(() => null);
+      return fetchedChannel?.messages?.fetch?.(messageId).catch(() => null) ?? null;
+    };
+    await trackedMessageService.replaceOlderFwaMatchChecklistMessages({
+      guildId: params.guildId,
+      channelId: params.channelId,
+      messageId: params.message.id,
+      resolveMessageForCleanup,
+    });
   }
 }
 
@@ -241,6 +309,7 @@ export async function finalizeFwaMatchChecklistPublication(
 export async function postFwaMatchChecklistMessage(params: {
   interaction: ChatInputCommandInteraction;
   isPublic: boolean;
+  viewType?: "Mail" | "Bases";
   rows: FwaMatchChecklistTrackedRow[];
   clanTag: string | null;
   scopeKey: string | null;
@@ -248,14 +317,20 @@ export async function postFwaMatchChecklistMessage(params: {
   referenceId?: string | null;
   expiresAt?: Date | null;
 }): Promise<void> {
-  const content = buildFwaMatchChecklistMessageContent({
-    rows: params.rows,
-    checkedClanTags: params.checkedClanTags,
-  });
+  const viewType = params.viewType ?? "Mail";
+  const content =
+    viewType === "Bases"
+      ? buildFwaMatchBasesMessageContent({ rows: params.rows })
+      : buildFwaMatchChecklistMessageContent({
+          rows: params.rows,
+          checkedClanTags: params.checkedClanTags,
+        });
   await params.interaction.editReply({
     content: truncateDiscordContent(content),
     embeds: [],
-    components: params.isPublic ? buildFwaMatchChecklistComponents() : [],
+    components: params.isPublic
+      ? buildFwaMatchChecklistComponents({ viewType })
+      : [],
   });
   if (!params.isPublic) return;
 
@@ -271,6 +346,7 @@ export async function postFwaMatchChecklistMessage(params: {
     createdByUserId: params.interaction.user.id,
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? null,
+    viewType,
     onPinFailure: async (err) => {
       await params.interaction
         .followUp({
@@ -288,6 +364,7 @@ export async function postFwaMatchChecklistMessage(params: {
 
 /** Purpose: publish a checklist directly to a channel for scheduled runs. */
 export async function publishFwaMatchChecklistMessageToChannel(params: {
+  viewType?: "Mail" | "Bases";
   channel: {
     send: (payload: {
       content: string;
@@ -305,14 +382,18 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
   referenceId?: string | null;
   expiresAt?: Date | null;
 }): Promise<string | null> {
-  const content = buildFwaMatchChecklistMessageContent({
-    rows: params.rows,
-    checkedClanTags: params.checkedClanTags,
-  });
+  const viewType = params.viewType ?? "Mail";
+  const content =
+    viewType === "Bases"
+      ? buildFwaMatchBasesMessageContent({ rows: params.rows })
+      : buildFwaMatchChecklistMessageContent({
+          rows: params.rows,
+          checkedClanTags: params.checkedClanTags,
+        });
   const postedMessage = (await params.channel.send({
     content: truncateDiscordContent(content),
     embeds: [],
-    components: buildFwaMatchChecklistComponents(),
+    components: buildFwaMatchChecklistComponents({ viewType }),
   }).catch((err): any => {
     console.error(
       `[fwa match checklist] send failed guild=${params.guildId} channel=${params.channelId} error=${formatError(err)}`,
@@ -331,6 +412,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
     createdByUserId: params.createdByUserId,
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? null,
+    viewType,
   }).catch((err) => {
     console.error(
       `[fwa match checklist] finalize failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,

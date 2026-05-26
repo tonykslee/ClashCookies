@@ -43,10 +43,12 @@ const prismaMock = vi.hoisted(() => ({
   },
   currentWar: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
   trackedMessage: {
     findMany: vi.fn(),
     findFirst: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -76,11 +78,15 @@ import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
 } from "../src/commands/Fwa";
+import { trackedMessageService } from "../src/services/TrackedMessageService";
 
 function makeMatchInteraction(params: {
   subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
   subcommandGroup?: "blacklist-samples" | "blacklist-profile" | null;
   visibility?: "private" | "public";
+  type?: "Mail" | "Bases";
+  clan?: string | null;
+  checked?: boolean | null;
   copyPaste?: boolean;
   tag?: string | null;
   tags?: string | null;
@@ -90,12 +96,22 @@ function makeMatchInteraction(params: {
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
+  const react = vi.fn().mockResolvedValue(undefined);
+  const pin = vi.fn().mockResolvedValue(undefined);
+  const fetchReply = vi.fn().mockResolvedValue({
+    id: "message-1",
+    react,
+    pin,
+  });
   const interaction = {
     id: "interaction-1",
     guildId: "guild-1",
+    channelId: "channel-1",
     user: { id: "user-1" },
     deferReply,
     editReply,
+    fetchReply,
+    followUp: vi.fn().mockResolvedValue(undefined),
     memberPermissions: {
       has: vi.fn(() => Boolean(params.isAdmin)),
     },
@@ -105,6 +121,8 @@ function makeMatchInteraction(params: {
       getSubcommand: vi.fn(() => params.subcommand ?? "match"),
       getString: vi.fn((name: string) => {
         if (name === "visibility") return params.visibility ?? "private";
+        if (name === "type") return params.type ?? null;
+        if (name === "clan") return params.clan ?? null;
         if (name === "tag") return params.tag ?? "ABC123";
         if (name === "tags") return params.tags ?? null;
         if (name === "source-label") return params.sourceLabel ?? null;
@@ -112,6 +130,7 @@ function makeMatchInteraction(params: {
         return null;
       }),
       getBoolean: vi.fn((name: string) => {
+        if (name === "checked") return params.checked ?? null;
         if (name === "copy_paste") return params.copyPaste ?? false;
         if (name === "active") return params.active ?? true;
         if (name === "debug-mail-status") return false;
@@ -131,6 +150,7 @@ describe("/fwa match response normalization", () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findFirst.mockResolvedValue(null);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
@@ -233,6 +253,194 @@ describe("/fwa match response normalization", () => {
         ),
       }),
     );
+  });
+
+  it("defaults /fwa match-checklist to Mail when type is omitted", async () => {
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+      }),
+    );
+    const payload = run.editReply.mock.calls.at(-1)?.[0] as any;
+    const refreshButton = payload?.components?.[0]?.toJSON?.().components?.[0];
+    expect(refreshButton?.label).toBe("Refresh");
+  });
+
+  it("renders the bases checklist snapshot command as read-only text", async () => {
+    fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+      checkedClanTags: [],
+      referenceId: null,
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    } as any);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "private",
+      type: "Bases",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Bases",
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Bases Checklist"),
+        components: [],
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("❌ Bases not checked"),
+      }),
+    );
+  });
+
+  it("persists a bases checked completion for the current war", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findFirst.mockImplementation(async ({ where }) => {
+      const candidates = Array.isArray(where?.OR) ? where.OR : [];
+      const found = candidates.some(
+        (candidate: { clanTag?: string | null }) => candidate?.clanTag === "PYPY",
+      );
+      return found
+        ? {
+            warId: 1001,
+            startTime: new Date("2026-05-13T18:00:00.000Z"),
+            opponentTag: "#OPP1",
+            state: "preparation",
+          }
+        : null;
+    });
+    const completionSpy = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue(true);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+      type: "Bases",
+      clan: "A",
+      checked: true,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(completionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        clanTag: "#PYPY",
+        checked: true,
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+      }),
+    );
+    expect(prismaMock.currentWar.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          OR: expect.arrayContaining([
+            { clanTag: "PYPY" },
+            { clanTag: "#PYPY" },
+          ]),
+        }),
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Bases checked and all good saved"),
+      }),
+    );
+  });
+
+  it("clears a bases checked completion for the current war", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1001,
+      startTime: new Date("2026-05-13T18:00:00.000Z"),
+      opponentTag: "#OPP1",
+      state: "battle",
+    });
+    const completionSpy = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue(true);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "private",
+      type: "Bases",
+      clan: "A",
+      checked: false,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(completionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#PYPY",
+        checked: false,
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Cleared all-good bases state"),
+      }),
+    );
+  });
+
+  it("rejects clan and checked when provided for mail mode", async () => {
+    const completionSpy = vi.spyOn(
+      trackedMessageService,
+      "setFwaMatchChecklistBasesCompletion",
+    );
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "private",
+      type: "Mail",
+      clan: "Alpha",
+      checked: true,
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "`clan` and `checked` only apply to `type:Bases`.",
+      }),
+    );
+    expect(completionSpy).not.toHaveBeenCalled();
   });
 
   it("imports blacklist clans through the new admin command path", async () => {

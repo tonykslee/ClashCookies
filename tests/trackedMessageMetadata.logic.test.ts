@@ -125,6 +125,7 @@ describe("tracked message metadata parsing", () => {
           compactCopyLine: "row-1",
           badgeEmojiInline: "<:rr:111>",
           contextKey: "ctx-1",
+          detailLines: null,
         },
       ],
     });
@@ -135,13 +136,17 @@ describe("tracked message metadata parsing", () => {
       scopeKey: "scope-1",
       checkedClanTags: ["RR", "TWC"],
       rows: [
-        {
+                {
           clanTag: "RR",
           compactCopyLine: "row-1",
           badgeEmojiId: null,
           badgeEmojiName: null,
           badgeEmojiInline: "<:rr:111>",
           contextKey: "ctx-1",
+          detailLines: null,
+          warId: null,
+          opponentTag: null,
+          warStartTimeIso: null,
         },
       ],
     });

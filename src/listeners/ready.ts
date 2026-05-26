@@ -45,6 +45,10 @@ import {
   DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
   FwaBaseSwapDmReminderSchedulerService,
 } from "../services/fwa/baseSwapDmReminderSchedulerService";
+import {
+  DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS,
+  FwaBasesChecklistReminderSchedulerService,
+} from "../services/fwa/basesChecklistReminderSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
@@ -88,6 +92,7 @@ const BOT_POLL_STATUS_JOB_KEYS = {
   warEventPollCycle: "war_event_poll_cycle",
   fwaFeedScheduler: "fwa_feed_scheduler",
   fwaBaseSwapDmReminderScheduler: "fwa_base_swap_dm_reminder_scheduler",
+  fwaBasesChecklistReminderScheduler: "fwa_bases_checklist_reminder_scheduler",
   mirrorSyncCycle: "mirror_sync_cycle",
   userActivityReminderScheduler: "user_activity_reminder_scheduler",
 } as const;
@@ -100,6 +105,7 @@ const BOT_POLL_STATUS_DISPLAY_NAMES = {
   warEventPollCycle: "War event poll",
   fwaFeedScheduler: "FWA feed scheduler",
   fwaBaseSwapDmReminderScheduler: "FWA base-swap DM reminder scheduler",
+  fwaBasesChecklistReminderScheduler: "FWA bases checklist reminder scheduler",
   mirrorSyncCycle: "Mirror sync",
   userActivityReminderScheduler: "User activity reminder scheduler",
 } as const;
@@ -1454,6 +1460,61 @@ export default (client: Client, cocService: CoCService): void => {
       );
       userActivityReminderScheduler.start();
       console.log("User activity reminder scheduler loop initialized.");
+
+      if (runtimeEnvironment !== "staging") {
+        const fwaBasesChecklistReminderScheduler = new FwaBasesChecklistReminderSchedulerService(client);
+        startupPhase = "fwa_bases_checklist_reminder_scheduler";
+        await markStartupPhase(startupPhase, { pollingMode });
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBasesChecklistReminderScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBasesChecklistReminderScheduler,
+          intervalMs: DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS),
+          metadata: {
+            started: true,
+          },
+        });
+        const fwaBasesChecklistReminderSchedulerStart =
+          fwaBasesChecklistReminderScheduler.start();
+        if (fwaBasesChecklistReminderSchedulerStart.started) {
+          await markPollJobSucceeded({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBasesChecklistReminderScheduler,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBasesChecklistReminderScheduler,
+            intervalMs: DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(Date.now() + DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS),
+            metadata: {
+              started: true,
+            },
+          });
+          console.log("FWA bases checklist reminder scheduler loop initialized.");
+        } else {
+          await markPollJobSkipped({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBasesChecklistReminderScheduler,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBasesChecklistReminderScheduler,
+            intervalMs: DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS,
+            nextDueAt: new Date(Date.now() + DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS),
+            metadata: {
+              started: false,
+              reason: fwaBasesChecklistReminderSchedulerStart.reason,
+            },
+          });
+          dozzleLog.info(
+            `[polling-mode] event=poller_skipped job=fwa_bases_checklist_reminder_scheduler mode=${fwaBasesChecklistReminderSchedulerStart.reason}`,
+          );
+        }
+      } else {
+        startupPhase = "fwa_bases_checklist_reminder_scheduler";
+        await markStartupPhase(startupPhase, { pollingMode, skipped: true });
+        await markPollJobDisabled({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBasesChecklistReminderScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBasesChecklistReminderScheduler,
+          intervalMs: null,
+          metadata: { reason: "staging" },
+        });
+        dozzleLog.info(
+          "[polling-mode] event=poller_skipped job=fwa_bases_checklist_reminder_scheduler mode=staging",
+        );
+      }
     } else {
       startupPhase = "user_activity_reminder_scheduler";
       await markStartupPhase(startupPhase, { pollingMode, skipped: true });
@@ -1465,6 +1526,18 @@ export default (client: Client, cocService: CoCService): void => {
       });
       console.log(
         "[polling-mode] event=poller_skipped job=user_activity_reminder_scheduler mode=mirror",
+      );
+
+      startupPhase = "fwa_bases_checklist_reminder_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode, skipped: true });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBasesChecklistReminderScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBasesChecklistReminderScheduler,
+        intervalMs: null,
+        metadata: { reason: "mirror" },
+      });
+      console.log(
+        "[polling-mode] event=poller_skipped job=fwa_bases_checklist_reminder_scheduler mode=mirror",
       );
     }
 

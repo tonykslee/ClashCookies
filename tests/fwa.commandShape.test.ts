@@ -58,7 +58,7 @@ describe("/fwa base-swap command shape", () => {
     expect(copyPaste?.required).toBe(false);
   });
 
-  it("registers /fwa match-checklist with a visibility option", () => {
+  it("registers /fwa match-checklist with type and visibility options", () => {
     const checklist = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -66,11 +66,30 @@ describe("/fwa base-swap command shape", () => {
     );
     expect(checklist).toBeTruthy();
 
+    const type = checklist?.options?.find(
+      (option: { name: string }) => option.name === "type",
+    );
+    expect(type?.type).toBe(ApplicationCommandOptionType.String);
+    expect(type?.required).toBe(false);
+    expect(type?.choices).toEqual([
+      { name: "Mail", value: "Mail" },
+      { name: "Bases", value: "Bases" },
+    ]);
     const visibility = checklist?.options?.find(
       (option: { name: string }) => option.name === "visibility",
     );
     expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
     expect(visibility?.required).toBe(false);
+    const clan = checklist?.options?.find(
+      (option: { name: string }) => option.name === "clan",
+    );
+    expect(clan?.type).toBe(ApplicationCommandOptionType.String);
+    expect(clan?.required).toBe(false);
+    const checked = checklist?.options?.find(
+      (option: { name: string }) => option.name === "checked",
+    );
+    expect(checked?.type).toBe(ApplicationCommandOptionType.Boolean);
+    expect(checked?.required).toBe(false);
     const tag = checklist?.options?.find(
       (option: { name: string }) => option.name === "tag",
     );

@@ -131,10 +131,18 @@ describe("command coverage", () => {
     const normalized = fwaHelpText.toLowerCase();
     expect(fwaHelpText).toContain("/fwa match-checklist");
     expect(fwaHelpText).not.toContain("checklist:true");
-    expect(normalized).toContain("public checklist posts are auto-pinned");
-    expect(normalized).toContain("persistent reaction-driven checklist");
+    expect(normalized).toContain("default is `type:mail`");
+    expect(normalized).toContain("public mail checklist posts are auto-pinned");
+    expect(normalized).toContain("persistent reaction-driven mail checklist");
+    expect(normalized).toContain("type:bases");
+    expect(normalized).toContain("reaction-driven bases checklist");
+    expect(normalized).toContain("private is snapshot-only");
+    expect(normalized).toContain("clan:<tag-or-short-name> checked:true|false");
+    expect(normalized).toContain("bases reminders go to the clan's configured leader/notify/log channel at 12h, 6h, 3h, and 1h left");
+    expect(normalized).toContain("clan:<tag-or-short-name>");
+    expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
-    expect(normalized).toContain("snapshot without reactions");
+    expect(normalized).toContain("snapshot-only");
   });
 
   it("documents the blacklist import command in FWA help detail text", () => {
