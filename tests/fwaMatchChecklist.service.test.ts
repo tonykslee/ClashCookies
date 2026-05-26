@@ -492,14 +492,15 @@ describe("FWA match checklist service", () => {
     consoleError.mockRestore();
   });
 
-  it("publishes a public bases checklist without reactions or tracked-message writes", async () => {
+  it("publishes a public bases checklist with reactions and tracked-message persistence", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
     const pin = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       guildId: "guild-1",
       channelId: "channel-1",
       user: { id: "user-1" },
       editReply: vi.fn().mockResolvedValue(undefined),
-      fetchReply: vi.fn().mockResolvedValue({ id: "message-1", pin }),
+      fetchReply: vi.fn().mockResolvedValue({ id: "message-1", react, pin }),
       followUp: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -511,9 +512,12 @@ describe("FWA match checklist service", () => {
         {
           clanTag: "#PYPY",
           compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
-          badgeEmojiId: null,
-          badgeEmojiName: null,
-          badgeEmojiInline: "",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-13T18:00:00.000Z",
         },
       ],
       clanTag: null,
@@ -521,8 +525,23 @@ describe("FWA match checklist service", () => {
       checkedClanTags: [],
     });
 
-    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).not.toHaveBeenCalled();
-    expect(pin).not.toHaveBeenCalled();
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          kind: "bases_checklist",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              badgeEmojiInline: "<:rr:111>",
+              warId: 1001,
+              opponentTag: "#OPP1",
+              warStartTimeIso: "2026-05-13T18:00:00.000Z",
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(pin).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),
