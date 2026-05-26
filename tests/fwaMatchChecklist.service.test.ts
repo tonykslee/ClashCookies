@@ -549,6 +549,8 @@ describe("FWA match checklist service", () => {
         }),
       }),
     );
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.components).toEqual([]);
     expect(react).toHaveBeenCalledWith("<:rr:111>");
     expect(pin).toHaveBeenCalledTimes(1);
     expect(

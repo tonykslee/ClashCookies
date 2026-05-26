@@ -190,7 +190,7 @@ export class FwaBasesChecklistReminderSchedulerService {
 
       for (const candidate of candidates) {
         dozzleLog.debug(
-          `[fwa bases-check reminder] candidate_evaluated guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} channel=${candidate.destinationChannelId ?? "missing"}`,
+          `[fwa bases-check reminder] candidate_evaluated guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} destinationChannelKind=${candidate.destinationChannelKind ?? "missing"}`,
         );
 
         const claimed = await trackedMessageService
@@ -212,14 +212,14 @@ export class FwaBasesChecklistReminderSchedulerService {
           .catch((err) => {
             failed += 1;
             dozzleLog.error(
-              `[fwa bases-check reminder] marker_claim_failed guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} error=${formatError(err)}`,
+              `[fwa bases-check reminder] marker_claim_failed guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} error=${formatError(err)}`,
             );
             return false;
           });
         if (!claimed) {
           deduped += 1;
           dozzleLog.debug(
-            `[fwa bases-check reminder] candidate_deduped guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours}`,
+            `[fwa bases-check reminder] candidate_deduped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"}`,
           );
           continue;
         }
@@ -227,21 +227,21 @@ export class FwaBasesChecklistReminderSchedulerService {
         if (!candidate.destinationChannelId) {
           skipped += 1;
           dozzleLog.warn(
-            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} reason=missing_channel`,
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=missing reason=missing_channel`,
           );
           continue;
         }
 
         const channel = await this.client.channels.fetch(candidate.destinationChannelId).catch((err) => {
           dozzleLog.warn(
-            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} channel=${candidate.destinationChannelId} reason=unavailable_channel error=${formatError(err)}`,
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=unavailable_channel error=${formatError(err)}`,
           );
           return null;
         });
         if (!isSendableTextChannel(channel)) {
           skipped += 1;
           dozzleLog.warn(
-            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} channel=${candidate.destinationChannelId} reason=unavailable_channel`,
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=unavailable_channel`,
           );
           continue;
         }
@@ -254,12 +254,12 @@ export class FwaBasesChecklistReminderSchedulerService {
           await channel.send(payload);
           sent += 1;
           dozzleLog.info(
-            `[fwa bases-check reminder] reminder_sent guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} channel=${candidate.destinationChannelId} role_ping=${String(candidate.clanRoleId ?? "").trim() ? "yes" : "no"}`,
+            `[fwa bases-check reminder] reminder_sent guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} role_ping=${String(candidate.clanRoleId ?? "").trim() ? "yes" : "no"}`,
           );
         } catch (err) {
           failed += 1;
           dozzleLog.error(
-            `[fwa bases-check reminder] reminder_failed guild=${candidate.guildId} clan=${candidate.clanTag} bucket=${candidate.dueBucketHours} channel=${candidate.destinationChannelId} reason=${classifySendFailureReason(err)} error=${formatError(err)}`,
+            `[fwa bases-check reminder] reminder_failed guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=${classifySendFailureReason(err)} error=${formatError(err)}`,
           );
         }
       }
