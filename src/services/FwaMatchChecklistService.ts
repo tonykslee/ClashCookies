@@ -13,6 +13,7 @@ import {
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistRowContextKey,
   trackedMessageService,
+  resolveFwaMatchChecklistViewType,
   type FwaMatchChecklistTrackedRow,
 } from "./TrackedMessageService";
 import {
@@ -160,7 +161,6 @@ export function buildFwaMatchChecklistComponents(params?: {
 }): Array<
   ActionRowBuilder<ButtonBuilder>
 > {
-  if ((params?.viewType ?? "Mail") === "Bases") return [];
   const state = params?.state ?? "refresh";
   const refreshing = state === "refreshing";
   const expired = state === "expired";
@@ -425,6 +425,25 @@ export async function handleFwaMatchChecklistRefreshButton(
   if (!isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) return;
   await interaction.deferUpdate();
   const guildId = interaction.guildId ?? null;
+  const trackedBeforeRefresh = guildId
+    ? await trackedMessageService
+        .getActiveByMessageId(interaction.message.id)
+        .catch(() => null)
+    : null;
+  if (trackedBeforeRefresh?.status !== "ACTIVE") {
+    await interaction.message
+      .edit({
+        components: buildFwaMatchChecklistComponents({ state: "expired" }),
+      })
+      .catch(() => undefined);
+    await interaction
+      .followUp({
+        ephemeral: true,
+        content: "This checklist post can no longer be refreshed.",
+      })
+      .catch(() => undefined);
+    return;
+  }
   const disableRefreshButton = async (): Promise<void> => {
     await interaction.message
       .edit({
@@ -443,11 +462,13 @@ export async function handleFwaMatchChecklistRefreshButton(
     try {
       if (!guildId) return false;
       await disableRefreshButton();
+      const trackedViewType = resolveFwaMatchChecklistViewType(trackedBeforeRefresh.metadata);
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService: new CoCService(),
         guildId,
         warLookupCache: new Map(),
         client: interaction.client,
+        viewType: trackedViewType === "Bases" ? "Bases" : "Mail",
       });
       const updated = await trackedMessageService
         .refreshFwaMatchChecklistMessage(

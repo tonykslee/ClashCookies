@@ -2014,9 +2014,31 @@ export class TrackedMessageService {
       const content = checklistService.buildFwaMatchBasesMessageContent({
         rows: checklistState.rows,
       });
+      const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
+        tracked.expiresAt ?? null,
+        options?.expiresAt ?? null,
+      );
       await message.edit({
         content,
         allowedMentions: { parse: [] },
+      });
+      await prisma.trackedMessage.update({
+        where: { messageId: message.id },
+        data: {
+          ...(extendedExpiresAt ? { expiresAt: extendedExpiresAt } : {}),
+          metadata: {
+            kind: "bases_checklist",
+            createdByUserId: metadata.createdByUserId,
+            createdAtIso: metadata.createdAtIso,
+            scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
+            checkedClanTags: [],
+            rows: checklistState.rows.map((row) => ({ ...row })),
+            guildId: tracked.guildId,
+            channelId: tracked.channelId,
+            messageId: tracked.messageId,
+            clanTag: tracked.clanTag ?? null,
+          } as any,
+        },
       });
       return true;
     }

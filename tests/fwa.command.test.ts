@@ -319,6 +319,39 @@ describe("/fwa match response normalization", () => {
     );
   });
 
+
+  it("renders the public bases checklist with a Refresh button", async () => {
+    fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+          badgeEmojiId: null,
+          badgeEmojiName: null,
+          badgeEmojiInline: "",
+        },
+      ],
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+      checkedClanTags: [],
+      referenceId: null,
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    } as any);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+      type: "Bases",
+    });
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    const payload = run.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.components?.[0]?.toJSON?.().components?.[0]?.label).toBe("Refresh");
+    expect(run.interaction.fetchReply).toHaveBeenCalledTimes(1);
+  });
+
   it("persists a bases checked completion for the current war", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", name: "Alpha", shortName: "A" },
