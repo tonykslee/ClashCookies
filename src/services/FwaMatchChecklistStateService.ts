@@ -26,6 +26,7 @@ export type FwaMatchChecklistRenderState = {
   scopeKey: string;
   checkedClanTags: string[];
   referenceId: string | null;
+  expiresAt: Date | null;
   emptyMessage: string | null;
 };
 
@@ -42,6 +43,27 @@ function normalizeTagBare(tag: string): string {
 function normalizeChecklistClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return normalized || normalizeTagBare(tag);
+}
+
+function buildFallbackChecklistExpiresAt(nowMs: number = Date.now()): Date {
+  return new Date(nowMs + 30 * 60 * 1000);
+}
+
+function resolveChecklistExpiresAt(params: {
+  warStartTimes: Array<Date | null | undefined>;
+  nowMs?: number;
+}): Date {
+  const latestWarStartMs = params.warStartTimes
+    .map((time) => (time instanceof Date && Number.isFinite(time.getTime()) ? time.getTime() : null))
+    .filter((time): time is number => time !== null)
+    .reduce<number | null>((latest, current) => {
+      if (latest === null) return current;
+      return current > latest ? current : latest;
+    }, null);
+  if (latestWarStartMs !== null) {
+    return new Date(latestWarStartMs);
+  }
+  return buildFallbackChecklistExpiresAt(params.nowMs);
 }
 
 function normalizeMatchType(
@@ -207,6 +229,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       }),
       checkedClanTags: [],
       referenceId: latestActiveSyncPost?.messageId ?? null,
+      expiresAt: buildFallbackChecklistExpiresAt(),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
     };
   }
@@ -229,6 +252,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const warMailLifecycleService = new WarMailLifecycleService();
   const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
   const copyLines: string[] = [];
+  const checklistExpiresAtCandidates: Array<Date | null> = [];
 
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
@@ -249,6 +273,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     const warStartTime =
       currentWar?.startTime ??
       (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
+    checklistExpiresAtCandidates.push(warStartTime);
     const mailStatus = await warMailLifecycleService.resolveStatusForCurrentWar({
       client: params.client,
       guildId: params.guildId,
@@ -304,6 +329,9 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     scopeKey,
     checkedClanTags,
     referenceId: latestActiveSyncPost?.messageId ?? null,
+    expiresAt: resolveChecklistExpiresAt({
+      warStartTimes: checklistExpiresAtCandidates,
+    }),
     emptyMessage: null,
   };
 }

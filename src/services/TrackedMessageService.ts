@@ -114,6 +114,7 @@ export type FwaMatchChecklistReactionChange = {
 export type FwaMatchChecklistRefreshOptions = {
   rows?: FwaMatchChecklistTrackedRow[];
   scopeKey?: string | null;
+  expiresAt?: Date | null;
 };
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
@@ -254,6 +255,23 @@ function normalizeTagBare(tag: string): string {
 function normalizeChecklistClanTag(tag: string): string {
   const normalized = normalizeClanTag(tag);
   return normalized || normalizeTagBare(tag);
+}
+
+function resolveExtendedChecklistExpiresAt(
+  currentExpiresAt: Date | null | undefined,
+  refreshedExpiresAt: Date | null | undefined,
+): Date | null {
+  const currentTime =
+    currentExpiresAt instanceof Date && Number.isFinite(currentExpiresAt.getTime())
+      ? currentExpiresAt.getTime()
+      : null;
+  const refreshedTime =
+    refreshedExpiresAt instanceof Date && Number.isFinite(refreshedExpiresAt.getTime())
+      ? refreshedExpiresAt.getTime()
+      : null;
+  if (refreshedTime === null) return currentTime !== null ? currentExpiresAt ?? null : null;
+  if (currentTime === null) return refreshedExpiresAt ?? null;
+  return refreshedTime > currentTime ? refreshedExpiresAt ?? null : currentExpiresAt ?? null;
 }
 
 /** Purpose: build a stable identity fragment for a checklist row when a live match/sync context exists. */
@@ -1392,6 +1410,13 @@ export class TrackedMessageService {
     });
     if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
     if ((tracked.featureType as string) !== TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) return false;
+    if (tracked.expiresAt instanceof Date && tracked.expiresAt.getTime() <= Date.now()) {
+      await prisma.trackedMessage.update({
+        where: { messageId: message.id },
+        data: { status: TRACKED_MESSAGE_STATUS.EXPIRED },
+      });
+      return false;
+    }
 
     const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
     if (!metadata) {
@@ -1437,6 +1462,10 @@ export class TrackedMessageService {
       rows: effectiveRows,
       checkedClanTags: reactedTags,
     });
+    const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
+      tracked.expiresAt ?? null,
+      options?.expiresAt ?? null,
+    );
     await message.edit({
       content,
       allowedMentions: { parse: [] },
@@ -1444,6 +1473,9 @@ export class TrackedMessageService {
     await prisma.trackedMessage.update({
       where: { messageId: message.id },
       data: {
+        ...(extendedExpiresAt
+          ? { expiresAt: extendedExpiresAt }
+          : {}),
         metadata: {
           createdByUserId: metadata.createdByUserId,
           createdAtIso: metadata.createdAtIso,
