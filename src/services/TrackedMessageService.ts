@@ -853,12 +853,14 @@ export class TrackedMessageService {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
     if (!guildId || !normalizedClanTag) return null;
+    const now = new Date();
 
     const rows = await prisma.trackedMessage.findMany({
       where: {
         guildId,
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: now },
         OR: [
           { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
           {

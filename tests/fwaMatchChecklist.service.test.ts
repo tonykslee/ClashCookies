@@ -522,7 +522,7 @@ describe("FWA match checklist service", () => {
     });
 
     expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).not.toHaveBeenCalled();
-    expect(pin).toHaveBeenCalledTimes(1);
+    expect(pin).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),

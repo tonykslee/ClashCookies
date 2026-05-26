@@ -285,17 +285,6 @@ export async function postFwaMatchChecklistMessage(params: {
 
   const postedMessage = await params.interaction.fetchReply();
   if (viewType === "Bases") {
-    await postedMessage.pin().catch((err) => {
-      console.error(
-        `[fwa match checklist] pin failed message=${postedMessage.id} channel=${params.interaction.channelId} guild=${params.interaction.guildId ?? ""} error=${formatError(err)}`,
-      );
-      params.interaction
-        .followUp({
-          ephemeral: true,
-          content: summarizePinIssue(err),
-        })
-        .catch(() => undefined);
-    });
     return;
   }
   await finalizeFwaMatchChecklistPublication({
@@ -364,12 +353,6 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
   })) as { id: string } | null;
   if (!postedMessage) return null;
   if (viewType === "Bases") {
-    await (postedMessage as any).pin?.().catch?.((err: unknown) => {
-      console.error(
-        `[fwa match checklist] pin failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
-      );
-      return null;
-    });
     return postedMessage.id;
   }
   await finalizeFwaMatchChecklistPublication({

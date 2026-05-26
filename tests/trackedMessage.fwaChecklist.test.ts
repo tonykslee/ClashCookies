@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
   },
@@ -72,6 +73,7 @@ describe("fwa checklist tracked messages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
   });
@@ -162,6 +164,26 @@ describe("fwa checklist tracked messages", () => {
           expiresAt: refreshedExpiresAt,
           metadata: expect.objectContaining({
             rows: expect.any(Array),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("ignores expired base-swap rows when resolving the latest active tracked message", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+
+    const found = await trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+    });
+
+    expect(found).toBeNull();
+    expect(prismaMock.trackedMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          expiresAt: expect.objectContaining({
+            gt: expect.any(Date),
           }),
         }),
       }),
