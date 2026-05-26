@@ -131,6 +131,51 @@ describe("fwa bases checklist reminder service", () => {
     );
   });
 
+  it("queries CurrentWar with both bare and hash clan-tag variants", async () => {
+    prismaMock.currentWar.findMany.mockImplementation(async (args: any) => {
+      const queryTags = Array.isArray(args?.where?.clanTag?.in)
+        ? args.where.clanTag.in.map((value: unknown) => String(value))
+        : [];
+      expect(queryTags).toContain("PYPY");
+      expect(queryTags).toContain("#PYPY");
+      return [
+        {
+          guildId: "guild-1",
+          clanTag: "#PYPY",
+          state: "preparation",
+        },
+      ];
+    });
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      clanTag: "#PYPY",
+      dueBucketHours: 3,
+      warId: 1001,
+    });
+  });
+
   it("skips clans that already have active base issues or an all-good completion", async () => {
     renderStateMock.build.mockResolvedValueOnce({
       viewType: "Bases",

@@ -63,6 +63,16 @@ function normalizeDateMs(input: Date | null | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function buildClanTagQueryVariants(tag: string): string[] {
+  const normalized = normalizeClanTag(tag);
+  if (!normalized) return [];
+  const bare = normalized.replace(/^#/, "");
+  const variants = new Set<string>();
+  if (bare) variants.add(bare);
+  if (normalized) variants.add(normalized);
+  return [...variants];
+}
+
 function resolveReminderDestination(clan: TrackedClanRow): {
   channelId: string | null;
   kind: ReminderDestinationKind | null;
@@ -117,17 +127,18 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
   })) as TrackedClanRow[];
   if (trackedClans.length === 0) return [];
 
-  const trackedTagSet = new Set(
-    trackedClans
-      .map((clan) => normalizeClanTag(clan.tag))
-      .filter((tag): tag is string => Boolean(tag)),
-  );
-  if (trackedTagSet.size === 0) return [];
+  const trackedTagVariants = new Set<string>();
+  for (const clan of trackedClans) {
+    for (const variant of buildClanTagQueryVariants(clan.tag)) {
+      trackedTagVariants.add(variant);
+    }
+  }
+  if (trackedTagVariants.size === 0) return [];
 
   const currentWarRows = (await prisma.currentWar.findMany({
     where: {
       clanTag: {
-        in: [...trackedTagSet],
+        in: [...trackedTagVariants],
       },
     },
     select: {
