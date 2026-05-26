@@ -106,6 +106,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
   scopeKey?: string | null;
   checkedClanTags?: Iterable<string>;
   referenceId?: string | null;
+  expiresAt?: Date | null;
   createdAtIso?: string;
 }): Parameters<typeof trackedMessageService.createFwaMatchChecklistTrackedMessage>[0] {
   const createdAtIso = params.createdAtIso ?? new Date().toISOString();
@@ -115,7 +116,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
     messageId: params.messageId,
     clanTag: params.clanTag,
     referenceId: params.referenceId ?? null,
-    expiresAt: buildFwaMatchChecklistExpiresAt(),
+    expiresAt: params.expiresAt ?? buildFwaMatchChecklistExpiresAt(),
     metadata: {
       createdByUserId: params.createdByUserId,
       createdAtIso,
@@ -142,14 +143,20 @@ export function buildFwaMatchChecklistMessageContent(input: {
 }
 
 /** Purpose: build checklist components for the public post. */
-export function buildFwaMatchChecklistComponents(): Array<
+export function buildFwaMatchChecklistComponents(params?: {
+  state?: "refresh" | "refreshing" | "expired";
+}): Array<
   ActionRowBuilder<ButtonBuilder>
 > {
+  const state = params?.state ?? "refresh";
+  const refreshing = state === "refreshing";
+  const expired = state === "expired";
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(buildFwaMatchChecklistRefreshCustomId())
-        .setLabel("Refresh")
+        .setLabel(refreshing ? "Refreshing..." : expired ? "Expired" : "Refresh")
+        .setDisabled(refreshing || expired)
         .setStyle(ButtonStyle.Secondary),
     ),
   ];
@@ -197,6 +204,7 @@ type FwaMatchChecklistPublicationInput = {
   checkedClanTags: Iterable<string>;
   createdByUserId: string;
   referenceId?: string | null;
+  expiresAt?: Date | null;
   onPinFailure?: (err: unknown) => void | Promise<void>;
 };
 
@@ -215,6 +223,7 @@ export async function finalizeFwaMatchChecklistPublication(
       scopeKey: params.scopeKey,
       checkedClanTags: params.checkedClanTags,
       referenceId: params.referenceId ?? null,
+      expiresAt: params.expiresAt ?? null,
     }),
   );
   await addFwaMatchChecklistReactions(params.message, params.rows);
@@ -237,6 +246,7 @@ export async function postFwaMatchChecklistMessage(params: {
   scopeKey: string | null;
   checkedClanTags: Iterable<string>;
   referenceId?: string | null;
+  expiresAt?: Date | null;
 }): Promise<void> {
   const content = buildFwaMatchChecklistMessageContent({
     rows: params.rows,
@@ -260,6 +270,7 @@ export async function postFwaMatchChecklistMessage(params: {
     rows: params.rows,
     createdByUserId: params.interaction.user.id,
     referenceId: params.referenceId ?? null,
+    expiresAt: params.expiresAt ?? null,
     onPinFailure: async (err) => {
       await params.interaction
         .followUp({
@@ -292,6 +303,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
   checkedClanTags: Iterable<string>;
   createdByUserId: string;
   referenceId?: string | null;
+  expiresAt?: Date | null;
 }): Promise<string | null> {
   const content = buildFwaMatchChecklistMessageContent({
     rows: params.rows,
@@ -318,6 +330,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
     rows: params.rows,
     createdByUserId: params.createdByUserId,
     referenceId: params.referenceId ?? null,
+    expiresAt: params.expiresAt ?? null,
   }).catch((err) => {
     console.error(
       `[fwa match checklist] finalize failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
@@ -334,9 +347,24 @@ export async function handleFwaMatchChecklistRefreshButton(
   if (!isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) return;
   await interaction.deferUpdate();
   const guildId = interaction.guildId ?? null;
+  const disableRefreshButton = async (): Promise<void> => {
+    await interaction.message
+      .edit({
+        components: buildFwaMatchChecklistComponents({ state: "refreshing" }),
+      })
+      .catch(() => undefined);
+  };
+  const restoreRefreshButton = async (state: "refresh" | "expired"): Promise<void> => {
+    await interaction.message
+      .edit({
+        components: buildFwaMatchChecklistComponents({ state }),
+      })
+      .catch(() => undefined);
+  };
   const refreshed = await (async () => {
     try {
       if (!guildId) return false;
+      await disableRefreshButton();
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService: new CoCService(),
         guildId,
@@ -350,6 +378,7 @@ export async function handleFwaMatchChecklistRefreshButton(
           {
             rows: checklistState.rows,
             scopeKey: checklistState.scopeKey,
+            expiresAt: checklistState.expiresAt,
           },
         )
         .catch((err) => {
@@ -366,6 +395,14 @@ export async function handleFwaMatchChecklistRefreshButton(
       return false;
     }
   })();
+  const trackedAfterRefresh = await trackedMessageService
+    .getActiveByMessageId(interaction.message.id)
+    .catch(() => null);
+  if (trackedAfterRefresh?.status === "ACTIVE") {
+    await restoreRefreshButton("refresh");
+  } else {
+    await restoreRefreshButton("expired");
+  }
   if (!refreshed) {
     await interaction
       .followUp({

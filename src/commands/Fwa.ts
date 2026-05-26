@@ -583,34 +583,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       );
     });
 
-    const clanRoleId = String(payload.clanRoleId ?? "").trim();
     const reminderMessages: string[] = [postedA.url, postedB.url];
-    let reminderMessageUrl: string | null = null;
-    if (payload.swapReminder && clanRoleId) {
-      try {
-        const reminderMessage = await mailChannel.send({
-          content: buildFwaBaseSwapReminderLines({
-            clanRoleId,
-          }).join("\n"),
-          allowedMentions: {
-            roles: [clanRoleId],
-          },
-        });
-        reminderMessageUrl =
-          String(reminderMessage?.url ?? "").trim() ||
-          (reminderMessage
-            ? `https://discord.com/channels/${payload.guildId}/${mailChannelId}/${reminderMessage.id}`
-            : "");
-        reminderMessages.push(reminderMessageUrl);
-      } catch (err) {
-        console.warn(
-          `[fwa base-swap] reminder post failed guild=${payload.guildId} channel=${mailChannelId} clan=#${payload.clanTag} error=${formatError(
-            err,
-          )}`,
-        );
-      }
-    }
-
     await logFwaBaseSwapPublication({
       client: interaction.client,
       guildId: payload.guildId,
@@ -643,7 +616,6 @@ export async function handleFwaBaseSwapSplitPostButton(
         `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).`,
         postedA.url,
         postedB.url,
-        reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
       ]
         .filter((line) => Boolean(String(line ?? "").trim()))
         .join("\n"),
@@ -1559,11 +1531,17 @@ function resolveFwaBaseSwapDisplayName(
 }
 
 function validateFwaBaseSwapSwapReminderOption(input: {
+  warBasesRaw: string | null;
+  baseErrorsRaw: string | null;
   fwaBasesRaw: string | null;
   swapReminderRaw: boolean | null;
 }): string | null {
-  if (input.swapReminderRaw !== null && input.fwaBasesRaw === null) {
-    return "`swap-reminder` can only be used when `fwa-bases` is provided.";
+  const hasAnyBaseSwapSelection =
+    input.warBasesRaw !== null ||
+    input.baseErrorsRaw !== null ||
+    input.fwaBasesRaw !== null;
+  if (input.swapReminderRaw !== null && !hasAnyBaseSwapSelection) {
+    return "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.";
   }
   return null;
 }
@@ -13369,6 +13347,7 @@ export const Fwa: Command = {
         scopeKey: checklistState.scopeKey,
         checkedClanTags: checklistState.checkedClanTags,
         referenceId: checklistState.referenceId,
+        expiresAt: checklistState.expiresAt,
       });
       return;
     }
@@ -13524,6 +13503,8 @@ export const Fwa: Command = {
         false,
       );
       const swapReminderError = validateFwaBaseSwapSwapReminderOption({
+        warBasesRaw,
+        baseErrorsRaw,
         fwaBasesRaw,
         swapReminderRaw,
       });
@@ -13531,7 +13512,12 @@ export const Fwa: Command = {
         await editReplySafe(swapReminderError);
         return;
       }
-      const swapReminder = fwaBasesRaw === null ? null : swapReminderRaw ?? true;
+      const swapReminder =
+        swapReminderRaw === null
+          ? fwaBasesRaw !== null
+            ? true
+            : null
+          : swapReminderRaw;
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
           {
@@ -13724,37 +13710,7 @@ export const Fwa: Command = {
           users: mentionUserIds,
         },
       });
-      const clanRoleId = String(trackedConfig?.clanRoleId ?? "").trim();
-      const swapReminderContent =
-        swapReminder && clanRoleId
-          ? buildFwaBaseSwapReminderLines({
-              clanRoleId,
-            })
-          : [];
       const reminderMessages: string[] = [posted.url];
-      let reminderMessageUrl: string | null = null;
-      if (swapReminderContent.length > 0) {
-        try {
-          const reminderMessage = await mailChannel.send({
-            content: swapReminderContent.join("\n"),
-            allowedMentions: {
-              roles: [clanRoleId],
-            },
-          });
-          reminderMessageUrl =
-            String(reminderMessage?.url ?? "").trim() ||
-            (reminderMessage
-              ? `https://discord.com/channels/${interaction.guildId}/${mailChannelId}/${reminderMessage.id}`
-              : "");
-          reminderMessages.push(reminderMessageUrl);
-        } catch (err) {
-          console.warn(
-            `[fwa base-swap] reminder post failed guild=${interaction.guildId} channel=${mailChannelId} clan=#${clanTag} error=${formatError(
-              err,
-            )}`,
-          );
-        }
-      }
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
@@ -13812,7 +13768,6 @@ export const Fwa: Command = {
             ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
             : "All listed players have linked Discord users.",
           posted.url,
-          reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
         ].join("\n"),
       );
       await deliverFwaBaseSwapDmMessages({

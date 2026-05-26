@@ -12,6 +12,25 @@ const blacklistHeatmapRefServiceMock = vi.hoisted(() => ({
   rebuildBlacklistHeatmapRef: vi.fn(),
 }));
 
+const fwaMatchChecklistStateServiceMock = vi.hoisted(() => ({
+  buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
+    rows: [
+      {
+        clanTag: "#PYPY",
+        compactCopyLine: "📬 | 🟢 | RR vs `Bravo` (`#B1`)",
+        badgeEmojiId: "111",
+        badgeEmojiName: "rr",
+        badgeEmojiInline: "<:rr:111>",
+        contextKey: "ctx-rr",
+      },
+    ],
+    scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr",
+    checkedClanTags: ["#PYPY"],
+    referenceId: "sync-message-1",
+    emptyMessage: null,
+  }),
+}));
+
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
   clanPointsSync: {
@@ -46,6 +65,11 @@ vi.mock("../src/services/BlacklistMatchSampleService", () => ({
 
 vi.mock("../src/services/BlacklistHeatmapRefService", () => ({
   blacklistHeatmapRefService: blacklistHeatmapRefServiceMock,
+}));
+
+vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
+  buildFwaMatchChecklistRenderStateForGuild:
+    fwaMatchChecklistStateServiceMock.buildFwaMatchChecklistRenderStateForGuild,
 }));
 
 import {
@@ -195,6 +219,11 @@ describe("/fwa match response normalization", () => {
     expect(run.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Mail Checklist"),
+      }),
+    );
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)"),
       }),
     );
     expect(run.editReply).toHaveBeenCalledWith(
