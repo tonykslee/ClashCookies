@@ -9,6 +9,13 @@ import { normalizeClanTag } from "../PlayerLinkService";
 import { isTodoWarStateActive } from "../TodoTrackedWarStateService";
 
 export const BASE_SWAP_DM_REMINDER_OFFSETS_HOURS = [12, 6, 3, 1] as const;
+const BASE_SWAP_DM_REMINDER_SECTION_ORDER = [
+  "war_bases",
+  "fwa_bases",
+  "base_errors",
+] as const;
+type FwaBaseSwapDmReminderSection =
+  (typeof BASE_SWAP_DM_REMINDER_SECTION_ORDER)[number];
 
 const BASE_SWAP_DM_REMINDER_HOUR_MS = 60 * 60 * 1000;
 
@@ -16,12 +23,14 @@ export type FwaBaseSwapDmReminderEntry = {
   position: number;
   playerTag: string;
   playerName: string;
+  section: FwaBaseSwapDmReminderSection;
 };
 
 export type FwaBaseSwapDmReminderCandidate = {
   guildId: string;
   clanTag: string;
   clanName: string | null;
+  matchType: string | null;
   trackedMessageId: string;
   referenceId: string | null;
   channelId: string;
@@ -56,12 +65,14 @@ type CurrentWarRow = {
   clanTag: string;
   startTime: Date | null;
   state: string | null;
+  matchType: string | null;
 };
 
 type ReminderEntry = {
   position: number;
   playerTag: string;
   playerName: string;
+  section: FwaBaseSwapDmReminderSection;
   discordUserId: string;
 };
 
@@ -138,6 +149,7 @@ export function buildFwaBaseSwapDmReminderContent(input: {
   battleDayStart: Date;
   now?: Date;
   remainingOffsetHours: readonly number[];
+  matchType?: string | null;
   entries: readonly FwaBaseSwapDmReminderEntry[];
 }): string {
   const now = input.now ?? new Date();
@@ -148,22 +160,36 @@ export function buildFwaBaseSwapDmReminderContent(input: {
       ? formatCompactDurationLabel(battleDayStartMs - nowMs)
       : "unknown time";
   const remainingSlotsLabel = formatReminderSlotList(input.remainingOffsetHours);
-  const entryLines = [...input.entries]
-    .sort((a, b) => {
-      if (a.position !== b.position) return a.position - b.position;
-      return a.playerName.localeCompare(b.playerName);
-    })
-    .map((entry) => `- #${entry.position} ${entry.playerName}`);
+  const groupedEntries = groupReminderEntriesBySection(input.entries);
+  const lines: string[] = [
+    "# Base swap reminder",
+    `Since you have not yet reacted to the base-swap post ${input.postUrl}, you are getting pinged for:`,
+  ];
 
-  return [
-    "# Swap back to FWA base!",
-    `Since you have not yet reacted to the base-swap post ${input.postUrl}, you are getting pinged to swap your base for:`,
-    ...entryLines,
-    `You have ${timeLeftLabel} to swap!`,
+  for (const section of BASE_SWAP_DM_REMINDER_SECTION_ORDER) {
+    const sectionEntries = groupedEntries.get(section) ?? [];
+    if (sectionEntries.length === 0) continue;
+    const sectionCopy = resolveFwaBaseSwapReminderSectionCopy({
+      section,
+      matchType: input.matchType ?? null,
+    });
+    lines.push("");
+    lines.push(`## ${sectionCopy.heading}`);
+    lines.push(sectionCopy.description);
+    lines.push(
+      ...sectionEntries.map((entry) => `- #${entry.position} ${entry.playerName}`),
+    );
+  }
+
+  lines.push("");
+  lines.push(`## You have ${timeLeftLabel} until battle day starts`);
+  lines.push(
     input.remainingOffsetHours.length > 0
       ? `You will get pinged at the ${remainingSlotsLabel} mark until you react to the base-swap post ${input.postUrl}`
       : `You will not get pinged again before battle day unless you react to the base-swap post ${input.postUrl}`,
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 export const buildFwaBaseSwapDmReminderContentForTest =
@@ -210,7 +236,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
         metadata.entries
           .filter(
             (entry) =>
-              entry.section === "fwa_bases" &&
+              isBaseSwapReminderSection(entry.section) &&
               Boolean(String(entry.discordUserId ?? "").trim()) &&
               entry.acknowledged !== true,
           )
@@ -218,6 +244,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
             position: entry.position,
             playerTag: entry.playerTag,
             playerName: entry.playerName,
+            section: entry.section,
             discordUserId: String(entry.discordUserId ?? "").trim(),
           })),
       );
@@ -236,6 +263,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
           position: entry.position,
           playerTag: entry.playerTag,
           playerName: entry.playerName,
+          section: entry.section,
           discordUserId: String(entry.discordUserId ?? "").trim(),
         })),
       };
@@ -255,6 +283,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
           clanTag: true,
           startTime: true,
           state: true,
+          matchType: true,
         },
       })
     : [];
@@ -268,6 +297,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
       clanTag,
       startTime: row.startTime,
       state: row.state ?? null,
+      matchType: row.matchType ?? null,
     });
   }
   const groupedByScope = new Map<
@@ -305,6 +335,8 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
       offsets: BASE_SWAP_DM_REMINDER_OFFSETS_HOURS,
     });
     if (dueOffsets.length === 0) continue;
+    const dueOffsetHours = dueOffsets[dueOffsets.length - 1] ?? null;
+    if (dueOffsetHours === null) continue;
     const remainingOffsets = resolveRemainingFwaBaseSwapDmReminderSlots({
       now,
       battleDayStart,
@@ -327,6 +359,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
             position: normalizeReminderPosition(entry.position),
             playerTag: String(entry.playerTag ?? "").trim(),
             playerName: String(entry.playerName ?? "").trim(),
+            section: normalizeReminderSection(entry.section) ?? "war_bases",
             discordUserId,
           });
           acc.set(discordUserId, userEntries);
@@ -339,33 +372,28 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
     for (const [discordUserId, entries] of entriesByUser.entries()) {
       const dedupedEntries = dedupeReminderEntries(entries);
       if (dedupedEntries.length === 0) continue;
-      const sortedEntries = [...dedupedEntries].sort((a, b) => {
-        if (a.position !== b.position) return a.position - b.position;
-        const nameCompare = a.playerName.localeCompare(b.playerName);
-        if (nameCompare !== 0) return nameCompare;
-        return a.playerTag.localeCompare(b.playerTag);
+      const sortedEntries = [...dedupedEntries].sort(compareReminderEntries);
+      candidates.push({
+        guildId,
+        clanTag: group.canonicalRow.clanTag,
+        clanName: group.canonicalRow.metadata.clanName ?? null,
+        matchType: group.activeCurrentWar?.matchType ?? null,
+        trackedMessageId: group.canonicalRow.id,
+        referenceId: group.canonicalRow.referenceId,
+        channelId: group.canonicalRow.channelId,
+        messageId: group.canonicalRow.messageId,
+        postUrl,
+        discordUserId,
+        battleDayStart: battleDayStart ?? new Date(now.getTime()),
+        dueOffsetHours,
+        remainingOffsetHours: remainingOffsets,
+        entries: sortedEntries.map(({ position, playerTag, playerName, section }) => ({
+          position,
+          playerTag,
+          playerName,
+          section,
+        })),
       });
-      for (const dueOffsetHours of dueOffsets) {
-        candidates.push({
-          guildId,
-          clanTag: group.canonicalRow.clanTag,
-          clanName: group.canonicalRow.metadata.clanName ?? null,
-          trackedMessageId: group.canonicalRow.id,
-          referenceId: group.canonicalRow.referenceId,
-          channelId: group.canonicalRow.channelId,
-          messageId: group.canonicalRow.messageId,
-          postUrl,
-          discordUserId,
-          battleDayStart: battleDayStart ?? new Date(now.getTime()),
-          dueOffsetHours,
-          remainingOffsetHours: remainingOffsets,
-          entries: sortedEntries.map(({ position, playerTag, playerName }) => ({
-            position,
-            playerTag,
-            playerName,
-          })),
-        });
-      }
     }
   }
 
@@ -470,19 +498,32 @@ function dedupeReminderEntries(entries: readonly ReminderEntry[]): ReminderEntry
     const position = normalizeReminderPosition(entry.position);
     const playerTag = String(entry.playerTag ?? "").trim();
     const playerName = String(entry.playerName ?? "").trim();
+    const section = normalizeReminderSection(entry.section);
     const discordUserId = String(entry.discordUserId ?? "").trim();
-    if (position <= 0 || !playerTag || !playerName || !discordUserId) continue;
-    const key = `${position}:${playerTag}:${discordUserId}`;
+    if (position <= 0 || !playerTag || !playerName || !discordUserId || !section) continue;
+    const key = `${section}:${position}:${playerTag}:${discordUserId}`;
     if (!deduped.has(key)) {
       deduped.set(key, {
         position,
         playerTag,
         playerName,
+        section,
         discordUserId,
       });
     }
   }
   return [...deduped.values()];
+}
+
+function compareReminderEntries(a: ReminderEntry, b: ReminderEntry): number {
+  const sectionCompare =
+    BASE_SWAP_DM_REMINDER_SECTION_ORDER.indexOf(a.section) -
+    BASE_SWAP_DM_REMINDER_SECTION_ORDER.indexOf(b.section);
+  if (sectionCompare !== 0) return sectionCompare;
+  if (a.position !== b.position) return a.position - b.position;
+  const nameCompare = a.playerName.localeCompare(b.playerName);
+  if (nameCompare !== 0) return nameCompare;
+  return a.playerTag.localeCompare(b.playerTag);
 }
 
 function normalizeOffsets(offsets?: readonly number[]): number[] {
@@ -506,6 +547,14 @@ function normalizeReminderPosition(input: unknown): number {
   return normalized > 0 ? normalized : 0;
 }
 
+function normalizeReminderSection(input: unknown): FwaBaseSwapDmReminderSection | null {
+  const section = String(input ?? "").trim();
+  if (section === "war_bases" || section === "base_errors" || section === "fwa_bases") {
+    return section;
+  }
+  return null;
+}
+
 function normalizeDateMs(input: Date | null | undefined): number | null {
   if (!(input instanceof Date)) return null;
   const value = input.getTime();
@@ -520,6 +569,68 @@ function formatReminderSlotList(offsetHours: readonly number[]): string {
   if (labels.length === 1) return labels[0];
   if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
   return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+function groupReminderEntriesBySection(entries: readonly FwaBaseSwapDmReminderEntry[]): Map<
+  FwaBaseSwapDmReminderSection,
+  FwaBaseSwapDmReminderEntry[]
+> {
+  const grouped = new Map<FwaBaseSwapDmReminderSection, FwaBaseSwapDmReminderEntry[]>();
+  for (const entry of entries) {
+    const section = normalizeReminderSection(entry.section);
+    if (!section) continue;
+    const list = grouped.get(section) ?? [];
+    list.push({
+      position: normalizeReminderPosition(entry.position),
+      playerTag: String(entry.playerTag ?? "").trim(),
+      playerName: String(entry.playerName ?? "").trim(),
+      section,
+    });
+    grouped.set(section, list);
+  }
+  for (const [section, sectionEntries] of grouped.entries()) {
+    sectionEntries.sort((a, b) => {
+      if (a.position !== b.position) return a.position - b.position;
+      const nameCompare = a.playerName.localeCompare(b.playerName);
+      if (nameCompare !== 0) return nameCompare;
+      return a.playerTag.localeCompare(b.playerTag);
+    });
+    grouped.set(section, sectionEntries);
+  }
+  return grouped;
+}
+
+function isBaseSwapReminderSection(
+  section: string,
+): section is FwaBaseSwapDmReminderSection {
+  return normalizeReminderSection(section) !== null;
+}
+
+function resolveFwaBaseSwapReminderSectionCopy(input: {
+  section: FwaBaseSwapDmReminderSection;
+  matchType: string | null;
+}): { heading: string; description: string } {
+  const matchType = String(input.matchType ?? "").trim().toUpperCase();
+  switch (input.section) {
+    case "war_bases":
+      return {
+        heading: "Swap back to FWA base!",
+        description:
+          "You have not yet reacted and need to swap the listed account(s) from war base back to FWA base.",
+      };
+    case "fwa_bases":
+      return {
+        heading: "Swap to WAR base!",
+        description:
+          "You have not yet reacted and need to swap the listed account(s) from FWA base to war base.",
+      };
+    case "base_errors":
+      return {
+        heading: matchType === "FWA" ? "Fix your FWA base!" : "Fix your war base!",
+        description:
+          "You have not yet reacted and need to fix the listed account(s)' base errors.",
+      };
+  }
 }
 
 function formatCompactDurationLabel(durationMs: number): string {

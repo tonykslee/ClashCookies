@@ -1531,11 +1531,17 @@ function resolveFwaBaseSwapDisplayName(
 }
 
 function validateFwaBaseSwapSwapReminderOption(input: {
+  warBasesRaw: string | null;
+  baseErrorsRaw: string | null;
   fwaBasesRaw: string | null;
   swapReminderRaw: boolean | null;
 }): string | null {
-  if (input.swapReminderRaw !== null && input.fwaBasesRaw === null) {
-    return "`swap-reminder` can only be used when `fwa-bases` is provided.";
+  const hasAnyBaseSwapSelection =
+    input.warBasesRaw !== null ||
+    input.baseErrorsRaw !== null ||
+    input.fwaBasesRaw !== null;
+  if (input.swapReminderRaw !== null && !hasAnyBaseSwapSelection) {
+    return "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.";
   }
   return null;
 }
@@ -13496,6 +13502,8 @@ export const Fwa: Command = {
         false,
       );
       const swapReminderError = validateFwaBaseSwapSwapReminderOption({
+        warBasesRaw,
+        baseErrorsRaw,
         fwaBasesRaw,
         swapReminderRaw,
       });
@@ -13503,7 +13511,12 @@ export const Fwa: Command = {
         await editReplySafe(swapReminderError);
         return;
       }
-      const swapReminder = fwaBasesRaw === null ? null : swapReminderRaw ?? true;
+      const swapReminder =
+        swapReminderRaw === null
+          ? fwaBasesRaw !== null
+            ? true
+            : null
+          : swapReminderRaw;
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
           {

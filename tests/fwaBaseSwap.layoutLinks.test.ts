@@ -790,25 +790,51 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
-  it("allows swap-reminder only when fwa-bases is present", () => {
+  it("allows swap-reminder when any base-swap section is present", () => {
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
+        warBasesRaw: "1",
+        baseErrorsRaw: null,
         fwaBasesRaw: null,
         swapReminderRaw: true,
       }),
-    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    ).toBeNull();
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
+        warBasesRaw: null,
+        baseErrorsRaw: "2",
         fwaBasesRaw: null,
         swapReminderRaw: false,
       }),
-    ).toBe("`swap-reminder` can only be used when `fwa-bases` is provided.");
+    ).toBeNull();
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
+        warBasesRaw: null,
+        baseErrorsRaw: null,
         fwaBasesRaw: "1,2",
         swapReminderRaw: null,
       }),
     ).toBeNull();
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        warBasesRaw: null,
+        baseErrorsRaw: null,
+        fwaBasesRaw: null,
+        swapReminderRaw: true,
+      }),
+    ).toBe(
+      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+    );
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        warBasesRaw: null,
+        baseErrorsRaw: null,
+        fwaBasesRaw: null,
+        swapReminderRaw: false,
+      }),
+    ).toBe(
+      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+    );
   });
 
   it("renders the fwa-bases section and keeps the preparation and react prompt lines", () => {
