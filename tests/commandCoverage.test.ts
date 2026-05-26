@@ -134,8 +134,9 @@ describe("command coverage", () => {
     expect(normalized).toContain("public mail checklist posts are auto-pinned");
     expect(normalized).toContain("persistent reaction-driven mail checklist");
     expect(normalized).toContain("type:bases");
-    expect(normalized).toContain("read-only bases checklist snapshot");
-    expect(normalized).toContain("no reactions or pinning lifecycle");
+    expect(normalized).toContain("tracked bases checklist in public mode");
+    expect(normalized).toContain("clan badge reactions and auto-pinning");
+    expect(normalized).toContain("ephemeral snapshot without reactions");
     expect(normalized).toContain("clan:<tag-or-short-name>");
     expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");

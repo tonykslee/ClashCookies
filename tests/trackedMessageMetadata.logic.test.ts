@@ -136,7 +136,7 @@ describe("tracked message metadata parsing", () => {
       scopeKey: "scope-1",
       checkedClanTags: ["RR", "TWC"],
       rows: [
-        {
+                {
           clanTag: "RR",
           compactCopyLine: "row-1",
           badgeEmojiId: null,
@@ -144,6 +144,9 @@ describe("tracked message metadata parsing", () => {
           badgeEmojiInline: "<:rr:111>",
           contextKey: "ctx-1",
           detailLines: null,
+          warId: null,
+          opponentTag: null,
+          warStartTimeIso: null,
         },
       ],
     });

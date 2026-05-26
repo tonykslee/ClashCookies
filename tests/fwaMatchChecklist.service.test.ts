@@ -4,6 +4,7 @@ const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
   refreshFwaMatchChecklistMessage: vi.fn().mockResolvedValue(true),
   getActiveByMessageId: vi.fn().mockResolvedValue({ status: "ACTIVE" }),
+  replaceOlderFwaMatchChecklistMessages: vi.fn().mockResolvedValue(0),
 }));
 const fwaChecklistRenderStateMock = vi.hoisted(() => ({
   buildFwaMatchChecklistRenderStateForGuild: vi.fn().mockResolvedValue({
@@ -84,6 +85,7 @@ describe("FWA match checklist service", () => {
     );
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValue(true);
     trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
+    trackedMessageMock.replaceOlderFwaMatchChecklistMessages.mockResolvedValue(0);
   });
 
   it("builds checklist content with the mail checklist header and body", () => {
@@ -227,6 +229,9 @@ describe("FWA match checklist service", () => {
     expect(react).toHaveBeenCalledWith("<:twc:222>");
     expect(react).toHaveBeenCalledTimes(2);
     expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).not.toHaveBeenCalled();
   });
 
 
@@ -492,14 +497,19 @@ describe("FWA match checklist service", () => {
     consoleError.mockRestore();
   });
 
-  it("publishes a public bases checklist without reactions or tracked-message writes", async () => {
+  it("publishes a public bases checklist with reactions and tracked-message persistence", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
     const pin = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       guildId: "guild-1",
       channelId: "channel-1",
       user: { id: "user-1" },
       editReply: vi.fn().mockResolvedValue(undefined),
-      fetchReply: vi.fn().mockResolvedValue({ id: "message-1", pin }),
+      fetchReply: vi.fn().mockResolvedValue({
+        id: "message-1",
+        react,
+        pin,
+      }),
       followUp: vi.fn().mockResolvedValue(undefined),
     } as any;
 
@@ -511,9 +521,12 @@ describe("FWA match checklist service", () => {
         {
           clanTag: "#PYPY",
           compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
-          badgeEmojiId: null,
-          badgeEmojiName: null,
-          badgeEmojiInline: "",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-13T18:00:00.000Z",
         },
       ],
       clanTag: null,
@@ -521,8 +534,33 @@ describe("FWA match checklist service", () => {
       checkedClanTags: [],
     });
 
-    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).not.toHaveBeenCalled();
-    expect(pin).not.toHaveBeenCalled();
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          kind: "bases_checklist",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              badgeEmojiInline: "<:rr:111>",
+              warId: 1001,
+              opponentTag: "#OPP1",
+              warStartTimeIso: "2026-05-13T18:00:00.000Z",
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(pin).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageMock.replaceOlderFwaMatchChecklistMessages,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+        resolveMessageForCleanup: expect.any(Function),
+      }),
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),

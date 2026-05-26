@@ -94,14 +94,26 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiInline: string;
   contextKey?: string | null;
   detailLines?: string[] | null;
+  warId?: string | number | null;
+  opponentTag?: string | null;
+  warStartTimeIso?: string | null;
 };
 
 export type FwaMatchChecklistTrackedMetadata = {
+  kind?: "mail_checklist" | "bases_checklist";
   createdByUserId: string;
   createdAtIso: string;
   scopeKey?: string | null;
   checkedClanTags?: string[];
   rows: FwaMatchChecklistTrackedRow[];
+  guildId?: string | null;
+  channelId?: string | null;
+  messageId?: string | null;
+  clanTag?: string | null;
+  clanName?: string | null;
+  warId?: string | number | null;
+  opponentTag?: string | null;
+  warStartTimeIso?: string | null;
 };
 
 export type FwaBaseSwapTrackedMessageSnapshot = {
@@ -681,6 +693,9 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiInline: badgeEmojiInline || "",
     contextKey: String(value.contextKey ?? "").trim() || null,
     detailLines: detailLines && detailLines.length > 0 ? detailLines : null,
+    warId: normalizeWarIdText(value.warId as string | number | null | undefined),
+    opponentTag: String(value.opponentTag ?? "").trim() || null,
+    warStartTimeIso: String(value.warStartTimeIso ?? "").trim() || null,
   };
 }
 
@@ -743,6 +758,13 @@ export function parseFwaMatchChecklistMetadata(
     checkedClanTags,
     rows,
   };
+}
+
+export function resolveFwaMatchChecklistViewType(
+  metadata: unknown,
+): "Mail" | "Bases" {
+  if (!isObject(metadata)) return "Mail";
+  return String(metadata.kind ?? "").trim() === "bases_checklist" ? "Bases" : "Mail";
 }
 
 /** Purpose: render the current sync spin/claim state into one embed shared by the scheduler and the manual command. */
@@ -1349,6 +1371,69 @@ export class TrackedMessageService {
     });
   }
 
+  async replaceOlderFwaMatchChecklistMessages(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    resolveMessageForCleanup?: (input: {
+      channelId: string;
+      messageId: string;
+    }) => Promise<
+      | {
+          pinned?: boolean | null;
+          unpin: () => Promise<unknown>;
+        }
+      | null
+    >;
+  }): Promise<number> {
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId: String(params.guildId ?? "").trim(),
+        channelId: String(params.channelId ?? "").trim(),
+        messageId: { not: String(params.messageId ?? "").trim() },
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      },
+      orderBy: [{ createdAt: "asc" }],
+    });
+
+    let replacedCount = 0;
+    for (const row of rows) {
+      if (resolveFwaMatchChecklistViewType(row.metadata) !== "Bases") continue;
+      const currentMessage =
+        params.resolveMessageForCleanup
+          ? await params.resolveMessageForCleanup({
+              channelId: row.channelId,
+              messageId: row.messageId,
+            }).catch((err) => {
+              console.error(
+                `[tracked-message] fwa checklist cleanup fetch failed guild=${params.guildId} channel=${params.channelId} message=${row.messageId} error=${formatError(err)}`,
+              );
+              return null;
+            })
+          : null;
+      if (!currentMessage) {
+        console.error(
+          `[tracked-message] fwa checklist cleanup missing message guild=${params.guildId} channel=${params.channelId} message=${row.messageId}`,
+        );
+      } else if (currentMessage.pinned !== false) {
+        await currentMessage.unpin().catch((err) => {
+          console.error(
+            `[tracked-message] fwa checklist cleanup unpin failed guild=${params.guildId} channel=${params.channelId} message=${row.messageId} error=${formatError(err)}`,
+          );
+        });
+      }
+
+      await prisma.trackedMessage.update({
+        where: { messageId: row.messageId },
+        data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+      });
+      replacedCount += 1;
+    }
+
+    return replacedCount;
+  }
+
   async setFwaMatchChecklistBasesCompletion(params: {
     guildId: string;
     channelId: string;
@@ -1739,6 +1824,74 @@ export class TrackedMessageService {
         data: { status: TRACKED_MESSAGE_STATUS.EXPIRED },
       });
       return false;
+    }
+
+    const viewType = resolveFwaMatchChecklistViewType(tracked.metadata);
+    if (viewType === "Bases") {
+      const changedRowTag = change
+        ? findChecklistRowTagForReaction(metadata.rows, change.reaction)
+        : null;
+      if (change && changedRowTag) {
+        const reactionChange = change;
+        const matchedRow = metadata.rows.find(
+          (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
+        );
+        if (matchedRow) {
+          const warStartTime = matchedRow.warStartTimeIso
+            ? new Date(matchedRow.warStartTimeIso)
+            : null;
+          const checked =
+            reactionChange.kind === "add" ||
+            (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
+          if (checked) {
+            await this.setFwaMatchChecklistBasesCompletion({
+              guildId: tracked.guildId,
+              channelId: tracked.channelId,
+              createdByUserId: metadata.createdByUserId,
+              clanTag: matchedRow.clanTag,
+              clanName: null,
+              warId: matchedRow.warId ?? null,
+              warStartTime,
+              opponentTag: matchedRow.opponentTag ?? null,
+              checked: true,
+            });
+          } else if (
+            reactionChange.kind === "remove" &&
+            (reactionChange.reaction.count ?? 0) <= 1
+          ) {
+            await this.setFwaMatchChecklistBasesCompletion({
+              guildId: tracked.guildId,
+              channelId: tracked.channelId,
+              createdByUserId: metadata.createdByUserId,
+              clanTag: matchedRow.clanTag,
+              clanName: null,
+              warId: matchedRow.warId ?? null,
+              warStartTime,
+              opponentTag: matchedRow.opponentTag ?? null,
+              checked: false,
+            });
+          }
+        }
+      }
+
+      const [stateService, checklistService] = await Promise.all([
+        import("./FwaMatchChecklistStateService"),
+        import("./FwaMatchChecklistService"),
+      ]);
+      const checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
+        cocService: {} as any,
+        guildId: tracked.guildId,
+        client: (message as { client?: Client }).client ?? ({} as Client),
+        viewType: "Bases",
+      });
+      const content = checklistService.buildFwaMatchBasesMessageContent({
+        rows: checklistState.rows,
+      });
+      await message.edit({
+        content,
+        allowedMentions: { parse: [] },
+      });
+      return true;
     }
 
     const persistedCheckedTags = new Set(

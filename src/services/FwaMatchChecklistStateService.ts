@@ -50,6 +50,36 @@ function normalizeChecklistClanTag(tag: string): string {
   return normalized || normalizeTagBare(tag);
 }
 
+function parseTrackedClanBadge(
+  badge: string | null | undefined,
+): {
+  badgeEmojiId: string | null;
+  badgeEmojiName: string | null;
+  badgeEmojiInline: string;
+} {
+  const trimmed = String(badge ?? "").trim();
+  if (!trimmed) {
+    return {
+      badgeEmojiId: null,
+      badgeEmojiName: null,
+      badgeEmojiInline: "",
+    };
+  }
+  const custom = /^<a?:([A-Za-z0-9_]{2,32}):(\d{1,22})>$/.exec(trimmed);
+  if (custom) {
+    return {
+      badgeEmojiId: custom[2],
+      badgeEmojiName: custom[1],
+      badgeEmojiInline: `<${custom[0].startsWith("<a:") ? "a" : ""}:${custom[1]}:${custom[2]}>`,
+    };
+  }
+  return {
+    badgeEmojiId: null,
+    badgeEmojiName: trimmed,
+    badgeEmojiInline: trimmed,
+  };
+}
+
 function buildFallbackChecklistExpiresAt(nowMs: number = Date.now()): Date {
   return new Date(nowMs + 30 * 60 * 1000);
 }
@@ -241,6 +271,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       sanitizeClanName(clan.shortName) ??
       sanitizeClanName(clan.name) ??
       `#${clanTag}`;
+    const clanBadge = parseTrackedClanBadge(clan.clanBadge);
     const allGoodCompletion = issueSummary.hasIssues
       ? null
       : await trackedMessageService
@@ -260,9 +291,12 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     rows.push({
       clanTag,
       compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}`,
-      badgeEmojiId: null,
-      badgeEmojiName: null,
-      badgeEmojiInline: "",
+      badgeEmojiId: clanBadge.badgeEmojiId,
+      badgeEmojiName: clanBadge.badgeEmojiName,
+      badgeEmojiInline: clanBadge.badgeEmojiInline,
+      warId: activeCurrentWar?.warId ?? null,
+      opponentTag: activeCurrentWar?.opponentTag ?? null,
+      warStartTimeIso: activeCurrentWar?.startTime ? activeCurrentWar.startTime.toISOString() : null,
       contextKey: activeCurrentWar
         ? buildFwaMatchChecklistRowContextKey({
             clanTag: clan.tag,
