@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -53,9 +53,12 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       },
     ]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
+      null as any,
+    );
     vi.spyOn(
       trackedMessageService,
-      "findLatestActiveFwaBaseSwapTrackedMessageForClan",
+      "findLatestFwaMatchChecklistBasesCompletionForClan",
     ).mockResolvedValue(null as any);
     vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValue({
       status: "posted",
@@ -105,7 +108,6 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         outcome: null,
       },
     ]);
-    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     const before = Date.now();
     const state = await buildFwaMatchChecklistRenderStateForGuild({
       cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
@@ -193,6 +195,34 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         } as any;
       },
     );
+    vi.mocked(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
+    ).mockImplementation(async ({ clanTag, warId }) => {
+      if (clanTag !== "#PYPL") return null;
+      if (String(warId ?? "") !== "2") return null;
+      return {
+        id: "completion-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId:
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z",
+        referenceId: null,
+        clanTag: "#PYPL",
+        createdAt: new Date("2026-05-13T21:59:00.000Z"),
+        expiresAt: null,
+        metadata: {
+          kind: "bases_completion",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T21:58:00.000Z",
+          clanTag: "PYPL",
+          clanName: "Bravo",
+          checked: true,
+          warId: "2",
+          opponentTag: "OPP2",
+          warStartTimeIso: "2026-05-13T22:00:00.000Z",
+        },
+      } as any;
+    });
 
     const getCurrentWar = vi.fn().mockResolvedValue(null);
     const state = await buildFwaMatchChecklistRenderStateForGuild({
@@ -213,8 +243,72 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       "    - #23 PlayerTwo",
     ]);
     expect(state.rows[1].compactCopyLine).toContain("Bravo |");
-    expect(state.rows[1].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[1].compactCopyLine).toContain("✅ Bases checked and all good");
+    expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPL",
+        warId: 2,
+        warStartTime: new Date("2026-05-13T22:00:00.000Z"),
+        opponentTag: "#OPP2",
+      }),
+    );
     expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
     expect(getCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("does not carry bases completion into a different current-war identity", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPL",
+        warId: 3,
+        startTime: new Date("2026-05-14T22:00:00.000Z"),
+        opponentTag: "#OPP3",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(
+      null as any,
+    );
+    vi.mocked(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
+    ).mockImplementation(async ({ clanTag, warId, opponentTag }) => {
+      if (clanTag === "#PYPL" && String(warId ?? "") === "2" && opponentTag === "#OPP2") {
+        return {
+          id: "completion-old",
+          guildId: "guild-1",
+          channelId: "channel-1",
+          messageId:
+            "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z",
+          referenceId: null,
+          clanTag: "#PYPL",
+          createdAt: new Date("2026-05-13T21:59:00.000Z"),
+          expiresAt: null,
+          metadata: {
+            kind: "bases_completion",
+            createdByUserId: "user-1",
+            createdAtIso: "2026-05-13T21:58:00.000Z",
+            clanTag: "PYPL",
+            clanName: "Bravo",
+            checked: true,
+            warId: "2",
+            opponentTag: "OPP2",
+            warStartTimeIso: "2026-05-13T22:00:00.000Z",
+          },
+        } as any;
+      }
+      return null;
+    });
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
   });
 });

@@ -199,6 +199,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       matchType: true,
       inferredMatchType: true,
       outcome: true,
+      state: true,
     },
   });
   const currentWarByTag = new Map(
@@ -210,7 +211,11 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
-    checklistExpiresAtCandidates.push(currentWar?.startTime ?? null);
+    const activeCurrentWar =
+      currentWar && String(currentWar.state ?? "").trim().toLowerCase() !== "notinwar"
+        ? currentWar
+        : null;
+    checklistExpiresAtCandidates.push(activeCurrentWar?.startTime ?? null);
     const activeBaseSwap = await trackedMessageService
       .findLatestActiveFwaBaseSwapTrackedMessageForClan({
         guildId: params.guildId,
@@ -225,9 +230,9 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           detailLines: [],
         };
     const matchType = normalizeMatchType(
-      String(currentWar?.matchType ?? currentWar?.inferredMatchType ?? "").trim() || null,
+      String(activeCurrentWar?.matchType ?? activeCurrentWar?.inferredMatchType ?? "").trim() || null,
     );
-    const outcome = normalizeOutcome(currentWar?.outcome ?? null);
+    const outcome = normalizeOutcome(activeCurrentWar?.outcome ?? null);
     const matchStateEmoji = resolveFwaMatchStateEmoji({
       matchType,
       outcome,
@@ -236,17 +241,33 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       sanitizeClanName(clan.shortName) ??
       sanitizeClanName(clan.name) ??
       `#${clanTag}`;
+    const allGoodCompletion = issueSummary.hasIssues
+      ? null
+      : await trackedMessageService
+          .findLatestFwaMatchChecklistBasesCompletionForClan({
+            guildId: params.guildId,
+            clanTag,
+            warId: activeCurrentWar?.warId ?? null,
+            warStartTime: activeCurrentWar?.startTime ?? null,
+            opponentTag: activeCurrentWar?.opponentTag ?? null,
+          })
+          .catch(() => null);
+    const statusText = issueSummary.hasIssues
+      ? issueSummary.statusText
+      : allGoodCompletion
+        ? "✅ Bases checked and all good"
+        : "❌ Bases not checked";
     rows.push({
       clanTag,
-      compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${issueSummary.statusText}`,
+      compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}`,
       badgeEmojiId: null,
       badgeEmojiName: null,
       badgeEmojiInline: "",
-      contextKey: currentWar
+      contextKey: activeCurrentWar
         ? buildFwaMatchChecklistRowContextKey({
             clanTag: clan.tag,
-            warId: currentWar.warId ?? null,
-            opponentTag: currentWar.opponentTag ?? null,
+            warId: activeCurrentWar.warId ?? null,
+            opponentTag: activeCurrentWar.opponentTag ?? null,
           })
         : null,
       detailLines: issueSummary.detailLines.length > 0 ? issueSummary.detailLines : null,
