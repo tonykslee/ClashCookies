@@ -583,34 +583,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       );
     });
 
-    const clanRoleId = String(payload.clanRoleId ?? "").trim();
     const reminderMessages: string[] = [postedA.url, postedB.url];
-    let reminderMessageUrl: string | null = null;
-    if (payload.swapReminder && clanRoleId) {
-      try {
-        const reminderMessage = await mailChannel.send({
-          content: buildFwaBaseSwapReminderLines({
-            clanRoleId,
-          }).join("\n"),
-          allowedMentions: {
-            roles: [clanRoleId],
-          },
-        });
-        reminderMessageUrl =
-          String(reminderMessage?.url ?? "").trim() ||
-          (reminderMessage
-            ? `https://discord.com/channels/${payload.guildId}/${mailChannelId}/${reminderMessage.id}`
-            : "");
-        reminderMessages.push(reminderMessageUrl);
-      } catch (err) {
-        console.warn(
-          `[fwa base-swap] reminder post failed guild=${payload.guildId} channel=${mailChannelId} clan=#${payload.clanTag} error=${formatError(
-            err,
-          )}`,
-        );
-      }
-    }
-
     await logFwaBaseSwapPublication({
       client: interaction.client,
       guildId: payload.guildId,
@@ -643,7 +616,6 @@ export async function handleFwaBaseSwapSplitPostButton(
         `Posted split base swap announcements for **${payload.clanName}** (#${payload.clanTag}).`,
         postedA.url,
         postedB.url,
-        reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
       ]
         .filter((line) => Boolean(String(line ?? "").trim()))
         .join("\n"),
@@ -13724,37 +13696,7 @@ export const Fwa: Command = {
           users: mentionUserIds,
         },
       });
-      const clanRoleId = String(trackedConfig?.clanRoleId ?? "").trim();
-      const swapReminderContent =
-        swapReminder && clanRoleId
-          ? buildFwaBaseSwapReminderLines({
-              clanRoleId,
-            })
-          : [];
       const reminderMessages: string[] = [posted.url];
-      let reminderMessageUrl: string | null = null;
-      if (swapReminderContent.length > 0) {
-        try {
-          const reminderMessage = await mailChannel.send({
-            content: swapReminderContent.join("\n"),
-            allowedMentions: {
-              roles: [clanRoleId],
-            },
-          });
-          reminderMessageUrl =
-            String(reminderMessage?.url ?? "").trim() ||
-            (reminderMessage
-              ? `https://discord.com/channels/${interaction.guildId}/${mailChannelId}/${reminderMessage.id}`
-              : "");
-          reminderMessages.push(reminderMessageUrl);
-        } catch (err) {
-          console.warn(
-            `[fwa base-swap] reminder post failed guild=${interaction.guildId} channel=${mailChannelId} clan=#${clanTag} error=${formatError(
-              err,
-            )}`,
-          );
-        }
-      }
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
@@ -13812,7 +13754,6 @@ export const Fwa: Command = {
             ? `Unlinked positions: ${[...new Set(unlinked.map((entry) => `#${entry.position} ${entry.playerName}`))].join(", ")}`
             : "All listed players have linked Discord users.",
           posted.url,
-          reminderMessageUrl ? `Swap-back reminder: ${reminderMessageUrl}` : null,
         ].join("\n"),
       );
       await deliverFwaBaseSwapDmMessages({
