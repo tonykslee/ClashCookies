@@ -172,6 +172,33 @@ export type FwaMatchChecklistBasesCompletionSnapshot = {
   metadata: FwaMatchChecklistBasesCompletionMetadata;
 };
 
+export type FwaBasesChecklistReminderMetadata = {
+  kind: "bases_check_reminder";
+  createdByUserId: string;
+  createdAtIso: string;
+  guildId: string;
+  clanTag: string;
+  clanName: string | null;
+  warId: string | null;
+  opponentTag: string | null;
+  warStartTimeIso: string | null;
+  bucketHours: number;
+  destinationChannelId: string | null;
+  destinationChannelKind: "leader" | "notify" | "log" | null;
+  clanRoleId: string | null;
+};
+
+export type FwaBasesChecklistReminderSnapshot = {
+  id: string;
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  clanTag: string | null;
+  createdAt: Date;
+  expiresAt: Date | null;
+  metadata: FwaBasesChecklistReminderMetadata;
+};
+
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
@@ -343,6 +370,34 @@ function buildFwaMatchChecklistBasesCompletionKey(params: {
     `war=${warId || "none"}`,
     `opponent=${opponentTag || "none"}`,
     `start=${warStartTimeIso || "none"}`,
+  ].join("|");
+}
+
+export function buildFwaBasesChecklistReminderMessageId(params: {
+  guildId: string;
+  clanTag: string;
+  warId?: string | number | null;
+  opponentTag?: string | null;
+  warStartTime?: Date | null;
+  bucketHours: number;
+}): string | null {
+  const guildId = String(params.guildId ?? "").trim();
+  const clanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+  const warId = normalizeWarIdText(params.warId ?? null);
+  const opponentTag = normalizeChecklistClanTag(String(params.opponentTag ?? ""));
+  const warStartTimeIso = normalizeDateTimeIso(params.warStartTime ?? null);
+  const bucketHours = Math.trunc(Number(params.bucketHours));
+  if (!guildId || !clanTag || !warStartTimeIso || !Number.isFinite(bucketHours) || bucketHours <= 0) {
+    return null;
+  }
+  return [
+    "fwa_match_checklist_bases_reminder",
+    `guild=${guildId}`,
+    `clan=${clanTag}`,
+    `war=${warId || "none"}`,
+    `opponent=${opponentTag || "none"}`,
+    `start=${warStartTimeIso}`,
+    `bucket=${bucketHours}`,
   ].join("|");
 }
 
@@ -1369,6 +1424,78 @@ export class TrackedMessageService {
         metadata: params.metadata as any,
       },
     });
+  }
+
+  async claimFwaBasesChecklistReminderMarker(params: {
+    guildId: string;
+    channelId: string;
+    clanTag: string;
+    clanName?: string | null;
+    warId?: string | number | null;
+    opponentTag?: string | null;
+    warStartTime?: Date | null;
+    bucketHours: number;
+    destinationChannelId?: string | null;
+    destinationChannelKind?: "leader" | "notify" | "log" | null;
+    clanRoleId?: string | null;
+    createdByUserId?: string | null;
+    createdAtIso?: string | null;
+  }): Promise<boolean> {
+    const messageId = buildFwaBasesChecklistReminderMessageId({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      warId: params.warId ?? null,
+      opponentTag: params.opponentTag ?? null,
+      warStartTime: params.warStartTime ?? null,
+      bucketHours: params.bucketHours,
+    });
+    if (!messageId) return false;
+
+    const createdByUserId = String(params.createdByUserId ?? "system").trim() || "system";
+    const createdAtIso = String(params.createdAtIso ?? "").trim() || new Date().toISOString();
+    const clanTag = normalizeChecklistClanTag(params.clanTag);
+    const clanName = String(params.clanName ?? "").trim() || null;
+    const metadata: FwaBasesChecklistReminderMetadata = {
+      kind: "bases_check_reminder",
+      createdByUserId,
+      createdAtIso,
+      guildId: String(params.guildId ?? "").trim(),
+      clanTag,
+      clanName,
+      warId: normalizeWarIdText(params.warId ?? null),
+      opponentTag: normalizeChecklistClanTag(String(params.opponentTag ?? "")) || null,
+      warStartTimeIso: normalizeDateTimeIso(params.warStartTime ?? null),
+      bucketHours: Math.trunc(Number(params.bucketHours)),
+      destinationChannelId: String(params.destinationChannelId ?? "").trim() || null,
+      destinationChannelKind:
+        params.destinationChannelKind === "leader" ||
+        params.destinationChannelKind === "notify" ||
+        params.destinationChannelKind === "log"
+          ? params.destinationChannelKind
+          : null,
+      clanRoleId: String(params.clanRoleId ?? "").trim() || null,
+    };
+
+    try {
+      await prisma.trackedMessage.create({
+        data: {
+          guildId: String(params.guildId ?? "").trim(),
+          channelId: String(params.channelId ?? "").trim() || String(params.destinationChannelId ?? "").trim() || "missing-channel",
+          messageId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          referenceId: null,
+          clanTag,
+          expiresAt: params.warStartTime ?? null,
+          metadata: metadata as any,
+        },
+      });
+      return true;
+    } catch (err) {
+      const code = (err as { code?: string } | null | undefined)?.code ?? "";
+      if (code === "P2002") return false;
+      throw err;
+    }
   }
 
   async replaceOlderFwaMatchChecklistMessages(params: {
