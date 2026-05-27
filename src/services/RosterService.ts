@@ -2355,7 +2355,7 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
 function buildRosterManageActionTitle(action: RosterManageAction): string {
   if (action === "add") return "Add Player";
   if (action === "remove") return "Remove Player";
-  if (action === "move") return "Move Player";
+  if (action === "move") return "Change Group";
   if (action === "change_roster") return "Change Roster";
   return "Set Weight";
 }
@@ -2378,7 +2378,7 @@ export function buildRosterMoveResultSummary(
     normalizeRosterText(destinationGroupLabel ?? result.groupName ?? null) ?? result.groupKey;
   const lines: string[] = [];
   if (result.movedTags.length > 0) {
-    lines.push(`Moved ${result.movedTags.join(", ")} to ${destinationLabel}.`);
+    lines.push(`Changed group for ${result.movedTags.join(", ")} to ${destinationLabel}.`);
   }
   if (result.duplicateTags.length > 0) {
     lines.push(`Selected signup(s) are already in ${destinationLabel}: ${result.duplicateTags.join(", ")}.`);
@@ -2391,7 +2391,7 @@ export function buildRosterMoveResultSummary(
     );
   }
 
-  return lines.length > 0 ? lines.join("\n") : `No roster signups were moved to ${destinationLabel}.`;
+  return lines.length > 0 ? lines.join("\n") : `No roster signups were changed to ${destinationLabel}.`;
 }
 
 function buildRosterManageStateLabel(state: RosterLifecycleState): string {
@@ -2540,7 +2540,13 @@ function buildRosterManageGroupSelectRow(session: RosterManageSession): ActionRo
   if (options.length <= 0) return null;
   const select = new StringSelectMenuBuilder()
     .setCustomId(buildRosterManageGroupSelectMenuCustomId(session.sessionId))
-    .setPlaceholder(session.action === "change_roster" ? "Select target group" : "Select roster group")
+    .setPlaceholder(
+      session.action === "change_roster"
+        ? "Select target group"
+        : session.action === "move"
+          ? "Select target group"
+          : "Select roster group",
+    )
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(
@@ -2613,7 +2619,7 @@ function buildRosterManageActionButtons(session: RosterManageSession): ActionRow
     session.action === "remove"
         ? "Confirm Remove"
         : session.action === "move"
-          ? "Confirm Move"
+          ? "Confirm Change Group"
           : session.action === "change_roster"
             ? "Confirm Change"
             : "Confirm Add";
@@ -5853,23 +5859,23 @@ export class RosterService {
         lifecycleState: true,
       },
     });
-  const requestedTags = normalizeRosterPlayerTags(
-    Array.isArray(input.playerTags) ? input.playerTags : [],
-  );
-  const logMoveOutcome = (
-    result: RosterManagerMoveSignupsResult & { groupName: string | null },
-  ): RosterManagerMoveSignupsResult => {
-    console.info(
-      [
-        "[roster-manage-move]",
-        `rosterId=${result.rosterId}`,
-        `destinationGroupKey=${result.groupKey}`,
-        `destinationGroupName=${result.groupName ?? ""}`,
-        `requestedCount=${requestedTags.length}`,
-        `movedCount=${result.movedTags.length}`,
-        `duplicateCount=${result.duplicateTags.length}`,
-        `missingCount=${result.missingTags.length}`,
-        `outcome=${result.outcome}`,
+    const requestedTags = normalizeRosterPlayerTags(
+      Array.isArray(input.playerTags) ? input.playerTags : [],
+    );
+    const logMoveOutcome = (
+      result: RosterManagerMoveSignupsResult & { groupName: string | null },
+    ): RosterManagerMoveSignupsResult => {
+      console.info(
+        [
+          "[roster] move_signups_result",
+          `rosterId=${result.rosterId}`,
+          `destinationGroupKey=${result.groupKey}`,
+          `destinationGroupName=${result.groupName ?? ""}`,
+          `requestedCount=${requestedTags.length}`,
+          `movedCount=${result.movedTags.length}`,
+          `duplicateCount=${result.duplicateTags.length}`,
+          `missingCount=${result.missingTags.length}`,
+          `outcome=${result.outcome}`,
         ].join(" "),
       );
       return result;

@@ -3201,6 +3201,14 @@ async function handleRosterManageSubcommand(
       return;
     }
 
+    const targetRosterIdForMove = interaction.options.getString("target_roster", false)?.trim() ?? "";
+    if (targetRosterIdForMove) {
+      await interaction.editReply(
+        "Use action:change_roster to move players to another roster. Use Change Group only for changing groups inside the same roster.",
+      );
+      return;
+    }
+
     const destinationGroupKeyInput = interaction.options.getString("target_group", false);
     const destinationGroupKey = normalizeRosterGroupKeyInput(destinationGroupKeyInput) || "confirmed";
     const result = await rosterService.moveRosterSignups({
@@ -4077,7 +4085,7 @@ export const Roster: Command = {
           required: true,
           choices: [
             { name: "Add players", value: "add" },
-            { name: "Move players", value: "move" },
+            { name: "Change Group", value: "move" },
             { name: "Remove players", value: "remove" },
             { name: "Change roster", value: "change_roster" },
             { name: "Set weight", value: "set_weight" },

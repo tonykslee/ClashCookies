@@ -1171,7 +1171,9 @@ describe("/roster command", () => {
         playerTags: ["#PQL0289"],
       }),
     );
-    expect(String(moveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to Confirmed");
+    expect(String(moveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Changed group for #PQL0289 to Confirmed",
+    );
     expect(rosterService.getRosterView.mock.calls.length).toBe(getRosterViewCallsBeforeMove + 1);
 
     const moveTargetInteraction = makeInteraction({
@@ -1190,7 +1192,24 @@ describe("/roster command", () => {
         playerTags: ["#PQL0289"],
       }),
     );
-    expect(String(moveTargetInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to Substitute");
+    expect(String(moveTargetInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Changed group for #PQL0289 to Substitute",
+    );
+
+    const moveWithTargetRosterInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+      targetRoster: "roster-2",
+      targetGroup: "substitute",
+      players: "#PQL0289",
+    }) as any;
+    const moveCallsBeforeTargetRoster = rosterService.moveRosterSignups.mock.calls.length;
+    await Roster.run({} as any, moveWithTargetRosterInteraction as any);
+    expect(rosterService.moveRosterSignups.mock.calls.length).toBe(moveCallsBeforeTargetRoster);
+    expect(String(moveWithTargetRosterInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "Use action:change_roster to move players to another roster. Use Change Group only for changing groups inside the same roster.",
+    );
 
     const removeInteraction = makeInteraction({
       subcommand: "manage",
