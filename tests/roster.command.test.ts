@@ -23,6 +23,10 @@ import {
   Roster,
   handleRosterPostClearButtonInteraction,
   handleRosterPostCustomizeMenuInteraction,
+  handleRosterPostChangeGroupActionButtonInteraction,
+  handleRosterPostChangeGroupGroupSelectInteraction,
+  handleRosterPostChangeGroupPlayerSelectInteraction,
+  handleRosterPostChangeGroupRosterSelectInteraction,
   handleRosterManageActionButtonInteraction,
   handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
@@ -36,6 +40,20 @@ import {
 } from "../src/commands/Roster";
 import { rosterService } from "../src/services/RosterService";
 import * as rosterServiceModule from "../src/services/RosterService";
+import {
+  buildRosterPostChangeGroupActionButtonCustomId,
+  buildRosterPostChangeGroupPlayerSelectMenuCustomId,
+  buildRosterPostChangeGroupRosterSelectMenuCustomId,
+  buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId,
+  buildRosterPostChangeGroupTargetGroupSelectMenuCustomId,
+} from "../src/services/RosterService";
+import {
+  buildRosterPostChangeGroupActionButtonCustomId,
+  buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId,
+  buildRosterPostChangeGroupPlayerSelectMenuCustomId,
+  buildRosterPostChangeGroupRosterSelectMenuCustomId,
+  buildRosterPostChangeGroupTargetGroupSelectMenuCustomId,
+} from "../src/services/RosterService";
 import * as rosterRoleSyncService from "../src/services/RosterRoleSyncService";
 import { rosterExportService } from "../src/services/RosterExportService";
 import { rosterWeightService } from "../src/services/RosterWeightService";
@@ -1960,6 +1978,7 @@ describe("/roster command", () => {
     expect(optionValues).toEqual([
       "export",
       "customize",
+      "change_group",
       "add_user",
       "remove_user",
       "close_roster",
@@ -1970,6 +1989,330 @@ describe("/roster command", () => {
       "missing_members",
     ]);
     expect(optionValues).not.toContain("open_roster");
+  });
+
+  it("opens the roster change group panel from Settings -> Change Group", async () => {
+    vi.spyOn(rosterService, "createRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Change Group"),
+        components: [],
+      },
+    });
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["change_group"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(rosterService.createRosterPostChangeGroupPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Group panel when the current roster select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Change Group"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeGroupRosterSelectMenuCustomId("session-1"),
+      values: ["roster-2"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeGroupRosterSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeGroupPanel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      discordUserId: "111111111111111111",
+      selectedCurrentRosterId: "roster-2",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it.each([
+    ["current", buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId("session-1"), "confirmed", "selectedCurrentGroupKey"],
+    ["target", buildRosterPostChangeGroupTargetGroupSelectMenuCustomId("session-1"), "substitute", "selectedTargetGroupKey"],
+  ] as const)("updates the Change Group panel when the %s group select changes", async (_kind, customId, value, fieldName) => {
+    vi.spyOn(rosterService, "updateRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Change Group"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId,
+      values: [value],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeGroupGroupSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeGroupPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        discordUserId: "111111111111111111",
+        [fieldName]: value,
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Group panel when player selections change", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-1",
+        embed: new EmbedBuilder().setTitle("Change Group"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeGroupPlayerSelectMenuCustomId("session-1", 0),
+      values: ["#PQL0289", "#QGRJ2222"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeGroupPlayerSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeGroupPanel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      discordUserId: "111111111111111111",
+      selectedPlayerTags: ["#PQL0289", "#QGRJ2222"],
+      selectedPlayerPageIndex: 0,
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("confirms Change Group, syncs roster roles, and refreshes the roster post", async () => {
+    vi.spyOn(rosterService, "confirmRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "completed",
+      rosterId: "roster-1",
+      currentGroupKey: "confirmed",
+      targetGroupKey: "substitute",
+      selectedCount: 1,
+      moveResult: {
+        outcome: "moved",
+        rosterId: "roster-1",
+        groupKey: "substitute",
+        groupName: "Substitute",
+        requestedTags: ["#PQL0289"],
+        movedTags: ["#PQL0289"],
+        duplicateTags: [],
+        missingTags: [],
+      },
+      summary: "Changed group for #PQL0289 to Substitute.",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockResolvedValue(undefined as never);
+    const interaction = {
+      customId: buildRosterPostChangeGroupActionButtonCustomId("confirm", "session-1"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostChangeGroupActionButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.confirmRosterPostChangeGroupPanel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-1");
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-1",
+      expect.any(Object),
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+      "Changed group for #PQL0289 to Substitute.",
+    );
+  });
+
+  it("cancels Change Group without moving signups", async () => {
+    vi.spyOn(rosterService, "cancelRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "cancelled",
+    });
+    const moveSpy = vi.spyOn(rosterService, "moveRosterSignups");
+    const interaction = {
+      customId: buildRosterPostChangeGroupActionButtonCustomId("cancel", "session-1"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeGroupActionButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.cancelRosterPostChangeGroupPanel).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(moveSpy).not.toHaveBeenCalled();
+    expect(interaction.update).toHaveBeenCalledWith({
+      content: "Change Group cancelled.",
+      embeds: [],
+      components: [],
+    });
+  });
+
+  it("shows the expired Change Group message when the session is missing", async () => {
+    vi.spyOn(rosterService, "confirmRosterPostChangeGroupPanel").mockResolvedValue({
+      outcome: "session_not_found",
+    });
+    const interaction = {
+      customId: buildRosterPostChangeGroupActionButtonCustomId("confirm", "session-1"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeGroupActionButtonInteraction(interaction, {} as any);
+
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "This Change Group panel expired. Open Settings again.",
+        ephemeral: true,
+      }),
+    );
   });
 
   it.each(["add_user", "remove_user"] as const)(
