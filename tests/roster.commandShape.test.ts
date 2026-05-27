@@ -104,6 +104,16 @@ describe("/roster command shape", () => {
       "close",
       "archive",
     ]);
+    expect(manageAction?.choices?.map((choice: any) => choice.name)).toEqual([
+      "Add players",
+      "Change Group",
+      "Remove players",
+      "Change roster",
+      "Set weight",
+      "Open roster",
+      "Close roster",
+      "Archive roster",
+    ]);
 
     expect(edit?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "name")?.required).toBe(false);

@@ -5174,7 +5174,7 @@ describe("RosterService", () => {
       });
       expect(consoleInfoSpy).toHaveBeenCalledWith(
         expect.stringContaining(
-          "[roster-manage-move] rosterId=roster-1 destinationGroupKey=substitute destinationGroupName=Substitute requestedCount=2 movedCount=2 duplicateCount=0 missingCount=0 outcome=moved",
+          "[roster] move_signups_result rosterId=roster-1 destinationGroupKey=substitute destinationGroupName=Substitute requestedCount=2 movedCount=2 duplicateCount=0 missingCount=0 outcome=moved",
         ),
       );
       expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith(
@@ -5251,7 +5251,7 @@ describe("RosterService", () => {
         } as any,
       ),
     ).toBe(
-      "Moved #PQL0289 to Substitute.\nSelected signup(s) are already in Substitute: #QGRJ2222.\nNot found on that roster: #ZZZ99999.",
+      "Changed group for #PQL0289 to Substitute.\nSelected signup(s) are already in Substitute: #QGRJ2222.\nNot found on that roster: #ZZZ99999.",
     );
 
     expect(
@@ -5268,6 +5268,208 @@ describe("RosterService", () => {
         } as any,
       ),
     ).toBe("None of the selected signups were found on that roster.");
+  });
+
+  it("renders move panels as Change Group with target-group controls", async () => {
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: makeValidRosterPlayerTag(1),
+        playerName: "Alpha",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValueOnce([
+      {
+        playerTag: makeValidRosterPlayerTag(1),
+        linkedName: "Alpha",
+        linkedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([[makeValidRosterPlayerTag(1), { townHall: 15 }]]),
+    );
+
+    const opened = await rosterService.createRosterManageActionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      selectedDiscordUserId: "222222222222222222",
+      selectedDiscordUserLabel: "Roster User (@rosteruser)",
+      action: "move",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    expect(String(opened.panel.embed.toJSON().title ?? "")).toBe("Manage Roster — Change Group");
+    const componentRows = flattenComponentRows(opened.panel.components);
+    const confirmButton = componentRows.find((component) =>
+      String(component.customId ?? component.custom_id ?? component.data?.custom_id ?? "").includes(":action:confirm:"),
+    );
+    const confirmButtonJson = confirmButton?.toJSON?.() ?? confirmButton ?? {};
+    expect(String(confirmButtonJson.label ?? "")).toBe("Confirm Change Group");
+    const groupSelect = componentRows.find((component) =>
+      String(component.customId ?? component.custom_id ?? component.data?.custom_id ?? "").includes(":group:"),
+    );
+    const groupSelectJson = groupSelect?.toJSON?.() ?? groupSelect ?? {};
+    expect(String(groupSelectJson.placeholder ?? "")).toBe("Select target group");
+  });
+
+  it("creates roster-centric Change Group panels with the current roster, current group, target group, and group players", async () => {
+    const confirmedPlayerTag = makeValidRosterPlayerTag(1);
+    const substitutePlayerTag = makeValidRosterPlayerTag(2);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: confirmedPlayerTag,
+        playerName: "Alpha",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-2",
+        rosterId: "roster-1",
+        groupId: "group-substitute",
+        playerTag: substitutePlayerTag,
+        playerName: "Bravo",
+        discordUserId: "333333333333333333",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-substitute",
+          key: "substitute",
+          name: "Substitute",
+          description: "Reserve roster members",
+          sortOrder: 1,
+        },
+      },
+    ] as any);
+    const opened = await rosterService.createRosterPostChangeGroupPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const componentRows = flattenComponentRows(opened.panel.components);
+    const selectMenus = componentRows.filter((component) => Array.isArray(component.options));
+    const rosterSelect = selectMenus.find((component) => String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select roster"));
+    const currentGroupSelect = selectMenus.find((component) => String(component.placeholder ?? component.data?.placeholder ?? "").includes("current group"));
+    const targetGroupSelect = selectMenus.find((component) => String(component.placeholder ?? component.data?.placeholder ?? "").includes("target group"));
+    const playerSelect = selectMenus.find((component) => String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select players"));
+
+    expect(String(opened.panel.embed.toJSON().title ?? "")).toBe("Change Group");
+    expect(String(rosterSelect?.placeholder ?? rosterSelect?.data?.placeholder ?? "")).toBe("Select roster");
+    expect(
+      rosterSelect?.options?.find((option: any) => option.value === "roster-1")?.default ??
+        rosterSelect?.data?.options?.find((option: any) => option.value === "roster-1")?.default ??
+        false,
+    ).toBe(true);
+    expect(String(currentGroupSelect?.placeholder ?? currentGroupSelect?.data?.placeholder ?? "")).toBe(
+      "Select current group",
+    );
+    expect(
+      currentGroupSelect?.options?.find((option: any) => option.value === "confirmed")?.default ??
+        currentGroupSelect?.data?.options?.find((option: any) => option.value === "confirmed")?.default ??
+        false,
+    ).toBe(true);
+    expect(String(targetGroupSelect?.placeholder ?? targetGroupSelect?.data?.placeholder ?? "")).toBe(
+      "Select target group",
+    );
+    expect(
+      targetGroupSelect?.options?.find((option: any) => option.value === "confirmed")?.default ??
+        targetGroupSelect?.data?.options?.find((option: any) => option.value === "confirmed")?.default ??
+        false,
+    ).toBe(true);
+    expect(String(playerSelect?.placeholder ?? playerSelect?.data?.placeholder ?? "")).toContain("Select players");
+    expect(playerSelect?.options?.map((option: any) => option.value) ?? playerSelect?.data?.options?.map((option: any) => option.value)).toEqual([
+      confirmedPlayerTag,
+    ]);
+  });
+
+  it("reloads the roster-centric Change Group panel players when the current group changes and clears selected players", async () => {
+    const confirmedPlayerTag = makeValidRosterPlayerTag(1);
+    const substitutePlayerTag = makeValidRosterPlayerTag(2);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: confirmedPlayerTag,
+        playerName: "Alpha",
+        discordUserId: "222222222222222222",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+      {
+        id: "signup-2",
+        rosterId: "roster-1",
+        groupId: "group-substitute",
+        playerTag: substitutePlayerTag,
+        playerName: "Bravo",
+        discordUserId: "333333333333333333",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-substitute",
+          key: "substitute",
+          name: "Substitute",
+          description: "Reserve roster members",
+          sortOrder: 1,
+        },
+      },
+    ] as any);
+
+    const opened = await rosterService.createRosterPostChangeGroupPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const changed = await rosterService.updateRosterPostChangeGroupPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedCurrentGroupKey: "substitute",
+    });
+    expect(changed).toMatchObject({ outcome: "updated" });
+    if (changed.outcome !== "updated") return;
+
+    const changedJson = changed.panel.embed.toJSON();
+    expect(String(changedJson.description ?? "")).toContain("Current group: Substitute");
+    expect(String(changedJson.description ?? "")).toContain("Selected players: 0");
   });
 
   it("rejects archived roster mutations for manager add, move, and remove actions", async () => {

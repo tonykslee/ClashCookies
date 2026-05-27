@@ -40,6 +40,10 @@ import {
   parseRosterPostRefreshButtonCustomId,
   parseRosterPostSettingsButtonCustomId,
   parseRosterPostSettingsMenuCustomId,
+  parseRosterPostChangeGroupRosterSelectMenuCustomId,
+  parseRosterPostChangeGroupGroupSelectMenuCustomId,
+  parseRosterPostChangeGroupPlayerSelectMenuCustomId,
+  parseRosterPostChangeGroupActionButtonCustomId,
   buildRosterReportPingButtonCustomId,
   parseRosterReportPingButtonCustomId,
   parseRosterPingActionButtonCustomId,
@@ -75,6 +79,8 @@ export {
 } from "./Cwl";
 
 const rosterPermissionService = new CommandPermissionService();
+const ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE = "This Change Group panel expired. Open Settings again.";
+const ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
 
 type RosterMutationAction =
   | "add"
@@ -88,6 +94,7 @@ type RosterMutationAction =
 type RosterPostSettingsAction =
   | "export"
   | "customize"
+  | "change_group"
   | "add_user"
   | "remove_user"
   | "open_roster"
@@ -904,6 +911,7 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
   return [
     { label: "Export", value: "export", description: "Create a Google Sheet export" },
     { label: "Customize", value: "customize", description: "Change board columns and sort order" },
+    { label: "Change Group", value: "change_group", description: "Move selected signups to another group" },
     { label: "Add User", value: "add_user", description: "Add linked players through an interactive panel" },
     { label: "Remove User", value: "remove_user", description: "Remove linked players through an interactive panel" },
     lifecycleAction,
@@ -1420,6 +1428,31 @@ export async function handleRosterPostSettingsMenuInteraction(
     await interaction.reply({
       embeds: [panel.embed],
       components: panel.components,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (choice === "change_group") {
+    const panel = await rosterService.createRosterPostChangeGroupPanel({
+      rosterId: roster.id,
+      discordUserId: interaction.user.id,
+    });
+    if (panel.outcome !== "ready") {
+      const message =
+        panel.outcome === "roster_not_found"
+          ? "That roster is no longer available."
+          : "That roster is archived and can no longer be modified.";
+      await interaction.reply({
+        content: message,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      embeds: [panel.panel.embed],
+      components: panel.panel.components,
       ephemeral: true,
     });
     return;
@@ -2185,6 +2218,260 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     embeds: [],
     components: [],
   });
+}
+
+export async function handleRosterPostChangeGroupRosterSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostChangeGroupRosterSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const result = await rosterService.updateRosterPostChangeGroupPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedCurrentRosterId: interaction.values[0] ?? null,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostChangeGroupGroupSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostChangeGroupGroupSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const result = await rosterService.updateRosterPostChangeGroupPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedCurrentGroupKey: parsed.kind === "current_group" ? interaction.values[0] ?? null : undefined,
+    selectedTargetGroupKey: parsed.kind === "target_group" ? interaction.values[0] ?? null : undefined,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostChangeGroupPlayerSelectInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseRosterPostChangeGroupPlayerSelectMenuCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const result = await rosterService.updateRosterPostChangeGroupPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+    selectedPlayerTags: interaction.values,
+    selectedPlayerPageIndex: parsed.pageIndex,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.update({
+    embeds: [result.panel.embed],
+    components: result.panel.components,
+  });
+}
+
+export async function handleRosterPostChangeGroupActionButtonInteraction(
+  interaction: ButtonInteraction,
+  cocService?: CoCService | null,
+): Promise<void> {
+  const parsed = parseRosterPostChangeGroupActionButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+    await interaction.reply({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (parsed.action === "cancel") {
+    const result = await rosterService.cancelRosterPostChangeGroupPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      content: "Change Group cancelled.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (parsed.action === "previous_page" || parsed.action === "next_page") {
+    const result = await rosterService.updateRosterPostChangeGroupPanel({
+      sessionId: parsed.sessionId,
+      discordUserId: interaction.user.id,
+      playerPageWindowDelta: parsed.action === "previous_page" ? -1 : 1,
+    });
+    if (result.outcome === "session_not_found") {
+      await interaction.reply({
+        content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "forbidden") {
+      await interaction.reply({
+        content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [result.panel.embed],
+      components: result.panel.components,
+    });
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => undefined);
+  const result = await rosterService.confirmRosterPostChangeGroupPanel({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+  });
+  if (result.outcome === "session_not_found") {
+    await interaction.followUp({
+      content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "forbidden") {
+    await interaction.followUp({
+      content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_roster") {
+    await interaction.followUp({
+      content: "Select a roster first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_current_group") {
+    await interaction.followUp({
+      content: "Select a current group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_target_group") {
+    await interaction.followUp({
+      content: "Select a target group first.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+  if (result.outcome === "missing_players") {
+    await interaction.followUp({
+      content: "Select at least one player.",
+      ephemeral: true,
+    }).catch(() => undefined);
+    return;
+  }
+
+  await syncRosterRoleAssignments(interaction.client, result.rosterId).catch(() => undefined);
+  await refreshExistingRosterPost(
+    interaction as unknown as ChatInputCommandInteraction,
+    result.rosterId,
+    cocService ?? null,
+  ).catch(() => undefined);
+  await interaction.editReply({
+    content: result.summary,
+    embeds: [],
+    components: [],
+  }).catch(() => undefined);
 }
 
 export async function handleRosterPingActionButtonInteraction(interaction: ButtonInteraction): Promise<void> {
@@ -3201,6 +3488,14 @@ async function handleRosterManageSubcommand(
       return;
     }
 
+    const targetRosterIdForMove = interaction.options.getString("target_roster", false)?.trim() ?? "";
+    if (targetRosterIdForMove) {
+      await interaction.editReply(
+        "Use action:change_roster to move players to another roster. Use Change Group only for changing groups inside the same roster.",
+      );
+      return;
+    }
+
     const destinationGroupKeyInput = interaction.options.getString("target_group", false);
     const destinationGroupKey = normalizeRosterGroupKeyInput(destinationGroupKeyInput) || "confirmed";
     const result = await rosterService.moveRosterSignups({
@@ -4077,7 +4372,7 @@ export const Roster: Command = {
           required: true,
           choices: [
             { name: "Add players", value: "add" },
-            { name: "Move players", value: "move" },
+            { name: "Change Group", value: "move" },
             { name: "Remove players", value: "remove" },
             { name: "Change roster", value: "change_roster" },
             { name: "Set weight", value: "set_weight" },
