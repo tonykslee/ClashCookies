@@ -47,13 +47,6 @@ import {
   buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId,
   buildRosterPostChangeGroupTargetGroupSelectMenuCustomId,
 } from "../src/services/RosterService";
-import {
-  buildRosterPostChangeGroupActionButtonCustomId,
-  buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId,
-  buildRosterPostChangeGroupPlayerSelectMenuCustomId,
-  buildRosterPostChangeGroupRosterSelectMenuCustomId,
-  buildRosterPostChangeGroupTargetGroupSelectMenuCustomId,
-} from "../src/services/RosterService";
 import * as rosterRoleSyncService from "../src/services/RosterRoleSyncService";
 import { rosterExportService } from "../src/services/RosterExportService";
 import { rosterWeightService } from "../src/services/RosterWeightService";
