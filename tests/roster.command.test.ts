@@ -40,6 +40,8 @@ import * as rosterRoleSyncService from "../src/services/RosterRoleSyncService";
 import { rosterExportService } from "../src/services/RosterExportService";
 import { rosterWeightService } from "../src/services/RosterWeightService";
 import * as playerLinkService from "../src/services/PlayerLinkService";
+import * as cwlRegistryService from "../src/services/CwlRegistryService";
+import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 
 type RosterSubcommand =
   | "create"
@@ -331,6 +333,13 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "confirmRosterManageSession");
     vi.spyOn(rosterWeightService, "setManualWeightForRoster");
     vi.spyOn(rosterExportService, "createRosterExport");
+    vi.spyOn(cwlRegistryService, "refreshCwlTrackedClanMetadataForSeason").mockResolvedValue({
+      season: resolveCurrentCwlSeasonKey(),
+      requestedCount: 0,
+      ensuredCount: 0,
+      hydratedCount: 0,
+      skippedCount: 0,
+    });
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue(
       makeRosterRefreshPayload(false, "Roster Signup"),
     );
@@ -387,6 +396,39 @@ describe("/roster command", () => {
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Use /roster post roster:roster-2 to publish it.",
+    );
+  });
+
+  it("hydrates CWL tracked metadata before deriving the default CWL roster name", async () => {
+    (rosterService.createRoster as any).mockResolvedValue({ id: "roster-2" });
+    prismaMock.cwlTrackedClan.findFirst
+      .mockResolvedValueOnce({ tag: "#2QG2C08UP", name: "Old Name", leagueLabel: "Champion League II" })
+      .mockResolvedValueOnce({ tag: "#2QG2C08UP", name: "RISING DAWN", leagueLabel: "Masters I [D] | TH18 175k+ WW" });
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      timezone: "America/Los_Angeles",
+    }) as any;
+
+    const cwlCreateCocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "RISING DAWN", warLeague: { name: "Masters I [D] | TH18 175k+ WW" } }),
+    } as any;
+
+    await Roster.run({} as any, interaction as any, cwlCreateCocService);
+
+    expect(cwlRegistryService.refreshCwlTrackedClanMetadataForSeason).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTags: ["#2QG2C08UP"],
+        season: resolveCurrentCwlSeasonKey(),
+        cocService: expect.anything(),
+        ensureRows: false,
+      }),
+    );
+    expect(rosterService.createRoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: `RISING DAWN CWL Signup (${resolveCurrentCwlSeasonKey()})`,
+      }),
     );
   });
 

@@ -1507,20 +1507,24 @@ describe("RosterService", () => {
         playerTag: "#PQL0289",
         playerName: "Alpha",
         clanTag: "#2QG2C08UP",
-        clanName: "Rising Crowns",
+        clanName: "Rising Taxes",
         cwlClanTag: "#2QG2C08UP",
-        cwlClanName: "Rising Crowns",
+        cwlClanName: "Rising Taxes",
       },
       {
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
         clanTag: "#2QG2C08UP",
-        clanName: "Rising Crowns",
+        clanName: "Rising Taxes",
         cwlClanTag: "#2QG2C08UP",
-        cwlClanName: "Rising Crowns",
+        cwlClanName: "Rising Taxes",
         weight: 88_000,
       },
     ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+      name: "RISING DAWN",
+      leagueLabel: "Champion League II",
+    });
     cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
       {
         playerTag: "#PQL0289",
@@ -1558,7 +1562,7 @@ describe("RosterService", () => {
     expect(headerLine).toBeTruthy();
     expect(confirmedRow).toBeTruthy();
     expect(substituteRow).toBeTruthy();
-    expect(embedTitle).toBe("Rising Crowns");
+    expect(embedTitle).toBe("RISING DAWN");
     expect(description).toContain(
       "**[CWL Alpha Signup](https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP)** Champion League II",
     );
@@ -1595,6 +1599,64 @@ describe("RosterService", () => {
     const settingsButton = buttons.find((button: any) => button.custom_id === "roster-post-action:settings:roster-1");
     expect(refreshButton?.label ?? refreshButton?.data?.label ?? null).toBeNull();
     expect(settingsButton?.label ?? settingsButton?.data?.label ?? null).toBeNull();
+  });
+
+  it("falls back to the roster clan tag when the tracked CWL clan has no resolved name", async () => {
+    prismaMock.rosterSignup.findMany.mockResolvedValue([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+      name: null,
+      leagueLabel: "Champion League II",
+    });
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Taxes",
+      },
+    ] as any);
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Taxes",
+        cwlClanTag: "#2QG2C08UP",
+        cwlClanName: "Rising Taxes",
+      },
+    ] as any);
+    cwlStateServiceMock.listSeasonRosterForClan.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 16,
+      },
+    ] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(makePlayerCurrentMap([["#PQL0289", 16]]));
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+
+    expect(payload).toBeTruthy();
+    expect(String(payload?.embed.toJSON().title ?? "")).toBe("#2QG2C08UP");
+    expect(String(payload?.embed.toJSON().title ?? "")).not.toContain("Rising Taxes");
   });
 
   it("prefers PlayerCurrent, then Todo, then FWA, then exact-season CWL data for roster TH icons", async () => {
@@ -2495,7 +2557,7 @@ describe("RosterService", () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
-      name: "CWL Alpha",
+      name: "RISING DAWN",
       leagueLabel: "Champion League II",
     });
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
@@ -2503,7 +2565,7 @@ describe("RosterService", () => {
         playerTag: "#PQL0289",
         townHall: 15,
         clanTag: "#2QG2C08UP",
-        clanName: "CWL Alpha",
+        clanName: "Rising Taxes",
       },
     ] as any);
     todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([
@@ -2512,9 +2574,9 @@ describe("RosterService", () => {
         playerName: "Alpha",
         townHall: 15,
         clanTag: "#2QG2C08UP",
-        clanName: "CWL Alpha",
+        clanName: "Rising Taxes",
         cwlClanTag: "#2QG2C08UP",
-        cwlClanName: "CWL Alpha",
+        cwlClanName: "Rising Taxes",
       },
     ] as any);
     playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(makePlayerCurrentMap([["#PQL0289", 15]]));
@@ -2555,7 +2617,7 @@ describe("RosterService", () => {
       },
     });
     expect(payload).toBeTruthy();
-    expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
+    expect(String(payload?.embed.toJSON().title ?? "")).toBe("RISING DAWN");
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
       "**[CWL Alpha Signup](https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP)** Champion League II",
     );
@@ -5396,6 +5458,10 @@ describe("RosterService", () => {
         discordUsername: "bravo-user",
       },
     ] as any);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce({
+      name: "RISING DAWN",
+      leagueLabel: "Champion League II",
+    });
 
     const report = await rosterService.buildRosterManagerReadinessText({
       rosterId: "roster-1",
@@ -5403,7 +5469,7 @@ describe("RosterService", () => {
       emojiClient: makeRosterEmojiClient(),
     });
 
-    expect(report).toContain("Clan: Rising Crowns `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>))");
+    expect(report).toContain("Clan: RISING DAWN `#2QG2C08UP` ([Open in-game](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>))");
     expect(report).toContain("**Groups**");
     expect(report).toContain("**Confirmed** (1)");
     expect(report).toContain("- <:th16:116> Alpha <:yes:901>");
