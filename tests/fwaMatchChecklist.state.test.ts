@@ -244,6 +244,120 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(getCurrentWar).not.toHaveBeenCalled();
   });
 
+  it("treats fwa bases as a checklist issue for BL matches", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue({
+      id: "tracked-bl",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-bl",
+      referenceId: "ref-bl",
+      clanTag: "#PYPY",
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      expiresAt: null,
+      metadata: {
+        clanName: "Alpha",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanRoleId: null,
+        swapReminder: true,
+        entries: [
+          {
+            position: 35,
+            playerTag: "#CCC",
+            playerName: "OnlyFwa",
+            discordUserId: "333",
+            townhallLevel: 13,
+            section: "fwa_bases",
+            acknowledged: false,
+          },
+        ],
+      } as any,
+    } as any);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0].compactCopyLine).toContain("⚠️ Bases checked - issues found");
+    expect(state.rows[0].compactCopyLine).toContain("[base-swap post](");
+    expect(state.rows[0].detailLines).toBeNull();
+  });
+
+  it("does not treat fwa bases as an issue for FWA matches", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: null,
+        outcome: null,
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue({
+      id: "tracked-fwa",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-fwa",
+      referenceId: "ref-fwa",
+      clanTag: "#PYPY",
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      expiresAt: null,
+      metadata: {
+        clanName: "Alpha",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanRoleId: null,
+        swapReminder: true,
+        entries: [
+          {
+            position: 35,
+            playerTag: "#CCC",
+            playerName: "OnlyFwa",
+            discordUserId: "333",
+            townhallLevel: 13,
+            section: "fwa_bases",
+            acknowledged: false,
+          },
+        ],
+      } as any,
+    } as any);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).not.toContain("[base-swap post](");
+    expect(state.rows[0].detailLines).toBeNull();
+  });
+
   it("does not carry bases completion into a different current-war identity", async () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {

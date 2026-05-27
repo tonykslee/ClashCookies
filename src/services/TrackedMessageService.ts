@@ -420,11 +420,16 @@ function resolveExtendedChecklistExpiresAt(
 
 export function buildFwaBaseSwapIssueSummary(
   metadata: FwaBaseSwapTrackedMetadata,
+  matchType?: string | null,
 ): FwaBaseSwapIssueSummary {
+  const normalizedMatchType = String(matchType ?? "").trim().toUpperCase();
+  const includeFwaBasesAsIssues = normalizedMatchType === "BL";
   const activeIssueEntries = metadata.entries.filter(
     (entry) =>
       !entry.acknowledged &&
-      (entry.section === "war_bases" || entry.section === "base_errors"),
+      (entry.section === "war_bases" ||
+        entry.section === "base_errors" ||
+        (includeFwaBasesAsIssues && entry.section === "fwa_bases")),
   );
   if (activeIssueEntries.length === 0) {
     return {
@@ -436,12 +441,15 @@ export function buildFwaBaseSwapIssueSummary(
 
   const detailLines: string[] = [];
   const sections: Array<{
-    section: "war_bases" | "base_errors";
+    section: "war_bases" | "base_errors" | "fwa_bases";
     label: string;
   }> = [
     { section: "war_bases", label: "War bases" },
     { section: "base_errors", label: "Base errors" },
   ];
+  if (includeFwaBasesAsIssues) {
+    sections.push({ section: "fwa_bases", label: "Fwa bases" });
+  }
   for (const { section, label } of sections) {
     const sectionEntries = activeIssueEntries
       .filter((entry) => entry.section === section)
