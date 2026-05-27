@@ -265,7 +265,10 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       })
       .catch(() => null);
     const issueSummary = activeBaseSwap
-      ? buildFwaBaseSwapIssueSummary(activeBaseSwap.metadata)
+      ? buildFwaBaseSwapIssueSummary(
+          activeBaseSwap.metadata,
+          String(activeCurrentWar?.matchType ?? activeCurrentWar?.inferredMatchType ?? "").trim() || null,
+        )
       : {
           hasIssues: false,
           statusText: "❌ Bases not checked",
