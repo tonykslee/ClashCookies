@@ -22,6 +22,7 @@ import {
 } from "./PlayerLinkService";
 import {
   ensureAndHydrateCwlTrackedClanMetadataForSeason,
+  refreshCwlTrackedClanMetadataForSeason,
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
 import { cwlStateService } from "./CwlStateService";
@@ -4866,7 +4867,7 @@ export class RosterService {
     }
 
     if (cocService && roster.rosterType === "CWL" && roster.clanTag) {
-      await ensureAndHydrateCwlTrackedClanMetadataForSeason({
+      await refreshCwlTrackedClanMetadataForSeason({
         clanTags: [roster.clanTag],
         season: resolveCurrentCwlSeasonKey(),
         cocService,
