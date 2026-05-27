@@ -554,6 +554,56 @@ describe("fwa active-war identity reconciliation", () => {
       }),
     ).toBeNull();
   });
+
+  it("returns null for scraped label names that are not valid clan names", () => {
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: {
+          warId: 2001,
+          startTime: new Date("2026-03-10T22:00:00.000Z"),
+          opponentTag: "#2OLDTAG",
+        },
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          endTime: "20260313T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "Point Balance",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: {
+          warId: 2001,
+          startTime: new Date("2026-03-10T22:00:00.000Z"),
+          opponentTag: "#2OLDTAG",
+        },
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          endTime: "20260313T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "Clan Tag",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("fwa mail send gating", () => {
