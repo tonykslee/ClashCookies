@@ -483,7 +483,10 @@ describe("/roster command", () => {
         postedChannelId: null,
         postedMessageId: null,
       },
-      groups: [],
+      groups: [
+        { id: "group-confirmed", key: "confirmed", name: "Confirmed", description: null, sortOrder: 0 },
+        { id: "group-substitute", key: "substitute", name: "Substitute", description: null, sortOrder: 1 },
+      ],
       signups: [],
       totalSignupCount: 0,
     });
@@ -1009,7 +1012,10 @@ describe("/roster command", () => {
         postedChannelId: null,
         postedMessageId: null,
       },
-      groups: [],
+      groups: [
+        { key: "confirmed", name: "Confirmed" },
+        { key: "substitute", name: "Substitute" },
+      ],
       signups: [],
       totalSignupCount: 0,
     });
@@ -1024,15 +1030,27 @@ describe("/roster command", () => {
       duplicateTags: [],
       missingLinkedTags: [],
     });
-    (rosterService.moveRosterSignups as any).mockResolvedValue({
-      outcome: "moved",
-      rosterId: "roster-1",
-      groupKey: "substitute",
-      requestedTags: ["#PQL0289"],
-      movedTags: ["#PQL0289"],
-      duplicateTags: [],
-      missingTags: [],
-    });
+    (rosterService.moveRosterSignups as any)
+      .mockResolvedValueOnce({
+        outcome: "moved",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#PQL0289"],
+        movedTags: ["#PQL0289"],
+        duplicateTags: [],
+        missingTags: [],
+      })
+      .mockResolvedValueOnce({
+        outcome: "moved",
+        rosterId: "roster-1",
+        groupKey: "substitute",
+        groupName: "Substitute",
+        requestedTags: ["#PQL0289"],
+        movedTags: ["#PQL0289"],
+        duplicateTags: [],
+        missingTags: [],
+      });
     (rosterService.removeRosterSignupsAsManager as any).mockResolvedValue({
       outcome: "removed",
       rosterId: "roster-1",
@@ -1094,6 +1112,7 @@ describe("/roster command", () => {
       }),
     );
     expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Signed up #PQL0289, #QGRJ2222");
+    const getRosterViewCallsBeforeMove = rosterService.getRosterView.mock.calls.length;
 
     const moveInteraction = makeInteraction({
       subcommand: "manage",
@@ -1106,11 +1125,30 @@ describe("/roster command", () => {
     expect(rosterService.moveRosterSignups).toHaveBeenCalledWith(
       expect.objectContaining({
         rosterId: "roster-1",
+        groupKey: "confirmed",
+        playerTags: ["#PQL0289"],
+      }),
+    );
+    expect(String(moveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to Confirmed");
+    expect(rosterService.getRosterView.mock.calls.length).toBe(getRosterViewCallsBeforeMove + 1);
+
+    const moveTargetInteraction = makeInteraction({
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+      group: "confirmed",
+      targetGroup: "substitute",
+      players: "#PQL0289",
+    }) as any;
+    await Roster.run({} as any, moveTargetInteraction as any);
+    expect(rosterService.moveRosterSignups).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rosterId: "roster-1",
         groupKey: "substitute",
         playerTags: ["#PQL0289"],
       }),
     );
-    expect(String(moveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to substitute");
+    expect(String(moveTargetInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to Substitute");
 
     const removeInteraction = makeInteraction({
       subcommand: "manage",
@@ -3594,7 +3632,9 @@ describe("/roster command", () => {
       action: "move",
     }) as any;
     await Roster.autocomplete(moveMissingGroupInteraction);
-    expect(moveMissingGroupInteraction.respond).toHaveBeenCalledWith([]);
+    expect(moveMissingGroupInteraction.respond).toHaveBeenCalledWith([
+      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
+    ]);
 
     const moveInteraction = makeAutocompleteInteraction({
       focusedName: "players",
@@ -3602,11 +3642,12 @@ describe("/roster command", () => {
       subcommand: "manage",
       roster: "roster-1",
       action: "move",
-      group: "confirmed",
+      targetGroup: "substitute",
     }) as any;
     await Roster.autocomplete(moveInteraction);
     expect(moveInteraction.respond).toHaveBeenCalledWith([
-      { name: "Charlie (#CUV02898)", value: "#CUV02898" },
+      { name: "Alpha (#PYLQ0289)", value: "#PYLQ0289" },
+      { name: "Bravo (#QGRJ2222)", value: "#QGRJ2222" },
     ]);
 
     const invalidMoveInteraction = makeAutocompleteInteraction({
@@ -3615,10 +3656,23 @@ describe("/roster command", () => {
       subcommand: "manage",
       roster: "roster-1",
       action: "move",
-      group: "not-real",
+      targetGroup: "not-real",
     }) as any;
     await Roster.autocomplete(invalidMoveInteraction);
     expect(invalidMoveInteraction.respond).toHaveBeenCalledWith([]);
+
+    const moveTargetGroupInteraction = makeAutocompleteInteraction({
+      focusedName: "target_group",
+      focusedValue: "con",
+      subcommand: "manage",
+      roster: "roster-1",
+      action: "move",
+    }) as any;
+    await Roster.autocomplete(moveTargetGroupInteraction);
+    expect(rosterService.getRosterView).toHaveBeenCalledWith("roster-1");
+    expect(moveTargetGroupInteraction.respond).toHaveBeenCalledWith([
+      { name: "Confirmed (confirmed)", value: "confirmed" },
+    ]);
 
     const removeInteraction = makeAutocompleteInteraction({
       focusedName: "players",
