@@ -56,6 +56,7 @@ export type AutoRoleEvaluationMemberLike = {
   user?: {
     username?: string | null;
     globalName?: string | null;
+    bot?: boolean;
   } | null;
   roles: {
     cache: {
@@ -239,6 +240,9 @@ export class AutoRoleEvaluationService {
     if (input.config.verifiedRoleId) roleIds.add(input.config.verifiedRoleId);
     if (input.config.familyRoleId) roleIds.add(input.config.familyRoleId);
     if (input.config.cwlClanRoleId) roleIds.add(input.config.cwlClanRoleId);
+    if (input.config.nonMemberEnabled && input.config.nonMemberRoleId) {
+      roleIds.add(input.config.nonMemberRoleId);
+    }
     for (const clan of input.trackedClans ?? []) {
       const clanRoleId = String(clan.clanRoleId ?? "").trim();
       if (clanRoleId) {
