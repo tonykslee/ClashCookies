@@ -2355,6 +2355,39 @@ function buildRosterManageActionTitle(action: RosterManageAction): string {
   return "Set Weight";
 }
 
+export function buildRosterMoveResultSummary(
+  result: RosterManagerMoveSignupsResult,
+  destinationGroupLabel: string | null = null,
+): string {
+  if (result.outcome === "roster_not_found") {
+    return "That roster is no longer available.";
+  }
+  if (result.outcome === "roster_archived") {
+    return "That roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "group_not_found") {
+    return "That roster group is no longer available.";
+  }
+
+  const destinationLabel = normalizeRosterText(destinationGroupLabel ?? null) ?? result.groupKey;
+  const lines: string[] = [];
+  if (result.movedTags.length > 0) {
+    lines.push(`Moved ${result.movedTags.join(", ")} to ${destinationLabel}.`);
+  }
+  if (result.duplicateTags.length > 0) {
+    lines.push(`Selected signup(s) are already in ${destinationLabel}: ${result.duplicateTags.join(", ")}.`);
+  }
+  if (result.missingTags.length > 0) {
+    lines.push(
+      result.movedTags.length <= 0 && result.duplicateTags.length <= 0
+        ? "None of the selected signups were found on that roster."
+        : `Not found on that roster: ${result.missingTags.join(", ")}.`,
+    );
+  }
+
+  return lines.length > 0 ? lines.join("\n") : `No roster signups were moved to ${destinationLabel}.`;
+}
+
 function buildRosterManageStateLabel(state: RosterLifecycleState): string {
   if (state === ROSTER_LIFECYCLE_STATE.ACTIVE) return "Active";
   if (state === ROSTER_LIFECYCLE_STATE.CLOSED) return "Closed";
@@ -2375,6 +2408,23 @@ function buildRosterManageClanLabel(roster: { clanTag: string | null }, clanName
 
 function buildRosterManagePlayerLabel(input: { playerName: string | null; playerTag: string }): string {
   return input.playerName ? `${input.playerName} \`${input.playerTag}\`` : `\`${input.playerTag}\``;
+}
+
+function resolveRosterManageGroupLabel(session: RosterManageSession, groupKey: string | null): string | null {
+  const normalizedGroupKey = normalizeRosterGroupKey(groupKey ?? "");
+  if (!normalizedGroupKey) {
+    return null;
+  }
+  return session.groupOptions.find((option) => option.value === normalizedGroupKey)?.label ?? null;
+}
+
+function resolveRosterManageMoveDestinationGroupKey(session: RosterManageSession): string | null {
+  const confirmedGroupKey = normalizeRosterGroupKey("confirmed");
+  const selectedGroupKey = normalizeRosterGroupKey(session.selectedGroupKey ?? "");
+  if (selectedGroupKey) {
+    return selectedGroupKey;
+  }
+  return session.groupOptions.find((option) => option.value === confirmedGroupKey)?.value ?? session.groupOptions[0]?.value ?? null;
 }
 
 function buildRosterManageGroupedRosterLines(signups: RosterSignupViewRecord[]): string[] {
@@ -5802,8 +5852,23 @@ export class RosterService {
     const requestedTags = normalizeRosterPlayerTags(
       Array.isArray(input.playerTags) ? input.playerTags : [],
     );
+    const logMoveOutcome = (result: RosterManagerMoveSignupsResult): RosterManagerMoveSignupsResult => {
+      console.info(
+        [
+          "[roster-manage-move]",
+          `rosterId=${result.rosterId}`,
+          `destinationGroupKey=${result.groupKey}`,
+          `requestedCount=${requestedTags.length}`,
+          `movedCount=${result.movedTags.length}`,
+          `duplicateCount=${result.duplicateTags.length}`,
+          `missingCount=${result.missingTags.length}`,
+          `outcome=${result.outcome}`,
+        ].join(" "),
+      );
+      return result;
+    };
     if (!roster) {
-      return {
+      return logMoveOutcome({
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         groupKey: normalizeRosterGroupKey(input.groupKey),
@@ -5811,10 +5876,10 @@ export class RosterService {
         movedTags: [],
         duplicateTags: [],
         missingTags: requestedTags,
-      };
+      });
     }
     if (!canManagerMutateRoster(roster.lifecycleState)) {
-      return {
+      return logMoveOutcome({
         outcome: "roster_archived",
         rosterId: roster.id,
         groupKey: normalizeRosterGroupKey(input.groupKey),
@@ -5822,12 +5887,12 @@ export class RosterService {
         movedTags: [],
         duplicateTags: [],
         missingTags: requestedTags,
-      };
+      });
     }
 
     const group = await getRosterGroupByKey({ rosterId: roster.id, groupKey: input.groupKey });
     if (!group) {
-      return {
+      return logMoveOutcome({
         outcome: "group_not_found",
         rosterId: roster.id,
         groupKey: normalizeRosterGroupKey(input.groupKey),
@@ -5835,7 +5900,7 @@ export class RosterService {
         movedTags: [],
         duplicateTags: [],
         missingTags: requestedTags,
-      };
+      });
     }
 
     const existing = await prisma.rosterSignup.findMany({
@@ -5869,7 +5934,7 @@ export class RosterService {
       });
     }
 
-    return {
+    return logMoveOutcome({
       outcome: movedTags.length > 0 ? "moved" : "nothing_moved",
       rosterId: roster.id,
       groupKey: group.key,
@@ -5877,7 +5942,7 @@ export class RosterService {
       movedTags,
       duplicateTags,
       missingTags,
-    };
+    });
   }
 
   async changeRosterSignups(input: {
@@ -6852,7 +6917,14 @@ export class RosterService {
       selectedDiscordUserLabel,
       rosterSignups: view.signups,
       selectedPlayerTags: [],
-      selectedGroupKey: input.action === "add" || input.action === "move" ? groupOptions[0]?.value ?? null : null,
+      selectedGroupKey:
+        input.action === "add"
+          ? groupOptions[0]?.value ?? null
+          : input.action === "move"
+            ? groupOptions.find((group) => group.value === normalizeRosterGroupKey("confirmed"))?.value ??
+              groupOptions[0]?.value ??
+              null
+            : null,
       selectedTargetRosterId: null,
       selectedTargetGroupKey: null,
       playerOptions,
@@ -7153,12 +7225,13 @@ export class RosterService {
       }
 
       if (session.action === "move") {
-        if (!session.selectedGroupKey) {
+        const destinationGroupKey = resolveRosterManageMoveDestinationGroupKey(session);
+        if (!destinationGroupKey) {
           return { outcome: "missing_group" };
         }
         const result = await this.moveRosterSignups({
           rosterId: session.rosterId,
-          groupKey: session.selectedGroupKey,
+          groupKey: destinationGroupKey,
           playerTags: session.selectedPlayerTags,
           updatedByDiscordUserId: session.ownerDiscordUserId,
         });
@@ -7168,7 +7241,7 @@ export class RosterService {
           action: session.action,
           rosterId: session.rosterId,
           targetRosterId: null,
-          summary: `Processed ${result.movedTags.length} move(s) for ${session.rosterTitle}.`,
+          summary: buildRosterMoveResultSummary(result, resolveRosterManageGroupLabel(session, destinationGroupKey)),
         };
       }
 

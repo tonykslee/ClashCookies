@@ -289,6 +289,7 @@ vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", async () => {
 import {
   ROSTER_DEFAULT_GROUPS,
   buildRosterSignupRoleRequirementLines,
+  buildRosterMoveResultSummary,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../src/services/RosterService";
@@ -4982,6 +4983,7 @@ describe("RosterService", () => {
   it.each(["OPEN", "CLOSED"] as const)(
     "allows managers to add, move, and remove roster entries on %s rosters",
     async (lifecycleState) => {
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
       prismaMock.roster.findUnique.mockResolvedValue({
         id: "roster-1",
         guildId: "guild-1",
@@ -5107,6 +5109,11 @@ describe("RosterService", () => {
         duplicateTags: [],
         missingTags: [],
       });
+      expect(consoleInfoSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[roster-manage-move] rosterId=roster-1 destinationGroupKey=substitute requestedCount=2 movedCount=2 duplicateCount=0 missingCount=0 outcome=moved",
+        ),
+      );
       expect(prismaMock.rosterSignup.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
@@ -5122,6 +5129,7 @@ describe("RosterService", () => {
         removedTags: ["#PQL0289", "#QGRJ2222"],
         notOwnedTags: [],
       });
+      consoleInfoSpy.mockRestore();
       expect(prismaMock.rosterSignup.deleteMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
@@ -5132,6 +5140,72 @@ describe("RosterService", () => {
       );
     },
   );
+
+  it("formats move summaries with destination, duplicate, and missing buckets", () => {
+    expect(
+      buildRosterMoveResultSummary(
+        {
+          outcome: "nothing_moved",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          requestedTags: ["#PQL0289"],
+          movedTags: [],
+          duplicateTags: ["#PQL0289"],
+          missingTags: [],
+        } as any,
+        "Confirmed",
+      ),
+    ).toBe("Selected signup(s) are already in Confirmed: #PQL0289.");
+
+    expect(
+      buildRosterMoveResultSummary(
+        {
+          outcome: "nothing_moved",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          requestedTags: ["#PQL0289", "#QGRJ2222"],
+          movedTags: [],
+          duplicateTags: ["#PQL0289"],
+          missingTags: ["#QGRJ2222"],
+        } as any,
+        "Confirmed",
+      ),
+    ).toBe(
+      "Selected signup(s) are already in Confirmed: #PQL0289.\nNot found on that roster: #QGRJ2222.",
+    );
+
+    expect(
+      buildRosterMoveResultSummary(
+        {
+          outcome: "moved",
+          rosterId: "roster-1",
+          groupKey: "substitute",
+          requestedTags: ["#PQL0289", "#QGRJ2222"],
+          movedTags: ["#PQL0289"],
+          duplicateTags: ["#QGRJ2222"],
+          missingTags: ["#ZZZ99999"],
+        } as any,
+        "Substitute",
+      ),
+    ).toBe(
+      "Moved #PQL0289 to Substitute.\nSelected signup(s) are already in Substitute: #QGRJ2222.\nNot found on that roster: #ZZZ99999.",
+    );
+
+    expect(
+      buildRosterMoveResultSummary(
+        {
+          outcome: "nothing_moved",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          requestedTags: ["#PQL0289"],
+          movedTags: [],
+          duplicateTags: [],
+          missingTags: ["#PQL0289"],
+        } as any,
+        "Confirmed",
+      ),
+    ).toBe("None of the selected signups were found on that roster.");
+  });
 
   it("rejects archived roster mutations for manager add, move, and remove actions", async () => {
     prismaMock.roster.findUnique.mockResolvedValue({
