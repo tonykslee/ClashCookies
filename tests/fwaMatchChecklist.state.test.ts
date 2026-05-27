@@ -181,15 +181,6 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
                 section: "base_errors",
                 acknowledged: false,
               },
-              {
-                position: 35,
-                playerTag: "#CCC",
-                playerName: "Ignored",
-                discordUserId: "333",
-                townhallLevel: 13,
-                section: "fwa_bases",
-                acknowledged: false,
-              },
             ],
           } as any,
         } as any;
