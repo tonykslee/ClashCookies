@@ -11232,7 +11232,7 @@ async function buildTrackedMatchOverview(
           opponentTag: liveIdentityPatch.patch.opponentTag,
           opponentName: liveIdentityPatch.patch.opponentName,
           clanName: liveIdentityPatch.patch.clanName,
-          warId: liveIdentityPatch.patch.warId ?? sub?.warId ?? null,
+          warId: liveIdentityPatch.patch.warId,
           matchType: liveIdentityPatch.sameWar
             ? (sub?.matchType ?? null)
             : null,
