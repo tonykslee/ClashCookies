@@ -146,6 +146,15 @@ describe("command coverage", () => {
     expect(normalized).toContain("snapshot-only");
   });
 
+  it("documents roster manage change group and change roster wording in roster help detail text", () => {
+    const rosterHelpText = helpEmbedText("roster");
+    const normalized = rosterHelpText.toLowerCase();
+    expect(normalized).toContain("change group");
+    expect(normalized).toContain("change roster");
+    expect(normalized).toContain("target_group");
+    expect(normalized).toContain("another roster");
+  });
+
   it("documents the blacklist import command in FWA help detail text", () => {
     const fwaHelpText = helpEmbedText("fwa");
     const normalized = fwaHelpText.toLowerCase();
