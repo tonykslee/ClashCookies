@@ -92,6 +92,7 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiId: string | null;
   badgeEmojiName: string | null;
   badgeEmojiInline: string;
+  matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   contextKey?: string | null;
   detailLines?: string[] | null;
   warId?: string | number | null;

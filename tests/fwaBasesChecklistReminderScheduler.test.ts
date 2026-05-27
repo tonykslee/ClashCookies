@@ -60,6 +60,7 @@ function makeCandidate(overrides: Partial<FwaBasesChecklistReminderCandidate> = 
     clanName: "Alpha Clan",
     clanShortName: "Alpha",
     clanRoleId: "role-1",
+    matchType: "BL",
     destinationChannelId: "channel-1",
     destinationChannelKind: "leader",
     reminderMessageId: "fwa_match_checklist_bases_reminder|guild=guild-1|clan=#ABC|war=1001|opponent=OPP1|start=2026-05-26T18:00:00.000Z|bucket=3",
@@ -174,6 +175,28 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     });
     expect(client.channels.fetch).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("skips MM clans without claiming a reminder marker or sending", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate({ matchType: "MM" })]);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=mm_match_type"),
+    );
   });
 
   it("skips a candidate when no destination channel is configured", async () => {
