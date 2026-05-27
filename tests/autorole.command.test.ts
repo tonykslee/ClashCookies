@@ -69,6 +69,10 @@ function createInteraction(input: InteractionInput) {
         members: {
           fetch: vi.fn(),
         },
+        roles: {
+          cache: new Map<string, { id: string }>(),
+          fetch: vi.fn(),
+        },
       } as any),
     memberPermissions: {
       has: vi.fn(() => input.isAdmin ?? true),
@@ -121,6 +125,8 @@ describe("/autorole command", () => {
       verifiedRoleId: null,
       familyRoleId: null,
       cwlClanRoleId: null,
+      nonMemberRoleId: null,
+      nonMemberEnabled: false,
       clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -140,6 +146,8 @@ describe("/autorole command", () => {
       verifiedRoleId: null,
       familyRoleId: null,
       cwlClanRoleId: null,
+      nonMemberRoleId: null,
+      nonMemberEnabled: false,
       clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -260,6 +268,8 @@ describe("/autorole command", () => {
       "clear_clan_role_removal_delay",
       "cwl_clan_role",
       "clear_cwl_clan_role",
+      "non-member-role",
+      "non-member-enabled",
     ]));
     expect(rulesGroup?.options?.map((option: any) => option.name)).toEqual([
       "list",
@@ -491,7 +501,42 @@ describe("/autorole command", () => {
     expect(getDescription(interaction)).toContain("Enabled: disabled");
     expect(getDescription(interaction)).toContain("Trusted links allowed: enabled");
     expect(getDescription(interaction)).toContain("CWL clan role: none");
+    expect(getDescription(interaction)).toContain("Visitor role: none");
+    expect(getDescription(interaction)).toContain("Visitor role enabled: disabled");
     expect(getDescription(interaction)).toContain("Clan role removal delay: none");
+  });
+
+  it("shows a stale visitor role warning when the configured role is missing", async () => {
+    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "777777777777777777",
+      nonMemberEnabled: true,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const interaction = createInteraction({ group: "config", subcommand: "show" });
+    (interaction.guild?.roles?.fetch as any).mockResolvedValueOnce(null);
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.guild?.roles?.fetch).toHaveBeenCalledWith("777777777777777777");
+    expect(getDescription(interaction)).toContain("Visitor role: <@&777777777777777777>");
+    expect(getDescription(interaction)).toContain("Visitor role enabled: enabled");
+    expect(getDescription(interaction)).toContain("Visitor role warning: missing/deleted");
   });
 
   it("updates config fields from /autorole config set", async () => {
@@ -547,6 +592,128 @@ describe("/autorole command", () => {
     expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
       cwlClanRoleId: null,
     });
+  });
+
+  it("sets, disables, and re-enables the visitor role from /autorole config set", async () => {
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "666666666666666666",
+      nonMemberEnabled: true,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    const setInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      roles: {
+        "non-member-role": { id: "666666666666666666" },
+      },
+    });
+    await Autorole.run({} as any, setInteraction as any, {} as any);
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nonMemberRoleId: "666666666666666666",
+    });
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "666666666666666666",
+      nonMemberEnabled: false,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const disableInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        "non-member-enabled": false,
+      },
+    });
+    await Autorole.run({} as any, disableInteraction as any, {} as any);
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nonMemberEnabled: false,
+    });
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "666666666666666666",
+      nonMemberEnabled: true,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const enableInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        "non-member-enabled": true,
+      },
+    });
+    await Autorole.run({} as any, enableInteraction as any, {} as any);
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nonMemberEnabled: true,
+    });
+  });
+
+  it("fails clearly when enabling the visitor role without a saved role", async () => {
+    autoRoleServiceMock.updateGuildConfig.mockRejectedValueOnce(
+      new Error("non-member-enabled:true requires a saved role. Set non-member-role first."),
+    );
+
+    const interaction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      booleans: {
+        "non-member-enabled": true,
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(getEditReplyPayload(interaction).content).toContain(
+      "non-member-enabled:true requires a saved role",
+    );
   });
 
   it("sets and clears the clan role removal delay from /autorole config set", async () => {

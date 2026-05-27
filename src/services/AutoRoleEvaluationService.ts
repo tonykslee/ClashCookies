@@ -31,6 +31,8 @@ export type AutoRoleGuildConfigSnapshot = Pick<
   | "verifiedRoleId"
   | "familyRoleId"
   | "cwlClanRoleId"
+  | "nonMemberRoleId"
+  | "nonMemberEnabled"
   | "clanRoleRemovalDelayMinutes"
 >;
 

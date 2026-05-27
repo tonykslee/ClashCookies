@@ -267,6 +267,9 @@ describe("command coverage", () => {
     const autoroleHelpText = helpEmbedText("autorole");
     expect(autoroleHelpText).toContain("/autorole refresh");
     expect(autoroleHelpText).toContain("manual refresh");
+    expect(autoroleHelpText).toContain("non-member-role");
+    expect(autoroleHelpText).toContain("non-member-enabled");
+    expect(autoroleHelpText).toContain("visitor/non-member role");
   });
 
   it("moves and resets help detail navigation state", () => {
