@@ -618,57 +618,6 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBe(false);
   });
 
-  it("accepts reminder candidates for war or base-error sections without fwa bases", async () => {
-    prismaMock.trackedMessage.findMany.mockResolvedValue([
-      {
-        id: "tracked-1",
-        guildId: "guild-1",
-        channelId: "channel-1",
-        messageId: "message-1",
-        referenceId: "fwa-base-swap:split-key",
-        clanTag: "2QG2C08UP",
-        createdAt: new Date("2026-03-20T00:00:00.000Z"),
-        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
-        metadata: {
-          clanName: "Alpha",
-          createdByUserId: "user-1",
-          createdAtIso: "2026-03-20T00:01:00.000Z",
-          swapReminder: true,
-          entries: [
-            {
-              position: 5,
-              playerTag: "#AAA111",
-              playerName: "Alice",
-              discordUserId: "user-1",
-              townhallLevel: 15,
-              section: "war_bases",
-              acknowledged: false,
-            },
-            {
-              position: 7,
-              playerTag: "#BBB222",
-              playerName: "Bea",
-              discordUserId: "user-2",
-              townhallLevel: 14,
-              section: "base_errors",
-              acknowledged: false,
-            },
-          ],
-          layoutLinks: [],
-        },
-      },
-    ]);
-
-    const candidate = await trackedMessageService.findLatestActiveFwaBaseSwapReminderCandidate({
-      guildId: "guild-1",
-      clanTag: "2QG2C08UP",
-    });
-
-    expect(candidate?.messageId).toBe("message-1");
-    expect(candidate?.metadata.entries.some((entry) => entry.section === "war_bases")).toBe(true);
-    expect(candidate?.metadata.entries.some((entry) => entry.section === "base_errors")).toBe(true);
-  });
-
   it("keeps reminder markers scoped to the current war identity", async () => {
     prismaMock.trackedMessage.create.mockResolvedValue(undefined);
 

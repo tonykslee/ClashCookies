@@ -1138,14 +1138,9 @@ export class TrackedMessageService {
         );
         continue;
       }
-      const hasAnyRemindableEntries = metadata.entries.some((entry) =>
-        entry.section === "war_bases" ||
-        entry.section === "base_errors" ||
-        entry.section === "fwa_bases"
-      );
-      if (!hasAnyRemindableEntries) {
+      if (!metadata.entries.some((entry) => entry.section === "fwa_bases")) {
         console.log(
-          `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=no_remindable_entries`,
+          `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=no_fwa_bases_entry`,
         );
         continue;
       }
