@@ -3218,22 +3218,31 @@ describe("/roster command", () => {
       subcommand: "edit",
       roster: "roster-1",
       name: "CWL Alpha Signup (Updated)",
-      timezone: "America/New_York",
-      displayTimezone: "America/New_York",
     }) as any;
     editInteraction.client.channels.fetch = interactionClientFetchMock;
 
     await Roster.run({} as any, editInteraction as any);
 
-    expect(rosterService.updateRoster).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rosterId: "roster-1",
-        name: "CWL Alpha Signup (Updated)",
-        timezone: "America/New_York",
-        displayTimezone: "America/New_York",
-        updatedByDiscordUserId: "111111111111111111",
-      }),
-    );
+    const editUpdatePayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(editUpdatePayload).toMatchObject({
+      rosterId: "roster-1",
+      name: "CWL Alpha Signup (Updated)",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(editUpdatePayload.timezone).toBeUndefined();
+    expect(editUpdatePayload.displayTimezone).toBeUndefined();
+    expect(editUpdatePayload.startsAt).toBeUndefined();
+    expect(editUpdatePayload.endsAt).toBeUndefined();
+    expect(editUpdatePayload.maxMembers).toBeUndefined();
+    expect(editUpdatePayload.maxAccountsPerUser).toBeUndefined();
+    expect(editUpdatePayload.minTownhall).toBeUndefined();
+    expect(editUpdatePayload.maxTownhall).toBeUndefined();
+    expect(editUpdatePayload.requiredSignupRoleId).toBeUndefined();
+    expect(editUpdatePayload.noRoleSignupLimit).toBeUndefined();
+    expect(editUpdatePayload.rosterRoleId).toBeUndefined();
+    expect(editUpdatePayload.allowMultiSignup).toBeUndefined();
+    expect(editUpdatePayload.sortBy).toBeUndefined();
+    expect(editUpdatePayload.importMembers).toBeUndefined();
     expect(editedMessage.edit).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: [expect.any(EmbedBuilder)],
@@ -3241,6 +3250,82 @@ describe("/roster command", () => {
     );
     expect(String(editInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Updated roster CWL Alpha Signup (Updated).");
 
+    const editMaxMembersInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      maxMembers: 30,
+    }) as any;
+    editMaxMembersInteraction.client.channels.fetch = interactionClientFetchMock;
+    await Roster.run({} as any, editMaxMembersInteraction as any);
+    const maxMembersPayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(maxMembersPayload).toMatchObject({
+      rosterId: "roster-1",
+      maxMembers: 30,
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(maxMembersPayload.minTownhall).toBeUndefined();
+    expect(maxMembersPayload.maxTownhall).toBeUndefined();
+    expect(maxMembersPayload.startsAt).toBeUndefined();
+    expect(maxMembersPayload.endsAt).toBeUndefined();
+    expect(maxMembersPayload.sortBy).toBeUndefined();
+
+    const editMinTownhallInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      minTownhall: 14,
+    }) as any;
+    editMinTownhallInteraction.client.channels.fetch = interactionClientFetchMock;
+    await Roster.run({} as any, editMinTownhallInteraction as any);
+    const minTownhallPayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(minTownhallPayload).toMatchObject({
+      rosterId: "roster-1",
+      minTownhall: 14,
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(minTownhallPayload.maxTownhall).toBeUndefined();
+    expect(minTownhallPayload.startsAt).toBeUndefined();
+    expect(minTownhallPayload.endsAt).toBeUndefined();
+
+    const editSortByInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      sortBy: "townhall",
+    }) as any;
+    editSortByInteraction.client.channels.fetch = interactionClientFetchMock;
+    await Roster.run({} as any, editSortByInteraction as any);
+    const sortByPayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(sortByPayload).toMatchObject({
+      rosterId: "roster-1",
+      sortBy: "townhall",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(sortByPayload.maxMembers).toBeUndefined();
+    expect(sortByPayload.minTownhall).toBeUndefined();
+    expect(sortByPayload.maxTownhall).toBeUndefined();
+    expect(sortByPayload.startsAt).toBeUndefined();
+    expect(sortByPayload.endsAt).toBeUndefined();
+
+    const clearRequiredRoleInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      clearRequiredRole: true,
+    }) as any;
+    clearRequiredRoleInteraction.client.channels.fetch = interactionClientFetchMock;
+    await Roster.run({} as any, clearRequiredRoleInteraction as any);
+    const clearRequiredRolePayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(clearRequiredRolePayload.requiredSignupRoleId).toBeNull();
+
+    const deleteRoleInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      deleteRole: true,
+    }) as any;
+    deleteRoleInteraction.client.channels.fetch = interactionClientFetchMock;
+    await Roster.run({} as any, deleteRoleInteraction as any);
+    const deleteRolePayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(deleteRolePayload.rosterRoleId).toBeNull();
+
+    const updateCallsBeforeTitle = rosterService.updateRoster.mock.calls.length;
     const titleOnlyInteraction = makeInteraction({
       subcommand: "edit",
       roster: "roster-1",
@@ -3253,7 +3338,7 @@ describe("/roster command", () => {
     expect(String(titleOnlyInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Provide at least one roster field to edit.",
     );
-    expect(rosterService.updateRoster).toHaveBeenCalledTimes(1);
+    expect(rosterService.updateRoster.mock.calls.length).toBe(updateCallsBeforeTitle);
 
     const refreshInteraction = makeInteraction({
       subcommand: "refresh",
