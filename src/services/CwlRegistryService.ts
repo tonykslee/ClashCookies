@@ -386,6 +386,112 @@ export async function ensureAndHydrateCwlTrackedClanMetadataForSeason(input: {
   };
 }
 
+/** Purpose: force-refresh tracked CWL clan metadata from live CoC even when rows already have values. */
+export async function refreshCwlTrackedClanMetadataForSeason(input: {
+  clanTags: string[];
+  season?: string;
+  cocService: CoCService;
+  ensureRows?: boolean;
+}): Promise<{
+  season: string;
+  requestedCount: number;
+  ensuredCount: number;
+  hydratedCount: number;
+  skippedCount: number;
+}> {
+  const season = input.season ?? resolveCurrentCwlSeasonKey();
+  const clanTags = normalizeUniqueCwlClanTags(input.clanTags);
+  if (clanTags.length <= 0) {
+    return {
+      season,
+      requestedCount: 0,
+      ensuredCount: 0,
+      hydratedCount: 0,
+      skippedCount: 0,
+    };
+  }
+
+  const ensured = input.ensureRows === false
+    ? { count: 0 }
+    : await runBoundedCwlTagStage({
+        stage: "cwl_tags_force_metadata_ensure_rows",
+        timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+        details: { season, requested_count: clanTags.length },
+        action: () =>
+          prisma.cwlTrackedClan.createMany({
+            data: clanTags.map((tag) => ({
+              season,
+              tag,
+              name: null,
+              leagueLabel: null,
+            })),
+            skipDuplicates: true,
+          }),
+      });
+
+  let hydratedCount = 0;
+  let skippedCount = 0;
+  await Promise.allSettled(
+    clanTags.map(async (tag) => {
+      try {
+        const clan = await runBoundedCwlTagStage({
+          stage: "cwl_tags_force_metadata_lookup",
+          timeoutMs: CWL_TAG_HYDRATION_LOOKUP_TIMEOUT_MS,
+          details: { season, tag },
+          action: () => input.cocService.getClan(tag),
+        });
+        const clanName = String(clan?.name ?? "").trim();
+        const leagueLabel = String(clan?.warLeague?.name ?? "").trim();
+        if (!clanName && !leagueLabel) {
+          skippedCount += 1;
+          console.info(
+            `[tracked-clan] stage=cwl_tags_force_metadata_skipped season=${season} tag=${tag} reason=empty_name_and_league`,
+          );
+          return;
+        }
+        const updateResult = await runBoundedCwlTagStage({
+          stage: "cwl_tags_force_metadata_update",
+          timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
+          details: { season, tag },
+          action: () =>
+            prisma.cwlTrackedClan.updateMany({
+              where: {
+                season,
+                tag,
+              },
+              data: {
+                ...(clanName ? { name: clanName } : {}),
+                ...(leagueLabel ? { leagueLabel } : {}),
+              },
+            }),
+        });
+        if (updateResult.count > 0) {
+          hydratedCount += updateResult.count;
+        } else {
+          skippedCount += 1;
+        }
+      } catch (err) {
+        skippedCount += 1;
+        console.error(
+          `[tracked-clan] stage=cwl_tags_force_metadata_failed season=${season} tag=${tag} error=${formatError(err)}`,
+        );
+      }
+    }),
+  );
+
+  console.info(
+    `[tracked-clan] stage=cwl_tags_force_metadata_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+  );
+
+  return {
+    season,
+    requestedCount: clanTags.length,
+    ensuredCount: ensured.count,
+    hydratedCount,
+    skippedCount,
+  };
+}
+
 /** Purpose: hydrate missing CWL clan names as best-effort enrichment after rows exist. */
 export async function hydrateMissingCwlClanNamesForSeason(input: {
   rawTags: string;
