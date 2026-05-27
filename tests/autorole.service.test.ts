@@ -66,6 +66,8 @@ describe("AutoRoleService", () => {
       verifiedRoleId: null,
       familyRoleId: null,
       cwlClanRoleId: null,
+      nonMemberRoleId: null,
+      nonMemberEnabled: false,
       clanRoleRemovalDelayMinutes: null,
       createdAt: new Date("2026-04-01T00:00:00.000Z"),
       updatedAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -130,6 +132,7 @@ describe("AutoRoleService", () => {
       nicknameTemplate: "TH{th} {name}",
       verifiedRoleId: "222222222222222222",
       cwlClanRoleId: "333333333333333333",
+      nonMemberRoleId: "444444444444444444",
     });
     expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
       where: { guildId: "111111111111111111" },
@@ -140,6 +143,8 @@ describe("AutoRoleService", () => {
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
         cwlClanRoleId: "333333333333333333",
+        nonMemberRoleId: "444444444444444444",
+        nonMemberEnabled: true,
       },
       update: {
         enabled: true,
@@ -147,8 +152,112 @@ describe("AutoRoleService", () => {
         nicknameTemplate: "TH{th} {name}",
         verifiedRoleId: "222222222222222222",
         cwlClanRoleId: "333333333333333333",
+        nonMemberRoleId: "444444444444444444",
+        nonMemberEnabled: true,
       },
     });
+  });
+
+  it("preserves a saved visitor role when disabled and re-enables it later", async () => {
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "444444444444444444",
+      nonMemberEnabled: true,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    await service.updateGuildConfig("111111111111111111", {
+      nonMemberEnabled: false,
+    });
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
+      where: { guildId: "111111111111111111" },
+      create: {
+        guildId: "111111111111111111",
+        nonMemberEnabled: false,
+      },
+      update: {
+        nonMemberEnabled: false,
+      },
+    });
+
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: "444444444444444444",
+      nonMemberEnabled: true,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    await service.updateGuildConfig("111111111111111111", {
+      nonMemberEnabled: true,
+    });
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { guildId: "111111111111111111" },
+        update: expect.objectContaining({
+          nonMemberEnabled: true,
+        }),
+      }),
+    );
+  });
+
+  it("rejects enabling visitor autorole without a saved role", async () => {
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
+      id: "config-1",
+      guildId: "111111111111111111",
+      enabled: false,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: true,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: null,
+      nonMemberEnabled: false,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    await expect(
+      service.updateGuildConfig("111111111111111111", {
+        nonMemberEnabled: true,
+      }),
+    ).rejects.toThrow("non-member-enabled:true requires a saved role. Set non-member-role first.");
   });
 
   it("creates every supported rule type with normalized targets", async () => {

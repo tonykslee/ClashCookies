@@ -64,6 +64,8 @@ export type AutoRoleGuildConfigUpdateInput = {
   verifiedRoleId?: string | null;
   familyRoleId?: string | null;
   cwlClanRoleId?: string | null;
+  nonMemberRoleId?: string | null;
+  nonMemberEnabled?: boolean;
   clanRoleRemovalDelayMinutes?: number | null;
 };
 
@@ -417,6 +419,15 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
     data.cwlClanRoleId = normalizeOptionalSnowflakeId(input.cwlClanRoleId) ?? null;
   }
 
+  if (input.nonMemberRoleId !== undefined) {
+    data.nonMemberRoleId = normalizeOptionalSnowflakeId(input.nonMemberRoleId) ?? null;
+  }
+
+  const nonMemberEnabled = toBooleanOrUndefined(input.nonMemberEnabled);
+  if (nonMemberEnabled !== undefined) {
+    data.nonMemberEnabled = nonMemberEnabled;
+  }
+
   if (input.clanRoleRemovalDelayMinutes !== undefined) {
     data.clanRoleRemovalDelayMinutes = normalizeClanRoleRemovalDelayMinutes(
       input.clanRoleRemovalDelayMinutes,
@@ -464,9 +475,24 @@ export class AutoRoleService {
     input: AutoRoleGuildConfigUpdateInput,
   ): Promise<AutoRoleGuildConfigRecord> {
     const normalizedGuildId = requireGuildId(guildId);
+    const current = await this.getOrCreateGuildConfig(normalizedGuildId);
     const data = normalizeGuildConfigUpdate(input);
+    const nextNonMemberRoleId =
+      data.nonMemberRoleId !== undefined
+        ? String(data.nonMemberRoleId ?? "").trim() || null
+        : current.nonMemberRoleId ?? null;
+    if (
+      data.nonMemberRoleId !== undefined &&
+      data.nonMemberRoleId !== null &&
+      data.nonMemberEnabled === undefined
+    ) {
+      data.nonMemberEnabled = true;
+    }
+    if (data.nonMemberEnabled === true && !nextNonMemberRoleId) {
+      throw new Error("non-member-enabled:true requires a saved role. Set non-member-role first.");
+    }
     if (Object.keys(data).length === 0) {
-      return this.getOrCreateGuildConfig(normalizedGuildId);
+      return current;
     }
 
     return prisma.autoRoleGuildConfig.upsert({

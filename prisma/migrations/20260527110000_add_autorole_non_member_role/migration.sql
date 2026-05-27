@@ -1,0 +1,2 @@
+ALTER TABLE "AutoRoleGuildConfig" ADD COLUMN IF NOT EXISTS "nonMemberRoleId" TEXT;
+ALTER TABLE "AutoRoleGuildConfig" ADD COLUMN IF NOT EXISTS "nonMemberEnabled" BOOLEAN NOT NULL DEFAULT false;
