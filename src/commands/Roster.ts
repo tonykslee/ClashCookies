@@ -706,6 +706,12 @@ function parseRosterNonNegativeIntegerOption(value: number | null | undefined): 
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function optionalRosterIntegerOption(value: number | null | undefined): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const parsed = parseRosterIntegerOption(value);
+  return parsed === null ? undefined : parsed;
+}
+
 function resolveRosterNameOption(interaction: ChatInputCommandInteraction): {
   name: string | null;
   title: string | null;
@@ -3237,20 +3243,22 @@ async function handleRosterEditSubcommand(
     return;
   }
   const deleteRole = interaction.options.getBoolean("delete_role", false) ?? false;
-  const maxMembers = parseRosterIntegerOption(interaction.options.getInteger("max_members", false));
-  const maxAccountsPerUser = parseRosterIntegerOption(
+  const maxMembers = optionalRosterIntegerOption(interaction.options.getInteger("max_members", false));
+  const maxAccountsPerUser = optionalRosterIntegerOption(
     interaction.options.getInteger("max_accounts_per_user", false),
   );
-  const minTownhall = parseRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
-  const maxTownhall = parseRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
-  const allowMultiSignup = interaction.options.getBoolean("allow_multi_signup", false);
+  const minTownhall = optionalRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
+  const maxTownhall = optionalRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const allowMultiSignupRaw = interaction.options.getBoolean("allow_multi_signup", false);
+  const allowMultiSignup = allowMultiSignupRaw === null ? undefined : allowMultiSignupRaw;
   const sortBySeed = interaction.options.getString("sort_by", false);
-  const sortBy = sortBySeed ? normalizeRosterSortByChoice(sortBySeed) : null;
-  if (sortBySeed && !sortBy) {
+  const sortBy = sortBySeed !== null ? normalizeRosterSortByChoice(sortBySeed) : undefined;
+  if (sortBySeed !== null && !sortBy) {
     await interaction.editReply("Use a supported sort_by value.");
     return;
   }
-  const importMembers = interaction.options.getBoolean("import_members", false);
+  const importMembersRaw = interaction.options.getBoolean("import_members", false);
+  const importMembers = importMembersRaw === null ? undefined : importMembersRaw;
 
   if (
     !nameSeed &&
@@ -3265,13 +3273,13 @@ async function handleRosterEditSubcommand(
     noRoleSignupLimit === null &&
     !rosterRoleSeed &&
     !deleteRole &&
-    maxMembers === null &&
-    maxAccountsPerUser === null &&
-    minTownhall === null &&
-    maxTownhall === null &&
-    allowMultiSignup === null &&
-    sortBy === null &&
-    importMembers === null
+    maxMembers === undefined &&
+    maxAccountsPerUser === undefined &&
+    minTownhall === undefined &&
+    maxTownhall === undefined &&
+    allowMultiSignup === undefined &&
+    sortBy === undefined &&
+    importMembers === undefined
   ) {
     await interaction.editReply("Provide at least one roster field to edit.");
     return;
@@ -3387,8 +3395,8 @@ async function handleRosterEditSubcommand(
     clanTag: clanSeed ?? undefined,
     timezone: timezone ?? undefined,
     displayTimezone: displayTimezone ?? undefined,
-    startsAt,
-    endsAt,
+    startsAt: startsAt ?? undefined,
+    endsAt: endsAt ?? undefined,
     maxMembers,
     maxAccountsPerUser,
     minTownhall,
