@@ -244,6 +244,41 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(getCurrentWar).not.toHaveBeenCalled();
   });
 
+  it("keeps MM clans visible in the bases checklist", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "MM",
+        inferredMatchType: null,
+        outcome: null,
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(
+      null as any,
+    );
+    vi.mocked(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
+    ).mockResolvedValue(null as any);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0].compactCopyLine).toContain("A |");
+    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].detailLines).toBeNull();
+  });
+
   it("treats fwa bases as a checklist issue for BL matches", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },

@@ -316,6 +316,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       badgeEmojiId: clanBadge.badgeEmojiId,
       badgeEmojiName: clanBadge.badgeEmojiName,
       badgeEmojiInline: clanBadge.badgeEmojiInline,
+      matchType,
       warId: activeCurrentWar?.warId ?? null,
       opponentTag: activeCurrentWar?.opponentTag ?? null,
       warStartTimeIso: activeCurrentWar?.startTime ? activeCurrentWar.startTime.toISOString() : null,
