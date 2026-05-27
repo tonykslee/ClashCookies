@@ -2913,6 +2913,9 @@ export class WarEventLogService {
     const nextWarEndTime = timing.warEndTime;
     const nextPrepStartTime =
       parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
+    // This poller keeps its own identity/timing reconciliation because it also
+    // decides outage recovery and event emission; the shared active-war helper
+    // used by `/fwa match` is intentionally narrower and command-focused.
     const warIdentityComparison = compareActiveWarIdentities({
       persisted: {
         warId: sub.warId,

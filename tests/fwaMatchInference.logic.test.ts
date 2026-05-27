@@ -7,13 +7,15 @@ import {
   shouldRedirectToFwaMatchForMailGateReasonForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
   resolveMatchTypeWithFallbackForTest,
-  resolveFwaActiveWarIdentityPatchForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
 } from "../src/commands/Fwa";
 import {
   chooseMatchTypeResolution,
   resolveCurrentWarMatchTypeSignal,
 } from "../src/services/MatchTypeResolutionService";
+import {
+  resolveActiveWarIdentityPatchForTest,
+} from "../src/services/ActiveWarIdentityReconciliationService";
 import { PointsSyncService } from "../src/services/PointsSyncService";
 
 describe("fwa match inference from points snapshots", () => {
@@ -336,13 +338,49 @@ describe("fwa match stored sync fallback", () => {
 });
 
 describe("fwa active-war identity reconciliation", () => {
+  it("preserves the existing warId when the live war is the same war", () => {
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: {
+        warId: 2001,
+        startTime: new Date("2026-03-12T22:00:00.000Z"),
+        opponentTag: "#20P292Q2V",
+      },
+      liveWar: {
+        state: "inWar",
+        startTime: "20260312T220000.000Z",
+        endTime: "20260313T220000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "Same Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(patch).not.toBeNull();
+    expect(patch).toMatchObject({
+      sameWar: true,
+      patch: {
+        state: "inWar",
+        opponentTag: "20P292Q2V",
+        opponentName: "Same Opponent",
+        clanName: "Tracked Clan",
+        warId: 2001,
+      },
+    });
+  });
+
   it("builds a live identity patch and keeps same-war confirmation authoritative", () => {
     const staleCurrentWar = {
       warId: 2001,
       startTime: new Date("2026-03-10T22:00:00.000Z"),
       opponentTag: "#2OLDTAG",
     };
-    const patch = resolveFwaActiveWarIdentityPatchForTest({
+    const patch = resolveActiveWarIdentityPatchForTest({
       guildId: "guild-1",
       clanTag: "2TRACK",
       currentWar: staleCurrentWar,
@@ -368,6 +406,7 @@ describe("fwa active-war identity reconciliation", () => {
         opponentTag: "20P292Q2V",
         opponentName: "New Opponent",
         clanName: "Tracked Clan",
+        warId: null,
       },
     });
     expect(patch?.patch.startTime).toEqual(
@@ -440,7 +479,7 @@ describe("fwa active-war identity reconciliation", () => {
     };
 
     expect(
-      resolveFwaActiveWarIdentityPatchForTest({
+      resolveActiveWarIdentityPatchForTest({
         guildId: "guild-1",
         clanTag: "2TRACK",
         currentWar: staleCurrentWar,
@@ -459,7 +498,7 @@ describe("fwa active-war identity reconciliation", () => {
     ).toBeNull();
 
     expect(
-      resolveFwaActiveWarIdentityPatchForTest({
+      resolveActiveWarIdentityPatchForTest({
         guildId: "guild-1",
         clanTag: "2TRACK",
         currentWar: staleCurrentWar,
@@ -472,6 +511,44 @@ describe("fwa active-war identity reconciliation", () => {
           },
           clan: {
             name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "",
           },
         } as any,
       }),

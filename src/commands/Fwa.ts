@@ -119,6 +119,9 @@ import {
   type ActiveWarSyncIdentity,
 } from "../services/ActiveWarSyncResolutionService";
 import {
+  resolveActiveWarIdentityPatch,
+} from "../services/ActiveWarIdentityReconciliationService";
+import {
   WarMailLifecycleService,
   type WarMailLifecycleReconciliationOutcome,
   type WarMailLifecycleNormalizedStatus,
@@ -6597,7 +6600,7 @@ export async function handleFwaMatchTypeActionButton(
         const liveCurrentWar = await new CoCService()
           .getCurrentWar(`#${parsed.tag}`)
           .catch(() => null);
-        const identityPatch = resolveFwaActiveWarIdentityPatch({
+        const identityPatch = resolveActiveWarIdentityPatch({
           guildId: interaction.guildId,
           clanTag: parsed.tag,
           liveWar: liveCurrentWar,
@@ -9475,8 +9478,6 @@ export const isPointsValidationCurrentForMatchupForTest =
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
-export const resolveFwaActiveWarIdentityPatchForTest =
-  resolveFwaActiveWarIdentityPatch;
 export const resolveCurrentWarScopedSyncRowForTest =
   resolveCurrentWarScopedSyncRow;
 export const persistActiveWarMailLifecycleForTest =
@@ -10053,106 +10054,6 @@ function getCurrentWarCached(
   const pending = cocService.getCurrentWar(normalized);
   warLookupCache.set(normalized, pending);
   return pending;
-}
-
-type FwaActiveWarIdentityPatch = {
-  state: "preparation" | "inWar";
-  prepStartTime: Date;
-  startTime: Date;
-  endTime: Date;
-  opponentTag: string;
-  opponentName: string;
-  clanName: string;
-  warId: number | null;
-  updatedAt: Date;
-};
-
-type FwaActiveWarIdentityPatchResult = {
-  patch: FwaActiveWarIdentityPatch;
-  sameWar: boolean;
-};
-
-function resolveFwaActiveWarIdentityPatch(input: {
-  guildId: string;
-  clanTag: string;
-  liveWar: CurrentWarResult | null | undefined;
-  currentWar?: {
-    warId?: string | number | null | undefined;
-    startTime?: Date | null | undefined;
-    opponentTag?: string | null | undefined;
-    state?: string | null | undefined;
-    prepStartTime?: Date | null | undefined;
-    endTime?: Date | null | undefined;
-    opponentName?: string | null | undefined;
-    clanName?: string | null | undefined;
-  } | null;
-}): FwaActiveWarIdentityPatchResult | null {
-  const warState = deriveWarState(input.liveWar?.state);
-  if (warState !== "preparation" && warState !== "inWar") return null;
-
-  const liveStartTimeMs = parseCocApiTime(input.liveWar?.startTime ?? null);
-  const liveStartTime =
-    liveStartTimeMs !== null ? new Date(Math.trunc(liveStartTimeMs)) : null;
-  const liveOpponentTag = normalizeTag(String(input.liveWar?.opponent?.tag ?? ""));
-  const liveOpponentName = sanitizeClanName(
-    String(input.liveWar?.opponent?.name ?? ""),
-  );
-  const liveClanName = sanitizeClanName(String(input.liveWar?.clan?.name ?? ""));
-  if (!liveStartTime || !liveOpponentTag || !liveOpponentName || !liveClanName) {
-    return null;
-  }
-
-  const parsedPrepStartTime =
-    parseCocApiTime(
-      (input.liveWar as { preparationStartTime?: string | null } | null)?.preparationStartTime ??
-        null,
-    ) ??
-    null;
-  const parsedEndTime =
-    parseCocApiTime(
-      (input.liveWar as { endTime?: string | null } | null)?.endTime ?? null,
-    ) ?? null;
-  const prepStartTime =
-    parsedPrepStartTime !== null
-      ? new Date(Math.trunc(parsedPrepStartTime))
-      : new Date(liveStartTime.getTime() - 24 * 60 * 60 * 1000);
-  const endTime =
-    parsedEndTime !== null
-      ? new Date(Math.trunc(parsedEndTime))
-      : new Date(liveStartTime.getTime() + 24 * 60 * 60 * 1000);
-
-  const currentWarId =
-    input.currentWar?.warId !== null &&
-    input.currentWar?.warId !== undefined &&
-    Number.isFinite(Number(input.currentWar.warId))
-      ? Math.trunc(Number(input.currentWar.warId))
-      : null;
-  const comparison = compareActiveWarIdentities({
-    persisted: {
-      warId: currentWarId,
-      warStartTime: input.currentWar?.startTime ?? null,
-      opponentTag: input.currentWar?.opponentTag ?? null,
-    },
-    active: {
-      warStartTime: liveStartTime,
-      opponentTag: liveOpponentTag,
-    },
-  });
-
-  return {
-      sameWar: comparison.sameWar,
-      patch: {
-        state: warState,
-      prepStartTime,
-      startTime: liveStartTime,
-      endTime,
-      opponentTag: liveOpponentTag,
-      opponentName: liveOpponentName,
-      clanName: liveClanName,
-      warId: comparison.sameWar ? currentWarId : null,
-      updatedAt: new Date(),
-    },
-  };
 }
 
 async function scrapeClanPoints(
@@ -11138,7 +11039,7 @@ async function buildTrackedMatchOverview(
       buildActiveWarSyncIdentity({ warState });
     const liveIdentityPatch =
       guildId && war
-        ? resolveFwaActiveWarIdentityPatch({
+      ? resolveActiveWarIdentityPatch({
             guildId,
             clanTag,
             liveWar: war,
