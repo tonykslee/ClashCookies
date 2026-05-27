@@ -22,7 +22,7 @@ import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
-import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import { refreshCwlTrackedClanMetadataForSeason, resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   listPlayerLinksForDiscordUser,
@@ -710,6 +710,11 @@ function optionalRosterIntegerOption(value: number | null | undefined): number |
   if (value === null || value === undefined) return undefined;
   const parsed = parseRosterIntegerOption(value);
   return parsed === null ? undefined : parsed;
+}
+
+function normalizeRosterTextInput(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function resolveRosterNameOption(interaction: ChatInputCommandInteraction): {
@@ -2596,22 +2601,50 @@ async function handleRosterCreateSubcommand(
   let defaultName = nameSeed?.trim() ?? "";
   if (rosterType === "CWL") {
     const season = resolveCurrentCwlSeasonKey();
-    const trackedClan = await prisma.cwlTrackedClan.findFirst({
+    const trackedClanFilter = {
       where: {
         season,
         tag: clanTag,
       },
+    };
+    const trackedClan = await prisma.cwlTrackedClan.findFirst({
+      ...trackedClanFilter,
       select: {
         tag: true,
         name: true,
+        leagueLabel: true,
       },
     });
     if (!trackedClan) {
       await interaction.editReply(`No tracked CWL clan found for ${clanTag} in ${season}.`);
       return;
     }
+    if (cocService) {
+      await refreshCwlTrackedClanMetadataForSeason({
+        clanTags: [clanTag],
+        season,
+        cocService,
+        ensureRows: false,
+      }).catch((err) => {
+        console.error(
+          `[roster] stage=cwl_metadata_refresh_failed roster_create clan_tag=${clanTag} season=${season} error=${String((err as Error)?.message ?? err)}`,
+        );
+      });
+    }
+    const refreshedTrackedClan = await prisma.cwlTrackedClan.findFirst({
+      ...trackedClanFilter,
+      select: {
+        tag: true,
+        name: true,
+        leagueLabel: true,
+      },
+    }).catch(() => trackedClan);
     if (!defaultName) {
-      defaultName = `${trackedClan.name?.trim() || trackedClan.tag} CWL Signup (${season})`;
+      const resolvedName =
+        normalizeRosterTextInput(refreshedTrackedClan?.name ?? null) ??
+        normalizeRosterTextInput(trackedClan.name ?? null) ??
+        trackedClan.tag;
+      defaultName = `${resolvedName || trackedClan.tag} CWL Signup (${season})`;
     }
   } else {
     const fwaClan = await prisma.fwaClanMemberCurrent.findFirst({
