@@ -6,7 +6,7 @@ import {
   normalizeNicknameTemplate,
 } from "./AutoRoleNicknameService";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
-import type { PlayerLinkWithTrust } from "./PlayerLinkService";
+import { normalizePlayerTag, type PlayerLinkWithTrust } from "./PlayerLinkService";
 import { prisma } from "../prisma";
 
 export type AutoRoleApplyNicknameStatus = "changed" | "skipped" | "unchanged" | "failed";
@@ -28,6 +28,8 @@ export type AutoRoleApplyInput = {
   config: AutoRoleGuildConfigSnapshot;
   managedRoleIds: Set<string>;
   suppressRemovalRoleIds?: Set<string>;
+  trackedFwaMemberTags?: Set<string>;
+  visitorRoleAvailable?: boolean;
   rules: AutoRoleRule[];
   member: AutoRoleEvaluationMemberLike;
   evaluation: AutoRoleMemberEvaluation;
@@ -63,6 +65,20 @@ function formatNicknameFailureReason(error: unknown): string {
 function normalizeText(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function isLinkedAccountFamilyMember(input: {
+  linkedAccounts: PlayerLinkWithTrust[];
+  trackedFwaMemberTags: Set<string>;
+}): boolean {
+  if (input.trackedFwaMemberTags.size === 0) {
+    return false;
+  }
+
+  return input.linkedAccounts.some((account) => {
+    const playerTag = normalizePlayerTag(account.playerTag);
+    return playerTag.length > 0 && input.trackedFwaMemberTags.has(playerTag);
+  });
 }
 
 const CLAN_STALE_PENDING_REMOVAL_REASON = "CLAN_STALE";
@@ -123,6 +139,17 @@ export class AutoRoleApplyService {
       input.evaluation.desiredManagedRoleIds.filter((roleId) => input.managedRoleIds.has(roleId)),
     );
     const suppressRemovalRoleIds = normalizeRoleIds(input.suppressRemovalRoleIds ?? new Set<string>());
+    const visitorRoleId = String(input.config.nonMemberRoleId ?? "").trim();
+    const visitorRoleConfigured =
+      Boolean(visitorRoleId) && input.config.nonMemberEnabled && input.managedRoleIds.has(visitorRoleId);
+    const visitorRoleAvailable = input.visitorRoleAvailable ?? true;
+    const familyMember = visitorRoleConfigured
+      ? isLinkedAccountFamilyMember({
+          linkedAccounts: input.linkedAccounts,
+          trackedFwaMemberTags: input.trackedFwaMemberTags ?? new Set(),
+        })
+      : false;
+    const shouldHaveVisitorRole = visitorRoleConfigured && visitorRoleAvailable && !familyMember;
     const currentManagedRoleIds = new Set(
       [...input.member.roles.cache.keys()]
         .map((roleId) => String(roleId ?? "").trim())
@@ -155,6 +182,10 @@ export class AutoRoleApplyService {
         failureReasons: [],
         resultHash: input.evaluation.resultHash,
       };
+    }
+
+    if (shouldHaveVisitorRole) {
+      desiredManagedRoleIds.add(visitorRoleId);
     }
 
     const now = input.now ?? new Date();
@@ -190,7 +221,10 @@ export class AutoRoleApplyService {
 
     if (input.config.removeStaleManagedRoles) {
       const staleManagedRoleIds = [...currentManagedRoleIds].filter(
-        (roleId) => !desiredManagedRoleIds.has(roleId) && !suppressRemovalRoleIds.has(roleId),
+        (roleId) =>
+          roleId !== visitorRoleId &&
+          !desiredManagedRoleIds.has(roleId) &&
+          !suppressRemovalRoleIds.has(roleId),
       );
       const staleClanRoles: Array<{ roleId: string; rules: AutoRoleRule[] }> = [];
       const immediateRemovalRoleIds = new Set<string>();
@@ -295,6 +329,15 @@ export class AutoRoleApplyService {
           discordUserId: input.member.id,
         },
       });
+    }
+
+    if (visitorRoleConfigured && visitorRoleAvailable && !shouldHaveVisitorRole && currentManagedRoleIds.has(visitorRoleId)) {
+      try {
+        await input.member.roles.remove(visitorRoleId);
+        rolesRemoved.push(visitorRoleId);
+      } catch (error) {
+        failureReasons.push(formatFailureReason("remove", visitorRoleId, error));
+      }
     }
 
     let nicknameStatus: AutoRoleApplyNicknameStatus = "skipped";
