@@ -143,13 +143,14 @@ export class AutoRoleApplyService {
     const visitorRoleConfigured =
       Boolean(visitorRoleId) && input.config.nonMemberEnabled && input.managedRoleIds.has(visitorRoleId);
     const visitorRoleAvailable = input.visitorRoleAvailable ?? true;
+    const isBot = Boolean(input.member.user?.bot);
     const familyMember = visitorRoleConfigured
       ? isLinkedAccountFamilyMember({
           linkedAccounts: input.linkedAccounts,
           trackedFwaMemberTags: input.trackedFwaMemberTags ?? new Set(),
         })
       : false;
-    const shouldHaveVisitorRole = visitorRoleConfigured && visitorRoleAvailable && !familyMember;
+    const shouldHaveVisitorRole = visitorRoleConfigured && visitorRoleAvailable && !familyMember && !isBot;
     const currentManagedRoleIds = new Set(
       [...input.member.roles.cache.keys()]
         .map((roleId) => String(roleId ?? "").trim())
@@ -331,7 +332,7 @@ export class AutoRoleApplyService {
       });
     }
 
-    if (visitorRoleConfigured && visitorRoleAvailable && !shouldHaveVisitorRole && currentManagedRoleIds.has(visitorRoleId)) {
+    if (visitorRoleConfigured && visitorRoleAvailable && !isBot && !shouldHaveVisitorRole && currentManagedRoleIds.has(visitorRoleId)) {
       try {
         await input.member.roles.remove(visitorRoleId);
         rolesRemoved.push(visitorRoleId);

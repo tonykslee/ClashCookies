@@ -58,7 +58,7 @@ type AutoRoleGuildMemberLike = {
   id: string;
   displayName?: string;
   nickname?: string | null;
-  user: { id: string; username?: string | null; globalName?: string | null };
+  user: { id: string; username?: string | null; globalName?: string | null; bot?: boolean };
   roles: {
     cache: {
       keys(): IterableIterator<string>;
@@ -2081,7 +2081,7 @@ export class AutoRoleRefreshService {
           runId: run.id,
           now: input.now,
           suppressRemovalRoleIds,
-          trackedFwaMemberTags: trackedMembershipScope.fwaMemberTags,
+          trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
           visitorRoleAvailable,
         });
       }

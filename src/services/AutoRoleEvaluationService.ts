@@ -56,6 +56,7 @@ export type AutoRoleEvaluationMemberLike = {
   user?: {
     username?: string | null;
     globalName?: string | null;
+    bot?: boolean;
   } | null;
   roles: {
     cache: {

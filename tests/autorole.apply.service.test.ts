@@ -56,7 +56,7 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
   };
 }
 
-function makeMember(displayName = "Old Nick", roleIds: string[] = []): TestMember {
+function makeMember(displayName = "Old Nick", roleIds: string[] = [], bot = false): TestMember {
   const roleState = [...roleIds];
   return {
     id: "111111111111111111",
@@ -65,6 +65,7 @@ function makeMember(displayName = "Old Nick", roleIds: string[] = []): TestMembe
     user: {
       username: "DiscordUser",
       globalName: "Discord Global",
+      bot,
     },
     roles: {
       cache: {
@@ -363,6 +364,29 @@ describe("AutoRoleApplyService", () => {
 
     expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
     expect(result.rolesRemoved).toEqual([visitorRoleId]);
+  });
+
+  it("does not change the visitor role for bots", async () => {
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [visitorRoleId], true);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({ applyNicknames: false, nonMemberEnabled: true, nonMemberRoleId: visitorRoleId }),
+      managedRoleIds: new Set([visitorRoleId]),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(["#2QG2C08UP"]),
+    });
+
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([]);
+    expect(result.rolesRemoved).toEqual([]);
   });
 
   it("leaves the visitor role untouched when the config is disabled", async () => {
