@@ -2547,7 +2547,6 @@ describe("RosterService", () => {
       where: {
         season: resolveCurrentCwlSeasonKey(),
         tag: "#2QG2C08UP",
-        OR: [{ name: null }, { name: "" }, { leagueLabel: null }, { leagueLabel: "" }],
       },
       data: {
         name: "CWL Alpha",
@@ -3113,6 +3112,45 @@ describe("RosterService", () => {
     expect(String(payload?.embed.toJSON().description ?? "")).toContain(
       "**[CWL Alpha Signup](https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP)** CWL",
     );
+  });
+
+  it("force refreshes a stale CWL league label before rerendering a roster post", async () => {
+    const trackedClanRecord = {
+      name: "CWL Alpha",
+      leagueLabel: "Champion League III",
+    };
+    prismaMock.cwlTrackedClan.findFirst.mockImplementation(async () => trackedClanRecord as any);
+    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 1 } as any);
+    prismaMock.cwlTrackedClan.updateMany.mockImplementation(async ({ data }: any) => {
+      Object.assign(trackedClanRecord, data);
+      return { count: 1 };
+    });
+    prismaMock.rosterSignup.findMany.mockResolvedValue([] as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValue([] as any);
+    prismaMock.rosterSignup.count.mockResolvedValue(0 as any);
+
+    const hydrated = await rosterService.refreshRosterBoardSourceData(
+      "roster-1",
+      cocServiceMock as any,
+      null,
+    );
+    expect(hydrated).toBe(true);
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          season: resolveCurrentCwlSeasonKey(),
+          tag: "#2QG2C08UP",
+        },
+        data: {
+          name: "CWL Alpha",
+          leagueLabel: "Champion League II",
+        },
+      }),
+    );
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1", cocServiceMock as any);
+    expect(String(payload?.embed.toJSON().description ?? "")).toContain("Champion League II");
+    expect(String(payload?.embed.toJSON().description ?? "")).not.toContain("Champion League III");
   });
 
   it("builds a signup selection panel that lets a user choose linked accounts", async () => {

@@ -16,6 +16,7 @@ import {
   addCwlClanTagsForSeason,
   ensureAndHydrateCwlTrackedClanMetadataForSeason,
   hydrateMissingCwlClanNamesForSeason,
+  refreshCwlTrackedClanMetadataForSeason,
 } from "../src/services/CwlRegistryService";
 
 describe("CwlRegistryService helpers", () => {
@@ -205,6 +206,46 @@ describe("CwlRegistryService helpers", () => {
       requestedCount: 2,
       ensuredCount: 0,
       hydratedCount: 2,
+      skippedCount: 0,
+    });
+  });
+
+  it("force refreshes CWL tracked clan metadata even when current values are already populated", async () => {
+    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    const cocService = {
+      getClan: vi.fn(async () => ({
+        name: "CWL Alpha",
+        warLeague: { name: "Champion League I" },
+      })),
+    };
+
+    const result = await refreshCwlTrackedClanMetadataForSeason({
+      clanTags: ["#PYLQ0289"],
+      season: "2026-03",
+      cocService: cocService as any,
+    });
+
+    expect(prismaMock.cwlTrackedClan.createMany).toHaveBeenCalledWith({
+      data: [{ season: "2026-03", tag: "#PYLQ0289", name: null, leagueLabel: null }],
+      skipDuplicates: true,
+    });
+    expect(cocService.getClan).toHaveBeenCalledWith("#PYLQ0289");
+    expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+      },
+      data: {
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+      },
+    });
+    expect(result).toEqual({
+      season: "2026-03",
+      requestedCount: 1,
+      ensuredCount: 1,
+      hydratedCount: 1,
       skippedCount: 0,
     });
   });
