@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyExplicitOpponentNotFoundFallbackGuardForTest,
   hasSameWarExplicitFwaConfirmationForTest,
+  buildOverviewMailDecisionProjectionForTest,
   getMailBlockedReasonFromStatusForTest,
   shouldRedirectToFwaMatchForMailGateReasonForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
@@ -12,6 +13,9 @@ import {
   chooseMatchTypeResolution,
   resolveCurrentWarMatchTypeSignal,
 } from "../src/services/MatchTypeResolutionService";
+import {
+  resolveActiveWarIdentityPatchForTest,
+} from "../src/services/ActiveWarIdentityReconciliationService";
 import { PointsSyncService } from "../src/services/PointsSyncService";
 
 describe("fwa match inference from points snapshots", () => {
@@ -330,6 +334,275 @@ describe("fwa match stored sync fallback", () => {
       syncIsFwa: false,
     });
     expect(fallback.unconfirmedCurrent).toBeNull();
+  });
+});
+
+describe("fwa active-war identity reconciliation", () => {
+  it("preserves the existing warId when the live war is the same war", () => {
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: {
+        warId: 2001,
+        startTime: new Date("2026-03-12T22:00:00.000Z"),
+        opponentTag: "#20P292Q2V",
+      },
+      liveWar: {
+        state: "inWar",
+        startTime: "20260312T220000.000Z",
+        endTime: "20260313T220000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "Same Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(patch).not.toBeNull();
+    expect(patch).toMatchObject({
+      sameWar: true,
+      patch: {
+        state: "inWar",
+        opponentTag: "20P292Q2V",
+        opponentName: "Same Opponent",
+        clanName: "Tracked Clan",
+        warId: 2001,
+      },
+    });
+  });
+
+  it("builds a live identity patch and keeps same-war confirmation authoritative", () => {
+    const staleCurrentWar = {
+      warId: 2001,
+      startTime: new Date("2026-03-10T22:00:00.000Z"),
+      opponentTag: "#2OLDTAG",
+    };
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: staleCurrentWar,
+      liveWar: {
+        state: "preparation",
+        startTime: "20260312T220000.000Z",
+        endTime: "20260313T220000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "New Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(patch).not.toBeNull();
+    expect(patch).toMatchObject({
+      sameWar: false,
+      patch: {
+        state: "preparation",
+        opponentTag: "20P292Q2V",
+        opponentName: "New Opponent",
+        clanName: "Tracked Clan",
+        warId: null,
+      },
+    });
+    expect(patch?.patch.startTime).toEqual(
+      new Date("2026-03-12T22:00:00.000Z"),
+    );
+    expect(patch?.patch.prepStartTime).toEqual(
+      new Date("2026-03-11T22:00:00.000Z"),
+    );
+    expect(patch?.patch.endTime).toEqual(new Date("2026-03-13T22:00:00.000Z"));
+
+    const confirmed = resolveCurrentWarMatchTypeSignal({
+      matchType: "BL",
+      inferredMatchType: false,
+    });
+    const resolved = chooseMatchTypeResolution({
+      confirmedCurrent: confirmed.confirmed,
+      liveOpponent: inferMatchTypeFromPointsSnapshotsForTest(
+        { activeFwa: true },
+        { balance: 41, activeFwa: false, notFound: false },
+      ),
+      storedSync: null,
+      unconfirmedCurrent: confirmed.unconfirmed,
+    });
+
+    expect(resolved).toMatchObject({
+      matchType: "BL",
+      source: "confirmed_current_war",
+      inferred: false,
+      confirmed: true,
+      syncIsFwa: false,
+    });
+
+    const mailProjection = buildOverviewMailDecisionProjectionForTest({
+      decision: {
+        mailStatus: {
+          status: "not_posted",
+          debug: {
+            currentWarId: "2001",
+            trackedMailWarId: null,
+            trackedChannelId: null,
+            trackedMessageId: null,
+            trackedMessageExists: false,
+            winningSource: "none",
+            finalNormalizedStatus: "not_posted",
+            reconciliationOutcome: "unchanged",
+            reconciliationCertainty: "low",
+            debugReasonCode: null,
+            trackingCleared: false,
+            currentWarOpposition: null,
+          },
+        } as any,
+        liveRevisionFields: null,
+        confirmedRevisionBaseline: null,
+        effectiveRevisionFields: null,
+        appliedDraftRevision: null,
+        draftDiffersFromBaseline: false,
+        mailBlockedReason: null,
+      },
+      inferredMatchType: false,
+    });
+
+    expect(mailProjection.mailActionEnabled).toBe(true);
+  });
+
+  it("returns null for partial live war data that would erase identity", () => {
+    const staleCurrentWar = {
+      warId: 2001,
+      startTime: new Date("2026-03-10T22:00:00.000Z"),
+      opponentTag: "#2OLDTAG",
+    };
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          opponent: {
+            tag: "",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: null,
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: staleCurrentWar,
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for scraped label names that are not valid clan names", () => {
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: {
+          warId: 2001,
+          startTime: new Date("2026-03-10T22:00:00.000Z"),
+          opponentTag: "#2OLDTAG",
+        },
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          endTime: "20260313T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "Point Balance",
+          },
+          clan: {
+            name: "Tracked Clan",
+          },
+        } as any,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveActiveWarIdentityPatchForTest({
+        guildId: "guild-1",
+        clanTag: "2TRACK",
+        currentWar: {
+          warId: 2001,
+          startTime: new Date("2026-03-10T22:00:00.000Z"),
+          opponentTag: "#2OLDTAG",
+        },
+        liveWar: {
+          state: "preparation",
+          startTime: "20260312T220000.000Z",
+          endTime: "20260313T220000.000Z",
+          opponent: {
+            tag: "#20P292Q2V",
+            name: "New Opponent",
+          },
+          clan: {
+            name: "Clan Tag",
+          },
+        } as any,
+      }),
+    ).toBeNull();
   });
 });
 
