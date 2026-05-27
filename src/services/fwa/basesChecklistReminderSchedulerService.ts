@@ -78,6 +78,10 @@ function resolveReminderContent(input: {
   };
 }
 
+function isMatchTypeMm(matchType: string | null | undefined): boolean {
+  return String(matchType ?? "").trim().toUpperCase() === "MM";
+}
+
 function isSendableTextChannel(channel: unknown): channel is {
   isTextBased: () => boolean;
   send: (payload: {
@@ -192,6 +196,14 @@ export class FwaBasesChecklistReminderSchedulerService {
         dozzleLog.debug(
           `[fwa bases-check reminder] candidate_evaluated guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} destinationChannelKind=${candidate.destinationChannelKind ?? "missing"}`,
         );
+
+        if (isMatchTypeMm(candidate.matchType)) {
+          skipped += 1;
+          dozzleLog.info(
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=mm_match_type`,
+          );
+          continue;
+        }
 
         const claimed = await trackedMessageService
           .claimFwaBasesChecklistReminderMarker({

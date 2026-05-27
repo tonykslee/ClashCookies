@@ -55,7 +55,7 @@ vi.mock("../src/services/PollingModeService", () => pollingModeMock);
 
 type GuildMemberLike = {
   id: string;
-  user: { id: string };
+  user: { id: string; bot?: boolean };
   displayName: string;
   nickname: string | null;
   roles: {
@@ -70,7 +70,7 @@ type GuildMemberLike = {
   __roleIds: string[];
 };
 
-function makeMember(id: string, roleIds: string[] = []): GuildMemberLike {
+function makeMember(id: string, roleIds: string[] = [], bot = false): GuildMemberLike {
   const roleState = [...roleIds];
   const add = vi.fn(async (roleId: string) => {
     if (!roleState.includes(roleId)) {
@@ -86,7 +86,7 @@ function makeMember(id: string, roleIds: string[] = []): GuildMemberLike {
   const setNickname = vi.fn(async () => undefined);
   return {
     id,
-    user: { id },
+    user: { id, bot },
     displayName: `Member ${id}`,
     nickname: null,
     roles: {
@@ -102,8 +102,14 @@ function makeMember(id: string, roleIds: string[] = []): GuildMemberLike {
   };
 }
 
-function makeGuild(members: Map<string, GuildMemberLike>) {
+function makeGuild(members: Map<string, GuildMemberLike>, roleIds: string[] = []) {
+  const guildRoleIds = new Set(roleIds);
   return {
+    roles: {
+      cache: {
+        has: (roleId: string) => guildRoleIds.has(roleId),
+      },
+    },
     members: {
       cache: members,
       fetch: vi.fn(async (discordUserId?: string) => {
@@ -132,6 +138,8 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
     verifiedRoleId: null,
     familyRoleId: null,
     cwlClanRoleId: null,
+    nonMemberRoleId: null,
+    nonMemberEnabled: false,
     clanRoleRemovalDelayMinutes: null,
     createdAt: new Date("2026-04-01T00:00:00.000Z"),
     updatedAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -1995,6 +2003,242 @@ describe("AutoRoleRefreshService", () => {
       addedCount: 3,
       removedCount: 0,
     });
+  });
+
+  it("adds visitor roles for non-family members and removes them from family members", async () => {
+    const familyRoleId = "222222222222222222";
+    const visitorRoleId = "333333333333333333";
+    const trackedClanTag = "#2QG2C08UP";
+    const familyMemberId = "111111111111111111";
+    const visitorMemberId = "444444444444444444";
+    const familyMember = makeMember(familyMemberId, [visitorRoleId]);
+    const visitorMember = makeMember(visitorMemberId);
+    const guild = makeGuild(
+      new Map([
+        [familyMemberId, familyMember],
+        [visitorMemberId, visitorMember],
+      ]),
+      [familyRoleId, visitorRoleId],
+    );
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: "#2QG2C08UP",
+            discordUserId: familyMemberId,
+            playerName: "Family Member",
+          }),
+          makeLinkedAccount({
+            playerTag: "#QGRJ2222",
+            discordUserId: visitorMemberId,
+            playerName: "Visitor Member",
+          }),
+        ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: trackedClanTag, name: "Tracked Clan", shortName: "TC" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: trackedClanTag,
+        playerTag: "#2QG2C08UP",
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        familyRoleId,
+        nonMemberRoleId: visitorRoleId,
+        nonMemberEnabled: true,
+        applyNicknames: false,
+        removeStaleManagedRoles: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(familyMember.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(familyMember.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(visitorMember.roles.add).toHaveBeenCalledWith(visitorRoleId);
+    expect(visitorMember.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.addedCount).toBe(2);
+    expect(result.removedCount).toBe(1);
+  });
+
+  it("skips visitor role changes for bot members", async () => {
+    const visitorRoleId = "333333333333333333";
+    const botMemberId = "111111111111111111";
+    const botMember = makeMember(botMemberId, [], true);
+    const guild = makeGuild(new Map([[botMemberId, botMember]]), [visitorRoleId]);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "TC" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        nonMemberRoleId: visitorRoleId,
+        nonMemberEnabled: true,
+        applyNicknames: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(botMember.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(botMember.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.addedCount).toBe(0);
+    expect(result.removedCount).toBe(0);
+  });
+
+  it("treats members in the refreshed FWA set as family for visitor role removal", async () => {
+    const visitorRoleId = "333333333333333333";
+    const memberId = "111111111111111111";
+    const visitorMember = makeMember(memberId, [visitorRoleId]);
+    const guild = makeGuild(new Map([[memberId, visitorMember]]), [visitorRoleId]);
+    const cocService = {
+      getClan: vi.fn(async (clanTag: string) => {
+        if (clanTag === "#2QG2C08UP") {
+          return {
+            tag: "#2QG2C08UP",
+            name: "Tracked Clan",
+            members: [
+              {
+                tag: "#2QG2C08UP",
+                name: "Visitor Member",
+                townHallLevel: 16,
+                role: "member",
+                league: { name: "Champion I" },
+              },
+            ],
+          };
+        }
+        return null;
+      }),
+    } as any;
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      makeLinkedAccount({
+        playerTag: "#2QG2C08UP",
+        discordUserId: memberId,
+        playerName: "Visitor Member",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "TC" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        nonMemberRoleId: visitorRoleId,
+        nonMemberEnabled: true,
+        applyNicknames: false,
+        removeStaleManagedRoles: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+      cocService,
+    });
+
+    expect(visitorMember.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(visitorMember.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.addedCount).toBe(0);
+    expect(result.removedCount).toBe(1);
+  });
+
+  it("leaves visitor roles unchanged when the visitor config is disabled", async () => {
+    const familyRoleId = "222222222222222222";
+    const visitorRoleId = "333333333333333333";
+    const memberId = "111111111111111111";
+    const member = makeMember(memberId, [visitorRoleId]);
+    const guild = makeGuild(new Map([[memberId, member]]), [familyRoleId, visitorRoleId]);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      makeLinkedAccount({
+        playerTag: "#QGRJ2222",
+        discordUserId: memberId,
+        playerName: "Visitor Member",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "TC" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        familyRoleId,
+        nonMemberRoleId: visitorRoleId,
+        nonMemberEnabled: false,
+        applyNicknames: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.addedCount).toBe(0);
+    expect(result.removedCount).toBe(0);
+  });
+
+  it("skips visitor role changes cleanly when the configured role is missing", async () => {
+    const visitorRoleId = "333333333333333333";
+    const memberId = "111111111111111111";
+    const member = makeMember(memberId);
+    const guild = makeGuild(new Map([[memberId, member]]));
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      makeLinkedAccount({
+        playerTag: "#QGRJ2222",
+        discordUserId: memberId,
+        playerName: "Visitor Member",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "TC" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        nonMemberRoleId: visitorRoleId,
+        nonMemberEnabled: true,
+        applyNicknames: false,
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.failedCount).toBe(0);
   });
 
   it("builds family role-scoped candidates from tracked member tags and current holders without resolving PlayerCurrent", async () => {

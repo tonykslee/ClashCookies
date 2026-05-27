@@ -17,6 +17,7 @@ export type FwaBasesChecklistReminderCandidate = {
   clanName: string | null;
   clanShortName: string | null;
   clanRoleId: string | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   destinationChannelId: string | null;
   destinationChannelKind: ReminderDestinationKind | null;
   reminderMessageId: string;
@@ -216,6 +217,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
         clanName: trackedClan.name ?? null,
         clanShortName: trackedClan.shortName ?? null,
         clanRoleId: trackedClan.clanRoleId ?? null,
+        matchType: row.matchType ?? null,
         destinationChannelId: destination.channelId,
         destinationChannelKind: destination.kind,
         reminderMessageId,

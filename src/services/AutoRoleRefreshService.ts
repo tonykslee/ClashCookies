@@ -58,7 +58,7 @@ type AutoRoleGuildMemberLike = {
   id: string;
   displayName?: string;
   nickname?: string | null;
-  user: { id: string; username?: string | null; globalName?: string | null };
+  user: { id: string; username?: string | null; globalName?: string | null; bot?: boolean };
   roles: {
     cache: {
       keys(): IterableIterator<string>;
@@ -1344,6 +1344,20 @@ function buildManagedRoleIds(
   });
 }
 
+function resolveVisitorRoleAvailability(guild: Guild, visitorRoleId: string | null | undefined): boolean {
+  const normalizedVisitorRoleId = String(visitorRoleId ?? "").trim();
+  if (!normalizedVisitorRoleId) {
+    return false;
+  }
+
+  const roleCache = guild.roles?.cache ?? null;
+  if (!roleCache || typeof roleCache.has !== "function") {
+    return true;
+  }
+
+  return roleCache.has(normalizedVisitorRoleId);
+}
+
 function collectConfiguredLeadRoleIds(trackedClans: AutoRoleTrackedClanLike[]): Set<string> {
   const roleIds = new Set<string>();
   for (const trackedClan of trackedClans) {
@@ -1589,6 +1603,7 @@ async function runRefreshPass(input: {
   guild: Guild;
   snapshot: AutoRoleGuildStateSnapshot;
   trackedClans: AutoRoleTrackedClanLike[];
+  trackedFwaMemberTags: Set<string>;
   membersById: Map<string, AutoRoleGuildMemberLike>;
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
@@ -1605,6 +1620,7 @@ async function runRefreshPass(input: {
   candidateUserIdsOverride?: Set<string>;
   suppressRemovalRoleIds?: Set<string>;
   preferCurrentClanTagForClanRules?: boolean;
+  visitorRoleAvailable?: boolean;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
@@ -1710,6 +1726,8 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
         suppressRemovalRoleIds,
+        trackedFwaMemberTags: input.trackedFwaMemberTags,
+        visitorRoleAvailable: input.visitorRoleAvailable,
         now: input.now,
       });
 
@@ -1845,6 +1863,15 @@ export class AutoRoleRefreshService {
         throw new Error("Autorole kill switch is enabled for this guild.");
       }
 
+      const visitorRoleId = String(snapshot.config.nonMemberRoleId ?? "").trim();
+      const visitorRoleConfigured = snapshot.config.nonMemberEnabled && visitorRoleId.length > 0;
+      const visitorRoleAvailable = resolveVisitorRoleAvailability(input.guild, visitorRoleId);
+      if (visitorRoleConfigured && !visitorRoleAvailable) {
+        dozzleLog.warn(
+          `[autorole] event=visitor_role_missing guild_id=${input.guildId} role_id=${visitorRoleId} reason=missing_or_deleted action=skip_visitor_role_changes`,
+        );
+      }
+
       const trackedClans = await loadTrackedClansForAutorole();
       const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
       const suppressRemovalRoleIds = buildLeadRoleRemovalSuppression({
@@ -1909,6 +1936,8 @@ export class AutoRoleRefreshService {
             candidateUserIdsOverride: clanRoleState.candidateUserIds,
             suppressRemovalRoleIds,
             preferCurrentClanTagForClanRules: true,
+            trackedFwaMemberTags: clanRoleState.trackedMembershipScope.fwaMemberTags,
+            visitorRoleAvailable,
           });
         }
 
@@ -1968,20 +1997,22 @@ export class AutoRoleRefreshService {
             now: input.now,
             candidateUserIdsOverride: leadRoleState.candidateUserIds,
             suppressRemovalRoleIds,
+            trackedFwaMemberTags: leadRoleState.trackedMembershipScope.fwaMemberTags,
+            visitorRoleAvailable,
           });
         }
       }
 
       if (input.scope.kind === "guild") {
-        const membersById = await fetchGuildMembersMap(input.guild, input.scope);
-        const cwlSeason = resolveCurrentCwlSeasonKey();
-        const trackedMembershipScope = await loadTrackedClanMembershipScope({
-          season: cwlSeason,
-          cocService: input.cocService ?? null,
-        });
-        const trackedFwaRefresh = await loadTrackedFwaClanRefreshState({
-          cocService: input.cocService ?? null,
-        });
+      const membersById = await fetchGuildMembersMap(input.guild, input.scope);
+      const cwlSeason = resolveCurrentCwlSeasonKey();
+      const trackedMembershipScope = await loadTrackedClanMembershipScope({
+        season: cwlSeason,
+        cocService: input.cocService ?? null,
+      });
+      const trackedFwaRefresh = await loadTrackedFwaClanRefreshState({
+        cocService: input.cocService ?? null,
+      });
         if (input.cocService) {
           const missingClanTags = collectMissingTrackedClanTags(
             trackedFwaRefresh.configuredClanTags,
@@ -2005,16 +2036,19 @@ export class AutoRoleRefreshService {
             throw error;
           }
         }
-        const trackedCandidateUserIds = await collectGuildCandidateUsersForTrackedMembership({
-          membersById,
-          managedRoleIds,
-          trackedMemberPlayerTags: [
-            ...trackedMembershipScope.fwaMemberTags,
-            ...trackedFwaRefresh.fwaMemberTags,
-            ...trackedMembershipScope.cwlMemberTags,
-          ],
-        });
-        const candidateUserIds = new Set<string>(trackedCandidateUserIds);
+        const visitorRoleAwareCandidateUserIds =
+          visitorRoleConfigured && visitorRoleAvailable
+            ? new Set<string>(membersById.keys())
+            : await collectGuildCandidateUsersForTrackedMembership({
+                membersById,
+                managedRoleIds,
+                trackedMemberPlayerTags: [
+                  ...trackedMembershipScope.fwaMemberTags,
+                  ...trackedFwaRefresh.fwaMemberTags,
+                  ...trackedMembershipScope.cwlMemberTags,
+                ],
+              });
+        const candidateUserIds = new Set<string>(visitorRoleAwareCandidateUserIds);
         const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
           guildMemberIds: [...candidateUserIds],
         });
@@ -2047,6 +2081,8 @@ export class AutoRoleRefreshService {
           runId: run.id,
           now: input.now,
           suppressRemovalRoleIds,
+          trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
+          visitorRoleAvailable,
         });
       }
 
@@ -2125,6 +2161,8 @@ export class AutoRoleRefreshService {
         now: input.now,
         suppressRemovalRoleIds,
         preferCurrentClanTagForClanRules: input.scope.kind === "user",
+        trackedFwaMemberTags: trackedMembershipScope.fwaMemberTags,
+        visitorRoleAvailable,
       });
     } catch (error) {
       await prisma.autoRoleSyncRun.update({

@@ -57,6 +57,19 @@ function maybeRoleLabel(roleId: string | null): string {
   return roleId ? `<@&${roleId}>` : "none";
 }
 
+async function resolveRolePresence(
+  guild: ChatInputCommandInteraction["guild"] | null | undefined,
+  roleId: string | null | undefined,
+): Promise<"present" | "missing" | null> {
+  const normalizedRoleId = String(roleId ?? "").trim();
+  if (!normalizedRoleId) return null;
+  if (!guild?.roles) return null;
+  const cached = guild.roles.cache?.get(normalizedRoleId) ?? null;
+  if (cached) return "present";
+  const fetched = await guild.roles.fetch(normalizedRoleId).catch(() => null);
+  return fetched ? "present" : "missing";
+}
+
 function maybeTextLabel(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
   return normalized.length > 0 ? normalized : "none";
@@ -212,7 +225,12 @@ async function replyPagedLines(
   });
 }
 
-function buildConfigEmbed(config: AutoRoleGuildConfigRecord): EmbedBuilder {
+function buildConfigEmbed(
+  config: AutoRoleGuildConfigRecord,
+  input?: {
+    visitorRolePresence?: "present" | "missing" | null;
+  },
+): EmbedBuilder {
   const lines = [
     `Enabled: ${boolLabel(config.enabled)}`,
     `Kill switch: ${boolLabel(config.killSwitchEnabled)}`,
@@ -226,6 +244,11 @@ function buildConfigEmbed(config: AutoRoleGuildConfigRecord): EmbedBuilder {
     `Verified role: ${maybeRoleLabel(config.verifiedRoleId)}`,
     `Family role: ${maybeRoleLabel(config.familyRoleId)}`,
     `CWL clan role: ${maybeRoleLabel(config.cwlClanRoleId)}`,
+    `Visitor role: ${maybeRoleLabel(config.nonMemberRoleId)}`,
+    `Visitor role enabled: ${boolLabel(config.nonMemberEnabled)}`,
+    ...(config.nonMemberRoleId && input?.visitorRolePresence === "missing"
+      ? ["Visitor role warning: missing/deleted"]
+      : []),
     `Clan role removal delay: ${maybeMinutesLabel(config.clanRoleRemovalDelayMinutes)}`,
   ];
 
@@ -356,6 +379,16 @@ function buildConfigUpdateInput(
     update.cwlClanRoleId = null;
   } else if (cwlClanRoleId !== null) {
     update.cwlClanRoleId = cwlClanRoleId;
+  }
+
+  const nonMemberRoleId = getRoleOptionId(interaction, "non-member-role");
+  if (nonMemberRoleId !== null) {
+    update.nonMemberRoleId = nonMemberRoleId;
+  }
+
+  const nonMemberEnabled = getBooleanOption(interaction, "non-member-enabled");
+  if (nonMemberEnabled !== null) {
+    update.nonMemberEnabled = nonMemberEnabled;
   }
 
   const clanRoleRemovalDelayMinutes = getIntegerOption(interaction, "clan_role_removal_delay_minutes");
@@ -505,6 +538,8 @@ export const Autorole: Command = {
             { name: "clear_family_role", description: "Clear the family role", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "cwl_clan_role", description: "Role used for active current-season CWL clan members", type: ApplicationCommandOptionType.Role, required: false },
             { name: "clear_cwl_clan_role", description: "Clear the CWL clan role", type: ApplicationCommandOptionType.Boolean, required: false },
+            { name: "non-member-role", description: "Role used for non-member/visitor autorole", type: ApplicationCommandOptionType.Role, required: false },
+            { name: "non-member-enabled", description: "Enable or disable visitor autorole without clearing the saved role", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "clan_role_removal_delay_minutes", description: "Delay stale CLAN role removal in minutes", type: ApplicationCommandOptionType.Integer, required: false },
             { name: "clear_clan_role_removal_delay", description: "Clear the clan role removal delay", type: ApplicationCommandOptionType.Boolean, required: false },
           ],
@@ -780,7 +815,8 @@ export const Autorole: Command = {
       if (group === "config") {
         if (subcommand === "show") {
           const config = await autoRoleService.getOrCreateGuildConfig(guildId);
-          await interaction.editReply({ embeds: [buildConfigEmbed(config)] });
+          const visitorRolePresence = await resolveRolePresence(interaction.guild, config.nonMemberRoleId);
+          await interaction.editReply({ embeds: [buildConfigEmbed(config, { visitorRolePresence })] });
           return;
         }
 
@@ -789,9 +825,10 @@ export const Autorole: Command = {
             guildId,
             buildConfigUpdateInput(interaction),
           );
+          const visitorRolePresence = await resolveRolePresence(interaction.guild, config.nonMemberRoleId);
           await interaction.editReply({
             content: buildSuccessContent("config updated"),
-            embeds: [buildConfigEmbed(config)],
+            embeds: [buildConfigEmbed(config, { visitorRolePresence })],
           });
           return;
         }
