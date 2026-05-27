@@ -132,6 +132,10 @@ import {
 } from "../commands/Cwl";
 import {
   handleRosterPostSettingsActionButtonInteraction,
+  handleRosterPostChangeGroupActionButtonInteraction,
+  handleRosterPostChangeGroupGroupSelectInteraction,
+  handleRosterPostChangeGroupPlayerSelectInteraction,
+  handleRosterPostChangeGroupRosterSelectInteraction,
   handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
   handleRosterPostSettingsGroupSelectInteraction,
@@ -168,6 +172,7 @@ import {
   isRosterPostRefreshButtonCustomId,
   isRosterPostSettingsButtonCustomId,
   isRosterPostSettingsMenuCustomId,
+  isRosterPostChangeGroupCustomId,
   isRosterReportPingButtonCustomId,
   isRosterPingActionButtonCustomId,
   isRosterPostUsersActionButtonCustomId,
@@ -770,6 +775,22 @@ const handleSelectMenuInteraction = async (
     return;
   }
 
+  if (isRosterPostChangeGroupCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostChangeGroupRosterSelectInteraction(interaction);
+      await handleRosterPostChangeGroupGroupSelectInteraction(interaction);
+      await handleRosterPostChangeGroupPlayerSelectInteraction(interaction);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster change-group menu",
+        "Failed to update change group settings.",
+        err,
+      );
+    }
+    return;
+  }
+
   if (isRosterPostCustomizeColumnsMenuCustomId(interaction.customId) || isRosterPostCustomizeSortMenuCustomId(interaction.customId)) {
     try {
       await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
@@ -1212,6 +1233,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update roster manage session.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostChangeGroupCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostChangeGroupActionButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster change group button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update change group settings.",
         });
       }
     }
