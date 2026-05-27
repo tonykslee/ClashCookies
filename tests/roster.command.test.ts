@@ -1035,6 +1035,7 @@ describe("/roster command", () => {
         outcome: "moved",
         rosterId: "roster-1",
         groupKey: "confirmed",
+        groupName: "Confirmed",
         requestedTags: ["#PQL0289"],
         movedTags: ["#PQL0289"],
         duplicateTags: [],
@@ -1044,6 +1045,7 @@ describe("/roster command", () => {
         outcome: "moved",
         rosterId: "roster-1",
         groupKey: "substitute",
+        groupName: "Substitute",
         requestedTags: ["#PQL0289"],
         movedTags: ["#PQL0289"],
         duplicateTags: [],
@@ -1110,6 +1112,7 @@ describe("/roster command", () => {
       }),
     );
     expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Signed up #PQL0289, #QGRJ2222");
+    const getRosterViewCallsBeforeMove = rosterService.getRosterView.mock.calls.length;
 
     const moveInteraction = makeInteraction({
       subcommand: "manage",
@@ -1127,6 +1130,7 @@ describe("/roster command", () => {
       }),
     );
     expect(String(moveInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Moved #PQL0289 to Confirmed");
+    expect(rosterService.getRosterView.mock.calls.length).toBe(getRosterViewCallsBeforeMove + 1);
 
     const moveTargetInteraction = makeInteraction({
       subcommand: "manage",

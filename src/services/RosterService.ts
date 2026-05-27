@@ -862,6 +862,7 @@ export type RosterManagerMoveSignupsResult =
       outcome: "moved";
       rosterId: string;
       groupKey: string;
+      groupName: string | null;
       requestedTags: string[];
       movedTags: string[];
       duplicateTags: string[];
@@ -871,6 +872,7 @@ export type RosterManagerMoveSignupsResult =
       outcome: "nothing_moved";
       rosterId: string;
       groupKey: string;
+      groupName: string | null;
       requestedTags: string[];
       movedTags: string[];
       duplicateTags: string[];
@@ -880,6 +882,7 @@ export type RosterManagerMoveSignupsResult =
       outcome: "roster_not_found";
       rosterId: string;
       groupKey: string;
+      groupName: string | null;
       requestedTags: string[];
       movedTags: string[];
       duplicateTags: string[];
@@ -889,6 +892,7 @@ export type RosterManagerMoveSignupsResult =
       outcome: "roster_archived";
       rosterId: string;
       groupKey: string;
+      groupName: string | null;
       requestedTags: string[];
       movedTags: string[];
       duplicateTags: string[];
@@ -898,6 +902,7 @@ export type RosterManagerMoveSignupsResult =
       outcome: "group_not_found";
       rosterId: string;
       groupKey: string;
+      groupName: string | null;
       requestedTags: string[];
       movedTags: string[];
       duplicateTags: string[];
@@ -2369,7 +2374,8 @@ export function buildRosterMoveResultSummary(
     return "That roster group is no longer available.";
   }
 
-  const destinationLabel = normalizeRosterText(destinationGroupLabel ?? null) ?? result.groupKey;
+  const destinationLabel =
+    normalizeRosterText(destinationGroupLabel ?? result.groupName ?? null) ?? result.groupKey;
   const lines: string[] = [];
   if (result.movedTags.length > 0) {
     lines.push(`Moved ${result.movedTags.join(", ")} to ${destinationLabel}.`);
@@ -2408,14 +2414,6 @@ function buildRosterManageClanLabel(roster: { clanTag: string | null }, clanName
 
 function buildRosterManagePlayerLabel(input: { playerName: string | null; playerTag: string }): string {
   return input.playerName ? `${input.playerName} \`${input.playerTag}\`` : `\`${input.playerTag}\``;
-}
-
-function resolveRosterManageGroupLabel(session: RosterManageSession, groupKey: string | null): string | null {
-  const normalizedGroupKey = normalizeRosterGroupKey(groupKey ?? "");
-  if (!normalizedGroupKey) {
-    return null;
-  }
-  return session.groupOptions.find((option) => option.value === normalizedGroupKey)?.label ?? null;
 }
 
 function resolveRosterManageMoveDestinationGroupKey(session: RosterManageSession): string | null {
@@ -5849,20 +5847,23 @@ export class RosterService {
         lifecycleState: true,
       },
     });
-    const requestedTags = normalizeRosterPlayerTags(
-      Array.isArray(input.playerTags) ? input.playerTags : [],
-    );
-    const logMoveOutcome = (result: RosterManagerMoveSignupsResult): RosterManagerMoveSignupsResult => {
-      console.info(
-        [
-          "[roster-manage-move]",
-          `rosterId=${result.rosterId}`,
-          `destinationGroupKey=${result.groupKey}`,
-          `requestedCount=${requestedTags.length}`,
-          `movedCount=${result.movedTags.length}`,
-          `duplicateCount=${result.duplicateTags.length}`,
-          `missingCount=${result.missingTags.length}`,
-          `outcome=${result.outcome}`,
+  const requestedTags = normalizeRosterPlayerTags(
+    Array.isArray(input.playerTags) ? input.playerTags : [],
+  );
+  const logMoveOutcome = (
+    result: RosterManagerMoveSignupsResult & { groupName: string | null },
+  ): RosterManagerMoveSignupsResult => {
+    console.info(
+      [
+        "[roster-manage-move]",
+        `rosterId=${result.rosterId}`,
+        `destinationGroupKey=${result.groupKey}`,
+        `destinationGroupName=${result.groupName ?? ""}`,
+        `requestedCount=${requestedTags.length}`,
+        `movedCount=${result.movedTags.length}`,
+        `duplicateCount=${result.duplicateTags.length}`,
+        `missingCount=${result.missingTags.length}`,
+        `outcome=${result.outcome}`,
         ].join(" "),
       );
       return result;
@@ -5872,6 +5873,7 @@ export class RosterService {
         outcome: "roster_not_found",
         rosterId: input.rosterId,
         groupKey: normalizeRosterGroupKey(input.groupKey),
+        groupName: null,
         requestedTags,
         movedTags: [],
         duplicateTags: [],
@@ -5883,6 +5885,7 @@ export class RosterService {
         outcome: "roster_archived",
         rosterId: roster.id,
         groupKey: normalizeRosterGroupKey(input.groupKey),
+        groupName: null,
         requestedTags,
         movedTags: [],
         duplicateTags: [],
@@ -5896,6 +5899,7 @@ export class RosterService {
         outcome: "group_not_found",
         rosterId: roster.id,
         groupKey: normalizeRosterGroupKey(input.groupKey),
+        groupName: null,
         requestedTags,
         movedTags: [],
         duplicateTags: [],
@@ -5938,6 +5942,7 @@ export class RosterService {
       outcome: movedTags.length > 0 ? "moved" : "nothing_moved",
       rosterId: roster.id,
       groupKey: group.key,
+      groupName: group.name,
       requestedTags,
       movedTags,
       duplicateTags,
@@ -7241,7 +7246,7 @@ export class RosterService {
           action: session.action,
           rosterId: session.rosterId,
           targetRosterId: null,
-          summary: buildRosterMoveResultSummary(result, resolveRosterManageGroupLabel(session, destinationGroupKey)),
+          summary: buildRosterMoveResultSummary(result),
         };
       }
 

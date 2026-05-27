@@ -3174,12 +3174,9 @@ async function handleRosterManageSubcommand(
       await interaction.editReply("That roster group is no longer available.");
       return;
     }
-    const rosterView = await rosterService.getRosterView(roster.id).catch(() => null);
-    const destinationGroupLabel =
-      rosterView?.groups.find((group) => normalizeRosterGroupKeyInput(group.key) === destinationGroupKey)?.name ?? null;
     await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     await refreshExistingRosterPost(interaction, roster.id, cocService).catch(() => undefined);
-    await interaction.editReply(buildRosterMoveResultSummary(result, destinationGroupLabel));
+    await interaction.editReply(buildRosterMoveResultSummary(result));
     return;
   }
 
