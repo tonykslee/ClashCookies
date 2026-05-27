@@ -54,6 +54,7 @@ import {
   parseRosterManageRosterSelectMenuCustomId,
   getRosterManageSession,
   buildRosterSignupRoleRequirementLines,
+  buildRosterMoveResultSummary,
   rosterService,
   type RosterRecord,
   type RosterSignupViewRecord,
@@ -106,6 +107,12 @@ function parseRosterPlayerTags(input: string): string[] {
         .filter(Boolean),
     ),
   ];
+}
+
+function normalizeRosterGroupKeyInput(input: string | null | undefined): string {
+  return String(input ?? "")
+    .trim()
+    .toLowerCase();
 }
 
 function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
@@ -295,30 +302,6 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
       ? ` (${result.duplicateTags.length} already signed up)`
       : "";
   return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
-}
-
-function buildRosterMoveResultSummary(result: Awaited<ReturnType<typeof rosterService.moveRosterSignups>>): string {
-  if (result.outcome === "roster_not_found") {
-    return "That roster is no longer available.";
-  }
-  if (result.outcome === "roster_archived") {
-    return "That roster is archived and can no longer be modified.";
-  }
-  if (result.outcome === "group_not_found") {
-    return "That roster group is no longer available.";
-  }
-  if (result.outcome === "nothing_moved" && result.movedTags.length <= 0) {
-    return result.missingTags.length > 0
-      ? "None of the selected signups were found on that roster."
-      : "No roster signups were moved.";
-  }
-
-  const moved = result.movedTags.length > 0 ? result.movedTags.join(", ") : "no signups";
-  const duplicate =
-    result.duplicateTags.length > 0 ? ` (${result.duplicateTags.length} already in ${result.groupKey})` : "";
-  const missing =
-    result.missingTags.length > 0 ? ` (${result.missingTags.length} not found on that roster)` : "";
-  return `Moved ${moved} to ${result.groupKey}${duplicate}${missing}.`;
 }
 
 function buildRosterChangeResultSummary(
@@ -3159,13 +3142,12 @@ async function handleRosterManageSubcommand(
   }
 
   if (action === "add" || action === "move") {
-    const groupKey = interaction.options.getString("group", false);
-    if (!groupKey) {
-      await interaction.editReply("Provide a roster group for this action.");
-      return;
-    }
-
     if (action === "add") {
+      const groupKey = interaction.options.getString("group", false);
+      if (!groupKey) {
+        await interaction.editReply("Provide a roster group for this action.");
+        return;
+      }
       const result = await rosterService.addRosterSignupsForManager({
         rosterId: roster.id,
         groupKey,
@@ -3180,9 +3162,11 @@ async function handleRosterManageSubcommand(
       return;
     }
 
+    const destinationGroupKeyInput = interaction.options.getString("target_group", false);
+    const destinationGroupKey = normalizeRosterGroupKeyInput(destinationGroupKeyInput) || "confirmed";
     const result = await rosterService.moveRosterSignups({
       rosterId: roster.id,
-      groupKey,
+      groupKey: destinationGroupKey,
       playerTags,
       updatedByDiscordUserId: interaction.user.id,
     });
@@ -3668,9 +3652,11 @@ async function autocompleteRosterGroup(interaction: AutocompleteInteraction): Pr
     return;
   }
 
-  const rosterId = interaction.options
-    .getString(focused.name === "target_group" ? "target_roster" : "roster", false)
-    ?.trim();
+  const action = interaction.options.getString("action", false)?.trim().toLowerCase();
+  const rosterId =
+    focused.name === "target_group" && action === "change_roster"
+      ? interaction.options.getString("target_roster", false)?.trim()
+      : interaction.options.getString("roster", false)?.trim();
   if (!rosterId) {
     await interaction.respond([]);
     return;
@@ -3732,18 +3718,16 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
     return;
   }
 
-  const groupKey = interaction.options.getString("group", false)?.trim() ?? "";
-  if (action === "move" && !groupKey) {
-    await interaction.respond([]);
-    return;
-  }
-  const normalizedGroupKey = String(groupKey ?? "").trim().toLowerCase();
   const rosterGroups = Array.isArray((rosterView as { groups?: Array<{ key: string }> }).groups)
     ? (rosterView as { groups: Array<{ key: string }> }).groups
     : [];
+  const destinationGroupKey =
+    action === "move"
+      ? normalizeRosterGroupKeyInput(interaction.options.getString("target_group", false)) || "confirmed"
+      : normalizeRosterGroupKeyInput(interaction.options.getString("group", false));
   if (
     action === "move" &&
-    !rosterGroups.some((group) => String(group.key ?? "").trim().toLowerCase() === normalizedGroupKey)
+    !rosterGroups.some((group) => normalizeRosterGroupKeyInput(group.key) === destinationGroupKey)
   ) {
     await interaction.respond([]);
     return;
@@ -3792,8 +3776,8 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
           .filter((signup) => {
             const signupTag = normalizePlayerTag(signup.playerTag);
             if (action === "move") {
-              const signupGroupKey = String(signup.group?.key ?? "").trim().toLowerCase();
-              return signupGroupKey !== normalizedGroupKey;
+              const signupGroupKey = normalizeRosterGroupKeyInput(signup.group?.key ?? "");
+              return signupGroupKey !== destinationGroupKey;
             }
             if (action === "change_roster") {
               if (selectedUserId && String(signup.discordUserId ?? "").trim() !== selectedUserId) {
