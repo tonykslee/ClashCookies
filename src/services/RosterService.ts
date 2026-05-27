@@ -4227,8 +4227,6 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
   const snapshotRows = [...sourceMaps.snapshotByTag.values()];
   const discordDisplayNameByUserId = options?.discordDisplayNamesByUserId ?? new Map<string, string | null>();
   const currentClanName =
-    currentClanSnapshotRows.find((row) => normalizeRosterText(row.cwlClanName ?? row.clanName ?? null))
-      ?.cwlClanName ??
     currentClanSnapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
     snapshotRows.find((row) => normalizeRosterText(row.clanName ?? null))?.clanName ??
     null;
@@ -4271,10 +4269,18 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       clanName: sourceRow?.clanName ?? null,
     };
   });
+  const normalizedTrackedClanName = normalizeRosterText(trackedClan?.name ?? null);
+  const normalizedTrackedClanTag = normalizeClanTag(roster.clanTag ?? "") ?? normalizeRosterText(roster.clanTag ?? null);
   const clanDisplayName =
-    normalizeRosterText(currentClanName ?? null) ??
-    normalizeRosterText(trackedClan?.name ?? null) ??
-    null;
+    roster.rosterType === "CWL"
+      ? normalizedTrackedClanName ?? normalizedTrackedClanTag ?? "Roster"
+      : normalizeRosterText(currentClanName ?? null) ?? null;
+  if (roster.rosterType === "CWL") {
+    const displaySource = normalizedTrackedClanName ? "cwl_tracked_clan" : "clan_tag_fallback";
+    console.info(
+      `[roster] stage=cwl_roster_display_name rosterId=${roster.id} rosterClanTag=${roster.clanTag ?? ""} source=${displaySource} resolvedName=${normalizeRosterText(clanDisplayName) ?? ""}`,
+    );
+  }
   const sortedSignups = sortRosterSignupsForRoster(signupsWithTownHall, roster.sortBy);
   const signupCountByGroupId = new Map<string, number>();
   for (const signup of sortedSignups) {
