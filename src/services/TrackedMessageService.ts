@@ -1818,6 +1818,17 @@ export class TrackedMessageService {
     });
   }
 
+  async resolveLatestSyncPost(guildId: string) {
+    return prisma.trackedMessage.findFirst({
+      where: {
+        guildId,
+        referenceId: null,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      },
+      orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
+    });
+  }
+
   async repairStaleFwaBasesChecklistState(params: {
     guildId: string;
     now?: Date;
@@ -1826,19 +1837,19 @@ export class TrackedMessageService {
     const guildId = String(params.guildId ?? "").trim();
     const now = params.now instanceof Date && Number.isFinite(params.now.getTime()) ? params.now : new Date();
     const apply = params.apply ?? false;
-    const latestActiveSyncPost = guildId
-      ? await this.resolveLatestActiveSyncPost(guildId).catch(() => null)
+    const latestSyncPost = guildId
+      ? await this.resolveLatestSyncPost(guildId).catch(() => null)
       : null;
-    const currentSyncMessageId = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+    const currentSyncMessageId = resolveTrackedMessageSyncIdentity(latestSyncPost);
     const currentSyncCreatedAtIso =
-      latestActiveSyncPost?.createdAt instanceof Date &&
-      Number.isFinite(latestActiveSyncPost.createdAt.getTime())
-        ? latestActiveSyncPost.createdAt.toISOString()
+      latestSyncPost?.createdAt instanceof Date &&
+      Number.isFinite(latestSyncPost.createdAt.getTime())
+        ? latestSyncPost.createdAt.toISOString()
         : null;
     const currentSyncCreatedAtMs =
-      latestActiveSyncPost?.createdAt instanceof Date &&
-      Number.isFinite(latestActiveSyncPost.createdAt.getTime())
-        ? latestActiveSyncPost.createdAt.getTime()
+      latestSyncPost?.createdAt instanceof Date &&
+      Number.isFinite(latestSyncPost.createdAt.getTime())
+        ? latestSyncPost.createdAt.getTime()
         : null;
 
     const basesCompletionRows = guildId
@@ -1854,13 +1865,18 @@ export class TrackedMessageService {
           },
           select: {
             id: true,
+            createdAt: true,
             messageId: true,
             referenceId: true,
             metadata: true,
           },
         })
       : [];
-    const basesCompletionCandidateRows = basesCompletionRows.filter(isLegacyUnscopedBasesCompletionTrackedMessage);
+    const basesCompletionCandidateRows = basesCompletionRows.filter((row) => {
+      if (!isLegacyUnscopedBasesCompletionTrackedMessage(row)) return false;
+      if (currentSyncCreatedAtMs === null) return false;
+      return row.createdAt.getTime() < currentSyncCreatedAtMs;
+    });
     const basesCompletionIds = basesCompletionCandidateRows.map((row) => row.id);
 
     const baseSwapRows = guildId

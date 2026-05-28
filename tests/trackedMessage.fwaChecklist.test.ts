@@ -635,7 +635,7 @@ describe("fwa checklist tracked messages", () => {
   });
 
   it("repairs stale legacy bases checklist markers without touching current-sync base-swap rows", async () => {
-    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+    vi.spyOn(trackedMessageService, "resolveLatestSyncPost").mockResolvedValue({
       id: "sync-tracked-2",
       guildId: "guild-1",
       channelId: "channel-1",
@@ -658,6 +658,7 @@ describe("fwa checklist tracked messages", () => {
             messageId:
               "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-06-13T18:00:00.000Z",
             referenceId: null,
+            createdAt: new Date("2026-06-13T17:59:00.000Z"),
             metadata: {
               kind: "bases_completion",
               createdByUserId: "user-1",
