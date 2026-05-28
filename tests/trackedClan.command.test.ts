@@ -676,11 +676,11 @@ describe("/clan command behavior", () => {
     expect(description).toContain("**CWL**");
     expect(description).toContain("**RAIDS**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 members",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👤",
     );
     expect(description).not.toContain("leadRole:");
     expect(description).toContain(
-      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 12 members",
+      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 12 👤",
     );
     expect(description).toContain("Vanilla | 3331");
     expect(payload?.components).toHaveLength(1);
@@ -786,7 +786,7 @@ describe("/clan command behavior", () => {
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
     expect(refreshedDescription).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 50 members",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 50 👤",
     );
     expect(refreshButton.followUp).not.toHaveBeenCalled();
   });
@@ -862,8 +862,8 @@ describe("/clan command behavior", () => {
     const refreshedDescription = String(
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
-    expect(refreshedDescription).toContain("50 members");
-    expect(refreshedDescription).toContain("12 members");
+    expect(refreshedDescription).toContain("50 👤");
+    expect(refreshedDescription).toContain("12 👤");
   });
 
   it("keeps the existing overview view and reports a clear failure when all refreshes fail", async () => {
@@ -917,7 +917,7 @@ describe("/clan command behavior", () => {
     const refreshedDescription = String(
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
-    expect(refreshedDescription).toContain("49 members");
+    expect(refreshedDescription).toContain("49 👤");
     expect(interaction.editReply.mock.calls[1]?.[0]?.components).toHaveLength(1);
   });
 
@@ -954,7 +954,7 @@ describe("/clan command behavior", () => {
     expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (FWA) (1)");
     expect(description).toContain("**FWA**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 members",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👤",
     );
     expect(description).not.toContain("leadRole:");
     expect(payload?.components).toHaveLength(1);
@@ -1021,7 +1021,7 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, typedInteraction as any, {} as any);
     const typedDescription = getFirstEmbedDescription(typedInteraction);
     expect(typedDescription).toContain("**CWL**");
-    expect(typedDescription).toContain("| 12 members");
+    expect(typedDescription).toContain("| 12 👤");
     expect(typedDescription).not.toContain("leadRole:");
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -1070,7 +1070,7 @@ describe("/clan command behavior", () => {
     expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (RAIDS) (1)");
     expect(description).toContain("**RAIDS**");
     expect(description).toContain("Vanilla | 3331");
-    expect(description).toContain("| 3 members");
+    expect(description).toContain("| 3 👤");
     expect(payload?.components).toHaveLength(1);
     expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
       "tracked-clan-list:raids-summary:tracked-clan-itx-1:refresh",
