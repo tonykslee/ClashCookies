@@ -28,6 +28,7 @@ export type FwaBaseSwapTrackedMetadata = {
   clanName: string;
   createdByUserId: string;
   createdAtIso: string;
+  syncMessageId?: string | null;
   clanRoleId?: string | null;
   swapReminder: boolean;
   renderVariant?: "single" | "split_part_1" | "split_part_2";
@@ -644,6 +645,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
   const swapReminder =
     value.swapReminder === true ||
     String(value.swapReminder ?? "").trim().toLowerCase() === "true";
+  const syncMessageId = normalizeTrackedMessageId(value.syncMessageId as string | null | undefined);
   const clanRoleId = String(value.clanRoleId ?? "").trim() || null;
   const entries = value.entries
     .map((entry) => {
@@ -708,6 +710,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     clanName,
     createdByUserId,
     createdAtIso,
+    syncMessageId,
     clanRoleId,
     renderVariant,
     phaseTimingLine: phaseTimingLineRaw || null,
@@ -983,6 +986,7 @@ export class TrackedMessageService {
     clanTag: string;
     expiresAt: Date;
     referenceId?: string | null;
+    syncMessageId?: string | null;
     messages: Array<{
       channelId: string;
       messageId: string;
@@ -990,6 +994,7 @@ export class TrackedMessageService {
     }>;
   }): Promise<void> {
     if (!Array.isArray(params.messages) || params.messages.length === 0) return;
+    const syncMessageId = normalizeTrackedMessageId(params.syncMessageId ?? null);
     await prisma.$transaction(async (tx) => {
       await tx.trackedMessage.updateMany({
         where: {
@@ -1011,7 +1016,10 @@ export class TrackedMessageService {
             referenceId: params.referenceId ?? null,
             clanTag: params.clanTag,
             expiresAt: params.expiresAt,
-            metadata: message.metadata as any,
+            metadata: {
+              ...message.metadata,
+              ...(syncMessageId ? { syncMessageId } : {}),
+            } as any,
           },
           create: {
             guildId: params.guildId,
@@ -1022,7 +1030,10 @@ export class TrackedMessageService {
             referenceId: params.referenceId ?? null,
             clanTag: params.clanTag,
             expiresAt: params.expiresAt,
-            metadata: message.metadata as any,
+            metadata: {
+              ...message.metadata,
+              ...(syncMessageId ? { syncMessageId } : {}),
+            } as any,
           },
         });
       }
@@ -1035,12 +1046,14 @@ export class TrackedMessageService {
     messageId: string;
     clanTag: string;
     expiresAt: Date;
+    syncMessageId?: string | null;
     metadata: FwaBaseSwapTrackedMetadata;
   }): Promise<void> {
     await this.createFwaBaseSwapTrackedMessages({
       guildId: params.guildId,
       clanTag: params.clanTag,
       expiresAt: params.expiresAt,
+      syncMessageId: params.syncMessageId ?? null,
       messages: [
         {
           channelId: params.channelId,
@@ -1055,14 +1068,10 @@ export class TrackedMessageService {
     guildId: string;
     clanTag: string;
     syncMessageId?: string | null;
-    syncReferenceId?: string | null;
   }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
-    const syncIdentity = resolveTrackedMessageSyncIdentity({
-      messageId: params.syncMessageId ?? null,
-      referenceId: params.syncReferenceId ?? null,
-    });
+    const syncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
     if (!guildId || !normalizedClanTag) return null;
     const now = new Date();
 
@@ -1106,9 +1115,8 @@ export class TrackedMessageService {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
       if (syncIdentity) {
-        const rowMessageId = normalizeTrackedMessageId(row.messageId);
-        const rowReferenceId = normalizeTrackedMessageId(row.referenceId ?? null);
-        if (rowMessageId !== syncIdentity && rowReferenceId !== syncIdentity) continue;
+        const rowSyncIdentity = metadata.syncMessageId ?? normalizeTrackedMessageId(row.referenceId ?? null);
+        if (rowSyncIdentity !== syncIdentity) continue;
       }
       return {
         id: row.id,

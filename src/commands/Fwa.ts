@@ -509,6 +509,10 @@ export async function handleFwaBaseSwapSplitPostButton(
   }
   const { channel: mailChannel, channelId: mailChannelId } =
     resolvedMailChannel;
+  const latestActiveSyncPost = await trackedMessageService
+    .resolveLatestActiveSyncPost(payload.guildId)
+    .catch(() => null);
+  const syncMessageId = latestActiveSyncPost?.messageId ?? null;
 
   try {
     const clanKind = payload.clanKind ?? "FWA";
@@ -531,6 +535,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       clanTag: payload.clanTag,
       expiresAt,
       referenceId: `fwa-base-swap:${parsed.key}`,
+      syncMessageId,
       messages: [
         {
           channelId: mailChannelId,
@@ -540,6 +545,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
+            syncMessageId,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -558,6 +564,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
+            syncMessageId,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -14041,10 +14048,15 @@ export const Fwa: Command = {
       });
       const reminderMessages: string[] = [posted.url];
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+      const latestActiveSyncPost = await trackedMessageService
+        .resolveLatestActiveSyncPost(interaction.guildId)
+        .catch(() => null);
+      const syncMessageId = latestActiveSyncPost?.messageId ?? null;
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
         clanTag,
         expiresAt,
+        syncMessageId,
         messages: [
           {
             channelId: mailChannelId,
@@ -14053,6 +14065,7 @@ export const Fwa: Command = {
               clanName,
               createdByUserId: interaction.user.id,
               createdAtIso,
+              syncMessageId,
               entries,
               layoutLinks,
               phaseTimingLine: baseSwapPhaseTimingLine,

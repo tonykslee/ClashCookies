@@ -577,6 +577,61 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
+  it("resolves current-sync base-swap rows using explicit sync metadata", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "swap-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "swap-message-1",
+        referenceId: "fwa-base-swap:split-1",
+        clanTag: "#PYPY",
+        createdAt: new Date("2026-05-13T17:00:00.000Z"),
+        expiresAt: new Date("2026-05-13T19:00:00.000Z"),
+        metadata: {
+          clanKind: "FWA",
+          clanName: "Alpha",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T17:00:00.000Z",
+          syncMessageId: "sync-message-1",
+          clanRoleId: null,
+          swapReminder: false,
+          renderVariant: "single",
+          phaseTimingLine: null,
+          alertEmoji: null,
+          fwaAlertEmoji: null,
+          layoutBulletEmoji: null,
+          entries: [
+            {
+              position: 12,
+              playerTag: "#P1",
+              playerName: "PlayerOne",
+              discordUserId: "discord-1",
+              townhallLevel: 15,
+              section: "base_errors",
+              acknowledged: false,
+            },
+          ],
+          layoutLinks: [],
+        },
+      } as any,
+    ]);
+
+    const found = await trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      syncMessageId: "sync-message-1",
+    });
+
+    expect(found).toMatchObject({
+      messageId: "swap-message-1",
+      referenceId: "fwa-base-swap:split-1",
+      metadata: expect.objectContaining({
+        syncMessageId: "sync-message-1",
+      }),
+    });
+  });
+
   it("creates and dedupes a bases checklist reminder marker per clan war bucket", async () => {
     prismaMock.trackedMessage.create.mockResolvedValueOnce(undefined);
 
@@ -1384,7 +1439,7 @@ describe("fwa checklist tracked messages", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       messageId: "swap-message-1",
-      referenceId: "swap-ref-1",
+      referenceId: "fwa-base-swap:split-1",
       clanTag: "#PYPY",
       createdAt: new Date("2026-05-13T17:00:00.000Z"),
       expiresAt: new Date("2026-05-13T19:00:00.000Z"),
@@ -1393,6 +1448,7 @@ describe("fwa checklist tracked messages", () => {
         clanName: "Alpha",
         createdByUserId: "user-1",
         createdAtIso: "2026-05-13T17:00:00.000Z",
+        syncMessageId: "sync-message-1",
         clanRoleId: null,
         swapReminder: false,
         renderVariant: "single",
