@@ -211,13 +211,30 @@ function logRosterMutationTiming(input: {
   flow: "add_user" | "remove_user" | "change_group" | "change_roster";
   sessionId: string;
   mutationMs: number;
-  roleSyncMs: number;
-  refreshMs: number;
-  totalMs: number;
+  totalToUserMs?: number;
+  totalMs?: number;
+  roleSyncMs?: number;
+  refreshMs?: number;
   outcome: string;
 }): void {
+  const totalToUserMs = input.totalToUserMs ?? input.totalMs ?? 0;
   console.info(
-    `[roster] mutation_timing flow=${input.flow} sessionId=${input.sessionId} mutationMs=${input.mutationMs} roleSyncMs=${input.roleSyncMs} refreshMs=${input.refreshMs} totalMs=${input.totalMs} outcome=${input.outcome}`,
+    `[roster] mutation_timing flow=${input.flow} sessionId=${input.sessionId} mutationMs=${input.mutationMs} totalToUserMs=${totalToUserMs} outcome=${input.outcome}`,
+  );
+}
+
+type RosterMutationSideEffectName = "role_sync" | "post_refresh";
+
+function logRosterMutationSideEffectTiming(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  sideEffect: RosterMutationSideEffectName;
+  rosterId: string;
+  durationMs: number;
+  outcome: "success" | "failed";
+}): void {
+  console.info(
+    `[roster] mutation_side_effect flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${input.durationMs} outcome=${input.outcome}`,
   );
 }
 
@@ -789,6 +806,78 @@ async function syncRosterRolesForRoster(client: Client, rosterId: string): Promi
   await syncRosterRoleAssignments(client, rosterId).catch((error) => {
     console.error(`[roster] role_sync_failed rosterId=${rosterId} error=${formatError(error)}`);
   });
+}
+
+async function runRosterMutationSideEffectTask(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  sideEffect: RosterMutationSideEffectName;
+  rosterId: string;
+  taskFactory: () => Promise<unknown>;
+}): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await input.taskFactory();
+    logRosterMutationSideEffectTiming({
+      flow: input.flow,
+      sessionId: input.sessionId,
+      sideEffect: input.sideEffect,
+      rosterId: input.rosterId,
+      durationMs: Date.now() - startedAt,
+      outcome: "success",
+    });
+  } catch (error) {
+    logRosterMutationSideEffectTiming({
+      flow: input.flow,
+      sessionId: input.sessionId,
+      sideEffect: input.sideEffect,
+      rosterId: input.rosterId,
+      durationMs: Date.now() - startedAt,
+      outcome: "failed",
+    });
+    console.error(
+      `[roster] mutation_side_effect_failed flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${Date.now() - startedAt} error=${formatError(error)}`,
+    );
+  }
+}
+
+async function runRosterMutationSideEffects(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  interaction: ButtonInteraction | ChatInputCommandInteraction;
+  cocService?: CoCService | null;
+  rosterIdsForRoleSync: string[];
+  rosterIdsForRefresh: string[];
+}): Promise<void> {
+  const uniqueRoleSyncRosterIds = [...new Set(input.rosterIdsForRoleSync.map((rosterId) => String(rosterId ?? "").trim()).filter(Boolean))];
+  const uniqueRefreshRosterIds = [...new Set(input.rosterIdsForRefresh.map((rosterId) => String(rosterId ?? "").trim()).filter(Boolean))];
+  const tasks: Promise<void>[] = [];
+
+  for (const rosterId of uniqueRoleSyncRosterIds) {
+    tasks.push(
+      runRosterMutationSideEffectTask({
+        flow: input.flow,
+        sessionId: input.sessionId,
+        sideEffect: "role_sync",
+        rosterId,
+        taskFactory: () => syncRosterRoleAssignments(input.interaction.client, rosterId),
+      }),
+    );
+  }
+
+  for (const rosterId of uniqueRefreshRosterIds) {
+    tasks.push(
+      runRosterMutationSideEffectTask({
+        flow: input.flow,
+        sessionId: input.sessionId,
+        sideEffect: "post_refresh",
+        rosterId,
+        taskFactory: () => refreshExistingRosterPost(input.interaction as unknown as ChatInputCommandInteraction, rosterId, input.cocService ?? null),
+      }),
+    );
+  }
+
+  await Promise.allSettled(tasks);
 }
 
 async function canUseRosterPostTarget(
@@ -2299,95 +2388,106 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   }
 
   if (result.outcome === "add_user") {
-    const roleSyncStartedAt = Date.now();
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    const roleSyncMs = Date.now() - roleSyncStartedAt;
-    const refreshStartedAt = Date.now();
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
-    const refreshMs = Date.now() - refreshStartedAt;
-    logRosterMutationTiming({
-      flow: "add_user",
-      sessionId: parsed.sessionId,
-      mutationMs,
-      roleSyncMs,
-      refreshMs,
-      totalMs: Date.now() - confirmStartedAt,
-      outcome: result.outcome,
-    });
     const confirmationContent = await buildRosterMutationConfirmationContent("add", result.result);
     await interaction.editReply({
       content: confirmationContent,
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=add_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
   if (result.outcome === "remove_user") {
-    const roleSyncStartedAt = Date.now();
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    const roleSyncMs = Date.now() - roleSyncStartedAt;
-    const refreshStartedAt = Date.now();
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
-    const refreshMs = Date.now() - refreshStartedAt;
-    logRosterMutationTiming({
-      flow: "remove_user",
-      sessionId: parsed.sessionId,
-      mutationMs,
-      roleSyncMs,
-      refreshMs,
-      totalMs: Date.now() - confirmStartedAt,
-      outcome: result.outcome,
-    });
     const confirmationContent = await buildRosterMutationConfirmationContent("remove", result.result);
     await interaction.editReply({
       content: confirmationContent,
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "remove_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "remove_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=remove_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
   if (result.outcome === "signup") {
-    const roleSyncStartedAt = Date.now();
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    const roleSyncMs = Date.now() - roleSyncStartedAt;
-    const refreshStartedAt = Date.now();
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
-    const refreshMs = Date.now() - refreshStartedAt;
-    logRosterMutationTiming({
-      flow: "add_user",
-      sessionId: parsed.sessionId,
-      mutationMs,
-      roleSyncMs,
-      refreshMs,
-      totalMs: Date.now() - confirmStartedAt,
-      outcome: result.outcome,
-    });
     await interaction.editReply({
       content: buildRosterSignupResultSummary(result.result),
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=add_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
-  const refreshStartedAt = Date.now();
-  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
-  const refreshMs = Date.now() - refreshStartedAt;
-  logRosterMutationTiming({
-    flow: "remove_user",
-    sessionId: parsed.sessionId,
-    mutationMs,
-    roleSyncMs: 0,
-    refreshMs,
-    totalMs: Date.now() - confirmStartedAt,
-    outcome: result.outcome,
-  });
   await interaction.editReply({
     content: buildRosterRemoveResultSummary(result.result),
     embeds: [],
     components: [],
+  }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "remove_user",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "remove_user",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.result.rosterId],
+    rosterIdsForRefresh: [result.result.rosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=remove_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
   });
 }
 
@@ -2689,30 +2789,28 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
 
-  const roleSyncStartedAt = Date.now();
-  await syncRosterRoleAssignments(interaction.client, result.rosterId).catch(() => undefined);
-  const roleSyncMs = Date.now() - roleSyncStartedAt;
-  const refreshStartedAt = Date.now();
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.rosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
-  const refreshMs = Date.now() - refreshStartedAt;
-  logRosterMutationTiming({
-    flow: "change_group",
-    sessionId: parsed.sessionId,
-    mutationMs,
-    roleSyncMs,
-    refreshMs,
-    totalMs: Date.now() - confirmStartedAt,
-    outcome: result.outcome,
-  });
   await interaction.editReply({
     content: result.summary,
     embeds: [],
     components: [],
   }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "change_group",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "change_group",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.rosterId],
+    rosterIdsForRefresh: [result.rosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=change_group sessionId=${parsed.sessionId} error=${formatError(error)}`);
+  });
 }
 
 export async function handleRosterPostChangeRosterCurrentRosterSelectInteraction(
@@ -3053,36 +3151,28 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
 
-  const roleSyncStartedAt = Date.now();
-  await syncRosterRoleAssignments(interaction.client, result.sourceRosterId).catch(() => undefined);
-  await syncRosterRoleAssignments(interaction.client, result.targetRosterId).catch(() => undefined);
-  const roleSyncMs = Date.now() - roleSyncStartedAt;
-  const refreshStartedAt = Date.now();
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.sourceRosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.targetRosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
-  const refreshMs = Date.now() - refreshStartedAt;
-  logRosterMutationTiming({
-    flow: "change_roster",
-    sessionId: parsed.sessionId,
-    mutationMs,
-    roleSyncMs,
-    refreshMs,
-    totalMs: Date.now() - confirmStartedAt,
-    outcome: result.outcome,
-  });
   await interaction.editReply({
     content: result.summary,
     embeds: [],
     components: [],
   }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "change_roster",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "change_roster",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.sourceRosterId, result.targetRosterId],
+    rosterIdsForRefresh: [result.sourceRosterId, result.targetRosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=change_roster sessionId=${parsed.sessionId} error=${formatError(error)}`);
+  });
 }
 
 export async function handleRosterPingActionButtonInteraction(interaction: ButtonInteraction): Promise<void> {
