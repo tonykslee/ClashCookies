@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
     create: vi.fn(),
   },
   trackedClan: {
@@ -126,6 +127,7 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.trackedMessage.create.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
@@ -630,6 +632,203 @@ describe("fwa checklist tracked messages", () => {
         syncMessageId: "sync-message-1",
       }),
     });
+  });
+
+  it("repairs stale legacy bases checklist markers without touching current-sync base-swap rows", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-2",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-2",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-06-13T18:00:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (
+        where?.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST &&
+        where?.status === TRACKED_MESSAGE_STATUS.ACTIVE
+      ) {
+        return [
+          {
+            id: "legacy-bases-1",
+            messageId:
+              "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-06-13T18:00:00.000Z",
+            referenceId: null,
+            metadata: {
+              kind: "bases_completion",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T17:59:00.000Z",
+              clanTag: "#PYPY",
+              clanName: "Alpha",
+              checked: true,
+              warId: "1001",
+              opponentTag: "#OPP1",
+              warStartTimeIso: "2026-06-13T18:00:00.000Z",
+            },
+          },
+        ];
+      }
+      if (
+        where?.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP &&
+        where?.status === TRACKED_MESSAGE_STATUS.ACTIVE
+      ) {
+        return [
+          {
+            id: "base-swap-old-1",
+            createdAt: new Date("2026-06-13T17:30:00.000Z"),
+            expiresAt: new Date("2026-06-13T19:00:00.000Z"),
+            metadata: {
+              clanKind: "FWA",
+              clanName: "Alpha",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T17:30:00.000Z",
+              clanRoleId: null,
+              swapReminder: true,
+              entries: [
+                {
+                  position: 1,
+                  playerTag: "#AAA",
+                  playerName: "Alpha",
+                  discordUserId: null,
+                  townhallLevel: 15,
+                  section: "fwa_bases",
+                  acknowledged: false,
+                },
+              ],
+            },
+          },
+          {
+            id: "base-swap-expired-1",
+            createdAt: new Date("2026-06-13T18:30:00.000Z"),
+            expiresAt: new Date("2026-06-13T17:45:00.000Z"),
+            metadata: {
+              clanKind: "FWA",
+              clanName: "Alpha",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T18:30:00.000Z",
+              clanRoleId: null,
+              swapReminder: true,
+              entries: [
+                {
+                  position: 1,
+                  playerTag: "#BBB",
+                  playerName: "Bravo",
+                  discordUserId: null,
+                  townhallLevel: 15,
+                  section: "fwa_bases",
+                  acknowledged: false,
+                },
+              ],
+            },
+          },
+          {
+            id: "base-swap-current-1",
+            createdAt: new Date("2026-06-13T18:15:00.000Z"),
+            expiresAt: new Date("2026-06-13T20:00:00.000Z"),
+            metadata: {
+              clanKind: "FWA",
+              clanName: "Alpha",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T18:15:00.000Z",
+              syncMessageId: "sync-message-2",
+              clanRoleId: null,
+              swapReminder: true,
+              entries: [
+                {
+                  position: 1,
+                  playerTag: "#CCC",
+                  playerName: "Charlie",
+                  discordUserId: null,
+                  townhallLevel: 15,
+                  section: "fwa_bases",
+                  acknowledged: false,
+                },
+              ],
+            },
+          },
+          {
+            id: "base-swap-future-1",
+            createdAt: new Date("2026-06-13T19:30:00.000Z"),
+            expiresAt: new Date("2026-06-13T20:00:00.000Z"),
+            metadata: {
+              clanKind: "FWA",
+              clanName: "Alpha",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T19:30:00.000Z",
+              clanRoleId: null,
+              swapReminder: true,
+              entries: [
+                {
+                  position: 1,
+                  playerTag: "#DDD",
+                  playerName: "Delta",
+                  discordUserId: null,
+                  townhallLevel: 15,
+                  section: "fwa_bases",
+                  acknowledged: false,
+                },
+              ],
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const summary = await trackedMessageService.repairStaleFwaBasesChecklistState({
+      guildId: "guild-1",
+      apply: true,
+      now: new Date("2026-06-13T18:45:00.000Z"),
+    });
+
+    expect(summary).toMatchObject({
+      guildId: "guild-1",
+      currentSyncMessageId: "sync-message-2",
+      dryRun: false,
+      basesCompletionCandidates: 1,
+      basesCompletionReplaced: 1,
+      baseSwapCandidates: 2,
+      baseSwapExpiredCandidates: 1,
+      baseSwapOlderThanCurrentSyncCandidates: 1,
+      baseSwapReplaced: 2,
+    });
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ["legacy-bases-1"] },
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+        data: expect.objectContaining({
+          status: TRACKED_MESSAGE_STATUS.REPLACED,
+        }),
+      }),
+    );
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          id: {
+            in: expect.arrayContaining([
+              "base-swap-old-1",
+              "base-swap-expired-1",
+            ]),
+          },
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+        data: expect.objectContaining({
+          status: TRACKED_MESSAGE_STATUS.REPLACED,
+        }),
+      }),
+    );
   });
 
   it("creates and dedupes a bases checklist reminder marker per clan war bucket", async () => {

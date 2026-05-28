@@ -207,6 +207,21 @@ const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
 
+export type FwaBasesChecklistRepairSummary = {
+  guildId: string;
+  currentSyncMessageId: string | null;
+  currentSyncCreatedAtIso: string | null;
+  dryRun: boolean;
+  basesCompletionCandidates: number;
+  basesCompletionReplaced: number;
+  baseSwapCandidates: number;
+  baseSwapExpiredCandidates: number;
+  baseSwapOlderThanCurrentSyncCandidates: number;
+  baseSwapReplaced: number;
+};
+
+const FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX = "fwa_match_checklist_bases_completion|";
+
 /** Purpose: sanitize copy text so inline-code formatting stays intact in compact match rows. */
 export function sanitizeFwaMatchCopyText(input: string | null | undefined): string {
   return String(input ?? "").replace(/`/g, "'");
@@ -400,6 +415,20 @@ function buildFwaMatchChecklistBasesCompletionKey(params: {
     parts.push(`sync=${syncIdentity}`);
   }
   return parts.join("|");
+}
+
+function isLegacyUnscopedBasesCompletionTrackedMessage(row: {
+  messageId: string;
+  referenceId: string | null;
+  metadata: unknown;
+}): boolean {
+  if (!String(row.messageId ?? "").trim().startsWith(FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX)) {
+    return false;
+  }
+  if (normalizeTrackedMessageId(row.referenceId ?? null)) return false;
+  const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
+  if (!metadata) return true;
+  return !metadata.syncMessageId && !metadata.syncReferenceId;
 }
 
 export function buildFwaBasesChecklistReminderMessageId(params: {
@@ -1787,6 +1816,125 @@ export class TrackedMessageService {
       },
       orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
     });
+  }
+
+  async repairStaleFwaBasesChecklistState(params: {
+    guildId: string;
+    now?: Date;
+    apply?: boolean;
+  }): Promise<FwaBasesChecklistRepairSummary> {
+    const guildId = String(params.guildId ?? "").trim();
+    const now = params.now instanceof Date && Number.isFinite(params.now.getTime()) ? params.now : new Date();
+    const apply = params.apply ?? false;
+    const latestActiveSyncPost = guildId
+      ? await this.resolveLatestActiveSyncPost(guildId).catch(() => null)
+      : null;
+    const currentSyncMessageId = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+    const currentSyncCreatedAtIso =
+      latestActiveSyncPost?.createdAt instanceof Date &&
+      Number.isFinite(latestActiveSyncPost.createdAt.getTime())
+        ? latestActiveSyncPost.createdAt.toISOString()
+        : null;
+    const currentSyncCreatedAtMs =
+      latestActiveSyncPost?.createdAt instanceof Date &&
+      Number.isFinite(latestActiveSyncPost.createdAt.getTime())
+        ? latestActiveSyncPost.createdAt.getTime()
+        : null;
+
+    const basesCompletionRows = guildId
+      ? await prisma.trackedMessage.findMany({
+          where: {
+            guildId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            referenceId: null,
+            messageId: {
+              startsWith: FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX,
+            },
+          },
+          select: {
+            id: true,
+            messageId: true,
+            referenceId: true,
+            metadata: true,
+          },
+        })
+      : [];
+    const basesCompletionCandidateRows = basesCompletionRows.filter(isLegacyUnscopedBasesCompletionTrackedMessage);
+    const basesCompletionIds = basesCompletionCandidateRows.map((row) => row.id);
+
+    const baseSwapRows = guildId
+      ? await prisma.trackedMessage.findMany({
+          where: {
+            guildId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          },
+          select: {
+            id: true,
+            createdAt: true,
+            expiresAt: true,
+            metadata: true,
+          },
+        })
+      : [];
+    const baseSwapExpiredRows: Array<{ id: string }> = [];
+    const baseSwapOlderRows: Array<{ id: string }> = [];
+    for (const row of baseSwapRows) {
+      const metadata = parseFwaBaseSwapMetadata(row.metadata);
+      if (!metadata) continue;
+      if (metadata.syncMessageId) continue;
+      const expiresAtMs =
+        row.expiresAt instanceof Date && Number.isFinite(row.expiresAt.getTime())
+          ? row.expiresAt.getTime()
+          : null;
+      if (expiresAtMs !== null && expiresAtMs <= now.getTime()) {
+        baseSwapExpiredRows.push({ id: row.id });
+        continue;
+      }
+      if (currentSyncCreatedAtMs !== null && row.createdAt.getTime() < currentSyncCreatedAtMs) {
+        baseSwapOlderRows.push({ id: row.id });
+      }
+    }
+
+    const baseSwapIds = [...new Set([...baseSwapExpiredRows, ...baseSwapOlderRows].map((row) => row.id))];
+    if (apply && guildId) {
+      if (basesCompletionIds.length > 0) {
+        await prisma.trackedMessage.updateMany({
+          where: {
+            guildId,
+            id: { in: basesCompletionIds },
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+          },
+          data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+        });
+      }
+      if (baseSwapIds.length > 0) {
+        await prisma.trackedMessage.updateMany({
+          where: {
+            guildId,
+            id: { in: baseSwapIds },
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+          },
+          data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+        });
+      }
+    }
+
+    return {
+      guildId,
+      currentSyncMessageId,
+      currentSyncCreatedAtIso,
+      dryRun: !apply,
+      basesCompletionCandidates: basesCompletionCandidateRows.length,
+      basesCompletionReplaced: basesCompletionIds.length,
+      baseSwapCandidates: baseSwapIds.length,
+      baseSwapExpiredCandidates: baseSwapExpiredRows.length,
+      baseSwapOlderThanCurrentSyncCandidates: baseSwapOlderRows.length,
+      baseSwapReplaced: baseSwapIds.length,
+    };
   }
 
   async processDueExpirations(): Promise<number> {
