@@ -36,7 +36,10 @@ import {
   refreshRaidTrackedClansMetadata,
   upsertRaidTrackedClansForTags,
 } from "../services/RaidTrackedClanService";
-import { listFwaTrackedClansForDisplay } from "../services/TrackedClanListService";
+import {
+  listFwaClanMemberCountsForTags,
+  listFwaTrackedClansForDisplay,
+} from "../services/TrackedClanListService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
@@ -153,6 +156,13 @@ function buildTrackedClanListEmbed(total: number, pageContent: string, page: num
     .setFooter({ text: `Page ${page + 1}/${pages}` });
 }
 
+function buildTrackedClanSectionEmbed(title: string, total: number, description: string) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clans (${title}) (${total})`)
+    .setDescription(description)
+    .setColor(0x57f287);
+}
+
 function buildCwlTrackedClanListEmbed(
   total: number,
   season: string,
@@ -225,12 +235,21 @@ function buildRaidTrackedClanListComponents(
   return rows;
 }
 
-function buildTrackedClanSummaryLine(clan: { name: string | null; tag: string; leadRoleId?: string | null }): string {
+function formatTrackedClanMemberCount(memberCount: number | null): string {
+  return memberCount === null ? "\u2014 members" : `${memberCount} members`;
+}
+
+function buildTrackedClanSummaryLine(clan: {
+  name: string | null;
+  tag: string;
+  memberCount: number | null;
+}): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  const leadRole = String(clan.leadRoleId ?? "").trim();
-  const leadRoleText = leadRole ? ` | leadRole: <@&${leadRole}>` : "";
-  return clan.name && clanTag ? `- ${title} \`${clanTag}\`${leadRoleText}` : `- ${title}${leadRoleText}`;
+  const memberCountText = formatTrackedClanMemberCount(clan.memberCount);
+  return clan.name && clanTag
+    ? `- ${title} \`${clanTag}\` | ${memberCountText}`
+    : `- ${title} | ${memberCountText}`;
 }
 
 function buildRaidTrackedClanSummaryLine(clan: {
@@ -238,15 +257,16 @@ function buildRaidTrackedClanSummaryLine(clan: {
   clanName: string | null;
   upgrades: number | null;
   joinType: "open" | "inviteOnly" | "closed" | null;
+  memberCount: number | null;
 }): string {
   const clanTag = normalizeRaidTrackedClanTag(clan.clanTag) || clan.clanTag;
-  const upgradesText = clan.upgrades === null ? "—" : String(clan.upgrades);
+  const upgradesText = clan.upgrades === null ? "\u2014" : String(clan.upgrades);
   const emoji = getRaidTrackedClanJoinTypeEmoji(clan.joinType);
   const title = buildClanProfileMarkdownLink(
     `${clan.clanName ?? clanTag} | ${upgradesText}`,
     clan.clanTag,
   );
-  return `- ${emoji} ${title} \`${clanTag}\``;
+  return `- ${emoji} ${title} \`${clanTag}\` | ${formatTrackedClanMemberCount(clan.memberCount)}`;
 }
 
 function buildCombinedTrackedClanListDescription(sections: Array<{ title: string; lines: string[] }>) {
@@ -426,6 +446,16 @@ export const TrackedClan: Command = {
             { name: "RAIDS", value: "RAIDS" },
           ],
         },
+        {
+          name: "display",
+          description: "Typed list display mode",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "Minimal", value: "minimal" },
+            { name: "Detailed", value: "detailed" },
+          ],
+        },
       ],
     },
     {
@@ -480,6 +510,11 @@ export const TrackedClan: Command = {
         const listType = interaction.options.getString("type", false) as
           | TrackedClanRegistryType
           | null;
+        const requestedDisplay = interaction.options.getString("display", false) as
+          | "minimal"
+          | "detailed"
+          | null;
+        const displayMode = listType === null ? null : requestedDisplay ?? "detailed";
         if (listType === null) {
           const season = resolveCurrentCwlSeasonKey();
           const [fwaTracked, cwlTracked, raidTracked] = await Promise.all([
@@ -497,22 +532,42 @@ export const TrackedClan: Command = {
           }
 
           const sections: Array<{ title: string; lines: string[] }> = [];
+          const memberCountByTag = await listFwaClanMemberCountsForTags([
+            ...fwaTracked.map((clan) => clan.tag),
+            ...cwlTracked.map((clan) => clan.tag),
+            ...raidTracked.map((clan) => clan.clanTag),
+          ]);
           if (fwaTracked.length > 0) {
             sections.push({
               title: "FWA",
-              lines: fwaTracked.map((clan) => buildTrackedClanSummaryLine(clan)),
+              lines: fwaTracked.map((clan) =>
+                buildTrackedClanSummaryLine({
+                  ...clan,
+                  memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+                }),
+              ),
             });
           }
           if (cwlTracked.length > 0) {
             sections.push({
               title: "CWL",
-              lines: cwlTracked.map((clan) => buildTrackedClanSummaryLine(clan)),
+              lines: cwlTracked.map((clan) =>
+                buildTrackedClanSummaryLine({
+                  ...clan,
+                  memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+                }),
+              ),
             });
           }
           if (raidTracked.length > 0) {
             sections.push({
               title: "RAIDS",
-              lines: raidTracked.map((clan) => buildRaidTrackedClanSummaryLine(clan)),
+              lines: raidTracked.map((clan) =>
+                buildRaidTrackedClanSummaryLine({
+                  ...clan,
+                  memberCount: memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
+                }),
+              ),
             });
           }
 
@@ -531,6 +586,21 @@ export const TrackedClan: Command = {
             await safeReply(interaction, {
               ephemeral: true,
               content: `No CWL tracked clans for season ${season}.`,
+            });
+            return;
+          }
+
+          if (displayMode === "minimal") {
+            const memberCountByTag = await listFwaClanMemberCountsForTags(tracked.map((clan) => clan.tag));
+            const lines = tracked.map((clan) =>
+              buildTrackedClanSummaryLine({
+                ...clan,
+                memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+              }),
+            );
+            await interaction.editReply({
+              embeds: [buildTrackedClanSectionEmbed("CWL", tracked.length, buildCombinedTrackedClanListDescription([{ title: "CWL", lines }]))],
+              components: [],
             });
             return;
           }
@@ -608,6 +678,23 @@ export const TrackedClan: Command = {
             await safeReply(interaction, {
               ephemeral: true,
               content: "No RAIDS tracked clans in the database.",
+            });
+            return;
+          }
+
+          if (displayMode === "minimal") {
+            const memberCountByTag = await listFwaClanMemberCountsForTags(
+              tracked.map((clan) => normalizeRaidTrackedClanTag(clan.clanTag) || clan.clanTag),
+            );
+            const lines = tracked.map((clan) =>
+              buildRaidTrackedClanSummaryLine({
+                ...clan,
+                memberCount: memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
+              }),
+            );
+            await interaction.editReply({
+              embeds: [buildTrackedClanSectionEmbed("RAIDS", tracked.length, buildCombinedTrackedClanListDescription([{ title: "RAIDS", lines }]))],
+              components: [],
             });
             return;
           }
@@ -760,6 +847,30 @@ export const TrackedClan: Command = {
             } catch {
               // no-op
             }
+          });
+          return;
+        }
+
+        if (listType === "FWA" && displayMode === "minimal") {
+          const tracked = await listFwaTrackedClansForDisplay();
+          if (tracked.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content:
+                "No tracked clans in the database. You can still set TRACKED_CLANS in .env as fallback.",
+            });
+            return;
+          }
+          const memberCountByTag = await listFwaClanMemberCountsForTags(tracked.map((clan) => clan.tag));
+          const lines = tracked.map((clan) =>
+            buildTrackedClanSummaryLine({
+              ...clan,
+              memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+            }),
+          );
+          await interaction.editReply({
+            embeds: [buildTrackedClanSectionEmbed("FWA", tracked.length, buildCombinedTrackedClanListDescription([{ title: "FWA", lines }]))],
+            components: [],
           });
           return;
         }
