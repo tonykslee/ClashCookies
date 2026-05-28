@@ -2364,7 +2364,7 @@ export async function handleRosterPostSettingsActionButtonInteraction(
       totalMs: Date.now() - confirmStartedAt,
       outcome: result.outcome,
     });
-    await interaction.update({
+    await interaction.editReply({
       content: buildRosterSignupResultSummary(result.result),
       embeds: [],
       components: [],
@@ -2384,7 +2384,7 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     totalMs: Date.now() - confirmStartedAt,
     outcome: result.outcome,
   });
-  await interaction.update({
+  await interaction.editReply({
     content: buildRosterRemoveResultSummary(result.result),
     embeds: [],
     components: [],
