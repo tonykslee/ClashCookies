@@ -136,6 +136,11 @@ import {
   handleRosterPostChangeGroupGroupSelectInteraction,
   handleRosterPostChangeGroupPlayerSelectInteraction,
   handleRosterPostChangeGroupRosterSelectInteraction,
+  handleRosterPostChangeRosterActionButtonInteraction,
+  handleRosterPostChangeRosterCurrentRosterSelectInteraction,
+  handleRosterPostChangeRosterPlayerSelectInteraction,
+  handleRosterPostChangeRosterTargetGroupSelectInteraction,
+  handleRosterPostChangeRosterTargetRosterSelectInteraction,
   handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
   handleRosterPostSettingsGroupSelectInteraction,
@@ -173,6 +178,7 @@ import {
   isRosterPostSettingsButtonCustomId,
   isRosterPostSettingsMenuCustomId,
   isRosterPostChangeGroupCustomId,
+  isRosterPostChangeRosterCustomId,
   isRosterReportPingButtonCustomId,
   isRosterPingActionButtonCustomId,
   isRosterPostUsersActionButtonCustomId,
@@ -791,6 +797,23 @@ const handleSelectMenuInteraction = async (
     return;
   }
 
+  if (isRosterPostChangeRosterCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostChangeRosterCurrentRosterSelectInteraction(interaction);
+      await handleRosterPostChangeRosterTargetRosterSelectInteraction(interaction);
+      await handleRosterPostChangeRosterTargetGroupSelectInteraction(interaction);
+      await handleRosterPostChangeRosterPlayerSelectInteraction(interaction);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Roster change-roster menu",
+        "Failed to update change roster settings.",
+        err,
+      );
+    }
+    return;
+  }
+
   if (isRosterPostCustomizeColumnsMenuCustomId(interaction.customId) || isRosterPostCustomizeSortMenuCustomId(interaction.customId)) {
     try {
       await handleRosterPostCustomizeMenuInteraction(interaction, cocService);
@@ -1248,6 +1271,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update change group settings.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isRosterPostChangeRosterCustomId(interaction.customId)) {
+    try {
+      await handleRosterPostChangeRosterActionButtonInteraction(interaction, cocService);
+    } catch (err) {
+      console.error(`Roster change roster button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update change roster settings.",
         });
       }
     }
