@@ -1818,12 +1818,20 @@ export class TrackedMessageService {
     });
   }
 
-  async resolveLatestSyncPost(guildId: string) {
+  async resolveLatestSyncPost(guildId: string, now: Date = new Date()) {
     return prisma.trackedMessage.findFirst({
       where: {
         guildId,
         referenceId: null,
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+        OR: [
+          { remindAt: null },
+          {
+            remindAt: {
+              lte: now,
+            },
+          },
+        ],
       },
       orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
     });
@@ -1838,7 +1846,7 @@ export class TrackedMessageService {
     const now = params.now instanceof Date && Number.isFinite(params.now.getTime()) ? params.now : new Date();
     const apply = params.apply ?? false;
     const latestSyncPost = guildId
-      ? await this.resolveLatestSyncPost(guildId).catch(() => null)
+      ? await this.resolveLatestSyncPost(guildId, now).catch(() => null)
       : null;
     const currentSyncMessageId = resolveTrackedMessageSyncIdentity(latestSyncPost);
     const currentSyncCreatedAtIso =

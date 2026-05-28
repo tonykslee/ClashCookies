@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
+    findFirst: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
@@ -125,6 +126,7 @@ describe("fwa checklist tracked messages", () => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
     prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
@@ -830,6 +832,73 @@ describe("fwa checklist tracked messages", () => {
         }),
       }),
     );
+  });
+
+  it("ignores a future sync post when deciding whether to replace legacy bases completion rows", async () => {
+    prismaMock.trackedMessage.findFirst.mockImplementation(async (query: any) => {
+      expect(query).toMatchObject({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          referenceId: null,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          OR: [
+            { remindAt: null },
+            {
+              remindAt: {
+                lte: new Date("2026-06-13T18:45:00.000Z"),
+              },
+            },
+          ],
+        }),
+      });
+      return null;
+    });
+
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (
+        where?.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST &&
+        where?.status === TRACKED_MESSAGE_STATUS.ACTIVE
+      ) {
+        return [
+          {
+            id: "legacy-bases-current",
+            messageId:
+              "fwa_match_checklist_bases_completion|guild=guild-1|clan=#LQQ99UV8|war=1000418|opponent=OPP1|start=2026-06-13T18:00:00.000Z",
+            referenceId: null,
+            createdAt: new Date("2026-06-13T18:10:00.000Z"),
+            metadata: {
+              kind: "bases_completion",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-06-13T18:10:00.000Z",
+              clanTag: "#LQQ99UV8",
+              clanName: "Zero Gravity",
+              checked: true,
+              warId: "1000418",
+              opponentTag: "#902PQVRL",
+              warStartTimeIso: "2026-06-13T18:00:00.000Z",
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const summary = await trackedMessageService.repairStaleFwaBasesChecklistState({
+      guildId: "guild-1",
+      apply: true,
+      now: new Date("2026-06-13T18:45:00.000Z"),
+    });
+
+    expect(summary).toMatchObject({
+      guildId: "guild-1",
+      currentSyncMessageId: null,
+      dryRun: false,
+      basesCompletionCandidates: 0,
+      basesCompletionReplaced: 0,
+      baseSwapCandidates: 0,
+      baseSwapReplaced: 0,
+    });
+    expect(prismaMock.trackedMessage.updateMany).not.toHaveBeenCalled();
   });
 
   it("creates and dedupes a bases checklist reminder marker per clan war bucket", async () => {
