@@ -252,7 +252,7 @@ function buildTrackedClanSummaryRefreshComponents(prefix: string, refreshing: bo
 }
 
 function formatTrackedClanMemberCount(memberCount: number | null): string {
-  return memberCount === null ? "\u2014 👤" : `${memberCount} 👤`;
+  return memberCount === null ? "\u2014 👥" : `${memberCount} 👥`;
 }
 
 function buildTrackedClanSummaryLine(clan: {
@@ -618,7 +618,7 @@ export const TrackedClan: Command = {
           | "minimal"
           | "detailed"
           | null;
-        const displayMode = listType === null ? null : requestedDisplay ?? "detailed";
+        const displayMode = listType === null ? null : requestedDisplay ?? "minimal";
         if (listType === null) {
           const season = resolveCurrentCwlSeasonKey();
           const [fwaTracked, cwlTracked, raidTracked] = await Promise.all([
