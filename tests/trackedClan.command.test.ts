@@ -30,6 +30,9 @@ const prismaMock = vi.hoisted(() => ({
     deleteMany: vi.fn(),
     upsert: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    groupBy: vi.fn(),
+  },
   $transaction: vi.fn(async (arg: any) => {
     if (Array.isArray(arg)) return Promise.all(arg);
     if (typeof arg === "function") return arg({});
@@ -41,12 +44,22 @@ const cocQueueMock = vi.hoisted(() => ({
   runWithCoCQueueContext: vi.fn(async (_context: unknown, run: () => Promise<unknown>) => run()),
 }));
 
+const fwaClanMembersSyncMock = vi.hoisted(() => ({
+  refreshCurrentClanMembersForClanTags: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
 vi.mock("../src/services/CoCQueueContext", () => ({
   runWithCoCQueueContext: cocQueueMock.runWithCoCQueueContext,
+}));
+
+vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", () => ({
+  FwaClanMembersSyncService: vi.fn().mockImplementation(() => ({
+    refreshCurrentClanMembersForClanTags: fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags,
+  })),
 }));
 
 import {
@@ -124,6 +137,16 @@ function makeButtonInteraction(customId: string) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("/clan command behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -146,9 +169,16 @@ describe("/clan command behavior", () => {
     prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.raidTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.raidTrackedClan.findFirst.mockResolvedValue(null);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.currentWar.deleteMany.mockResolvedValue({ count: 0 });
+    fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags.mockResolvedValue({
+      clanCount: 0,
+      rowCount: 0,
+      changedRowCount: 0,
+      failedClans: [],
+    });
   });
 
   afterEach(() => {
@@ -370,6 +400,22 @@ describe("/clan command behavior", () => {
         updatedAt: new Date("2026-04-15T00:00:00.000Z"),
       },
     ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -380,8 +426,7 @@ describe("/clan command behavior", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = getFirstEmbedDescription(interaction);
-    expect(description).toContain("### 🔓 [Vanilla | 3331]");
-    expect(description).toContain("2RVGJYLC0");
+    expect(description).toContain("Vanilla | 3331");
     const buttonIds = payload?.components?.[0]?.toJSON?.().components.map((component: any) =>
       String(component.custom_id ?? ""),
     );
@@ -422,19 +467,29 @@ describe("/clan command behavior", () => {
     expect(description).toContain("shortName: AC");
     expect(description).toContain("leaderChannel: <#leader-channel-1>");
     expect(description).toContain("leadRole: <@&lead-role-1>");
+    expect(interaction.editReply.mock.calls[0]?.[0]?.components).toEqual([]);
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
 
   it("renders linked clan titles when type:CWL is provided", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
-      {
-        season: "2026-03",
-        tag: "#PYLQ0289",
-        name: "CWL Alpha",
-        createdAt: new Date("2026-03-01T00:00:00.000Z"),
-      },
-    ]);
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([
+        {
+          season: "2026-03",
+          tag: "#PYLQ0289",
+          name: "CWL Alpha",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          season: "2026-03",
+          tag: "#PYLQ0289",
+          name: "CWL Alpha",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      ]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -448,6 +503,7 @@ describe("/clan command behavior", () => {
       "**[CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289`",
     );
     expect(description).toContain("registry: CWL seasonal");
+    expect(interaction.editReply.mock.calls[0]?.[0]?.components).toEqual([]);
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
@@ -601,6 +657,10 @@ describe("/clan command behavior", () => {
         updatedAt: new Date("2026-04-15T00:00:00.000Z"),
       },
     ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -616,19 +676,405 @@ describe("/clan command behavior", () => {
     expect(description).toContain("**CWL**");
     expect(description).toContain("**RAIDS**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 members",
     );
-    expect(description).toContain("leadRole: <@&lead-role-1>");
+    expect(description).not.toContain("leadRole:");
     expect(description).toContain(
-      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289`",
+      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 12 members",
     );
-    expect(description).toContain(
-      "- 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0`",
+    expect(description).toContain("Vanilla | 3331");
+    expect(payload?.components).toHaveLength(1);
+    expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:summary:tracked-clan-itx-1:refresh",
     );
-    expect(payload?.components).toEqual([]);
     expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.raidTrackedClan.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the overview member counts in place and disables the button while syncing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Vanilla",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+      { clanTag: "2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 50 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+      { clanTag: "2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+
+    fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags.mockResolvedValueOnce({
+      clanCount: 3,
+      rowCount: 3,
+      changedRowCount: 1,
+      failedClans: [],
+    });
+    const cocService = {
+      getClan: vi.fn(),
+    };
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: {},
+    });
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    expect(collectHandler).toBeDefined();
+
+    const refreshButton = makeButtonInteraction("tracked-clan-list:summary:tracked-clan-itx-1:refresh");
+    const collectPromise = collectHandler?.(refreshButton);
+
+    expect(refreshButton.update).toHaveBeenCalledTimes(1);
+    const updatingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
+    expect(updatingPayload?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe("Refreshing...");
+    expect(updatingPayload?.components?.[0]?.toJSON?.().components?.[0]?.disabled).toBe(true);
+    expect(interaction.editReply.mock.calls).toHaveLength(1);
+    await collectPromise;
+
+    expect(fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags).toHaveBeenCalledWith(
+      ["#2QG2C08UP", "#PYLQ0289", "2RVGJYLC0"],
+      { cocService },
+    );
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "tracked-clan:list:member-counts-refresh:overview",
+      }),
+      expect.any(Function),
+    );
+    expect(interaction.editReply.mock.calls).toHaveLength(2);
+    const refreshedDescription = String(
+      interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
+    );
+    expect(refreshedDescription).toContain(
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 50 members",
+    );
+    expect(refreshButton.followUp).not.toHaveBeenCalled();
+  });
+
+  it("reports partial overview refresh failures without blocking refreshed member counts", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Vanilla",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+      { clanTag: "2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 50 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+      { clanTag: "2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+    fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags.mockResolvedValueOnce({
+      clanCount: 3,
+      rowCount: 2,
+      changedRowCount: 1,
+      failedClans: ["#PYLQ0289"],
+    });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: {},
+    });
+
+    await TrackedClan.run({} as any, interaction as any, { getClan: vi.fn() } as any);
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    const refreshButton = makeButtonInteraction("tracked-clan-list:summary:tracked-clan-itx-1:refresh");
+    const collectPromise = collectHandler?.(refreshButton);
+    await collectPromise;
+
+    expect(refreshButton.followUp).toHaveBeenCalledTimes(1);
+    expect(String(refreshButton.followUp.mock.calls[0]?.[0]?.content ?? "")).toContain("#PYLQ0289");
+    const refreshedDescription = String(
+      interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
+    );
+    expect(refreshedDescription).toContain("50 members");
+    expect(refreshedDescription).toContain("12 members");
+  });
+
+  it("keeps the existing overview view and reports a clear failure when all refreshes fail", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+    ]);
+    fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags.mockResolvedValueOnce({
+      clanCount: 1,
+      rowCount: 0,
+      changedRowCount: 0,
+      failedClans: ["#2QG2C08UP"],
+    });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: {},
+    });
+
+    await TrackedClan.run({} as any, interaction as any, { getClan: vi.fn() } as any);
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    const refreshButton = makeButtonInteraction("tracked-clan-list:summary:tracked-clan-itx-1:refresh");
+    const collectPromise = collectHandler?.(refreshButton);
+    await collectPromise;
+
+    expect(refreshButton.followUp).toHaveBeenCalledTimes(1);
+    expect(String(refreshButton.followUp.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Failed to refresh member counts for the displayed clans.",
+    );
+    const refreshedDescription = String(
+      interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
+    );
+    expect(refreshedDescription).toContain("49 members");
+    expect(interaction.editReply.mock.calls[1]?.[0]?.components).toHaveLength(1);
+  });
+
+  it("renders a typed FWA minimal overview section without leadRole and with persisted member counts", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: "leader-channel-1",
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = getFirstEmbedDescription(interaction);
+    expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (FWA) (1)");
+    expect(description).toContain("**FWA**");
+    expect(description).toContain(
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 members",
+    );
+    expect(description).not.toContain("leadRole:");
+    expect(payload?.components).toHaveLength(1);
+    expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:fwa-summary:tracked-clan-itx-1:refresh",
+    );
+    expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("renders a typed CWL minimal overview section and ignores display when type is omitted", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Vanilla",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+      { clanTag: "2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+
+    const typedInteraction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+    await TrackedClan.run({} as any, typedInteraction as any, {} as any);
+    const typedDescription = getFirstEmbedDescription(typedInteraction);
+    expect(typedDescription).toContain("**CWL**");
+    expect(typedDescription).toContain("| 12 members");
+    expect(typedDescription).not.toContain("leadRole:");
+    expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
+    expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:cwl-summary:tracked-clan-itx-1:refresh",
+    );
+
+    const overviewInteraction = createInteraction({
+      subcommand: "list",
+      strings: { display: "minimal" },
+    });
+    await TrackedClan.run({} as any, overviewInteraction as any, {} as any);
+    const overviewDescription = getFirstEmbedDescription(overviewInteraction);
+    expect(overviewDescription).toContain("**FWA**");
+    expect(overviewDescription).toContain("**CWL**");
+    expect(overviewDescription).toContain("**RAIDS**");
+    expect(overviewInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
+    expect(overviewInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:summary:tracked-clan-itx-1:refresh",
+    );
+  });
+
+  it("renders a typed RAIDS minimal overview section with join emoji, upgrades, and persisted member counts", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Vanilla",
+        upgrades: 3331,
+        joinType: "open",
+        createdAt: new Date("2026-04-15T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2RVGJYLC0", _count: { clanTag: 3 } },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "RAIDS", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = getFirstEmbedDescription(interaction);
+    expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (RAIDS) (1)");
+    expect(description).toContain("**RAIDS**");
+    expect(description).toContain("Vanilla | 3331");
+    expect(description).toContain("| 3 members");
+    expect(payload?.components).toHaveLength(1);
+    expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:raids-summary:tracked-clan-itx-1:refresh",
+    );
   });
 
   it("persists leaderChannelId when /clan configure receives leader-channel", async () => {

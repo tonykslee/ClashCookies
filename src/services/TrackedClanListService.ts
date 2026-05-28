@@ -48,3 +48,31 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     createdAt: row.createdAt,
   }));
 }
+
+/** Purpose: load persisted FWA current-member counts for a set of tracked clan tags in one bulk query. */
+export async function listFwaClanMemberCountsForTags(tags: string[]): Promise<Map<string, number>> {
+  const normalizedTags = [
+    ...new Set(tags.map((tag) => normalizeClanTag(tag)).filter((tag): tag is string => Boolean(tag))),
+  ];
+  if (normalizedTags.length === 0) {
+    return new Map();
+  }
+
+  const rows = await prisma.fwaClanMemberCurrent.groupBy({
+    by: ["clanTag"],
+    where: {
+      clanTag: { in: normalizedTags },
+    },
+    _count: {
+      clanTag: true,
+    },
+  });
+
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const tag = normalizeClanTag(row.clanTag);
+    if (!tag) continue;
+    counts.set(tag, row._count.clanTag);
+  }
+  return counts;
+}

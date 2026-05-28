@@ -192,6 +192,9 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("/clan configure");
     expect(clanHelpText).toContain("leader channel");
     expect(clanHelpText).toContain("lead-role");
+    expect(clanHelpText).toContain("display:minimal|detailed");
+    expect(clanHelpText.toLowerCase()).toContain("if `type` is omitted, `display` is ignored");
+    expect(clanHelpText).toContain("member-count `Refresh` button");
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 

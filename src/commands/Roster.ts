@@ -3,6 +3,7 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonInteraction,
@@ -89,6 +90,7 @@ const ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE = "This Change Group panel expire
 const ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
 const ROSTER_POST_CHANGE_ROSTER_EXPIRED_MESSAGE = "This Change Roster panel expired. Open Settings again.";
 const ROSTER_POST_CHANGE_ROSTER_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
+const ROSTER_MUTATION_APPLYING_LABEL = "Applying changes...";
 
 type RosterMutationAction =
   | "add"
@@ -137,6 +139,114 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
 
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
+type RosterApplyingButtonComponent = {
+  type?: number;
+  custom_id?: string | null;
+  customId?: string | null;
+  label?: string | null;
+  style?: number | null;
+  disabled?: boolean | null;
+  emoji?: unknown;
+};
+
+type RosterApplyingSelectComponent = {
+  type?: number;
+  custom_id?: string | null;
+  customId?: string | null;
+  placeholder?: string | null;
+  min_values?: number | null;
+  max_values?: number | null;
+  disabled?: boolean | null;
+  options?: unknown[];
+};
+
+function cloneRosterApplyingComponents(
+  rows: ReadonlyArray<
+    | { toJSON?: () => { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number } }
+    | { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number }
+  >,
+  confirmCustomId: string,
+): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
+  return rows.map((row) => {
+    const rawRow = typeof (row as { toJSON?: () => unknown }).toJSON === "function" ? (row as { toJSON: () => any }).toJSON() : row;
+    const clonedComponents = (rawRow.components ?? []).map(
+      (component: RosterApplyingButtonComponent | RosterApplyingSelectComponent) => {
+        const buttonComponent = component as RosterApplyingButtonComponent;
+        const selectComponent = component as RosterApplyingSelectComponent;
+        const customId = String(component.custom_id ?? component.customId ?? "");
+        if (component.type === ComponentType.Button) {
+          return {
+            ...component,
+            disabled: true,
+            label: customId === confirmCustomId ? ROSTER_MUTATION_APPLYING_LABEL : buttonComponent.label ?? null,
+            style: customId === confirmCustomId ? ButtonStyle.Secondary : buttonComponent.style ?? null,
+          };
+        }
+        if (component.type === ComponentType.StringSelect) {
+          return {
+            ...component,
+            disabled: true,
+          };
+        }
+        return {
+          ...selectComponent,
+          disabled: true,
+        };
+      },
+    );
+    return {
+      ...(rawRow ?? {}),
+      components: clonedComponents,
+    };
+  });
+}
+
+function buildRosterMutationApplyingComponents(interaction: ButtonInteraction): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
+  return cloneRosterApplyingComponents((interaction.message?.components ?? []) as any, interaction.customId);
+}
+
+function logRosterMutationTiming(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  mutationMs: number;
+  totalToUserMs?: number;
+  totalMs?: number;
+  roleSyncMs?: number;
+  refreshMs?: number;
+  outcome: string;
+}): void {
+  const totalToUserMs = input.totalToUserMs ?? input.totalMs ?? 0;
+  console.info(
+    `[roster] mutation_timing flow=${input.flow} sessionId=${input.sessionId} mutationMs=${input.mutationMs} totalToUserMs=${totalToUserMs} outcome=${input.outcome}`,
+  );
+}
+
+type RosterMutationSideEffectName = "role_sync" | "post_refresh";
+
+function logRosterMutationSideEffectTiming(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  sideEffect: RosterMutationSideEffectName;
+  rosterId: string;
+  durationMs: number;
+  outcome: "success" | "failed";
+}): void {
+  console.info(
+    `[roster] mutation_side_effect flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${input.durationMs} outcome=${input.outcome}`,
+  );
+}
+
+async function showRosterMutationApplyingState(interaction: ButtonInteraction): Promise<void> {
+  const components = buildRosterMutationApplyingComponents(interaction);
+  try {
+    await interaction.update({
+      components: components as any,
+    });
+  } catch {
+    await interaction.deferUpdate().catch(() => undefined);
+  }
 }
 
 function getAutocompleteUserOptionId(interaction: AutocompleteInteraction): string | null {
@@ -696,6 +806,78 @@ async function syncRosterRolesForRoster(client: Client, rosterId: string): Promi
   await syncRosterRoleAssignments(client, rosterId).catch((error) => {
     console.error(`[roster] role_sync_failed rosterId=${rosterId} error=${formatError(error)}`);
   });
+}
+
+async function runRosterMutationSideEffectTask(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  sideEffect: RosterMutationSideEffectName;
+  rosterId: string;
+  taskFactory: () => Promise<unknown>;
+}): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await input.taskFactory();
+    logRosterMutationSideEffectTiming({
+      flow: input.flow,
+      sessionId: input.sessionId,
+      sideEffect: input.sideEffect,
+      rosterId: input.rosterId,
+      durationMs: Date.now() - startedAt,
+      outcome: "success",
+    });
+  } catch (error) {
+    logRosterMutationSideEffectTiming({
+      flow: input.flow,
+      sessionId: input.sessionId,
+      sideEffect: input.sideEffect,
+      rosterId: input.rosterId,
+      durationMs: Date.now() - startedAt,
+      outcome: "failed",
+    });
+    console.error(
+      `[roster] mutation_side_effect_failed flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${Date.now() - startedAt} error=${formatError(error)}`,
+    );
+  }
+}
+
+async function runRosterMutationSideEffects(input: {
+  flow: "add_user" | "remove_user" | "change_group" | "change_roster";
+  sessionId: string;
+  interaction: ButtonInteraction | ChatInputCommandInteraction;
+  cocService?: CoCService | null;
+  rosterIdsForRoleSync: string[];
+  rosterIdsForRefresh: string[];
+}): Promise<void> {
+  const uniqueRoleSyncRosterIds = [...new Set(input.rosterIdsForRoleSync.map((rosterId) => String(rosterId ?? "").trim()).filter(Boolean))];
+  const uniqueRefreshRosterIds = [...new Set(input.rosterIdsForRefresh.map((rosterId) => String(rosterId ?? "").trim()).filter(Boolean))];
+  const tasks: Promise<void>[] = [];
+
+  for (const rosterId of uniqueRoleSyncRosterIds) {
+    tasks.push(
+      runRosterMutationSideEffectTask({
+        flow: input.flow,
+        sessionId: input.sessionId,
+        sideEffect: "role_sync",
+        rosterId,
+        taskFactory: () => syncRosterRoleAssignments(input.interaction.client, rosterId),
+      }),
+    );
+  }
+
+  for (const rosterId of uniqueRefreshRosterIds) {
+    tasks.push(
+      runRosterMutationSideEffectTask({
+        flow: input.flow,
+        sessionId: input.sessionId,
+        sideEffect: "post_refresh",
+        rosterId,
+        taskFactory: () => refreshExistingRosterPost(input.interaction as unknown as ChatInputCommandInteraction, rosterId, input.cocService ?? null),
+      }),
+    );
+  }
+
+  await Promise.allSettled(tasks);
 }
 
 async function canUseRosterPostTarget(
@@ -2115,13 +2297,25 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
+  await showRosterMutationApplyingState(interaction);
+  const confirmStartedAt = Date.now();
+  const mutationStartedAt = confirmStartedAt;
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
     cocService: cocService ?? null,
   });
+  const mutationMs = Date.now() - mutationStartedAt;
   if (result.outcome === "session_not_found") {
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "That roster selection has expired. Please start again.",
       ephemeral: true,
@@ -2129,6 +2323,15 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
   if (result.outcome === "forbidden") {
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Only the original requester can use this roster selection.",
       ephemeral: true,
@@ -2136,6 +2339,15 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_user") {
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a Discord user first.",
       ephemeral: true,
@@ -2143,6 +2355,15 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_players") {
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select at least one linked player.",
       ephemeral: true,
@@ -2150,6 +2371,15 @@ export async function handleRosterPostSettingsActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_group") {
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a roster group first.",
       ephemeral: true,
@@ -2158,45 +2388,106 @@ export async function handleRosterPostSettingsActionButtonInteraction(
   }
 
   if (result.outcome === "add_user") {
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
     const confirmationContent = await buildRosterMutationConfirmationContent("add", result.result);
     await interaction.editReply({
       content: confirmationContent,
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=add_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
   if (result.outcome === "remove_user") {
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService ?? null).catch(() => undefined);
     const confirmationContent = await buildRosterMutationConfirmationContent("remove", result.result);
     await interaction.editReply({
       content: confirmationContent,
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "remove_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "remove_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=remove_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
   if (result.outcome === "signup") {
-    await syncRosterRoleAssignments(interaction.client, result.result.rosterId).catch(() => undefined);
-    await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
-    await interaction.update({
+    await interaction.editReply({
       content: buildRosterSignupResultSummary(result.result),
       embeds: [],
       components: [],
+    }).catch(() => undefined);
+    logRosterMutationTiming({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      totalToUserMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
+    void runRosterMutationSideEffects({
+      flow: "add_user",
+      sessionId: parsed.sessionId,
+      interaction,
+      cocService: cocService ?? null,
+      rosterIdsForRoleSync: [result.result.rosterId],
+      rosterIdsForRefresh: [result.result.rosterId],
+    }).catch((error) => {
+      console.error(`[roster] mutation_side_effects_failed flow=add_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
     });
     return;
   }
 
-  await refreshExistingRosterPost(interaction as unknown as ChatInputCommandInteraction, result.result.rosterId, cocService).catch(() => undefined);
-  await interaction.update({
+  await interaction.editReply({
     content: buildRosterRemoveResultSummary(result.result),
     embeds: [],
     components: [],
+  }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "remove_user",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "remove_user",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.result.rosterId],
+    rosterIdsForRefresh: [result.result.rosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=remove_user sessionId=${parsed.sessionId} error=${formatError(error)}`);
   });
 }
 
@@ -2393,12 +2684,24 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
+  await showRosterMutationApplyingState(interaction);
+  const confirmStartedAt = Date.now();
+  const mutationStartedAt = confirmStartedAt;
   const result = await rosterService.confirmRosterPostChangeGroupPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
   });
+  const mutationMs = Date.now() - mutationStartedAt;
   if (result.outcome === "session_not_found") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE,
       ephemeral: true,
@@ -2406,6 +2709,15 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
   if (result.outcome === "forbidden") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE,
       ephemeral: true,
@@ -2413,6 +2725,15 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_roster") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a roster first.",
       ephemeral: true,
@@ -2420,6 +2741,15 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_current_group") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a current group first.",
       ephemeral: true,
@@ -2427,6 +2757,15 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_target_group") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a target group first.",
       ephemeral: true,
@@ -2434,6 +2773,15 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_players") {
+    logRosterMutationTiming({
+      flow: "change_group",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select at least one player.",
       ephemeral: true,
@@ -2441,17 +2789,28 @@ export async function handleRosterPostChangeGroupActionButtonInteraction(
     return;
   }
 
-  await syncRosterRoleAssignments(interaction.client, result.rosterId).catch(() => undefined);
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.rosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
   await interaction.editReply({
     content: result.summary,
     embeds: [],
     components: [],
   }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "change_group",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "change_group",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.rosterId],
+    rosterIdsForRefresh: [result.rosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=change_group sessionId=${parsed.sessionId} error=${formatError(error)}`);
+  });
 }
 
 export async function handleRosterPostChangeRosterCurrentRosterSelectInteraction(
@@ -2686,13 +3045,25 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
+  await showRosterMutationApplyingState(interaction);
+  const confirmStartedAt = Date.now();
+  const mutationStartedAt = confirmStartedAt;
   const result = await rosterService.confirmRosterPostChangeRosterPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
     cocService: cocService ?? null,
   });
+  const mutationMs = Date.now() - mutationStartedAt;
   if (result.outcome === "session_not_found") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: ROSTER_POST_CHANGE_ROSTER_EXPIRED_MESSAGE,
       ephemeral: true,
@@ -2700,6 +3071,15 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
   if (result.outcome === "forbidden") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: ROSTER_POST_CHANGE_ROSTER_PERMISSION_MESSAGE,
       ephemeral: true,
@@ -2707,6 +3087,15 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_source_roster") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a current roster first.",
       ephemeral: true,
@@ -2714,6 +3103,15 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_target_roster") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a target roster first.",
       ephemeral: true,
@@ -2721,6 +3119,15 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_target_group") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select a target group first.",
       ephemeral: true,
@@ -2728,6 +3135,15 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
   if (result.outcome === "missing_players") {
+    logRosterMutationTiming({
+      flow: "change_roster",
+      sessionId: parsed.sessionId,
+      mutationMs,
+      roleSyncMs: 0,
+      refreshMs: 0,
+      totalMs: Date.now() - confirmStartedAt,
+      outcome: result.outcome,
+    });
     await interaction.followUp({
       content: "Select at least one player.",
       ephemeral: true,
@@ -2735,23 +3151,28 @@ export async function handleRosterPostChangeRosterActionButtonInteraction(
     return;
   }
 
-  await syncRosterRoleAssignments(interaction.client, result.sourceRosterId).catch(() => undefined);
-  await syncRosterRoleAssignments(interaction.client, result.targetRosterId).catch(() => undefined);
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.sourceRosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
-  await refreshExistingRosterPost(
-    interaction as unknown as ChatInputCommandInteraction,
-    result.targetRosterId,
-    cocService ?? null,
-  ).catch(() => undefined);
   await interaction.editReply({
     content: result.summary,
     embeds: [],
     components: [],
   }).catch(() => undefined);
+  logRosterMutationTiming({
+    flow: "change_roster",
+    sessionId: parsed.sessionId,
+    mutationMs,
+    totalToUserMs: Date.now() - confirmStartedAt,
+    outcome: result.outcome,
+  });
+  void runRosterMutationSideEffects({
+    flow: "change_roster",
+    sessionId: parsed.sessionId,
+    interaction,
+    cocService: cocService ?? null,
+    rosterIdsForRoleSync: [result.sourceRosterId, result.targetRosterId],
+    rosterIdsForRefresh: [result.sourceRosterId, result.targetRosterId],
+  }).catch((error) => {
+    console.error(`[roster] mutation_side_effects_failed flow=change_roster sessionId=${parsed.sessionId} error=${formatError(error)}`);
+  });
 }
 
 export async function handleRosterPingActionButtonInteraction(interaction: ButtonInteraction): Promise<void> {

@@ -271,6 +271,31 @@ function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
   };
 }
 
+function makeRosterMutationPanelComponents(confirmCustomId: string): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(confirmCustomId)
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`${confirmCustomId}:cancel`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeValidRosterPlayerTag(index: number): string {
   const alphabet = ["0", "2", "8", "9"];
   const normalizedIndex = Math.max(0, Math.trunc(index));
@@ -2624,9 +2649,20 @@ describe("/roster command", () => {
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
       components: [],
     });
-    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
-      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
-      components: [],
+    const events: string[] = [];
+    const roleSyncStarted = createDeferred<void>();
+    const roleSyncDeferred = createDeferred<void>();
+    const refreshStarted = createDeferred<void>();
+    const refreshDeferred = createDeferred<boolean>();
+    (rosterService.refreshRosterSignupPayload as any).mockImplementation(async () => {
+      events.push("refresh_start");
+      refreshStarted.resolve();
+      await refreshDeferred.promise;
+      events.push("refresh_end");
+      return {
+        embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+        components: [],
+      };
     });
     const editedMessage = {
       edit: vi.fn().mockResolvedValue(undefined),
@@ -2637,7 +2673,12 @@ describe("/roster command", () => {
         fetch: vi.fn().mockResolvedValue(editedMessage),
       },
     };
-    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockResolvedValue(undefined as never);
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockImplementation(async () => {
+      events.push("role_sync_start");
+      roleSyncStarted.resolve();
+      await roleSyncDeferred.promise;
+      events.push("role_sync_end");
+    });
     const interaction = {
       customId: buildRosterPostChangeGroupActionButtonCustomId("confirm", "session-1"),
       user: { id: "111111111111111111" },
@@ -2646,9 +2687,15 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(buildRosterPostChangeGroupActionButtonCustomId("confirm", "session-1")),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
-      editReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockImplementation(async () => {
+        events.push("final_edit");
+        return undefined;
+      }),
       followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
@@ -2658,6 +2705,7 @@ describe("/roster command", () => {
     } as any;
 
     await handleRosterPostChangeGroupActionButtonInteraction(interaction, {} as any);
+    await Promise.all([roleSyncStarted.promise, refreshStarted.promise]);
 
     expect(rosterService.confirmRosterPostChangeGroupPanel).toHaveBeenCalledWith({
       sessionId: "session-1",
@@ -2671,6 +2719,27 @@ describe("/roster command", () => {
         refreshButtonDisabled: false,
       }),
     );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
+      }),
+    );
+    expect(events.indexOf("final_edit")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("role_sync_start"));
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("refresh_start"));
+    roleSyncDeferred.resolve();
+    refreshDeferred.resolve(true);
+    await Promise.all([roleSyncDeferred.promise, refreshDeferred.promise]);
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-1");
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
       "Changed group for #PQL0289 to Substitute.",
     );
@@ -2753,9 +2822,30 @@ describe("/roster command", () => {
       embed: new EmbedBuilder().setTitle("Roster"),
       components: [],
     });
-    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
-      embed: new EmbedBuilder().setTitle("Roster"),
-      components: [],
+    const events: string[] = [];
+    const sourceRoleSyncStarted = createDeferred<void>();
+    const sourceRoleSyncDeferred = createDeferred<void>();
+    const targetRoleSyncStarted = createDeferred<void>();
+    const targetRoleSyncDeferred = createDeferred<void>();
+    const sourceRefreshStarted = createDeferred<void>();
+    const sourceRefreshDeferred = createDeferred<boolean>();
+    const targetRefreshStarted = createDeferred<void>();
+    const targetRefreshDeferred = createDeferred<boolean>();
+    (rosterService.refreshRosterSignupPayload as any).mockImplementation(async (_rosterId: string) => {
+      const rosterId = String(_rosterId ?? "");
+      events.push(`refresh_start:${rosterId}`);
+      if (rosterId === "roster-source") {
+        sourceRefreshStarted.resolve();
+        await sourceRefreshDeferred.promise;
+      } else if (rosterId === "roster-target") {
+        targetRefreshStarted.resolve();
+        await targetRefreshDeferred.promise;
+      }
+      events.push(`refresh_end:${rosterId}`);
+      return {
+        embed: new EmbedBuilder().setTitle(rosterId === "roster-source" ? "Source CWL Signup" : "Target CWL Signup"),
+        components: [],
+      };
     });
     const editedMessage = {
       edit: vi.fn().mockResolvedValue(undefined),
@@ -2766,7 +2856,17 @@ describe("/roster command", () => {
         fetch: vi.fn().mockResolvedValue(editedMessage),
       },
     };
-    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockResolvedValue(undefined as never);
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockImplementation(async (_client, rosterId: string) => {
+      events.push(`role_sync_start:${rosterId}`);
+      if (rosterId === "roster-source") {
+        sourceRoleSyncStarted.resolve();
+        await sourceRoleSyncDeferred.promise;
+      } else if (rosterId === "roster-target") {
+        targetRoleSyncStarted.resolve();
+        await targetRoleSyncDeferred.promise;
+      }
+      events.push(`role_sync_end:${rosterId}`);
+    });
     const interaction = {
       customId: buildRosterPostChangeRosterActionButtonCustomId("confirm", "session-2"),
       user: { id: "111111111111111111" },
@@ -2775,9 +2875,15 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(buildRosterPostChangeRosterActionButtonCustomId("confirm", "session-2")),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
-      editReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockImplementation(async () => {
+        events.push("final_edit");
+        return undefined;
+      }),
       followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
@@ -2787,6 +2893,12 @@ describe("/roster command", () => {
     } as any;
 
     await handleRosterPostChangeRosterActionButtonInteraction(interaction, {} as any);
+    await Promise.all([
+      sourceRoleSyncStarted.promise,
+      targetRoleSyncStarted.promise,
+      sourceRefreshStarted.promise,
+      targetRefreshStarted.promise,
+    ]);
 
     expect(rosterService.confirmRosterPostChangeRosterPanel).toHaveBeenCalledWith({
       sessionId: "session-2",
@@ -2807,6 +2919,37 @@ describe("/roster command", () => {
       expect.any(Object),
       expect.objectContaining({
         refreshButtonDisabled: false,
+      }),
+    );
+    expect(events.indexOf("final_edit")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("role_sync_start:roster-source"));
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("role_sync_start:roster-target"));
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("refresh_start:roster-source"));
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("refresh_start:roster-target"));
+    sourceRoleSyncDeferred.resolve();
+    targetRoleSyncDeferred.resolve();
+    sourceRefreshDeferred.resolve(true);
+    targetRefreshDeferred.resolve(true);
+    await Promise.all([
+      sourceRoleSyncDeferred.promise,
+      targetRoleSyncDeferred.promise,
+      sourceRefreshDeferred.promise,
+      targetRefreshDeferred.promise,
+    ]);
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-source");
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-target");
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
@@ -3058,12 +3201,33 @@ describe("/roster command", () => {
     const editedMessage = {
       edit: vi.fn().mockResolvedValue(undefined),
     };
+    const events: string[] = [];
+    const roleSyncStarted = createDeferred<void>();
+    const roleSyncDeferred = createDeferred<void>();
+    const refreshStarted = createDeferred<void>();
+    const refreshDeferred = createDeferred<boolean>();
     const rosterChannel = {
       isTextBased: () => true,
       messages: {
         fetch: vi.fn().mockResolvedValue(editedMessage),
       },
     };
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockImplementation(async () => {
+      events.push("role_sync_start");
+      roleSyncStarted.resolve();
+      await roleSyncDeferred.promise;
+      events.push("role_sync_end");
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockImplementation(async () => {
+      events.push("refresh_start");
+      refreshStarted.resolve();
+      await refreshDeferred.promise;
+      events.push("refresh_end");
+      return {
+        embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+        components: [],
+      };
+    });
 
     const interaction = {
       customId,
@@ -3073,8 +3237,14 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
-      editReply: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(customId),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockImplementation(async () => {
+        events.push("final_edit");
+        return undefined;
+      }),
       followUp: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
@@ -3084,6 +3254,7 @@ describe("/roster command", () => {
     } as any;
 
     await handleRosterPostSettingsActionButtonInteraction(interaction);
+    await Promise.all([roleSyncStarted.promise, refreshStarted.promise]);
 
     expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
       sessionId: customId.split(":").at(-1),
@@ -3097,7 +3268,155 @@ describe("/roster command", () => {
         refreshButtonDisabled: false,
       }),
     );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
+      }),
+    );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(expectedContent);
+    expect(events.indexOf("final_edit")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("role_sync_start"));
+    expect(events.indexOf("final_edit")).toBeLessThan(events.indexOf("refresh_start"));
+    roleSyncDeferred.resolve();
+    refreshDeferred.resolve(true);
+    await Promise.all([roleSyncDeferred.promise, refreshDeferred.promise]);
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-1");
+  });
+
+  it("does not schedule side effects when the Settings roster selection returns a validation error", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "missing_group",
+    });
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments");
+    const refreshSpy = vi.spyOn(rosterService, "refreshRosterSignupPayload");
+    const interaction = {
+      customId: "roster-post-users:action:confirm:session-9",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      message: {
+        components: makeRosterMutationPanelComponents("roster-post-users:action:confirm:session-9"),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsActionButtonInteraction(interaction);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Select a roster group first.",
+        ephemeral: true,
+      }),
+    );
+    expect(syncSpy).not.toHaveBeenCalled();
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it("logs side-effect failures without changing the final Settings confirmation", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "add_user",
+      result: {
+        outcome: "created",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#PQL0289"],
+        linkedTags: ["#PQL0289"],
+        createdTags: ["#PQL0289"],
+        createdAccounts: [{ playerTag: "#PQL0289", playerName: "Alpha" }],
+        duplicateTags: [],
+        missingLinkedTags: [],
+      },
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        rosterRoleId: null,
+      },
+      clanDisplayName: "CWL Alpha",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
+      components: [],
+    });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const roleSyncStarted = createDeferred<void>();
+    vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockImplementation(async () => {
+      roleSyncStarted.resolve();
+      throw new Error("sync boom");
+    });
+    const interaction = {
+      customId: "roster-post-users:action:confirm:session-11",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      message: {
+        components: makeRosterMutationPanelComponents("roster-post-users:action:confirm:session-11"),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsActionButtonInteraction(interaction);
+    await roleSyncStarted.promise;
+    await Promise.resolve();
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Added Alpha (#PQL0289) to CWL Alpha Signup - CWL Alpha",
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("mutation_side_effect_failed flow=add_user sessionId=session-11"),
+    );
   });
 
   it("opens the roster ping preview with the requested target set", async () => {
