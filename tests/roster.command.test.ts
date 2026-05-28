@@ -271,6 +271,21 @@ function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
   };
 }
 
+function makeRosterMutationPanelComponents(confirmCustomId: string): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(confirmCustomId)
+        .setLabel("Confirm")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`${confirmCustomId}:cancel`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
 function makeValidRosterPlayerTag(index: number): string {
   const alphabet = ["0", "2", "8", "9"];
   const normalizedIndex = Math.max(0, Math.trunc(index));
@@ -2646,7 +2661,10 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(buildRosterPostChangeGroupActionButtonCustomId("confirm", "session-1")),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
@@ -2669,6 +2687,20 @@ describe("/roster command", () => {
       expect.any(Object),
       expect.objectContaining({
         refreshButtonDisabled: false,
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
@@ -2775,7 +2807,10 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(buildRosterPostChangeRosterActionButtonCustomId("confirm", "session-2")),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
@@ -2807,6 +2842,20 @@ describe("/roster command", () => {
       expect.any(Object),
       expect.objectContaining({
         refreshButtonDisabled: false,
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
@@ -3073,7 +3122,10 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
-      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      message: {
+        components: makeRosterMutationPanelComponents(customId),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
       client: {
@@ -3095,6 +3147,20 @@ describe("/roster command", () => {
       null,
       expect.objectContaining({
         refreshButtonDisabled: false,
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(expectedContent);
