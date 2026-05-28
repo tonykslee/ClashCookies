@@ -84,7 +84,7 @@ function makeBasesTrackedChecklistRow() {
     messageId: "bases-message-1",
     featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
-    referenceId: null,
+    referenceId: "sync-message-1",
     clanTag: "#PYPY",
     expiresAt: new Date("2026-06-13T22:00:00.000Z"),
     createdAt: new Date("2026-06-13T17:00:00.000Z"),
@@ -129,6 +129,17 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.create.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue({
+      id: "sync-tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-1",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T16:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
   });
 
   it("checklist post gets clan badge reactions", async () => {

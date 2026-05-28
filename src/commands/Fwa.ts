@@ -13627,6 +13627,9 @@ export const Fwa: Command = {
           await editReplySafe(`Clan ${resolvedClan.tag} is not in an active war.`);
           return;
         }
+        const latestActiveSyncPost = await trackedMessageService
+          .resolveLatestActiveSyncPost(interaction.guildId ?? "")
+          .catch(() => null);
         const updated = await trackedMessageService.setFwaMatchChecklistBasesCompletion({
           guildId: interaction.guildId ?? "",
           channelId: interaction.channelId,
@@ -13640,6 +13643,7 @@ export const Fwa: Command = {
           warStartTime: currentWar.startTime ?? null,
           opponentTag: currentWar.opponentTag ?? null,
           checked: Boolean(checklistCheckedOption),
+          syncMessageId: latestActiveSyncPost?.messageId ?? latestActiveSyncPost?.referenceId ?? null,
         });
         if (!updated) {
           await editReplySafe("Unable to update bases completion state.");

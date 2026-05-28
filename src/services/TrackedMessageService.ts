@@ -153,6 +153,8 @@ export type FwaMatchChecklistBasesCompletionMetadata = {
   kind: "bases_completion";
   createdByUserId: string;
   createdAtIso: string;
+  syncMessageId?: string | null;
+  syncReferenceId?: string | null;
   clanTag: string;
   clanName: string | null;
   checked: boolean;
@@ -350,28 +352,53 @@ function normalizeDateTimeIso(input: Date | null | undefined): string | null {
   return Number.isFinite(input.getTime()) ? input.toISOString() : null;
 }
 
+function normalizeTrackedMessageId(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed || null;
+}
+
+export function resolveTrackedMessageSyncIdentity(input: {
+  messageId?: string | null;
+  referenceId?: string | null;
+} | null | undefined): string | null {
+  return (
+    normalizeTrackedMessageId(input?.messageId ?? null) ??
+    normalizeTrackedMessageId(input?.referenceId ?? null)
+  );
+}
+
 function buildFwaMatchChecklistBasesCompletionKey(params: {
   guildId: string;
   clanTag: string;
   warId?: string | number | null;
   opponentTag?: string | null;
   warStartTime?: Date | null;
+  syncMessageId?: string | null;
+  syncReferenceId?: string | null;
 }): string | null {
   const guildId = String(params.guildId ?? "").trim();
   const clanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
   const warId = normalizeWarIdText(params.warId ?? null);
   const opponentTag = normalizeChecklistClanTag(String(params.opponentTag ?? ""));
   const warStartTimeIso = normalizeDateTimeIso(params.warStartTime ?? null);
+  const syncIdentity = resolveTrackedMessageSyncIdentity({
+    messageId: params.syncMessageId ?? null,
+    referenceId: params.syncReferenceId ?? null,
+  });
   if (!guildId || !clanTag) return null;
   if (!warId && !opponentTag && !warStartTimeIso) return null;
-  return [
+  const parts = [
     "fwa_match_checklist_bases_completion",
     `guild=${guildId}`,
     `clan=${clanTag}`,
     `war=${warId || "none"}`,
     `opponent=${opponentTag || "none"}`,
     `start=${warStartTimeIso || "none"}`,
-  ].join("|");
+  ];
+  if (syncIdentity) {
+    parts.push(`sync=${syncIdentity}`);
+  }
+  return parts.join("|");
 }
 
 export function buildFwaBasesChecklistReminderMessageId(params: {
@@ -775,11 +802,17 @@ function parseFwaMatchChecklistBasesCompletionMetadata(
   const warId = normalizeWarIdText(value.warId as string | number | null | undefined);
   const opponentTag = normalizeChecklistClanTag(String(value.opponentTag ?? ""));
   const warStartTimeIso = String(value.warStartTimeIso ?? "").trim() || null;
+  const syncMessageId = normalizeTrackedMessageId(value.syncMessageId as string | null | undefined);
+  const syncReferenceId = normalizeTrackedMessageId(
+    value.syncReferenceId as string | null | undefined,
+  );
   if (!createdByUserId || !createdAtIso || !clanTag) return null;
   return {
     kind: "bases_completion",
     createdByUserId,
     createdAtIso,
+    syncMessageId,
+    syncReferenceId,
     clanTag,
     clanName,
     checked:
@@ -1021,9 +1054,15 @@ export class TrackedMessageService {
   async findLatestActiveFwaBaseSwapTrackedMessageForClan(params: {
     guildId: string;
     clanTag: string;
+    syncMessageId?: string | null;
+    syncReferenceId?: string | null;
   }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+    const syncIdentity = resolveTrackedMessageSyncIdentity({
+      messageId: params.syncMessageId ?? null,
+      referenceId: params.syncReferenceId ?? null,
+    });
     if (!guildId || !normalizedClanTag) return null;
     const now = new Date();
 
@@ -1066,6 +1105,11 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
+      if (syncIdentity) {
+        const rowMessageId = normalizeTrackedMessageId(row.messageId);
+        const rowReferenceId = normalizeTrackedMessageId(row.referenceId ?? null);
+        if (rowMessageId !== syncIdentity && rowReferenceId !== syncIdentity) continue;
+      }
       return {
         id: row.id,
         guildId: row.guildId,
@@ -1580,6 +1624,8 @@ export class TrackedMessageService {
     warStartTime?: Date | null;
     opponentTag?: string | null;
     checked: boolean;
+    syncMessageId?: string | null;
+    syncReferenceId?: string | null;
   }): Promise<boolean> {
     const messageId = buildFwaMatchChecklistBasesCompletionKey({
       guildId: params.guildId,
@@ -1587,14 +1633,22 @@ export class TrackedMessageService {
       warId: params.warId ?? null,
       opponentTag: params.opponentTag ?? null,
       warStartTime: params.warStartTime ?? null,
+      syncMessageId: params.syncMessageId ?? null,
+      syncReferenceId: params.syncReferenceId ?? null,
     });
     if (!messageId) return false;
     const createdAtIso = new Date().toISOString();
     const normalizedClanTag = normalizeChecklistClanTag(params.clanTag);
+    const syncIdentity = resolveTrackedMessageSyncIdentity({
+      messageId: params.syncMessageId ?? null,
+      referenceId: params.syncReferenceId ?? null,
+    });
     const metadata: FwaMatchChecklistBasesCompletionMetadata = {
       kind: "bases_completion",
       createdByUserId: params.createdByUserId,
       createdAtIso,
+      syncMessageId: normalizeTrackedMessageId(params.syncMessageId ?? null),
+      syncReferenceId: normalizeTrackedMessageId(params.syncReferenceId ?? null),
       clanTag: normalizedClanTag,
       clanName: String(params.clanName ?? "").trim() || null,
       checked: params.checked,
@@ -1611,7 +1665,7 @@ export class TrackedMessageService {
         status: params.checked
           ? TRACKED_MESSAGE_STATUS.ACTIVE
           : TRACKED_MESSAGE_STATUS.REPLACED,
-        referenceId: null,
+        referenceId: syncIdentity,
         clanTag: normalizedClanTag,
         expiresAt: null,
         metadata: metadata as any,
@@ -1624,7 +1678,7 @@ export class TrackedMessageService {
         status: params.checked
           ? TRACKED_MESSAGE_STATUS.ACTIVE
           : TRACKED_MESSAGE_STATUS.REPLACED,
-        referenceId: null,
+        referenceId: syncIdentity,
         clanTag: normalizedClanTag,
         expiresAt: null,
         metadata: metadata as any,
@@ -1639,6 +1693,8 @@ export class TrackedMessageService {
     warId?: string | number | null;
     warStartTime?: Date | null;
     opponentTag?: string | null;
+    syncMessageId?: string | null;
+    syncReferenceId?: string | null;
   }): Promise<FwaMatchChecklistBasesCompletionSnapshot | null> {
     const messageId = buildFwaMatchChecklistBasesCompletionKey({
       guildId: params.guildId,
@@ -1646,6 +1702,8 @@ export class TrackedMessageService {
       warId: params.warId ?? null,
       opponentTag: params.opponentTag ?? null,
       warStartTime: params.warStartTime ?? null,
+      syncMessageId: params.syncMessageId ?? null,
+      syncReferenceId: params.syncReferenceId ?? null,
     });
     if (!messageId) return null;
     const row = await prisma.trackedMessage.findUnique({
@@ -1976,6 +2034,7 @@ export class TrackedMessageService {
           const warStartTime = matchedRow.warStartTimeIso
             ? new Date(matchedRow.warStartTimeIso)
             : null;
+          const syncMessageId = normalizeTrackedMessageId(tracked.referenceId ?? null);
           const checked =
             reactionChange.kind === "add" ||
             (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
@@ -1990,6 +2049,7 @@ export class TrackedMessageService {
               warStartTime,
               opponentTag: matchedRow.opponentTag ?? null,
               checked: true,
+              syncMessageId,
             });
           } else if (
             reactionChange.kind === "remove" &&
@@ -2005,6 +2065,7 @@ export class TrackedMessageService {
               warStartTime,
               opponentTag: matchedRow.opponentTag ?? null,
               checked: false,
+              syncMessageId,
             });
           }
         }
