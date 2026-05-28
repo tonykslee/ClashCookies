@@ -62,6 +62,13 @@ describe("/clan command shape", () => {
     expect(
       list?.options?.find((o: any) => o.name === "type")?.choices?.map((choice: any) => choice.value)
     ).toEqual(expect.arrayContaining(["FWA", "CWL", "RAIDS"]));
+    expect(list?.options?.find((o: any) => o.name === "display")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(list?.options?.find((o: any) => o.name === "display")?.required).toBe(false);
+    expect(
+      list?.options?.find((o: any) => o.name === "display")?.choices?.map((choice: any) => choice.value)
+    ).toEqual(expect.arrayContaining(["minimal", "detailed"]));
     expect(cwlTags?.options?.find((o: any) => o.name === "cwl-tags")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
