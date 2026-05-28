@@ -5472,6 +5472,298 @@ describe("RosterService", () => {
     expect(String(changedJson.description ?? "")).toContain("Selected players: 0");
   });
 
+  it("creates roster-centric Change Roster panels with current and target roster controls and eligible players", async () => {
+    const currentRoster = makeRosterRecord({
+      id: "roster-current",
+      title: "Current CWL Signup",
+      clanTag: "#AAAA",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+    });
+    const targetRoster = makeRosterRecord({
+      id: "roster-target",
+      title: "Target CWL Signup",
+      clanTag: "#BBBB",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+    });
+    prismaMock.roster.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.guildId === "guild-1") {
+        return [
+          { ...currentRoster, _count: { groups: 2, signups: 2 } },
+          { ...targetRoster, _count: { groups: 2, signups: 1 } },
+        ] as any;
+      }
+      return [];
+    });
+    prismaMock.roster.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.id === currentRoster.id) return currentRoster;
+      if (where?.id === targetRoster.id) return targetRoster;
+      return null;
+    });
+    prismaMock.rosterGroup.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.rosterId === currentRoster.id) {
+        return [
+          {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+          {
+            id: "group-substitute",
+            key: "substitute",
+            name: "Substitute",
+            description: "Reserve roster members",
+            sortOrder: 1,
+          },
+        ] as any;
+      }
+      if (where?.rosterId === targetRoster.id) {
+        return [
+          {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+          {
+            id: "group-substitute",
+            key: "substitute",
+            name: "Substitute",
+            description: "Reserve roster members",
+            sortOrder: 1,
+          },
+        ] as any;
+      }
+      return [];
+    });
+    prismaMock.rosterSignup.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.rosterId === currentRoster.id && !where?.playerTag) {
+        return [
+          {
+            id: "signup-1",
+            rosterId: currentRoster.id,
+            groupId: "group-confirmed",
+            playerTag: makeValidRosterPlayerTag(1),
+            playerName: "Alpha",
+            discordUserId: "222222222222222222",
+            signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
+            townHall: 16,
+          },
+          {
+            id: "signup-2",
+            rosterId: currentRoster.id,
+            groupId: "group-confirmed",
+            playerTag: makeValidRosterPlayerTag(2),
+            playerName: "Bravo",
+            discordUserId: "333333333333333333",
+            signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
+            townHall: 17,
+          },
+        ] as any;
+      }
+      if (where?.rosterId === targetRoster.id && !where?.playerTag) {
+        return [
+          {
+            id: "target-signup-1",
+            rosterId: targetRoster.id,
+            groupId: "group-confirmed",
+            playerTag: makeValidRosterPlayerTag(2),
+            playerName: "Bravo",
+            discordUserId: "333333333333333333",
+            signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
+            townHall: 17,
+          },
+        ] as any;
+      }
+      if (Array.isArray(where?.playerTag?.in)) {
+        return [] as any;
+      }
+      return [] as any;
+    });
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([]);
+
+    const opened = await rosterService.createRosterPostChangeRosterPanel({
+      rosterId: currentRoster.id,
+      discordUserId: "111111111111111111",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    expect(String(opened.panel.embed.toJSON().title ?? "")).toBe("Change Roster");
+    const componentRows = flattenComponentRows(opened.panel.components);
+    const selectMenus = componentRows.filter((component) => Array.isArray(component.options));
+    const currentRosterSelect = selectMenus.find((component) =>
+      String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select current roster"),
+    );
+    const targetRosterSelect = selectMenus.find((component) =>
+      String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select target roster"),
+    );
+    const targetGroupSelect = selectMenus.find((component) =>
+      String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select target group"),
+    );
+    const playerSelect = selectMenus.find((component) =>
+      String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select players"),
+    );
+    expect(currentRosterSelect?.options?.find((option: any) => option.value === currentRoster.id)?.default ?? false).toBe(
+      true,
+    );
+    expect(
+      targetRosterSelect?.options?.some((option: any) => option.value === currentRoster.id) ??
+        targetRosterSelect?.data?.options?.some((option: any) => option.value === currentRoster.id) ??
+        false,
+    ).toBe(false);
+    expect(targetRosterSelect?.options?.find((option: any) => option.value === targetRoster.id)?.default ?? false).toBe(
+      true,
+    );
+    expect(targetGroupSelect?.options?.find((option: any) => option.value === "confirmed")?.default ?? false).toBe(true);
+    expect(playerSelect?.options?.map((option: any) => option.value) ?? []).toEqual([makeValidRosterPlayerTag(1)]);
+    expect(String(opened.panel.embed.toJSON().description ?? "")).toContain("Eligible players: 1");
+    expect(String(opened.panel.embed.toJSON().description ?? "")).toContain("Blocked players: 1");
+  });
+
+  it("reloads the roster-centric Change Roster panel when the current roster changes and clears selected players", async () => {
+    const currentRoster = makeRosterRecord({
+      id: "roster-current",
+      title: "Current CWL Signup",
+      clanTag: "#AAAA",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+    });
+    const targetRoster = makeRosterRecord({
+      id: "roster-target",
+      title: "Target CWL Signup",
+      clanTag: "#BBBB",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+    });
+    prismaMock.roster.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.guildId === "guild-1") {
+        return [
+          { ...currentRoster, _count: { groups: 2, signups: 1 } },
+          { ...targetRoster, _count: { groups: 2, signups: 0 } },
+        ] as any;
+      }
+      return [];
+    });
+    prismaMock.roster.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.id === currentRoster.id) return currentRoster;
+      if (where?.id === targetRoster.id) return targetRoster;
+      return null;
+    });
+    prismaMock.rosterGroup.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.rosterId === currentRoster.id || where?.rosterId === targetRoster.id) {
+        return [
+          {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        ] as any;
+      }
+      return [];
+    });
+    prismaMock.rosterSignup.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.rosterId === currentRoster.id && !where?.playerTag) {
+        return [
+          {
+            id: "signup-1",
+            rosterId: currentRoster.id,
+            groupId: "group-confirmed",
+            playerTag: makeValidRosterPlayerTag(1),
+            playerName: "Alpha",
+            discordUserId: "222222222222222222",
+            signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+            createdAt: new Date("2026-04-20T00:00:00.000Z"),
+            updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
+            townHall: 16,
+          },
+        ] as any;
+      }
+      if (where?.rosterId === targetRoster.id && !where?.playerTag) {
+        return [] as any;
+      }
+      if (Array.isArray(where?.playerTag?.in)) {
+        return [] as any;
+      }
+      return [] as any;
+    });
+    todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValue([]);
+
+    const opened = await rosterService.createRosterPostChangeRosterPanel({
+      rosterId: currentRoster.id,
+      discordUserId: "111111111111111111",
+    });
+    expect(opened).toMatchObject({ outcome: "ready" });
+    if (opened.outcome !== "ready") return;
+
+    const changed = await rosterService.updateRosterPostChangeRosterPanel({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+      selectedCurrentRosterId: targetRoster.id,
+    });
+    expect(changed).toMatchObject({ outcome: "updated" });
+    if (changed.outcome !== "updated") return;
+
+    const changedJson = changed.panel.embed.toJSON();
+    expect(String(changedJson.description ?? "")).toContain("Current roster: Target CWL Signup");
+    expect(String(changedJson.description ?? "")).toContain("Selected players: 0");
+    const componentRows = flattenComponentRows(changed.panel.components);
+    const selectMenus = componentRows.filter((component) => Array.isArray(component.options));
+    const targetRosterSelect = selectMenus.find((component) =>
+      String(component.placeholder ?? component.data?.placeholder ?? "").includes("Select target roster"),
+    );
+    expect(
+      targetRosterSelect?.options?.some((option: any) => option.value === targetRoster.id) ??
+        targetRosterSelect?.data?.options?.some((option: any) => option.value === targetRoster.id) ??
+        false,
+    ).toBe(false);
+    expect(
+      targetRosterSelect?.options?.find((option: any) => option.value === currentRoster.id)?.default ??
+        targetRosterSelect?.data?.options?.find((option: any) => option.value === currentRoster.id)?.default ??
+        false,
+    ).toBe(true);
+  });
+
   it("rejects archived roster mutations for manager add, move, and remove actions", async () => {
     prismaMock.roster.findUnique.mockResolvedValue({
       id: "roster-1",

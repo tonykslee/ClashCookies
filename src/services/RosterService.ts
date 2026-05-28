@@ -71,10 +71,12 @@ export const ROSTER_POST_ACTION_PREFIX = "roster-post-action";
 export const ROSTER_POST_SETTINGS_PREFIX = "roster-post-settings";
 export const ROSTER_POST_USERS_PREFIX = "roster-post-users";
 export const ROSTER_POST_CHANGE_GROUP_PREFIX = "roster-post-change-group";
+export const ROSTER_POST_CHANGE_ROSTER_PREFIX = "roster-post-change-roster";
 export const ROSTER_PING_PREFIX = "roster-ping";
 export const ROSTER_MANAGE_PREFIX = "roster-manage";
 const ROSTER_MANAGER_PLAYER_PAGE_ROW_COUNT = 3;
 const ROSTER_POST_CHANGE_GROUP_PLAYER_SELECT_LIMIT = 25;
+const ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT = 25;
 const ROSTER_SELECTION_SESSION_TTL_MS = 15 * 60 * 1000;
 const ROSTER_CONFLICT_LIFECYCLE_STATES: readonly RosterLifecycleState[] = [
   ROSTER_LIFECYCLE_STATE.ACTIVE,
@@ -348,6 +350,33 @@ export type RosterPostChangeGroupCommitResult =
   | { outcome: "forbidden" };
 
 export type RosterPostChangeGroupCancelResult =
+  | { outcome: "cancelled" }
+  | { outcome: "session_not_found" }
+  | { outcome: "forbidden" };
+
+export type RosterPostChangeRosterOpenResult =
+  | { outcome: "ready"; panel: RosterManagePanel }
+  | { outcome: "roster_not_found"; rosterId: string }
+  | { outcome: "roster_archived"; rosterId: string };
+
+export type RosterPostChangeRosterCommitResult =
+  | {
+      outcome: "completed";
+      sourceRosterId: string;
+      targetRosterId: string;
+      targetGroupKey: string | null;
+      selectedCount: number;
+      changeResult: ChangeRosterSignupsResult;
+      summary: string;
+    }
+  | { outcome: "missing_source_roster" }
+  | { outcome: "missing_target_roster" }
+  | { outcome: "missing_target_group" }
+  | { outcome: "missing_players" }
+  | { outcome: "session_not_found" }
+  | { outcome: "forbidden" };
+
+export type RosterPostChangeRosterCancelResult =
   | { outcome: "cancelled" }
   | { outcome: "session_not_found" }
   | { outcome: "forbidden" };
@@ -1871,6 +1900,29 @@ export function buildRosterPostChangeGroupActionButtonCustomId(
   return `${ROSTER_POST_CHANGE_GROUP_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
 }
 
+export function buildRosterPostChangeRosterCurrentRosterSelectMenuCustomId(sessionId: string): string {
+  return `${ROSTER_POST_CHANGE_ROSTER_PREFIX}:current_roster:${String(sessionId ?? "").trim()}`;
+}
+
+export function buildRosterPostChangeRosterTargetRosterSelectMenuCustomId(sessionId: string): string {
+  return `${ROSTER_POST_CHANGE_ROSTER_PREFIX}:target_roster:${String(sessionId ?? "").trim()}`;
+}
+
+export function buildRosterPostChangeRosterTargetGroupSelectMenuCustomId(sessionId: string): string {
+  return `${ROSTER_POST_CHANGE_ROSTER_PREFIX}:target_group:${String(sessionId ?? "").trim()}`;
+}
+
+export function buildRosterPostChangeRosterPlayerSelectMenuCustomId(sessionId: string, pageIndex: number): string {
+  return `${ROSTER_POST_CHANGE_ROSTER_PREFIX}:players:${String(sessionId ?? "").trim()}:${String(Math.max(0, Math.trunc(pageIndex || 0)))}`;
+}
+
+export function buildRosterPostChangeRosterActionButtonCustomId(
+  action: "confirm" | "cancel" | "previous_page" | "next_page",
+  sessionId: string,
+): string {
+  return `${ROSTER_POST_CHANGE_ROSTER_PREFIX}:action:${action}:${String(sessionId ?? "").trim()}`;
+}
+
 type RosterSelectionSession = {
   sessionId: string;
   mode: RosterSelectionMode;
@@ -1938,6 +1990,32 @@ type RosterPostChangeGroupSession = {
 };
 
 const rosterPostChangeGroupSessions = new Map<string, RosterPostChangeGroupSession>();
+
+type RosterPostChangeRosterBlockedPlayerOption = {
+  value: string;
+  label: string;
+  reason: string;
+};
+
+type RosterPostChangeRosterSession = {
+  sessionId: string;
+  ownerDiscordUserId: string;
+  guildId: string;
+  sourceRosterId: string;
+  selectedCurrentRosterId: string;
+  selectedTargetRosterId: string | null;
+  selectedTargetGroupKey: string | null;
+  selectedPlayerTags: string[];
+  currentRosterOptions: RosterSelectionOption[];
+  targetRosterOptions: RosterSelectionOption[];
+  targetGroupOptions: RosterSelectionOption[];
+  eligiblePlayerOptions: RosterSelectionOption[];
+  blockedPlayerOptions: RosterPostChangeRosterBlockedPlayerOption[];
+  playerPageWindowStart: number;
+  createdAtMs: number;
+};
+
+const rosterPostChangeRosterSessions = new Map<string, RosterPostChangeRosterSession>();
 
 function pruneExpiredRosterSelectionSessions(nowMs = Date.now()): void {
   for (const [sessionId, session] of rosterSelectionSessions.entries()) {
@@ -2023,6 +2101,36 @@ function getRosterPostChangeGroupSession(sessionId: string): RosterPostChangeGro
 
 function deleteRosterPostChangeGroupSession(sessionId: string): void {
   rosterPostChangeGroupSessions.delete(sessionId);
+}
+
+function pruneExpiredRosterPostChangeRosterSessions(nowMs = Date.now()): void {
+  for (const [sessionId, session] of rosterPostChangeRosterSessions.entries()) {
+    if (session.createdAtMs + ROSTER_SELECTION_SESSION_TTL_MS <= nowMs) {
+      rosterPostChangeRosterSessions.delete(sessionId);
+    }
+  }
+}
+
+function createRosterPostChangeRosterSession(
+  input: Omit<RosterPostChangeRosterSession, "sessionId" | "createdAtMs">,
+): RosterPostChangeRosterSession {
+  const session: RosterPostChangeRosterSession = {
+    ...input,
+    sessionId: randomUUID().replace(/-/g, "").slice(0, 18),
+    createdAtMs: Date.now(),
+  };
+  rosterPostChangeRosterSessions.set(session.sessionId, session);
+  pruneExpiredRosterPostChangeRosterSessions();
+  return session;
+}
+
+function getRosterPostChangeRosterSession(sessionId: string): RosterPostChangeRosterSession | null {
+  pruneExpiredRosterPostChangeRosterSessions();
+  return rosterPostChangeRosterSessions.get(sessionId) ?? null;
+}
+
+function deleteRosterPostChangeRosterSession(sessionId: string): void {
+  rosterPostChangeRosterSessions.delete(sessionId);
 }
 
 type RosterPingSession = {
@@ -2492,6 +2600,69 @@ export function buildRosterMoveResultSummary(
   }
 
   return lines.length > 0 ? lines.join("\n") : `No roster signups were changed to ${destinationLabel}.`;
+}
+
+function formatRosterAccountIdentity(account: { playerName: string | null; playerTag: string }): string {
+  return account.playerName ? `${account.playerName} (${account.playerTag})` : account.playerTag;
+}
+
+function formatRosterAccountIdentityList(
+  accounts: Array<{ playerName: string | null; playerTag: string }>,
+): string {
+  return accounts.map((account) => formatRosterAccountIdentity(account)).join(", ");
+}
+
+export function buildRosterChangeResultSummary(result: ChangeRosterSignupsResult): string {
+  if (result.outcome === "roster_not_found") {
+    return "That source roster is no longer available.";
+  }
+  if (result.outcome === "target_roster_not_found") {
+    return "That target roster is no longer available.";
+  }
+  if (result.outcome === "same_roster") {
+    return "Source and target rosters must be different.";
+  }
+  if (result.outcome === "source_roster_archived") {
+    return "That source roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_roster_archived") {
+    return "That target roster is archived and can no longer be modified.";
+  }
+  if (result.outcome === "target_group_not_found") {
+    return "That target roster group is no longer available.";
+  }
+
+  const destinationForAccount = (account: { targetGroupName: string | null; targetGroupKey: string }) =>
+    account.targetGroupName ?? account.targetGroupKey;
+  const lines = result.movedAccounts.map((account) => {
+    const destination = destinationForAccount(account);
+    const destinationLabel = destination ? `${result.targetRosterTitle} - ${destination}` : result.targetRosterTitle;
+    return `Moved ${formatRosterAccountIdentity(account)} to ${destinationLabel}.`;
+  });
+
+  if (result.duplicateTags.length > 0) {
+    lines.push(`Already on the target roster: ${result.duplicateTags.join(", ")}.`);
+  }
+  if (result.missingTags.length > 0) {
+    lines.push(`Not found on the source roster: ${result.missingTags.join(", ")}.`);
+  }
+  if (result.blockedAccounts.length > 0) {
+    const reason =
+      result.outcome === "roster_full"
+        ? "Roster full"
+        : result.outcome === "account_limit_exceeded"
+          ? "Account limit exceeded"
+          : result.outcome === "townhall_unavailable"
+            ? "Town hall data unavailable"
+            : result.outcome === "townhall_out_of_range"
+              ? "Town hall out of range"
+              : result.outcome === "roster_conflict"
+                ? "Roster conflict"
+                : "Blocked";
+    lines.push(`${reason}: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : `No roster signups were changed to ${result.targetRosterTitle}.`;
 }
 
 function buildRosterManageStateLabel(state: RosterLifecycleState): string {
@@ -3037,6 +3208,374 @@ function buildRosterPostChangeGroupPanel(session: RosterPostChangeGroupSession):
   return {
     sessionId: session.sessionId,
     action: "move",
+    embed,
+    components,
+  };
+}
+
+function resolveRosterPostChangeRosterDefaultTargetGroupKey(view: RosterSignupView): string | null {
+  const confirmedGroupKey = normalizeRosterGroupKey("confirmed");
+  return view.groups.find((group) => group.key === confirmedGroupKey)?.key ?? view.groups[0]?.key ?? null;
+}
+
+function buildRosterPostChangeRosterPlayerDescription(input: {
+  playerTag: string;
+  groupName: string | null;
+  townHall: number | null;
+}): string {
+  const parts: string[] = [];
+  parts.push(input.playerTag);
+  if (input.groupName) {
+    parts.push(`source group: ${input.groupName}`);
+  }
+  if (input.townHall !== null) {
+    parts.push(`TH${input.townHall}`);
+  }
+  return parts.join(" • ");
+}
+
+async function buildRosterPostChangeRosterPlayerOptions(
+  sourceView: RosterSignupView,
+  targetView: RosterSignupView | null,
+): Promise<{
+  eligiblePlayerOptions: RosterSelectionOption[];
+  blockedPlayerOptions: RosterPostChangeRosterBlockedPlayerOption[];
+}> {
+  const sourceSignups = [...sourceView.signups];
+  if (!targetView) {
+    return {
+      eligiblePlayerOptions: [],
+      blockedPlayerOptions: sourceSignups.slice(0, 10).map((signup) => {
+        const playerTag = normalizePlayerTag(signup.playerTag);
+        const label = normalizeRosterText(signup.playerName ?? null) ?? playerTag;
+        return {
+          value: playerTag,
+          label,
+          reason: "Select a target roster first",
+        };
+      }),
+    };
+  }
+
+  const targetExistingTags = new Set(
+    targetView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean),
+  );
+  const candidateTags = sourceSignups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
+  const conflictRows =
+    candidateTags.length > 0
+      ? ((await prisma.rosterSignup.findMany({
+          where: {
+            playerTag: { in: candidateTags },
+            rosterId: { notIn: [sourceView.roster.id, targetView.roster.id] },
+            roster: {
+              rosterType: targetView.roster.rosterType,
+              rosterCategory: targetView.roster.rosterCategory,
+              lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+            },
+          },
+          select: {
+            playerTag: true,
+            rosterId: true,
+          },
+        })) as Array<{ playerTag: string; rosterId: string }>)
+      : [];
+  const conflictTags = new Set(normalizeRosterPlayerTags(conflictRows.map((row) => row.playerTag)));
+  const targetOwnedCountByUser = new Map<string, number>();
+  for (const signup of targetView.signups) {
+    const normalizedDiscordUserId = normalizeDiscordUserId(signup.discordUserId) ?? signup.discordUserId;
+    if (!normalizedDiscordUserId) continue;
+    targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
+  }
+
+  const maxMembers = normalizeRosterInt(targetView.roster.maxMembers);
+  const effectiveMaxAccountsPerUser =
+    targetView.roster.allowMultiSignup === false ? 1 : normalizeRosterInt(targetView.roster.maxAccountsPerUser);
+  const minTownhall = normalizeRosterInt(targetView.roster.minTownhall);
+  const maxTownhall = normalizeRosterInt(targetView.roster.maxTownhall);
+  const targetCount = targetView.signups.length;
+
+  const eligiblePlayerOptions: RosterSelectionOption[] = [];
+  const blockedPlayerOptions: RosterPostChangeRosterBlockedPlayerOption[] = [];
+  for (const signup of sourceSignups) {
+    const playerTag = normalizePlayerTag(signup.playerTag);
+    if (!playerTag) continue;
+    const playerName = normalizeRosterText(signup.playerName ?? null) ?? playerTag;
+    const groupName = normalizeRosterText(signup.group?.name ?? null) ?? signup.group?.key ?? null;
+    const label = playerName;
+    const description = buildRosterPostChangeRosterPlayerDescription({
+      playerTag,
+      groupName,
+      townHall: signup.townHall ?? null,
+    });
+
+    if (targetExistingTags.has(playerTag)) {
+      blockedPlayerOptions.push({
+        value: playerTag,
+        label,
+        reason: "Already signed up on the target roster",
+      });
+      continue;
+    }
+    if (maxMembers !== null && targetCount >= maxMembers) {
+      blockedPlayerOptions.push({
+        value: playerTag,
+        label,
+        reason: "Target roster is full",
+      });
+      continue;
+    }
+    if (conflictTags.has(playerTag)) {
+      blockedPlayerOptions.push({
+        value: playerTag,
+        label,
+        reason: "Already signed up on another roster of this type",
+      });
+      continue;
+    }
+
+    const normalizedDiscordUserId = normalizeDiscordUserId(signup.discordUserId) ?? signup.discordUserId;
+    if (effectiveMaxAccountsPerUser !== null && normalizedDiscordUserId) {
+      const ownedCount = targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0;
+      if (ownedCount + 1 > effectiveMaxAccountsPerUser) {
+        blockedPlayerOptions.push({
+          value: playerTag,
+          label,
+          reason: "Account limit exceeded on the target roster",
+        });
+        continue;
+      }
+    }
+
+    if (minTownhall !== null || maxTownhall !== null) {
+      if (signup.townHall === null) {
+        blockedPlayerOptions.push({
+          value: playerTag,
+          label,
+          reason: "Town hall data unavailable",
+        });
+        continue;
+      }
+      if ((minTownhall !== null && signup.townHall < minTownhall) || (maxTownhall !== null && signup.townHall > maxTownhall)) {
+        blockedPlayerOptions.push({
+          value: playerTag,
+          label,
+          reason: "Town hall is out of range for the target roster",
+        });
+        continue;
+      }
+    }
+
+    eligiblePlayerOptions.push({
+      value: playerTag,
+      label,
+      description,
+    });
+  }
+
+  return {
+    eligiblePlayerOptions,
+    blockedPlayerOptions,
+  };
+}
+
+function buildRosterPostChangeRosterRosterSelectRow(
+  session: RosterPostChangeRosterSession,
+): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostChangeRosterCurrentRosterSelectMenuCustomId(session.sessionId))
+    .setPlaceholder("Select current roster")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      session.currentRosterOptions.length > 0
+        ? session.currentRosterOptions.slice(0, 25).map((option) => ({
+            label: option.label.slice(0, 100),
+            value: option.value,
+            description: option.description ? option.description.slice(0, 100) : undefined,
+            default: session.selectedCurrentRosterId === option.value,
+          }))
+        : [
+            {
+              label: "No rosters",
+              value: "none",
+              description: "No roster available",
+            },
+          ],
+    )
+    .setDisabled(session.currentRosterOptions.length <= 0);
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildRosterPostChangeRosterTargetRosterSelectRow(
+  session: RosterPostChangeRosterSession,
+): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostChangeRosterTargetRosterSelectMenuCustomId(session.sessionId))
+    .setPlaceholder("Select target roster")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      session.targetRosterOptions.length > 0
+        ? session.targetRosterOptions.slice(0, 25).map((option) => ({
+            label: option.label.slice(0, 100),
+            value: option.value,
+            description: option.description ? option.description.slice(0, 100) : undefined,
+            default: session.selectedTargetRosterId === option.value,
+          }))
+        : [
+            {
+              label: "No rosters",
+              value: "none",
+              description: "No target roster available",
+            },
+          ],
+    )
+    .setDisabled(session.targetRosterOptions.length <= 0);
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildRosterPostChangeRosterTargetGroupSelectRow(
+  session: RosterPostChangeRosterSession,
+): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostChangeRosterTargetGroupSelectMenuCustomId(session.sessionId))
+    .setPlaceholder("Select target group")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      session.targetGroupOptions.length > 0
+        ? session.targetGroupOptions.slice(0, 25).map((option) => ({
+            label: option.label.slice(0, 100),
+            value: option.value,
+            description: option.description ? option.description.slice(0, 100) : undefined,
+            default: session.selectedTargetGroupKey === option.value,
+          }))
+        : [
+            {
+              label: "No groups",
+              value: "none",
+              description: "No target groups available",
+            },
+          ],
+    )
+    .setDisabled(session.targetGroupOptions.length <= 0);
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildRosterPostChangeRosterPlayerSelectRow(
+  session: RosterPostChangeRosterSession,
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  const totalPages = Math.max(1, Math.ceil(session.eligiblePlayerOptions.length / ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT));
+  const maxWindowStart = Math.max(0, totalPages - 1);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const start = windowStart * ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT;
+  const visibleOptions = session.eligiblePlayerOptions.slice(start, start + ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT);
+  const selected = new Set(session.selectedPlayerTags);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(buildRosterPostChangeRosterPlayerSelectMenuCustomId(session.sessionId, windowStart))
+    .setPlaceholder(
+      visibleOptions.length > 0
+        ? `Select players (${start + 1}-${Math.min(session.eligiblePlayerOptions.length, start + visibleOptions.length)} of ${session.eligiblePlayerOptions.length})`
+        : "No eligible players",
+    )
+    .setMinValues(0)
+    .setMaxValues(Math.max(1, Math.min(visibleOptions.length || 1, 25)))
+    .setDisabled(visibleOptions.length <= 0)
+    .addOptions(
+      visibleOptions.length > 0
+        ? visibleOptions.map((option) => ({
+            label: option.label.slice(0, 100),
+            value: option.value,
+            description: option.description ? option.description.slice(0, 100) : undefined,
+            default: selected.has(option.value),
+          }))
+        : [
+            {
+              label: "No players",
+              value: "none",
+              description: "No eligible players",
+            },
+          ],
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildRosterPostChangeRosterActionButtons(
+  session: RosterPostChangeRosterSession,
+): ActionRowBuilder<ButtonBuilder> {
+  const totalPages = Math.max(1, Math.ceil(session.eligiblePlayerOptions.length / ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT));
+  const maxWindowStart = Math.max(0, totalPages - 1);
+  const windowStart = Math.max(0, Math.min(Math.trunc(session.playerPageWindowStart || 0), maxWindowStart));
+  const confirmDisabled =
+    !session.selectedCurrentRosterId ||
+    !session.selectedTargetRosterId ||
+    !session.selectedTargetGroupKey ||
+    session.selectedPlayerTags.length <= 0;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostChangeRosterActionButtonCustomId("previous_page", session.sessionId))
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart <= 0),
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostChangeRosterActionButtonCustomId("next_page", session.sessionId))
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(windowStart >= maxWindowStart),
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostChangeRosterActionButtonCustomId("cancel", session.sessionId))
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(buildRosterPostChangeRosterActionButtonCustomId("confirm", session.sessionId))
+      .setLabel("Confirm Change Roster")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(confirmDisabled),
+  );
+}
+
+function buildRosterPostChangeRosterDescription(session: RosterPostChangeRosterSession): string[] {
+  const currentRosterOption = session.currentRosterOptions.find((option) => option.value === session.selectedCurrentRosterId) ?? null;
+  const targetRosterOption = session.targetRosterOptions.find((option) => option.value === session.selectedTargetRosterId) ?? null;
+  const selectedTargetGroup = session.targetGroupOptions.find((option) => option.value === session.selectedTargetGroupKey) ?? null;
+  const lines: string[] = [
+    "Transfer selected signups from one roster to another.",
+    `Current roster: ${currentRosterOption?.label ?? session.selectedCurrentRosterId}`,
+    `Target roster: ${targetRosterOption?.label ?? "Select a target roster"}`,
+    `Target group: ${selectedTargetGroup?.label ?? "Select a target group"}`,
+    `Eligible players: ${session.eligiblePlayerOptions.length}`,
+    `Blocked players: ${session.blockedPlayerOptions.length}`,
+    `Selected players: ${session.selectedPlayerTags.length}`,
+  ];
+  if (session.blockedPlayerOptions.length > 0) {
+    lines.push("");
+    lines.push("Blocked examples");
+    for (const blocked of session.blockedPlayerOptions.slice(0, 5)) {
+      lines.push(`- ${blocked.label}: ${blocked.reason}`);
+    }
+  }
+  if (session.eligiblePlayerOptions.length <= 0) {
+    lines.push("");
+    lines.push("No eligible players are currently available for this target roster.");
+  }
+  return lines;
+}
+
+function buildRosterPostChangeRosterPanel(session: RosterPostChangeRosterSession): RosterManagePanel {
+  const embed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle("Change Roster")
+    .setDescription(buildRosterPostChangeRosterDescription(session).join("\n"));
+  const components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> = [
+    buildRosterPostChangeRosterRosterSelectRow(session)!,
+    buildRosterPostChangeRosterTargetRosterSelectRow(session)!,
+    buildRosterPostChangeRosterTargetGroupSelectRow(session)!,
+    buildRosterPostChangeRosterPlayerSelectRow(session),
+    buildRosterPostChangeRosterActionButtons(session),
+  ].filter(Boolean) as Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
+  return {
+    sessionId: session.sessionId,
+    action: "change_roster",
     embed,
     components,
   };
@@ -4831,6 +5370,65 @@ export function parseRosterPostChangeGroupActionButtonCustomId(
 ): { action: "confirm" | "cancel" | "previous_page" | "next_page"; sessionId: string } | null {
   const parts = String(customId ?? "").split(":");
   if (parts.length !== 4 || parts[0] !== ROSTER_POST_CHANGE_GROUP_PREFIX || parts[1] !== "action") {
+    return null;
+  }
+  const action = parts[2];
+  if (action !== "confirm" && action !== "cancel" && action !== "previous_page" && action !== "next_page") {
+    return null;
+  }
+  const sessionId = parts[3]?.trim() ?? "";
+  return sessionId ? { action, sessionId } : null;
+}
+
+export function isRosterPostChangeRosterCustomId(customId: string): boolean {
+  return String(customId ?? "").startsWith(`${ROSTER_POST_CHANGE_ROSTER_PREFIX}:`);
+}
+
+export function parseRosterPostChangeRosterCurrentRosterSelectMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_CHANGE_ROSTER_PREFIX || parts[1] !== "current_roster") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterPostChangeRosterTargetRosterSelectMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_CHANGE_ROSTER_PREFIX || parts[1] !== "target_roster") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterPostChangeRosterTargetGroupSelectMenuCustomId(customId: string): { sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== ROSTER_POST_CHANGE_ROSTER_PREFIX || parts[1] !== "target_group") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  return sessionId ? { sessionId } : null;
+}
+
+export function parseRosterPostChangeRosterPlayerSelectMenuCustomId(
+  customId: string,
+): { sessionId: string; pageIndex: number } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== ROSTER_POST_CHANGE_ROSTER_PREFIX || parts[1] !== "players") {
+    return null;
+  }
+  const sessionId = parts[2]?.trim() ?? "";
+  if (!sessionId) return null;
+  const pageIndex = Math.max(0, Math.trunc(Number(parts[3] ?? 0) || 0));
+  return { sessionId, pageIndex };
+}
+
+export function parseRosterPostChangeRosterActionButtonCustomId(
+  customId: string,
+): { action: "confirm" | "cancel" | "previous_page" | "next_page"; sessionId: string } | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts.length !== 4 || parts[0] !== ROSTER_POST_CHANGE_ROSTER_PREFIX || parts[1] !== "action") {
     return null;
   }
   const action = parts[2];
@@ -7638,6 +8236,292 @@ export class RosterService {
       return { outcome: "forbidden" };
     }
     deleteRosterPostChangeGroupSession(session.sessionId);
+    return { outcome: "cancelled" };
+  }
+
+  async createRosterPostChangeRosterPanel(input: {
+    rosterId: string;
+    discordUserId: string;
+  }): Promise<RosterPostChangeRosterOpenResult> {
+    const sourceView = await loadRosterView(input.rosterId);
+    if (!sourceView) {
+      return { outcome: "roster_not_found", rosterId: input.rosterId };
+    }
+    if (sourceView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+      return { outcome: "roster_archived", rosterId: sourceView.roster.id };
+    }
+
+    const guildRosters = await this.listGuildRosters({
+      guildId: sourceView.roster.guildId,
+      limit: 25,
+    });
+    const rosterMap = new Map(guildRosters.map((roster) => [roster.id, roster] as const));
+    rosterMap.set(sourceView.roster.id, {
+      ...sourceView.roster,
+      groupCount: sourceView.groups.length,
+      signupCount: sourceView.totalSignupCount,
+    } as RosterSummaryRecord);
+    const currentRosterOptions = buildRosterPostChangeGroupRosterOptions(
+      [...rosterMap.values()].filter((roster) => roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.ARCHIVED),
+      sourceView.roster.id,
+    );
+    const targetRosterOptions = buildRosterPostChangeGroupRosterOptions(
+      [...rosterMap.values()]
+        .filter((roster) => roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.ARCHIVED)
+        .filter((roster) => roster.id !== sourceView.roster.id),
+      "",
+    );
+    const selectedCurrentRosterId = sourceView.roster.id;
+    const selectedTargetRosterId = targetRosterOptions[0]?.value ?? null;
+    const targetRosterView = selectedTargetRosterId ? await loadRosterView(selectedTargetRosterId) : null;
+    const targetGroupOptions = targetRosterView ? buildRosterPostChangeGroupGroupOptions(targetRosterView) : [];
+    const selectedTargetGroupKey = targetRosterView ? resolveRosterPostChangeRosterDefaultTargetGroupKey(targetRosterView) : null;
+    const playerState = await buildRosterPostChangeRosterPlayerOptions(sourceView, targetRosterView);
+    const session = createRosterPostChangeRosterSession({
+      ownerDiscordUserId: normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId,
+      guildId: sourceView.roster.guildId,
+      sourceRosterId: sourceView.roster.id,
+      selectedCurrentRosterId,
+      selectedTargetRosterId,
+      selectedTargetGroupKey,
+      selectedPlayerTags: [],
+      currentRosterOptions,
+      targetRosterOptions,
+      targetGroupOptions,
+      eligiblePlayerOptions: playerState.eligiblePlayerOptions,
+      blockedPlayerOptions: playerState.blockedPlayerOptions,
+      playerPageWindowStart: 0,
+    });
+    return {
+      outcome: "ready",
+      panel: buildRosterPostChangeRosterPanel(session),
+    };
+  }
+
+  async updateRosterPostChangeRosterPanel(input: {
+    sessionId: string;
+    discordUserId: string;
+    selectedCurrentRosterId?: string | null;
+    selectedTargetRosterId?: string | null;
+    selectedTargetGroupKey?: string | null;
+    selectedPlayerTags?: string[] | null;
+    selectedPlayerPageIndex?: number | null;
+    playerPageWindowDelta?: number | null;
+  }): Promise<RosterManageUpdateResult> {
+    const session = getRosterPostChangeRosterSession(input.sessionId);
+    if (!session) {
+      return { outcome: "session_not_found" };
+    }
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId;
+    if (session.ownerDiscordUserId !== normalizedDiscordUserId) {
+      return { outcome: "forbidden" };
+    }
+
+    const currentRosterChanged = input.selectedCurrentRosterId !== undefined;
+    if (currentRosterChanged) {
+      const nextCurrentRosterId = String(input.selectedCurrentRosterId ?? "").trim();
+      if (!nextCurrentRosterId) {
+        return { outcome: "session_not_found" };
+      }
+      session.selectedCurrentRosterId = nextCurrentRosterId;
+      session.sourceRosterId = nextCurrentRosterId;
+      session.selectedPlayerTags = [];
+      session.playerPageWindowStart = 0;
+    }
+
+    const currentRosterView = await loadRosterView(session.selectedCurrentRosterId);
+    if (!currentRosterView) {
+      return { outcome: "session_not_found" };
+    }
+    if (currentRosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+      return { outcome: "session_not_found" };
+    }
+
+    const guildRosters = await this.listGuildRosters({
+      guildId: currentRosterView.roster.guildId,
+      limit: 25,
+    });
+    const rosterMap = new Map(guildRosters.map((roster) => [roster.id, roster] as const));
+    rosterMap.set(currentRosterView.roster.id, {
+      ...currentRosterView.roster,
+      groupCount: currentRosterView.groups.length,
+      signupCount: currentRosterView.totalSignupCount,
+    } as RosterSummaryRecord);
+    const mutableRosters = [...rosterMap.values()].filter(
+      (roster) => roster.lifecycleState !== ROSTER_LIFECYCLE_STATE.ARCHIVED,
+    );
+    session.currentRosterOptions = buildRosterPostChangeGroupRosterOptions(
+      mutableRosters,
+      currentRosterView.roster.id,
+    );
+
+    const validTargetRosterIds = new Set(
+      mutableRosters.filter((roster) => roster.id !== currentRosterView.roster.id).map((roster) => roster.id),
+    );
+    const targetRosterChanged = input.selectedTargetRosterId !== undefined;
+    if (targetRosterChanged) {
+      const nextTargetRosterId = String(input.selectedTargetRosterId ?? "").trim();
+      if (!nextTargetRosterId) {
+        return { outcome: "session_not_found" };
+      }
+      session.selectedTargetRosterId = nextTargetRosterId;
+      session.selectedPlayerTags = [];
+      session.playerPageWindowStart = 0;
+    }
+    if (!session.selectedTargetRosterId || !validTargetRosterIds.has(session.selectedTargetRosterId)) {
+      session.selectedTargetRosterId = mutableRosters.find((roster) => roster.id !== currentRosterView.roster.id)?.id ?? null;
+    }
+
+    const targetRosterView = session.selectedTargetRosterId ? await loadRosterView(session.selectedTargetRosterId) : null;
+    if (!targetRosterView || targetRosterView.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED) {
+      session.targetRosterOptions = buildRosterPostChangeGroupRosterOptions(
+        mutableRosters.filter((roster) => roster.id !== currentRosterView.roster.id),
+        session.selectedTargetRosterId ?? "",
+      );
+      session.targetGroupOptions = [];
+      session.selectedTargetGroupKey = null;
+      session.eligiblePlayerOptions = [];
+      session.blockedPlayerOptions = [];
+      rosterPostChangeRosterSessions.set(session.sessionId, session);
+      return {
+        outcome: "updated",
+        panel: buildRosterPostChangeRosterPanel(session),
+      };
+    }
+
+    const targetRosterOptions = buildRosterPostChangeGroupRosterOptions(
+      mutableRosters.filter((roster) => roster.id !== currentRosterView.roster.id),
+      targetRosterView.roster.id,
+    );
+    session.targetRosterOptions = targetRosterOptions;
+    session.targetGroupOptions = buildRosterPostChangeGroupGroupOptions(targetRosterView);
+
+    if (input.selectedTargetGroupKey !== undefined) {
+      const nextTargetGroupKey = normalizeRosterGroupKey(input.selectedTargetGroupKey ?? "");
+      session.selectedTargetGroupKey =
+        nextTargetGroupKey && session.targetGroupOptions.some((group) => group.value === nextTargetGroupKey)
+          ? nextTargetGroupKey
+          : resolveRosterPostChangeRosterDefaultTargetGroupKey(targetRosterView);
+    } else if (
+      !session.selectedTargetGroupKey ||
+      !session.targetGroupOptions.some((group) => group.value === session.selectedTargetGroupKey)
+    ) {
+      session.selectedTargetGroupKey = resolveRosterPostChangeRosterDefaultTargetGroupKey(targetRosterView);
+    }
+
+    const playerState = await buildRosterPostChangeRosterPlayerOptions(currentRosterView, targetRosterView);
+    session.eligiblePlayerOptions = playerState.eligiblePlayerOptions;
+    session.blockedPlayerOptions = playerState.blockedPlayerOptions;
+
+    if (currentRosterChanged || targetRosterChanged) {
+      session.selectedPlayerTags = [];
+      session.playerPageWindowStart = 0;
+    } else if (input.selectedTargetGroupKey !== undefined) {
+      session.selectedPlayerTags = normalizeRosterSelectionTags(
+        session.selectedPlayerTags,
+        session.eligiblePlayerOptions.map((option) => option.value),
+      );
+    } else if (Array.isArray(input.selectedPlayerTags)) {
+      const pageIndex = Math.max(0, Math.trunc(Number(input.selectedPlayerPageIndex ?? 0)));
+      const pageStart = pageIndex * ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT;
+      const pageOptions = session.eligiblePlayerOptions
+        .slice(pageStart, pageStart + ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT)
+        .map((option) => option.value);
+      const remaining = session.selectedPlayerTags.filter((tag) => !pageOptions.includes(tag));
+      session.selectedPlayerTags = normalizeRosterSelectionTags(
+        [...remaining, ...input.selectedPlayerTags],
+        session.eligiblePlayerOptions.map((option) => option.value),
+      );
+    }
+    if (input.playerPageWindowDelta !== undefined) {
+      const totalPages = Math.max(
+        1,
+        Math.ceil(session.eligiblePlayerOptions.length / ROSTER_POST_CHANGE_ROSTER_PLAYER_SELECT_LIMIT),
+      );
+      const maxWindowStart = Math.max(0, totalPages - 1);
+      const delta = Math.trunc(Number(input.playerPageWindowDelta ?? 0)) || 0;
+      session.playerPageWindowStart = Math.max(
+        0,
+        Math.min(Math.trunc(session.playerPageWindowStart || 0) + delta, maxWindowStart),
+      );
+    }
+
+    rosterPostChangeRosterSessions.set(session.sessionId, session);
+    return {
+      outcome: "updated",
+      panel: buildRosterPostChangeRosterPanel(session),
+    };
+  }
+
+  async confirmRosterPostChangeRosterPanel(input: {
+    sessionId: string;
+    discordUserId: string;
+    cocService?: CoCService | null;
+  }): Promise<RosterPostChangeRosterCommitResult> {
+    const session = getRosterPostChangeRosterSession(input.sessionId);
+    if (!session) {
+      return { outcome: "session_not_found" };
+    }
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId;
+    if (session.ownerDiscordUserId !== normalizedDiscordUserId) {
+      return { outcome: "forbidden" };
+    }
+    if (!session.selectedCurrentRosterId) {
+      return { outcome: "missing_source_roster" };
+    }
+    if (!session.selectedTargetRosterId) {
+      return { outcome: "missing_target_roster" };
+    }
+    if (!session.selectedTargetGroupKey) {
+      return { outcome: "missing_target_group" };
+    }
+    if (session.selectedPlayerTags.length <= 0) {
+      return { outcome: "missing_players" };
+    }
+
+    const changeResult = await this.changeRosterSignups({
+      sourceRosterId: session.selectedCurrentRosterId,
+      targetRosterId: session.selectedTargetRosterId,
+      targetGroupKey: session.selectedTargetGroupKey,
+      playerTags: session.selectedPlayerTags,
+      updatedByDiscordUserId: session.ownerDiscordUserId,
+      cocService: input.cocService ?? null,
+    });
+    console.info(
+      [
+        "[roster] change_roster_panel_confirm",
+        `sourceRosterId=${session.selectedCurrentRosterId}`,
+        `targetRosterId=${session.selectedTargetRosterId}`,
+        `targetGroup=${session.selectedTargetGroupKey}`,
+        `selectedCount=${session.selectedPlayerTags.length}`,
+        `outcome=${changeResult.outcome}`,
+      ].join(" "),
+    );
+    deleteRosterPostChangeRosterSession(session.sessionId);
+    return {
+      outcome: "completed",
+      sourceRosterId: session.selectedCurrentRosterId,
+      targetRosterId: session.selectedTargetRosterId,
+      targetGroupKey: session.selectedTargetGroupKey,
+      selectedCount: session.selectedPlayerTags.length,
+      changeResult,
+      summary: buildRosterChangeResultSummary(changeResult),
+    };
+  }
+
+  async cancelRosterPostChangeRosterPanel(input: {
+    sessionId: string;
+    discordUserId: string;
+  }): Promise<RosterPostChangeRosterCancelResult> {
+    const session = getRosterPostChangeRosterSession(input.sessionId);
+    if (!session) {
+      return { outcome: "session_not_found" };
+    }
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId;
+    if (session.ownerDiscordUserId !== normalizedDiscordUserId) {
+      return { outcome: "forbidden" };
+    }
+    deleteRosterPostChangeRosterSession(session.sessionId);
     return { outcome: "cancelled" };
   }
 

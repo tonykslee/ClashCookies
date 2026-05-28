@@ -27,6 +27,11 @@ import {
   handleRosterPostChangeGroupGroupSelectInteraction,
   handleRosterPostChangeGroupPlayerSelectInteraction,
   handleRosterPostChangeGroupRosterSelectInteraction,
+  handleRosterPostChangeRosterActionButtonInteraction,
+  handleRosterPostChangeRosterCurrentRosterSelectInteraction,
+  handleRosterPostChangeRosterPlayerSelectInteraction,
+  handleRosterPostChangeRosterTargetGroupSelectInteraction,
+  handleRosterPostChangeRosterTargetRosterSelectInteraction,
   handleRosterManageActionButtonInteraction,
   handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
@@ -46,6 +51,11 @@ import {
   buildRosterPostChangeGroupRosterSelectMenuCustomId,
   buildRosterPostChangeGroupCurrentGroupSelectMenuCustomId,
   buildRosterPostChangeGroupTargetGroupSelectMenuCustomId,
+  buildRosterPostChangeRosterActionButtonCustomId,
+  buildRosterPostChangeRosterCurrentRosterSelectMenuCustomId,
+  buildRosterPostChangeRosterPlayerSelectMenuCustomId,
+  buildRosterPostChangeRosterTargetGroupSelectMenuCustomId,
+  buildRosterPostChangeRosterTargetRosterSelectMenuCustomId,
 } from "../src/services/RosterService";
 import * as rosterRoleSyncService from "../src/services/RosterRoleSyncService";
 import { rosterExportService } from "../src/services/RosterExportService";
@@ -330,9 +340,13 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "deleteRoster");
     vi.spyOn(rosterService, "createRosterManagerUserSelectionPanel");
     vi.spyOn(rosterService, "createRosterPingSelectionPanel");
+    vi.spyOn(rosterService, "createRosterPostChangeRosterPanel");
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterPingSelectionPanel");
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel");
+    vi.spyOn(rosterService, "confirmRosterPostChangeRosterPanel");
+    vi.spyOn(rosterService, "cancelRosterPostChangeRosterPanel");
     vi.spyOn(rosterService, "clearRosterSignups");
     vi.spyOn(rosterService, "getRosterView");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
@@ -1303,7 +1317,7 @@ describe("/roster command", () => {
       }),
     );
     expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
-      "Moved Alpha `#PQL0289` to Target Roster - Confirmed.",
+      "Moved Alpha (#PQL0289) to Target Roster - Confirmed.",
     );
 
     const closeInteraction = makeInteraction({
@@ -1972,6 +1986,7 @@ describe("/roster command", () => {
       "export",
       "customize",
       "change_group",
+      "change_roster",
       "add_user",
       "remove_user",
       "close_roster",
@@ -2041,6 +2056,120 @@ describe("/roster command", () => {
     );
   });
 
+  it("opens the roster change roster panel from Settings -> Change Roster", async () => {
+    vi.spyOn(rosterService, "createRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["change_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(rosterService.createRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("opens the roster change roster panel from Settings -> Change Roster", async () => {
+    vi.spyOn(rosterService, "createRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "ready",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["change_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(rosterService.createRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+    });
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
   it("updates the Change Group panel when the current roster select changes", async () => {
     vi.spyOn(rosterService, "updateRosterPostChangeGroupPanel").mockResolvedValue({
       outcome: "updated",
@@ -2067,6 +2196,80 @@ describe("/roster command", () => {
 
     expect(rosterService.updateRosterPostChangeGroupPanel).toHaveBeenCalledWith({
       sessionId: "session-1",
+      discordUserId: "111111111111111111",
+      selectedCurrentRosterId: "roster-2",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the current roster select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterCurrentRosterSelectMenuCustomId("session-2"),
+      values: ["roster-2"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterCurrentRosterSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedCurrentRosterId: "roster-2",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the current roster select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterCurrentRosterSelectMenuCustomId("session-2"),
+      values: ["roster-2"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterCurrentRosterSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
       discordUserId: "111111111111111111",
       selectedCurrentRosterId: "roster-2",
     });
@@ -2146,6 +2349,230 @@ describe("/roster command", () => {
 
     expect(rosterService.updateRosterPostChangeGroupPanel).toHaveBeenCalledWith({
       sessionId: "session-1",
+      discordUserId: "111111111111111111",
+      selectedPlayerTags: ["#PQL0289", "#QGRJ2222"],
+      selectedPlayerPageIndex: 0,
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the target roster select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterTargetRosterSelectMenuCustomId("session-2"),
+      values: ["roster-3"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterTargetRosterSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedTargetRosterId: "roster-3",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the target group select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterTargetGroupSelectMenuCustomId("session-2"),
+      values: ["confirmed"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterTargetGroupSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedTargetGroupKey: "confirmed",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when player selections change", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterPlayerSelectMenuCustomId("session-2", 0),
+      values: ["#PQL0289", "#QGRJ2222"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterPlayerSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedPlayerTags: ["#PQL0289", "#QGRJ2222"],
+      selectedPlayerPageIndex: 0,
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the target roster select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterTargetRosterSelectMenuCustomId("session-2"),
+      values: ["roster-3"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterTargetRosterSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedTargetRosterId: "roster-3",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when the target group select changes", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterTargetGroupSelectMenuCustomId("session-2"),
+      values: ["confirmed"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterTargetGroupSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      selectedTargetGroupKey: "confirmed",
+    });
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        embeds: [expect.any(EmbedBuilder)],
+        components: [],
+      }),
+    );
+  });
+
+  it("updates the Change Roster panel when player selections change", async () => {
+    vi.spyOn(rosterService, "updateRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "updated",
+      panel: {
+        sessionId: "session-2",
+        embed: new EmbedBuilder().setTitle("Change Roster"),
+        components: [],
+      },
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterPlayerSelectMenuCustomId("session-2", 0),
+      values: ["#PQL0289", "#QGRJ2222"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterPlayerSelectInteraction(interaction);
+
+    expect(rosterService.updateRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
       discordUserId: "111111111111111111",
       selectedPlayerTags: ["#PQL0289", "#QGRJ2222"],
       selectedPlayerPageIndex: 0,
@@ -2246,6 +2673,205 @@ describe("/roster command", () => {
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
       "Changed group for #PQL0289 to Substitute.",
+    );
+  });
+
+  it("confirms Change Roster, syncs both roster roles, and refreshes both roster posts", async () => {
+    vi.spyOn(rosterService, "confirmRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "completed",
+      sourceRosterId: "roster-source",
+      targetRosterId: "roster-target",
+      targetGroupKey: "confirmed",
+      selectedCount: 1,
+      changeResult: {
+        outcome: "changed",
+        sourceRosterId: "roster-source",
+        sourceRosterTitle: "Source CWL Signup",
+        targetRosterId: "roster-target",
+        targetRosterTitle: "Target CWL Signup",
+        targetRosterClanTag: "#BBBB",
+        targetRosterClanName: "Target Clan",
+        targetGroupKey: "confirmed",
+        targetGroupName: "Confirmed",
+        requestedTags: ["#PQL0289"],
+        movedTags: ["#PQL0289"],
+        movedAccounts: [
+          {
+            playerTag: "#PQL0289",
+            playerName: "Alpha",
+            targetGroupKey: "confirmed",
+            targetGroupName: "Confirmed",
+          },
+        ],
+        duplicateTags: [],
+        missingTags: [],
+        blockedTags: [],
+        blockedAccounts: [],
+      } as any,
+      summary: "Moved Alpha (#PQL0289) to Target CWL Signup - Confirmed.",
+    });
+    (rosterService.getRosterView as any).mockImplementation(async (rosterId: string) => {
+      if (rosterId === "roster-source") {
+        return {
+          roster: {
+            id: "roster-source",
+            title: "Source CWL Signup",
+            clanTag: "#AAAA",
+            postedChannelId: "channel-1",
+            postedMessageId: "message-1",
+            postButtonMode: "standard",
+            rosterRoleId: null,
+          },
+          clanDisplayName: "Source Clan",
+          clanLeagueLabel: "Champion League II",
+          groups: [],
+          signups: [],
+          totalSignupCount: 0,
+        };
+      }
+      if (rosterId === "roster-target") {
+        return {
+          roster: {
+            id: "roster-target",
+            title: "Target CWL Signup",
+            clanTag: "#BBBB",
+            postedChannelId: "channel-2",
+            postedMessageId: "message-2",
+            postButtonMode: "standard",
+            rosterRoleId: null,
+          },
+          clanDisplayName: "Target Clan",
+          clanLeagueLabel: "Champion League II",
+          groups: [],
+          signups: [],
+          totalSignupCount: 0,
+        };
+      }
+      return null;
+    });
+    (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("Roster"),
+      components: [],
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockResolvedValue({
+      embed: new EmbedBuilder().setTitle("Roster"),
+      components: [],
+    });
+    const editedMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const rosterChannel = {
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue(editedMessage),
+      },
+    };
+    const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments").mockResolvedValue(undefined as never);
+    const interaction = {
+      customId: buildRosterPostChangeRosterActionButtonCustomId("confirm", "session-2"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(rosterChannel),
+        },
+      },
+    } as any;
+
+    await handleRosterPostChangeRosterActionButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.confirmRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+      cocService: expect.any(Object),
+    });
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-source");
+    expect(syncSpy).toHaveBeenCalledWith(interaction.client, "roster-target");
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-source",
+      expect.any(Object),
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
+    expect(rosterService.refreshRosterSignupPayload).toHaveBeenCalledWith(
+      "roster-target",
+      expect.any(Object),
+      expect.objectContaining({
+        refreshButtonDisabled: false,
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+      "Moved Alpha (#PQL0289) to Target CWL Signup - Confirmed.",
+    );
+  });
+
+  it("cancels Change Roster without moving signups", async () => {
+    vi.spyOn(rosterService, "cancelRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "cancelled",
+    });
+    const changeSpy = vi.spyOn(rosterService, "changeRosterSignups");
+    const interaction = {
+      customId: buildRosterPostChangeRosterActionButtonCustomId("cancel", "session-2"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterActionButtonInteraction(interaction, {} as any);
+
+    expect(rosterService.cancelRosterPostChangeRosterPanel).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      discordUserId: "111111111111111111",
+    });
+    expect(changeSpy).not.toHaveBeenCalled();
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Change Roster cancelled.",
+        embeds: [],
+        components: [],
+      }),
+    );
+  });
+
+  it("shows the expired Change Roster message when the session is missing", async () => {
+    vi.spyOn(rosterService, "confirmRosterPostChangeRosterPanel").mockResolvedValue({
+      outcome: "session_not_found",
+    });
+    const interaction = {
+      customId: buildRosterPostChangeRosterActionButtonCustomId("confirm", "session-2"),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostChangeRosterActionButtonInteraction(interaction, {} as any);
+
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "This Change Roster panel expired. Open Settings again.",
+        ephemeral: true,
+      }),
     );
   });
 
