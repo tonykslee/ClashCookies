@@ -426,16 +426,17 @@ describe("/clan command behavior", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("**RAIDS**");
     expect(description).toContain("Vanilla | 3331");
     const buttonIds = payload?.components?.[0]?.toJSON?.().components.map((component: any) =>
       String(component.custom_id ?? ""),
     );
-    expect(buttonIds).toContain("tracked-clan-list:raids:tracked-clan-itx-1:refresh");
+    expect(buttonIds).toContain("tracked-clan-list:raids-summary:tracked-clan-itx-1:refresh");
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
   });
 
-  it("renders linked FWA clan titles when type:FWA is provided", async () => {
+  it("renders the default typed FWA minimal overview when type:FWA is provided", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValueOnce([
       {
         tag: "#2QG2C08UP",
@@ -461,6 +462,45 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
     const description = getFirstEmbedDescription(interaction);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (FWA) (1)");
+    expect(description).toContain("**FWA**");
+    expect(description).toContain("Alpha Clan");
+    expect(description).not.toContain("leadRole:");
+    expect(payload?.components).toHaveLength(1);
+    expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:fwa-summary:tracked-clan-itx-1:refresh",
+    );
+    expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("renders linked FWA clan titles when type:FWA display:detailed is provided", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: "leader-channel-1",
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA", display: "detailed" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const description = getFirstEmbedDescription(interaction);
     expect(description).toContain(
       "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>)** `#2QG2C08UP`",
     );
@@ -472,7 +512,7 @@ describe("/clan command behavior", () => {
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
 
-  it("renders linked clan titles when type:CWL is provided", async () => {
+  it("renders the default typed CWL minimal overview when type:CWL is provided", async () => {
     prismaMock.cwlTrackedClan.findMany
       .mockResolvedValueOnce([
         {
@@ -494,6 +534,45 @@ describe("/clan command behavior", () => {
     const interaction = createInteraction({
       subcommand: "list",
       strings: { type: "CWL" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(description).toContain("**CWL**");
+    expect(description).toContain("CWL Alpha");
+    expect(description).not.toContain("registry: CWL seasonal");
+    expect(payload?.components).toHaveLength(1);
+    expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:cwl-summary:tracked-clan-itx-1:refresh",
+    );
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("renders linked clan titles when type:CWL display:detailed is provided", async () => {
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([
+        {
+          season: "2026-03",
+          tag: "#PYLQ0289",
+          name: "CWL Alpha",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          season: "2026-03",
+          tag: "#PYLQ0289",
+          name: "CWL Alpha",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
@@ -526,7 +605,7 @@ describe("/clan command behavior", () => {
 
     const interaction = createInteraction({
       subcommand: "list",
-      strings: { type: "FWA" },
+      strings: { type: "FWA", display: "detailed" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
@@ -550,7 +629,7 @@ describe("/clan command behavior", () => {
 
     const interaction = createInteraction({
       subcommand: "list",
-      strings: { type: "CWL" },
+      strings: { type: "CWL", display: "detailed" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
@@ -592,7 +671,7 @@ describe("/clan command behavior", () => {
 
     const interaction = createInteraction({
       subcommand: "list",
-      strings: { type: "FWA" },
+      strings: { type: "FWA", display: "detailed" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
@@ -676,12 +755,13 @@ describe("/clan command behavior", () => {
     expect(description).toContain("**CWL**");
     expect(description).toContain("**RAIDS**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👤",
+      "**FWA**\n- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👥",
     );
     expect(description).not.toContain("leadRole:");
     expect(description).toContain(
-      "- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 12 👤",
+      "**CWL**\n- [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 12 👥",
     );
+    expect(description).toContain("**RAIDS**");
     expect(description).toContain("Vanilla | 3331");
     expect(payload?.components).toHaveLength(1);
     expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -786,7 +866,7 @@ describe("/clan command behavior", () => {
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
     expect(refreshedDescription).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 50 👤",
+      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 50 👥",
     );
     expect(refreshButton.followUp).not.toHaveBeenCalled();
   });
@@ -862,8 +942,8 @@ describe("/clan command behavior", () => {
     const refreshedDescription = String(
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
-    expect(refreshedDescription).toContain("50 👤");
-    expect(refreshedDescription).toContain("12 👤");
+    expect(refreshedDescription).toContain("50 👥");
+    expect(refreshedDescription).toContain("12 👥");
   });
 
   it("keeps the existing overview view and reports a clear failure when all refreshes fail", async () => {
@@ -917,7 +997,7 @@ describe("/clan command behavior", () => {
     const refreshedDescription = String(
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
     );
-    expect(refreshedDescription).toContain("49 👤");
+    expect(refreshedDescription).toContain("49 👥");
     expect(interaction.editReply.mock.calls[1]?.[0]?.components).toHaveLength(1);
   });
 
@@ -954,7 +1034,7 @@ describe("/clan command behavior", () => {
     expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (FWA) (1)");
     expect(description).toContain("**FWA**");
     expect(description).toContain(
-      "- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👤",
+      "**FWA**\n- [Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP` | 49 👥",
     );
     expect(description).not.toContain("leadRole:");
     expect(payload?.components).toHaveLength(1);
@@ -1021,7 +1101,7 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, typedInteraction as any, {} as any);
     const typedDescription = getFirstEmbedDescription(typedInteraction);
     expect(typedDescription).toContain("**CWL**");
-    expect(typedDescription).toContain("| 12 👤");
+    expect(typedDescription).toContain("| 12 👥");
     expect(typedDescription).not.toContain("leadRole:");
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -1043,7 +1123,7 @@ describe("/clan command behavior", () => {
     );
   });
 
-  it("renders a typed RAIDS minimal overview section with join emoji, upgrades, and persisted member counts", async () => {
+  it("renders the default typed RAIDS minimal overview section with join emoji, upgrades, and persisted member counts", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2RVGJYLC0",
@@ -1060,7 +1140,7 @@ describe("/clan command behavior", () => {
 
     const interaction = createInteraction({
       subcommand: "list",
-      strings: { type: "RAIDS", display: "minimal" },
+      strings: { type: "RAIDS" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
@@ -1069,8 +1149,8 @@ describe("/clan command behavior", () => {
     const description = getFirstEmbedDescription(interaction);
     expect(payload?.embeds?.[0]?.toJSON?.().title).toBe("Tracked Clans (RAIDS) (1)");
     expect(description).toContain("**RAIDS**");
-    expect(description).toContain("Vanilla | 3331");
-    expect(description).toContain("| 3 👤");
+    expect(description).toContain("**RAIDS**\n- 🔓 [Vanilla | 3331](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2RVGJYLC0>) `2RVGJYLC0` | 3 👥");
+    expect(description).toContain("| 3 👥");
     expect(payload?.components).toHaveLength(1);
     expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
       "tracked-clan-list:raids-summary:tracked-clan-itx-1:refresh",
@@ -1222,7 +1302,7 @@ describe("/clan command behavior", () => {
 
     const interaction = createInteraction({
       subcommand: "list",
-      strings: { type: "FWA" },
+      strings: { type: "FWA", display: "detailed" },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
