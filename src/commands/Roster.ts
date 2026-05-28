@@ -865,7 +865,7 @@ function buildRosterPostSettingsActions(lifecycleState: RosterRecord["lifecycleS
   return [
     { label: "Export", value: "export", description: "Create a Google Sheet export" },
     { label: "Customize", value: "customize", description: "Change board columns and sort order" },
-    { label: "Change Group", value: "change_group", description: "Move selected signups to another group" },
+    { label: "Change Group", value: "change_group", description: "Change selected signups to another group" },
     { label: "Change Roster", value: "change_roster", description: "Transfer selected signups to another roster" },
     { label: "Add User", value: "add_user", description: "Add linked players through an interactive panel" },
     { label: "Remove User", value: "remove_user", description: "Remove linked players through an interactive panel" },
