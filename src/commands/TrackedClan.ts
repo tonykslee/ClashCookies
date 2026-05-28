@@ -252,7 +252,7 @@ function buildTrackedClanSummaryRefreshComponents(prefix: string, refreshing: bo
 }
 
 function formatTrackedClanMemberCount(memberCount: number | null): string {
-  return memberCount === null ? "\u2014 members" : `${memberCount} members`;
+  return memberCount === null ? "\u2014 👤" : `${memberCount} 👤`;
 }
 
 function buildTrackedClanSummaryLine(clan: {
