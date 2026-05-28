@@ -237,7 +237,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, leader channel, clan role, lead role, clan badge emoji, short name).",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
       "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, stores the clan name from the clan profile API on write, and caches the clan join status from the clan profile API on write.",
-      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view and accepts `display:minimal|detailed` (default `detailed`). Overview/minimal rows show current member counts when persisted and no longer show `leadRole`; detailed FWA still shows `leadRole` in the drilldown, and detailed RAIDS keeps its refresh button. If `type` is omitted, `display` is ignored.",
+      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view and accepts `display:minimal|detailed` (default `detailed`). Overview/minimal rows show current member counts when persisted, no longer show `leadRole`, and include a member-count `Refresh` button; detailed FWA still shows `leadRole` in the drilldown, and detailed RAIDS keeps its refresh button. If `type` is omitted, `display` is ignored.",
       "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
       "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],

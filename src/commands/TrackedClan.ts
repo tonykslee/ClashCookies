@@ -19,6 +19,7 @@ import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { normalizeClanTag } from "../services/PlayerLinkService";
+import { FwaClanMembersSyncService } from "../services/fwa-feeds/FwaClanMembersSyncService";
 import {
   addCwlClanTagsForSeason,
   ensureAndHydrateCwlTrackedClanMetadataForSeason,
@@ -235,6 +236,21 @@ function buildRaidTrackedClanListComponents(
   return rows;
 }
 
+function buildTrackedClanSummaryRefreshRow(prefix: string, refreshing: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:refresh`)
+      .setEmoji("🔄")
+      .setLabel(refreshing ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(refreshing),
+  );
+}
+
+function buildTrackedClanSummaryRefreshComponents(prefix: string, refreshing: boolean) {
+  return [buildTrackedClanSummaryRefreshRow(prefix, refreshing)];
+}
+
 function formatTrackedClanMemberCount(memberCount: number | null): string {
   return memberCount === null ? "\u2014 members" : `${memberCount} members`;
 }
@@ -283,6 +299,87 @@ function buildCombinedTrackedClanListEmbed(total: number, description: string) {
 function formatTagListForSummary(tags: string[]): string {
   if (tags.length <= 0) return "none";
   return tags.join(", ");
+}
+
+type TrackedClanSummaryRefreshRenderer = (input: {
+  memberCountByTag: Map<string, number>;
+  refreshing: boolean;
+}) => {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
+};
+
+const fwaClanMembersSyncService = new FwaClanMembersSyncService();
+
+async function refreshTrackedClanSummaryView(params: {
+  button: ButtonInteraction;
+  interaction: ChatInputCommandInteraction;
+  cocService: CoCService;
+  viewName: string;
+  displayedClanTags: string[];
+  currentMemberCounts: Map<string, number>;
+  render: TrackedClanSummaryRefreshRenderer;
+}): Promise<{ refreshedMemberCounts: Map<string, number> }> {
+  const refreshTags = [...new Set(params.displayedClanTags)];
+  let currentMemberCounts = params.currentMemberCounts;
+
+  try {
+    await params.button.update(params.render({ memberCountByTag: currentMemberCounts, refreshing: true }));
+  } catch (error) {
+    console.error(
+      `[tracked-clan] stage=list_member_counts_refresh_update_failed command=list view=${params.viewName} displayed_count=${refreshTags.length} error=${formatError(error)}`,
+    );
+    if (!params.button.replied && !params.button.deferred) {
+      try {
+        await params.button.deferUpdate();
+      } catch {
+        // no-op
+      }
+    }
+  }
+
+  try {
+    const refreshResult = await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags(refreshTags, {
+      cocService: params.cocService,
+    });
+    currentMemberCounts = await listFwaClanMemberCountsForTags(refreshTags);
+
+    if (refreshResult.failedClans.length > 0) {
+      console.error(
+        `[tracked-clan] stage=list_member_counts_refresh command=list view=${params.viewName} status=${
+          refreshResult.failedClans.length >= refreshTags.length ? "FAILURE" : "PARTIAL"
+        } displayed_count=${refreshTags.length} failed_tags=${formatTagListForSummary(refreshResult.failedClans)}`,
+      );
+    }
+
+    await params.interaction.editReply(
+      params.render({ memberCountByTag: currentMemberCounts, refreshing: false }),
+    );
+
+    if (refreshResult.failedClans.length > 0) {
+      const failedMessage =
+        refreshResult.failedClans.length >= refreshTags.length
+          ? "Failed to refresh member counts for the displayed clans."
+          : `Failed to refresh some clan member counts: ${formatTagListForSummary(refreshResult.failedClans)}`;
+      await params.button.followUp({
+        ephemeral: true,
+        content: failedMessage,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `[tracked-clan] stage=list_member_counts_refresh command=list view=${params.viewName} status=FAILURE displayed_count=${refreshTags.length} error=${formatError(error)}`,
+    );
+    await params.interaction.editReply(
+      params.render({ memberCountByTag: currentMemberCounts, refreshing: false }),
+    );
+    await params.button.followUp({
+      ephemeral: true,
+      content: "Failed to refresh member counts for the displayed clans.",
+    });
+  }
+
+  return { refreshedMemberCounts: currentMemberCounts };
 }
 
 export async function refreshRaidTrackedClanListWithQueueContext(input: {
@@ -531,50 +628,108 @@ export const TrackedClan: Command = {
             return;
           }
 
-          const sections: Array<{ title: string; lines: string[] }> = [];
-          const memberCountByTag = await listFwaClanMemberCountsForTags([
+          const refreshPrefix = `tracked-clan-list:summary:${interaction.id}`;
+          const refreshTags = [
             ...fwaTracked.map((clan) => clan.tag),
             ...cwlTracked.map((clan) => clan.tag),
             ...raidTracked.map((clan) => clan.clanTag),
-          ]);
-          if (fwaTracked.length > 0) {
-            sections.push({
-              title: "FWA",
-              lines: fwaTracked.map((clan) =>
-                buildTrackedClanSummaryLine({
-                  ...clan,
-                  memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
-                }),
-              ),
-            });
-          }
-          if (cwlTracked.length > 0) {
-            sections.push({
-              title: "CWL",
-              lines: cwlTracked.map((clan) =>
-                buildTrackedClanSummaryLine({
-                  ...clan,
-                  memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
-                }),
-              ),
-            });
-          }
-          if (raidTracked.length > 0) {
-            sections.push({
-              title: "RAIDS",
-              lines: raidTracked.map((clan) =>
-                buildRaidTrackedClanSummaryLine({
-                  ...clan,
-                  memberCount: memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
-                }),
-              ),
-            });
-          }
-
+          ];
+          let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
           const totalTracked = fwaTracked.length + cwlTracked.length + raidTracked.length;
-          await interaction.editReply({
-            embeds: [buildCombinedTrackedClanListEmbed(totalTracked, buildCombinedTrackedClanListDescription(sections))],
-            components: [],
+          const renderOverview = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
+            const sections: Array<{ title: string; lines: string[] }> = [];
+            if (fwaTracked.length > 0) {
+              sections.push({
+                title: "FWA",
+                lines: fwaTracked.map((clan) =>
+                  buildTrackedClanSummaryLine({
+                    ...clan,
+                    memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+                  }),
+                ),
+              });
+            }
+            if (cwlTracked.length > 0) {
+              sections.push({
+                title: "CWL",
+                lines: cwlTracked.map((clan) =>
+                  buildTrackedClanSummaryLine({
+                    ...clan,
+                    memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+                  }),
+                ),
+              });
+            }
+            if (raidTracked.length > 0) {
+              sections.push({
+                title: "RAIDS",
+                lines: raidTracked.map((clan) =>
+                  buildRaidTrackedClanSummaryLine({
+                    ...clan,
+                    memberCount: input.memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
+                  }),
+                ),
+              });
+            }
+
+            return {
+              embeds: [buildCombinedTrackedClanListEmbed(totalTracked, buildCombinedTrackedClanListDescription(sections))],
+              components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
+            };
+          };
+
+          await interaction.editReply(renderOverview({ memberCountByTag, refreshing: false }));
+
+          const message = await interaction.fetchReply();
+          const collector = message.createMessageComponentCollector({
+            componentType: ComponentType.Button,
+            time: 10 * 60 * 1000,
+            filter: (button) =>
+              button.user.id === interaction.user.id &&
+              button.customId === `${refreshPrefix}:refresh`,
+          });
+
+          collector.on("collect", async (button: ButtonInteraction) => {
+            try {
+              if (button.user.id !== interaction.user.id || button.customId !== `${refreshPrefix}:refresh`) {
+                return;
+              }
+              const refreshResult = await refreshTrackedClanSummaryView({
+                button,
+                interaction,
+                cocService,
+                viewName: "overview",
+                displayedClanTags: refreshTags,
+                currentMemberCounts: memberCountByTag,
+                render: ({ memberCountByTag: counts, refreshing }) =>
+                  renderOverview({ memberCountByTag: counts, refreshing }),
+              });
+              memberCountByTag = refreshResult.refreshedMemberCounts;
+            } catch (err) {
+              console.error(`tracked-clan overview member-count refresh failed: ${formatError(err)}`);
+              if (!button.replied && !button.deferred) {
+                await button.reply({
+                  ephemeral: true,
+                  content: "Failed to refresh tracked clan member counts.",
+                });
+              } else {
+                await button.followUp({
+                  ephemeral: true,
+                  content: "Failed to refresh tracked clan member counts.",
+                });
+              }
+            }
+          });
+
+          collector.on("end", async () => {
+            try {
+              await interaction.editReply({
+                embeds: renderOverview({ memberCountByTag, refreshing: false }).embeds,
+                components: [],
+              });
+            } catch {
+              // no-op
+            }
           });
           return;
         }
@@ -591,16 +746,79 @@ export const TrackedClan: Command = {
           }
 
           if (displayMode === "minimal") {
-            const memberCountByTag = await listFwaClanMemberCountsForTags(tracked.map((clan) => clan.tag));
-            const lines = tracked.map((clan) =>
-              buildTrackedClanSummaryLine({
-                ...clan,
-                memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
-              }),
-            );
-            await interaction.editReply({
-              embeds: [buildTrackedClanSectionEmbed("CWL", tracked.length, buildCombinedTrackedClanListDescription([{ title: "CWL", lines }]))],
-              components: [],
+            const refreshPrefix = `tracked-clan-list:cwl-summary:${interaction.id}`;
+            const refreshTags = tracked.map((clan) => clan.tag);
+            let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
+            const renderCwlMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
+              const lines = tracked.map((clan) =>
+                buildTrackedClanSummaryLine({
+                  ...clan,
+                  memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+                }),
+              );
+              return {
+                embeds: [
+                  buildTrackedClanSectionEmbed(
+                    "CWL",
+                    tracked.length,
+                    buildCombinedTrackedClanListDescription([{ title: "CWL", lines }]),
+                  ),
+                ],
+                components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
+              };
+            };
+            await interaction.editReply(renderCwlMinimal({ memberCountByTag, refreshing: false }));
+
+            const message = await interaction.fetchReply();
+            const collector = message.createMessageComponentCollector({
+              componentType: ComponentType.Button,
+              time: 10 * 60 * 1000,
+              filter: (button) =>
+                button.user.id === interaction.user.id &&
+                button.customId === `${refreshPrefix}:refresh`,
+            });
+
+            collector.on("collect", async (button: ButtonInteraction) => {
+              try {
+                if (button.user.id !== interaction.user.id || button.customId !== `${refreshPrefix}:refresh`) {
+                  return;
+                }
+                const refreshResult = await refreshTrackedClanSummaryView({
+                  button,
+                  interaction,
+                  cocService,
+                  viewName: "cwl-minimal",
+                  displayedClanTags: refreshTags,
+                  currentMemberCounts: memberCountByTag,
+                  render: ({ memberCountByTag: counts, refreshing }) =>
+                    renderCwlMinimal({ memberCountByTag: counts, refreshing }),
+                });
+                memberCountByTag = refreshResult.refreshedMemberCounts;
+              } catch (err) {
+                console.error(`tracked-clan CWL member-count refresh failed: ${formatError(err)}`);
+                if (!button.replied && !button.deferred) {
+                  await button.reply({
+                    ephemeral: true,
+                    content: "Failed to refresh tracked clan member counts.",
+                  });
+                } else {
+                  await button.followUp({
+                    ephemeral: true,
+                    content: "Failed to refresh tracked clan member counts.",
+                  });
+                }
+              }
+            });
+
+            collector.on("end", async () => {
+              try {
+                await interaction.editReply({
+                  embeds: renderCwlMinimal({ memberCountByTag, refreshing: false }).embeds,
+                  components: [],
+                });
+              } catch {
+                // no-op
+              }
             });
             return;
           }
@@ -683,18 +901,79 @@ export const TrackedClan: Command = {
           }
 
           if (displayMode === "minimal") {
-            const memberCountByTag = await listFwaClanMemberCountsForTags(
-              tracked.map((clan) => normalizeRaidTrackedClanTag(clan.clanTag) || clan.clanTag),
-            );
-            const lines = tracked.map((clan) =>
-              buildRaidTrackedClanSummaryLine({
-                ...clan,
-                memberCount: memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
-              }),
-            );
-            await interaction.editReply({
-              embeds: [buildTrackedClanSectionEmbed("RAIDS", tracked.length, buildCombinedTrackedClanListDescription([{ title: "RAIDS", lines }]))],
-              components: [],
+            const refreshPrefix = `tracked-clan-list:raids-summary:${interaction.id}`;
+            const refreshTags = tracked.map((clan) => normalizeRaidTrackedClanTag(clan.clanTag) || clan.clanTag);
+            let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
+            const renderRaidsMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
+              const lines = tracked.map((clan) =>
+                buildRaidTrackedClanSummaryLine({
+                  ...clan,
+                  memberCount: input.memberCountByTag.get(normalizeClanTag(clan.clanTag) || clan.clanTag) ?? null,
+                }),
+              );
+              return {
+                embeds: [
+                  buildTrackedClanSectionEmbed(
+                    "RAIDS",
+                    tracked.length,
+                    buildCombinedTrackedClanListDescription([{ title: "RAIDS", lines }]),
+                  ),
+                ],
+                components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
+              };
+            };
+            await interaction.editReply(renderRaidsMinimal({ memberCountByTag, refreshing: false }));
+
+            const message = await interaction.fetchReply();
+            const collector = message.createMessageComponentCollector({
+              componentType: ComponentType.Button,
+              time: 10 * 60 * 1000,
+              filter: (button) =>
+                button.user.id === interaction.user.id &&
+                button.customId === `${refreshPrefix}:refresh`,
+            });
+
+            collector.on("collect", async (button: ButtonInteraction) => {
+              try {
+                if (button.user.id !== interaction.user.id || button.customId !== `${refreshPrefix}:refresh`) {
+                  return;
+                }
+                const refreshResult = await refreshTrackedClanSummaryView({
+                  button,
+                  interaction,
+                  cocService,
+                  viewName: "raids-minimal",
+                  displayedClanTags: refreshTags,
+                  currentMemberCounts: memberCountByTag,
+                  render: ({ memberCountByTag: counts, refreshing }) =>
+                    renderRaidsMinimal({ memberCountByTag: counts, refreshing }),
+                });
+                memberCountByTag = refreshResult.refreshedMemberCounts;
+              } catch (err) {
+                console.error(`tracked-clan RAIDS member-count refresh failed: ${formatError(err)}`);
+                if (!button.replied && !button.deferred) {
+                  await button.reply({
+                    ephemeral: true,
+                    content: "Failed to refresh tracked clan member counts.",
+                  });
+                } else {
+                  await button.followUp({
+                    ephemeral: true,
+                    content: "Failed to refresh tracked clan member counts.",
+                  });
+                }
+              }
+            });
+
+            collector.on("end", async () => {
+              try {
+                await interaction.editReply({
+                  embeds: renderRaidsMinimal({ memberCountByTag, refreshing: false }).embeds,
+                  components: [],
+                });
+              } catch {
+                // no-op
+              }
             });
             return;
           }
@@ -857,20 +1136,83 @@ export const TrackedClan: Command = {
             await safeReply(interaction, {
               ephemeral: true,
               content:
-                "No tracked clans in the database. You can still set TRACKED_CLANS in .env as fallback.",
+              "No tracked clans in the database. You can still set TRACKED_CLANS in .env as fallback.",
             });
             return;
           }
-          const memberCountByTag = await listFwaClanMemberCountsForTags(tracked.map((clan) => clan.tag));
-          const lines = tracked.map((clan) =>
-            buildTrackedClanSummaryLine({
-              ...clan,
-              memberCount: memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
-            }),
-          );
-          await interaction.editReply({
-            embeds: [buildTrackedClanSectionEmbed("FWA", tracked.length, buildCombinedTrackedClanListDescription([{ title: "FWA", lines }]))],
-            components: [],
+          const refreshPrefix = `tracked-clan-list:fwa-summary:${interaction.id}`;
+          const refreshTags = tracked.map((clan) => clan.tag);
+          let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
+          const renderFwaMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
+            const lines = tracked.map((clan) =>
+              buildTrackedClanSummaryLine({
+                ...clan,
+                memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+              }),
+            );
+            return {
+              embeds: [
+                buildTrackedClanSectionEmbed(
+                  "FWA",
+                  tracked.length,
+                  buildCombinedTrackedClanListDescription([{ title: "FWA", lines }]),
+                ),
+              ],
+              components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
+            };
+          };
+          await interaction.editReply(renderFwaMinimal({ memberCountByTag, refreshing: false }));
+
+          const message = await interaction.fetchReply();
+          const collector = message.createMessageComponentCollector({
+            componentType: ComponentType.Button,
+            time: 10 * 60 * 1000,
+            filter: (button) =>
+              button.user.id === interaction.user.id &&
+              button.customId === `${refreshPrefix}:refresh`,
+          });
+
+          collector.on("collect", async (button: ButtonInteraction) => {
+            try {
+              if (button.user.id !== interaction.user.id || button.customId !== `${refreshPrefix}:refresh`) {
+                return;
+              }
+              const refreshResult = await refreshTrackedClanSummaryView({
+                button,
+                interaction,
+                cocService,
+                viewName: "fwa-minimal",
+                displayedClanTags: refreshTags,
+                currentMemberCounts: memberCountByTag,
+                render: ({ memberCountByTag: counts, refreshing }) =>
+                  renderFwaMinimal({ memberCountByTag: counts, refreshing }),
+              });
+              memberCountByTag = refreshResult.refreshedMemberCounts;
+            } catch (err) {
+              console.error(`tracked-clan FWA member-count refresh failed: ${formatError(err)}`);
+              if (!button.replied && !button.deferred) {
+                await button.reply({
+                  ephemeral: true,
+                  content: "Failed to refresh tracked clan member counts.",
+                });
+              } else {
+                await button.followUp({
+                  ephemeral: true,
+                  content: "Failed to refresh tracked clan member counts.",
+                });
+              }
+            }
+          });
+
+          collector.on("end", async () => {
+            try {
+              await interaction.editReply({
+                embeds: renderFwaMinimal({ memberCountByTag, refreshing: false }).embeds,
+                components: [],
+              });
+            } catch {
+              // no-op
+            }
           });
           return;
         }
