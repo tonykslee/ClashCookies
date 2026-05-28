@@ -339,9 +339,16 @@ async function refreshTrackedClanSummaryView(params: {
   }
 
   try {
-    const refreshResult = await fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags(refreshTags, {
-      cocService: params.cocService,
-    });
+    const refreshResult = await runWithCoCQueueContext(
+      {
+        priority: "interactive",
+        source: `tracked-clan:list:member-counts-refresh:${params.viewName}`,
+      },
+      () =>
+        fwaClanMembersSyncService.refreshCurrentClanMembersForClanTags(refreshTags, {
+          cocService: params.cocService,
+        }),
+    );
     currentMemberCounts = await listFwaClanMemberCountsForTags(refreshTags);
 
     if (refreshResult.failedClans.length > 0) {

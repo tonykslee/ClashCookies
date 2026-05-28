@@ -774,6 +774,13 @@ describe("/clan command behavior", () => {
       ["#2QG2C08UP", "#PYLQ0289", "2RVGJYLC0"],
       { cocService },
     );
+    expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priority: "interactive",
+        source: "tracked-clan:list:member-counts-refresh:overview",
+      }),
+      expect.any(Function),
+    );
     expect(interaction.editReply.mock.calls).toHaveLength(2);
     const refreshedDescription = String(
       interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
