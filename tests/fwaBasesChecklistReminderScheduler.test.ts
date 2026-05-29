@@ -115,6 +115,11 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
       name: "Alpha Clan",
       leaderChannelId: "channel-1",
     });
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as any);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(null as any);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaMatchChecklistBasesCompletionForClan").mockResolvedValue(
+      null as any,
+    );
     vi.spyOn(trackedMessageService, "claimFwaBasesChecklistReminderMarker").mockResolvedValue(true as any);
   });
 
@@ -155,6 +160,63 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
         clanTag: "#ABC",
         bucketHours: 3,
       }),
+    );
+    expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#ABC",
+        warId: 1001,
+        opponentTag: "#OPP1",
+      }),
+    );
+  });
+
+  it("skips sending when the final recheck shows the clan is no longer unchecked", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan).mockResolvedValueOnce(
+      {
+        id: "completion-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "fwa_match_checklist_bases_completion|guild=guild-1|clan=#ABC|war=1001|opponent=#OPP1|start=2026-05-26T18:00:00.000Z",
+        referenceId: "sync-message-1",
+        clanTag: "#ABC",
+        createdAt: new Date("2026-05-26T14:00:00.000Z"),
+        expiresAt: null,
+        metadata: {
+          kind: "bases_completion",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-26T14:00:00.000Z",
+          syncMessageId: null,
+          syncReferenceId: null,
+          clanTag: "#ABC",
+          clanName: "Alpha Clan",
+          checked: true,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      } as any,
+    );
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=no_longer_unchecked"),
     );
   });
 
