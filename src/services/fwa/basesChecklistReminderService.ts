@@ -201,15 +201,13 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
       const dueBucketHours = dueOffsets[dueOffsets.length - 1] ?? null;
       if (dueBucketHours === null) continue;
 
-      const activeBaseSwap = currentSyncIdentity
-        ? await trackedMessageService
-            .findLatestActiveFwaBaseSwapTrackedMessageForClan({
-              guildId,
-              clanTag,
-              syncMessageId: currentSyncIdentity,
-            })
-            .catch(() => null)
-        : null;
+      const activeBaseSwap = await trackedMessageService
+        .findLatestActiveFwaBaseSwapTrackedMessageForClan({
+          guildId,
+          clanTag,
+          syncMessageId: currentSyncIdentity,
+        })
+        .catch(() => null);
       if (activeBaseSwap) {
         dozzleLog.debug(
           `[fwa bases-check reminder] candidate_suppressed guildId=${guildId} clanTag=${clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} reason=base_swap_exists syncMessageId=${currentSyncIdentity ?? "missing"} trackedMessageId=${activeBaseSwap.messageId} messageId=${activeBaseSwap.messageId}`,
