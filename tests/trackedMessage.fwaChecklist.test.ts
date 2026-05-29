@@ -352,6 +352,48 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBeNull();
   });
 
+  it("does not treat a legacy active completion as current when the war identity does not match", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        id: "tracked-legacy-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId:
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z",
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: null,
+        clanTag: "#PYPY",
+        expiresAt: null,
+        createdAt: new Date("2026-05-13T18:00:01.000Z"),
+        metadata: {
+          kind: "bases_completion",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T18:00:00.000Z",
+          clanTag: "#PYPY",
+          clanName: "Alpha",
+          checked: true,
+          warId: "1001",
+          opponentTag: "OPP1",
+          warStartTimeIso: "2026-05-13T18:00:00.000Z",
+          syncMessageId: null,
+          syncReferenceId: null,
+        },
+      },
+    ] as any);
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-14T18:00:00.000Z"),
+        opponentTag: "OPP2",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("replaces older public bases checklist rows and unpins pinned messages", async () => {
     const oldUnpin = vi.fn().mockResolvedValue(undefined);
     const resolveMessageForCleanup = vi.fn().mockResolvedValue({
