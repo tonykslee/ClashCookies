@@ -5,7 +5,7 @@ import {
   isMirrorPollingMode,
   resolveRuntimeEnvironment,
 } from "../PollingModeService";
-import { trackedMessageService } from "../TrackedMessageService";
+import { resolveTrackedMessageSyncIdentity, trackedMessageService } from "../TrackedMessageService";
 import {
   buildFwaBasesChecklistReminderContent,
   findPendingFwaBasesChecklistReminderCandidates,
@@ -201,6 +201,36 @@ export class FwaBasesChecklistReminderSchedulerService {
           skipped += 1;
           dozzleLog.info(
             `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=mm_match_type`,
+          );
+          continue;
+        }
+
+        const latestActiveSyncPost = await trackedMessageService
+          .resolveLatestActiveSyncPost(candidate.guildId)
+          .catch(() => null);
+        const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+        const activeBaseSwap = await trackedMessageService
+          .findLatestActiveFwaBaseSwapTrackedMessageForClan({
+            guildId: candidate.guildId,
+            clanTag: candidate.clanTag,
+            syncMessageId: currentSyncIdentity,
+          })
+          .catch(() => null);
+        const activeCompletion = await trackedMessageService
+          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+            guildId: candidate.guildId,
+            clanTag: candidate.clanTag,
+            warId: candidate.warId,
+            warStartTime: candidate.battleDayStart,
+            opponentTag: candidate.opponentTag,
+            syncMessageId: currentSyncIdentity,
+            syncReferenceId: currentSyncIdentity,
+          })
+          .catch(() => null);
+        if (activeBaseSwap || activeCompletion) {
+          skipped += 1;
+          dozzleLog.info(
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=no_longer_unchecked`,
           );
           continue;
         }

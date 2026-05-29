@@ -1763,6 +1763,95 @@ export class TrackedMessageService {
     };
   }
 
+  async findLatestActiveFwaMatchChecklistBasesCompletionForClan(params: {
+    guildId: string;
+    clanTag: string;
+    warId?: string | number | null;
+    warStartTime?: Date | null;
+    opponentTag?: string | null;
+    syncMessageId?: string | null;
+    syncReferenceId?: string | null;
+  }): Promise<FwaMatchChecklistBasesCompletionSnapshot | null> {
+    const exact = await this.findLatestFwaMatchChecklistBasesCompletionForClan(params).catch(() => null);
+    if (exact) return exact;
+
+    const guildId = String(params.guildId ?? "").trim();
+    const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+    if (!guildId || !normalizedClanTag) return null;
+
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        messageId: {
+          startsWith: FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX,
+        },
+        OR: [
+          { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+          {
+            clanTag: {
+              equals: normalizedClanTag.replace(/^#/, ""),
+              mode: "insensitive",
+            },
+          },
+          {
+            clanTag: {
+              equals: `#${normalizedClanTag.replace(/^#/, "")}`,
+              mode: "insensitive",
+            },
+          },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        id: true,
+        guildId: true,
+        channelId: true,
+        messageId: true,
+        referenceId: true,
+        clanTag: true,
+        createdAt: true,
+        expiresAt: true,
+        metadata: true,
+      },
+    });
+
+    const expectedWarId = normalizeWarIdText(params.warId ?? null);
+    const expectedOpponentTag = normalizeChecklistClanTag(String(params.opponentTag ?? "")) || null;
+    const expectedWarStartTimeIso =
+      params.warStartTime instanceof Date && Number.isFinite(params.warStartTime.getTime())
+        ? params.warStartTime.toISOString()
+        : null;
+    const allowWarStartTimeMatch = expectedWarStartTimeIso !== null;
+    const allowWarIdOpponentMatch = expectedWarId !== null && expectedOpponentTag !== null;
+    if (!allowWarStartTimeMatch && !allowWarIdOpponentMatch) return null;
+
+    for (const row of rows) {
+      const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
+      if (!metadata || !metadata.checked) continue;
+      if (allowWarStartTimeMatch) {
+        if (metadata.warStartTimeIso !== expectedWarStartTimeIso) continue;
+      } else if (allowWarIdOpponentMatch) {
+        if (metadata.warId !== expectedWarId) continue;
+        if (metadata.opponentTag !== expectedOpponentTag) continue;
+      }
+      return {
+        id: row.id,
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        referenceId: row.referenceId ?? null,
+        clanTag: row.clanTag ?? null,
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt ?? null,
+        metadata,
+      };
+    }
+
+    return null;
+  }
+
   async recordSyncClaim(messageId: string, userId: string, reaction: { emoji: { id: string | null; name: string | null } }): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({ where: { messageId } });
     if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;

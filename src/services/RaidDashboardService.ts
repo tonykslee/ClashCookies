@@ -592,6 +592,11 @@ function formatRaidDashboardAverageAttacksPerCompletedRaid(value: number | null)
 }
 
 function buildRaidDashboardOverviewOffenseLine(row: RaidDashboardClanRow): string {
+  const hasOffensiveProgress =
+    (row.attacksCompleted ?? 0) > 0 ||
+    row.offensiveDistrictsDestroyed !== null ||
+    row.offensiveAverageAttacksPerCompletedRaid !== null;
+  if (!hasOffensiveProgress) return "";
   const totalAttacks = row.attacksCompleted === null ? "—" : String(row.attacksCompleted);
   const destroyedDistricts =
     row.offensiveDistrictsDestroyed === null ? "—" : String(row.offensiveDistrictsDestroyed);
@@ -1691,7 +1696,10 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
     if (intelLine) {
       lines.push(intelLine);
     }
-    lines.push(buildRaidDashboardOverviewOffenseLine(row));
+    const offenseLine = buildRaidDashboardOverviewOffenseLine(row);
+    if (offenseLine) {
+      lines.push(offenseLine);
+    }
     for (const section of row.openDefenseSections ?? []) {
       const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
       if (text) {
