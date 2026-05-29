@@ -1823,13 +1823,19 @@ export class TrackedMessageService {
       params.warStartTime instanceof Date && Number.isFinite(params.warStartTime.getTime())
         ? params.warStartTime.toISOString()
         : null;
+    const allowWarStartTimeMatch = expectedWarStartTimeIso !== null;
+    const allowWarIdOpponentMatch = expectedWarId !== null && expectedOpponentTag !== null;
+    if (!allowWarStartTimeMatch && !allowWarIdOpponentMatch) return null;
 
     for (const row of rows) {
       const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
       if (!metadata || !metadata.checked) continue;
-      if (expectedWarId !== null && metadata.warId !== expectedWarId) continue;
-      if (expectedOpponentTag !== null && metadata.opponentTag !== expectedOpponentTag) continue;
-      if (expectedWarStartTimeIso !== null && metadata.warStartTimeIso !== expectedWarStartTimeIso) continue;
+      if (allowWarStartTimeMatch) {
+        if (metadata.warStartTimeIso !== expectedWarStartTimeIso) continue;
+      } else if (allowWarIdOpponentMatch) {
+        if (metadata.warId !== expectedWarId) continue;
+        if (metadata.opponentTag !== expectedOpponentTag) continue;
+      }
       return {
         id: row.id,
         guildId: row.guildId,
