@@ -738,8 +738,82 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).not.toContain("- 🏘️");
-    expect(overview).toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
+    expect(overview).not.toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
     expect(overview).not.toContain("GM, SP, GQ");
+  });
+
+  it("hides the offensive overview line before any attacks have started", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: 0,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 1,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: null,
+        offensiveAverageAttacksPerCompletedRaid: null,
+      } as any,
+    ]);
+
+    expect(overview).not.toContain("- 🗡 0 🏠 —/9 📈 — att/raid");
+    expect(overview).not.toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
+    expect(overview).not.toContain("att/raid");
+  });
+
+  it("still renders offense progress once attacks have started even with partial metrics", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 1,
+        attacksMax: 12,
+        hasOngoingRaid: true,
+        raidsCompleted: 0,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: null,
+        offensiveAverageAttacksPerCompletedRaid: null,
+      } as any,
+    ]);
+
+    expect(overview).toContain("- 🗡 1 🏠 —/9 📈 — att/raid");
+  });
+
+  it("still renders the offensive overview line for a started raid with zero cleared districts", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 0,
+        attacksMax: 12,
+        hasOngoingRaid: true,
+        raidsCompleted: 0,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: 0,
+        offensiveAverageAttacksPerCompletedRaid: null,
+      } as any,
+    ]);
+
+    expect(overview).toContain("- 🗡 0 🏠 0/9 📈 — att/raid");
   });
 
   it("sorts overview rows by ongoing status, raids completed, and default layout count", async () => {
