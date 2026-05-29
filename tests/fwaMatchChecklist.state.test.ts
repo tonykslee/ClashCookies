@@ -144,15 +144,27 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         outcome: "WIN",
       },
     ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-2",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-2",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T16:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
     vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockImplementation(
-      async ({ clanTag }) => {
+      async ({ clanTag, syncMessageId }) => {
         if (clanTag !== "#PYPY") return null;
+        if (syncMessageId !== "sync-message-2") return null;
         return {
           id: "tracked-1",
           guildId: "guild-1",
           channelId: "channel-1",
           messageId: "message-1",
-          referenceId: "ref-1",
+          referenceId: "fwa-base-swap:split-1",
           clanTag: "#PYPY",
           createdAt: new Date("2026-05-13T17:00:00.000Z"),
           expiresAt: null,
@@ -160,6 +172,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
             clanName: "Alpha",
             createdByUserId: "user-1",
             createdAtIso: "2026-05-13T17:00:00.000Z",
+            syncMessageId: "sync-message-2",
             clanRoleId: null,
             swapReminder: true,
             entries: [
@@ -188,16 +201,17 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     );
     vi.mocked(
       trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
-    ).mockImplementation(async ({ clanTag, warId }) => {
+    ).mockImplementation(async ({ clanTag, warId, syncMessageId }) => {
       if (clanTag !== "#PYPL") return null;
       if (String(warId ?? "") !== "2") return null;
+      if (syncMessageId !== "sync-message-2") return null;
       return {
         id: "completion-1",
         guildId: "guild-1",
         channelId: "channel-1",
         messageId:
-          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z",
-        referenceId: null,
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z|sync=sync-message-2",
+        referenceId: "sync-message-2",
         clanTag: "#PYPL",
         createdAt: new Date("2026-05-13T21:59:00.000Z"),
         expiresAt: null,
@@ -205,6 +219,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
           kind: "bases_completion",
           createdByUserId: "user-1",
           createdAtIso: "2026-05-13T21:58:00.000Z",
+          syncMessageId: "sync-message-2",
+          syncReferenceId: null,
           clanTag: "PYPL",
           clanName: "Bravo",
           checked: true,
@@ -238,8 +254,10 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         warId: 2,
         warStartTime: new Date("2026-05-13T22:00:00.000Z"),
         opponentTag: "#OPP2",
+        syncMessageId: "sync-message-2",
       }),
     );
+    expect(state.referenceId).toBe("sync-message-2");
     expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
     expect(getCurrentWar).not.toHaveBeenCalled();
   });
@@ -294,12 +312,23 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         outcome: null,
       },
     ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-2",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-2",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T16:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
     vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue({
       id: "tracked-bl",
       guildId: "guild-1",
       channelId: "channel-1",
       messageId: "message-bl",
-      referenceId: "ref-bl",
+      referenceId: "fwa-base-swap:split-2",
       clanTag: "#PYPY",
       createdAt: new Date("2026-05-13T17:00:00.000Z"),
       expiresAt: null,
@@ -307,6 +336,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         clanName: "Alpha",
         createdByUserId: "user-1",
         createdAtIso: "2026-05-13T17:00:00.000Z",
+        syncMessageId: "sync-message-2",
         clanRoleId: null,
         swapReminder: true,
         entries: [
@@ -393,32 +423,123 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows[0].detailLines).toBeNull();
   });
 
-  it("does not carry bases completion into a different current-war identity", async () => {
+  it("does not carry bases issues into a different sync identity", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
-        clanTag: "#PYPL",
-        warId: 3,
-        startTime: new Date("2026-05-14T22:00:00.000Z"),
-        opponentTag: "#OPP3",
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
         matchType: "BL",
         inferredMatchType: null,
         outcome: null,
       },
     ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-4",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-4",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T21:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockImplementation(
+      async ({ clanTag, syncMessageId }) => {
+        if (clanTag !== "#PYPY") return null;
+        if (syncMessageId !== "sync-message-2") return null;
+        return {
+          id: "tracked-stale",
+          guildId: "guild-1",
+          channelId: "channel-1",
+          messageId: "message-stale",
+          referenceId: "fwa-base-swap:split-stale",
+          clanTag: "#PYPY",
+          createdAt: new Date("2026-05-13T17:00:00.000Z"),
+          expiresAt: null,
+          metadata: {
+            clanName: "Alpha",
+            createdByUserId: "user-1",
+            createdAtIso: "2026-05-13T17:00:00.000Z",
+            syncMessageId: "sync-message-2",
+            clanRoleId: null,
+            swapReminder: true,
+            entries: [
+              {
+                position: 35,
+                playerTag: "#CCC",
+                playerName: "OnlyFwa",
+                discordUserId: "333",
+                townhallLevel: 13,
+                section: "fwa_bases",
+                acknowledged: false,
+              },
+            ],
+          } as any,
+        } as any;
+      },
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).not.toContain("[base-swap post](");
+    expect(state.rows[0].detailLines).toBeNull();
+  });
+
+  it("does not carry bases completion into a different sync identity", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPL",
+        warId: 2,
+        startTime: new Date("2026-05-13T22:00:00.000Z"),
+        opponentTag: "#OPP2",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-3",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-3",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T21:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
     vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(
       null as any,
     );
     vi.mocked(
       trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
-    ).mockImplementation(async ({ clanTag, warId, opponentTag }) => {
-      if (clanTag === "#PYPL" && String(warId ?? "") === "2" && opponentTag === "#OPP2") {
+    ).mockImplementation(async ({ clanTag, warId, opponentTag, syncMessageId }) => {
+      if (
+        clanTag === "#PYPL" &&
+        String(warId ?? "") === "2" &&
+        opponentTag === "#OPP2" &&
+        syncMessageId === "sync-message-2"
+      ) {
         return {
           id: "completion-old",
           guildId: "guild-1",
           channelId: "channel-1",
           messageId:
-            "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z",
-          referenceId: null,
+            "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPL|war=2|opponent=OPP2|start=2026-05-13T22:00:00.000Z|sync=sync-message-2",
+          referenceId: "sync-message-2",
           clanTag: "#PYPL",
           createdAt: new Date("2026-05-13T21:59:00.000Z"),
           expiresAt: null,
@@ -426,6 +547,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
             kind: "bases_completion",
             createdByUserId: "user-1",
             createdAtIso: "2026-05-13T21:58:00.000Z",
+            syncMessageId: "sync-message-2",
+            syncReferenceId: null,
             clanTag: "PYPL",
             clanName: "Bravo",
             checked: true,

@@ -1,8 +1,10 @@
 import { prisma } from "../../prisma";
+import { dozzleLog } from "../../helper/dozzleLogger";
 import { normalizeClanTag } from "../PlayerLinkService";
 import { isTodoWarStateActive } from "../TodoTrackedWarStateService";
 import {
   buildFwaBasesChecklistReminderMessageId,
+  resolveTrackedMessageSyncIdentity,
   trackedMessageService,
 } from "../TrackedMessageService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../FwaMatchChecklistStateService";
@@ -167,6 +169,10 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
 
   const candidates: FwaBasesChecklistReminderCandidate[] = [];
   for (const guildId of activeGuildIds) {
+    const latestActiveSyncPost = await trackedMessageService
+      .resolveLatestActiveSyncPost(guildId)
+      .catch(() => null);
+    const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
     const renderState = await buildFwaMatchChecklistRenderStateForGuild({
       cocService: {} as any,
       guildId,
@@ -194,6 +200,20 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
       if (dueOffsets.length === 0) continue;
       const dueBucketHours = dueOffsets[dueOffsets.length - 1] ?? null;
       if (dueBucketHours === null) continue;
+
+      const activeBaseSwap = await trackedMessageService
+        .findLatestActiveFwaBaseSwapTrackedMessageForClan({
+          guildId,
+          clanTag,
+          syncMessageId: currentSyncIdentity,
+        })
+        .catch(() => null);
+      if (activeBaseSwap) {
+        dozzleLog.debug(
+          `[fwa bases-check reminder] candidate_suppressed guildId=${guildId} clanTag=${clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} reason=base_swap_exists syncMessageId=${currentSyncIdentity ?? "missing"} trackedMessageId=${activeBaseSwap.messageId} messageId=${activeBaseSwap.messageId}`,
+        );
+        continue;
+      }
 
       const reminderMessageId = buildFwaBasesChecklistReminderMessageId({
         guildId,

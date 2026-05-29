@@ -509,6 +509,10 @@ export async function handleFwaBaseSwapSplitPostButton(
   }
   const { channel: mailChannel, channelId: mailChannelId } =
     resolvedMailChannel;
+  const latestActiveSyncPost = await trackedMessageService
+    .resolveLatestActiveSyncPost(payload.guildId)
+    .catch(() => null);
+  const syncMessageId = latestActiveSyncPost?.messageId ?? null;
 
   try {
     const clanKind = payload.clanKind ?? "FWA";
@@ -531,6 +535,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       clanTag: payload.clanTag,
       expiresAt,
       referenceId: `fwa-base-swap:${parsed.key}`,
+      syncMessageId,
       messages: [
         {
           channelId: mailChannelId,
@@ -540,6 +545,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
+            syncMessageId,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -558,6 +564,7 @@ export async function handleFwaBaseSwapSplitPostButton(
             clanName: payload.clanName,
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
+            syncMessageId,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -13627,6 +13634,9 @@ export const Fwa: Command = {
           await editReplySafe(`Clan ${resolvedClan.tag} is not in an active war.`);
           return;
         }
+        const latestActiveSyncPost = await trackedMessageService
+          .resolveLatestActiveSyncPost(interaction.guildId ?? "")
+          .catch(() => null);
         const updated = await trackedMessageService.setFwaMatchChecklistBasesCompletion({
           guildId: interaction.guildId ?? "",
           channelId: interaction.channelId,
@@ -13640,6 +13650,7 @@ export const Fwa: Command = {
           warStartTime: currentWar.startTime ?? null,
           opponentTag: currentWar.opponentTag ?? null,
           checked: Boolean(checklistCheckedOption),
+          syncMessageId: latestActiveSyncPost?.messageId ?? latestActiveSyncPost?.referenceId ?? null,
         });
         if (!updated) {
           await editReplySafe("Unable to update bases completion state.");
@@ -14037,10 +14048,15 @@ export const Fwa: Command = {
       });
       const reminderMessages: string[] = [posted.url];
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
+      const latestActiveSyncPost = await trackedMessageService
+        .resolveLatestActiveSyncPost(interaction.guildId)
+        .catch(() => null);
+      const syncMessageId = latestActiveSyncPost?.messageId ?? null;
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
         clanTag,
         expiresAt,
+        syncMessageId,
         messages: [
           {
             channelId: mailChannelId,
@@ -14049,6 +14065,7 @@ export const Fwa: Command = {
               clanName,
               createdByUserId: interaction.user.id,
               createdAtIso,
+              syncMessageId,
               entries,
               layoutLinks,
               phaseTimingLine: baseSwapPhaseTimingLine,

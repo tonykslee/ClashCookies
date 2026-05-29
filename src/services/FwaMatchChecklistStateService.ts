@@ -11,6 +11,7 @@ import {
   type FwaMatchChecklistTrackedRow,
   trackedMessageService,
   buildFwaMatchCompactCopyLine,
+  resolveTrackedMessageSyncIdentity,
 } from "./TrackedMessageService";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { WarMailLifecycleService } from "./WarMailLifecycleService";
@@ -211,6 +212,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   const latestActiveSyncPost = await trackedMessageService
     .resolveLatestActiveSyncPost(params.guildId)
     .catch(() => null);
+  const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, clanBadge: true, name: true, shortName: true },
@@ -225,7 +227,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         rows: [],
       }),
       checkedClanTags: [],
-      referenceId: latestActiveSyncPost?.messageId ?? null,
+      referenceId: currentSyncIdentity,
       expiresAt: buildFallbackChecklistExpiresAt(),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
     };
@@ -258,12 +260,15 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? currentWar
         : null;
     checklistExpiresAtCandidates.push(activeCurrentWar?.startTime ?? null);
-    const activeBaseSwap = await trackedMessageService
-      .findLatestActiveFwaBaseSwapTrackedMessageForClan({
-        guildId: params.guildId,
-        clanTag,
-      })
-      .catch(() => null);
+    const activeBaseSwap = currentSyncIdentity
+      ? await trackedMessageService
+          .findLatestActiveFwaBaseSwapTrackedMessageForClan({
+            guildId: params.guildId,
+            clanTag,
+            syncMessageId: currentSyncIdentity,
+          })
+          .catch(() => null)
+      : null;
     const issueSummary = activeBaseSwap
       ? buildFwaBaseSwapIssueSummary(
           activeBaseSwap.metadata,
@@ -294,17 +299,19 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           messageId: activeBaseSwap.messageId,
         })
       : null;
-    const allGoodCompletion = issueSummary.hasIssues
-      ? null
-      : await trackedMessageService
-          .findLatestFwaMatchChecklistBasesCompletionForClan({
-            guildId: params.guildId,
-            clanTag,
-            warId: activeCurrentWar?.warId ?? null,
-            warStartTime: activeCurrentWar?.startTime ?? null,
-            opponentTag: activeCurrentWar?.opponentTag ?? null,
-          })
-          .catch(() => null);
+    const allGoodCompletion =
+      issueSummary.hasIssues || !currentSyncIdentity
+        ? null
+        : await trackedMessageService
+            .findLatestFwaMatchChecklistBasesCompletionForClan({
+              guildId: params.guildId,
+              clanTag,
+              warId: activeCurrentWar?.warId ?? null,
+              warStartTime: activeCurrentWar?.startTime ?? null,
+              opponentTag: activeCurrentWar?.opponentTag ?? null,
+              syncMessageId: currentSyncIdentity,
+            })
+            .catch(() => null);
     const statusText = issueSummary.hasIssues
       ? `${issueSummary.statusText}${issueLink ? `: [base-swap post](${issueLink})` : ""}`
       : allGoodCompletion
@@ -341,7 +348,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     rows,
     scopeKey,
     checkedClanTags: [],
-    referenceId: latestActiveSyncPost?.messageId ?? null,
+    referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
       warStartTimes: checklistExpiresAtCandidates,
     }),
@@ -437,6 +444,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const latestActiveSyncPost = await trackedMessageService
     .resolveLatestActiveSyncPost(params.guildId)
     .catch(() => null);
+  const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, clanBadge: true, name: true, shortName: true },
@@ -451,7 +459,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
         rows: [],
       }),
       checkedClanTags: [],
-      referenceId: latestActiveSyncPost?.messageId ?? null,
+      referenceId: currentSyncIdentity,
       expiresAt: buildFallbackChecklistExpiresAt(),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
     };
@@ -552,7 +560,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     rows,
     scopeKey,
     checkedClanTags,
-    referenceId: latestActiveSyncPost?.messageId ?? null,
+    referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
       warStartTimes: checklistExpiresAtCandidates,
     }),
