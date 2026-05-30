@@ -320,6 +320,7 @@ function parseTodoRefreshButtonCustomId(
 function buildTodoComponentRows(
   scope: TodoButtonScope,
   activeType: TodoType,
+  options?: { refreshing?: boolean },
 ): ActionRowBuilder<ButtonBuilder>[] {
   const pagingButtons = TODO_TYPES.map((type) =>
     new ButtonBuilder()
@@ -343,8 +344,15 @@ function buildTodoComponentRows(
         type: activeType,
       }),
     )
-    .setEmoji(TODO_REFRESH_BUTTON_EMOJI)
     .setStyle(ButtonStyle.Secondary);
+  if (options?.refreshing) {
+    refreshButton
+      .setLabel("Refreshing")
+      .setEmoji("⏳")
+      .setDisabled(true);
+  } else {
+    refreshButton.setEmoji(TODO_REFRESH_BUTTON_EMOJI);
+  }
 
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(pagingButtons),
@@ -502,7 +510,17 @@ export async function handleTodoRefreshButtonInteraction(
     todoRefreshInFlightByMessageId.add(messageId);
   }
 
-  await interaction.deferUpdate();
+  await interaction.update({
+    components: buildTodoComponentRows(
+      {
+        guildScopeId: parsed.guildScopeId || resolveTodoGuildScopeId(interaction.guildId),
+        requesterUserId: parsed.requesterUserId,
+        targetUserId: parsed.targetUserId,
+      },
+      parsed.type,
+      { refreshing: true },
+    ),
+  });
 
   try {
     await refreshTodoSnapshotsForDiscordUser({
@@ -543,6 +561,32 @@ export async function handleTodoRefreshButtonInteraction(
     console.error(
       `[todo-refresh] requester=${parsed.requesterUserId} target=${parsed.targetUserId} guild=${parsed.guildScopeId} type=${parsed.type} error=${formatError(err)}`,
     );
+    const restoreResult = await buildTodoRenderResult({
+      cocService,
+      selectedType: parsed.type,
+      scope: {
+        guildScopeId: parsed.guildScopeId || resolveTodoGuildScopeId(interaction.guildId),
+        requesterUserId: parsed.requesterUserId,
+        targetUserId: parsed.targetUserId,
+      },
+    });
+    if (restoreResult.ok) {
+      await interaction.editReply({
+        content: null,
+        ...restoreResult.payload,
+      });
+    } else {
+      await interaction.editReply({
+        components: buildTodoComponentRows(
+          {
+            guildScopeId: parsed.guildScopeId || resolveTodoGuildScopeId(interaction.guildId),
+            requesterUserId: parsed.requesterUserId,
+            targetUserId: parsed.targetUserId,
+          },
+          parsed.type,
+        ),
+      });
+    }
     await interaction
       .followUp({
         ephemeral: true,

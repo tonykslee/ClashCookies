@@ -150,6 +150,16 @@ type WarAttacksRow = {
   attackSeenAt: Date;
 };
 
+type TrackedWarRosterDriftDiagnostic = {
+  clanTag: string;
+  rawMemberCount: number;
+  derivedMemberCount: number;
+  missingDerivedMemberCount: number;
+  rosterCurrentExists: boolean;
+  currentWarState: string;
+  missingDerivedMemberSampleTags: string[];
+};
+
 type TodoGamesDerivedValues = {
   points: number | null;
   target: number | null;
@@ -770,46 +780,6 @@ export class TodoSnapshotService {
     const rosterCurrentClanTagSet = new Set(
       rosterCurrentRows.map((row) => normalizeClanTag(row.clanTag)).filter(Boolean),
     );
-    const allowedFwaWarMemberFallbackByPlayerTag = new Map<string, WarMemberCurrentRow>();
-    for (const row of fwaWarMemberFallbackByClanAndPlayer.values()) {
-      const playerTag = normalizePlayerTag(row.playerTag);
-      const clanTag = normalizeClanTag(row.clanTag);
-      if (!playerTag || !clanTag) continue;
-      if (!activeTrackedCurrentWarByClanTag.has(clanTag)) continue;
-      if (rosterCurrentClanTagSet.has(clanTag)) continue;
-
-      const existing = allowedFwaWarMemberFallbackByPlayerTag.get(playerTag);
-      if (!existing) {
-        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
-        continue;
-      }
-
-      const existingSyncedAt = existing.sourceSyncedAt.getTime();
-      const nextSyncedAt = row.sourceSyncedAt.getTime();
-      if (nextSyncedAt > existingSyncedAt) {
-        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
-        continue;
-      }
-      if (nextSyncedAt < existingSyncedAt) continue;
-
-      const existingPosition =
-        existing.position !== null && existing.position > 0
-          ? existing.position
-          : Number.MAX_SAFE_INTEGER;
-      const nextPosition =
-        row.position !== null && row.position > 0
-          ? row.position
-          : Number.MAX_SAFE_INTEGER;
-      if (nextPosition < existingPosition) {
-        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
-        continue;
-      }
-      if (nextPosition > existingPosition) continue;
-
-      if (clanTag.localeCompare(existing.clanTag) < 0) {
-        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
-      }
-    }
     const activeTrackedWarRosterRows = trackedWarRosterRows.filter((row) => {
       const clanTag = normalizeClanTag(row.clanTag);
       return Boolean(
@@ -833,6 +803,19 @@ export class TodoSnapshotService {
         row,
       ] as const),
     );
+    const allowedFwaWarMemberFallbackByPlayerTag = new Map<string, WarMemberCurrentRow>();
+    for (const row of fwaWarMemberFallbackByClanAndPlayer.values()) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const clanTag = normalizeClanTag(row.clanTag);
+      if (!playerTag || !clanTag) continue;
+      if (!activeTrackedCurrentWarByClanTag.has(clanTag)) continue;
+      if (activeTrackedWarRosterByClanAndPlayer.has(`${clanTag}:${playerTag}`)) continue;
+
+      const existing = allowedFwaWarMemberFallbackByPlayerTag.get(playerTag);
+      if (!existing || isBetterWarMemberFallbackCandidate(row, existing)) {
+        allowedFwaWarMemberFallbackByPlayerTag.set(playerTag, row);
+      }
+    }
     const trackedWarAttackRows: WarAttacksRow[] =
       activeTrackedClanTags.length > 0
         ? await prisma.warAttacks.findMany({
@@ -860,6 +843,17 @@ export class TodoSnapshotService {
       rosterRows: activeTrackedWarRosterRows,
       warAttackRows: trackedWarAttackRows,
     });
+    const trackedWarRosterDriftDiagnostics = buildTrackedWarRosterDriftDiagnostics({
+      activeTrackedCurrentWarByClanTag,
+      rosterCurrentClanTagSet,
+      rawWarMemberByClanAndPlayer: fwaWarMemberFallbackByClanAndPlayer,
+      derivedWarRosterByClanAndPlayer: activeTrackedWarRosterByClanAndPlayer,
+    });
+    for (const diagnostic of trackedWarRosterDriftDiagnostics) {
+      console.warn(
+        `[todo-snapshot] event=tracked_war_roster_drift clanTag=${diagnostic.clanTag} rawMemberCount=${diagnostic.rawMemberCount} derivedMemberCount=${diagnostic.derivedMemberCount} missingDerivedMemberCount=${diagnostic.missingDerivedMemberCount} rosterCurrentExists=${diagnostic.rosterCurrentExists} currentWarState=${diagnostic.currentWarState} missingDerivedMemberSampleTags=${diagnostic.missingDerivedMemberSampleTags.length > 0 ? diagnostic.missingDerivedMemberSampleTags.join(",") : "none"}`,
+      );
+    }
     const cwlTrackedTagSet = new Set(
       cwlTrackedClanRows
         .map((row) => normalizeClanTag(row.tag))
@@ -964,6 +958,8 @@ export class TodoSnapshotService {
     > = [];
     let raidActiveTrueCount = 0;
     let raidActiveFalseCount = 0;
+    const fallbackWarMemberUsedClanTags = new Set<string>();
+    const fallbackWarMemberUsedPlayerTags = new Set<string>();
 
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag);
@@ -1065,12 +1061,6 @@ export class TodoSnapshotService {
       const cwlAttacksMax = cwlParticipant
         ? Math.max(0, clampInt(currentCwlMember?.attacksAvailable, 0, 1))
         : 0;
-      const resolvedPlayerName =
-        sanitizeDisplayText(activeRosterRow?.playerName ?? "") ||
-        sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
-        latestCatalogNameByTag.get(playerTag) ||
-        sanitizeDisplayText(existing?.playerName ?? "") ||
-        playerTag;
       const livePlayer = liveClanTagByPlayerTag.get(playerTag) ?? { clanTag: "", townHall: null };
 
       const currentWar = resolvedClanTag
@@ -1093,6 +1083,13 @@ export class TodoSnapshotService {
           ? allowedFallbackWarMember
           : null;
       const warMember = trackedWarMember ?? allowedFallbackWarMemberForResolvedClan ?? null;
+      if (
+        allowedFallbackWarMemberForResolvedClan &&
+        warMember === allowedFallbackWarMemberForResolvedClan
+      ) {
+        fallbackWarMemberUsedClanTags.add(allowedFallbackWarMemberForResolvedClan.clanTag);
+        fallbackWarMemberUsedPlayerTags.add(playerTag);
+      }
       const warActive = warStateActive && warMember !== null;
       const warPhase = warActive
         ? normalizeWarPhaseLabel(currentWar?.state ?? "")
@@ -1107,6 +1104,13 @@ export class TodoSnapshotService {
             : allowedFallbackWarMemberForResolvedClan
               ? clampInt(allowedFallbackWarMemberForResolvedClan.attacks, 0, 2)
               : 0;
+      const resolvedPlayerName =
+        sanitizeDisplayText(activeRosterRow?.playerName ?? "") ||
+        sanitizeDisplayText(allowedFallbackWarMemberForResolvedClan?.playerName ?? "") ||
+        sanitizeDisplayText(latestClanMember?.playerName ?? "") ||
+        latestCatalogNameByTag.get(playerTag) ||
+        sanitizeDisplayText(existing?.playerName ?? "") ||
+        playerTag;
       const resolvedTownHall = (() => {
         if (livePlayer.townHall !== null && livePlayer.townHall !== undefined && livePlayer.townHall > 0) {
           return livePlayer.townHall;
@@ -1186,6 +1190,12 @@ export class TodoSnapshotService {
           ...data,
         },
       });
+    }
+
+    if (fallbackWarMemberUsedPlayerTags.size > 0) {
+      console.info(
+        `[todo-snapshot] event=tracked_war_roster_member_fallback_used reason=missing_derived_roster_member clan_count=${fallbackWarMemberUsedClanTags.size} player_count=${fallbackWarMemberUsedPlayerTags.size}`,
+      );
     }
 
     console.info(
@@ -1501,6 +1511,96 @@ function pickLatestWarMemberByClanAndPlayer(
     }
   }
   return latest;
+}
+
+/** Purpose: summarize tracked-war roster drift when derived roster members lag behind raw WarMembers. */
+function buildTrackedWarRosterDriftDiagnostics(input: {
+  activeTrackedCurrentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
+  rosterCurrentClanTagSet: Set<string>;
+  rawWarMemberByClanAndPlayer: Map<string, WarMemberCurrentRow>;
+  derivedWarRosterByClanAndPlayer: Map<string, TodoTrackedWarRosterRow>;
+}): TrackedWarRosterDriftDiagnostic[] {
+  const rawClanAndPlayerSet = new Map<string, Set<string>>();
+  for (const row of input.rawWarMemberByClanAndPlayer.values()) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+
+    const playerTags = rawClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    playerTags.add(playerTag);
+    rawClanAndPlayerSet.set(clanTag, playerTags);
+  }
+
+  const derivedClanAndPlayerSet = new Map<string, Set<string>>();
+  for (const row of input.derivedWarRosterByClanAndPlayer.values()) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+
+    const playerTags = derivedClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    playerTags.add(playerTag);
+    derivedClanAndPlayerSet.set(clanTag, playerTags);
+  }
+
+  const diagnostics: TrackedWarRosterDriftDiagnostic[] = [];
+  for (const [clanTag, currentWar] of input.activeTrackedCurrentWarByClanTag.entries()) {
+    if (!input.rosterCurrentClanTagSet.has(clanTag)) continue;
+
+    const rawPlayerTags = rawClanAndPlayerSet.get(clanTag);
+    if (!rawPlayerTags || rawPlayerTags.size === 0) continue;
+
+    const derivedPlayerTags = derivedClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    const missingDerivedMemberSampleTags = [...rawPlayerTags]
+      .filter((playerTag) => !derivedPlayerTags.has(playerTag))
+      .sort((a, b) => a.localeCompare(b));
+    if (missingDerivedMemberSampleTags.length === 0) continue;
+
+    diagnostics.push({
+      clanTag,
+      rawMemberCount: rawPlayerTags.size,
+      derivedMemberCount: derivedPlayerTags.size,
+      missingDerivedMemberCount: missingDerivedMemberSampleTags.length,
+      rosterCurrentExists: true,
+      currentWarState: String(currentWar.state ?? "") || "unknown",
+      missingDerivedMemberSampleTags: missingDerivedMemberSampleTags.slice(0, 3),
+    });
+  }
+
+  return diagnostics;
+}
+
+/** Purpose: choose one deterministic raw-war fallback row when tracked roster members are missing. */
+function isBetterWarMemberFallbackCandidate(
+  candidate: WarMemberCurrentRow,
+  existing: WarMemberCurrentRow,
+): boolean {
+  const candidateSyncedAt = candidate.sourceSyncedAt.getTime();
+  const existingSyncedAt = existing.sourceSyncedAt.getTime();
+  if (candidateSyncedAt !== existingSyncedAt) {
+    return candidateSyncedAt > existingSyncedAt;
+  }
+
+  const candidatePosition =
+    candidate.position !== null && candidate.position > 0
+      ? candidate.position
+      : Number.MAX_SAFE_INTEGER;
+  const existingPosition =
+    existing.position !== null && existing.position > 0
+      ? existing.position
+      : Number.MAX_SAFE_INTEGER;
+  if (candidatePosition !== existingPosition) {
+    return candidatePosition < existingPosition;
+  }
+
+  const candidateClanTag = normalizeClanTag(candidate.clanTag);
+  const existingClanTag = normalizeClanTag(existing.clanTag);
+  if (candidateClanTag !== existingClanTag) {
+    return candidateClanTag.localeCompare(existingClanTag) < 0;
+  }
+
+  const candidatePlayerTag = normalizePlayerTag(candidate.playerTag);
+  const existingPlayerTag = normalizePlayerTag(existing.playerTag);
+  return candidatePlayerTag.localeCompare(existingPlayerTag) < 0;
 }
 
 /** Purpose: keep the freshest CurrentWar row per clan tag when multiple guild rows exist. */
