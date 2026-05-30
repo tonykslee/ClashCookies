@@ -150,6 +150,16 @@ type WarAttacksRow = {
   attackSeenAt: Date;
 };
 
+type TrackedWarRosterDriftDiagnostic = {
+  clanTag: string;
+  rawMemberCount: number;
+  derivedMemberCount: number;
+  missingDerivedMemberCount: number;
+  rosterCurrentExists: boolean;
+  currentWarState: string;
+  missingDerivedMemberSampleTags: string[];
+};
+
 type TodoGamesDerivedValues = {
   points: number | null;
   target: number | null;
@@ -833,6 +843,17 @@ export class TodoSnapshotService {
       rosterRows: activeTrackedWarRosterRows,
       warAttackRows: trackedWarAttackRows,
     });
+    const trackedWarRosterDriftDiagnostics = buildTrackedWarRosterDriftDiagnostics({
+      activeTrackedCurrentWarByClanTag,
+      rosterCurrentClanTagSet,
+      rawWarMemberByClanAndPlayer: fwaWarMemberFallbackByClanAndPlayer,
+      derivedWarRosterByClanAndPlayer: activeTrackedWarRosterByClanAndPlayer,
+    });
+    for (const diagnostic of trackedWarRosterDriftDiagnostics) {
+      console.warn(
+        `[todo-snapshot] event=tracked_war_roster_drift clanTag=${diagnostic.clanTag} rawMemberCount=${diagnostic.rawMemberCount} derivedMemberCount=${diagnostic.derivedMemberCount} missingDerivedMemberCount=${diagnostic.missingDerivedMemberCount} rosterCurrentExists=${diagnostic.rosterCurrentExists} currentWarState=${diagnostic.currentWarState} missingDerivedMemberSampleTags=${diagnostic.missingDerivedMemberSampleTags.length > 0 ? diagnostic.missingDerivedMemberSampleTags.join(",") : "none"}`,
+      );
+    }
     const cwlTrackedTagSet = new Set(
       cwlTrackedClanRows
         .map((row) => normalizeClanTag(row.tag))
@@ -1490,6 +1511,62 @@ function pickLatestWarMemberByClanAndPlayer(
     }
   }
   return latest;
+}
+
+/** Purpose: summarize tracked-war roster drift when derived roster members lag behind raw WarMembers. */
+function buildTrackedWarRosterDriftDiagnostics(input: {
+  activeTrackedCurrentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
+  rosterCurrentClanTagSet: Set<string>;
+  rawWarMemberByClanAndPlayer: Map<string, WarMemberCurrentRow>;
+  derivedWarRosterByClanAndPlayer: Map<string, TodoTrackedWarRosterRow>;
+}): TrackedWarRosterDriftDiagnostic[] {
+  const rawClanAndPlayerSet = new Map<string, Set<string>>();
+  for (const row of input.rawWarMemberByClanAndPlayer.values()) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+
+    const playerTags = rawClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    playerTags.add(playerTag);
+    rawClanAndPlayerSet.set(clanTag, playerTags);
+  }
+
+  const derivedClanAndPlayerSet = new Map<string, Set<string>>();
+  for (const row of input.derivedWarRosterByClanAndPlayer.values()) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+
+    const playerTags = derivedClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    playerTags.add(playerTag);
+    derivedClanAndPlayerSet.set(clanTag, playerTags);
+  }
+
+  const diagnostics: TrackedWarRosterDriftDiagnostic[] = [];
+  for (const [clanTag, currentWar] of input.activeTrackedCurrentWarByClanTag.entries()) {
+    if (!input.rosterCurrentClanTagSet.has(clanTag)) continue;
+
+    const rawPlayerTags = rawClanAndPlayerSet.get(clanTag);
+    if (!rawPlayerTags || rawPlayerTags.size === 0) continue;
+
+    const derivedPlayerTags = derivedClanAndPlayerSet.get(clanTag) ?? new Set<string>();
+    const missingDerivedMemberSampleTags = [...rawPlayerTags]
+      .filter((playerTag) => !derivedPlayerTags.has(playerTag))
+      .sort((a, b) => a.localeCompare(b));
+    if (missingDerivedMemberSampleTags.length === 0) continue;
+
+    diagnostics.push({
+      clanTag,
+      rawMemberCount: rawPlayerTags.size,
+      derivedMemberCount: derivedPlayerTags.size,
+      missingDerivedMemberCount: missingDerivedMemberSampleTags.length,
+      rosterCurrentExists: true,
+      currentWarState: String(currentWar.state ?? "") || "unknown",
+      missingDerivedMemberSampleTags: missingDerivedMemberSampleTags.slice(0, 3),
+    });
+  }
+
+  return diagnostics;
 }
 
 /** Purpose: choose one deterministic raw-war fallback row when tracked roster members are missing. */
