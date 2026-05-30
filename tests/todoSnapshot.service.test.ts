@@ -1819,7 +1819,7 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("marks WAR inactive for players missing from active-war membership", async () => {
+  it("uses raw FwaWarMemberCurrent fallback when no derived roster member row exists", async () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -1838,54 +1838,6 @@ describe("TodoSnapshotService", () => {
       },
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.currentWar.findMany.mockResolvedValue([
-      {
-        clanTag: "#PQL0289",
-        state: "inWar",
-        startTime: new Date("2026-03-25T12:00:00.000Z"),
-        endTime: new Date("2026-03-26T12:00:00.000Z"),
-        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
-      },
-    ]);
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
-    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
-
-    await todoSnapshotService.refreshSnapshotsForPlayerTags({
-      playerTags: ["#PYLQ0289"],
-      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
-    });
-
-    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          warActive: false,
-          warPhase: null,
-          warAttacksUsed: 0,
-        }),
-      }),
-    );
-  });
-
-  it("uses stale FwaWarMemberCurrent fallback only when no tracked roster snapshot exists", async () => {
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#PYLQ0289",
-        clanTag: "#PQL0289",
-        playerName: "Alpha",
-        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
-      },
-    ]);
-    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag: "#PYLQ0289",
-        clanTag: "#PQL0289",
-        position: 8,
-        attacks: 1,
-        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
-      },
-    ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -1910,6 +1862,201 @@ describe("TodoSnapshotService", () => {
           warActive: true,
           warPhase: "battle day",
           warAttacksUsed: 1,
+        }),
+      }),
+    );
+  });
+
+  it("uses raw FwaWarMemberCurrent fallback when the active tracked roster is missing one linked player", async () => {
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+        {
+          playerTag: "#PYLQ0289",
+          clanTag: "#2QVGPQP0U",
+          playerName: "Live Alpha",
+          sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+        },
+      ]);
+      prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+        { clanTag: "#2QVGPQP0U" },
+      ]);
+      prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+        {
+          playerTag: "#PYLQ0289",
+          clanTag: "#2QVGPQP0U",
+          playerName: "Fallback Alpha",
+          townHall: 16,
+          position: 7,
+          attacks: 1,
+          sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+        },
+      ]);
+      prismaMock.currentWar.findMany.mockResolvedValue([
+        {
+          clanTag: "#2QVGPQP0U",
+          state: "inWar",
+          startTime: new Date("2026-03-25T12:00:00.000Z"),
+          endTime: new Date("2026-03-26T12:00:00.000Z"),
+          updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        },
+      ]);
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: "#2QVGPQP0U", name: "Clan Two" },
+      ]);
+      prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: ["#PYLQ0289"],
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            clanTag: "#2QVGPQP0U",
+            playerName: "Fallback Alpha",
+            townHall: 16,
+            warActive: true,
+            warPhase: "battle day",
+            warAttacksUsed: 1,
+          }),
+        }),
+      );
+      expect(
+        consoleInfoSpy.mock.calls.some(
+          ([message]) =>
+            String(message).includes("event=tracked_war_roster_member_fallback_used") &&
+            String(message).includes("clan_count=1") &&
+            String(message).includes("player_count=1"),
+        ),
+      ).toBe(true);
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
+  });
+
+  it("keeps the derived tracked-war roster member row ahead of newer raw FwaWarMemberCurrent fallback data", async () => {
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#PQL0289" },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 8,
+        playerName: "Derived Alpha",
+        townHall: 14,
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#PQL0289",
+        playerName: "Fallback Alpha",
+        townHall: 16,
+        position: 1,
+        attacks: 1,
+        sourceSyncedAt: new Date("2026-03-27T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        state: "inWar",
+        startTime: new Date("2026-03-26T12:00:00.000Z"),
+        endTime: new Date("2026-03-27T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-26T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 2,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 7,
+        stars: 2,
+        attackSeenAt: new Date("2026-03-26T00:05:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          clanTag: "#PQL0289",
+          playerName: "Derived Alpha",
+          townHall: 14,
+          warActive: true,
+          warAttacksUsed: 2,
+        }),
+      }),
+    );
+  });
+
+  it("does not use raw FwaWarMemberCurrent fallback for active wars on non-tracked clans", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+        playerName: "Live Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#2QVGPQP0U" },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+        playerName: "Fallback Alpha",
+        townHall: 16,
+        position: 7,
+        attacks: 1,
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          clanTag: "#2QVGPQP0U",
+          playerName: "Live Alpha",
+          warActive: false,
+          warAttacksUsed: 0,
         }),
       }),
     );
