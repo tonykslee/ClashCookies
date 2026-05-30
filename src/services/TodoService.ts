@@ -811,6 +811,7 @@ function buildWarPageDescription(
         heading: "WAR",
         linkedPlayerCount,
         displayedFreshnessAtMs,
+        displayedFreshnessLabel: "war data updated",
         statusLine: warCompletion.statusLine,
         lines: ["No war active"],
       }),
@@ -839,6 +840,7 @@ function buildWarPageDescription(
       heading: "WAR",
       linkedPlayerCount,
       displayedFreshnessAtMs,
+      displayedFreshnessLabel: "war data updated",
       statusLine: warCompletion.statusLine,
       lines,
     }),
@@ -1235,13 +1237,17 @@ function buildTodoPageDescription(input: {
   heading: TodoType;
   linkedPlayerCount: number;
   displayedFreshnessAtMs: number | null;
+  displayedFreshnessLabel?: string;
   statusLine?: string | null;
   lines: string[];
 }): string {
   const statusLine = sanitizeStatusText(input.statusLine ?? "");
   const lines = [
     `Type: ${input.heading}`,
-    formatTodoDisplayedDataLegend(input.displayedFreshnessAtMs),
+    formatTodoDisplayedDataLegend(
+      input.displayedFreshnessAtMs,
+      input.displayedFreshnessLabel,
+    ),
     statusLine || `Linked players: ${input.linkedPlayerCount}`,
     "",
     ...input.lines,
@@ -1860,11 +1866,14 @@ function formatRelativeTimestamp(input: Date): string {
 }
 
 /** Purpose: build the shared todo freshness legend from the displayed page data timestamp. */
-function formatTodoDisplayedDataLegend(displayedFreshnessAtMs: number | null): string {
+function formatTodoDisplayedDataLegend(
+  displayedFreshnessAtMs: number | null,
+  label = "last updated",
+): string {
   if (displayedFreshnessAtMs === null) {
-    return ":hourglass: last updated unknown";
+    return `:hourglass: ${label} unknown`;
   }
-  return `:hourglass: last updated ${formatRelativeTimestamp(
+  return `:hourglass: ${label} ${formatRelativeTimestamp(
     new Date(displayedFreshnessAtMs),
   )}`;
 }

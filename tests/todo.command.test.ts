@@ -267,22 +267,34 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
-function expectTodoLegendWithLastUpdated(description: string): void {
-  expect(description).toContain(":hourglass: last updated <t:");
-  expect(description).toMatch(/:hourglass: last updated <t:\d+:R>/);
+function expectTodoLegendWithLastUpdated(
+  description: string,
+  label = "last updated",
+): void {
+  expect(description).toContain(`:hourglass: ${label} <t:`);
+  expect(description).toMatch(
+    new RegExp(`:hourglass: ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} <t:\\d+:R>`),
+  );
   expect(description).not.toContain(":hourglass: snapshot may be out of date");
 }
 
-function expectTodoLegendUnknown(description: string): void {
-  expect(description).toContain(":hourglass: last updated unknown");
-  expect(description).not.toContain(":hourglass: last updated <t:");
+function expectTodoLegendUnknown(
+  description: string,
+  label = "last updated",
+): void {
+  expect(description).toContain(`:hourglass: ${label} unknown`);
+  expect(description).not.toContain(`:hourglass: ${label} <t:`);
   expect(description).not.toContain(":hourglass: snapshot may be out of date");
 }
 
-function expectTodoPagesLastUpdatedAt(pages: Record<TodoType, string>, timestamp: Date): void {
+function expectTodoPagesLastUpdatedAt(
+  pages: Record<TodoType, string>,
+  timestamp: Date,
+  warLabel = "last updated",
+): void {
   const unix = Math.floor(timestamp.getTime() / 1000);
   const expected = `:hourglass: last updated <t:${unix}:R>`;
-  expect(pages.WAR).toContain(expected);
+  expect(pages.WAR).toContain(`:hourglass: ${warLabel} <t:${unix}:R>`);
   expect(pages.CWL).toContain(expected);
   expect(pages.RAIDS).toContain(expected);
   expect(pages.GAMES).toContain(expected);
@@ -612,7 +624,7 @@ describe("/todo command", () => {
       cocService: makeCocServiceSpy() as any,
     });
 
-    expectTodoLegendUnknown(pages.pages.WAR);
+    expectTodoLegendUnknown(pages.pages.WAR, "war data updated");
     expectTodoLegendUnknown(pages.pages.CWL);
     expectTodoLegendUnknown(pages.pages.RAIDS);
     expectTodoLegendUnknown(pages.pages.GAMES);
@@ -1559,7 +1571,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
 
     const description = getReplyDescription(interaction);
-    expectTodoLegendWithLastUpdated(description);
+    expectTodoLegendWithLastUpdated(description, "war data updated");
     expect(description).toContain(":white_check_mark: #8 Alpha - `2 / 2`");
     expect(description).not.toContain("stale snapshot");
     expect(description).toContain("- #1 Bravo - `1 / 2` - :hourglass:");
@@ -3427,13 +3439,13 @@ describe("/todo pagination buttons", () => {
       discordUserId,
       cocService: makeCocServiceSpy() as any,
     });
-    expectTodoPagesLastUpdatedAt(firstPages.pages, firstRefreshAt);
+    expectTodoPagesLastUpdatedAt(firstPages.pages, firstRefreshAt, "war data updated");
 
     const rerenderedPages = await buildTodoPagesForUser({
       discordUserId,
       cocService: makeCocServiceSpy() as any,
     });
-    expectTodoPagesLastUpdatedAt(rerenderedPages.pages, firstRefreshAt);
+    expectTodoPagesLastUpdatedAt(rerenderedPages.pages, firstRefreshAt, "war data updated");
 
     setDisplayedFreshness(secondRefreshAt);
     const refreshedPages = await buildTodoPagesForUser({
@@ -3444,7 +3456,7 @@ describe("/todo pagination buttons", () => {
       `:hourglass: last updated <t:${Math.floor(firstRefreshAt.getTime() / 1000)}:R>`,
     );
     expect(refreshedPages.pages.WAR).toContain(
-      `:hourglass: last updated <t:${Math.floor(secondRefreshAt.getTime() / 1000)}:R>`,
+      `:hourglass: war data updated <t:${Math.floor(secondRefreshAt.getTime() / 1000)}:R>`,
     );
     expect(refreshedPages.pages.CWL).toContain(
       `:hourglass: last updated <t:${Math.floor(secondRefreshAt.getTime() / 1000)}:R>`,
@@ -3592,7 +3604,8 @@ describe("/todo refresh button", () => {
 
     await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
 
-    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.update).toHaveBeenCalledTimes(1);
+    expect(interaction.deferUpdate).not.toHaveBeenCalled();
     expect(cwlRefreshSpy).toHaveBeenCalledWith({
       cocService: expect.anything(),
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
@@ -3606,6 +3619,16 @@ describe("/todo refresh button", () => {
     expect(cwlRefreshSpy.mock.invocationCallOrder[0]).toBeLessThan(
       refreshSpy.mock.invocationCallOrder[0],
     );
+    const refreshingPayload = interaction.update.mock.calls[0]?.[0] as any;
+    expect(refreshingPayload.components[1].components.map((b: any) => b.toJSON().label)).toEqual([
+      "Refreshing",
+    ]);
+    expect(
+      refreshingPayload.components[1].components.map((b: any) => b.toJSON().disabled),
+    ).toEqual([true]);
+    expect(
+      refreshingPayload.components[1].components.map((b: any) => b.toJSON().emoji?.name),
+    ).toEqual([String.fromCodePoint(0x23f3)]);
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds[0].toJSON().title).toBe("Todo - GAMES");
@@ -3613,7 +3636,7 @@ describe("/todo refresh button", () => {
       undefined,
     ]);
     expect(payload.components[1].components.map((b: any) => b.toJSON().emoji?.name)).toEqual([
-      "🔄",
+      String.fromCodePoint(0x1f504),
     ]);
     expect(todoLastViewedTypeService.setLastViewedType).toHaveBeenCalledWith({
       discordUserId: "111111111111111111",
@@ -3748,7 +3771,11 @@ describe("/todo refresh button", () => {
       ephemeral: true,
       content: "Failed to refresh todo data. Please try again.",
     });
-    expect(interaction.editReply).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Todo - RAIDS");
+    expect(payload.components[1].components[0].toJSON().disabled).toBeUndefined();
+    expect(payload.components[1].components[0].toJSON().emoji?.name).toBe("🔄");
   });
 
   it("rejects refresh clicks from non-requesting users", async () => {
