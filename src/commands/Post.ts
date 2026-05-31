@@ -34,6 +34,7 @@ import {
   parseSyncTimeMetadata,
   trackedMessageService,
 } from "../services/TrackedMessageService";
+import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
   autocompleteSyncTimeZones,
   normalizeSyncTimeZone,
@@ -665,10 +666,6 @@ type SyncTimePostMessageLike = {
   unpin: () => Promise<void>;
 };
 
-function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
-  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
-}
-
 function isSupportedSyncTimePostChannel(
   channel: SyncTimePostChannelLike | null | undefined
 ): channel is SyncTimePostChannelLike {
@@ -700,6 +697,58 @@ async function resolveConfiguredSyncTimePostChannel(
   if (isSupportedSyncTimePostChannel(fetched)) return fetched;
 
   return null;
+}
+
+async function resolveSyncTimePostDestination(input: {
+  guild: Guild;
+  guildId: string;
+  invocationChannel: SyncTimePostChannelLike | null;
+  settings: SettingsService;
+  botLogChannelService?: BotLogChannelService;
+}): Promise<{
+  channel: SyncTimePostChannelLike | null;
+  fallbackNotice: string | null;
+}> {
+  const botLogChannelService =
+    input.botLogChannelService ?? new BotLogChannelService(input.settings);
+  const typedChannelId = await botLogChannelService.getChannelIdForType(
+    input.guildId,
+    "sync",
+  );
+  if (typedChannelId) {
+    const typedChannel = await resolveConfiguredSyncTimePostChannel(
+      input.guild,
+      typedChannelId,
+    );
+    if (typedChannel) {
+      return { channel: typedChannel, fallbackNotice: null };
+    }
+    await botLogChannelService.clearChannelIdForType(input.guildId, "sync");
+    return {
+      channel: input.invocationChannel,
+      fallbackNotice: `Configured sync bot-log channel <#${typedChannelId}> is unavailable; posted in this channel instead.`,
+    };
+  }
+
+  const legacyChannelId = await input.settings.get(
+    guildSyncPostChannelKey(input.guildId),
+  );
+  if (legacyChannelId) {
+    const legacyChannel = await resolveConfiguredSyncTimePostChannel(
+      input.guild,
+      legacyChannelId,
+    );
+    if (legacyChannel) {
+      return { channel: legacyChannel, fallbackNotice: null };
+    }
+    await input.settings.delete(guildSyncPostChannelKey(input.guildId));
+    return {
+      channel: input.invocationChannel,
+      fallbackNotice: `Configured sync-time post channel <#${legacyChannelId}> is unavailable; posted in this channel instead.`,
+    };
+  }
+
+  return { channel: input.invocationChannel, fallbackNotice: null };
 }
 
 function buildSyncMessage(epochSeconds: number, roleId: string): string {
@@ -894,18 +943,13 @@ export async function handlePostModalSubmit(
   );
 
   const invocationChannel = interaction.channel as SyncTimePostChannelLike | null;
-  const configuredChannelId = await settings.get(guildSyncPostChannelKey(interaction.guildId));
-  let channel: SyncTimePostChannelLike | null = invocationChannel;
-  let configuredChannelFallbackNotice: string | null = null;
-  if (configuredChannelId) {
-    const configuredChannel = await resolveConfiguredSyncTimePostChannel(guild, configuredChannelId);
-    if (configuredChannel) {
-      channel = configuredChannel;
-    } else {
-      await settings.delete(guildSyncPostChannelKey(interaction.guildId));
-      configuredChannelFallbackNotice = `Configured sync-time post channel <#${configuredChannelId}> is unavailable; posted in this channel instead.`;
-    }
-  }
+  const { channel, fallbackNotice: configuredChannelFallbackNotice } =
+    await resolveSyncTimePostDestination({
+      guild,
+      guildId: interaction.guildId,
+      invocationChannel,
+      settings,
+    });
 
   if (!isSupportedSyncTimePostChannel(channel)) {
     await interaction.editReply("This command can only post to text channels.");
@@ -1123,16 +1167,6 @@ export const Post: Command = {
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
-              name: "channel",
-              description: "Admin only: default channel for sync-time posts",
-              type: ApplicationCommandOptionType.Channel,
-              required: false,
-              channel_types: [
-                ChannelType.GuildText,
-                ChannelType.GuildAnnouncement,
-              ],
-            },
-            {
               name: "role",
               description: "Role to ping",
               type: ApplicationCommandOptionType.Role,
@@ -1235,41 +1269,7 @@ export const Post: Command = {
 
     const settings = new SettingsService();
     const role = interaction.options.getRole("role", false);
-    const requestedChannel = interaction.options.getChannel("channel", false) as
-      | SyncTimePostChannelLike
-      | null;
     const timezoneSeedRaw = interaction.options.getString("timezone", false)?.trim() ?? null;
-
-    if (requestedChannel) {
-      if (!hasAdministratorPermission(interaction)) {
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: "You do not have permission to change the sync post channel.",
-        });
-        return;
-      }
-
-      if (
-        requestedChannel.guildId &&
-        requestedChannel.guildId !== interaction.guildId
-      ) {
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: "Selected channel must belong to this server.",
-        });
-        return;
-      }
-
-      if (!isSupportedSyncTimePostChannel(requestedChannel)) {
-        await safeReply(interaction, {
-          ephemeral: true,
-          content: "Selected channel must be a server text or announcement channel.",
-        });
-        return;
-      }
-
-      await settings.set(guildSyncPostChannelKey(interaction.guildId), requestedChannel.id);
-    }
 
     const rememberedTimeZoneRaw = await settings.get(userTimeZoneKey(interaction.user.id));
     const rememberedTimeZone = normalizeSyncTimeZone(rememberedTimeZoneRaw);

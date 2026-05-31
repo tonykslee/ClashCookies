@@ -91,6 +91,9 @@ beforeEach(() => {
   vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(
     null,
   );
+  vi.spyOn(BotLogChannelService.prototype, "getBaseSwapRoutingConfig").mockResolvedValue(
+    null,
+  );
   clearFwaBaseSwapSplitPostPayloadsForTest();
   prismaMock.clanPointsSync.findFirst.mockReset();
   prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
@@ -179,8 +182,6 @@ function makeBaseSwapCommandInteraction(input: {
   baseErrors?: string | null;
   fwaBases?: string | null;
   swapReminder?: boolean | null;
-  logEnable?: string | null;
-  channelId?: string | null;
   guildId?: string;
   invokeChannelId?: string;
   mailChannelId?: string | null;
@@ -256,7 +257,6 @@ function makeBaseSwapCommandInteraction(input: {
         if (name === "war-bases") return input.warBases ?? null;
         if (name === "base-errors") return input.baseErrors ?? null;
         if (name === "fwa-bases") return input.fwaBases ?? null;
-        if (name === "log-enable") return input.logEnable ?? null;
         if (name === "visibility") return null;
         return null;
       }),
@@ -264,19 +264,7 @@ function makeBaseSwapCommandInteraction(input: {
         if (name === "swap-reminder") return input.swapReminder ?? null;
         return null;
       }),
-      getChannel: vi.fn((name: string) => {
-        if (name === "channel" && input.channelId !== undefined) {
-          return input.channelId === null
-            ? null
-            : {
-                id: input.channelId,
-                guildId: input.guildId ?? "guild-1",
-                isTextBased: () => true,
-                send: customLogChannelSend,
-              };
-        }
-        return null;
-      }),
+      getChannel: vi.fn(() => null),
     },
   };
 
@@ -1555,11 +1543,7 @@ describe("FWA base-swap split-post prompt actions", () => {
         fwaBases: null,
         baseErrors: null,
         swapReminder: null,
-        logEnable: "clan-lead channel",
-        logChannelId: "223456789012345678",
       }),
-      auditLogMode: "clan-lead channel",
-      auditLogChannelId: "223456789012345678",
       entries: [
         buildEntry({
           position: 1,
@@ -1582,6 +1566,21 @@ describe("FWA base-swap split-post prompt actions", () => {
         `Part 2 content\n\nReact with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
       ],
     });
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+      legacy: false,
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+        logChannelId: null,
+        leaderChannelId: "223456789012345678",
+      },
+    ]);
 
     const postedA = {
       id: "msg-1",
@@ -1828,11 +1827,15 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("skips audit log delivery when log-enable:false is selected", async () => {
+  it("skips audit log delivery when persisted base-swap routing is disabled", async () => {
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "DISABLED",
+      channelId: null,
+      legacy: false,
+    });
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       warBases: "1",
-      logEnable: "false",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
@@ -1885,12 +1888,16 @@ describe("FWA base-swap mail-channel routing", () => {
     );
   });
 
-  it("sends the audit log to the tracked clan log channel when requested", async () => {
+  it("sends the audit log to the tracked clan log channel when persisted routing requests it", async () => {
     const clanLogSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CLAN_LOG",
+      channelId: null,
+      legacy: false,
+    });
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       warBases: "1",
-      logEnable: "clan-log channel",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
@@ -1957,16 +1964,23 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(clanLogSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "log-enable:clan-log channel",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+    );
+    expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "log-enable:",
     );
   });
 
-  it("sends the audit log to the tracked clan leader channel when requested", async () => {
+  it("sends the audit log to the tracked clan leader channel when persisted routing requests it", async () => {
     const clanLeadSend = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+      legacy: false,
+    });
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       warBases: "1",
-      logEnable: "clan-lead channel",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
@@ -2031,23 +2045,30 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.client.channels.fetch).toHaveBeenCalledWith("223456789012345678");
     expect(clanLeadSend).toHaveBeenCalledTimes(1);
     expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "log-enable:clan-lead channel",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+    );
+    expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "log-enable:",
     );
   });
 
-  it("uses the existing bot-log resolver when log-enable:bot-log channel is selected", async () => {
+  it("uses the generic bot-log resolver when persisted base-swap routing selects bot-log channel", async () => {
     const botLogSend = vi.fn().mockResolvedValue(undefined);
-    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
-      "typed-bot-log-1",
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "BOT_LOG",
+      channelId: null,
+      legacy: false,
+    });
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
     );
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       warBases: "1",
-      logEnable: "bot-log channel",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
-      botLogChannelId: "typed-bot-log-1",
+      botLogChannelId: "bot-log-1",
     });
     baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
       ok: true,
@@ -2092,9 +2113,9 @@ describe("FWA base-swap mail-channel routing", () => {
           send: run.mailChannelSend,
         };
       }
-      if (channelId === "typed-bot-log-1") {
+      if (channelId === "bot-log-1") {
         return {
-          id: "typed-bot-log-1",
+          id: "bot-log-1",
           guildId: "guild-1",
           isTextBased: () => true,
           send: botLogSend,
@@ -2105,19 +2126,25 @@ describe("FWA base-swap mail-channel routing", () => {
 
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
-    expect(run.client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
+    expect(run.client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
     expect(botLogSend).toHaveBeenCalledTimes(1);
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "log-enable:bot-log channel",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+    );
+    expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "log-enable:",
     );
   });
 
-  it("sends the audit log to the provided custom channel", async () => {
+  it("sends the audit log to the persisted custom channel", async () => {
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "custom-log-1",
+      legacy: false,
+    });
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       warBases: "1",
-      logEnable: "custom",
-      channelId: "custom-log-1",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
@@ -2157,6 +2184,25 @@ describe("FWA base-swap mail-channel routing", () => {
       react: vi.fn().mockResolvedValue(undefined),
     };
     run.mailChannelSend.mockResolvedValueOnce(posted);
+    run.client.channels.fetch.mockImplementation(async (channelId: string) => {
+      if (channelId === "mail-1") {
+        return {
+          id: "mail-1",
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: run.mailChannelSend,
+        };
+      }
+      if (channelId === "custom-log-1") {
+        return {
+          id: "custom-log-1",
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: run.customLogChannelSend,
+        };
+      }
+      return null;
+    });
 
     await Fwa.run({} as any, run.interaction as any, {} as any);
 
@@ -2164,57 +2210,10 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.customLogChannelSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "log-enable:custom",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
     );
-    expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "channel:<#custom-log-1>",
-    );
-  });
-
-  it("rejects a custom channel unless log-enable:custom is selected", async () => {
-    const run = makeBaseSwapCommandInteraction({
-      clanTag: "#2qg2c08up",
-      warBases: "1",
-      channelId: "custom-log-1",
-      guildId: "guild-1",
-      invokeChannelId: "invoke-1",
-      mailChannelId: "mail-1",
-      botLogChannelId: "bot-log-1",
-    });
-
-    await Fwa.run({} as any, run.interaction as any, {} as any);
-
-    expect(run.mailChannelSend).not.toHaveBeenCalled();
-    expect(run.client.channels.fetch).not.toHaveBeenCalled();
-    expect(run.editReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: expect.stringContaining(
-          "`channel` can only be used with `log-enable:custom`",
-        ),
-      }),
-    );
-  });
-
-  it("rejects log-enable:custom when no channel is provided", async () => {
-    const run = makeBaseSwapCommandInteraction({
-      clanTag: "#2qg2c08up",
-      warBases: "1",
-      logEnable: "custom",
-      channelId: null,
-      guildId: "guild-1",
-      invokeChannelId: "invoke-1",
-      mailChannelId: "mail-1",
-      botLogChannelId: "bot-log-1",
-    });
-
-    await Fwa.run({} as any, run.interaction as any, {} as any);
-
-    expect(run.mailChannelSend).not.toHaveBeenCalled();
-    expect(run.client.channels.fetch).not.toHaveBeenCalled();
-    expect(run.editReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: expect.stringContaining("`log-enable:custom` requires `channel`"),
-      }),
+    expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "log-enable:",
     );
   });
 
@@ -3294,32 +3293,17 @@ describe("FWA base-swap bot-log audit", () => {
     expect(content).not.toContain("```text");
   });
 
-  it("includes explicit log routing in the reconstructed command text", () => {
+  it("does not include persistent audit routing in the reconstructed command text", () => {
     const commandText = buildFwaBaseSwapCommandTextForTest({
       clanTag: "2QG2C08UP",
       warBases: "1",
       fwaBases: "5",
       baseErrors: "2",
       swapReminder: true,
-      logEnable: "custom",
-      logChannelId: "custom-log-1",
     });
 
-    expect(commandText).toContain("log-enable:custom");
-    expect(commandText).toContain("channel:<#custom-log-1>");
-  });
-
-  it("preserves log-enable:false in the reconstructed command text", () => {
-    const commandText = buildFwaBaseSwapCommandTextForTest({
-      clanTag: "2QG2C08UP",
-      warBases: "1",
-      fwaBases: null,
-      baseErrors: null,
-      swapReminder: null,
-      logEnable: "false",
-    });
-
-    expect(commandText).toContain("log-enable:false");
+    expect(commandText).toContain("/fwa base-swap clan:2QG2C08UP");
+    expect(commandText).not.toContain("log-enable:");
     expect(commandText).not.toContain("channel:<#");
   });
 
