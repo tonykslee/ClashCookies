@@ -53,6 +53,7 @@ type TodoRenderRow = {
   warHeaderBadge: string | null;
   warMatchIndicator: string;
   inValidatedWarMemberSet: boolean;
+  activeTrackedWarClan: boolean;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -122,6 +123,7 @@ const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
 const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
+const TODO_WAR_NON_LINEUP_SECTION_LIMIT = 8;
 const TODO_LOCALE = "en-US";
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
 const todoRenderGenerationByUser = new Map<string, number>();
@@ -597,6 +599,9 @@ export async function buildTodoPagesForUser(input: {
     const trackedClanActive = Boolean(
       resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
     );
+    const activeTrackedWarClan = Boolean(
+      resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
+    );
     const resolvedWarPosition = trackedClanActive
       ? toFiniteIntOrNull(trackedWarMember?.position)
       : null;
@@ -701,6 +706,7 @@ export async function buildTodoPagesForUser(input: {
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
       raidClanTracked,
       inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
+      activeTrackedWarClan,
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -804,8 +810,16 @@ function buildWarPageDescription(
   displayedFreshnessAtMs: number | null,
 ): { description: string; sidebarState: TodoSidebarState } {
   const activeRows = rows.filter((row) => Boolean(row.snapshot?.warActive));
+  const nonLineupRows = rows.filter(
+    (row) =>
+      row.activeTrackedWarClan &&
+      Boolean(row.snapshot) &&
+      !row.snapshot?.warActive &&
+      !row.inValidatedWarMemberSet,
+  );
   const warCompletion = summarizeWarCompletionStatus(activeRows);
-  if (activeRows.length <= 0) {
+  const hasNonLineupRows = nonLineupRows.length > 0;
+  if (activeRows.length <= 0 && !hasNonLineupRows) {
     return {
       description: buildTodoPageDescription({
         heading: "WAR",
@@ -819,20 +833,28 @@ function buildWarPageDescription(
     };
   }
 
-  const grouped = buildEventGroups(activeRows, "war");
-  const unfinishedGroups = grouped.filter((group) => !isWarEventGroupComplete(group));
-  const completedGroups = grouped.filter((group) => isWarEventGroupComplete(group));
-  const groupedByCompletion = [...unfinishedGroups, ...completedGroups];
   const lines: string[] = [];
-  for (const group of groupedByCompletion) {
-    lines.push(`**${buildEventGroupHeader(group)}**`);
-    for (const row of group.rows) {
-      lines.push(formatWarTodoRow(row, getWarRowStatus(row)));
+  if (activeRows.length > 0) {
+    const grouped = buildEventGroups(activeRows, "war");
+    const unfinishedGroups = grouped.filter((group) => !isWarEventGroupComplete(group));
+    const completedGroups = grouped.filter((group) => isWarEventGroupComplete(group));
+    const groupedByCompletion = [...unfinishedGroups, ...completedGroups];
+    for (const group of groupedByCompletion) {
+      lines.push(`**${buildEventGroupHeader(group)}**`);
+      for (const row of group.rows) {
+        lines.push(formatWarTodoRow(row, getWarRowStatus(row)));
+      }
+      lines.push("");
     }
-    lines.push("");
+    if (lines.at(-1) === "") {
+      lines.pop();
+    }
   }
-  if (lines.at(-1) === "") {
-    lines.pop();
+  if (hasNonLineupRows) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(...buildWarNonLineupSectionLines(nonLineupRows));
   }
 
   return {
@@ -841,11 +863,29 @@ function buildWarPageDescription(
       linkedPlayerCount,
       displayedFreshnessAtMs,
       displayedFreshnessLabel: "war data updated",
-      statusLine: warCompletion.statusLine,
+      statusLine:
+        activeRows.length > 0
+          ? warCompletion.statusLine
+          : "No linked accounts are in an active war lineup.",
       lines,
     }),
     sidebarState: warCompletion.sidebarState,
   };
+}
+
+/** Purpose: build one bounded informational WAR section for linked players in an active clan but not lineup. */
+function buildWarNonLineupSectionLines(rows: TodoRenderRow[]): string[] {
+  const sortedRows = [...rows].sort(compareWarNonLineupRowsForRendering);
+  const visibleRows = sortedRows.slice(0, TODO_WAR_NON_LINEUP_SECTION_LIMIT);
+  const omittedCount = Math.max(0, sortedRows.length - visibleRows.length);
+  const lines = [
+    "**In active war clan, not in lineup**",
+    ...visibleRows.map((row) => formatWarNonLineupRow(row)),
+  ];
+  if (omittedCount > 0) {
+    lines.push(`...and ${omittedCount} more`);
+  }
+  return lines;
 }
 
 /** Purpose: build the CWL page from grouped active contexts only. */
@@ -892,6 +932,36 @@ function buildCwlPageDescription(
     }),
     sidebarState: cwlCompletion.sidebarState,
   };
+}
+
+/** Purpose: sort informational WAR rows by clan first, then player identity. */
+function compareWarNonLineupRowsForRendering(a: TodoRenderRow, b: TodoRenderRow): number {
+  const clanCompare = buildWarNonLineupClanIdentity(a).localeCompare(
+    buildWarNonLineupClanIdentity(b),
+    undefined,
+    { sensitivity: "base" },
+  );
+  if (clanCompare !== 0) return clanCompare;
+  const playerCompare = sanitizeStatusText(a.playerName).localeCompare(
+    sanitizeStatusText(b.playerName),
+    undefined,
+    { sensitivity: "base" },
+  );
+  if (playerCompare !== 0) return playerCompare;
+  return a.playerTag.localeCompare(b.playerTag);
+}
+
+/** Purpose: render one informational WAR row as plain clan context text. */
+function formatWarNonLineupRow(row: TodoRenderRow): string {
+  const playerName = sanitizeStatusText(row.playerName) || row.playerTag;
+  const clanName = buildWarNonLineupClanIdentity(row);
+  const clanTag = row.clanTag ? ` ${row.clanTag}` : "";
+  return `- ${playerName} — ${clanName}${clanTag}`;
+}
+
+/** Purpose: build stable clan identity text for the non-lineup WAR section. */
+function buildWarNonLineupClanIdentity(row: TodoRenderRow): string {
+  return sanitizeStatusText(row.clanName) || normalizeClanTag(row.clanTag ?? "") || "Unknown Clan";
 }
 
 /** Purpose: compute WAR completion totals and sidebar state from confirmed participating rows. */
