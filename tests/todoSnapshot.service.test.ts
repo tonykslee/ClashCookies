@@ -996,7 +996,7 @@ describe("TodoSnapshotService", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
-  it("refreshes only tracked-clan players for activated users in the tracked cadence", async () => {
+  it("refreshes tracked-cadence players from persisted clan-member evidence when a snapshot clanTag is stale", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
       { discordUserId: "111111111111111111", playerTag: "#QGRJ2222" },
@@ -1007,26 +1007,51 @@ describe("TodoSnapshotService", () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
-        clanTag: "#PQL0289",
+        clanTag: "#OLDCLAN",
       }),
       buildSnapshotRow({
         playerTag: "#QGRJ2222",
         clanTag: "#NONT",
       }),
     ]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#PQL0289", name: "Clan One" },
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#NONT",
+      },
     ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
 
-    const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
-      cadence: "tracked",
-      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
-    });
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
 
-    expect(result.activatedUserCount).toBe(1);
-    expect(result.trackedPlayerCount).toBe(1);
-    expect(result.nonTrackedPlayerCount).toBe(1);
-    expect(result.selectedPlayerCount).toBe(1);
+      expect(result.activatedUserCount).toBe(1);
+      expect(result.trackedPlayerCount).toBe(1);
+      expect(result.nonTrackedPlayerCount).toBe(1);
+      expect(result.selectedPlayerCount).toBe(1);
+      expect(refreshSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          playerTags: ["#PYLQ0289"],
+          includeNonTrackedCwlRefresh: false,
+        }),
+      );
+    } finally {
+      refreshSpy.mockRestore();
+    }
   });
 
   it("hydrates raid-tracked clan names during snapshot refresh", async () => {
@@ -1152,7 +1177,7 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("refreshes activated users' non-tracked-clan players in the observe cadence", async () => {
+  it("refreshes observe-cadence players with tracked evidence excluded from the refresh set", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
       { discordUserId: "111111111111111111", playerTag: "#QGRJ2222" },
@@ -1163,26 +1188,197 @@ describe("TodoSnapshotService", () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
-        clanTag: "#PQL0289",
+        clanTag: "#OLDCLAN",
       }),
       buildSnapshotRow({
         playerTag: "#QGRJ2222",
         clanTag: "#NONT",
       }),
     ]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#PQL0289", name: "Clan One" },
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+      },
+      {
+        playerTag: "#QGRJ2222",
+        clanTag: "#NONT",
+      },
     ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
 
-    const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
-      cadence: "observe",
-      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
-    });
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "observe",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
 
-    expect(result.activatedUserCount).toBe(1);
-    expect(result.trackedPlayerCount).toBe(1);
-    expect(result.nonTrackedPlayerCount).toBe(1);
-    expect(result.selectedPlayerCount).toBe(1);
+      expect(result.activatedUserCount).toBe(1);
+      expect(result.trackedPlayerCount).toBe(1);
+      expect(result.nonTrackedPlayerCount).toBe(1);
+      expect(result.selectedPlayerCount).toBe(1);
+      expect(refreshSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          playerTags: ["#QGRJ2222"],
+          includeNonTrackedCwlRefresh: true,
+        }),
+      );
+    } finally {
+      refreshSpy.mockRestore();
+    }
+  });
+
+  it("includes players from tracked active-war roster rows when the snapshot row is missing", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        playerTag: "#PYLQ0289",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "inWar",
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
+
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      expect(result.trackedPlayerCount).toBe(1);
+      expect(result.nonTrackedPlayerCount).toBe(0);
+      expect(result.selectedPlayerCount).toBe(1);
+      expect(refreshSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          playerTags: ["#PYLQ0289"],
+        }),
+      );
+    } finally {
+      refreshSpy.mockRestore();
+    }
+  });
+
+  it("includes players from tracked active-war member rows when the snapshot row is missing", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "inWar",
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
+
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      expect(result.trackedPlayerCount).toBe(1);
+      expect(result.nonTrackedPlayerCount).toBe(0);
+      expect(result.selectedPlayerCount).toBe(1);
+      expect(refreshSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          playerTags: ["#PYLQ0289"],
+        }),
+      );
+    } finally {
+      refreshSpy.mockRestore();
+    }
+  });
+
+  it("does not classify war-member evidence as tracked when the clan's current war is inactive", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "finished",
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 });
+
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      expect(result.trackedPlayerCount).toBe(0);
+      expect(result.nonTrackedPlayerCount).toBe(1);
+      expect(result.selectedPlayerCount).toBe(0);
+      expect(refreshSpy).not.toHaveBeenCalled();
+    } finally {
+      refreshSpy.mockRestore();
+    }
   });
 
   it("sources active raid attacks from live clan raid members even for untracked clans", async () => {
