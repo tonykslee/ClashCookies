@@ -739,6 +739,24 @@ export async function buildTodoPagesForUser(input: {
   const raidsFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "RAIDS");
   const gamesFreshnessAtMs = resolveTodoPageDisplayedDataFreshnessMs(renderRows, "GAMES");
   const warView = buildWarPageDescription(renderRows, linkedTags.length, warFreshnessAtMs);
+  const activeLineupCount = renderRows.filter((row) => Boolean(row.snapshot?.warActive)).length;
+  const nonLineupCount = renderRows.filter(
+    (row) =>
+      row.activeTrackedWarClan &&
+      Boolean(row.snapshot) &&
+      !row.snapshot?.warActive &&
+      !row.inValidatedWarMemberSet,
+  ).length;
+  const activeTrackedWarClanCount = new Set(
+    renderRows
+      .filter((row) => row.activeTrackedWarClan)
+      .map((row) => normalizeClanTag(row.clanTag ?? "")),
+  ).size;
+  const missingSnapshotCount = renderRows.filter((row) => row.missingSnapshot).length;
+  const staleSnapshotCount = renderRows.filter((row) => row.staleSnapshot).length;
+  console.info(
+    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
+  );
   const cwlView = buildCwlPageDescription(renderRows, linkedTags.length, cwlFreshnessAtMs);
   const pages = {
     linkedPlayerCount: linkedTags.length,

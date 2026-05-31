@@ -1091,6 +1091,7 @@ describe("/todo command", () => {
   });
 
   it("shows linked non-lineup players from active war clans without affecting WAR completion", async () => {
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -1187,9 +1188,24 @@ describe("/todo command", () => {
     expect(description).toContain("**In active war clan, not in lineup**");
     expect(description).toContain("- Bravo — Clan One #PQL0289");
     expect(description).not.toContain("Delta");
+    expect(
+      consoleInfoSpy.mock.calls.some(
+        ([message]) =>
+          String(message).includes("event=todo_war_render_summary") &&
+          String(message).includes("page=WAR") &&
+          String(message).includes("linked_player_count=3") &&
+          String(message).includes("active_lineup_count=1") &&
+          String(message).includes("non_lineup_count=1") &&
+          String(message).includes("active_tracked_war_clan_count=1") &&
+          String(message).includes("missing_snapshot_count=0") &&
+          String(message).includes("stale_snapshot_count=0"),
+      ),
+    ).toBe(true);
+    consoleInfoSpy.mockRestore();
   });
 
   it("shows the informational WAR section when no linked players are in an active lineup", async () => {
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
@@ -1277,6 +1293,20 @@ describe("/todo command", () => {
     expect(description).toContain("- Bravo — Clan Two #2QG2C08UP");
     expect(description).not.toContain("No war active");
     expect(description).not.toContain("Charlie");
+    expect(
+      consoleInfoSpy.mock.calls.some(
+        ([message]) =>
+          String(message).includes("event=todo_war_render_summary") &&
+          String(message).includes("page=WAR") &&
+          String(message).includes("linked_player_count=3") &&
+          String(message).includes("active_lineup_count=0") &&
+          String(message).includes("non_lineup_count=2") &&
+          String(message).includes("active_tracked_war_clan_count=2") &&
+          String(message).includes("missing_snapshot_count=0") &&
+          String(message).includes("stale_snapshot_count=0"),
+      ),
+    ).toBe(true);
+    consoleInfoSpy.mockRestore();
   });
 
   it("uses check-mark bullets for completed WAR rows while keeping unfinished bullets unchanged", async () => {
