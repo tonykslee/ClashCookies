@@ -2498,6 +2498,143 @@ describe("TodoSnapshotService", () => {
     }
   });
 
+  it("bounds live current-war fallback fetch concurrency across multiple candidate clans", async () => {
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clanTags = ["#2QVGPQP0U", "#2QG2C08UP", "#2RYGLU2UY", "#PQL0289"];
+    const playerTags = clanTags.map((_, index) => buildValidPlayerTag(index));
+    const playerTagByClanTag = new Map(
+      clanTags.map((clanTag, index) => [clanTag, playerTags[index]] as const),
+    );
+    const pendingCalls: Array<{
+      clanTag: string;
+      resolve: (value: unknown) => void;
+    }> = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const makeWar = (clanTag: string) => ({
+      state: "inWar",
+      attacksPerMember: 2,
+      startTime: "20260325T120000.000Z",
+      endTime: "20260326T120000.000Z",
+      clan: {
+        tag: clanTag,
+        name: `Clan ${clanTag}`,
+        members: [
+          {
+            tag: playerTagByClanTag.get(clanTag) ?? "#PYLQ0289",
+            name: `Live ${clanTag}`,
+            townhallLevel: 16,
+            mapPosition: 1,
+            attacks: [{ order: 1 }],
+          },
+        ],
+      },
+      opponent: {
+        tag: "#OPP",
+        name: "Opponent",
+        members: [],
+      },
+    });
+
+    const cocService = {
+      getCurrentWar: vi.fn().mockImplementation((clanTag: string) => {
+        return new Promise((resolve) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          pendingCalls.push({
+            clanTag,
+            resolve: (value: unknown) => resolve(value),
+          });
+        });
+      }),
+    };
+
+    const flush = async (): Promise<void> => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+
+    const waitForCallCount = async (expectedCount: number): Promise<void> => {
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        if (cocService.getCurrentWar.mock.calls.length >= expectedCount) return;
+        await flush();
+      }
+      throw new Error(
+        `Expected ${expectedCount} getCurrentWar calls, saw ${cocService.getCurrentWar.mock.calls.length}`,
+      );
+    };
+
+    const releaseOne = (): void => {
+      const next = pendingCalls.shift();
+      if (!next) {
+        throw new Error("Expected a pending getCurrentWar call to release");
+      }
+      inFlight -= 1;
+      next.resolve(makeWar(next.clanTag));
+    };
+
+    try {
+      prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue(
+        clanTags.map((clanTag, index) =>
+          buildSnapshotRow({
+            playerTag: playerTags[index],
+            clanTag,
+          }),
+        ),
+      );
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue(
+        clanTags.map((clanTag) => ({ clanTag })),
+      );
+      prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.currentWar.findMany.mockResolvedValue(
+        clanTags.map((clanTag, index) => ({
+          clanTag,
+          state: "inWar",
+          warId: index + 1,
+          startTime: new Date("2026-03-25T12:00:00.000Z"),
+          endTime: new Date("2026-03-26T12:00:00.000Z"),
+          updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+        })),
+      );
+      prismaMock.trackedClan.findMany.mockResolvedValue(
+        clanTags.map((tag) => ({ tag, name: `Clan ${tag}` })),
+      );
+      prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+      const refreshPromise = todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags,
+        cocService: cocService as any,
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      await waitForCallCount(3);
+      expect(maxInFlight).toBe(3);
+      expect(cocService.getCurrentWar).toHaveBeenCalledTimes(3);
+
+      releaseOne();
+      await waitForCallCount(4);
+      expect(maxInFlight).toBe(3);
+      expect(cocService.getCurrentWar).toHaveBeenCalledTimes(4);
+      expect(
+        cocService.getCurrentWar.mock.calls.map(([clanTag]) => clanTag).sort(),
+      ).toEqual([...clanTags].sort());
+
+      while (pendingCalls.length > 0) {
+        releaseOne();
+      }
+
+      await refreshPromise;
+    } finally {
+      consoleInfoSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
   it("keeps snapshots inactive when the live current-war roster does not contain the linked player", async () => {
     const cocService = {
       getCurrentWar: vi.fn().mockResolvedValue({
