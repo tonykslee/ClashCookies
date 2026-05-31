@@ -1386,6 +1386,101 @@ async function resolveFwaBaseSwapDirectAuditLogChannel(input: {
   };
 }
 
+async function resolveTypedFwaBaseSwapBotLogChannel(input: {
+  client: Client;
+  guildId: string;
+  clanTag: string;
+  clanName: string;
+  botLogChannelService: BotLogChannelService;
+}): Promise<FwaBaseSwapAuditLogDestination | null> {
+  const configuredTypedChannelId =
+    await input.botLogChannelService.getChannelIdForType(input.guildId, "base-swap");
+  if (!configuredTypedChannelId) {
+    return null;
+  }
+
+  let fetchedChannel: unknown;
+  try {
+    fetchedChannel = await input.client.channels.fetch(configuredTypedChannelId);
+  } catch (error) {
+    const code = (error as { code?: number } | null | undefined)?.code;
+    if (code === 10003) {
+      await input.botLogChannelService.clearChannelIdForType(input.guildId, "base-swap");
+      logFwaBaseSwapAuditRoutingIssue({
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        routingMode: "bot-log channel",
+        destinationChannelId: configuredTypedChannelId,
+        reason: "missing",
+      });
+      return null;
+    }
+    logFwaBaseSwapAuditRoutingIssue({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      routingMode: "bot-log channel",
+      destinationChannelId: configuredTypedChannelId,
+      reason: "fetch_failed",
+    });
+    return null;
+  }
+
+  if (!fetchedChannel) {
+    await input.botLogChannelService.clearChannelIdForType(input.guildId, "base-swap");
+    logFwaBaseSwapAuditRoutingIssue({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      routingMode: "bot-log channel",
+      destinationChannelId: configuredTypedChannelId,
+      reason: "missing",
+    });
+    return null;
+  }
+
+  const typedChannel = fetchedChannel as FwaBaseSwapAuditLogChannelLike;
+  if (!isGuildScopedAuditLogChannel(typedChannel, input.guildId)) {
+    await input.botLogChannelService.clearChannelIdForType(input.guildId, "base-swap");
+    logFwaBaseSwapAuditRoutingIssue({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      routingMode: "bot-log channel",
+      destinationChannelId: configuredTypedChannelId,
+      reason: "guild_mismatch",
+    });
+    return null;
+  }
+  if (!isSupportedFwaBaseSwapAuditLogChannel(typedChannel)) {
+    logFwaBaseSwapAuditRoutingIssue({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      routingMode: "bot-log channel",
+      destinationChannelId: configuredTypedChannelId,
+      reason:
+        typeof typedChannel.isTextBased === "function" && !typedChannel.isTextBased()
+          ? "not_text_based"
+          : "not_sendable",
+    });
+    return null;
+  }
+
+  const send = typedChannel.send;
+  if (typeof send !== "function") {
+    logFwaBaseSwapAuditRoutingIssue({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      routingMode: "bot-log channel",
+      destinationChannelId: configuredTypedChannelId,
+      reason: "not_sendable",
+    });
+    return null;
+  }
+
+  return {
+    channelId: configuredTypedChannelId,
+    send: send.bind(typedChannel),
+  };
+}
+
 async function resolveConfiguredBotLogChannel(input: {
   client: Client;
   guildId: string;
@@ -1490,27 +1585,15 @@ async function resolveFwaBaseSwapBotLogChannel(
 ): Promise<FwaBaseSwapAuditLogDestination | null> {
   if (!guildId) return null;
 
-  const configuredTypedChannelId =
-    await botLogChannelService.getChannelIdForType(guildId, "base-swap");
-  if (configuredTypedChannelId) {
-    try {
-      const typedChannel = await resolveFwaBaseSwapDirectAuditLogChannel({
-        client,
-        guildId,
-        clanTag: context.clanTag,
-        clanName: context.clanName,
-        routingMode: "bot-log channel",
-        destinationChannelId: configuredTypedChannelId,
-      });
-      if (!typedChannel) {
-        await botLogChannelService.clearChannelIdForType(guildId, "base-swap");
-        return null;
-      }
-      return typedChannel;
-    } catch {
-      await botLogChannelService.clearChannelIdForType(guildId, "base-swap");
-      return null;
-    }
+  const typedChannel = await resolveTypedFwaBaseSwapBotLogChannel({
+    client,
+    guildId,
+    clanTag: context.clanTag,
+    clanName: context.clanName,
+    botLogChannelService,
+  });
+  if (typedChannel) {
+    return typedChannel;
   }
 
   return resolveConfiguredBotLogChannel({

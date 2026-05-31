@@ -3433,14 +3433,14 @@ describe("FWA base-swap bot-log audit", () => {
     expect(String(payload.content ?? "")).not.toContain("Source channel:");
   });
 
-  it("does not fall back to generic bot-log routing when the typed base-swap channel is unavailable", async () => {
+  it("clears stale typed bot-log config and can fall back to generic routing", async () => {
     const genericBotLogSend = vi.fn().mockResolvedValue(undefined);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clearTypedSpy = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
     vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
       "typed-bot-log-1",
-    );
-    vi.spyOn(BotLogChannelService.prototype, "clearChannelIdForType").mockResolvedValue(
-      undefined,
     );
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "bot-log-1",
@@ -3483,8 +3483,8 @@ describe("FWA base-swap bot-log audit", () => {
     });
 
     expect(client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
-    expect(client.channels.fetch).not.toHaveBeenCalledWith("bot-log-1");
-    expect(genericBotLogSend).not.toHaveBeenCalled();
+    expect(client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
+    expect(genericBotLogSend).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("mode=bot-log channel"),
     );
@@ -3492,9 +3492,112 @@ describe("FWA base-swap bot-log audit", () => {
       expect.stringContaining("reason=missing"),
     );
     expect(warnSpy.mock.calls.some((call) => String(call[0] ?? "").includes("destination=typed-bot-log-1"))).toBe(true);
-    expect(BotLogChannelService.prototype.clearChannelIdForType).toHaveBeenCalledWith(
+    expect(clearTypedSpy).toHaveBeenCalledWith(
       "guild-1",
       "base-swap",
+    );
+  });
+
+  it("does not clear typed base-swap bot-log config on transient fetch failures", async () => {
+    const genericBotLogSend = vi.fn().mockResolvedValue(undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clearTypedSpy = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-bot-log-1",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation(async (channelId: string) => {
+          if (channelId === "typed-bot-log-1") {
+            throw Object.assign(new Error("boom"), { code: 500 });
+          }
+          if (channelId === "bot-log-1") {
+            return {
+              guildId: "guild-1",
+              isTextBased: () => true,
+              send: genericBotLogSend,
+            };
+          }
+          return null;
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "5",
+        baseErrors: "2",
+        swapReminder: true,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
+    expect(client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
+    expect(genericBotLogSend).toHaveBeenCalledTimes(1);
+    expect(clearTypedSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=fetch_failed"),
+    );
+  });
+
+  it("does not clear typed base-swap bot-log config when the channel is not sendable", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clearTypedSpy = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-bot-log-1",
+    );
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: "guild-1",
+          isTextBased: () => true,
+          send: undefined,
+        }),
+      },
+    } as any;
+
+    await logFwaBaseSwapPublicationForTest({
+      client,
+      guildId: "guild-1",
+      sourceChannelId: "channel-1",
+      userId: "user-1",
+      username: "Requester",
+      displayName: "driedsheets",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: "1",
+        fwaBases: "5",
+        baseErrors: "2",
+        swapReminder: true,
+      }),
+      messageUrls: ["https://discord.com/channels/guild-1/channel-1/msg-1"],
+    });
+
+    expect(client.channels.fetch).toHaveBeenCalledWith("typed-bot-log-1");
+    expect(clearTypedSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=not_sendable"),
     );
   });
 
