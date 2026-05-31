@@ -15,6 +15,13 @@ const syncBadgeEmojis = vi.hoisted(() => [
   { code: "TWC", label: "TheWiseCowboys", name: "twc", id: "222" },
   { code: "GB", label: "Gabbar", name: "gb", id: "333" },
 ]);
+const checklistAutoPostMock = vi.hoisted(() => ({
+  postForSyncTrackedMessage: vi.fn().mockResolvedValue({
+    posted: 0,
+    skipped: 2,
+    failed: 0,
+  }),
+}));
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -23,6 +30,10 @@ vi.mock("../src/prisma", () => ({
 vi.mock("../src/helper/syncBadgeEmoji", () => ({
   findSyncBadgeEmojiForClan: vi.fn(() => null),
   getSyncBadgeEmojis: vi.fn(() => syncBadgeEmojis),
+}));
+
+vi.mock("../src/services/fwa/matchChecklistAutoPostService", () => ({
+  fwaMatchChecklistAutoPostService: checklistAutoPostMock,
 }));
 
 import { Post, handlePostModalSubmit } from "../src/commands/Post";
@@ -306,6 +317,11 @@ describe("/sync time post autocomplete", () => {
 describe("/sync post status reaction scan", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    checklistAutoPostMock.postForSyncTrackedMessage.mockResolvedValue({
+      posted: 0,
+      skipped: 2,
+      failed: 0,
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
       if (key === "fwa_leader_role:guild-1") return "123456789012345678";
@@ -454,6 +470,11 @@ describe("/sync time post modal seed", () => {
 describe("/sync time post modal submit", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    checklistAutoPostMock.postForSyncTrackedMessage.mockResolvedValue({
+      posted: 0,
+      skipped: 2,
+      failed: 0,
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     vi.spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
@@ -478,6 +499,17 @@ describe("/sync time post modal submit", () => {
     expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-1",
+      }),
+    );
+    expect(checklistAutoPostMock.postForSyncTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: interaction.client,
+        tracked: expect.objectContaining({
+          guildId: "guild-1",
+          channelId: "channel-1",
+          messageId: "posted-message-channel-1",
+        }),
+        createdByUserId: "user-1",
       }),
     );
     expect(interaction.channel.send).toHaveBeenCalledTimes(1);

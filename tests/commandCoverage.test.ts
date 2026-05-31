@@ -143,6 +143,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("clan:<tag-or-short-name>");
     expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
+    expect(normalized).toContain("auto-post to `/bot-logs type:checklist channel:<channel>`");
     expect(normalized).toContain("snapshot-only");
   });
 

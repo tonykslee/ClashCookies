@@ -50,6 +50,7 @@ import {
   buildFwaMatchChecklistRowsFromCopyView,
   handleFwaMatchChecklistRefreshButton,
   postFwaMatchChecklistMessage,
+  publishFwaMatchChecklistMessageToChannel,
 } from "../src/services/FwaMatchChecklistService";
 
 function buildRows() {
@@ -188,6 +189,7 @@ describe("FWA match checklist service", () => {
         clanTag: null,
         expiresAt,
         metadata: expect.objectContaining({
+          kind: "mail_checklist",
           scopeKey: "scope-key",
           checkedClanTags: ["#PYPY"],
           createdByUserId: "user-1",
@@ -651,5 +653,117 @@ describe("FWA match checklist service", () => {
     );
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.components?.[0]?.toJSON?.().components?.[0]?.label).toBe("Refresh");
+  });
+
+  it("publishes a mail checklist directly to a channel with reactions, pinning, and tracked kind", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({
+      id: "mail-message-1",
+      react,
+      pin,
+    });
+
+    const messageId = await publishFwaMatchChecklistMessageToChannel({
+      viewType: "Mail",
+      channel: { send },
+      guildId: "guild-1",
+      channelId: "checklist-channel",
+      rows: buildRows(),
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: ["#PYPY"],
+      createdByUserId: "system",
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+    });
+
+    expect(messageId).toBe("mail-message-1");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Mail Checklist"),
+        embeds: [],
+        components: expect.any(Array),
+      }),
+    );
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "checklist-channel",
+        messageId: "mail-message-1",
+        referenceId: "sync-message-1",
+        metadata: expect.objectContaining({
+          kind: "mail_checklist",
+          checkedClanTags: ["#PYPY"],
+        }),
+      }),
+    );
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(react).toHaveBeenCalledWith("<:twc:222>");
+    expect(pin).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes a bases checklist directly to a channel with reactions, pinning, and tracked kind", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue({
+      id: "bases-message-1",
+      react,
+      pin,
+    });
+    const rows = [
+      {
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+        badgeEmojiId: "111",
+        badgeEmojiName: "rr",
+        badgeEmojiInline: "<:rr:111>",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+      },
+    ];
+
+    const messageId = await publishFwaMatchChecklistMessageToChannel({
+      viewType: "Bases",
+      channel: { send },
+      guildId: "guild-1",
+      channelId: "checklist-channel",
+      rows,
+      clanTag: null,
+      scopeKey: "bases-scope-key",
+      checkedClanTags: [],
+      createdByUserId: "system",
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+    });
+
+    expect(messageId).toBe("bases-message-1");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Clan Bases Checklist"),
+        embeds: [],
+        components: expect.any(Array),
+      }),
+    );
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        channelId: "checklist-channel",
+        messageId: "bases-message-1",
+        referenceId: "sync-message-1",
+        metadata: expect.objectContaining({
+          kind: "bases_checklist",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              badgeEmojiInline: "<:rr:111>",
+              warId: 1001,
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(pin).toHaveBeenCalledTimes(1);
   });
 });
