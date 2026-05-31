@@ -4,6 +4,7 @@ import {
   TRACKED_MESSAGE_STATUS,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
@@ -110,6 +111,7 @@ function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>
 
 describe("TrackedMessageService sync spin status", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
@@ -117,6 +119,7 @@ describe("TrackedMessageService sync spin status", () => {
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
     prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
+    vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(null);
   });
 
   it("posts the scheduled status embed once and reacts with every clan badge", async () => {
@@ -181,6 +184,106 @@ describe("TrackedMessageService sync spin status", () => {
           metadata: expect.objectContaining({
             statusPostedAt: expect.any(String),
           }),
+        }),
+      }),
+    );
+  });
+
+  it("posts the scheduled status embed to the typed sync channel when configured", async () => {
+    const trackedRow = makeTrackedRow({
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-sync-channel",
+    );
+
+    const sourceSend = vi.fn().mockResolvedValue({ id: "source-status", react: vi.fn() });
+    const typedReact = vi.fn().mockResolvedValue(undefined);
+    const typedSend = vi.fn().mockResolvedValue({
+      id: "typed-status-message",
+      react: typedReact,
+    });
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue({
+          channels: {
+            fetch: vi.fn(async (channelId: string) => ({
+              isTextBased: () => true,
+              send: channelId === "typed-sync-channel" ? typedSend : sourceSend,
+            })),
+          },
+        }),
+      },
+      users: {
+        fetch: vi.fn(async () => null),
+      },
+    } as any;
+
+    const result = await trackedMessageService.processDueSyncReminders(client);
+
+    expect(result).toBe(1);
+    expect(typedSend).toHaveBeenCalledTimes(1);
+    expect(sourceSend).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "typed-status-message" },
+        create: expect.objectContaining({
+          channelId: "typed-sync-channel",
+          referenceId: "sync-message-1",
+        }),
+      }),
+    );
+  });
+
+  it("falls back to the source sync post channel when the typed sync channel is unavailable", async () => {
+    const trackedRow = makeTrackedRow({
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "typed-sync-channel",
+    );
+
+    const sourceSend = vi.fn().mockResolvedValue({
+      id: "fallback-status-message",
+      react: vi.fn().mockResolvedValue(undefined),
+    });
+    const fetch = vi.fn(async (channelId: string) => {
+      if (channelId === "typed-sync-channel") return null;
+      if (channelId === "channel-1") {
+        return {
+          isTextBased: () => true,
+          send: sourceSend,
+        };
+      }
+      return null;
+    });
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue({
+          channels: { fetch },
+        }),
+      },
+      users: {
+        fetch: vi.fn(async () => null),
+      },
+    } as any;
+
+    const result = await trackedMessageService.processDueSyncReminders(client);
+
+    expect(result).toBe(1);
+    expect(fetch).toHaveBeenCalledWith("typed-sync-channel");
+    expect(fetch).toHaveBeenCalledWith("channel-1");
+    expect(sourceSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "fallback-status-message" },
+        create: expect.objectContaining({
+          channelId: "channel-1",
+          referenceId: "sync-message-1",
         }),
       }),
     );

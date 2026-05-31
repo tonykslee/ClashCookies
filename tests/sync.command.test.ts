@@ -247,7 +247,7 @@ function makeStatusInteraction(input: {
 }
 
 describe("/sync time post command shape", () => {
-  it("registers optional timezone autocomplete on the post subcommand", () => {
+  it("registers role and timezone but no destination channel on the post subcommand", () => {
     const timeGroup = Post.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.SubcommandGroup &&
@@ -266,12 +266,7 @@ describe("/sync time post command shape", () => {
       (option: { name: string }) => option.name === "timezone",
     );
 
-    expect(channelOption?.required).toBe(false);
-    expect(channelOption?.type).toBe(ApplicationCommandOptionType.Channel);
-    expect(channelOption?.channel_types).toEqual([
-      ChannelType.GuildText,
-      ChannelType.GuildAnnouncement,
-    ]);
+    expect(channelOption).toBeUndefined();
     expect(roleOption?.required).toBe(false);
     expect(timezoneOption?.required).toBe(false);
     expect(timezoneOption?.type).toBe(ApplicationCommandOptionType.String);
@@ -445,67 +440,14 @@ describe("/sync time post modal seed", () => {
     expect(modal.components[2].components[0].value).toBe("America/Chicago");
   });
 
-  it("saves an admin-selected destination channel before opening the modal", async () => {
-    const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
-    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
-      if (key.startsWith("user_timezone:")) return null;
-      if (key.startsWith("guild_sync_role:")) return null;
-      if (key.startsWith("fwa_leader_role:")) return null;
-      return null;
-    });
-
-    const selectedChannel = makeSendableChannel({
-      id: "222222222222222222",
-      guildId: "guild-1",
-      type: ChannelType.GuildText,
-    });
-    const interaction = makeRunInteraction({
-      timezone: null,
-      channel: selectedChannel,
-      admin: true,
-    });
+  it("does not read a destination channel option before opening the modal", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+    const interaction = makeRunInteraction({ timezone: null });
 
     await Post.run({} as any, interaction as any, {} as any);
 
-    expect(setSpy).toHaveBeenCalledWith(
-      "guild_sync_post_channel:guild-1",
-      "222222222222222222",
-    );
+    expect(interaction.options.getChannel).not.toHaveBeenCalled();
     expect(interaction.showModal).toHaveBeenCalledTimes(1);
-    expect(interaction.reply).not.toHaveBeenCalled();
-  });
-
-  it("rejects a non-admin channel override before opening the modal", async () => {
-    const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
-    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
-      if (key.startsWith("user_timezone:")) return null;
-      if (key.startsWith("guild_sync_role:")) return null;
-      if (key.startsWith("fwa_leader_role:")) return null;
-      return null;
-    });
-
-    const selectedChannel = makeSendableChannel({
-      id: "333333333333333333",
-      guildId: "guild-1",
-      type: ChannelType.GuildText,
-    });
-    const interaction = makeRunInteraction({
-      timezone: null,
-      channel: selectedChannel,
-      admin: false,
-    });
-
-    await Post.run({} as any, interaction as any, {} as any);
-
-    expect(setSpy).not.toHaveBeenCalledWith(
-      "guild_sync_post_channel:guild-1",
-      "333333333333333333",
-    );
-    expect(interaction.showModal).not.toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalledWith({
-      ephemeral: true,
-      content: "You do not have permission to change the sync post channel.",
-    });
   });
 });
 
@@ -544,8 +486,41 @@ describe("/sync time post modal submit", () => {
     );
   });
 
-  it("posts to the saved destination channel when configured", async () => {
+  it("posts to the typed sync bot-log destination channel when configured", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key === "bot_logs_channel:guild-1:sync") return "222222222222222222";
+      if (key.startsWith("active_sync_post:")) return null;
+      return null;
+    });
+
+    const destinationChannel = makeSendableChannel({
+      id: "222222222222222222",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+      destinationChannel,
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(destinationChannel.send).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "222222222222222222",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Posted in <#222222222222222222>."),
+    );
+  });
+
+  it("falls back to the legacy saved destination channel when typed sync is not configured", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key === "bot_logs_channel:guild-1:sync") return null;
       if (key === "guild_sync_post_channel:guild-1") return "channel-2";
       if (key.startsWith("active_sync_post:")) return null;
       return null;
@@ -571,21 +546,18 @@ describe("/sync time post modal submit", () => {
         channelId: "channel-2",
       }),
     );
-    expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("Posted in <#channel-2>."),
-    );
   });
 
-  it("falls back to the current channel when the saved destination channel is unavailable", async () => {
+  it("falls back to the current channel when the typed sync destination channel is unavailable", async () => {
     const deleteSpy = vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
-      if (key === "guild_sync_post_channel:guild-1") return "channel-2";
+      if (key === "bot_logs_channel:guild-1:sync") return "222222222222222222";
       if (key.startsWith("active_sync_post:")) return null;
       return null;
     });
 
     const missingChannel = makeSendableChannel({
-      id: "channel-2",
+      id: "222222222222222222",
       guildId: "guild-1",
       type: ChannelType.GuildText,
     });
@@ -594,12 +566,12 @@ describe("/sync time post modal submit", () => {
       role: "<@&123456789012345678>",
       destinationChannel: missingChannel,
     });
-    interaction.guild.channels.cache.delete("channel-2");
+    interaction.guild.channels.cache.delete("222222222222222222");
     interaction.guild.channels.fetch = vi.fn(async () => null);
 
     await handlePostModalSubmit(interaction as any);
 
-    expect(deleteSpy).toHaveBeenCalledWith("guild_sync_post_channel:guild-1");
+    expect(deleteSpy).toHaveBeenCalledWith("bot_logs_channel:guild-1:sync");
     expect(interaction.channel.send).toHaveBeenCalledTimes(1);
     expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -607,7 +579,7 @@ describe("/sync time post modal submit", () => {
       }),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("Configured sync-time post channel <#channel-2> is unavailable"),
+      expect.stringContaining("Configured sync bot-log channel <#222222222222222222> is unavailable"),
     );
   });
 
