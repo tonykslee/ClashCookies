@@ -9,7 +9,6 @@ type TestInteractionInput = {
   isAdmin?: boolean;
   type?: string | null;
   enable?: string | null;
-  setChannel?: { id: string; guildId?: string; type?: number } | null;
   channel?: { id: string; guildId?: string; type?: number } | null;
   cacheChannelId?: string | null;
   fetchChannel?: unknown;
@@ -47,7 +46,6 @@ function createInteraction(input: TestInteractionInput = {}) {
         return null;
       }),
       getChannel: vi.fn((name: string) => {
-        if (name === "set-channel") return input.setChannel ?? null;
         if (name === "channel") return input.channel ?? null;
         return null;
       }),
@@ -57,7 +55,7 @@ function createInteraction(input: TestInteractionInput = {}) {
 }
 
 describe("/bot-logs command shape", () => {
-  it("registers optional type, set-channel, base-swap enable, and custom channel options", () => {
+  it("registers optional type, base-swap enable, and a single channel option", () => {
     const typeOption = BotLogs.options?.find((option) => option.name === "type");
     const setChannelOption = BotLogs.options?.find(
       (option) => option.name === "set-channel"
@@ -71,15 +69,9 @@ describe("/bot-logs command shape", () => {
       { name: "base-swap", value: "base-swap" },
       { name: "maintenance", value: "maintenance" },
       { name: "sync", value: "sync" },
+      { name: "checklist", value: "checklist" },
     ]);
-    expect(setChannelOption?.type).toBe(ApplicationCommandOptionType.Channel);
-    expect(setChannelOption?.required).toBe(false);
-    expect(setChannelOption?.channel_types).toEqual([
-      ChannelType.GuildText,
-      ChannelType.GuildAnnouncement,
-      ChannelType.PublicThread,
-      ChannelType.PrivateThread,
-    ]);
+    expect(setChannelOption).toBeUndefined();
     expect(enableOption?.type).toBe(ApplicationCommandOptionType.String);
     expect(enableOption?.required).toBe(false);
     expect(enableOption?.choices).toEqual([
@@ -116,7 +108,7 @@ describe("/bot-logs behavior", () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
     const interaction = createInteraction({
       guildId: "111",
-      setChannel: {
+      channel: {
         id: "222222222222222222",
         guildId: "111",
         type: ChannelType.GuildText,
@@ -143,7 +135,7 @@ describe("/bot-logs behavior", () => {
     const interaction = createInteraction({
       guildId: "111",
       type: "base-swap",
-      setChannel: {
+      channel: {
         id: "222222222222222222",
         guildId: "111",
         type: ChannelType.GuildText,
@@ -309,7 +301,7 @@ describe("/bot-logs behavior", () => {
     const interaction = createInteraction({
       guildId: "111",
       type: "maintenance",
-      setChannel: {
+      channel: {
         id: "333333333333333333",
         guildId: "111",
         type: ChannelType.GuildText,
@@ -360,15 +352,15 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("keeps legacy set-channel support for sync typed channel", async () => {
+  it("saves checklist typed channel with the channel option", async () => {
     const setChannelIdForType = vi
       .spyOn(BotLogChannelService.prototype, "setChannelIdForType")
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
       guildId: "111",
-      type: "sync",
-      setChannel: {
-        id: "444444444444444444",
+      type: "checklist",
+      channel: {
+        id: "555555555555555555",
         guildId: "111",
         type: ChannelType.GuildAnnouncement,
       },
@@ -379,16 +371,16 @@ describe("/bot-logs behavior", () => {
 
     expect(setChannelIdForType).toHaveBeenCalledWith(
       "111",
-      "sync",
-      "444444444444444444",
+      "checklist",
+      "555555555555555555",
     );
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Sync bot-log channel saved: <#444444444444444444>.",
+      content: "Checklist bot-log channel saved: <#555555555555555555>.",
     });
   });
 
-  it("returns the configured channel mention when no set-channel is provided", async () => {
+  it("returns the configured channel mention when no update args are provided", async () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "333333333333333333"
     );
@@ -404,7 +396,7 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("returns the configured base-swap channel mention when no set-channel is provided", async () => {
+  it("returns the configured base-swap channel mention when no update args are provided", async () => {
     vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
       routingMode: "CUSTOM",
       channelId: "333333333333333333",
@@ -441,7 +433,7 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("returns the configured maintenance channel mention when no set-channel is provided", async () => {
+  it("returns the configured maintenance channel mention when no update args are provided", async () => {
     vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
       "444444444444444444",
     );
@@ -472,6 +464,23 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content: "Current sync bot-log channel: <#444444444444444444>.",
+    });
+  });
+
+  it("returns the configured checklist channel mention when no update args are provided", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "555555555555555555",
+    );
+    const interaction = createInteraction({
+      type: "checklist",
+      cacheChannelId: "555555555555555555",
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Current checklist bot-log channel: <#555555555555555555>.",
     });
   });
 
@@ -530,6 +539,20 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it("returns no-config message when no checklist channel is configured", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(null);
+    const interaction = createInteraction({
+      type: "checklist",
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No checklist bot-log channel is configured yet.",
+    });
+  });
+
   it("clears stale config when saved channel no longer exists", async () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "444444444444444444"
@@ -548,7 +571,7 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content:
         "Configured bot-log channel <#444444444444444444> no longer exists. " +
-        "I cleared the saved setting. Set a new one with `/bot-logs set-channel`.",
+        "I cleared the saved setting. Set a new one with `/bot-logs channel:<channel>`.",
     });
   });
 
@@ -600,7 +623,7 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content:
         "Configured maintenance bot-log channel <#444444444444444444> no longer exists. " +
-        "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
+        "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance channel:<channel>`.",
     });
   });
 
@@ -621,11 +644,38 @@ describe("/bot-logs behavior", () => {
     expect(clearChannelIdForType).toHaveBeenCalledWith("100", "sync");
     expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "maintenance");
     expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "base-swap");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "checklist");
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content:
         "Configured sync bot-log channel <#444444444444444444> no longer exists. " +
         "I cleared the saved setting. Set a new one with `/bot-logs type:sync channel:<channel>`.",
+    });
+  });
+
+  it("clears stale checklist config without touching other typed settings", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "555555555555555555",
+    );
+    const clearChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      type: "checklist",
+      fetchChannel: null,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(clearChannelIdForType).toHaveBeenCalledWith("100", "checklist");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "maintenance");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "sync");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "base-swap");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "Configured checklist bot-log channel <#555555555555555555> no longer exists. " +
+        "I cleared the saved setting. Set a new one with `/bot-logs type:checklist channel:<channel>`.",
     });
   });
 
@@ -647,7 +697,7 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content:
         "Configured bot-log channel <#555555555555555555> is no longer accessible. " +
-        "Set a new one with `/bot-logs set-channel`.",
+        "Set a new one with `/bot-logs channel:<channel>`.",
     });
   });
 
@@ -695,7 +745,30 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content:
         "Configured maintenance bot-log channel <#555555555555555555> is no longer accessible. " +
-        "Set a new one with `/bot-logs type:maintenance set-channel`.",
+        "Set a new one with `/bot-logs type:maintenance channel:<channel>`.",
+    });
+  });
+
+  it("reports inaccessible configured checklist channels without crashing", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "666666666666666666",
+    );
+    const clearChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      type: "checklist",
+      fetchError: { code: 50013 },
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(clearChannelIdForType).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "Configured checklist bot-log channel <#666666666666666666> is no longer accessible. " +
+        "Set a new one with `/bot-logs type:checklist channel:<channel>`.",
     });
   });
 
@@ -705,7 +778,7 @@ describe("/bot-logs behavior", () => {
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
       isAdmin: false,
-      setChannel: {
+      channel: {
         id: "666666666666666666",
         guildId: "100",
         type: ChannelType.GuildText,
@@ -721,13 +794,13 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("rejects set-channel from another guild", async () => {
+  it("rejects channel from another guild", async () => {
     const setChannelId = vi
       .spyOn(BotLogChannelService.prototype, "setChannelId")
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
       guildId: "100",
-      setChannel: {
+      channel: {
         id: "777777777777777777",
         guildId: "999",
         type: ChannelType.GuildText,
@@ -743,12 +816,12 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("rejects unsupported channel types for set-channel", async () => {
+  it("rejects unsupported channel types for generic channel", async () => {
     const setChannelId = vi
       .spyOn(BotLogChannelService.prototype, "setChannelId")
       .mockResolvedValue(undefined);
     const interaction = createInteraction({
-      setChannel: {
+      channel: {
         id: "888888888888888888",
         guildId: "100",
         type: ChannelType.GuildVoice,
@@ -760,7 +833,7 @@ describe("/bot-logs behavior", () => {
     expect(setChannelId).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Selected channel must be a server text, announcement, or thread channel.",
+      content: "Selected channel must be a server text or announcement channel.",
     });
   });
 });

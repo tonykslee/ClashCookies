@@ -2,7 +2,7 @@ import { SettingsService } from "./SettingsService";
 
 const BOT_LOG_CHANNEL_SETTING_PREFIX = "bot_logs_channel";
 const BASE_SWAP_ROUTING_SETTING_PREFIX = "bot_logs_base_swap_routing";
-export const BOT_LOG_CHANNEL_TYPES = ["base-swap", "maintenance", "sync"] as const;
+export const BOT_LOG_CHANNEL_TYPES = ["base-swap", "maintenance", "sync", "checklist"] as const;
 export type BotLogChannelType = (typeof BOT_LOG_CHANNEL_TYPES)[number];
 export type BaseSwapBotLogRoutingMode =
   | "CLAN_LOG"
