@@ -346,7 +346,7 @@ export class TodoSnapshotService {
     const snapshotRows = activatedPlayerTags.length > 0
       ? await prisma.todoPlayerSnapshot.findMany({
           where: { playerTag: { in: activatedPlayerTags } },
-          select: { playerTag: true, clanTag: true },
+          select: { playerTag: true, clanTag: true, cwlClanTag: true },
         })
       : [];
     const snapshotClanTagByPlayerTag = new Map(
@@ -355,10 +355,19 @@ export class TodoSnapshotService {
         normalizeClanTag(row.clanTag ?? ""),
       ] as const),
     );
+    const snapshotCwlClanTagByPlayerTag = new Map(
+      snapshotRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.cwlClanTag ?? ""),
+      ] as const),
+    );
     const trackedClanTagRows = await prisma.trackedClan.findMany({
       select: { tag: true },
     });
     const raidTrackedClanTagRows = await listRaidTrackedClanRows();
+    const cwlTrackedClanRows = await prisma.cwlTrackedClan.findMany({
+      select: { tag: true },
+    });
     const trackedClanTagSet = new Set(
       trackedClanTagRows
         .map((row) => normalizeClanTag(row.tag))
@@ -373,12 +382,124 @@ export class TodoSnapshotService {
       ...trackedClanTagSet,
       ...raidTrackedClanTagSet,
     ]);
+    const cwlTrackedClanTagSet = new Set(
+      cwlTrackedClanRows
+        .map((row) => normalizeClanTag(row.tag))
+        .filter(Boolean),
+    );
+
+    const currentWarRows =
+      trackedClanTagSet.size > 0
+        ? await prisma.currentWar.findMany({
+            where: { clanTag: { in: [...trackedClanTagSet] } },
+            select: {
+              clanTag: true,
+              state: true,
+            },
+          })
+        : [];
+    const activeTrackedCurrentWarClanTagSet = new Set(
+      currentWarRows
+        .map((row) => [normalizeClanTag(row.clanTag), row.state] as const)
+        .filter(
+          (entry): entry is [string, string | null] =>
+            Boolean(entry[0] && isTodoWarStateActive(entry[1])),
+        )
+        .map(([clanTag]) => clanTag),
+    );
+
+    const clanMemberRows =
+      activatedPlayerTags.length > 0
+        ? await prisma.fwaClanMemberCurrent.findMany({
+            where: { playerTag: { in: activatedPlayerTags } },
+            select: {
+              playerTag: true,
+              clanTag: true,
+            },
+          })
+        : [];
+    const warMemberRows =
+      activatedPlayerTags.length > 0
+        ? await prisma.fwaWarMemberCurrent.findMany({
+            where: { playerTag: { in: activatedPlayerTags } },
+            select: {
+              playerTag: true,
+              clanTag: true,
+            },
+          })
+        : [];
+    const trackedWarRosterMemberRows =
+      activatedPlayerTags.length > 0
+        ? await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+            where: { playerTag: { in: activatedPlayerTags } },
+            select: {
+              playerTag: true,
+              clanTag: true,
+            },
+          })
+        : [];
+
+    const clanMemberClanTagByPlayerTag = new Map(
+      clanMemberRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.clanTag),
+      ] as const),
+    );
+    const warMemberClanTagByPlayerTag = new Map(
+      warMemberRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.clanTag),
+      ] as const),
+    );
+    const trackedWarRosterClanTagByPlayerTag = new Map(
+      trackedWarRosterMemberRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        normalizeClanTag(row.clanTag),
+      ] as const),
+    );
 
     const trackedPlayerTags: string[] = [];
     const nonTrackedPlayerTags: string[] = [];
+    const snapshotTrackedPlayerTagSet = new Set<string>();
+    const memberTrackedPlayerTagSet = new Set<string>();
+    const warMemberTrackedPlayerTagSet = new Set<string>();
+    const rosterTrackedPlayerTagSet = new Set<string>();
     for (const playerTag of activatedPlayerTags) {
-      const clanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
-      if (clanTag && trackedRaidClanTagSet.has(clanTag)) {
+      const snapshotClanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
+      const snapshotCwlClanTag = snapshotCwlClanTagByPlayerTag.get(playerTag) ?? null;
+      const memberClanTag = clanMemberClanTagByPlayerTag.get(playerTag) ?? null;
+      const warMemberClanTag = warMemberClanTagByPlayerTag.get(playerTag) ?? null;
+      const rosterClanTag = trackedWarRosterClanTagByPlayerTag.get(playerTag) ?? null;
+
+      if (snapshotClanTag && trackedRaidClanTagSet.has(snapshotClanTag)) {
+        snapshotTrackedPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
+      if (memberClanTag && trackedRaidClanTagSet.has(memberClanTag)) {
+        memberTrackedPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
+      if (
+        warMemberClanTag &&
+        trackedClanTagSet.has(warMemberClanTag) &&
+        activeTrackedCurrentWarClanTagSet.has(warMemberClanTag)
+      ) {
+        warMemberTrackedPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
+      if (
+        rosterClanTag &&
+        trackedClanTagSet.has(rosterClanTag) &&
+        activeTrackedCurrentWarClanTagSet.has(rosterClanTag)
+      ) {
+        rosterTrackedPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
+      if (snapshotCwlClanTag && cwlTrackedClanTagSet.has(snapshotCwlClanTag)) {
         trackedPlayerTags.push(playerTag);
       } else {
         nonTrackedPlayerTags.push(playerTag);
@@ -417,6 +538,9 @@ export class TodoSnapshotService {
     const skippedNeverUsedUserCount = Math.max(
       0,
       totalLinkedUserIds.length - activatedUserCount,
+    );
+    console.info(
+      `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
     );
     console.info(
       `[todo-snapshot] event=todo_refresh_population cadence=${input.cadence} activated_user_count=${activatedUserCount} total_linked_user_count=${totalLinkedUserIds.length} skipped_never_used_user_count=${skippedNeverUsedUserCount} selected_player_count=${selectedPlayerCount} tracked_player_count=${trackedPlayerCount} non_tracked_player_count=${nonTrackedPlayerCount}`,
