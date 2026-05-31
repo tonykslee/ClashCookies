@@ -415,16 +415,24 @@ describe("TrackedMessageService sync spin status", () => {
       .mockResolvedValueOnce({
         ...makeTrackedRow({
           messageId: "status-message-1",
+          channelId: "typed-sync-channel",
           referenceId: "sync-message-1",
           claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
         }),
       })
       .mockResolvedValueOnce({
+        channelId: "source-channel",
+      })
+      .mockResolvedValueOnce({
         ...makeTrackedRow({
           messageId: "status-message-1",
+          channelId: "typed-sync-channel",
           referenceId: "sync-message-1",
           claims: [],
         }),
+      })
+      .mockResolvedValueOnce({
+        channelId: "source-channel",
       });
 
     const edit = vi.fn().mockResolvedValue(undefined);
@@ -439,6 +447,14 @@ describe("TrackedMessageService sync spin status", () => {
     expect(edit).toHaveBeenCalledTimes(1);
     expect((edit.mock.calls[0]?.[0] as any).embeds[0].toJSON().description).toContain(
       "✅ <:rr:111> **RR** (Rocky Road)",
+    );
+
+    const claimedDescription = (edit.mock.calls[0]?.[0] as any).embeds[0].toJSON().description;
+    expect(claimedDescription).toContain(
+      "https://discord.com/channels/guild-1/source-channel/sync-message-1",
+    );
+    expect(claimedDescription).not.toContain(
+      "https://discord.com/channels/guild-1/typed-sync-channel/sync-message-1",
     );
 
     edit.mockClear();

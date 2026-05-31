@@ -2265,10 +2265,15 @@ export class TrackedMessageService {
 
     const metadata = parseSyncTimeMetadata(tracked.metadata);
     if (!metadata) return false;
+    const sourceSyncPost = await prisma.trackedMessage.findUnique({
+      where: { messageId: tracked.referenceId },
+      select: { channelId: true },
+    });
+    const sourceChannelId = sourceSyncPost?.channelId ?? tracked.channelId;
 
     const embed = buildSyncSpinStatusEmbed({
       guildId: tracked.guildId,
-      sourceChannelId: tracked.channelId,
+      sourceChannelId,
       sourceMessageId: tracked.referenceId,
       metadata,
       claimedClanTags: new Set(
