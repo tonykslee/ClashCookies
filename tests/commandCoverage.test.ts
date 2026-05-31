@@ -179,6 +179,15 @@ describe("command coverage", () => {
     expect(normalized).toContain("admin-only by default");
   });
 
+  it("documents base-swap log routing in FWA help detail text", () => {
+    const fwaHelpText = helpEmbedText("fwa");
+    const normalized = fwaHelpText.toLowerCase();
+    expect(fwaHelpText).toContain("/fwa base-swap");
+    expect(normalized).toContain("log-enable");
+    expect(normalized).toContain("bot-log channel");
+    expect(normalized).toContain("custom");
+  });
+
   it("documents maintenance bot-log routing in the bot-logs help detail text", () => {
     const botLogsHelpText = helpEmbedText("bot-logs");
     const normalized = botLogsHelpText.toLowerCase();
