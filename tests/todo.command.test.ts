@@ -3876,6 +3876,17 @@ describe("/todo refresh button", () => {
         historyRoundCount: 0,
         historyMemberCount: 0,
       });
+    const cwlMappingRefreshSpy = vi
+      .spyOn(cwlStateService, "refreshSeasonalCwlClanMappingsForPlayerTags")
+      .mockResolvedValue({
+        season: "2026-03",
+        playerCount: 0,
+        existingMappingCount: 0,
+        persistedEvidenceCount: 0,
+        liveEvidenceCount: 0,
+        learnedClanCount: 0,
+        failedClanCount: 0,
+      });
     const refreshedAt = new Date("2026-03-26T01:00:00.000Z");
     let snapshotRows = [
       makeSnapshotRow({
@@ -4001,48 +4012,7 @@ describe("/todo refresh button", () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.warAttacks.findMany.mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
-    const refreshSpy = vi
-      .spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags")
-      .mockImplementation(async (input: any) => {
-        const war = await input.cocService?.getCurrentWar("#2QVGPQP0U");
-        const activePlayerTags = new Set(
-          Array.isArray(war?.clan?.members)
-            ? war.clan.members
-                .map((member: any) => String(member?.tag ?? "").trim())
-                .filter(Boolean)
-            : [],
-        );
-
-        for (const row of snapshotRows) {
-          const isActive = activePlayerTags.has(row.playerTag);
-          const update = {
-            ...row,
-            playerName: isActive ? "Live Alpha" : "Live Bravo",
-            clanTag: "#2QVGPQP0U",
-            clanName: "Clan Two",
-            warActive: isActive,
-            warAttacksUsed: isActive ? 1 : 0,
-            warAttacksMax: 2,
-            warPhase: isActive ? "battle day" : null,
-            warEndsAt: isActive ? new Date("2026-03-26T12:00:00.000Z") : null,
-            lastUpdatedAt: refreshedAt,
-            updatedAt: refreshedAt,
-          };
-          await prismaMock.todoPlayerSnapshot.upsert({
-            where: { playerTag: row.playerTag },
-            update,
-            create: {
-              playerTag: row.playerTag,
-              ...update,
-            },
-          });
-        }
-
-        return {
-          playerCount: snapshotRows.length,
-          updatedCount: snapshotRows.length,
-        };
-      });
+    const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
 
     const interaction = makeTodoButtonInteraction({
       customId: buildTodoRefreshButtonCustomId({
@@ -4056,6 +4026,7 @@ describe("/todo refresh button", () => {
     });
 
     const cocService = makeCocServiceSpy();
+    cocService.getPlayerRaw = vi.fn().mockResolvedValue(null);
     cocService.getCurrentWar = vi.fn().mockResolvedValue(liveWar);
     cocService.getClanWarLeagueGroup = vi.fn().mockResolvedValue(null);
     cocService.getClanWarLeagueWar = vi.fn().mockResolvedValue(null);
@@ -4066,6 +4037,7 @@ describe("/todo refresh button", () => {
       cocService: cocService as any,
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
     });
+    expect(cwlMappingRefreshSpy).toHaveBeenCalled();
     expect(refreshSpy).toHaveBeenCalledWith({
       playerTags: ["#PYLQ0289", "#QGRJ2222"],
       cocService: cocService as any,
@@ -4094,7 +4066,6 @@ describe("/todo refresh button", () => {
     const description = String(payload.embeds[0].toJSON().description ?? "");
     expect(description).toContain("war status: 1 / 2 attacks completed");
     expect(description).toContain("Live Alpha");
-    expect(description).toContain("Live Bravo");
     expect(description).toContain("`1 / 2`");
     expect(description).toContain("**In active war clan, not in lineup**");
     expect(description).not.toContain("No linked accounts are in an active war lineup.");
