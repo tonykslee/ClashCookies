@@ -756,7 +756,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   sync: {
     summary: "Post structured messages such as sync time announcements.",
     details: [
-      "`/sync time post` opens a modal to capture date/time/timezone and role ping.",
+      "`/sync time post` opens a modal to capture date/time/timezone and role ping. Configure its destination with `/bot-logs type:sync channel:<channel>`; when unset, it posts in the invocation channel, with legacy saved sync-post channels still honored as fallback.",
       "Optional `timezone` autocompletes IANA zones and prefills the modal timezone field while keeping the field editable.",
       "Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.",
       "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
@@ -816,7 +816,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "For base-swap routing, `enable:clan-log channel` uses each tracked clan's log channel, `enable:clan-lead channel` uses its leader channel, `enable:bot-log channel` uses the generic `/bot-logs` channel, `enable:custom` uses `channel`, and `enable:false` disables base-swap audit delivery.",
       "Legacy `/bot-logs type:base-swap set-channel:<channel>` is still accepted and treated as custom base-swap audit routing.",
       "Use `/bot-logs type:maintenance set-channel:<channel>` to save the channel used for maintenance start/end notices.",
-      "Use `/bot-logs` with no arguments to view the currently configured generic channel mention, `/bot-logs type:base-swap` to view base-swap audit routing, or `/bot-logs type:maintenance` to view the typed maintenance channel.",
+      "Use `/bot-logs type:sync channel:<channel>` to save the channel used for `/sync time post` and scheduled sync spin status embeds.",
+      "Use `/bot-logs` with no arguments to view the currently configured generic channel mention, `/bot-logs type:base-swap` to view base-swap audit routing, `/bot-logs type:maintenance` to view the typed maintenance channel, or `/bot-logs type:sync` to view the typed sync channel.",
       "If a saved channel no longer exists, the command reports stale config and clears it.",
       "If a typed base-swap channel no longer exists, the command reports stale config and clears only that typed setting.",
       "If a typed maintenance channel no longer exists, the command reports stale config and clears only that typed setting.",
@@ -830,6 +831,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/bot-logs type:base-swap enable:custom channel:#fwa-audit-logs",
       "/bot-logs type:maintenance",
       "/bot-logs type:maintenance set-channel:#maintenance-logs",
+      "/bot-logs type:sync channel:#sync-time",
     ],
   },
   bot: {

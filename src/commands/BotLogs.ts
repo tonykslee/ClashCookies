@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { CoCService } from "../services/CoCService";
+import { SettingsService } from "../services/SettingsService";
 import {
   BOT_LOG_CHANNEL_TYPES,
   BotLogChannelService,
@@ -20,6 +21,8 @@ const BOT_LOGS_ENABLE_OPTION = "enable";
 const BOT_LOGS_CHANNEL_OPTION = "channel";
 const BOT_LOGS_BASE_SWAP_TYPE: BotLogChannelType = "base-swap";
 const BOT_LOGS_MAINTENANCE_TYPE: BotLogChannelType = "maintenance";
+const BOT_LOGS_SYNC_TYPE: BotLogChannelType = "sync";
+const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
   "clan-lead channel",
@@ -59,6 +62,10 @@ function formatBaseSwapRoutingMode(mode: BaseSwapBotLogRoutingMode): string {
   return "false";
 }
 
+function legacySyncPostChannelKey(guildId: string): string {
+  return `${LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX}:${guildId}`;
+}
+
 /** Purpose: enforce strict admin-only access for bot-log channel config. */
 function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
@@ -75,6 +82,14 @@ function isSupportedBotLogsChannel(channel: BotLogsChannel): boolean {
   if (typeof channel.type !== "number") return false;
   return BOT_LOGS_SUPPORTED_CHANNEL_TYPES.includes(
     channel.type as (typeof BOT_LOGS_SUPPORTED_CHANNEL_TYPES)[number]
+  );
+}
+
+function isSupportedSyncBotLogsChannel(channel: BotLogsChannel): boolean {
+  if (typeof channel.type !== "number") return false;
+  return (
+    channel.type === ChannelType.GuildText ||
+    channel.type === ChannelType.GuildAnnouncement
   );
 }
 
@@ -132,7 +147,7 @@ export const BotLogs: Command = {
     },
     {
       name: BOT_LOGS_CHANNEL_OPTION,
-      description: "Custom base-swap audit-log channel or thread",
+      description: "Custom base-swap audit-log channel/thread, or sync destination channel",
       type: ApplicationCommandOptionType.Channel,
       required: false,
       channel_types: [...BOT_LOGS_SUPPORTED_CHANNEL_TYPES],
@@ -182,10 +197,15 @@ export const BotLogs: Command = {
       return;
     }
 
-    if (customRoutingChannel && requestedType !== BOT_LOGS_BASE_SWAP_TYPE) {
+    if (
+      customRoutingChannel &&
+      requestedType !== BOT_LOGS_BASE_SWAP_TYPE &&
+      requestedType !== BOT_LOGS_SYNC_TYPE
+    ) {
       await interaction.reply({
         ephemeral: true,
-        content: "`channel` is only supported with `type:base-swap enable:custom`.",
+        content:
+          "`channel` is only supported with `type:base-swap enable:custom` or `type:sync`.",
       });
       return;
     }
@@ -251,6 +271,36 @@ export const BotLogs: Command = {
     }
 
     if (customRoutingChannel) {
+      if (requestedType === BOT_LOGS_SYNC_TYPE) {
+        if (!isGuildScopedChannel(customRoutingChannel, interaction.guildId)) {
+          await interaction.reply({
+            ephemeral: true,
+            content: "Selected channel must belong to this server.",
+          });
+          return;
+        }
+
+        if (!isSupportedSyncBotLogsChannel(customRoutingChannel)) {
+          await interaction.reply({
+            ephemeral: true,
+            content: "Selected channel must be a server text or announcement channel.",
+          });
+          return;
+        }
+
+        await botLogChannelService.setChannelIdForType(
+          interaction.guildId,
+          requestedType,
+          customRoutingChannel.id,
+        );
+        await new SettingsService().delete(legacySyncPostChannelKey(interaction.guildId));
+        await interaction.reply({
+          ephemeral: true,
+          content: `Sync bot-log channel saved: <#${customRoutingChannel.id}>.`,
+        });
+        return;
+      }
+
       await interaction.reply({
         ephemeral: true,
         content: "`channel` is only valid with `type:base-swap enable:custom`.",
@@ -267,11 +317,17 @@ export const BotLogs: Command = {
         return;
       }
 
-      if (!isSupportedBotLogsChannel(requestedChannel)) {
+      const channelSupported =
+        requestedType === BOT_LOGS_SYNC_TYPE
+          ? isSupportedSyncBotLogsChannel(requestedChannel)
+          : isSupportedBotLogsChannel(requestedChannel);
+      if (!channelSupported) {
         await interaction.reply({
           ephemeral: true,
           content:
-            "Selected channel must be a server text, announcement, or thread channel.",
+            requestedType === BOT_LOGS_SYNC_TYPE
+              ? "Selected channel must be a server text or announcement channel."
+              : "Selected channel must be a server text, announcement, or thread channel.",
         });
         return;
       }
@@ -294,15 +350,24 @@ export const BotLogs: Command = {
         return;
       }
 
-      if (requestedType === BOT_LOGS_MAINTENANCE_TYPE) {
+      if (
+        requestedType === BOT_LOGS_MAINTENANCE_TYPE ||
+        requestedType === BOT_LOGS_SYNC_TYPE
+      ) {
         await botLogChannelService.setChannelIdForType(
           interaction.guildId,
           requestedType,
           requestedChannel.id,
         );
+        if (requestedType === BOT_LOGS_SYNC_TYPE) {
+          await new SettingsService().delete(legacySyncPostChannelKey(interaction.guildId));
+        }
         await interaction.reply({
           ephemeral: true,
-          content: `Maintenance bot-log channel saved: <#${requestedChannel.id}>.`,
+          content:
+            requestedType === BOT_LOGS_SYNC_TYPE
+              ? `Sync bot-log channel saved: <#${requestedChannel.id}>.`
+              : `Maintenance bot-log channel saved: <#${requestedChannel.id}>.`,
         });
         return;
       }
@@ -385,7 +450,10 @@ export const BotLogs: Command = {
       return;
     }
 
-    if (requestedType === BOT_LOGS_MAINTENANCE_TYPE) {
+    if (
+      requestedType === BOT_LOGS_MAINTENANCE_TYPE ||
+      requestedType === BOT_LOGS_SYNC_TYPE
+    ) {
       const configuredChannelId = await botLogChannelService.getChannelIdForType(
         interaction.guildId,
         requestedType,
@@ -393,7 +461,10 @@ export const BotLogs: Command = {
       if (!configuredChannelId) {
         await interaction.reply({
           ephemeral: true,
-          content: "No maintenance bot-log channel is configured yet.",
+          content:
+            requestedType === BOT_LOGS_SYNC_TYPE
+              ? "No sync bot-log channel is configured yet."
+              : "No maintenance bot-log channel is configured yet.",
         });
         return;
       }
@@ -405,7 +476,10 @@ export const BotLogs: Command = {
       if (channelState === "found") {
         await interaction.reply({
           ephemeral: true,
-          content: `Current maintenance bot-log channel: <#${configuredChannelId}>.`,
+          content:
+            requestedType === BOT_LOGS_SYNC_TYPE
+              ? `Current sync bot-log channel: <#${configuredChannelId}>.`
+              : `Current maintenance bot-log channel: <#${configuredChannelId}>.`,
         });
         return;
       }
@@ -418,8 +492,11 @@ export const BotLogs: Command = {
         await interaction.reply({
           ephemeral: true,
           content:
-            `Configured maintenance bot-log channel <#${configuredChannelId}> no longer exists. ` +
-            "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
+            requestedType === BOT_LOGS_SYNC_TYPE
+              ? `Configured sync bot-log channel <#${configuredChannelId}> no longer exists. ` +
+                "I cleared the saved setting. Set a new one with `/bot-logs type:sync channel:<channel>`."
+              : `Configured maintenance bot-log channel <#${configuredChannelId}> no longer exists. ` +
+                "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
         });
         return;
       }
@@ -427,8 +504,11 @@ export const BotLogs: Command = {
       await interaction.reply({
         ephemeral: true,
         content:
-          `Configured maintenance bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
-          "Set a new one with `/bot-logs type:maintenance set-channel`.",
+          requestedType === BOT_LOGS_SYNC_TYPE
+            ? `Configured sync bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+              "Set a new one with `/bot-logs type:sync channel:<channel>`."
+            : `Configured maintenance bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+              "Set a new one with `/bot-logs type:maintenance set-channel`.",
       });
       return;
     }

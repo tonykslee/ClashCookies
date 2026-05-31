@@ -3,6 +3,7 @@ import { normalizeClanTag } from "./PlayerLinkService";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
+import { BotLogChannelService } from "./BotLogChannelService";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
@@ -2133,10 +2134,40 @@ export class TrackedMessageService {
         if (didWork) sentCount += 1;
         continue;
       }
-      const channel = await guild.channels.fetch(tracked.channelId).catch(() => null);
+      const botLogChannelService = new BotLogChannelService();
+      const typedSyncChannelId = await botLogChannelService.getChannelIdForType(
+        tracked.guildId,
+        "sync",
+      );
+      let destinationChannelId = tracked.channelId;
+      if (typedSyncChannelId) {
+        destinationChannelId = typedSyncChannelId;
+      }
+
+      let channel = await guild.channels.fetch(destinationChannelId).catch((err) => {
+        console.error(
+          `[tracked-message] sync status destination fetch failed event=sync_status_destination_fetch_failed guild=${tracked.guildId} configured_channel=${destinationChannelId} fallback_channel=${tracked.channelId} typed_sync_channel=${typedSyncChannelId ?? "none"} message=${tracked.messageId} error=${formatError(err)}`,
+        );
+        return null;
+      });
+      if (
+        typedSyncChannelId &&
+        (!channel || !channel.isTextBased() || !("send" in channel))
+      ) {
+        console.error(
+          `[tracked-message] sync status typed destination unavailable event=sync_status_typed_destination_unavailable guild=${tracked.guildId} configured_channel=${typedSyncChannelId} fallback_channel=${tracked.channelId} message=${tracked.messageId}`,
+        );
+        channel = await guild.channels.fetch(tracked.channelId).catch((err) => {
+          console.error(
+            `[tracked-message] sync status fallback fetch failed event=sync_status_fallback_fetch_failed guild=${tracked.guildId} fallback_channel=${tracked.channelId} message=${tracked.messageId} error=${formatError(err)}`,
+          );
+          return null;
+        });
+        destinationChannelId = tracked.channelId;
+      }
       if (!channel || !channel.isTextBased() || !("send" in channel)) {
         console.error(
-          `[tracked-message] sync status post skipped channel_unavailable guild=${tracked.guildId} channel=${tracked.channelId} message=${tracked.messageId}`,
+          `[tracked-message] sync status post skipped channel_unavailable guild=${tracked.guildId} channel=${destinationChannelId} source_channel=${tracked.channelId} message=${tracked.messageId}`,
         );
         if (didWork) sentCount += 1;
         continue;
@@ -2156,7 +2187,7 @@ export class TrackedMessageService {
         allowedMentions: { parse: [] },
       }).catch((err) => {
         console.error(
-          `[tracked-message] sync status post failed guild=${tracked.guildId} channel=${tracked.channelId} message=${tracked.messageId} error=${formatError(err)}`,
+          `[tracked-message] sync status post failed guild=${tracked.guildId} channel=${destinationChannelId} source_channel=${tracked.channelId} message=${tracked.messageId} error=${formatError(err)}`,
         );
         return null;
       });
@@ -2175,7 +2206,7 @@ export class TrackedMessageService {
         where: { messageId: sentMessage.id },
         update: {
           guildId: tracked.guildId,
-          channelId: tracked.channelId,
+          channelId: destinationChannelId,
           featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
           status: TRACKED_MESSAGE_STATUS.ACTIVE,
           clanTag: tracked.clanTag ?? null,
@@ -2186,7 +2217,7 @@ export class TrackedMessageService {
         },
         create: {
           guildId: tracked.guildId,
-          channelId: tracked.channelId,
+          channelId: destinationChannelId,
           messageId: sentMessage.id,
           featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
           status: TRACKED_MESSAGE_STATUS.ACTIVE,
@@ -2234,10 +2265,15 @@ export class TrackedMessageService {
 
     const metadata = parseSyncTimeMetadata(tracked.metadata);
     if (!metadata) return false;
+    const sourceSyncPost = await prisma.trackedMessage.findUnique({
+      where: { messageId: tracked.referenceId },
+      select: { channelId: true },
+    });
+    const sourceChannelId = sourceSyncPost?.channelId ?? tracked.channelId;
 
     const embed = buildSyncSpinStatusEmbed({
       guildId: tracked.guildId,
-      sourceChannelId: tracked.channelId,
+      sourceChannelId,
       sourceMessageId: tracked.referenceId,
       metadata,
       claimedClanTags: new Set(

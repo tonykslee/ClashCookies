@@ -2,6 +2,7 @@ import { ApplicationCommandOptionType, ChannelType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BotLogs } from "../src/commands/BotLogs";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
+import { SettingsService } from "../src/services/SettingsService";
 
 type TestInteractionInput = {
   guildId?: string;
@@ -69,6 +70,7 @@ describe("/bot-logs command shape", () => {
     expect(typeOption?.choices).toEqual([
       { name: "base-swap", value: "base-swap" },
       { name: "maintenance", value: "maintenance" },
+      { name: "sync", value: "sync" },
     ]);
     expect(setChannelOption?.type).toBe(ApplicationCommandOptionType.Channel);
     expect(setChannelOption?.required).toBe(false);
@@ -104,6 +106,7 @@ describe("/bot-logs behavior", () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(null);
     vi.spyOn(BotLogChannelService.prototype, "getBaseSwapRoutingConfig").mockResolvedValue(null);
     vi.spyOn(BotLogChannelService.prototype, "setBaseSwapRoutingConfig").mockResolvedValue(undefined);
+    vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
   });
 
   it("saves provided channel for the current guild and confirms ephemerally", async () => {
@@ -327,6 +330,64 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it("saves sync typed channel with the preferred channel option", async () => {
+    const setChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "setChannelIdForType")
+      .mockResolvedValue(undefined);
+    const deleteLegacy = vi.mocked(SettingsService.prototype.delete);
+    const interaction = createInteraction({
+      guildId: "111",
+      type: "sync",
+      channel: {
+        id: "444444444444444444",
+        guildId: "111",
+        type: ChannelType.GuildText,
+      },
+      isAdmin: true,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setChannelIdForType).toHaveBeenCalledWith(
+      "111",
+      "sync",
+      "444444444444444444",
+    );
+    expect(deleteLegacy).toHaveBeenCalledWith("guild_sync_post_channel:111");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Sync bot-log channel saved: <#444444444444444444>.",
+    });
+  });
+
+  it("keeps legacy set-channel support for sync typed channel", async () => {
+    const setChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "setChannelIdForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      guildId: "111",
+      type: "sync",
+      setChannel: {
+        id: "444444444444444444",
+        guildId: "111",
+        type: ChannelType.GuildAnnouncement,
+      },
+      isAdmin: true,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setChannelIdForType).toHaveBeenCalledWith(
+      "111",
+      "sync",
+      "444444444444444444",
+    );
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Sync bot-log channel saved: <#444444444444444444>.",
+    });
+  });
+
   it("returns the configured channel mention when no set-channel is provided", async () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       "333333333333333333"
@@ -397,6 +458,23 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it("returns the configured sync channel mention when no update args are provided", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "444444444444444444",
+    );
+    const interaction = createInteraction({
+      type: "sync",
+      cacheChannelId: "444444444444444444",
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Current sync bot-log channel: <#444444444444444444>.",
+    });
+  });
+
   it("returns no-config message when no channel is configured", async () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
     const interaction = createInteraction();
@@ -435,6 +513,20 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content: "No maintenance bot-log channel is configured yet.",
+    });
+  });
+
+  it("returns no-config message when no sync channel is configured", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(null);
+    const interaction = createInteraction({
+      type: "sync",
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "No sync bot-log channel is configured yet.",
     });
   });
 
@@ -509,6 +601,31 @@ describe("/bot-logs behavior", () => {
       content:
         "Configured maintenance bot-log channel <#444444444444444444> no longer exists. " +
         "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
+    });
+  });
+
+  it("clears stale sync config without touching other typed settings", async () => {
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "444444444444444444",
+    );
+    const clearChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      type: "sync",
+      fetchChannel: null,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(clearChannelIdForType).toHaveBeenCalledWith("100", "sync");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "maintenance");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "base-swap");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "Configured sync bot-log channel <#444444444444444444> no longer exists. " +
+        "I cleared the saved setting. Set a new one with `/bot-logs type:sync channel:<channel>`.",
     });
   });
 
