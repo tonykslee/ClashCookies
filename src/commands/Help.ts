@@ -677,7 +677,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa blacklist-samples rebuild",
       "/fwa blacklist-profile rebuild",
       "/fwa match tag:2QG2C08UP copy_paste:true",
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 swap-reminder:false base-errors:2,3 log-enable:clan-log channel:#fwa-audit",
+      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 swap-reminder:false base-errors:2,3 log-enable:custom channel:#fwa-audit",
       "/fwa compliance tag:2QG2C08UP",
       "/fwa compliance tag:2QG2C08UP war-id:current",
       "/fwa compliance tag:2QG2C08UP war-id:12345",

@@ -3309,6 +3309,20 @@ describe("FWA base-swap bot-log audit", () => {
     expect(commandText).toContain("channel:<#custom-log-1>");
   });
 
+  it("preserves log-enable:false in the reconstructed command text", () => {
+    const commandText = buildFwaBaseSwapCommandTextForTest({
+      clanTag: "2QG2C08UP",
+      warBases: "1",
+      fwaBases: null,
+      baseErrors: null,
+      swapReminder: null,
+      logEnable: "false",
+    });
+
+    expect(commandText).toContain("log-enable:false");
+    expect(commandText).not.toContain("channel:<#");
+  });
+
   it("sends the audit log to the configured generic bot-log channel when no typed channel is configured", async () => {
     const botLogSend = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
@@ -3478,6 +3492,10 @@ describe("FWA base-swap bot-log audit", () => {
       expect.stringContaining("reason=missing"),
     );
     expect(warnSpy.mock.calls.some((call) => String(call[0] ?? "").includes("destination=typed-bot-log-1"))).toBe(true);
+    expect(BotLogChannelService.prototype.clearChannelIdForType).toHaveBeenCalledWith(
+      "guild-1",
+      "base-swap",
+    );
   });
 
   it("does nothing when no bot-log channel is configured", async () => {
