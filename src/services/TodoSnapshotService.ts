@@ -14,6 +14,7 @@ import {
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
+import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
   isTodoWarStateActive,
@@ -189,6 +190,7 @@ const TODO_GAMES_TARGET_POINTS = 4000;
 const TODO_GAMES_POINTS_MAX = 4000;
 const TODO_GAMES_REWARD_COLLECTION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TODO_SNAPSHOT_WRITE_CHUNK_SIZE = 50;
+const LIVE_CURRENT_WAR_FALLBACK_CONCURRENCY_LIMIT = 3;
 
 function normalizeRosterInt(input: unknown): number | null {
   const value = Number(input);
@@ -2014,67 +2016,74 @@ async function loadLiveCurrentWarFallbackContextsByClanTag(input: {
     return new Map();
   }
 
-  const contexts = await Promise.all(
-    [...new Set(input.clanTags)]
-      .map((clanTag) => normalizeClanTag(clanTag))
-      .filter((clanTag): clanTag is string => Boolean(clanTag))
-      .map(async (clanTag) => {
-        const war = await input.cocService!.getCurrentWar(clanTag).catch(() => null);
-        if (!war || !isTodoWarStateActive(war.state)) {
-          return [clanTag, null] as const;
-        }
+  const normalizedClanTags = [...new Set(input.clanTags)]
+    .map((clanTag) => normalizeClanTag(clanTag))
+    .filter((clanTag): clanTag is string => Boolean(clanTag));
+  const startedAtMs = Date.now();
+  const contexts = await mapWithConcurrency(
+    normalizedClanTags,
+    LIVE_CURRENT_WAR_FALLBACK_CONCURRENCY_LIMIT,
+    async (clanTag) => {
+      const war = await input.cocService!.getCurrentWar(clanTag).catch(() => null);
+      if (!war || !isTodoWarStateActive(war.state)) {
+        return [clanTag, null] as const;
+      }
 
-        const side = resolveLiveCurrentWarSide(clanTag, war);
-        if (!side) {
-          return [clanTag, null] as const;
-        }
+      const side = resolveLiveCurrentWarSide(clanTag, war);
+      if (!side) {
+        return [clanTag, null] as const;
+      }
 
-        const currentWarState = String(war.state ?? "");
-        const phaseEndsAt = resolveCurrentWarPhaseEnd({
-          state: currentWarState,
-          startTime: parseCocTime(war.startTime ?? null),
-          endTime: parseCocTime(war.endTime ?? null),
-        });
-        const attacksAvailable = Math.max(
-          0,
-          clampInt(war.attacksPerMember ?? 2, 0, 2),
-        );
-        const membersByPlayerTag = new Map<
-          string,
-          {
-            clanTag: string;
-            playerName: string;
-            townHall: number | null;
-            mapPosition: number | null;
-            attacksUsed: number;
-            attacksAvailable: number;
-          }
-        >();
-        for (const member of side.members) {
-          const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
-          if (!playerTag) continue;
-          membersByPlayerTag.set(playerTag, {
-            clanTag,
-            playerName: sanitizeDisplayText(member?.name) || playerTag,
-            townHall: normalizeRosterInt(member?.townhallLevel ?? null),
-            mapPosition: normalizeRosterInt(member?.mapPosition ?? null),
-            attacksUsed: isWarStatePreparation(currentWarState)
-              ? 0
-              : Math.min(2, Array.isArray(member?.attacks) ? member.attacks.length : 0),
-            attacksAvailable,
-          });
+      const currentWarState = String(war.state ?? "");
+      const phaseEndsAt = resolveCurrentWarPhaseEnd({
+        state: currentWarState,
+        startTime: parseCocTime(war.startTime ?? null),
+        endTime: parseCocTime(war.endTime ?? null),
+      });
+      const attacksAvailable = Math.max(0, clampInt(war.attacksPerMember ?? 2, 0, 2));
+      const membersByPlayerTag = new Map<
+        string,
+        {
+          clanTag: string;
+          playerName: string;
+          townHall: number | null;
+          mapPosition: number | null;
+          attacksUsed: number;
+          attacksAvailable: number;
         }
-
-        return [
+      >();
+      for (const member of side.members) {
+        const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
+        if (!playerTag) continue;
+        membersByPlayerTag.set(playerTag, {
           clanTag,
-          {
-            clanTag,
-            currentWarState,
-            phaseEndsAt,
-            membersByPlayerTag,
-          },
-        ] as const;
-      }),
+          playerName: sanitizeDisplayText(member?.name) || playerTag,
+          townHall: normalizeRosterInt(member?.townhallLevel ?? null),
+          mapPosition: normalizeRosterInt(member?.mapPosition ?? null),
+          attacksUsed: isWarStatePreparation(currentWarState)
+            ? 0
+            : Math.min(2, Array.isArray(member?.attacks) ? member.attacks.length : 0),
+          attacksAvailable,
+        });
+      }
+
+      return [
+        clanTag,
+        {
+          clanTag,
+          currentWarState,
+          phaseEndsAt,
+          membersByPlayerTag,
+        },
+      ] as const;
+    },
+  );
+  const fetchedContextCount = contexts.filter(
+    (entry): entry is [string, LiveCurrentWarFallbackContext] =>
+      Boolean(entry[0] && entry[1]),
+  ).length;
+  console.info(
+    `[todo-snapshot] event=todo_live_current_war_roster_fallback_fetch candidate_clan_count=${normalizedClanTags.length} fetched_context_count=${fetchedContextCount} concurrency_limit=${LIVE_CURRENT_WAR_FALLBACK_CONCURRENCY_LIMIT} duration_ms=${Date.now() - startedAtMs}`,
   );
 
   return new Map(
