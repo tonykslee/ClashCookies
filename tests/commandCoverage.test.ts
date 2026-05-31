@@ -143,6 +143,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("clan:<tag-or-short-name>");
     expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
+    expect(normalized).toContain("auto-post to `/bot-logs type:checklist channel:<channel>`");
     expect(normalized).toContain("snapshot-only");
   });
 
@@ -192,8 +193,14 @@ describe("command coverage", () => {
   it("documents maintenance bot-log routing in the bot-logs help detail text", () => {
     const botLogsHelpText = helpEmbedText("bot-logs");
     const normalized = botLogsHelpText.toLowerCase();
+    expect(botLogsHelpText).not.toContain("set-channel");
+    expect(normalized).toContain("/bot-logs channel:<channel>");
     expect(botLogsHelpText).toContain("type:maintenance");
     expect(normalized).toContain("maintenance start/end notices");
+    expect(botLogsHelpText).toContain("type:sync");
+    expect(normalized).toContain("scheduled sync spin status");
+    expect(botLogsHelpText).toContain("type:checklist");
+    expect(normalized).toContain("auto-posted `/fwa match-checklist type:mail`");
     expect(normalized).toContain("type:base-swap");
     expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false>");
     expect(normalized).toContain("enable:false");

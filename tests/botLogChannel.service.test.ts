@@ -36,6 +36,11 @@ describe("BotLogChannelService typed routing", () => {
       "sync" as BotLogChannelType,
       "333333333333333333",
     );
+    await service.setChannelIdForType(
+      "guild-1",
+      "checklist" as BotLogChannelType,
+      "444444444444444444",
+    );
 
     expect(stub.storage.get("bot_logs_channel:guild-1")).toBe(
       "111111111111111111",
@@ -46,12 +51,18 @@ describe("BotLogChannelService typed routing", () => {
     expect(stub.storage.get("bot_logs_channel:guild-1:sync")).toBe(
       "333333333333333333",
     );
+    expect(stub.storage.get("bot_logs_channel:guild-1:checklist")).toBe(
+      "444444444444444444",
+    );
     expect(await service.getChannelId("guild-1")).toBe("111111111111111111");
     expect(await service.getChannelIdForType("guild-1", "base-swap")).toBe(
       "222222222222222222",
     );
     expect(await service.getChannelIdForType("guild-1", "sync")).toBe(
       "333333333333333333",
+    );
+    expect(await service.getChannelIdForType("guild-1", "checklist")).toBe(
+      "444444444444444444",
     );
 
     await service.clearChannelIdForType("guild-1", "base-swap");
@@ -62,6 +73,9 @@ describe("BotLogChannelService typed routing", () => {
     expect(stub.storage.get("bot_logs_channel:guild-1:base-swap")).toBeUndefined();
     expect(stub.storage.get("bot_logs_channel:guild-1:sync")).toBe(
       "333333333333333333",
+    );
+    expect(stub.storage.get("bot_logs_channel:guild-1:checklist")).toBe(
+      "444444444444444444",
     );
     expect(await service.getChannelId("guild-1")).toBe("111111111111111111");
     expect(await service.getChannelIdForType("guild-1", "base-swap")).toBeNull();

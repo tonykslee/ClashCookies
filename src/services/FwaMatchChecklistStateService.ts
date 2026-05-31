@@ -554,6 +554,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     guildId: params.guildId,
     clanTag: null,
     scopeKey,
+    syncMessageId: currentSyncIdentity,
   });
   return {
     viewType: "Mail",

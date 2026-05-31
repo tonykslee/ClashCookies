@@ -119,6 +119,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? buildFwaMatchChecklistExpiresAt(),
     metadata: {
+      kind: "mail_checklist",
       createdByUserId: params.createdByUserId,
       createdAtIso,
       scopeKey: params.scopeKey ?? null,
