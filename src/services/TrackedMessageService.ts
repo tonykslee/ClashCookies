@@ -403,7 +403,7 @@ function buildFwaMatchChecklistBasesCompletionKey(params: {
     referenceId: params.syncReferenceId ?? null,
   });
   if (!guildId || !clanTag) return null;
-  if (!warId && !opponentTag && !warStartTimeIso) return null;
+  if (!warId && !opponentTag && !warStartTimeIso && !syncIdentity) return null;
   const parts = [
     "fwa_match_checklist_bases_completion",
     `guild=${guildId}`,
@@ -580,10 +580,16 @@ export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
   guildId: string;
   clanTag: string | null;
   scopeKey: string | null;
+  syncMessageId?: string | null;
+  syncReferenceId?: string | null;
 }): Promise<string[]> {
   const scopeKey = String(params.scopeKey ?? "").trim();
   if (!scopeKey) return [];
   const clanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+  const syncIdentity = resolveTrackedMessageSyncIdentity({
+    messageId: params.syncMessageId ?? null,
+    referenceId: params.syncReferenceId ?? null,
+  });
   const rows = await prisma.trackedMessage.findMany({
     where: {
       guildId: String(params.guildId ?? "").trim(),
@@ -601,14 +607,28 @@ export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
         : {}),
     },
     orderBy: [{ createdAt: "desc" }],
-    select: { metadata: true },
+    select: { metadata: true, referenceId: true },
   });
+  let syncScopedFallback: string[] | null = null;
   for (const row of rows) {
     const metadata = parseFwaMatchChecklistMetadata(row.metadata);
-    if (!metadata || metadata.scopeKey !== scopeKey) continue;
-    return metadata.checkedClanTags ?? [];
+    if (!metadata || resolveFwaMatchChecklistViewType(row.metadata) !== "Mail") continue;
+    if (metadata.scopeKey === scopeKey) {
+      const checked = metadata.checkedClanTags ?? [];
+      if (checked.length > 0) return checked;
+      if (!syncIdentity) return checked;
+      continue;
+    }
+    const rowSyncIdentity = normalizeTrackedMessageId(row.referenceId ?? null);
+    if (
+      syncScopedFallback === null &&
+      syncIdentity &&
+      rowSyncIdentity === syncIdentity
+    ) {
+      syncScopedFallback = metadata.checkedClanTags ?? [];
+    }
   }
-  return [];
+  return syncScopedFallback ?? [];
 }
 
 export function parseFwaMatchChecklistBadgeInline(input: string | null | undefined): {
@@ -882,6 +902,12 @@ export function parseFwaMatchChecklistMetadata(
     );
   if (rows.length === 0) return null;
   return {
+    kind:
+      value.kind === "bases_checklist"
+        ? "bases_checklist"
+        : value.kind === "mail_checklist"
+          ? "mail_checklist"
+          : undefined,
     createdByUserId,
     createdAtIso,
     scopeKey: scopeKey || null,
@@ -1824,18 +1850,40 @@ export class TrackedMessageService {
       params.warStartTime instanceof Date && Number.isFinite(params.warStartTime.getTime())
         ? params.warStartTime.toISOString()
         : null;
+    const expectedSyncIdentity = resolveTrackedMessageSyncIdentity({
+      messageId: params.syncMessageId ?? null,
+      referenceId: params.syncReferenceId ?? null,
+    });
     const allowWarStartTimeMatch = expectedWarStartTimeIso !== null;
     const allowWarIdOpponentMatch = expectedWarId !== null && expectedOpponentTag !== null;
-    if (!allowWarStartTimeMatch && !allowWarIdOpponentMatch) return null;
+    if (!allowWarStartTimeMatch && !allowWarIdOpponentMatch && !expectedSyncIdentity) return null;
 
     for (const row of rows) {
       const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
       if (!metadata || !metadata.checked) continue;
+      const rowSyncIdentity = resolveTrackedMessageSyncIdentity({
+        messageId: metadata.syncMessageId ?? row.referenceId ?? null,
+        referenceId: metadata.syncReferenceId ?? null,
+      });
+      const syncScopedFallbackMatches =
+        Boolean(expectedSyncIdentity) &&
+        rowSyncIdentity === expectedSyncIdentity &&
+        !metadata.warId &&
+        !metadata.opponentTag &&
+        !metadata.warStartTimeIso;
       if (allowWarStartTimeMatch) {
-        if (metadata.warStartTimeIso !== expectedWarStartTimeIso) continue;
+        if (metadata.warStartTimeIso !== expectedWarStartTimeIso && !syncScopedFallbackMatches) {
+          continue;
+        }
       } else if (allowWarIdOpponentMatch) {
-        if (metadata.warId !== expectedWarId) continue;
-        if (metadata.opponentTag !== expectedOpponentTag) continue;
+        if (
+          (metadata.warId !== expectedWarId || metadata.opponentTag !== expectedOpponentTag) &&
+          !syncScopedFallbackMatches
+        ) {
+          continue;
+        }
+      } else if (expectedSyncIdentity) {
+        if (rowSyncIdentity !== expectedSyncIdentity) continue;
       }
       return {
         id: row.id,

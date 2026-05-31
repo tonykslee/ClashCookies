@@ -29,6 +29,7 @@ import {
   TRACKED_MESSAGE_STATUS,
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistMessageContent,
+  findLatestFwaMatchChecklistCheckedClanTags,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
 import {
@@ -336,6 +337,115 @@ describe("fwa checklist tracked messages", () => {
         }),
       }),
     );
+  });
+
+  it("persists bases completion with sync identity when war identity is not known yet", async () => {
+    await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      createdByUserId: "user-1",
+      clanTag: "#PYPY",
+      clanName: "Alpha",
+      checked: true,
+      syncMessageId: "sync-message-1",
+    });
+
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          messageId:
+            "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=none|opponent=none|start=none|sync=sync-message-1",
+        },
+        update: expect.objectContaining({
+          referenceId: "sync-message-1",
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+        create: expect.objectContaining({
+          referenceId: "sync-message-1",
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+      }),
+    );
+  });
+
+  it("falls back to sync-scoped bases completion after war identity becomes known", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        id: "tracked-sync-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId:
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=none|opponent=none|start=none|sync=sync-message-1",
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: "sync-message-1",
+        clanTag: "#PYPY",
+        expiresAt: null,
+        createdAt: new Date("2026-05-13T17:00:00.000Z"),
+        metadata: {
+          kind: "bases_completion",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T17:00:00.000Z",
+          clanTag: "#PYPY",
+          clanName: "Alpha",
+          checked: true,
+          warId: null,
+          opponentTag: null,
+          warStartTimeIso: null,
+          syncMessageId: "sync-message-1",
+          syncReferenceId: null,
+        },
+      },
+    ] as any);
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "OPP1",
+        syncMessageId: "sync-message-1",
+      }),
+    ).resolves.toMatchObject({
+      referenceId: "sync-message-1",
+      metadata: expect.objectContaining({
+        checked: true,
+        syncMessageId: "sync-message-1",
+      }),
+    });
+  });
+
+  it("falls back to sync-scoped mail checked tags when the refreshed scope has no state", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        referenceId: "sync-message-1",
+        metadata: {
+          kind: "mail_checklist",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T17:00:00.000Z",
+          scopeKey: "old-prematch-scope",
+          checkedClanTags: ["#PYPY"],
+          rows: [
+            {
+              clanTag: "#PYPY",
+              compactCopyLine: "📭 | ❔ | Alpha vs `Unknown`",
+              badgeEmojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      },
+    ] as any);
+
+    await expect(
+      findLatestFwaMatchChecklistCheckedClanTags({
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: "new-matched-scope",
+        syncMessageId: "sync-message-1",
+      }),
+    ).resolves.toEqual(["#PYPY"]);
   });
 
   it("ignores bases completion rows for a different war identity", async () => {
