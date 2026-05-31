@@ -1,9 +1,9 @@
-import { ApplicationCommandOptionType, ChannelType } from "discord.js";
+import { ApplicationCommandOptionType } from "discord.js";
 import { describe, expect, it } from "vitest";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa base-swap command shape", () => {
-  it("registers war-bases, base-errors, fwa-bases, swap-reminder, and log-routing options", () => {
+  it("registers war-bases, base-errors, fwa-bases, and swap-reminder without per-invocation log-routing options", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -39,28 +39,12 @@ describe("/fwa base-swap command shape", () => {
     const logEnable = baseSwap?.options?.find(
       (option: { name: string }) => option.name === "log-enable",
     );
-    expect(logEnable?.type).toBe(ApplicationCommandOptionType.String);
-    expect(logEnable?.required).toBe(false);
-    expect(logEnable?.choices).toEqual([
-      { name: "bot-log channel", value: "bot-log channel" },
-      { name: "clan-log channel", value: "clan-log channel" },
-      { name: "clan-lead channel", value: "clan-lead channel" },
-      { name: "custom", value: "custom" },
-      { name: "false", value: "false" },
-    ]);
+    expect(logEnable).toBeUndefined();
 
     const channel = baseSwap?.options?.find(
       (option: { name: string }) => option.name === "channel",
     );
-    expect(channel?.type).toBe(ApplicationCommandOptionType.Channel);
-    expect(channel?.required).toBe(false);
-    expect(channel?.channel_types).toEqual([
-      ChannelType.GuildText,
-      ChannelType.GuildAnnouncement,
-      ChannelType.AnnouncementThread,
-      ChannelType.PublicThread,
-      ChannelType.PrivateThread,
-    ]);
+    expect(channel).toBeUndefined();
 
     const clan = baseSwap?.options?.find(
       (option: { name: string }) => option.name === "clan",

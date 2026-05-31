@@ -10,13 +10,23 @@ import { CoCService } from "../services/CoCService";
 import {
   BOT_LOG_CHANNEL_TYPES,
   BotLogChannelService,
+  type BaseSwapBotLogRoutingMode,
   type BotLogChannelType,
 } from "../services/BotLogChannelService";
 
 const BOT_LOGS_SET_CHANNEL_OPTION = "set-channel";
 const BOT_LOGS_TYPE_OPTION = "type";
+const BOT_LOGS_ENABLE_OPTION = "enable";
+const BOT_LOGS_CHANNEL_OPTION = "channel";
 const BOT_LOGS_BASE_SWAP_TYPE: BotLogChannelType = "base-swap";
 const BOT_LOGS_MAINTENANCE_TYPE: BotLogChannelType = "maintenance";
+const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
+  "clan-log channel",
+  "clan-lead channel",
+  "bot-log channel",
+  "custom",
+  "false",
+] as const;
 const BOT_LOGS_SUPPORTED_CHANNEL_TYPES = [
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
@@ -29,6 +39,25 @@ type BotLogsChannel = {
   guildId?: string;
   type?: number;
 };
+
+function parseBaseSwapRoutingMode(
+  value: string | null,
+): BaseSwapBotLogRoutingMode | null {
+  if (value === "clan-log channel") return "CLAN_LOG";
+  if (value === "clan-lead channel") return "CLAN_LEAD";
+  if (value === "bot-log channel") return "BOT_LOG";
+  if (value === "custom") return "CUSTOM";
+  if (value === "false") return "DISABLED";
+  return null;
+}
+
+function formatBaseSwapRoutingMode(mode: BaseSwapBotLogRoutingMode): string {
+  if (mode === "CLAN_LOG") return "clan-log channel";
+  if (mode === "CLAN_LEAD") return "clan-lead channel";
+  if (mode === "BOT_LOG") return "bot-log channel";
+  if (mode === "CUSTOM") return "custom";
+  return "false";
+}
 
 /** Purpose: enforce strict admin-only access for bot-log channel config. */
 function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
@@ -91,6 +120,23 @@ export const BotLogs: Command = {
       required: false,
       channel_types: [...BOT_LOGS_SUPPORTED_CHANNEL_TYPES],
     },
+    {
+      name: BOT_LOGS_ENABLE_OPTION,
+      description: "Base-swap audit-log routing mode",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: BOT_LOGS_BASE_SWAP_ENABLE_CHOICES.map((choice) => ({
+        name: choice,
+        value: choice,
+      })),
+    },
+    {
+      name: BOT_LOGS_CHANNEL_OPTION,
+      description: "Custom base-swap audit-log channel or thread",
+      type: ApplicationCommandOptionType.Channel,
+      required: false,
+      channel_types: [...BOT_LOGS_SUPPORTED_CHANNEL_TYPES],
+    },
   ],
   run: async (
     _client: Client,
@@ -118,10 +164,99 @@ export const BotLogs: Command = {
       BOT_LOGS_TYPE_OPTION,
       false,
     ) as BotLogChannelType | null;
+    const enableRaw = interaction.options.getString(BOT_LOGS_ENABLE_OPTION, false);
     const requestedChannel = interaction.options.getChannel(
       BOT_LOGS_SET_CHANNEL_OPTION,
       false
     ) as BotLogsChannel | null;
+    const customRoutingChannel = interaction.options.getChannel(
+      BOT_LOGS_CHANNEL_OPTION,
+      false,
+    ) as BotLogsChannel | null;
+
+    if (enableRaw && requestedType !== BOT_LOGS_BASE_SWAP_TYPE) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "`enable` is only supported with `type:base-swap`.",
+      });
+      return;
+    }
+
+    if (customRoutingChannel && requestedType !== BOT_LOGS_BASE_SWAP_TYPE) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "`channel` is only supported with `type:base-swap enable:custom`.",
+      });
+      return;
+    }
+
+    if (enableRaw) {
+      const routingMode = parseBaseSwapRoutingMode(enableRaw);
+      if (!routingMode) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Invalid base-swap routing mode.",
+        });
+        return;
+      }
+
+      if (customRoutingChannel && routingMode !== "CUSTOM") {
+        await interaction.reply({
+          ephemeral: true,
+          content: "`channel` is only valid with `type:base-swap enable:custom`.",
+        });
+        return;
+      }
+
+      if (routingMode === "CUSTOM" && !customRoutingChannel) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "`enable:custom` requires `channel`.",
+        });
+        return;
+      }
+
+      if (customRoutingChannel) {
+        if (!isGuildScopedChannel(customRoutingChannel, interaction.guildId)) {
+          await interaction.reply({
+            ephemeral: true,
+            content: "Selected channel must belong to this server.",
+          });
+          return;
+        }
+
+        if (!isSupportedBotLogsChannel(customRoutingChannel)) {
+          await interaction.reply({
+            ephemeral: true,
+            content:
+              "Selected channel must be a server text, announcement, or thread channel.",
+          });
+          return;
+        }
+      }
+
+      await botLogChannelService.setBaseSwapRoutingConfig({
+        guildId: interaction.guildId,
+        routingMode,
+        channelId: routingMode === "CUSTOM" ? customRoutingChannel?.id : null,
+      });
+      await interaction.reply({
+        ephemeral: true,
+        content:
+          routingMode === "CUSTOM"
+            ? `Base-swap audit-log routing saved: custom <#${customRoutingChannel?.id}>.`
+            : `Base-swap audit-log routing saved: ${formatBaseSwapRoutingMode(routingMode)}.`,
+      });
+      return;
+    }
+
+    if (customRoutingChannel) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "`channel` is only valid with `type:base-swap enable:custom`.",
+      });
+      return;
+    }
 
     if (requestedChannel) {
       if (!isGuildScopedChannel(requestedChannel, interaction.guildId)) {
@@ -142,6 +277,11 @@ export const BotLogs: Command = {
       }
 
       if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
+        await botLogChannelService.setBaseSwapRoutingConfig({
+          guildId: interaction.guildId,
+          routingMode: "CUSTOM",
+          channelId: requestedChannel.id,
+        });
         await botLogChannelService.setChannelIdForType(
           interaction.guildId,
           requestedType,
@@ -149,7 +289,7 @@ export const BotLogs: Command = {
         );
         await interaction.reply({
           ephemeral: true,
-          content: `Base-swap bot-log channel saved: <#${requestedChannel.id}>.`,
+          content: `Base-swap audit-log routing saved: custom <#${requestedChannel.id}>.`,
         });
         return;
       }
@@ -178,21 +318,33 @@ export const BotLogs: Command = {
       return;
     }
 
-    if (
-      requestedType === BOT_LOGS_BASE_SWAP_TYPE ||
-      requestedType === BOT_LOGS_MAINTENANCE_TYPE
-    ) {
-      const configuredChannelId = await botLogChannelService.getChannelIdForType(
-        interaction.guildId,
-        requestedType,
-      );
-      if (!configuredChannelId) {
+    if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
+      const routingConfig =
+        await botLogChannelService.getBaseSwapRoutingConfig(interaction.guildId);
+      if (!routingConfig) {
         await interaction.reply({
           ephemeral: true,
           content:
-            requestedType === BOT_LOGS_BASE_SWAP_TYPE
-              ? "No base-swap bot-log channel is configured yet."
-              : "No maintenance bot-log channel is configured yet.",
+            "Base-swap audit-log routing is using the default: typed base-swap bot-log channel if configured, otherwise generic bot-log channel.",
+        });
+        return;
+      }
+
+      if (routingConfig.routingMode !== "CUSTOM") {
+        await interaction.reply({
+          ephemeral: true,
+          content: `Current base-swap audit-log routing: ${formatBaseSwapRoutingMode(
+            routingConfig.routingMode,
+          )}.`,
+        });
+        return;
+      }
+
+      const configuredChannelId = routingConfig.channelId;
+      if (!configuredChannelId) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "No base-swap custom audit-log channel is configured yet.",
         });
         return;
       }
@@ -204,10 +356,56 @@ export const BotLogs: Command = {
       if (channelState === "found") {
         await interaction.reply({
           ephemeral: true,
+          content: `Current base-swap audit-log routing: custom <#${configuredChannelId}>.`,
+        });
+        return;
+      }
+
+      if (channelState === "missing") {
+        await botLogChannelService.clearBaseSwapRoutingConfig(interaction.guildId);
+        await botLogChannelService.clearChannelIdForType(
+          interaction.guildId,
+          requestedType,
+        );
+        await interaction.reply({
+          ephemeral: true,
           content:
-            requestedType === BOT_LOGS_BASE_SWAP_TYPE
-              ? `Current base-swap bot-log channel: <#${configuredChannelId}>.`
-              : `Current maintenance bot-log channel: <#${configuredChannelId}>.`,
+            `Configured base-swap audit-log channel <#${configuredChannelId}> no longer exists. ` +
+            "Set a new one with `/bot-logs type:base-swap enable:custom channel:<channel>`.",
+        });
+        return;
+      }
+
+      await interaction.reply({
+        ephemeral: true,
+        content:
+          `Configured base-swap audit-log channel <#${configuredChannelId}> is no longer accessible. ` +
+          "Set a new one with `/bot-logs type:base-swap enable:custom channel:<channel>`.",
+      });
+      return;
+    }
+
+    if (requestedType === BOT_LOGS_MAINTENANCE_TYPE) {
+      const configuredChannelId = await botLogChannelService.getChannelIdForType(
+        interaction.guildId,
+        requestedType,
+      );
+      if (!configuredChannelId) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "No maintenance bot-log channel is configured yet.",
+        });
+        return;
+      }
+
+      const channelState = await resolveConfiguredChannelState(
+        interaction,
+        configuredChannelId,
+      );
+      if (channelState === "found") {
+        await interaction.reply({
+          ephemeral: true,
+          content: `Current maintenance bot-log channel: <#${configuredChannelId}>.`,
         });
         return;
       }
@@ -220,11 +418,8 @@ export const BotLogs: Command = {
         await interaction.reply({
           ephemeral: true,
           content:
-            requestedType === BOT_LOGS_BASE_SWAP_TYPE
-              ? `Configured base-swap bot-log channel <#${configuredChannelId}> no longer exists. ` +
-                "I cleared the saved setting. Set a new one with `/bot-logs type:base-swap set-channel`."
-              : `Configured maintenance bot-log channel <#${configuredChannelId}> no longer exists. ` +
-                "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
+            `Configured maintenance bot-log channel <#${configuredChannelId}> no longer exists. ` +
+            "I cleared the saved setting. Set a new one with `/bot-logs type:maintenance set-channel`.",
         });
         return;
       }
@@ -232,11 +427,8 @@ export const BotLogs: Command = {
       await interaction.reply({
         ephemeral: true,
         content:
-          requestedType === BOT_LOGS_BASE_SWAP_TYPE
-            ? `Configured base-swap bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
-              "Set a new one with `/bot-logs type:base-swap set-channel`."
-            : `Configured maintenance bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
-              "Set a new one with `/bot-logs type:maintenance set-channel`.",
+          `Configured maintenance bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
+          "Set a new one with `/bot-logs type:maintenance set-channel`.",
       });
       return;
     }
