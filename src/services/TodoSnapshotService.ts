@@ -877,7 +877,7 @@ export class TodoSnapshotService {
       if (!resolvedClanTag || !trackedClanTagSet.has(resolvedClanTag)) continue;
       if (!activeTrackedCurrentWarByClanTag.has(resolvedClanTag)) continue;
 
-      const playerKey = `${resolvedClanTag}:${playerTag}`;
+      const playerKey: `${string}:${string}` = `${resolvedClanTag}:${playerTag}`;
       if (
         activeTrackedWarRosterByClanAndPlayer.has(playerKey) ||
         fwaWarMemberFallbackByClanAndPlayer.has(playerKey)
