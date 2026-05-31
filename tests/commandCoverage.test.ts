@@ -183,7 +183,8 @@ describe("command coverage", () => {
     const fwaHelpText = helpEmbedText("fwa");
     const normalized = fwaHelpText.toLowerCase();
     expect(fwaHelpText).toContain("/fwa base-swap");
-    expect(normalized).toContain("log-enable");
+    expect(normalized).not.toContain("log-enable");
+    expect(normalized).toContain("/bot-logs type:base-swap enable:");
     expect(normalized).toContain("bot-log channel");
     expect(normalized).toContain("custom");
   });
@@ -194,6 +195,8 @@ describe("command coverage", () => {
     expect(botLogsHelpText).toContain("type:maintenance");
     expect(normalized).toContain("maintenance start/end notices");
     expect(normalized).toContain("type:base-swap");
+    expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false>");
+    expect(normalized).toContain("enable:false");
   });
 
   it("documents the /clan root in clan help detail text", () => {
