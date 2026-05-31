@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  ChannelType,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
@@ -50,6 +51,10 @@ const IANA_TIMEZONE_HELP_URL =
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 const SYNC_UNAVAILABLE_EMOJI = "\u{1F4A4}";
+const SYNC_TIME_POST_CHANNEL_TYPES = [
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+] as const;
 
 type SyncBadge = {
   clanTag: string;
@@ -636,6 +641,67 @@ function guildSyncRoleKey(guildId: string): string {
   return `guild_sync_role:${guildId}`;
 }
 
+function guildSyncPostChannelKey(guildId: string): string {
+  return `guild_sync_post_channel:${guildId}`;
+}
+
+type SyncTimePostChannelLike = {
+  id: string;
+  guildId?: string | null;
+  type?: number;
+  isTextBased?: () => boolean;
+  permissionsFor: (member: { id: string }) => { has: (flag: bigint) => boolean } | null;
+  messages: { fetchPinned: () => Promise<Map<string, SyncTimePostMessageLike>> };
+  send: (payload: { content: string; allowedMentions?: MessageMentionOptions }) => Promise<SyncTimePostMessageLike>;
+};
+
+type SyncTimePostMessageLike = {
+  id: string;
+  channelId: string;
+  author: { bot: boolean };
+  content: string;
+  react: (emoji: string) => Promise<void>;
+  pin: () => Promise<void>;
+  unpin: () => Promise<void>;
+};
+
+function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
+  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
+}
+
+function isSupportedSyncTimePostChannel(
+  channel: SyncTimePostChannelLike | null | undefined
+): channel is SyncTimePostChannelLike {
+  if (!channel) return false;
+  if (typeof channel.type !== "number") return false;
+  if (
+    !SYNC_TIME_POST_CHANNEL_TYPES.includes(
+      channel.type as (typeof SYNC_TIME_POST_CHANNEL_TYPES)[number]
+    )
+  ) {
+    return false;
+  }
+  if (typeof channel.isTextBased !== "function" || !channel.isTextBased()) return false;
+  if (typeof channel.permissionsFor !== "function") return false;
+  if (!("messages" in channel) || !("send" in channel)) return false;
+  return true;
+}
+
+async function resolveConfiguredSyncTimePostChannel(
+  guild: Guild,
+  channelId: string
+): Promise<SyncTimePostChannelLike | null> {
+  const cached = guild.channels.cache.get(channelId) as SyncTimePostChannelLike | null | undefined;
+  if (isSupportedSyncTimePostChannel(cached)) return cached;
+
+  const fetched = (await guild.channels.fetch(channelId).catch(() => null)) as
+    | SyncTimePostChannelLike
+    | null;
+  if (isSupportedSyncTimePostChannel(fetched)) return fetched;
+
+  return null;
+}
+
 function buildSyncMessage(epochSeconds: number, roleId: string): string {
   return `# Sync time :gem:
 
@@ -827,13 +893,26 @@ export async function handlePostModalSubmit(
     timezoneInput
   );
 
-  const channel = interaction.channel;
-  if (!channel?.isTextBased()) {
+  const invocationChannel = interaction.channel as SyncTimePostChannelLike | null;
+  const configuredChannelId = await settings.get(guildSyncPostChannelKey(interaction.guildId));
+  let channel: SyncTimePostChannelLike | null = invocationChannel;
+  let configuredChannelFallbackNotice: string | null = null;
+  if (configuredChannelId) {
+    const configuredChannel = await resolveConfiguredSyncTimePostChannel(guild, configuredChannelId);
+    if (configuredChannel) {
+      channel = configuredChannel;
+    } else {
+      await settings.delete(guildSyncPostChannelKey(interaction.guildId));
+      configuredChannelFallbackNotice = `Configured sync-time post channel <#${configuredChannelId}> is unavailable; posted in this channel instead.`;
+    }
+  }
+
+  if (!isSupportedSyncTimePostChannel(channel)) {
     await interaction.editReply("This command can only post to text channels.");
     return;
   }
 
-  if (!("permissionsFor" in channel)) {
+  if (typeof channel.permissionsFor !== "function") {
     await interaction.editReply("This command can only post in guild text channels.");
     return;
   }
@@ -868,7 +947,7 @@ export async function handlePostModalSubmit(
     }
   } catch (err) {
     console.error(
-      `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+      `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} user=${interaction.user.id} error=${formatError(
         err
       )}`
     );
@@ -901,14 +980,14 @@ export async function handlePostModalSubmit(
       content,
       allowedMentions,
     })
-    .catch(async (err) => {
-      console.error(
-        `[post sync time] send failed guild=${interaction.guildId} channel=${interaction.channelId} role=${role.id} user=${interaction.user.id} error=${formatError(
-          err
-        )}`
-      );
-      await interaction.editReply(summarizePermissionIssue(err, "Posting sync time"));
-      return null;
+      .catch(async (err) => {
+        console.error(
+          `[post sync time] send failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} role=${role.id} user=${interaction.user.id} error=${formatError(
+            err
+          )}`
+        );
+        await interaction.editReply(summarizePermissionIssue(err, "Posting sync time"));
+        return null;
     });
   if (!postedMessage) {
     return;
@@ -926,6 +1005,10 @@ export async function handlePostModalSubmit(
       `Role mention was included but may not notify members because \`${role.name}\` is not mentionable and bot lacks \`Mention Everyone\`.`
     );
   }
+  if (configuredChannelFallbackNotice) {
+    notices.push(configuredChannelFallbackNotice);
+  }
+  const destinationLine = channel.id !== interaction.channelId ? `\nPosted in <#${channel.id}>.` : "";
 
   const badges = await getSyncBadgesWithTrackedClanFallback(
     interaction.client.user?.id,
@@ -940,7 +1023,7 @@ export async function handlePostModalSubmit(
         reactedCount += 1;
       } catch (err) {
         console.error(
-          `[post sync time] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} emoji=${emojiIdentifier} user=${interaction.user.id} error=${formatError(
+          `[post sync time] react failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} emoji=${emojiIdentifier} user=${interaction.user.id} error=${formatError(
             err
           )}`
         );
@@ -956,7 +1039,7 @@ export async function handlePostModalSubmit(
     await postedMessage.react(SYNC_UNAVAILABLE_EMOJI);
   } catch (err) {
     console.error(
-      `[post sync time] react failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} emoji=${SYNC_UNAVAILABLE_EMOJI} user=${interaction.user.id} error=${formatError(
+      `[post sync time] react failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} emoji=${SYNC_UNAVAILABLE_EMOJI} user=${interaction.user.id} error=${formatError(
         err
       )}`
     );
@@ -996,7 +1079,7 @@ export async function handlePostModalSubmit(
     }
   } catch (err) {
     console.error(
-      `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} channel=${interaction.channelId} user=${interaction.user.id} error=${formatError(
+      `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} user=${interaction.user.id} error=${formatError(
         err
       )}`
     );
@@ -1007,7 +1090,7 @@ export async function handlePostModalSubmit(
     await postedMessage.pin();
   } catch (err) {
     console.error(
-      `[post sync time] pin failed guild=${interaction.guildId} channel=${interaction.channelId} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
+      `[post sync time] pin failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
         err
       )}`
     );
@@ -1021,7 +1104,7 @@ export async function handlePostModalSubmit(
     `Sync time message posted.\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
       time.hour,
       time.minute
-    )}, ${timezoneInput}).${noticeBlock}`
+    )}, ${timezoneInput}).${destinationLine}${noticeBlock}`
   );
 }
 
@@ -1039,6 +1122,16 @@ export const Post: Command = {
           description: "Post a localized sync time with role ping",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
+            {
+              name: "channel",
+              description: "Admin only: default channel for sync-time posts",
+              type: ApplicationCommandOptionType.Channel,
+              required: false,
+              channel_types: [
+                ChannelType.GuildText,
+                ChannelType.GuildAnnouncement,
+              ],
+            },
             {
               name: "role",
               description: "Role to ping",
@@ -1142,7 +1235,41 @@ export const Post: Command = {
 
     const settings = new SettingsService();
     const role = interaction.options.getRole("role", false);
+    const requestedChannel = interaction.options.getChannel("channel", false) as
+      | SyncTimePostChannelLike
+      | null;
     const timezoneSeedRaw = interaction.options.getString("timezone", false)?.trim() ?? null;
+
+    if (requestedChannel) {
+      if (!hasAdministratorPermission(interaction)) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "You do not have permission to change the sync post channel.",
+        });
+        return;
+      }
+
+      if (
+        requestedChannel.guildId &&
+        requestedChannel.guildId !== interaction.guildId
+      ) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Selected channel must belong to this server.",
+        });
+        return;
+      }
+
+      if (!isSupportedSyncTimePostChannel(requestedChannel)) {
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Selected channel must be a server text or announcement channel.",
+        });
+        return;
+      }
+
+      await settings.set(guildSyncPostChannelKey(interaction.guildId), requestedChannel.id);
+    }
 
     const rememberedTimeZoneRaw = await settings.get(userTimeZoneKey(interaction.user.id));
     const rememberedTimeZone = normalizeSyncTimeZone(rememberedTimeZoneRaw);
