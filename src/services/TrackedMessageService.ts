@@ -614,10 +614,7 @@ export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
     const metadata = parseFwaMatchChecklistMetadata(row.metadata);
     if (!metadata || resolveFwaMatchChecklistViewType(row.metadata) !== "Mail") continue;
     if (metadata.scopeKey === scopeKey) {
-      const checked = metadata.checkedClanTags ?? [];
-      if (checked.length > 0) return checked;
-      if (!syncIdentity) return checked;
-      continue;
+      return metadata.checkedClanTags ?? [];
     }
     const rowSyncIdentity = normalizeTrackedMessageId(row.referenceId ?? null);
     if (
@@ -1748,6 +1745,27 @@ export class TrackedMessageService {
         metadata: metadata as any,
       },
     });
+    if (!params.checked && syncIdentity) {
+      const syncScopedMessageId = buildFwaMatchChecklistBasesCompletionKey({
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        warId: null,
+        opponentTag: null,
+        warStartTime: null,
+        syncMessageId: syncIdentity,
+      });
+      if (syncScopedMessageId && syncScopedMessageId !== messageId) {
+        await prisma.trackedMessage.updateMany({
+          where: {
+            guildId: params.guildId,
+            messageId: syncScopedMessageId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          },
+          data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+        });
+      }
+    }
     return true;
   }
 
