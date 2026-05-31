@@ -312,6 +312,7 @@ export class TodoSnapshotService {
     nowMs?: number;
     producerPacingMs?: number | null;
   }): Promise<TodoSnapshotRefreshResult & TodoActivatedRefreshStats> {
+    const nowMs = input.nowMs;
     const allLinkedUserRows = await prisma.playerLink.findMany({
       where: { discordUserId: { not: null } },
       select: { discordUserId: true, playerTag: true },
@@ -342,6 +343,7 @@ export class TodoSnapshotService {
     const activatedPlayerTags = normalizePlayerTags(
       activatedLinkedRows.map((row) => row.playerTag),
     );
+    const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
 
     const snapshotRows = activatedPlayerTags.length > 0
       ? await prisma.todoPlayerSnapshot.findMany({
@@ -366,6 +368,7 @@ export class TodoSnapshotService {
     });
     const raidTrackedClanTagRows = await listRaidTrackedClanRows();
     const cwlTrackedClanRows = await prisma.cwlTrackedClan.findMany({
+      where: { season: currentCwlSeason },
       select: { tag: true },
     });
     const trackedClanTagSet = new Set(
@@ -540,7 +543,7 @@ export class TodoSnapshotService {
       totalLinkedUserIds.length - activatedUserCount,
     );
     console.info(
-      `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
+      `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} cwl_season=${currentCwlSeason} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
     );
     console.info(
       `[todo-snapshot] event=todo_refresh_population cadence=${input.cadence} activated_user_count=${activatedUserCount} total_linked_user_count=${totalLinkedUserIds.length} skipped_never_used_user_count=${skippedNeverUsedUserCount} selected_player_count=${selectedPlayerCount} tracked_player_count=${trackedPlayerCount} non_tracked_player_count=${nonTrackedPlayerCount}`,
