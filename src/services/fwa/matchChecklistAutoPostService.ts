@@ -31,6 +31,8 @@ type ChecklistDestinationChannel = {
   send: Parameters<typeof publishFwaMatchChecklistMessageToChannel>[0]["channel"]["send"];
 };
 
+type CoCServiceFactory = () => CoCService;
+
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
 
 function checklistKindForViewType(viewType: ChecklistViewType): "mail_checklist" | "bases_checklist" {
@@ -77,10 +79,17 @@ async function hasChecklistForSyncReference(params: {
 }
 
 export class FwaMatchChecklistAutoPostService {
+  private readonly cocServiceFactory: CoCServiceFactory;
+
   constructor(
     private readonly botLogChannelService = new BotLogChannelService(),
-    private readonly cocService = new CoCService(),
-  ) {}
+    cocServiceOrFactory?: CoCService | CoCServiceFactory,
+  ) {
+    this.cocServiceFactory =
+      typeof cocServiceOrFactory === "function"
+        ? cocServiceOrFactory
+        : () => cocServiceOrFactory ?? new CoCService();
+  }
 
   async postForSyncTrackedMessage(params: {
     client: Client;
@@ -149,6 +158,11 @@ export class FwaMatchChecklistAutoPostService {
     let posted = 0;
     let skipped = 0;
     let failed = 0;
+    let cocService: CoCService | null = null;
+    const getCocService = (): CoCService => {
+      cocService ??= this.cocServiceFactory();
+      return cocService;
+    };
     for (const viewType of CHECKLIST_VIEW_TYPES) {
       const kind = checklistKindForViewType(viewType);
       const duplicate = await hasChecklistForSyncReference({
@@ -167,7 +181,7 @@ export class FwaMatchChecklistAutoPostService {
       let state: FwaMatchChecklistRenderState;
       try {
         state = await buildFwaMatchChecklistRenderStateForGuild({
-          cocService: this.cocService,
+          cocService: getCocService(),
           guildId,
           client: params.client,
           warLookupCache: new Map(),

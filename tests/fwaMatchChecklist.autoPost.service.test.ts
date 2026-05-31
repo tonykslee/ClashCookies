@@ -107,7 +107,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
 
   it("posts Mail and Bases checklists once to the configured checklist channel", async () => {
     const channel = makeChecklistChannel();
-    const service = new FwaMatchChecklistAutoPostService();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
 
     const result = await service.postForSyncTrackedMessage({
       client: makeClient({ channel }),
@@ -125,6 +126,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
       "guild-1",
       "checklist",
     );
+    expect(cocFactory).toHaveBeenCalledTimes(1);
     expect(renderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: "guild-1", viewType: "Mail" }),
     );
@@ -153,7 +155,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
 
   it("skips without throwing when no checklist channel is configured", async () => {
     botLogChannelServiceMock.getChannelIdForType.mockResolvedValue(null);
-    const service = new FwaMatchChecklistAutoPostService();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
 
     const result = await service.postForSyncTrackedMessage({
       client: makeClient({ channel: makeChecklistChannel() }),
@@ -165,11 +168,13 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 2, failed: 0 });
+    expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });
 
   it("clears only checklist config when the configured channel is missing", async () => {
-    const service = new FwaMatchChecklistAutoPostService();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
 
     const result = await service.postForSyncTrackedMessage({
       client: makeClient({ channel: null }),
@@ -181,6 +186,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 0, failed: 2 });
+    expect(cocFactory).not.toHaveBeenCalled();
     expect(botLogChannelServiceMock.clearChannelIdForType).toHaveBeenCalledWith(
       "guild-1",
       "checklist",
@@ -192,7 +198,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
   });
 
   it("does not clear config when the configured channel is inaccessible", async () => {
-    const service = new FwaMatchChecklistAutoPostService();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
 
     const result = await service.postForSyncTrackedMessage({
       client: makeClient({ fetchError: { code: 50013 } }),
@@ -204,6 +211,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 0, failed: 2 });
+    expect(cocFactory).not.toHaveBeenCalled();
     expect(botLogChannelServiceMock.clearChannelIdForType).not.toHaveBeenCalled();
   });
 
@@ -211,7 +219,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
     prismaMock.trackedMessage.findMany
       .mockResolvedValueOnce([{ metadata: { kind: "mail_checklist", createdByUserId: "system", createdAtIso: "2026-05-13T00:00:00.000Z", rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }] } }])
       .mockResolvedValueOnce([{ metadata: { kind: "bases_checklist", createdByUserId: "system", createdAtIso: "2026-05-13T00:00:00.000Z", rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }] } }]);
-    const service = new FwaMatchChecklistAutoPostService();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
 
     const result = await service.postForSyncTrackedMessage({
       client: makeClient({ channel: makeChecklistChannel() }),
@@ -223,6 +232,25 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 2, failed: 0 });
+    expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+  });
+
+  it("can import the singleton without constructing the real CoC service", async () => {
+    vi.resetModules();
+    vi.doUnmock("../src/services/CoCService");
+    const originalToken = process.env.COC_API_TOKEN;
+    delete process.env.COC_API_TOKEN;
+    try {
+      await expect(
+        import("../src/services/fwa/matchChecklistAutoPostService"),
+      ).resolves.toHaveProperty("fwaMatchChecklistAutoPostService");
+    } finally {
+      if (originalToken === undefined) {
+        delete process.env.COC_API_TOKEN;
+      } else {
+        process.env.COC_API_TOKEN = originalToken;
+      }
+    }
   });
 });
