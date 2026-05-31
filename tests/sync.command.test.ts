@@ -1,4 +1,4 @@
-import { ApplicationCommandOptionType } from "discord.js";
+import { ApplicationCommandOptionType, ChannelType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { SettingsService } from "../src/services/SettingsService";
@@ -27,43 +27,121 @@ vi.mock("../src/helper/syncBadgeEmoji", () => ({
 
 import { Post, handlePostModalSubmit } from "../src/commands/Post";
 
-function makeRunInteraction(input: { timezone: string | null }) {
-  return {
-    inGuild: () => true,
-    guildId: "guild-1",
-    user: { id: "user-1" },
-    options: {
-      getSubcommandGroup: vi.fn().mockReturnValue("time"),
-      getSubcommand: vi.fn().mockReturnValue("post"),
-      getRole: vi.fn().mockReturnValue(null),
-      getString: vi.fn((name: string) => {
-        if (name === "timezone") return input.timezone;
-        return null;
-      }),
-    },
-    showModal: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-function makeSubmitInteraction(input: { timezone: string; role: string }) {
+function makeSendableChannel(input: {
+  id: string;
+  guildId?: string;
+  type?: ChannelType;
+  canSend?: boolean;
+}) {
   const react = vi.fn().mockResolvedValue(undefined);
   const pin = vi.fn().mockResolvedValue(undefined);
   const fetchPinned = vi.fn().mockResolvedValue(new Map());
   const send = vi.fn().mockResolvedValue({
-    id: "posted-message-1",
-    channelId: "channel-1",
+    id: `posted-message-${input.id}`,
+    channelId: input.id,
     react,
     pin,
   });
 
   return {
+    id: input.id,
+    guildId: input.guildId ?? "guild-1",
+    type: input.type ?? ChannelType.GuildText,
+    isTextBased: () => true,
+    permissionsFor: vi.fn().mockReturnValue({
+      has: vi.fn().mockReturnValue(input.canSend ?? true),
+    }),
+    messages: {
+      fetchPinned,
+    },
+    send,
+    react,
+    pin,
+    fetchPinned,
+  };
+}
+
+function makeRunInteraction(input: {
+  timezone: string | null;
+  channel?: unknown | null;
+  admin?: boolean;
+}) {
+  const role = {
+    id: "123456789012345678",
+    name: "War",
+    mentionable: true,
+  };
+  return {
+    inGuild: () => true,
+    guildId: "guild-1",
+    user: { id: "user-1" },
+    guild: {
+      id: "guild-1",
+      roles: {
+        fetch: vi.fn().mockResolvedValue(role),
+      },
+      channels: {
+        cache: new Map(),
+        fetch: vi.fn(),
+      },
+      members: {
+        me: { id: "bot-1" },
+      },
+    },
+    memberPermissions: {
+      has: vi.fn().mockReturnValue(input.admin ?? true),
+    },
+    options: {
+      getSubcommandGroup: vi.fn().mockReturnValue("time"),
+      getSubcommand: vi.fn().mockReturnValue("post"),
+      getRole: vi.fn().mockReturnValue(role),
+      getString: vi.fn((name: string) => {
+        if (name === "timezone") return input.timezone;
+        return null;
+      }),
+      getChannel: vi.fn((name: string) => {
+        if (name === "channel") return input.channel ?? null;
+        return null;
+      }),
+    },
+    showModal: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeSubmitInteraction(input: {
+  timezone: string;
+  role: string;
+  currentChannel?: ReturnType<typeof makeSendableChannel>;
+  destinationChannel?: ReturnType<typeof makeSendableChannel> | null;
+}) {
+  const currentChannel =
+    input.currentChannel ??
+    makeSendableChannel({
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+  const destinationChannel = input.destinationChannel ?? currentChannel;
+  const guildChannels = new Map<string, unknown>([[currentChannel.id, currentChannel]]);
+  if (destinationChannel && destinationChannel.id !== currentChannel.id) {
+    guildChannels.set(destinationChannel.id, destinationChannel);
+  }
+
+  return {
     customId: "post-sync-time:user-1",
     inGuild: () => true,
     guildId: "guild-1",
+    channelId: currentChannel.id,
     user: { id: "user-1" },
     client: { user: { id: "bot-1" } },
     guild: {
       id: "guild-1",
+      channels: {
+        cache: guildChannels,
+        fetch: vi.fn(async (channelId: string) => guildChannels.get(channelId) ?? null),
+      },
       roles: {
         fetch: vi.fn().mockResolvedValue({
           id: input.role.replace(/^<@&|>$/g, ""),
@@ -74,20 +152,8 @@ function makeSubmitInteraction(input: { timezone: string; role: string }) {
       members: {
         me: { id: "bot-1" },
       },
-      channels: {
-        fetch: vi.fn(),
-      },
     },
-    channel: {
-      isTextBased: () => true,
-      permissionsFor: vi.fn().mockReturnValue({
-        has: vi.fn().mockReturnValue(true),
-      }),
-      messages: {
-        fetchPinned,
-      },
-      send,
-    },
+    channel: currentChannel,
     fields: {
       getTextInputValue: vi.fn((name: string) => {
         if (name === "date") return "2026-04-08";
@@ -193,10 +259,19 @@ describe("/sync time post command shape", () => {
     const roleOption = postSubcommand?.options?.find(
       (option: { name: string }) => option.name === "role",
     );
+    const channelOption = postSubcommand?.options?.find(
+      (option: { name: string }) => option.name === "channel",
+    );
     const timezoneOption = postSubcommand?.options?.find(
       (option: { name: string }) => option.name === "timezone",
     );
 
+    expect(channelOption?.required).toBe(false);
+    expect(channelOption?.type).toBe(ApplicationCommandOptionType.Channel);
+    expect(channelOption?.channel_types).toEqual([
+      ChannelType.GuildText,
+      ChannelType.GuildAnnouncement,
+    ]);
     expect(roleOption?.required).toBe(false);
     expect(timezoneOption?.required).toBe(false);
     expect(timezoneOption?.type).toBe(ApplicationCommandOptionType.String);
@@ -369,6 +444,69 @@ describe("/sync time post modal seed", () => {
     const modal = interaction.showModal.mock.calls[0]?.[0].toJSON() as any;
     expect(modal.components[2].components[0].value).toBe("America/Chicago");
   });
+
+  it("saves an admin-selected destination channel before opening the modal", async () => {
+    const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key.startsWith("user_timezone:")) return null;
+      if (key.startsWith("guild_sync_role:")) return null;
+      if (key.startsWith("fwa_leader_role:")) return null;
+      return null;
+    });
+
+    const selectedChannel = makeSendableChannel({
+      id: "222222222222222222",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const interaction = makeRunInteraction({
+      timezone: null,
+      channel: selectedChannel,
+      admin: true,
+    });
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(setSpy).toHaveBeenCalledWith(
+      "guild_sync_post_channel:guild-1",
+      "222222222222222222",
+    );
+    expect(interaction.showModal).toHaveBeenCalledTimes(1);
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-admin channel override before opening the modal", async () => {
+    const setSpy = vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key.startsWith("user_timezone:")) return null;
+      if (key.startsWith("guild_sync_role:")) return null;
+      if (key.startsWith("fwa_leader_role:")) return null;
+      return null;
+    });
+
+    const selectedChannel = makeSendableChannel({
+      id: "333333333333333333",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const interaction = makeRunInteraction({
+      timezone: null,
+      channel: selectedChannel,
+      admin: false,
+    });
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(setSpy).not.toHaveBeenCalledWith(
+      "guild_sync_post_channel:guild-1",
+      "333333333333333333",
+    );
+    expect(interaction.showModal).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "You do not have permission to change the sync post channel.",
+    });
+  });
 });
 
 describe("/sync time post modal submit", () => {
@@ -395,8 +533,81 @@ describe("/sync time post modal submit", () => {
       "user_timezone:user-1",
       "America/Chicago",
     );
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "channel-1",
+      }),
+    );
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("America/Chicago"),
+    );
+  });
+
+  it("posts to the saved destination channel when configured", async () => {
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key === "guild_sync_post_channel:guild-1") return "channel-2";
+      if (key.startsWith("active_sync_post:")) return null;
+      return null;
+    });
+
+    const destinationChannel = makeSendableChannel({
+      id: "channel-2",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+      destinationChannel,
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(destinationChannel.send).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "channel-2",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Posted in <#channel-2>."),
+    );
+  });
+
+  it("falls back to the current channel when the saved destination channel is unavailable", async () => {
+    const deleteSpy = vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
+    vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
+      if (key === "guild_sync_post_channel:guild-1") return "channel-2";
+      if (key.startsWith("active_sync_post:")) return null;
+      return null;
+    });
+
+    const missingChannel = makeSendableChannel({
+      id: "channel-2",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+      destinationChannel: missingChannel,
+    });
+    interaction.guild.channels.cache.delete("channel-2");
+    interaction.guild.channels.fetch = vi.fn(async () => null);
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(deleteSpy).toHaveBeenCalledWith("guild_sync_post_channel:guild-1");
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "channel-1",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Configured sync-time post channel <#channel-2> is unavailable"),
     );
   });
 

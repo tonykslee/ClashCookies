@@ -618,7 +618,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state; `copy_paste:true` opens the compact copy/paste view directly.",
-      "`/fwa base-swap` posts a tracked acknowledgment message for war-base, FWA-base, and base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war, blacklist-war swap, and TH-grouped base errors). FWA tracked clans resolve positions from the active war roster source, while current-season CWL tracked clans resolve positions from the persisted CWL lineup source. Position lists accept comma-separated, space-separated, or mixed-separated values. Optional `swap-reminder:true|false` applies to `fwa-bases` flows and defaults to `true`. If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
+      "`/fwa base-swap` posts a tracked acknowledgment message for war-base, FWA-base, and base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war, blacklist-war swap, and TH-grouped base errors). FWA tracked clans resolve positions from the active war roster source, while current-season CWL tracked clans resolve positions from the persisted CWL lineup source. Position lists accept comma-separated, space-separated, or mixed-separated values. Optional `swap-reminder:true|false` applies to `fwa-bases` flows and defaults to `true`. Optional `log-enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false>` overrides the non-blocking audit-log destination for that invocation, and `channel:<channel-or-thread>` is required only when `log-enable:custom` is selected. If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
       "`/fwa police configure` controls automatic DM/log enforcement toggles for a tracked clan.",
       "`/fwa police send` test-delivers one rendered sample police message to your DM or the police log destination (`TrackedClan.logChannelId` first, then `/bot-logs`).",
@@ -677,7 +677,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa blacklist-samples rebuild",
       "/fwa blacklist-profile rebuild",
       "/fwa match tag:2QG2C08UP copy_paste:true",
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 swap-reminder:false base-errors:2,3",
+      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 swap-reminder:false base-errors:2,3 log-enable:custom channel:#fwa-audit",
       "/fwa compliance tag:2QG2C08UP",
       "/fwa compliance tag:2QG2C08UP war-id:current",
       "/fwa compliance tag:2QG2C08UP war-id:12345",
