@@ -313,22 +313,51 @@ import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentS
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
     conflictLifecycleState: "ACTIVE" | "OPEN" | "CLOSED" | "ARCHIVED",
+    options?: {
+      conflictingTags?: string[];
+      currentRosterTags?: string[];
+      conflictRosterId?: string;
+      conflictRosterTitle?: string;
+    },
   ) {
-    let rosterSignupFindManyCallCount = 0;
-    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
-      rosterSignupFindManyCallCount += 1;
-      if (rosterSignupFindManyCallCount === 1) {
+    const conflictRosterId = options?.conflictRosterId ?? "conflicting-roster";
+    const conflictRosterTitle = options?.conflictRosterTitle ?? "Champions CWL";
+    const conflictingTags = new Set(options?.conflictingTags ?? ["#PQL0289"]);
+    const currentRosterTags = new Set(options?.currentRosterTags ?? []);
+
+    prismaMock.roster.findMany.mockImplementation(async (args: any) => {
+      const lifecycleFilter = args?.where?.lifecycleState?.in as string[] | undefined;
+      if (!Array.isArray(lifecycleFilter) || !lifecycleFilter.includes(conflictLifecycleState)) {
         return [];
       }
 
-      const lifecycleFilter = args?.where?.roster?.lifecycleState?.in as string[] | undefined;
-      if (!Array.isArray(lifecycleFilter)) {
-        return [{ playerTag: "#PQL0289", rosterId: "archived-roster" }];
+      return [
+        {
+          id: conflictRosterId,
+          title: conflictRosterTitle,
+          startsAt: new Date("2026-04-19T00:00:00.000Z"),
+          createdAt: new Date("2026-04-18T00:00:00.000Z"),
+        },
+      ];
+    });
+
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterIds = args?.where?.rosterId?.in as string[] | undefined;
+      if (Array.isArray(rosterIds)) {
+        return rosterIds.includes(conflictRosterId)
+          ? [...conflictingTags].map((playerTag) => ({
+              playerTag,
+              rosterId: conflictRosterId,
+            }))
+          : [];
       }
 
-      return lifecycleFilter.includes(conflictLifecycleState)
-        ? [{ playerTag: "#PQL0289", rosterId: "archived-roster" }]
-        : [];
+      const rosterId = String(args?.where?.rosterId ?? "");
+      if (rosterId === "roster-1") {
+        return [...currentRosterTags].map((playerTag) => ({ playerTag }));
+      }
+
+      return [];
     });
   }
 
@@ -1158,6 +1187,17 @@ describe("RosterService", () => {
       },
     ] as any);
     prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        title: "Champions CWL",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", rosterId: "conflicting-roster" },
+    ] as any);
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 1 });
 
     const result = await rosterService.addRosterSignupsForManager({
@@ -1173,6 +1213,7 @@ describe("RosterService", () => {
       linkedTags: ["#PQL0289"],
       createdTags: ["#PQL0289"],
       missingLinkedTags: [],
+      warnings: ["Override: #PQL0289 (#PQL0289) was already signed up on Champions CWL."],
     });
     expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1730,7 +1771,7 @@ describe("RosterService", () => {
     expect(cwlStateServiceMock.listSeasonRosterForClan).not.toHaveBeenCalled();
   });
 
-  it.each(["OPEN", "CLOSED", "ACTIVE"] as const)(
+  it.each(["OPEN", "ACTIVE"] as const)(
     "blocks signup when the same player is already signed up on another relevant %s roster",
     async (conflictLifecycleState) => {
       playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
@@ -1745,18 +1786,25 @@ describe("RosterService", () => {
       });
 
       expect(result).toMatchObject({
-        outcome: "roster_conflict",
+        outcome: "cwl_roster_conflict",
         rosterId: "roster-1",
         blockedTags: ["#PQL0289"],
-        conflictingRosterIds: ["archived-roster"],
+        blockedAccounts: [{ playerTag: "#PQL0289", playerName: "#PQL0289" }],
+        conflictingRosterIds: ["conflicting-roster"],
+        conflictingAccounts: [
+          {
+            playerTag: "#PQL0289",
+            playerName: "#PQL0289",
+            conflictingRosterId: "conflicting-roster",
+            conflictingRosterTitle: "Champions CWL",
+          },
+        ],
       });
-      expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+      expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            roster: expect.objectContaining({
-              lifecycleState: expect.objectContaining({
-                in: expect.arrayContaining([conflictLifecycleState]),
-              }),
+            lifecycleState: expect.objectContaining({
+              in: expect.arrayContaining([conflictLifecycleState]),
             }),
           }),
         }),
@@ -1764,11 +1812,33 @@ describe("RosterService", () => {
     },
   );
 
-  it("does not block signup when the only prior signup is on an archived roster", async () => {
+  it("allows same-roster re-selection when the account is already signed up on the current roster", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
-    mockConflictLookupForLifecycleState("ARCHIVED");
+    mockConflictLookupForLifecycleState("OPEN", { conflictingTags: [], currentRosterTags: ["#PQL0289"] });
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "already_signed_up",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289"],
+      duplicateTags: ["#PQL0289"],
+      missingLinkedTags: [],
+      createdTags: [],
+    });
+  });
+
+  it("does not block signup when the only prior signup is on a closed or archived roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    mockConflictLookupForLifecycleState("CLOSED");
 
     const result = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
@@ -1785,17 +1855,93 @@ describe("RosterService", () => {
       duplicateTags: [],
       missingLinkedTags: [],
     });
-    expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+    expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          roster: expect.objectContaining({
-            lifecycleState: expect.objectContaining({
-              in: expect.not.arrayContaining(["ARCHIVED"]),
-            }),
+          lifecycleState: expect.objectContaining({
+            in: expect.arrayContaining(["OPEN", "ACTIVE"]),
           }),
         }),
       }),
     );
+  });
+
+  it("does not apply CWL conflict lookup to non-CWL rosters", async () => {
+    prismaMock.roster.findUnique.mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      duplicateTags: [],
+      missingLinkedTags: [],
+    });
+    expect(prismaMock.roster.findMany).not.toHaveBeenCalled();
+  });
+
+  it("blocks mixed selections when one linked account conflicts on another CWL roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#G2RG9JCRL", linkedName: "Charlie", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    mockConflictLookupForLifecycleState("OPEN", {
+      conflictingTags: ["#QGRJ2222"],
+      currentRosterTags: ["#PQL0289"],
+    });
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      playerTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
+    });
+
+      expect(result).toMatchObject({
+        outcome: "cwl_roster_conflict",
+        rosterId: "roster-1",
+        linkedTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
+        duplicateTags: ["#PQL0289"],
+        blockedTags: ["#QGRJ2222"],
+        conflictingAccounts: [
+          {
+            playerTag: "#QGRJ2222",
+            playerName: "#QGRJ2222",
+            conflictingRosterId: "conflicting-roster",
+            conflictingRosterTitle: "Champions CWL",
+          },
+        ],
+    });
   });
 
   it("renders grouped signup entries and shows the compact roster board header", async () => {
@@ -4703,6 +4849,14 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     } as any);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        title: "Champions CWL",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+      },
+    ] as any);
     prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
       {
         id: "group-confirmed",
@@ -5255,6 +5409,12 @@ describe("RosterService", () => {
           playerTag: "#ZZZ99999",
           discordUserId: "111111111111111111",
         },
+      ] as any)
+      .mockResolvedValueOnce([
+        {
+          playerTag: "#PQL0289",
+          rosterId: "conflicting-roster",
+        },
       ] as any);
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 1 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 1 });
@@ -5791,6 +5951,7 @@ describe("RosterService", () => {
       playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(new Map());
       prismaMock.rosterSignup.findMany
         .mockResolvedValueOnce([]) // add existing rows
+        .mockResolvedValueOnce([] as any) // add CWL conflict lookup
         .mockResolvedValueOnce([
           { playerTag: "#PQL0289", groupId: "group-confirmed" },
           { playerTag: "#QGRJ2222", groupId: "group-confirmed" },

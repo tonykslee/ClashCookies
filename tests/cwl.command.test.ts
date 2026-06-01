@@ -915,6 +915,80 @@ describe("/cwl command", () => {
     );
   });
 
+  it("shows conflicting CWL roster titles when self signup is blocked", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "signup",
+      result: {
+        outcome: "cwl_roster_conflict",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#P1", "#P2"],
+        linkedTags: ["#P1", "#P2"],
+        createdTags: [],
+        createdAccounts: [],
+        duplicateTags: [],
+        missingLinkedTags: [],
+        blockedTags: ["#P1", "#P2"],
+        blockedAccounts: [
+          { playerTag: "#P1", playerName: "Alpha" },
+          { playerTag: "#P2", playerName: null },
+        ],
+        conflictingAccounts: [
+          {
+            playerTag: "#P1",
+            playerName: "Alpha",
+            conflictingRosterId: "roster-a",
+            conflictingRosterTitle: "Champions CWL",
+          },
+          {
+            playerTag: "#P2",
+            playerName: null,
+            conflictingRosterId: "roster-b",
+            conflictingRosterTitle: "Alpha CWL",
+          },
+        ],
+        conflictingRosterIds: ["roster-a", "roster-b"],
+      },
+    });
+
+    const confirmInteraction = {
+      customId: "roster-selection:action:confirm:session-4",
+      user: { id: "111111111111111111" },
+      message: {
+        components: makeRosterSelectionApplyingRows("roster-selection:action:confirm:session-4"),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockImplementation(async () => {
+        (confirmInteraction as any).replied = true;
+        return undefined;
+      }),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+      replied: false,
+      deferred: false,
+    };
+
+    await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
+
+    expect(confirmInteraction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("These accounts are already signed up on another CWL roster:"),
+        embeds: [],
+        components: [],
+      }),
+    );
+    expect(String(confirmInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "- Alpha (#P1) → Champions CWL",
+    );
+    expect(String(confirmInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("- #P2 → Alpha CWL");
+  });
+
   it("shows exactly which selected accounts are missing town hall data when selection confirm is blocked", async () => {
     (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
       outcome: "signup",

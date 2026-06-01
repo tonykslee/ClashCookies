@@ -1124,6 +1124,7 @@ describe("/roster command", () => {
       createdTags: ["#PQL0289", "#QGRJ2222"],
       duplicateTags: [],
       missingLinkedTags: [],
+      warnings: ["Override: Alpha (#PQL0289) was already signed up on Champions CWL."],
     });
     (rosterService.moveRosterSignups as any)
       .mockResolvedValueOnce({
@@ -1207,6 +1208,9 @@ describe("/roster command", () => {
       }),
     );
     expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Signed up #PQL0289, #QGRJ2222");
+    expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Override: Alpha (#PQL0289) was already signed up on Champions CWL.",
+    );
     const getRosterViewCallsBeforeMove = rosterService.getRosterView.mock.calls.length;
 
     const moveInteraction = makeInteraction({

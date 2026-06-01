@@ -349,74 +349,85 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
   return account.playerName ? `${account.playerName} \`${account.playerTag}\`` : `\`${account.playerTag}\``;
 }
 
+function formatRosterConflictAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
+  const playerName = String(account.playerName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return playerName ? `${playerName} (${account.playerTag})` : account.playerTag;
+}
+
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
 }
 
 function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.signupLinkedAccounts>>): string {
+  let summary = "";
   if (result.outcome === "roster_not_found") {
-    return "That roster no longer exists.";
-  }
-  if (result.outcome === "roster_closed") {
-    return "Signups are closed for that roster.";
-  }
-  if (result.outcome === "roster_archived") {
-    return "That roster is archived.";
-  }
-  if (result.outcome === "roster_full") {
-    return "That roster is full.";
-  }
-  if (result.outcome === "account_limit_exceeded") {
-    return "You have reached the maximum accounts allowed on that roster.";
-  }
-  if (result.outcome === "townhall_unavailable") {
-    return result.blockedAccounts.length > 0
-      ? `Town hall data is unavailable for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
-      : "Town hall data is unavailable for some selected accounts.";
-  }
-  if (result.outcome === "townhall_out_of_range") {
-    return result.blockedAccounts.length > 0
-      ? `Some selected accounts do not meet the town hall requirements: ${formatRosterAccountIdentityList(
-          result.blockedAccounts,
-        )}.`
-      : "Some selected accounts do not meet the town hall requirements.";
-  }
-  if (result.outcome === "minimum_weight_unavailable") {
-    return result.blockedAccounts.length > 0
-      ? `Minimum weight could not be determined for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
-      : "Minimum weight could not be determined for some selected accounts.";
-  }
-  if (result.outcome === "minimum_weight_below_minimum") {
-    return result.blockedAccounts.length > 0
-      ? `Some selected accounts do not meet the minimum weight requirement: ${formatRosterAccountIdentityList(
-          result.blockedAccounts,
-        )}.`
-      : "Some selected accounts do not meet the minimum weight requirement.";
-  }
-  if (result.outcome === "signup_role_required") {
-    return `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`;
-  }
-  if (result.outcome === "roster_conflict") {
-    return "Some selected accounts are already signed up on another roster of this type.";
-  }
-  if (result.outcome === "group_not_found") {
-    return "That roster group is no longer available.";
-  }
-  if (result.outcome === "no_linked_accounts") {
-    return "No linked player accounts were found for your Discord user.";
-  }
-  if (result.outcome === "already_signed_up" && result.createdTags.length <= 0) {
-    return result.linkedTags.length > 0
+    summary = "That roster no longer exists.";
+  } else if (result.outcome === "roster_closed") {
+    summary = "Signups are closed for that roster.";
+  } else if (result.outcome === "roster_archived") {
+    summary = "That roster is archived.";
+  } else if (result.outcome === "roster_full") {
+    summary = "That roster is full.";
+  } else if (result.outcome === "account_limit_exceeded") {
+    summary = "You have reached the maximum accounts allowed on that roster.";
+  } else if (result.outcome === "townhall_unavailable") {
+    summary =
+      result.blockedAccounts.length > 0
+        ? `Town hall data is unavailable for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
+        : "Town hall data is unavailable for some selected accounts.";
+  } else if (result.outcome === "townhall_out_of_range") {
+    summary =
+      result.blockedAccounts.length > 0
+        ? `Some selected accounts do not meet the town hall requirements: ${formatRosterAccountIdentityList(
+            result.blockedAccounts,
+          )}.`
+        : "Some selected accounts do not meet the town hall requirements.";
+  } else if (result.outcome === "minimum_weight_unavailable") {
+    summary =
+      result.blockedAccounts.length > 0
+        ? `Minimum weight could not be determined for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
+        : "Minimum weight could not be determined for some selected accounts.";
+  } else if (result.outcome === "minimum_weight_below_minimum") {
+    summary =
+      result.blockedAccounts.length > 0
+        ? `Some selected accounts do not meet the minimum weight requirement: ${formatRosterAccountIdentityList(
+            result.blockedAccounts,
+          )}.`
+        : "Some selected accounts do not meet the minimum weight requirement.";
+  } else if (result.outcome === "signup_role_required") {
+    summary = `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`;
+  } else if (result.outcome === "cwl_roster_conflict") {
+    const lines =
+      result.conflictingAccounts.length > 0
+        ? result.conflictingAccounts.map(
+            (account) => `- ${formatRosterConflictAccountIdentity(account)} → ${account.conflictingRosterTitle}`,
+          )
+        : [];
+    summary =
+      lines.length > 0
+        ? `These accounts are already signed up on another CWL roster:\n${lines.join("\n")}`
+        : "Some selected accounts are already signed up on another CWL roster.";
+  } else if (result.outcome === "roster_conflict") {
+    summary = "Some selected accounts are already signed up on another roster of this type.";
+  } else if (result.outcome === "group_not_found") {
+    summary = "That roster group is no longer available.";
+  } else if (result.outcome === "no_linked_accounts") {
+    summary = "No linked player accounts were found for your Discord user.";
+  } else if (result.outcome === "already_signed_up" && result.createdTags.length <= 0) {
+    summary = result.linkedTags.length > 0
       ? `Those linked accounts were already signed up for ${result.groupName}.`
       : "No linked player accounts were available for signup.";
+  } else {
+    const created = result.createdTags.length > 0 ? result.createdTags.join(", ") : "no accounts";
+    const duplicateNote =
+      result.duplicateTags.length > 0
+        ? ` (${result.duplicateTags.length} already signed up)`
+        : "";
+    summary = `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
   }
-
-  const created = result.createdTags.length > 0 ? result.createdTags.join(", ") : "no accounts";
-  const duplicateNote =
-    result.duplicateTags.length > 0
-      ? ` (${result.duplicateTags.length} already signed up)`
-      : "";
-  return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+  return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
 }
 
 function formatRosterRemoveResultSummary(
@@ -3044,6 +3055,7 @@ export async function handleRosterManagerSubcommand(
         groupKey,
         playerTags,
         updatedByDiscordUserId: interaction.user.id,
+        bypassEligibility: true,
         cocService,
       });
       if (result.outcome === "roster_not_found") {

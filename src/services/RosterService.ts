@@ -194,6 +194,12 @@ export type RosterAccountIdentity = {
   playerName: string | null;
 };
 
+type RosterConflictWarning = {
+  playerTag: string;
+  playerName: string | null;
+  conflictingRosterTitle: string;
+};
+
 export type RosterSelectionPanel = {
   sessionId: string;
   mode: RosterSelectionMode;
@@ -495,7 +501,7 @@ export type CreateRosterInput = {
   cocService?: CoCService | null;
 };
 
-export type SignupLinkedAccountsResult =
+export type SignupLinkedAccountsResult = (
   | {
       outcome: "created";
       rosterId: string;
@@ -607,6 +613,22 @@ export type SignupLinkedAccountsResult =
       conflictingRosterIds: string[];
     }
   | {
+      outcome: "cwl_roster_conflict";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+      conflictingAccounts: Array<RosterAccountIdentity & { conflictingRosterId: string; conflictingRosterTitle: string }>;
+      conflictingRosterIds: string[];
+    }
+  | {
       outcome: "no_linked_accounts";
       rosterId: string;
       groupKey: string;
@@ -695,7 +717,8 @@ export type SignupLinkedAccountsResult =
       createdAccounts: RosterAccountIdentity[];
       duplicateTags: string[];
       missingLinkedTags: string[];
-    };
+    }
+) & { warnings?: string[] };
 
 export type RemoveRosterSignupsResult =
   | {
@@ -736,7 +759,7 @@ export type RosterChangeRosterIdentity = RosterAccountIdentity & {
   targetGroupName: string;
 };
 
-export type ChangeRosterSignupsResult =
+export type ChangeRosterSignupsResult = (
   | {
       outcome: "changed";
       sourceRosterId: string;
@@ -941,7 +964,8 @@ export type ChangeRosterSignupsResult =
       missingTags: string[];
       blockedTags: string[];
       blockedAccounts: RosterAccountIdentity[];
-    };
+    }
+) & { warnings?: string[] };
 
 export type RosterLifecycleUpdateResult =
   | {
@@ -2662,6 +2686,18 @@ function formatRosterAccountIdentityList(
   return accounts.map((account) => formatRosterAccountIdentity(account)).join(", ");
 }
 
+function formatRosterOverrideWarning(account: RosterConflictWarning): string {
+  const resolvedRosterTitle = normalizeRosterText(account.conflictingRosterTitle) ?? "Unknown Roster";
+  return `Override: ${formatRosterAccountIdentity(account)} was already signed up on ${resolvedRosterTitle}.`;
+}
+
+function appendRosterWarnings(summary: string, warnings: string[] | null | undefined): string {
+  if (!warnings || warnings.length <= 0) {
+    return summary;
+  }
+  return `${summary}\n${warnings.join("\n")}`;
+}
+
 export function buildRosterChangeResultSummary(result: ChangeRosterSignupsResult): string {
   if (result.outcome === "roster_not_found") {
     return "That source roster is no longer available.";
@@ -2708,11 +2744,13 @@ export function buildRosterChangeResultSummary(result: ChangeRosterSignupsResult
               ? "Town hall out of range"
               : result.outcome === "roster_conflict"
                 ? "Roster conflict"
-                : "Blocked";
+              : "Blocked";
     lines.push(`${reason}: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`);
   }
-
-  return lines.length > 0 ? lines.join("\n") : `No roster signups were changed to ${result.targetRosterTitle}.`;
+  return appendRosterWarnings(
+    lines.length > 0 ? lines.join("\n") : `No roster signups were changed to ${result.targetRosterTitle}.`,
+    result.warnings,
+  );
 }
 
 function buildRosterManageStateLabel(state: RosterLifecycleState): string {
@@ -6563,6 +6601,7 @@ export class RosterService {
       where: { id: input.rosterId },
       select: {
         id: true,
+        guildId: true,
         rosterType: true,
         clanTag: true,
         minTownhall: true,
@@ -6686,6 +6725,7 @@ export class RosterService {
       where: { id: input.rosterId },
       select: {
         id: true,
+        guildId: true,
         rosterType: true,
         clanTag: true,
         minTownhall: true,
@@ -6892,6 +6932,46 @@ export class RosterService {
       }
     }
 
+    const overrideWarnings: string[] = [];
+    if (roster.rosterType === "CWL" && createdTags.length > 0) {
+      const conflictLookup = await loadCwlRosterSignupConflictLookup({
+        guildId: roster.guildId,
+        currentRosterId: roster.id,
+        playerTags: createdTags,
+      });
+      for (const tag of createdTags) {
+        const conflict = conflictLookup.get(tag) ?? null;
+        if (!conflict) {
+          continue;
+        }
+        overrideWarnings.push(
+          formatRosterOverrideWarning({
+            playerTag: tag,
+            playerName: resolveBestRosterPlayerName({
+              playerTag: tag,
+              playerCurrentName: nameSources?.playerCurrentNameByTag.get(tag) ?? null,
+              fwaPlayerName: nameSources?.fwaPlayerNameByTag.get(tag) ?? null,
+              snapshotPlayerName: nameSources?.snapshotByTag.get(tag)?.playerName ?? null,
+              playerLinkPlayerName: nameSources?.linkByTag.get(tag)?.playerName ?? null,
+            }),
+            conflictingRosterTitle: conflict.conflictingRosterTitle,
+          }),
+        );
+      }
+      if (overrideWarnings.length > 0) {
+        for (const warning of overrideWarnings) {
+          console.info(
+            [
+              "[roster] signup_conflict_override",
+              `rosterId=${roster.id}`,
+              `groupKey=${group.key}`,
+              `warning=${warning}`,
+            ].join(" "),
+          );
+        }
+      }
+    }
+
     if (createdTags.length > 0) {
       await prisma.rosterSignup.createMany({
         data: createdTags.map((playerTag) => {
@@ -6939,6 +7019,7 @@ export class RosterService {
       createdAccounts,
       duplicateTags,
       missingLinkedTags,
+      warnings: overrideWarnings,
     };
   }
 
@@ -7327,8 +7408,16 @@ export class RosterService {
         targetOwnedCountByUser.set(normalizedDiscordUserId, (targetOwnedCountByUser.get(normalizedDiscordUserId) ?? 0) + 1);
       }
 
+      const cwlConflictLookup =
+        targetRoster.rosterType === "CWL" && candidateTags.length > 0
+          ? await loadCwlRosterSignupConflictLookup({
+              guildId: targetRoster.guildId,
+              currentRosterId: targetRoster.id,
+              playerTags: candidateTags,
+            })
+          : null;
       const conflictRows =
-        !bypassEligibility && candidateTags.length > 0
+        targetRoster.rosterType !== "CWL" && !bypassEligibility && candidateTags.length > 0
           ? ((await tx.rosterSignup.findMany({
               where: {
                 playerTag: { in: candidateTags },
@@ -7367,6 +7456,7 @@ export class RosterService {
       const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
       const blockedOutOfRangeTags: string[] = [];
       const blockedOutOfRangeAccounts: RosterAccountIdentity[] = [];
+      const overrideWarnings: string[] = [];
       const blockedOutcomeOrder: Array<
         "roster_conflict" | "roster_full" | "account_limit_exceeded" | "townhall_unavailable" | "townhall_out_of_range"
       > = [];
@@ -7406,7 +7496,22 @@ export class RosterService {
           playerTag: tag,
           playerName: normalizeRosterText(sourceSignup.playerName ?? null),
         };
-        if (conflictTags.has(tag)) {
+        const cwlConflict = cwlConflictLookup?.get(tag) ?? null;
+        if (cwlConflict) {
+          if (!bypassEligibility) {
+            blockedConflictTags.push(tag);
+            blockedConflictAccounts.push(blockedAccount);
+            blockedOutcomeOrder.push("roster_conflict");
+            continue;
+          }
+          overrideWarnings.push(
+            formatRosterOverrideWarning({
+              playerTag: tag,
+              playerName: normalizeRosterText(sourceSignup.playerName ?? null),
+              conflictingRosterTitle: cwlConflict.conflictingRosterTitle,
+            }),
+          );
+        } else if (conflictTags.has(tag)) {
           blockedConflictTags.push(tag);
           blockedConflictAccounts.push(blockedAccount);
           blockedOutcomeOrder.push("roster_conflict");
@@ -7513,6 +7618,19 @@ export class RosterService {
             playerTag: { in: movedTags },
           },
         });
+      }
+
+      if (overrideWarnings.length > 0) {
+        for (const warning of overrideWarnings) {
+          console.info(
+            [
+              "[roster] change_roster_override",
+              `sourceRosterId=${sourceRoster.id}`,
+              `targetRosterId=${targetRoster.id}`,
+              `warning=${warning}`,
+            ].join(" "),
+          );
+        }
       }
 
       const buildSharedResult = <T extends { outcome: string }>(result: T): T => result;
@@ -7638,8 +7756,11 @@ export class RosterService {
           blockedAccounts,
           conflictingRosterIds:
             blockedOutcome === "roster_conflict"
-              ? [...new Set(conflictRows.map((row) => row.rosterId))]
+              ? cwlConflictLookup
+                ? [...new Set([...cwlConflictLookup.values()].map((record) => record.conflictingRosterId))]
+                : [...new Set(conflictRows.map((row) => row.rosterId))]
               : undefined,
+          warnings: overrideWarnings,
         } as any);
       }
 
@@ -7662,6 +7783,7 @@ export class RosterService {
         missingTags,
         blockedTags: [],
         blockedAccounts: [],
+        warnings: overrideWarnings,
       });
     });
   }
@@ -8877,7 +8999,10 @@ export class RosterService {
           action: session.action,
           rosterId: session.rosterId,
           targetRosterId: null,
-          summary: `Processed ${result.createdTags.length} add request(s) for ${session.rosterTitle}.`,
+          summary: appendRosterWarnings(
+            `Processed ${result.createdTags.length} add request(s) for ${session.rosterTitle}.`,
+            result.warnings,
+          ),
         };
       }
 
@@ -9387,37 +9512,88 @@ export class RosterService {
         }
       }
 
-      const conflictingRows = await prisma.rosterSignup.findMany({
-        where: {
-          playerTag: { in: createdCandidates },
-          rosterId: { not: roster.id },
-          roster: {
-            rosterType: roster.rosterType,
-            rosterCategory: roster.rosterCategory,
-            lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+      if (roster.rosterType === "CWL") {
+        const conflictLookup = await loadCwlRosterSignupConflictLookup({
+          guildId: roster.guildId,
+          currentRosterId: roster.id,
+          playerTags: createdCandidates,
+        });
+        const conflictingAccounts: Array<
+          RosterAccountIdentity & { conflictingRosterId: string; conflictingRosterTitle: string }
+        > = [];
+        for (const tag of createdCandidates) {
+          const conflict = conflictLookup.get(tag) ?? null;
+          if (!conflict) {
+            continue;
+          }
+          conflictingAccounts.push({
+            playerTag: tag,
+            playerName: resolveBestRosterPlayerName({
+              playerTag: tag,
+              rosterPlayerName: null,
+              playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(tag) ?? null,
+              fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(tag) ?? null,
+              snapshotPlayerName: linkedNameSources?.snapshotByTag.get(tag)?.playerName ?? null,
+              playerLinkPlayerName: linkedNameSources?.linkByTag.get(tag)?.playerName ?? null,
+            }),
+            conflictingRosterId: conflict.conflictingRosterId,
+            conflictingRosterTitle: conflict.conflictingRosterTitle,
+          });
+        }
+        if (conflictingAccounts.length > 0) {
+          return {
+            outcome: "cwl_roster_conflict",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: conflictingAccounts.map((account) => account.playerTag),
+            blockedAccounts: conflictingAccounts.map((account) => ({
+              playerTag: account.playerTag,
+              playerName: account.playerName,
+            })),
+            conflictingAccounts,
+            conflictingRosterIds: [...new Set(conflictingAccounts.map((account) => account.conflictingRosterId))],
+          };
+        }
+      } else {
+        const conflictingRows = await prisma.rosterSignup.findMany({
+          where: {
+            playerTag: { in: createdCandidates },
+            rosterId: { not: roster.id },
+            roster: {
+              rosterType: roster.rosterType,
+              rosterCategory: roster.rosterCategory,
+              lifecycleState: { in: ROSTER_CONFLICT_LIFECYCLE_STATES.filter(isRosterConflictEligible) },
+            },
           },
-        },
-        select: {
-          playerTag: true,
-          rosterId: true,
-        },
-      });
-      const conflictingTags = normalizeRosterPlayerTags(conflictingRows.map((row) => row.playerTag));
-      if (conflictingTags.length > 0) {
-        return {
-          outcome: "roster_conflict",
-          rosterId: roster.id,
-          groupKey: group.key,
-          groupName: group.name,
-          requestedTags,
-          linkedTags: selectedTags,
-          createdTags: [],
-          createdAccounts: [],
-          duplicateTags,
-          missingLinkedTags,
-          blockedTags: conflictingTags,
-          conflictingRosterIds: [...new Set(conflictingRows.map((row) => row.rosterId))],
-        };
+          select: {
+            playerTag: true,
+            rosterId: true,
+          },
+        });
+        const conflictingTags = normalizeRosterPlayerTags(conflictingRows.map((row) => row.playerTag));
+        if (conflictingTags.length > 0) {
+          return {
+            outcome: "roster_conflict",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: conflictingTags,
+            conflictingRosterIds: [...new Set(conflictingRows.map((row) => row.rosterId))],
+          };
+        }
       }
 
       const minimumWeight = normalizeRosterInt(roster.minimumWeight);

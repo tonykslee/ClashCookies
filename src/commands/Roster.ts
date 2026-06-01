@@ -332,6 +332,19 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";
   }
+  if (result.outcome === "cwl_roster_conflict") {
+    const lines =
+      result.conflictingAccounts.length > 0
+        ? result.conflictingAccounts.map(
+            (account) => `- ${formatRosterAccountIdentity(account)} → ${account.conflictingRosterTitle}`,
+          )
+        : [];
+    const summary =
+      lines.length > 0
+        ? `These accounts are already signed up on another CWL roster:\n${lines.join("\n")}`
+        : "Some selected accounts are already signed up on another CWL roster.";
+    return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
+  }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
   }
@@ -349,7 +362,8 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
     result.duplicateTags.length > 0
       ? ` (${result.duplicateTags.length} already signed up)`
       : "";
-  return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+  const summary = `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+  return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
 }
 
 function buildRosterRemoveResultSummary(
