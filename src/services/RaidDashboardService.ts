@@ -17,6 +17,7 @@ import {
 import {
   loadRaidIntelDefenderProfileUpgradesForTags,
 } from "./RaidIntelDefenderProfileService";
+import { persistRaidDistrictHitHistoryFromAttackSections } from "./RaidDistrictHitHistoryService";
 import {
   estimateRaidMedals,
   type RaidMedalEstimate,
@@ -69,6 +70,9 @@ const RAID_INTEL_SUMMARY_DISTRICT_ABBREVIATIONS = new Map<string, string>([
   ["builders workshop", "BW"],
   ["builder's workshop", "BW"],
 ]);
+const RAID_MEDAL_OFFENSE_DISPLAY_CAP = 1620;
+const RAID_MEDAL_DEFENSE_DISPLAY_CAP = 350;
+const RAID_MEDAL_TOTAL_DISPLAY_CAP = 1970;
 
 export {
   buildRaidIntelDistrictKey,
@@ -120,11 +124,22 @@ export type RaidAttackerClanMetadata = {
 };
 
 export type RaidDashboardDistrictRow = {
+  id: number | null;
   name: string;
   districtHallLevel: number | null;
   attackCount: number | null;
   destructionPercent: number | null;
   stars: number | null;
+  totalLooted: number | null;
+  attacks: RaidDashboardDistrictAttackRow[];
+};
+
+export type RaidDashboardDistrictAttackRow = {
+  attackerName: string | null;
+  attackerTag: string | null;
+  destructionPercent: number | null;
+  stars: number | null;
+  order: number | null;
 };
 
 export type RaidDashboardAttackSection = {
@@ -458,11 +473,60 @@ function normalizeRaidAttackerClanMetadata(input: unknown): RaidAttackerClanMeta
   };
 }
 
+function normalizeRaidDistrictAttackRow(raw: unknown): RaidDashboardDistrictAttackRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const attacker = value.attacker as { name?: unknown; tag?: unknown } | null | undefined;
+  const attackerName = normalizeDistrictName(attacker?.name ?? value.attackerName ?? value.name);
+  const attackerTag = normalizeRaidTrackedClanTag(String(attacker?.tag ?? value.attackerTag ?? value.tag ?? ""));
+  const destructionPercent = normalizeNonNegativeInt(
+    value.destructionPercentage ?? value.destructionPercent ?? value.destruction,
+  );
+  const stars = normalizeNonNegativeInt(value.stars);
+  const order = normalizePositiveInt(value.order ?? value.attackOrder ?? value.sequence ?? value.index);
+
+  if (!attackerName && !attackerTag && destructionPercent === null && stars === null) {
+    return null;
+  }
+
+  return {
+    attackerName,
+    attackerTag,
+    destructionPercent,
+    stars,
+    order,
+  };
+}
+
+function normalizeRaidDistrictAttackRows(value: Record<string, unknown>): RaidDashboardDistrictAttackRow[] {
+  const rawAttacks =
+    value.attackLog ??
+    value.attacksList ??
+    value.attackList ??
+    value.attackDetails ??
+    (Array.isArray(value.attacks) ? value.attacks : null);
+  if (!Array.isArray(rawAttacks)) {
+    return [];
+  }
+  return rawAttacks
+    .map((attack) => normalizeRaidDistrictAttackRow(attack))
+    .filter((attack): attack is RaidDashboardDistrictAttackRow => attack !== null)
+    .sort((left, right) => {
+      const leftOrder = left.order ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = right.order ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      const leftName = left.attackerName ?? left.attackerTag ?? "";
+      const rightName = right.attackerName ?? right.attackerTag ?? "";
+      return leftName.localeCompare(rightName);
+    });
+}
+
 function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
   const name = normalizeDistrictName(value.name) ?? "Unknown District";
   return {
+    id: normalizePositiveInt(value.id),
     name,
     districtHallLevel:
       normalizePositiveInt(value.districtHallLevel ?? value.districtHall ?? value.hallLevel),
@@ -471,6 +535,8 @@ function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null
       value.destructionPercentage ?? value.destructionPercent,
     ),
     stars: normalizeNonNegativeInt(value.stars),
+    totalLooted: normalizeNonNegativeInt(value.totalLooted ?? value.looted),
+    attacks: normalizeRaidDistrictAttackRows(value),
   };
 }
 
@@ -592,6 +658,130 @@ function isRaidCapitalPeakDistrict(name: string): boolean {
   return normalized === "capital peak" || normalized === "capital hall";
 }
 
+function capRaidMedalValue(value: number | null, cap: number): number | null {
+  return value === null ? null : Math.min(value, cap);
+}
+
+function getRaidMedalDisplayValues(estimate: RaidMedalEstimate): {
+  offense: number | null;
+  defense: number | null;
+  total: number | null;
+} {
+  const offense = capRaidMedalValue(
+    estimate.offensiveMedalsForSixAttacks,
+    RAID_MEDAL_OFFENSE_DISPLAY_CAP,
+  );
+  const defense = capRaidMedalValue(estimate.defensiveMedals, RAID_MEDAL_DEFENSE_DISPLAY_CAP);
+  const total =
+    offense === null || defense === null
+      ? null
+      : Math.min(offense + defense, RAID_MEDAL_TOTAL_DISPLAY_CAP);
+  return { offense, defense, total };
+}
+
+function calculateRaidDefenseDistrictHousingSpace(
+  district: RaidDashboardDistrictRow,
+): number | null {
+  if (district.id === null || district.districtHallLevel === null) {
+    return null;
+  }
+  const base = 25 + 5 * district.districtHallLevel;
+  if (district.id === 70000001) {
+    return 3 * base;
+  }
+  if (district.id === 70000002) {
+    return district.districtHallLevel > 1 ? base : null;
+  }
+  if (district.id === 70000005) {
+    return base;
+  }
+  return null;
+}
+
+function calculateRaidDefenseDistrictWeight(districts: RaidDashboardDistrictRow[]): number | null {
+  const lootedValues = districts
+    .filter((district) => isDistrictFullyDestroyed(district) === true)
+    .map((district) => district.totalLooted)
+    .filter((value): value is number => value !== null);
+  if (lootedValues.length <= 0) {
+    return null;
+  }
+  const lower = Math.max(...lootedValues.map((value) => value - 750));
+  const upper = Math.min(...lootedValues);
+  return Math.floor((lower + upper) / 2);
+}
+
+function predictRaidDefenseMedalsFromDefenseLog(
+  defenseLog: ClanCapitalRaidSeason["defenseLog"],
+): number | null {
+  if (!Array.isArray(defenseLog) || defenseLog.length <= 0) {
+    return null;
+  }
+
+  let maxOpponentTroopsKilled: number | null = null;
+  for (const entry of defenseLog) {
+    if (!entry || typeof entry !== "object") continue;
+    const value = entry as Record<string, unknown>;
+    const districts = Array.isArray(value.districts)
+      ? value.districts
+          .map((district: unknown) => normalizeRaidDistrictRow(district))
+          .filter(
+            (district: RaidDashboardDistrictRow | null): district is RaidDashboardDistrictRow =>
+              district !== null,
+          )
+      : [];
+    if (districts.length <= 0) continue;
+
+    const districtWeight = calculateRaidDefenseDistrictWeight(districts);
+    let troopsKilled = 0;
+    let sawUsableDistrict = false;
+    for (const district of districts) {
+      const attackCount = district.attackCount;
+      const housingSpace = calculateRaidDefenseDistrictHousingSpace(district);
+      if (attackCount === null || housingSpace === null) {
+        continue;
+      }
+      sawUsableDistrict = true;
+      troopsKilled += attackCount * housingSpace;
+      if (
+        districtWeight !== null &&
+        district.totalLooted !== null &&
+        isDistrictFullyDestroyed(district) === true
+      ) {
+        troopsKilled -= Math.floor((district.totalLooted - districtWeight) / 3);
+      }
+    }
+    if (sawUsableDistrict) {
+      maxOpponentTroopsKilled =
+        maxOpponentTroopsKilled === null
+          ? troopsKilled
+          : Math.max(maxOpponentTroopsKilled, troopsKilled);
+    }
+  }
+
+  return maxOpponentTroopsKilled === null ? null : Math.floor(maxOpponentTroopsKilled / 25);
+}
+
+function isRaidSeasonFinalized(season: ClanCapitalRaidSeason | null | undefined): boolean {
+  const state = String(season?.state ?? "").trim().toLowerCase();
+  return (
+    state === "ended" ||
+    state === "finished" ||
+    state === "complete" ||
+    state === "completed"
+  );
+}
+
+function resolveRaidDashboardDefensiveMedals(
+  season: ClanCapitalRaidSeason | null | undefined,
+): number | null {
+  const reward = normalizeNonNegativeInt(season?.defensiveReward);
+  if (reward !== null && (reward > 0 || isRaidSeasonFinalized(season))) {
+    return reward;
+  }
+  return predictRaidDefenseMedalsFromDefenseLog(season?.defenseLog);
+}
+
 function buildRaidDashboardMedalEstimate(input: {
   attackSections: RaidDashboardAttackSection[];
   attacksCompleted: number | null;
@@ -661,12 +851,43 @@ function buildRaidDashboardOverviewMedalLine(row: RaidDashboardClanRow): string 
     return "";
   }
 
-  const defensiveText = estimate.defensiveMedals === null ? "—" : String(estimate.defensiveMedals);
+  const display = getRaidMedalDisplayValues(estimate);
+  if (display.offense === null) {
+    return "";
+  }
+  const displayDefenseText = display.defense === null ? "—" : String(display.defense);
   const totalText =
-    estimate.totalEstimatedMedals === null
+    display.total === null
       ? ""
-      : ` | Total ~${estimate.totalEstimatedMedals}`;
-  return `- 🏅 Est. Offense ~${estimate.offensiveMedalsForSixAttacks} | Defense ${defensiveText}${totalText}`;
+      : ` | Total ~${display.total}`;
+  return `- 🏅 Est. Offense ~${display.offense} | Defense ${displayDefenseText}${totalText}`;
+}
+
+function buildRaidDashboardMedalDetailLine(row: RaidDashboardClanRow): string | null {
+  if ((row.attacksCompleted ?? 0) <= 0) {
+    return null;
+  }
+  const estimate = row.raidMedalEstimate ?? null;
+  if (estimate?.offensiveMedalsForSixAttacks === null || estimate === null) {
+    return null;
+  }
+
+  const display = getRaidMedalDisplayValues(estimate);
+  if (display.offense === null) {
+    return null;
+  }
+  const parts = [
+    `Offense ${estimate.offensiveMedalsForSixAttacks} raw → ${display.offense} capped`,
+  ];
+  if (estimate.defensiveMedals === null || display.defense === null) {
+    parts.push("Defense —");
+  } else {
+    parts.push(`Defense ${estimate.defensiveMedals} raw → ${display.defense} capped`);
+  }
+  if (display.total !== null) {
+    parts.push(`Total ${display.total} capped`);
+  }
+  return `Estimated medals: ${parts.join(" | ")}`;
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
@@ -674,6 +895,20 @@ function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
   const hallSuffix = hallLabel === null ? "" : ` ${hallLabel}`;
   const attackCount = row.attackCount === null ? "— attacks" : `${row.attackCount} attacks`;
   return `${row.name}${hallSuffix} — ${attackCount}`;
+}
+
+function formatRaidDistrictAttackStars(stars: number | null): string {
+  if (stars === null || stars <= 0) {
+    return "";
+  }
+  return ` ${"⭐".repeat(Math.min(3, stars))}`;
+}
+
+function buildRaidDistrictAttackLabel(attack: RaidDashboardDistrictAttackRow): string {
+  const attacker = normalizeDistrictName(attack.attackerName) ??
+    (attack.attackerTag ? formatRaidTrackedClanTag(attack.attackerTag) : "Unknown attacker");
+  const destruction = attack.destructionPercent === null ? "—%" : `${attack.destructionPercent}%`;
+  return `${attacker} ${destruction}${formatRaidDistrictAttackStars(attack.stars)}`;
 }
 
 function buildRaidDetailDescription(input: {
@@ -749,13 +984,20 @@ function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidD
     ];
   }
 
-  return [
-    { text: header, item: false },
-    ...section.districts.map((district) => ({
+  const lines: RaidDetailLine[] = [{ text: header, item: false }];
+  for (const district of section.districts) {
+    lines.push({
       text: `- ${buildRaidDistrictLabel(district)}`,
       item: true,
-    })),
-  ];
+    });
+    for (const attack of district.attacks ?? []) {
+      lines.push({
+        text: `  - ${buildRaidDistrictAttackLabel(attack)}`,
+        item: false,
+      });
+    }
+  }
+  return lines;
 }
 
 function buildRaidDefenseSectionSummaryText(section: RaidDashboardDefenseSection): string {
@@ -1477,6 +1719,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     defenderTags: raidIntelDefenderTags,
   });
 
+  const hitHistoryPersistenceTasks: Array<Promise<unknown>> = [];
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
@@ -1492,6 +1735,21 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const activeSeasonStartMs = snapshot.activeSeason?.startTime
       ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
       : null;
+    if (input.guildId && activeSeasonStartMs !== null && snapshot.attackSections.length > 0) {
+      hitHistoryPersistenceTasks.push(
+        persistRaidDistrictHitHistoryFromAttackSections({
+          guildId: input.guildId,
+          sourceClanTag: row.clanTag,
+          raidSeasonStartTime: new Date(activeSeasonStartMs),
+          attackSections: snapshot.attackSections,
+          observedAt: new Date(nowMs),
+        }).catch((error) => {
+          console.warn(
+            `[raids] event=raid_hit_history_persist_failed guildId=${input.guildId} sourceClanTag=${formatRaidTrackedClanTag(row.clanTag)} error=${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      );
+    }
     const raidIntelMarks =
       activeSeasonStartMs === null
         ? []
@@ -1550,7 +1808,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const raidMedalEstimate = buildRaidDashboardMedalEstimate({
       attackSections: snapshot.attackSections,
       attacksCompleted: snapshot.counts.attacksCompleted,
-      defensiveMedals: normalizeNonNegativeInt(snapshot.activeSeason?.defensiveReward),
+      defensiveMedals: resolveRaidDashboardDefensiveMedals(snapshot.activeSeason),
     });
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
@@ -1574,6 +1832,10 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       openDefenseSections,
     };
   });
+
+  if (hitHistoryPersistenceTasks.length > 0) {
+    await Promise.all(hitHistoryPersistenceTasks);
+  }
 
   return sortRaidDashboardRows(rows);
 }
@@ -1817,6 +2079,11 @@ export function buildRaidDashboardSingleClanDescription(
       item: false,
     },
   ];
+
+  const medalDetailLine = buildRaidDashboardMedalDetailLine(row);
+  if (medalDetailLine) {
+    lines.push({ text: medalDetailLine, item: false });
+  }
 
   const intelSummaryLine = buildRaidDashboardIntelSummaryLine(row.raidIntelMarks);
   if (intelSummaryLine) {

@@ -3,7 +3,9 @@ import { prisma } from "../prisma";
 import { normalizePlayerTag } from "./PlayerLinkService";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { todoSnapshotService } from "./TodoSnapshotService";
+import type { CoCService } from "./CoCService";
 import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
+import { buildRaidHitStatsByAttackerTag, type RaidHitStats } from "./RaidHitStatsService";
 
 export type RaidRosterAddResult = {
   added: string[];
@@ -18,6 +20,17 @@ export type RaidRosterStatusRow = {
   townHall: number | null;
   discordUserId: string | null;
   completedRaidAttacks: number;
+  raidHitStats30d?: RaidRosterHitStatsSummary;
+};
+
+export type RaidRosterHitStatsSummary = {
+  totalHits: number;
+  oneShots: number;
+  twoShots: number;
+  threeShots: number;
+  averageDestructionPercent: number | null;
+  perfectHits: number;
+  lastHitAt: Date | null;
 };
 
 export type ParsedRaidRosterPlayerTagsInput = {
@@ -50,6 +63,83 @@ function clampInt(value: unknown, min: number, max: number): number {
   const raw = Number(value);
   if (!Number.isFinite(raw)) return min;
   return Math.min(max, Math.max(min, Math.trunc(raw)));
+}
+
+function normalizeStatsLookupTag(playerTag: string): string | null {
+  const normalized = normalizePlayerTag(playerTag);
+  return normalized ? normalized.replace(/^#/, "") : null;
+}
+
+function emptyRaidRosterHitStatsSummary(): RaidRosterHitStatsSummary & {
+  weightedDestructionSum: number;
+  weightedDestructionHitCount: number;
+} {
+  return {
+    totalHits: 0,
+    oneShots: 0,
+    twoShots: 0,
+    threeShots: 0,
+    averageDestructionPercent: null,
+    perfectHits: 0,
+    lastHitAt: null,
+    weightedDestructionSum: 0,
+    weightedDestructionHitCount: 0,
+  };
+}
+
+function mergeRaidRosterHitStats(
+  target: RaidRosterHitStatsSummary & {
+    weightedDestructionSum: number;
+    weightedDestructionHitCount: number;
+  },
+  source: RaidHitStats | null | undefined,
+): void {
+  if (!source || source.totalHits <= 0) return;
+  target.totalHits += source.totalHits;
+  target.oneShots += source.oneShots;
+  target.twoShots += source.twoShots;
+  target.threeShots += source.threeShots;
+  target.perfectHits += source.perfectHits;
+  if (source.averageDestructionPercent !== null) {
+    target.weightedDestructionSum += source.averageDestructionPercent * source.totalHits;
+    target.weightedDestructionHitCount += source.totalHits;
+  }
+  if (source.lastHitAt && (!target.lastHitAt || source.lastHitAt > target.lastHitAt)) {
+    target.lastHitAt = source.lastHitAt;
+  }
+}
+
+function finalizeRaidRosterHitStatsSummary(
+  value:
+    | (RaidRosterHitStatsSummary & {
+        weightedDestructionSum: number;
+        weightedDestructionHitCount: number;
+      })
+    | null
+    | undefined,
+): RaidRosterHitStatsSummary | undefined {
+  if (!value || value.totalHits <= 0) return undefined;
+  return {
+    totalHits: value.totalHits,
+    oneShots: value.oneShots,
+    twoShots: value.twoShots,
+    threeShots: value.threeShots,
+    averageDestructionPercent:
+      value.weightedDestructionHitCount > 0
+        ? value.weightedDestructionSum / value.weightedDestructionHitCount
+        : null,
+    perfectHits: value.perfectHits,
+    lastHitAt: value.lastHitAt,
+  };
+}
+
+function formatRaidRosterHitStatsSummary(stats: RaidRosterHitStatsSummary | null | undefined): string | null {
+  if (!stats || stats.totalHits <= 0) return null;
+  const average =
+    stats.averageDestructionPercent === null
+      ? "—"
+      : `${Math.round(stats.averageDestructionPercent)}%`;
+  return `30d: 1s ${stats.oneShots} | 2s ${stats.twoShots} | 3s ${stats.threeShots} | avg ${average}`;
 }
 
 function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: string): string {
@@ -172,6 +262,7 @@ export async function addRaidRosterMembersForGuild(input: {
 
 export async function listRaidRosterStatusRowsForGuild(input: {
   guildId: string;
+  cocService?: CoCService | null;
 }): Promise<RaidRosterStatusRow[]> {
   const guildId = String(input.guildId ?? "").trim();
   if (!guildId) return [];
@@ -188,7 +279,20 @@ export async function listRaidRosterStatusRowsForGuild(input: {
   );
   if (rosterTags.length <= 0) return [];
 
-  const [snapshotRows, playerCurrentRows, playerLinkRows, playerActivityRows] = await Promise.all([
+  if (input.cocService) {
+    await todoSnapshotService
+      .refreshSnapshotsForPlayerTags({
+        playerTags: rosterTags,
+        cocService: input.cocService,
+      })
+      .catch((error) => {
+        console.warn(
+          `[raids-roster] event=status_snapshot_refresh_failed guildId=${guildId} playerCount=${rosterTags.length} error=${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
+  const [snapshotRows, playerCurrentRows, playerLinkRows, playerActivityRows, hitStatsByAttackerTag] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({ playerTags: rosterTags }),
     playerCurrentService.listPlayerCurrentByTags(rosterTags),
     prisma.playerLink.findMany({
@@ -205,6 +309,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
         name: true,
       },
     }),
+    buildRaidHitStatsByAttackerTag({ guildId }),
   ]);
 
   const snapshotByTag = new Map(
@@ -223,6 +328,33 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       .filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
   );
 
+  const directStatsByRosterTag = new Map<string, RaidHitStats>();
+  for (const playerTag of rosterTags) {
+    const lookupTag = normalizeStatsLookupTag(playerTag);
+    const stats = lookupTag ? hitStatsByAttackerTag.get(lookupTag) ?? null : null;
+    if (stats) {
+      directStatsByRosterTag.set(playerTag, stats);
+    }
+  }
+
+  const aggregateStatsByDiscordUserId = new Map<
+    string,
+    RaidRosterHitStatsSummary & {
+      weightedDestructionSum: number;
+      weightedDestructionHitCount: number;
+    }
+  >();
+  for (const playerTag of rosterTags) {
+    const discordUserId = playerLinkByTag.get(playerTag) ?? null;
+    if (!discordUserId) continue;
+    const stats = directStatsByRosterTag.get(playerTag) ?? null;
+    if (!stats) continue;
+    const aggregate =
+      aggregateStatsByDiscordUserId.get(discordUserId) ?? emptyRaidRosterHitStatsSummary();
+    mergeRaidRosterHitStats(aggregate, stats);
+    aggregateStatsByDiscordUserId.set(discordUserId, aggregate);
+  }
+
   return rosterTags.map((playerTag) => {
     const snapshot = snapshotByTag.get(playerTag) ?? null;
     const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
@@ -234,12 +366,26 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       playerTag;
     const townHall = snapshot?.townHall ?? playerCurrent?.townHall ?? null;
     const completedRaidAttacks = clampInt(snapshot?.raidAttacksUsed ?? 0, 0, 6);
+    const discordUserId = playerLinkByTag.get(playerTag) ?? null;
+    const raidHitStats30d =
+      finalizeRaidRosterHitStatsSummary(
+        discordUserId
+          ? aggregateStatsByDiscordUserId.get(discordUserId)
+          : (() => {
+              const stats = directStatsByRosterTag.get(playerTag) ?? null;
+              if (!stats) return null;
+              const aggregate = emptyRaidRosterHitStatsSummary();
+              mergeRaidRosterHitStats(aggregate, stats);
+              return aggregate;
+            })(),
+      );
     return {
       playerTag,
       playerName,
       townHall,
-      discordUserId: playerLinkByTag.get(playerTag) ?? null,
+      discordUserId,
       completedRaidAttacks,
+      ...(raidHitStats30d ? { raidHitStats30d } : {}),
     };
   });
 }
@@ -268,7 +414,8 @@ export function buildRaidRosterStatusLine(
   const playerLink = buildPlayerProfileMarkdownLink(row.playerName, row.playerTag);
   const tag = `\`${normalizePlayerTag(row.playerTag) || row.playerTag}\``;
   const discordPart = row.discordUserId ? `<@${row.discordUserId}>` : "unlinked";
-  return `- ${townHallIcon} ${playerLink} ${tag} ${discordPart} - ${row.completedRaidAttacks}/6`;
+  const statsPart = formatRaidRosterHitStatsSummary(row.raidHitStats30d);
+  return `- ${townHallIcon} ${playerLink} ${tag} ${discordPart} - ${row.completedRaidAttacks}/6${statsPart ? ` | ${statsPart}` : ""}`;
 }
 
 export function buildRaidRosterStatusEmbeds(
