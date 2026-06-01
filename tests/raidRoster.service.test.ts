@@ -22,6 +22,10 @@ const playerCurrentServiceMock = vi.hoisted(() => ({
   listPlayerCurrentByTags: vi.fn(),
 }));
 
+const raidHitStatsServiceMock = vi.hoisted(() => ({
+  buildRaidHitStatsByAttackerTag: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -32,6 +36,10 @@ vi.mock("../src/services/TodoSnapshotService", () => ({
 
 vi.mock("../src/services/PlayerCurrentService", () => ({
   playerCurrentService: playerCurrentServiceMock,
+}));
+
+vi.mock("../src/services/RaidHitStatsService", () => ({
+  buildRaidHitStatsByAttackerTag: raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag,
 }));
 
 import {
@@ -53,6 +61,7 @@ describe("RaidRosterService", () => {
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({ playerCount: 0, updatedCount: 0 });
     playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
+    raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag.mockResolvedValue(new Map());
   });
 
   it("normalizes mixed player tag input and reports invalid and duplicate tags", () => {
@@ -234,6 +243,129 @@ describe("RaidRosterService", () => {
     ]);
   });
 
+  it("adds single-account 30-day raid hit stats to roster rows", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0" },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Solo Raider",
+        townHall: 16,
+        raidAttacksUsed: 6,
+      },
+    ]);
+    raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag.mockResolvedValueOnce(
+      new Map([
+        [
+          "2RVGJYLC0",
+          {
+            attackerTag: "2RVGJYLC0",
+            totalHits: 13,
+            oneShots: 3,
+            twoShots: 8,
+            threeShots: 2,
+            averageDestructionPercent: 74,
+            perfectHits: 5,
+            lastHitAt: new Date("2026-05-30T12:00:00.000Z"),
+          },
+        ],
+      ]),
+    );
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    expect(raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(rows[0]?.raidHitStats30d).toMatchObject({
+      totalHits: 13,
+      oneShots: 3,
+      twoShots: 8,
+      threeShots: 2,
+      averageDestructionPercent: 74,
+      perfectHits: 5,
+    });
+    expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
+      "30d: 1s 3 | 2s 8 | 3s 2 | avg 74%",
+    );
+  });
+
+  it("aggregates 30-day raid hit stats across accounts linked to the same Discord user", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0" },
+      { playerTag: "#2QG2C08UP" },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0", discordUserId: "123456789012345678" },
+      { playerTag: "#2QG2C08UP", discordUserId: "123456789012345678" },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0", playerName: "Main", townHall: 16, raidAttacksUsed: 6 },
+      { playerTag: "#2QG2C08UP", playerName: "Alt", townHall: 15, raidAttacksUsed: 5 },
+    ]);
+    raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag.mockResolvedValueOnce(
+      new Map([
+        [
+          "2RVGJYLC0",
+          {
+            attackerTag: "2RVGJYLC0",
+            totalHits: 10,
+            oneShots: 2,
+            twoShots: 4,
+            threeShots: 1,
+            averageDestructionPercent: 70,
+            perfectHits: 3,
+            lastHitAt: new Date("2026-05-29T12:00:00.000Z"),
+          },
+        ],
+        [
+          "2QG2C08UP",
+          {
+            attackerTag: "2QG2C08UP",
+            totalHits: 5,
+            oneShots: 1,
+            twoShots: 2,
+            threeShots: 3,
+            averageDestructionPercent: 80,
+            perfectHits: 2,
+            lastHitAt: new Date("2026-05-30T12:00:00.000Z"),
+          },
+        ],
+      ]),
+    );
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    for (const row of rows) {
+      expect(row.raidHitStats30d).toMatchObject({
+        totalHits: 15,
+        oneShots: 3,
+        twoShots: 6,
+        threeShots: 4,
+        averageDestructionPercent: 73.33333333333333,
+        perfectHits: 5,
+        lastHitAt: new Date("2026-05-30T12:00:00.000Z"),
+      });
+    }
+    expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
+      "30d: 1s 3 | 2s 6 | 3s 4 | avg 73%",
+    );
+  });
+
+  it("omits the 30-day stats segment when no raid hit stats exist", () => {
+    const line = buildRaidRosterStatusLine({
+      playerTag: "#2QG2C08UR",
+      playerName: "No Stats",
+      townHall: null,
+      discordUserId: null,
+      completedRaidAttacks: 0,
+    });
+
+    expect(line).toContain("0/6");
+    expect(line).not.toContain("30d:");
+  });
+
   it("renders best-effort roster status rows when snapshot refresh fails", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
@@ -295,6 +427,18 @@ describe("RaidRosterService", () => {
         townHall: 15,
         discordUserId: null,
         completedRaidAttacks: index % 7,
+        raidHitStats30d:
+          index === 0
+            ? {
+                totalHits: 13,
+                oneShots: 3,
+                twoShots: 8,
+                threeShots: 2,
+                averageDestructionPercent: 74,
+                perfectHits: 5,
+                lastHitAt: new Date("2026-05-30T12:00:00.000Z"),
+              }
+            : undefined,
       })),
       emojiMap,
     );
