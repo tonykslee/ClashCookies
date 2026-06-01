@@ -17,6 +17,7 @@ import {
 import {
   loadRaidIntelDefenderProfileUpgradesForTags,
 } from "./RaidIntelDefenderProfileService";
+import { persistRaidDistrictHitHistoryFromAttackSections } from "./RaidDistrictHitHistoryService";
 import {
   estimateRaidMedals,
   type RaidMedalEstimate,
@@ -1718,6 +1719,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     defenderTags: raidIntelDefenderTags,
   });
 
+  const hitHistoryPersistenceTasks: Array<Promise<unknown>> = [];
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
@@ -1733,6 +1735,21 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const activeSeasonStartMs = snapshot.activeSeason?.startTime
       ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
       : null;
+    if (input.guildId && activeSeasonStartMs !== null && snapshot.attackSections.length > 0) {
+      hitHistoryPersistenceTasks.push(
+        persistRaidDistrictHitHistoryFromAttackSections({
+          guildId: input.guildId,
+          sourceClanTag: row.clanTag,
+          raidSeasonStartTime: new Date(activeSeasonStartMs),
+          attackSections: snapshot.attackSections,
+          observedAt: new Date(nowMs),
+        }).catch((error) => {
+          console.warn(
+            `[raids] event=raid_hit_history_persist_failed guildId=${input.guildId} sourceClanTag=${formatRaidTrackedClanTag(row.clanTag)} error=${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      );
+    }
     const raidIntelMarks =
       activeSeasonStartMs === null
         ? []
@@ -1815,6 +1832,10 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       openDefenseSections,
     };
   });
+
+  if (hitHistoryPersistenceTasks.length > 0) {
+    await Promise.all(hitHistoryPersistenceTasks);
+  }
 
   return sortRaidDashboardRows(rows);
 }
