@@ -535,6 +535,7 @@ export type ClanCapitalRaidSeasonClan = {
 };
 
 export type ClanCapitalRaidSeasonDistrict = {
+  id?: number | null;
   name?: string | null;
   districtHallLevel?: number | null;
   districtHall?: number | null;
@@ -545,7 +546,7 @@ export type ClanCapitalRaidSeasonDistrict = {
   destructionPercent?: number | null;
   stars?: number | null;
   looted?: number | null;
-  id?: number | null;
+  totalLooted?: number | null;
 };
 
 export type ClanCapitalRaidSeasonAttackLog = {
