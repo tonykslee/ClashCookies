@@ -230,6 +230,10 @@ describe("command coverage", () => {
     expect(raidsHelpText).toContain("type:fwa");
     expect(raidsHelpText).toContain("type:custom");
     expect(raidsHelpText).not.toContain("type:custom tag:");
+    expect(raidsHelpText).toContain("Medal estimates");
+    expect(raidsHelpText).toContain("cleared districts/capital peaks");
+    expect(raidsHelpText).toContain("defensiveReward");
+    expect(raidsHelpText).toContain("Total appears only when both values are available");
     expect(raidsHelpText).toContain("/raids roster add");
     expect(raidsHelpText).toContain("/raids roster status");
     expect(raidsHelpText).toContain("already on roster");
