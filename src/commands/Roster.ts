@@ -3,7 +3,6 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
-  ComponentType,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonInteraction,
@@ -75,6 +74,7 @@ import {
   parseRosterManageWeightInput,
   rosterWeightService,
 } from "../services/RosterWeightService";
+import { showRosterMutationApplyingState } from "../services/RosterInteractionStateService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { rosterExportService } from "../services/RosterExportService";
 
@@ -90,7 +90,6 @@ const ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE = "This Change Group panel expire
 const ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
 const ROSTER_POST_CHANGE_ROSTER_EXPIRED_MESSAGE = "This Change Roster panel expired. Open Settings again.";
 const ROSTER_POST_CHANGE_ROSTER_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
-const ROSTER_MUTATION_APPLYING_LABEL = "Applying changes...";
 
 type RosterMutationAction =
   | "add"
@@ -141,72 +140,6 @@ function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; pl
   return accounts.map(formatRosterAccountIdentity).join(", ");
 }
 
-type RosterApplyingButtonComponent = {
-  type?: number;
-  custom_id?: string | null;
-  customId?: string | null;
-  label?: string | null;
-  style?: number | null;
-  disabled?: boolean | null;
-  emoji?: unknown;
-};
-
-type RosterApplyingSelectComponent = {
-  type?: number;
-  custom_id?: string | null;
-  customId?: string | null;
-  placeholder?: string | null;
-  min_values?: number | null;
-  max_values?: number | null;
-  disabled?: boolean | null;
-  options?: unknown[];
-};
-
-function cloneRosterApplyingComponents(
-  rows: ReadonlyArray<
-    | { toJSON?: () => { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number } }
-    | { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number }
-  >,
-  confirmCustomId: string,
-): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
-  return rows.map((row) => {
-    const rawRow = typeof (row as { toJSON?: () => unknown }).toJSON === "function" ? (row as { toJSON: () => any }).toJSON() : row;
-    const clonedComponents = (rawRow.components ?? []).map(
-      (component: RosterApplyingButtonComponent | RosterApplyingSelectComponent) => {
-        const buttonComponent = component as RosterApplyingButtonComponent;
-        const selectComponent = component as RosterApplyingSelectComponent;
-        const customId = String(component.custom_id ?? component.customId ?? "");
-        if (component.type === ComponentType.Button) {
-          return {
-            ...component,
-            disabled: true,
-            label: customId === confirmCustomId ? ROSTER_MUTATION_APPLYING_LABEL : buttonComponent.label ?? null,
-            style: customId === confirmCustomId ? ButtonStyle.Secondary : buttonComponent.style ?? null,
-          };
-        }
-        if (component.type === ComponentType.StringSelect) {
-          return {
-            ...component,
-            disabled: true,
-          };
-        }
-        return {
-          ...selectComponent,
-          disabled: true,
-        };
-      },
-    );
-    return {
-      ...(rawRow ?? {}),
-      components: clonedComponents,
-    };
-  });
-}
-
-function buildRosterMutationApplyingComponents(interaction: ButtonInteraction): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
-  return cloneRosterApplyingComponents((interaction.message?.components ?? []) as any, interaction.customId);
-}
-
 function logRosterMutationTiming(input: {
   flow: "add_user" | "remove_user" | "change_group" | "change_roster";
   sessionId: string;
@@ -236,17 +169,6 @@ function logRosterMutationSideEffectTiming(input: {
   console.info(
     `[roster] mutation_side_effect flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${input.durationMs} outcome=${input.outcome}`,
   );
-}
-
-async function showRosterMutationApplyingState(interaction: ButtonInteraction): Promise<void> {
-  const components = buildRosterMutationApplyingComponents(interaction);
-  try {
-    await interaction.update({
-      components: components as any,
-    });
-  } catch {
-    await interaction.deferUpdate().catch(() => undefined);
-  }
 }
 
 function getAutocompleteUserOptionId(interaction: AutocompleteInteraction): string | null {
@@ -2138,7 +2060,7 @@ export async function handleRosterManageActionButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
+  await showRosterMutationApplyingState(interaction);
   const result = await rosterService.confirmRosterManageSession({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
