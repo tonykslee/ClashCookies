@@ -259,7 +259,6 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
     expect(overview).not.toContain("Upgrades:");
-    expect(overview).not.toContain("???");
 
     const single = buildRaidDashboardSingleClanDescription(rows[0]!);
     expect(single).toContain("## Raid Clan");
@@ -390,8 +389,8 @@ describe("RaidDashboardService", () => {
 
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
-    expect(overview).toContain("1444 | defaults: 3 | GM, SP, GQ");
-    expect(overview).not.toContain("- ?? ??? 2210 | defaults: 3 | GM, SP, GQ");
+    expect(overview).toContain("- 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
+    expect(overview).not.toContain("- ⚔️ 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
 
     const drilldown = buildRaidDashboardSingleClanDescription(sourceRow as any, {
       activeSeason: { state: "ongoing" },
@@ -508,7 +507,7 @@ describe("RaidDashboardService", () => {
         attacksCompleted: null,
         attacksMax: null,
         hasOngoingRaid: false,
-        raidsCompleted: 1,
+        raidsCompleted: 0,
         defaultLayoutCount: 0,
         intelGradeScore: 0,
         maxDefenseAttacksUsed: null,
@@ -520,8 +519,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- ???");
-    expect(overview).not.toContain("???");
+    expect(overview).toContain("- 🏘️ — | defaults: 0 | —");
     expect(overview).not.toContain("GM, SP, GQ");
   });
 
@@ -543,7 +541,9 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).toContain("Charlie Raid");
-    expect(overview).not.toContain("???");
+    const titleLine = overview.split("\n").find((line) => line.includes("Charlie Raid"));
+    expect(titleLine).toBeDefined();
+    expect(titleLine).not.toContain("🛡️");
   });
 
   it("renders the defense shield metric in the overview title when a max defense count is known", () => {
@@ -564,7 +564,7 @@ describe("RaidDashboardService", () => {
     ]);
 
     const titleLine = overview.split("\n").find((line) => line.includes("[Alpha Raid]"));
-    expect(titleLine).toContain("46");
+    expect(titleLine).toContain("🛡️46");
     expect(titleLine).toContain("`#2QG2C08UP`");
   });
 
@@ -706,13 +706,10 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.raidsCompleted).toBe(2);
 
     const overview = buildRaidDashboardOverviewDescription(rows);
-    expect(overview).toContain("11");
-    expect(overview).toMatch(/7\/9/);
-    expect(overview).toContain("24.5 att/raid");
+    expect(overview).toContain("- 🗡 11 🏠 7/9 📈 24.5 att/raid");
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
-    expect(overview).toContain("Est. Offense ~1620 | Defense —");
+    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
     expect(overview).not.toContain("Total ~");
-    expect(overview).not.toContain("- ???");
   });
 
   it("renders the offensive overview line when intel is hidden after the first completed raid", () => {
@@ -724,15 +721,15 @@ describe("RaidDashboardService", () => {
         joinType: "closed",
         createdAt: new Date("2026-05-02T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:30:00.000Z"),
-        attacksCompleted: null,
+        attacksCompleted: 89,
         attacksMax: null,
         hasOngoingRaid: false,
         raidsCompleted: 1,
         defaultLayoutCount: 0,
         intelGradeScore: 0,
         maxDefenseAttacksUsed: null,
-        offensiveDistrictsDestroyed: null,
-        offensiveAverageAttacksPerCompletedRaid: null,
+        offensiveDistrictsDestroyed: 3,
+        offensiveAverageAttacksPerCompletedRaid: 24.5,
         raidIntelMarks: [
           { districtName: "Dragon Cliffs", layoutGrade: "CUSTOM_EASY" },
           { districtName: "Balloon Lagoon", layoutGrade: "CUSTOM_MEDIUM" },
@@ -741,8 +738,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- ???");
-    expect(overview).not.toContain("- ?? — ?? —/9 ?? — att/raid");
+    expect(overview).toContain("- 🗡 89 🏠 3/9 📈 24.5 att/raid");
     expect(overview).not.toContain("GM, SP, GQ");
   });
 
@@ -767,10 +763,10 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- ?? 0 ?? —/9 ?? — att/raid");
-    expect(overview).not.toContain("- ?? — ?? —/9 ?? — att/raid");
+    expect(overview).not.toContain("🗡");
+    expect(overview).not.toContain("🏠");
+    expect(overview).not.toContain("📈");
     expect(overview).not.toContain("att/raid");
-    expect(overview).not.toContain("??");
   });
 
   it("hides the medal estimate when only defensive medals are known", () => {
@@ -803,7 +799,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("??");
+    expect(overview).not.toContain("🏅");
     expect(overview).not.toContain("Defense 120");
   });
 
@@ -1347,8 +1343,8 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).toContain("Charlie Raid");
-    expect(overview).not.toContain("??");
-    expect(overview).not.toContain("??");
+    const titleLine = overview.split("\n").find((line) => line.includes("Charlie Raid"));
+    expect(titleLine).toBe("Charlie Raid `2XYZ12345`");
   });
 
   it("parses compact Clash raid timestamps and selects the active season", async () => {
@@ -2243,7 +2239,7 @@ describe("RaidDashboardService", () => {
     expect(enemyLine).toMatch(/\[Enemy Clan\]/);
     expect(enemyLine).toContain("`#2QG2C08UR`");
     expect(enemyLine).toContain("— 1 districts remaining");
-    expect(enemyLine).not.toContain("??");
+    expect(enemyLine?.startsWith("- 🛡️ [Enemy Clan]")).toBe(true);
     expect(enemyLine?.startsWith("  -")).toBe(false);
   });
 
@@ -2286,7 +2282,7 @@ describe("RaidDashboardService", () => {
     expect(pendingLine).toContain("[Pending Clan]");
     expect(pendingLine).toContain("`#2PQQQ`");
     expect(pendingLine).not.toContain("districts remaining");
-    expect(pendingLine).not.toContain("??");
+    expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
     expect(pendingLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Completed Clan");
@@ -2850,7 +2846,9 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | ???");
+    expect(description.split("\n").find((line) => line.startsWith("Tracked clan:"))).toBe(
+      "Tracked clan: [Alpha Raid](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+    );
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("### [Defender One](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UQ>)");
     expect(description).toContain("`#2QG2C08UQ` |");
@@ -2918,7 +2916,9 @@ describe("RaidDashboardService", () => {
 
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("No defender intel available yet.");
-    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | ???");
+    expect(description.split("\n").find((line) => line.startsWith("Tracked clan:"))).toBe(
+      "Tracked clan: [Alpha Raid](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+    );
   });
 
   it("renders a clean empty message when no active raid weekend data is available", async () => {
