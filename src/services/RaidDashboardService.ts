@@ -595,6 +595,7 @@ function isRaidCapitalPeakDistrict(name: string): boolean {
 function buildRaidDashboardMedalEstimate(input: {
   attackSections: RaidDashboardAttackSection[];
   attacksCompleted: number | null;
+  defensiveMedals: number | null;
 }): RaidMedalEstimate | null {
   if ((input.attacksCompleted ?? 0) <= 0) {
     return null;
@@ -619,7 +620,7 @@ function buildRaidDashboardMedalEstimate(input: {
     destroyedDistrictHallLevels,
     destroyedCapitalHallLevels,
     totalClanOffensiveAttacksUsed: input.attacksCompleted ?? 0,
-    defensiveMedals: null,
+    defensiveMedals: input.defensiveMedals,
   });
 }
 
@@ -1549,6 +1550,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const raidMedalEstimate = buildRaidDashboardMedalEstimate({
       attackSections: snapshot.attackSections,
       attacksCompleted: snapshot.counts.attacksCompleted,
+      defensiveMedals: normalizeNonNegativeInt(snapshot.activeSeason?.defensiveReward),
     });
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(

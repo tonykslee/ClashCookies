@@ -828,6 +828,58 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("- 🏅 Offense ~1452 | Defense 120 | Total ~1572");
   });
 
+  it("uses defensiveReward from the active raid season for defensive medal estimates", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 6,
+          districtCount: 9,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      defensiveReward: 123,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
+    expect(overview).toContain("- 🏅 Offense ~1452 | Defense 123 | Total ~1575");
+  });
+
   it("still renders the offensive overview line for a started raid with zero cleared districts", () => {
     const overview = buildRaidDashboardOverviewDescription([
       {
