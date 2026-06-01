@@ -1,10 +1,11 @@
 import { prisma } from "../prisma";
+import { playerCurrentService } from "./PlayerCurrentService";
 import { formatPendingAge } from "./WeightInputDefermentService";
 import { normalizePlayerTag } from "./PlayerLinkService";
 
 export const ROSTER_MANAGE_WEIGHT_SOURCE = "ROSTER_MANAGE" as const;
 
-export type RosterWeightSource = "FWA" | "Manual" | "Unknown";
+export type RosterWeightSource = "FWA" | "Manual" | "PlayerCurrent" | "Unknown";
 
 export type ResolvedRosterCurrentWeightRecord = {
   playerTag: string;
@@ -91,7 +92,7 @@ export async function resolveRosterCurrentWeightRecords(input: {
     return result;
   }
 
-  const [catalogRows, trophiesRows, manualRows] = await Promise.all([
+  const [catalogRows, trophiesRows, manualRows, playerCurrentRows] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: normalizedTags } },
       select: {
@@ -116,6 +117,7 @@ export async function resolveRosterCurrentWeightRecords(input: {
         measuredAt: true,
       },
     }),
+    playerCurrentService.listPlayerCurrentByTags(normalizedTags),
   ]);
 
   const latestFwaByTag = new Map<string, { weight: number | null; measuredAt: Date }>();
@@ -146,9 +148,21 @@ export async function resolveRosterCurrentWeightRecords(input: {
     });
   }
 
+  const playerCurrentByTag = new Map<string, { weight: number | null; measuredAt: Date | null }>();
+  for (const [playerTag, row] of playerCurrentRows) {
+    if (!playerTag || playerCurrentByTag.has(playerTag)) continue;
+    const weight = normalizeRosterWeightValue(row.currentWeight);
+    if (weight === null || weight <= 0) continue;
+    playerCurrentByTag.set(playerTag, {
+      weight,
+      measuredAt: row.currentWeightMeasuredAt ?? null,
+    });
+  }
+
   for (const playerTag of normalizedTags) {
     const fwa = latestFwaByTag.get(playerTag) ?? null;
     const manual = manualByTag.get(playerTag) ?? null;
+    const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
     if (fwa && fwa.weight !== null && fwa.weight > 0) {
       result.set(playerTag, {
         playerTag,
@@ -165,6 +179,16 @@ export async function resolveRosterCurrentWeightRecords(input: {
         weight: manual.weight,
         weightSource: "Manual",
         weightMeasuredAt: manual.measuredAt,
+        trophies: trophiesByTag.get(playerTag) ?? null,
+      });
+      continue;
+    }
+    if (playerCurrent) {
+      result.set(playerTag, {
+        playerTag,
+        weight: playerCurrent.weight,
+        weightSource: "PlayerCurrent",
+        weightMeasuredAt: playerCurrent.measuredAt,
         trophies: trophiesByTag.get(playerTag) ?? null,
       });
       continue;

@@ -20,9 +20,23 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const playerCurrentServiceMock = vi.hoisted(() => ({
+  listPlayerCurrentByTags: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
+
+vi.mock("../src/services/PlayerCurrentService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/PlayerCurrentService")>(
+    "../src/services/PlayerCurrentService",
+  );
+  return {
+    ...actual,
+    playerCurrentService: playerCurrentServiceMock,
+  };
+});
 
 import {
   formatRosterWeightAge,
@@ -41,6 +55,7 @@ describe("RosterWeightService", () => {
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.upsert.mockResolvedValue({} as never);
     prismaMock.externalPlayerWeightCurrent.deleteMany.mockResolvedValue({ count: 0 });
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
   });
 
   it("parses accepted manual weight formats", () => {
@@ -158,6 +173,47 @@ describe("RosterWeightService", () => {
         trophies: null,
       });
       expect(formatRosterWeightAge(new Date("2026-04-21T09:00:00.000Z"))).toBe("1d 3h");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to PlayerCurrent shared current weight when FWA and manual sources are missing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-22T12:00:00.000Z"));
+    try {
+      prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+        {
+          playerTag: "#QGRJ2222",
+          trophies: 5400,
+        },
+      ]);
+      prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
+      playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+        new Map([
+          [
+            "#QGRJ2222",
+            {
+              playerTag: "#QGRJ2222",
+              currentWeight: 160000,
+              currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+            },
+          ],
+        ]),
+      );
+
+      const resolved = await resolveRosterCurrentWeightRecords({
+        playerTags: ["#QGRJ2222"],
+      });
+
+      expect(resolved.get("#QGRJ2222")).toEqual({
+        playerTag: "#QGRJ2222",
+        weight: 160000,
+        weightSource: "PlayerCurrent",
+        weightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+        trophies: 5400,
+      });
     } finally {
       vi.useRealTimers();
     }
