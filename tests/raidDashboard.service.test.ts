@@ -708,6 +708,8 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("🗡 11");
     expect(overview).toMatch(/🏠.*7\/9/);
     expect(overview).toContain("📈 24.5 att/raid");
+    expect(overview).toContain("- 🏅 Offense ~2772 | Defense —");
+    expect(overview).not.toContain("Total ~");
     expect(overview).not.toContain("- 🏘️");
   });
 
@@ -766,6 +768,7 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("- 🗡 0 🏠 —/9 📈 — att/raid");
     expect(overview).not.toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
     expect(overview).not.toContain("att/raid");
+    expect(overview).not.toContain("🏅");
   });
 
   it("still renders offense progress once attacks have started even with partial metrics", () => {
@@ -790,6 +793,39 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).toContain("- 🗡 1 🏠 —/9 📈 — att/raid");
+  });
+
+  it("renders raid medal total only when defensive medals are known", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+        attacksCompleted: 6,
+        attacksMax: 12,
+        hasOngoingRaid: true,
+        raidsCompleted: 0,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: 1,
+        offensiveAverageAttacksPerCompletedRaid: null,
+        raidMedalEstimate: {
+          offensiveBaseValue: 1450,
+          offensiveMedalsPerAttack: 242,
+          offensiveMedalsForSixAttacks: 1452,
+          defensiveMedals: 120,
+          totalEstimatedMedals: 1572,
+          confidence: "complete",
+          sourceNotes: [],
+        },
+      } as any,
+    ]);
+
+    expect(overview).toContain("- 🏅 Offense ~1452 | Defense 120 | Total ~1572");
   });
 
   it("still renders the offensive overview line for a started raid with zero cleared districts", () => {
