@@ -1682,6 +1682,123 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("Unknown District DH7 — 1 attacks");
   });
 
+  it("renders district attack hit details in the clan drilldown", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 4,
+      attacksMax: 18,
+      raidsCompleted: 0,
+    } as any;
+
+    const detail = {
+      activeSeason: { state: "ongoing" },
+      attackSections: [
+        {
+          defenderName: "Defender One",
+          defenderTag: "#DEF1",
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 4,
+              destructionPercent: 100,
+              stars: 3,
+              attacks: [
+                {
+                  attackerName: "Tilonius",
+                  attackerTag: "#ATTACK1",
+                  destructionPercent: 42,
+                  stars: 0,
+                  order: 1,
+                },
+                {
+                  attackerName: "Jess",
+                  attackerTag: "#ATTACK2",
+                  destructionPercent: 78,
+                  stars: 2,
+                  order: 2,
+                },
+                {
+                  attackerName: "Sugi",
+                  attackerTag: "#ATTACK3",
+                  destructionPercent: 100,
+                  stars: 3,
+                  order: 3,
+                },
+              ],
+            },
+            {
+              name: "Barbarian Camp",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 25,
+              stars: 0,
+            },
+          ],
+        },
+      ],
+      defenseSections: [],
+      raidsCompleted: 0,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, detail);
+    expect(description).toContain("Capital Peak MAX — 4 attacks");
+    expect(description).toContain("  - Tilonius 42%");
+    expect(description).toContain("  - Jess 78% ⭐⭐");
+    expect(description).toContain("  - Sugi 100% ⭐⭐⭐");
+    expect(description).toContain("Barbarian Camp MAX — 1 attack");
+  });
+
+  it("falls back to attacker tag when district attack name is missing", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: 1,
+      attacksMax: 18,
+      raidsCompleted: 0,
+    } as any;
+
+    const detail = {
+      activeSeason: { state: "ongoing" },
+      attackSections: [
+        {
+          defenderName: "Defender One",
+          defenderTag: "#DEF1",
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+              attacks: [
+                {
+                  attackerTag: "#TAGONLY",
+                  destructionPercent: 100,
+                  stars: 3,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseSections: [],
+      raidsCompleted: 0,
+    } as any;
+
+    const description = buildRaidDashboardSingleClanDescription(row, detail);
+    expect(description).toContain("  - #TAGONLY 100% ⭐⭐⭐");
+  });
+
   it("treats invalid raid timestamps as missing", async () => {
     expect(parseRaidSeasonTimeMs(null)).toBeNull();
     expect(parseRaidSeasonTimeMs("")).toBeNull();

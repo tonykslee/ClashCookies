@@ -130,6 +130,15 @@ export type RaidDashboardDistrictRow = {
   destructionPercent: number | null;
   stars: number | null;
   totalLooted: number | null;
+  attacks: RaidDashboardDistrictAttackRow[];
+};
+
+export type RaidDashboardDistrictAttackRow = {
+  attackerName: string | null;
+  attackerTag: string | null;
+  destructionPercent: number | null;
+  stars: number | null;
+  order: number | null;
 };
 
 export type RaidDashboardAttackSection = {
@@ -463,6 +472,54 @@ function normalizeRaidAttackerClanMetadata(input: unknown): RaidAttackerClanMeta
   };
 }
 
+function normalizeRaidDistrictAttackRow(raw: unknown): RaidDashboardDistrictAttackRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const attacker = value.attacker as { name?: unknown; tag?: unknown } | null | undefined;
+  const attackerName = normalizeDistrictName(attacker?.name ?? value.attackerName ?? value.name);
+  const attackerTag = normalizeRaidTrackedClanTag(String(attacker?.tag ?? value.attackerTag ?? value.tag ?? ""));
+  const destructionPercent = normalizeNonNegativeInt(
+    value.destructionPercentage ?? value.destructionPercent ?? value.destruction,
+  );
+  const stars = normalizeNonNegativeInt(value.stars);
+  const order = normalizePositiveInt(value.order ?? value.attackOrder ?? value.sequence ?? value.index);
+
+  if (!attackerName && !attackerTag && destructionPercent === null && stars === null) {
+    return null;
+  }
+
+  return {
+    attackerName,
+    attackerTag,
+    destructionPercent,
+    stars,
+    order,
+  };
+}
+
+function normalizeRaidDistrictAttackRows(value: Record<string, unknown>): RaidDashboardDistrictAttackRow[] {
+  const rawAttacks =
+    value.attackLog ??
+    value.attacksList ??
+    value.attackList ??
+    value.attackDetails ??
+    (Array.isArray(value.attacks) ? value.attacks : null);
+  if (!Array.isArray(rawAttacks)) {
+    return [];
+  }
+  return rawAttacks
+    .map((attack) => normalizeRaidDistrictAttackRow(attack))
+    .filter((attack): attack is RaidDashboardDistrictAttackRow => attack !== null)
+    .sort((left, right) => {
+      const leftOrder = left.order ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = right.order ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      const leftName = left.attackerName ?? left.attackerTag ?? "";
+      const rightName = right.attackerName ?? right.attackerTag ?? "";
+      return leftName.localeCompare(rightName);
+    });
+}
+
 function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
@@ -478,6 +535,7 @@ function normalizeRaidDistrictRow(raw: unknown): RaidDashboardDistrictRow | null
     ),
     stars: normalizeNonNegativeInt(value.stars),
     totalLooted: normalizeNonNegativeInt(value.totalLooted ?? value.looted),
+    attacks: normalizeRaidDistrictAttackRows(value),
   };
 }
 
@@ -838,6 +896,20 @@ function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
   return `${row.name}${hallSuffix} — ${attackCount}`;
 }
 
+function formatRaidDistrictAttackStars(stars: number | null): string {
+  if (stars === null || stars <= 0) {
+    return "";
+  }
+  return ` ${"⭐".repeat(Math.min(3, stars))}`;
+}
+
+function buildRaidDistrictAttackLabel(attack: RaidDashboardDistrictAttackRow): string {
+  const attacker = normalizeDistrictName(attack.attackerName) ??
+    (attack.attackerTag ? formatRaidTrackedClanTag(attack.attackerTag) : "Unknown attacker");
+  const destruction = attack.destructionPercent === null ? "—%" : `${attack.destructionPercent}%`;
+  return `${attacker} ${destruction}${formatRaidDistrictAttackStars(attack.stars)}`;
+}
+
 function buildRaidDetailDescription(input: {
   lines: RaidDetailLine[];
 }): string {
@@ -911,13 +983,20 @@ function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidD
     ];
   }
 
-  return [
-    { text: header, item: false },
-    ...section.districts.map((district) => ({
+  const lines: RaidDetailLine[] = [{ text: header, item: false }];
+  for (const district of section.districts) {
+    lines.push({
       text: `- ${buildRaidDistrictLabel(district)}`,
       item: true,
-    })),
-  ];
+    });
+    for (const attack of district.attacks ?? []) {
+      lines.push({
+        text: `  - ${buildRaidDistrictAttackLabel(attack)}`,
+        item: false,
+      });
+    }
+  }
+  return lines;
 }
 
 function buildRaidDefenseSectionSummaryText(section: RaidDashboardDefenseSection): string {
