@@ -708,7 +708,10 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("🗡 11");
     expect(overview).toMatch(/🏠.*7\/9/);
     expect(overview).toContain("📈 24.5 att/raid");
-    expect(overview).toContain("- 🏅 Offense ~2772 | Defense —");
+    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
+    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
+    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(570);
+    expect(overview).toContain("- 🏅 Offense ~570 | Defense —");
     expect(overview).not.toContain("Total ~");
     expect(overview).not.toContain("- 🏘️");
   });
@@ -878,6 +881,206 @@ describe("RaidDashboardService", () => {
 
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
     expect(overview).toContain("- 🏅 Offense ~1452 | Defense 123 | Total ~1575");
+  });
+
+  it("uses the raw live medal estimate for an early raid before projection is stable", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 2 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 2,
+          districtCount: 9,
+          districtsDestroyed: 2,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Barbarian Camp",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+            {
+              name: "Wizard Valley",
+              districtHallLevel: 5,
+              attackCount: 0,
+              destructionPercent: 0,
+              stars: 0,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+
+    expect(rows[0]?.raidMedalEstimateMode).toBe("raw");
+    expect(rows[0]?.projectedRaidMedalEstimate).toBeNull();
+    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(5730);
+    expect(overview).toContain("- 🏅 Offense ~5730 | Defense —");
+  });
+
+  it("projects a partial raid once enough districts are destroyed", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const destroyedDistrict = (name: string, districtHallLevel: number) => ({
+      name,
+      districtHallLevel,
+      attackCount: 2,
+      destructionPercent: 100,
+      stars: 3,
+    });
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }, { attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 12,
+          districtCount: 9,
+          districtsDestroyed: 6,
+          districts: [
+            destroyedDistrict("Capital Peak", 10),
+            destroyedDistrict("Barbarian Camp", 5),
+            destroyedDistrict("Wizard Valley", 5),
+            destroyedDistrict("Balloon Lagoon", 5),
+            destroyedDistrict("Dragon Cliffs", 5),
+            destroyedDistrict("Golem Quarry", 5),
+            {
+              name: "Skeleton Park",
+              districtHallLevel: 4,
+              attackCount: 0,
+              destructionPercent: 0,
+              stars: 0,
+            },
+            {
+              name: "Builders Workshop",
+              districtHallLevel: 5,
+              attackCount: 0,
+              destructionPercent: 0,
+              stars: 0,
+            },
+            {
+              name: "Goblin Mines",
+              districtHallLevel: 4,
+              attackCount: 0,
+              destructionPercent: 0,
+              stars: 0,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+
+    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
+    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1878);
+    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1674);
+    expect(overview).toContain("- 🏅 Offense ~1674 | Defense —");
+  });
+
+  it("keeps completed raid estimates stable when no partial raid is active", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Complete Raid", tag: "#DONE" },
+          attackCount: 6,
+          districtCount: 1,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+
+    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
+    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+    expect(overview).toContain("- 🏅 Offense ~1452 | Defense —");
   });
 
   it("still renders the offensive overview line for a started raid with zero cleared districts", () => {

@@ -19,6 +19,7 @@ import {
 } from "./RaidIntelDefenderProfileService";
 import {
   estimateRaidMedals,
+  type RaidMedalEstimatorInput,
   type RaidMedalEstimate,
 } from "./RaidMedalEstimator";
 import {
@@ -91,7 +92,10 @@ export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCoun
   maxDefenseAttacksUsed: number | null;
   offensiveDistrictsDestroyed: number | null;
   offensiveAverageAttacksPerCompletedRaid: number | null;
+  rawRaidMedalEstimate?: RaidMedalEstimate | null;
+  projectedRaidMedalEstimate?: RaidMedalEstimate | null;
   raidMedalEstimate?: RaidMedalEstimate | null;
+  raidMedalEstimateMode?: "raw" | "projected";
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
@@ -592,36 +596,196 @@ function isRaidCapitalPeakDistrict(name: string): boolean {
   return normalized === "capital peak" || normalized === "capital hall";
 }
 
+const RAID_MEDAL_PROJECTION_STABLE_DESTROYED_DISTRICTS = 6;
+const RAID_MEDAL_PROJECTION_FULL_RAID_DISTRICTS = 9;
+
+type RaidMedalLevelBuckets = Pick<
+  RaidMedalEstimatorInput,
+  "destroyedDistrictHallLevels" | "destroyedCapitalHallLevels"
+>;
+
+type RaidDashboardMedalEstimateBundle = {
+  raw: RaidMedalEstimate;
+  projected: RaidMedalEstimate | null;
+  displayed: RaidMedalEstimate;
+  mode: "raw" | "projected";
+};
+
+function emptyRaidMedalLevelBuckets(): RaidMedalLevelBuckets {
+  return {
+    destroyedDistrictHallLevels: [],
+    destroyedCapitalHallLevels: [],
+  };
+}
+
+function appendRaidMedalDistrictLevel(
+  buckets: RaidMedalLevelBuckets,
+  district: RaidDashboardDistrictRow,
+): void {
+  if (district.districtHallLevel === null) {
+    return;
+  }
+  if (isRaidCapitalPeakDistrict(district.name)) {
+    buckets.destroyedCapitalHallLevels.push(district.districtHallLevel);
+  } else {
+    buckets.destroyedDistrictHallLevels.push(district.districtHallLevel);
+  }
+}
+
+function appendRaidMedalDistrictLevels(input: {
+  buckets: RaidMedalLevelBuckets;
+  districts: RaidDashboardDistrictRow[];
+  onlyDestroyed: boolean;
+}): void {
+  for (const district of input.districts) {
+    if (input.onlyDestroyed && isDistrictFullyDestroyed(district) !== true) {
+      continue;
+    }
+    appendRaidMedalDistrictLevel(input.buckets, district);
+  }
+}
+
+function mergeRaidMedalLevelBuckets(
+  left: RaidMedalLevelBuckets,
+  right: RaidMedalLevelBuckets,
+): RaidMedalLevelBuckets {
+  return {
+    destroyedDistrictHallLevels: [
+      ...left.destroyedDistrictHallLevels,
+      ...right.destroyedDistrictHallLevels,
+    ],
+    destroyedCapitalHallLevels: [
+      ...left.destroyedCapitalHallLevels,
+      ...right.destroyedCapitalHallLevels,
+    ],
+  };
+}
+
+function normalizeRaidAttackLogEntryDistricts(
+  entry: Record<string, unknown>,
+): RaidDashboardDistrictRow[] {
+  return Array.isArray(entry.districts)
+    ? entry.districts
+        .map((district: unknown) => normalizeRaidDistrictRow(district))
+        .filter(
+          (district: RaidDashboardDistrictRow | null): district is RaidDashboardDistrictRow =>
+            district !== null,
+        )
+    : [];
+}
+
 function buildRaidDashboardMedalEstimate(input: {
-  attackSections: RaidDashboardAttackSection[];
+  attackLog: ClanCapitalRaidSeason["attackLog"];
   attacksCompleted: number | null;
   defensiveMedals: number | null;
-}): RaidMedalEstimate | null {
+}): RaidDashboardMedalEstimateBundle | null {
   if ((input.attacksCompleted ?? 0) <= 0) {
     return null;
   }
 
-  const destroyedDistrictHallLevels: number[] = [];
-  const destroyedCapitalHallLevels: number[] = [];
-  for (const section of input.attackSections) {
-    for (const district of section.districts) {
-      if (district.districtHallLevel === null || isDistrictFullyDestroyed(district) !== true) {
+  const rawBuckets = emptyRaidMedalLevelBuckets();
+  const completedBuckets = emptyRaidMedalLevelBuckets();
+  let completedRaidCount = 0;
+  let completedRaidAttacks = 0;
+  let currentRaid:
+    | {
+        allKnownBuckets: RaidMedalLevelBuckets;
+        destroyedCount: number;
+        attacks: number | null;
+      }
+    | null = null;
+
+  if (Array.isArray(input.attackLog)) {
+    for (const entry of input.attackLog) {
+      if (!entry || typeof entry !== "object") continue;
+      const value = entry as Record<string, unknown>;
+      const districts = normalizeRaidAttackLogEntryDistricts(value);
+      const state = normalizeRaidAttackLogEntryState(value);
+      const attackCount = calculateAttackCountFromRaidLogEntry(value, districts);
+
+      appendRaidMedalDistrictLevels({
+        buckets: rawBuckets,
+        districts,
+        onlyDestroyed: true,
+      });
+
+      if (state.complete === true && attackCount !== null) {
+        completedRaidCount += 1;
+        completedRaidAttacks += attackCount;
+        appendRaidMedalDistrictLevels({
+          buckets: completedBuckets,
+          districts,
+          onlyDestroyed: true,
+        });
         continue;
       }
-      if (isRaidCapitalPeakDistrict(district.name)) {
-        destroyedCapitalHallLevels.push(district.districtHallLevel);
-      } else {
-        destroyedDistrictHallLevels.push(district.districtHallLevel);
+
+      if (currentRaid === null && state.started && state.complete === false) {
+        const allKnownBuckets = emptyRaidMedalLevelBuckets();
+        appendRaidMedalDistrictLevels({
+          buckets: allKnownBuckets,
+          districts,
+          onlyDestroyed: false,
+        });
+        currentRaid = {
+          allKnownBuckets,
+          destroyedCount: districts.reduce(
+            (sum, district) => sum + (isDistrictFullyDestroyed(district) === true ? 1 : 0),
+            0,
+          ),
+          attacks: attackCount,
+        };
       }
     }
   }
 
-  return estimateRaidMedals({
-    destroyedDistrictHallLevels,
-    destroyedCapitalHallLevels,
+  const raw = estimateRaidMedals({
+    ...rawBuckets,
     totalClanOffensiveAttacksUsed: input.attacksCompleted ?? 0,
     defensiveMedals: input.defensiveMedals,
   });
+
+  const averageCompletedRaidAttacks =
+    completedRaidCount > 0 && completedRaidAttacks > 0
+      ? completedRaidAttacks / completedRaidCount
+      : null;
+  let projected: RaidMedalEstimate | null = null;
+  if (averageCompletedRaidAttacks !== null) {
+    const projectedBuckets = currentRaid
+      ? mergeRaidMedalLevelBuckets(completedBuckets, currentRaid.allKnownBuckets)
+      : completedBuckets;
+    const projectedAttacks = completedRaidAttacks + (currentRaid ? averageCompletedRaidAttacks : 0);
+    projected = estimateRaidMedals({
+      ...projectedBuckets,
+      totalClanOffensiveAttacksUsed: Math.max(1, Math.round(projectedAttacks)),
+      defensiveMedals: input.defensiveMedals,
+    });
+  } else if (
+    currentRaid !== null &&
+    currentRaid.attacks !== null &&
+    currentRaid.attacks > 0 &&
+    currentRaid.destroyedCount >= RAID_MEDAL_PROJECTION_STABLE_DESTROYED_DISTRICTS
+  ) {
+    const projectedAttacks = Math.max(
+      currentRaid.attacks,
+      Math.round(
+        currentRaid.attacks *
+          (RAID_MEDAL_PROJECTION_FULL_RAID_DISTRICTS / Math.max(1, currentRaid.destroyedCount)),
+      ),
+    );
+    projected = estimateRaidMedals({
+      ...currentRaid.allKnownBuckets,
+      totalClanOffensiveAttacksUsed: projectedAttacks,
+      defensiveMedals: input.defensiveMedals,
+    });
+  }
+
+  return {
+    raw,
+    projected,
+    displayed: projected ?? raw,
+    mode: projected ? "projected" : "raw",
+  };
 }
 
 function formatRaidDashboardAverageAttacksPerCompletedRaid(value: number | null): string {
@@ -1547,8 +1711,8 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const offensiveAverageAttacksPerCompletedRaid = calculateAverageAttacksPerCompletedRaid(
       snapshot.activeSeason?.attackLog,
     );
-    const raidMedalEstimate = buildRaidDashboardMedalEstimate({
-      attackSections: snapshot.attackSections,
+    const raidMedalEstimateBundle = buildRaidDashboardMedalEstimate({
+      attackLog: snapshot.activeSeason?.attackLog,
       attacksCompleted: snapshot.counts.attacksCompleted,
       defensiveMedals: normalizeNonNegativeInt(snapshot.activeSeason?.defensiveReward),
     });
@@ -1566,7 +1730,10 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       maxDefenseAttacksUsed,
       offensiveDistrictsDestroyed,
       offensiveAverageAttacksPerCompletedRaid,
-      raidMedalEstimate,
+      rawRaidMedalEstimate: raidMedalEstimateBundle?.raw ?? null,
+      projectedRaidMedalEstimate: raidMedalEstimateBundle?.projected ?? null,
+      raidMedalEstimate: raidMedalEstimateBundle?.displayed ?? null,
+      raidMedalEstimateMode: raidMedalEstimateBundle?.mode ?? "raw",
       intelGradeScore,
       raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
