@@ -5133,6 +5133,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       maxAccountsPerUser: true,
       minTownhall: true,
       maxTownhall: true,
+      minimumWeight: true,
       requiredSignupRoleId: true,
       noRoleSignupLimit: true,
       rosterRoleId: true,
@@ -6259,6 +6260,7 @@ export class RosterService {
     maxAccountsPerUser?: number | null;
     minTownhall?: number | null;
     maxTownhall?: number | null;
+    minimumWeight?: number | null;
     requiredSignupRoleId?: string | null;
     noRoleSignupLimit?: number | null;
     rosterRoleId?: string | null;
@@ -9111,6 +9113,7 @@ export class RosterService {
         maxAccountsPerUser: true,
         minTownhall: true,
         maxTownhall: true,
+        minimumWeight: true,
         requiredSignupRoleId: true,
         noRoleSignupLimit: true,
         allowMultiSignup: true,

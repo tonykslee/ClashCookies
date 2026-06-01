@@ -394,7 +394,7 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
       : "Some selected accounts do not meet the minimum weight requirement.";
   }
   if (result.outcome === "signup_role_required") {
-    return `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`; 
+    return `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`;
   }
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";
