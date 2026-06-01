@@ -826,11 +826,12 @@ function buildRaidDashboardOverviewMedalLine(row: RaidDashboardClanRow): string 
   }
 
   const defensiveText = estimate.defensiveMedals === null ? "—" : String(estimate.defensiveMedals);
+  const modeText = row.raidMedalEstimateMode === "projected" ? "projected" : "live";
   const totalText =
     estimate.totalEstimatedMedals === null
       ? ""
       : ` | Total ~${estimate.totalEstimatedMedals}`;
-  return `- 🏅 Offense ~${estimate.offensiveMedalsForSixAttacks} | Defense ${defensiveText}${totalText}`;
+  return `- 🏅 Offense ~${estimate.offensiveMedalsForSixAttacks} ${modeText} | Defense ${defensiveText}${totalText}`;
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
