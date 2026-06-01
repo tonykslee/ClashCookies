@@ -595,7 +595,8 @@ describe("/raids command", () => {
       tag: "#2RVGJYLC0, 2QG2C08UP #2RVGJYLC0 BADTAG",
     });
 
-    await Raids.run({} as any, interaction as any, {} as any);
+    const cocService = {};
+    await Raids.run({} as any, interaction as any, cocService as any);
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(prismaMock.raidRosterMember.createMany).toHaveBeenCalledWith({
@@ -632,11 +633,13 @@ describe("/raids command", () => {
       subcommand: "status",
     });
 
-    await Raids.run({} as any, interaction as any, {} as any);
+    const cocService = {};
+    await Raids.run({} as any, interaction as any, cocService as any);
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(raidRosterServiceMock.listRaidRosterStatusRowsForGuild).toHaveBeenCalledWith({
       guildId: "guild-1",
+      cocService,
     });
     expect(raidRosterServiceMock.buildRaidRosterStatusEmbeds).toHaveBeenCalledWith(
       [

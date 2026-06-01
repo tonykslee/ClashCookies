@@ -15,6 +15,7 @@ const prismaMock = vi.hoisted(() => ({
 
 const todoSnapshotServiceMock = vi.hoisted(() => ({
   listSnapshotsByPlayerTags: vi.fn(),
+  refreshSnapshotsForPlayerTags: vi.fn(),
 }));
 
 const playerCurrentServiceMock = vi.hoisted(() => ({
@@ -50,6 +51,7 @@ describe("RaidRosterService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({ playerCount: 0, updatedCount: 0 });
     playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
   });
 
@@ -189,6 +191,76 @@ describe("RaidRosterService", () => {
         completedRaidAttacks: 0,
       },
     ]);
+  });
+
+  it("refreshes todo snapshots before building roster status rows", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0" },
+    ]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValueOnce({
+      playerCount: 1,
+      updatedCount: 1,
+    });
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Live Alpha",
+        townHall: 16,
+        raidAttacksUsed: 6,
+      },
+    ]);
+    const cocService = { getPlayerRaw: vi.fn() };
+
+    const rows = await listRaidRosterStatusRowsForGuild({
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(todoSnapshotServiceMock.refreshSnapshotsForPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#2RVGJYLC0"],
+      cocService,
+    });
+    expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).toHaveBeenCalledWith({
+      playerTags: ["#2RVGJYLC0"],
+    });
+    expect(rows).toEqual([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Live Alpha",
+        townHall: 16,
+        discordUserId: null,
+        completedRaidAttacks: 6,
+      },
+    ]);
+  });
+
+  it("renders best-effort roster status rows when snapshot refresh fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0" },
+    ]);
+    todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockRejectedValueOnce(new Error("upstream down"));
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Saved Alpha",
+        townHall: 15,
+        raidAttacksUsed: 2,
+      },
+    ]);
+
+    const rows = await listRaidRosterStatusRowsForGuild({
+      guildId: "guild-1",
+      cocService: {} as any,
+    });
+
+    expect(rows[0]).toMatchObject({
+      playerName: "Saved Alpha",
+      townHall: 15,
+      completedRaidAttacks: 2,
+    });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status_snapshot_refresh_failed"));
+    warnSpy.mockRestore();
   });
 
   it("renders raid roster status lines and paginates large outputs", () => {
