@@ -32,6 +32,7 @@ import {
   resolveRosterCurrentWeightRecords,
   type RosterWeightSource,
 } from "./RosterWeightService";
+import { loadCwlRosterSignupConflictLookup } from "./RosterSignupConflictService";
 import {
   PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
   playerCurrentService,
@@ -1011,6 +1012,15 @@ function normalizeRosterText(input: string | null | undefined): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function formatRosterSignupConflictTitle(input: string | null | undefined): string {
+  const normalized = normalizeRosterText(input ?? null);
+  if (!normalized) {
+    return "Another CWL roster";
+  }
+  const maxLength = 56;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized;
 }
 
 function isTagLikeRosterPlayerName(input: string | null | undefined): boolean {
@@ -3834,6 +3844,14 @@ async function loadRosterSelectionOptions(input: {
       select: { playerTag: true },
     });
     const existingTags = new Set(existing.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean));
+    const signupConflictLookup =
+      roster.rosterType === "CWL"
+        ? await loadCwlRosterSignupConflictLookup({
+            guildId: roster.guildId,
+            currentRosterId: roster.id,
+            playerTags: linkedTags,
+          })
+        : new Map<string, { playerTag: string; conflictingRosterId: string; conflictingRosterTitle: string }>();
     const minTownhall = normalizeRosterInt(roster.minTownhall);
     const maxTownhall = normalizeRosterInt(roster.maxTownhall);
     const townHallGated = minTownhall !== null || maxTownhall !== null;
@@ -3883,11 +3901,20 @@ async function loadRosterSelectionOptions(input: {
       group: selectedGroup,
       groups,
       selectedGroupKey: selectedGroup?.key ?? null,
-      options: signupOptions.map((account) => ({
-        value: account.playerTag,
-        label: account.linkedName ?? account.playerTag,
-        description: `${account.playerTag}${existingTags.has(account.playerTag) ? " | already signed up" : " | available"}`,
-      })),
+      options: signupOptions.map((account) => {
+        const playerTag = normalizePlayerTag(account.playerTag) ?? account.playerTag;
+        const alreadySignedUp = existingTags.has(playerTag);
+        const conflict = signupConflictLookup.get(playerTag) ?? null;
+        return {
+          value: account.playerTag,
+          label: account.linkedName ?? account.playerTag,
+          description: alreadySignedUp
+            ? `${playerTag} | already signed up`
+            : conflict
+              ? `📝 ${formatRosterSignupConflictTitle(conflict.conflictingRosterTitle)}`
+              : `${playerTag} | available`,
+        };
+      }),
       emptyStateMessage,
     };
   }
