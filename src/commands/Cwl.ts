@@ -381,6 +381,18 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
         )}.`
       : "Some selected accounts do not meet the town hall requirements.";
   }
+  if (result.outcome === "minimum_weight_unavailable") {
+    return result.blockedAccounts.length > 0
+      ? `Minimum weight could not be determined for: ${formatRosterAccountIdentityList(result.blockedAccounts)}.`
+      : "Minimum weight could not be determined for some selected accounts.";
+  }
+  if (result.outcome === "minimum_weight_below_minimum") {
+    return result.blockedAccounts.length > 0
+      ? `Some selected accounts do not meet the minimum weight requirement: ${formatRosterAccountIdentityList(
+          result.blockedAccounts,
+        )}.`
+      : "Some selected accounts do not meet the minimum weight requirement.";
+  }
   if (result.outcome === "signup_role_required") {
     return `This roster requires <@&${result.requiredSignupRoleId}>. The no-role signup allowance has already been used.`;
   }

@@ -34,6 +34,11 @@ import {
 } from "./RosterWeightService";
 import { loadCwlRosterSignupConflictLookup } from "./RosterSignupConflictService";
 import {
+  formatRosterSignupWeightGateDescription,
+  loadRosterSignupMinimumWeightLookup,
+  type RosterSignupWeightGateRecord,
+} from "./RosterSignupWeightService";
+import {
   PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
   playerCurrentService,
 } from "./PlayerCurrentService";
@@ -117,6 +122,7 @@ export type RosterRecord = {
   maxAccountsPerUser: number | null;
   minTownhall: number | null;
   maxTownhall: number | null;
+  minimumWeight: number | null;
   requiredSignupRoleId: string | null;
   noRoleSignupLimit: number;
   rosterRoleId: string | null;
@@ -439,6 +445,7 @@ const ROSTER_RECORD_SELECT = {
   maxAccountsPerUser: true,
   minTownhall: true,
   maxTownhall: true,
+  minimumWeight: true,
   requiredSignupRoleId: true,
   noRoleSignupLimit: true,
   rosterRoleId: true,
@@ -473,6 +480,7 @@ export type CreateRosterInput = {
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
   maxTownhall?: number | null;
+  minimumWeight?: number | null;
   requiredSignupRoleId?: string | null;
   noRoleSignupLimit?: number | null;
   rosterRoleId?: string | null;
@@ -553,6 +561,36 @@ export type SignupLinkedAccountsResult =
       missingLinkedTags: string[];
       blockedTags: string[];
       blockedAccounts: RosterAccountIdentity[];
+    }
+  | {
+      outcome: "minimum_weight_unavailable";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+      minimumWeight: number;
+    }
+  | {
+      outcome: "minimum_weight_below_minimum";
+      rosterId: string;
+      groupKey: string;
+      groupName: string | null;
+      requestedTags: string[];
+      linkedTags: string[];
+      createdTags: string[];
+      createdAccounts: RosterAccountIdentity[];
+      duplicateTags: string[];
+      missingLinkedTags: string[];
+      blockedTags: string[];
+      blockedAccounts: RosterAccountIdentity[];
+      minimumWeight: number;
     }
   | {
       outcome: "roster_conflict";
@@ -1483,6 +1521,7 @@ type RosterRecordLike = {
   maxAccountsPerUser: number | null;
   minTownhall: number | null;
   maxTownhall: number | null;
+  minimumWeight: number | null;
   requiredSignupRoleId: string | null;
   noRoleSignupLimit: number;
   rosterRoleId: string | null;
@@ -1518,6 +1557,7 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     maxAccountsPerUser: row.maxAccountsPerUser,
     minTownhall: row.minTownhall,
     maxTownhall: row.maxTownhall,
+    minimumWeight: normalizeRosterInt((row as { minimumWeight?: unknown }).minimumWeight ?? null),
     requiredSignupRoleId: row.requiredSignupRoleId,
     noRoleSignupLimit: Number.isFinite(Number(row.noRoleSignupLimit)) ? Math.max(0, Math.trunc(Number(row.noRoleSignupLimit))) : 0,
     rosterRoleId: row.rosterRoleId,
@@ -3854,6 +3894,7 @@ async function loadRosterSelectionOptions(input: {
         : new Map<string, { playerTag: string; conflictingRosterId: string; conflictingRosterTitle: string }>();
     const minTownhall = normalizeRosterInt(roster.minTownhall);
     const maxTownhall = normalizeRosterInt(roster.maxTownhall);
+    const minimumWeight = normalizeRosterInt(roster.minimumWeight);
     const townHallGated = minTownhall !== null || maxTownhall !== null;
     const resolvedPlayersByTag = townHallGated
       ? await playerCurrentService.resolveCurrentPlayersForTags({
@@ -3889,6 +3930,14 @@ async function loadRosterSelectionOptions(input: {
       }
       return true;
     });
+    const selectionAccounts = townHallGated ? signupOptions : linkedAccounts;
+    const minimumWeightLookup =
+      minimumWeight !== null && selectionAccounts.length > 0
+        ? await loadRosterSignupMinimumWeightLookup({
+            playerTags: selectionAccounts.map((account) => account.playerTag),
+            minimumWeight,
+          })
+        : new Map<string, RosterSignupWeightGateRecord>();
     const emptyStateMessage =
       townHallGated && linkedAccounts.length > 0 && signupOptions.length <= 0
         ? filteredOutReasons.unknown > 0
@@ -3901,10 +3950,11 @@ async function loadRosterSelectionOptions(input: {
       group: selectedGroup,
       groups,
       selectedGroupKey: selectedGroup?.key ?? null,
-      options: signupOptions.map((account) => {
+      options: selectionAccounts.map((account) => {
         const playerTag = normalizePlayerTag(account.playerTag) ?? account.playerTag;
         const alreadySignedUp = existingTags.has(playerTag);
         const conflict = signupConflictLookup.get(playerTag) ?? null;
+        const weightGateRecord = minimumWeight !== null ? minimumWeightLookup.get(playerTag) ?? null : null;
         return {
           value: account.playerTag,
           label: account.linkedName ?? account.playerTag,
@@ -3912,7 +3962,9 @@ async function loadRosterSelectionOptions(input: {
             ? `${playerTag} | already signed up`
             : conflict
               ? `📝 ${formatRosterSignupConflictTitle(conflict.conflictingRosterTitle)}`
-              : `${playerTag} | available`,
+              : weightGateRecord
+                ? `${playerTag} | ${formatRosterSignupWeightGateDescription(weightGateRecord)}`
+                : `${playerTag} | available`,
         };
       }),
       emptyStateMessage,
@@ -4910,6 +4962,9 @@ async function buildRosterSignupPayloadFromView(
   if (view.roster.minTownhall !== null && view.roster.minTownhall !== undefined) {
     summaryParts.push(`Min. TH ${minTownHallLabel}`);
   }
+  if (view.roster.minimumWeight !== null && view.roster.minimumWeight !== undefined) {
+    summaryParts.push(`Min. Weight: ${formatRosterBoardWeightValue(view.roster.minimumWeight) ?? "-"}`);
+  }
   if (view.roster.maxTownhall !== null && view.roster.maxTownhall !== undefined) {
     summaryParts.push(`Max. TH ${String(view.roster.maxTownhall)}`);
   }
@@ -5078,6 +5133,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       maxAccountsPerUser: true,
       minTownhall: true,
       maxTownhall: true,
+      minimumWeight: true,
       requiredSignupRoleId: true,
       noRoleSignupLimit: true,
       rosterRoleId: true,
@@ -5704,6 +5760,7 @@ export class RosterService {
     const maxAccountsPerUser = normalizeRosterInt(input.maxAccountsPerUser);
     const minTownhall = normalizeRosterInt(input.minTownhall);
     const maxTownhall = normalizeRosterInt(input.maxTownhall);
+    const minimumWeight = normalizeRosterInt(input.minimumWeight);
     const requiredSignupRoleId = normalizeRosterRoleId(input.requiredSignupRoleId);
     const noRoleSignupLimit = normalizeRosterNonNegativeInt(input.noRoleSignupLimit) ?? 0;
     const rosterRoleId = normalizeRosterRoleId(input.rosterRoleId);
@@ -5744,6 +5801,7 @@ export class RosterService {
           maxAccountsPerUser,
           minTownhall,
           maxTownhall,
+          minimumWeight,
           requiredSignupRoleId,
           noRoleSignupLimit,
           rosterRoleId,
@@ -6202,6 +6260,7 @@ export class RosterService {
     maxAccountsPerUser?: number | null;
     minTownhall?: number | null;
     maxTownhall?: number | null;
+    minimumWeight?: number | null;
     requiredSignupRoleId?: string | null;
     noRoleSignupLimit?: number | null;
     rosterRoleId?: string | null;
@@ -6266,6 +6325,9 @@ export class RosterService {
     }
     if (input.maxTownhall !== undefined) {
       data.maxTownhall = normalizeRosterInt(input.maxTownhall);
+    }
+    if (input.minimumWeight !== undefined) {
+      data.minimumWeight = normalizeRosterInt(input.minimumWeight);
     }
     if (input.requiredSignupRoleId !== undefined) {
       data.requiredSignupRoleId = normalizeRosterRoleId(input.requiredSignupRoleId);
@@ -9051,6 +9113,7 @@ export class RosterService {
         maxAccountsPerUser: true,
         minTownhall: true,
         maxTownhall: true,
+        minimumWeight: true,
         requiredSignupRoleId: true,
         noRoleSignupLimit: true,
         allowMultiSignup: true,
@@ -9355,6 +9418,75 @@ export class RosterService {
           blockedTags: conflictingTags,
           conflictingRosterIds: [...new Set(conflictingRows.map((row) => row.rosterId))],
         };
+      }
+
+      const minimumWeight = normalizeRosterInt(roster.minimumWeight);
+      if (minimumWeight !== null && createdCandidates.length > 0) {
+        const weightLookup = await loadRosterSignupMinimumWeightLookup({
+          playerTags: createdCandidates,
+          minimumWeight,
+        });
+        const blockedUnavailableTags: string[] = [];
+        const blockedUnavailableAccounts: RosterAccountIdentity[] = [];
+        const blockedBelowMinimumTags: string[] = [];
+        const blockedBelowMinimumAccounts: RosterAccountIdentity[] = [];
+        for (const tag of createdCandidates) {
+          const blockedAccount = {
+            playerTag: tag,
+            playerName: resolveBestRosterPlayerName({
+              playerTag: tag,
+              rosterPlayerName: null,
+              playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(tag) ?? null,
+              fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(tag) ?? null,
+              snapshotPlayerName: linkedNameSources?.snapshotByTag.get(tag)?.playerName ?? null,
+              playerLinkPlayerName: linkedNameSources?.linkByTag.get(tag)?.playerName ?? null,
+            }),
+          };
+          const weightRecord = weightLookup.get(tag) ?? null;
+          if (!weightRecord || weightRecord.status === "unavailable") {
+            blockedUnavailableTags.push(tag);
+            blockedUnavailableAccounts.push(blockedAccount);
+            continue;
+          }
+          if (weightRecord.status === "below_minimum") {
+            blockedBelowMinimumTags.push(tag);
+            blockedBelowMinimumAccounts.push(blockedAccount);
+          }
+        }
+        if (blockedUnavailableTags.length > 0) {
+          return {
+            outcome: "minimum_weight_unavailable",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: blockedUnavailableTags,
+            blockedAccounts: blockedUnavailableAccounts,
+            minimumWeight,
+          };
+        }
+        if (blockedBelowMinimumTags.length > 0) {
+          return {
+            outcome: "minimum_weight_below_minimum",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+            blockedTags: blockedBelowMinimumTags,
+            blockedAccounts: blockedBelowMinimumAccounts,
+            minimumWeight,
+          };
+        }
       }
     }
 
