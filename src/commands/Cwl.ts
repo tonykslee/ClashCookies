@@ -26,6 +26,7 @@ import {
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../services/RosterService";
+import { showRosterMutationApplyingState } from "../services/RosterInteractionStateService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { cwlRotationService } from "../services/CwlRotationService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
@@ -3764,9 +3765,8 @@ export async function handleRosterSelectionActionButtonInteraction(
     return;
   }
 
-  const deferred = await interaction.deferUpdate().then(() => true).catch(() => false);
   const sendSelectionResponse = async (content: string): Promise<void> => {
-    if (deferred) {
+    if (interaction.replied || interaction.deferred) {
       await interaction
         .editReply({
           content,
@@ -3785,6 +3785,7 @@ export async function handleRosterSelectionActionButtonInteraction(
       .catch(() => undefined);
   };
 
+  await showRosterMutationApplyingState(interaction);
   const result = await rosterService.confirmRosterSelectionPanel({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,

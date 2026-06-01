@@ -33,7 +33,6 @@ import {
   handleRosterPostChangeRosterTargetGroupSelectInteraction,
   handleRosterPostChangeRosterTargetRosterSelectInteraction,
   handleRosterManageActionButtonInteraction,
-  handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
   handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
@@ -1820,7 +1819,7 @@ describe("/roster command", () => {
     );
   });
 
-  it("does not sync roster roles when the interactive manage flow confirms", async () => {
+  it("disables the manage panel while the interactive manage flow confirms", async () => {
     const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments");
     (rosterService.confirmRosterManageSession as any).mockResolvedValue({
       outcome: "completed",
@@ -1837,7 +1836,11 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
+      message: {
+        components: makeRosterMutationPanelComponents("roster-manage:action:confirm:session-1"),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       client: {
@@ -1853,6 +1856,20 @@ describe("/roster command", () => {
       expect.objectContaining({
         sessionId: "session-1",
         discordUserId: "111111111111111111",
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(syncSpy).not.toHaveBeenCalled();
