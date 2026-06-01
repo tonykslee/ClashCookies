@@ -708,10 +708,8 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("🗡 11");
     expect(overview).toMatch(/🏠.*7\/9/);
     expect(overview).toContain("📈 24.5 att/raid");
-    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
-    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
-    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(570);
-    expect(overview).toContain("- 🏅 Offense ~570 | Defense —");
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
+    expect(overview).toContain("- 🏅 Est. Offense ~2772 | Defense —");
     expect(overview).not.toContain("Total ~");
     expect(overview).not.toContain("- 🏘️");
   });
@@ -774,6 +772,40 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("🏅");
   });
 
+  it("hides the medal estimate when only defensive medals are known", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: 0,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 1,
+        defaultLayoutCount: 0,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        offensiveDistrictsDestroyed: null,
+        offensiveAverageAttacksPerCompletedRaid: null,
+        raidMedalEstimate: {
+          offensiveBaseValue: 0,
+          offensiveMedalsPerAttack: null,
+          offensiveMedalsForSixAttacks: null,
+          defensiveMedals: 120,
+          totalEstimatedMedals: null,
+          confidence: "insufficient_offense",
+          sourceNotes: [],
+        },
+      } as any,
+    ]);
+
+    expect(overview).not.toContain("🏅");
+    expect(overview).not.toContain("Defense 120");
+  });
+
   it("still renders offense progress once attacks have started even with partial metrics", () => {
     const overview = buildRaidDashboardOverviewDescription([
       {
@@ -828,7 +860,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- 🏅 Offense ~1452 | Defense 120 | Total ~1572");
+    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense 120 | Total ~1572");
   });
 
   it("uses defensiveReward from the active raid season for defensive medal estimates", async () => {
@@ -880,10 +912,10 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
-    expect(overview).toContain("- 🏅 Offense ~1452 | Defense 123 | Total ~1575");
+    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense 123 | Total ~1575");
   });
 
-  it("uses the raw live medal estimate for an early raid before projection is stable", async () => {
+  it("uses the current-state medal estimate for an early raid", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2QG2C08UP",
@@ -944,13 +976,11 @@ describe("RaidDashboardService", () => {
     });
     const overview = buildRaidDashboardOverviewDescription(rows);
 
-    expect(rows[0]?.raidMedalEstimateMode).toBe("raw");
-    expect(rows[0]?.projectedRaidMedalEstimate).toBeNull();
-    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(5730);
-    expect(overview).toContain("- 🏅 Offense ~5730 | Defense —");
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(5730);
+    expect(overview).toContain("- 🏅 Est. Offense ~5730 | Defense —");
   });
 
-  it("projects a partial raid once enough districts are destroyed", async () => {
+  it("keeps partial raid estimates based only on already destroyed districts", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2QG2C08UP",
@@ -1024,13 +1054,11 @@ describe("RaidDashboardService", () => {
     });
     const overview = buildRaidDashboardOverviewDescription(rows);
 
-    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
-    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1878);
-    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1674);
-    expect(overview).toContain("- 🏅 Offense ~1674 | Defense —");
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1878);
+    expect(overview).toContain("- 🏅 Est. Offense ~1878 | Defense —");
   });
 
-  it("keeps completed raid estimates stable when no partial raid is active", async () => {
+  it("uses current-state estimates for completed raids", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
         clanTag: "2QG2C08UP",
@@ -1077,10 +1105,8 @@ describe("RaidDashboardService", () => {
     });
     const overview = buildRaidDashboardOverviewDescription(rows);
 
-    expect(rows[0]?.raidMedalEstimateMode).toBe("projected");
-    expect(rows[0]?.rawRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
-    expect(rows[0]?.projectedRaidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
-    expect(overview).toContain("- 🏅 Offense ~1452 | Defense —");
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense —");
   });
 
   it("still renders the offensive overview line for a started raid with zero cleared districts", () => {
