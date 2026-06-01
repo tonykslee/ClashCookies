@@ -114,6 +114,33 @@ model RaidIntelDefenderProfile {
   @@index([guildId, defenderTag])
 }
 
+model RaidDistrictHitHistory {
+  id                              Int      @id @default(autoincrement())
+  guildId                         String
+  sourceClanTag                   String   @db.VarChar(16)
+  raidSeasonStartTime             DateTime
+  defenderTag                     String   @db.VarChar(16)
+  defenderName                    String?
+  districtName                    String
+  districtHallLevel               Int?
+  attackOrder                     Int
+  attackerTag                     String   @db.VarChar(16)
+  attackerName                    String?
+  destructionPercent              Int?
+  stars                           Int?
+  districtFinalAttackCount        Int?
+  districtFinalDestructionPercent Int?
+  districtFinalStars              Int?
+  observedAt                      DateTime
+  createdAt                       DateTime @default(now())
+  updatedAt                       DateTime @updatedAt
+
+  @@unique([guildId, sourceClanTag, raidSeasonStartTime, defenderTag, districtName, attackOrder, attackerTag])
+  @@index([guildId, sourceClanTag, raidSeasonStartTime])
+  @@index([guildId, attackerTag, observedAt])
+  @@index([observedAt])
+}
+
 model BotSetting {
   key       String   @id
   value     String

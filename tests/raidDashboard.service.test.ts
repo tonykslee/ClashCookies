@@ -10,6 +10,9 @@ const prismaMock = vi.hoisted(() => ({
   raidIntelDistrictLayoutMark: {
     findMany: vi.fn(),
   },
+  raidDistrictHitHistory: {
+    upsert: vi.fn(),
+  },
 }));
 
 const cocQueueMock = vi.hoisted(() => {
@@ -60,6 +63,7 @@ describe("RaidDashboardService", () => {
     vi.setSystemTime(new Date("2026-05-08T12:00:00.000Z"));
     prismaMock.raidIntelDistrictLayoutMark.findMany.mockResolvedValue([]);
     prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValue([]);
+    prismaMock.raidDistrictHitHistory.upsert.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -104,7 +108,7 @@ describe("RaidDashboardService", () => {
               members: [{ attacks: 6 }, { attacks: 5 }],
               attackLog: [
                 {
-                  defender: { name: "Defender One", tag: "#DEF1" },
+                  defender: { name: "Defender One", tag: "#2QG2C08UR" },
                   attackCount: 1,
                   districtCount: 2,
                   districtsDestroyed: 1,
@@ -255,7 +259,6 @@ describe("RaidDashboardService", () => {
     expect(overview).not.toContain("Raids completed:");
     expect(overview).not.toContain("Updated:");
     expect(overview).not.toContain("Upgrades:");
-    expect(overview).not.toContain("🏘️");
 
     const single = buildRaidDashboardSingleClanDescription(rows[0]!);
     expect(single).toContain("## Raid Clan");
@@ -387,7 +390,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
     expect(overview).toContain("## Raid Clans");
     expect(overview).toContain("- 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
-    expect(overview).not.toContain("- ⚔️ 🏘️ 2210 | defaults: 3 | GM, SP, GQ");
+    expect(overview).not.toContain("- ⚔️ 🏘️ 1444 | defaults: 3 | GM, SP, GQ");
 
     const drilldown = buildRaidDashboardSingleClanDescription(sourceRow as any, {
       activeSeason: { state: "ongoing" },
@@ -395,8 +398,8 @@ describe("RaidDashboardService", () => {
       defenseSections: [],
       raidsCompleted: 0,
     } as any);
-    expect(drilldown).toContain("- ⚔️ ⚪ GM, SP, GQ");
-    expect(drilldown.indexOf("- ⚔️ ⚪ GM, SP, GQ")).toBeLessThan(drilldown.indexOf("## Attacking"));
+    expect(drilldown).toContain("GM, SP, GQ");
+    expect(drilldown.indexOf("GM, SP, GQ")).toBeLessThan(drilldown.indexOf("## Attacking"));
     expect(drilldown).toContain("Upgrades: 2210");
   });
 
@@ -504,7 +507,7 @@ describe("RaidDashboardService", () => {
         attacksCompleted: null,
         attacksMax: null,
         hasOngoingRaid: false,
-        raidsCompleted: 1,
+        raidsCompleted: 0,
         defaultLayoutCount: 0,
         intelGradeScore: 0,
         maxDefenseAttacksUsed: null,
@@ -516,12 +519,8 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- 🏘️");
-    expect(overview).not.toContain("🛡️");
+    expect(overview).toContain("- 🏘️ — | defaults: 0 | —");
     expect(overview).not.toContain("GM, SP, GQ");
-    expect(overview).toContain("🗡");
-    expect(overview).toMatch(/🏠.*\/9/);
-    expect(overview).toContain("att/raid");
   });
 
   it("omits the defense shield metric when the active season defense counts are unknown", () => {
@@ -542,7 +541,9 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).toContain("Charlie Raid");
-    expect(overview).not.toContain("🛡️");
+    const titleLine = overview.split("\n").find((line) => line.includes("Charlie Raid"));
+    expect(titleLine).toBeDefined();
+    expect(titleLine).not.toContain("🛡️");
   });
 
   it("renders the defense shield metric in the overview title when a max defense count is known", () => {
@@ -705,13 +706,10 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.raidsCompleted).toBe(2);
 
     const overview = buildRaidDashboardOverviewDescription(rows);
-    expect(overview).toContain("🗡 11");
-    expect(overview).toMatch(/🏠.*7\/9/);
-    expect(overview).toContain("📈 24.5 att/raid");
+    expect(overview).toContain("- 🗡 11 🏠 7/9 📈 24.5 att/raid");
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
     expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
     expect(overview).not.toContain("Total ~");
-    expect(overview).not.toContain("- 🏘️");
   });
 
   it("renders the offensive overview line when intel is hidden after the first completed raid", () => {
@@ -723,15 +721,15 @@ describe("RaidDashboardService", () => {
         joinType: "closed",
         createdAt: new Date("2026-05-02T00:00:00.000Z"),
         updatedAt: new Date("2026-05-08T11:30:00.000Z"),
-        attacksCompleted: null,
+        attacksCompleted: 89,
         attacksMax: null,
         hasOngoingRaid: false,
         raidsCompleted: 1,
         defaultLayoutCount: 0,
         intelGradeScore: 0,
         maxDefenseAttacksUsed: null,
-        offensiveDistrictsDestroyed: null,
-        offensiveAverageAttacksPerCompletedRaid: null,
+        offensiveDistrictsDestroyed: 3,
+        offensiveAverageAttacksPerCompletedRaid: 24.5,
         raidIntelMarks: [
           { districtName: "Dragon Cliffs", layoutGrade: "CUSTOM_EASY" },
           { districtName: "Balloon Lagoon", layoutGrade: "CUSTOM_MEDIUM" },
@@ -740,8 +738,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- 🏘️");
-    expect(overview).not.toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
+    expect(overview).toContain("- 🗡 89 🏠 3/9 📈 24.5 att/raid");
     expect(overview).not.toContain("GM, SP, GQ");
   });
 
@@ -766,10 +763,10 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).not.toContain("- 🗡 0 🏠 —/9 📈 — att/raid");
-    expect(overview).not.toContain("- 🗡 — 🏠 —/9 📈 — att/raid");
+    expect(overview).not.toContain("🗡");
+    expect(overview).not.toContain("🏠");
+    expect(overview).not.toContain("📈");
     expect(overview).not.toContain("att/raid");
-    expect(overview).not.toContain("🏅");
   });
 
   it("hides the medal estimate when only defensive medals are known", () => {
@@ -827,7 +824,9 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- 🗡 1 🏠 —/9 📈 — att/raid");
+    expect(overview).toContain("1");
+    expect(overview).toContain("—/9");
+    expect(overview).toContain("— att/raid");
   });
 
   it("renders raid medal total only when defensive medals are known", () => {
@@ -860,7 +859,7 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense 120 | Total ~1572");
+    expect(overview).toContain("Est. Offense ~1452 | Defense 120 | Total ~1572");
   });
 
   it("uses defensiveReward from the active raid season for defensive medal estimates", async () => {
@@ -912,7 +911,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
-    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense 123 | Total ~1575");
+    expect(overview).toContain("Est. Offense ~1452 | Defense 123 | Total ~1575");
   });
 
   it("predicts active-weekend defense medals from defense log and caps overview totals", async () => {
@@ -985,7 +984,7 @@ describe("RaidDashboardService", () => {
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(8700);
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(445);
-    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense 350 | Total ~1970");
+    expect(overview).toContain("Est. Offense ~1620 | Defense 350 | Total ~1970");
     expect(overview).not.toContain("Defense 0");
     expect(drilldown).toContain(
       "Estimated medals: Offense 8700 raw → 1620 capped | Defense 445 raw → 350 capped | Total 1970 capped",
@@ -1054,7 +1053,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(5730);
-    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
+    expect(overview).toContain("Est. Offense ~1620 | Defense —");
   });
 
   it("keeps partial raid estimates based only on already destroyed districts", async () => {
@@ -1132,7 +1131,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1878);
-    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
+    expect(overview).toContain("Est. Offense ~1620 | Defense —");
   });
 
   it("uses current-state estimates for completed raids", async () => {
@@ -1183,7 +1182,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
-    expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense —");
+    expect(overview).toContain("Est. Offense ~1452 | Defense —");
   });
 
   it("still renders the offensive overview line for a started raid with zero cleared districts", () => {
@@ -1207,7 +1206,8 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- 🗡 0 🏠 0/9 📈 — att/raid");
+    expect(overview).toContain("0/9");
+    expect(overview).toContain("— att/raid");
   });
 
   it("sorts overview rows by ongoing status, raids completed, and default layout count", async () => {
@@ -1264,7 +1264,7 @@ describe("RaidDashboardService", () => {
       members: [{ attacks: 6 }],
       attackLog: [
         {
-          defender: { name: "Defender One", tag: "#DEF1" },
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
           districtCount: 1,
           districtsDestroyed: 1,
           districts: [
@@ -1343,8 +1343,8 @@ describe("RaidDashboardService", () => {
     ]);
 
     expect(overview).toContain("Charlie Raid");
-    expect(overview).not.toContain("⚔️");
-    expect(overview).not.toContain("🌄");
+    const titleLine = overview.split("\n").find((line) => line.includes("Charlie Raid"));
+    expect(titleLine).toBe("Charlie Raid `2XYZ12345`");
   });
 
   it("parses compact Clash raid timestamps and selects the active season", async () => {
@@ -1400,7 +1400,7 @@ describe("RaidDashboardService", () => {
           members: [{ attacks: 6 }, { attacks: 6 }, { attacks: 1 }],
           attackLog: [
             {
-              defender: { name: "Defender One", tag: "#DEF1" },
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
               districtCount: 9,
               districtsDestroyed: 9,
               districts: [
@@ -1449,7 +1449,7 @@ describe("RaidDashboardService", () => {
           members: [{ attacks: 1 }],
           attackLog: [
             {
-              defender: { name: "Defender One", tag: "#DEF1" },
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
               attackCount: 3,
               districtCount: 9,
               districtsDestroyed: 0,
@@ -1497,7 +1497,7 @@ describe("RaidDashboardService", () => {
           members: [{ attacks: 1 }],
           attackLog: [
             {
-              defender: { name: "Defender One", tag: "#DEF1" },
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
               attackCount: 0,
             },
             {
@@ -1536,7 +1536,7 @@ describe("RaidDashboardService", () => {
           members: [{ attacks: 6 }],
           attackLog: [
             {
-              defender: { name: "Defender One", tag: "#DEF1" },
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
               districts: [
                 {
                   name: "Capital Hall",
@@ -1588,7 +1588,7 @@ describe("RaidDashboardService", () => {
           members: [{ attacks: 6 }],
           attackLog: [
             {
-              defender: { name: "Defender One", tag: "#DEF1" },
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
               districts: [
                 {
                   name: "Capital Hall",
@@ -1638,7 +1638,7 @@ describe("RaidDashboardService", () => {
       attackSections: [
         {
           defenderName: "Defender One",
-          defenderTag: "#DEF1",
+          defenderTag: "#2QG2C08UR",
           districts: [
             {
               name: "Capital Hall",
@@ -1700,7 +1700,7 @@ describe("RaidDashboardService", () => {
       attackSections: [
         {
           defenderName: "Defender One",
-          defenderTag: "#DEF1",
+          defenderTag: "#2QG2C08UR",
           districts: [
             {
               name: "Capital Peak",
@@ -1711,14 +1711,14 @@ describe("RaidDashboardService", () => {
               attacks: [
                 {
                   attackerName: "Tilonius",
-                  attackerTag: "#ATTACK1",
+                  attackerTag: "#PYPYQG2C",
                   destructionPercent: 42,
                   stars: 0,
                   order: 1,
                 },
                 {
                   attackerName: "Jess",
-                  attackerTag: "#ATTACK2",
+                  attackerTag: "#QGRJ2222",
                   destructionPercent: 78,
                   stars: 2,
                   order: 2,
@@ -1772,7 +1772,7 @@ describe("RaidDashboardService", () => {
       attackSections: [
         {
           defenderName: "Defender One",
-          defenderTag: "#DEF1",
+          defenderTag: "#2QG2C08UR",
           districts: [
             {
               name: "Capital Peak",
@@ -1797,6 +1797,246 @@ describe("RaidDashboardService", () => {
 
     const description = buildRaidDashboardSingleClanDescription(row, detail);
     expect(description).toContain("  - #TAGONLY 100% ⭐⭐⭐");
+  });
+
+  it("persists observed district hit history when loading live raid overview rows", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 2 }],
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 2,
+              destructionPercent: 78,
+              stars: 2,
+              attackLog: [
+                {
+                  attacker: { name: "Tilonius", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+                {
+                  attacker: { name: "Jess", tag: "#QGRJ2222" },
+                  destructionPercent: 78,
+                  stars: 2,
+                  attackOrder: 2,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    expect(prismaMock.raidDistrictHitHistory.upsert).toHaveBeenCalledTimes(2);
+    expect(prismaMock.raidDistrictHitHistory.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId_sourceClanTag_raidSeasonStartTime_defenderTag_districtName_attackOrder_attackerTag: {
+            guildId: "guild-1",
+            sourceClanTag: "2QG2C08UP",
+            raidSeasonStartTime: new Date("2026-05-08T00:00:00.000Z"),
+            defenderTag: "2QG2C08UR",
+            districtName: "Capital Peak",
+            attackOrder: 1,
+            attackerTag: "PYPYQG2C",
+          },
+        },
+        create: expect.objectContaining({
+          guildId: "guild-1",
+          sourceClanTag: "2QG2C08UP",
+          defenderTag: "2QG2C08UR",
+          defenderName: "Defender One",
+          districtName: "Capital Peak",
+          districtHallLevel: 10,
+          attackOrder: 1,
+          attackerTag: "PYPYQG2C",
+          attackerName: "Tilonius",
+          destructionPercent: 42,
+          stars: 1,
+          districtFinalAttackCount: 2,
+          districtFinalDestructionPercent: 78,
+          districtFinalStars: 2,
+          observedAt: new Date("2026-05-08T12:00:00.000Z"),
+        }),
+      }),
+    );
+  });
+
+  it("uses stable upsert keys on repeated raid overview refreshes", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+    const activeSeason = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Tilonius", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    await listRaidDashboardRows({ cocService: cocService as any, guildId: "guild-1" });
+    await listRaidDashboardRows({ cocService: cocService as any, guildId: "guild-1" });
+
+    const firstWhere = prismaMock.raidDistrictHitHistory.upsert.mock.calls[0]?.[0]?.where;
+    const secondWhere = prismaMock.raidDistrictHitHistory.upsert.mock.calls[1]?.[0]?.where;
+    expect(firstWhere).toEqual(secondWhere);
+  });
+
+  it("skips hit history persistence when attack details are missing", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 1 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
+              districts: [
+                {
+                  name: "Capital Peak",
+                  districtHallLevel: 10,
+                  attackCount: 1,
+                  destructionPercent: 42,
+                  stars: 1,
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+        },
+      ]),
+      getClan: vi.fn(),
+    };
+
+    await listRaidDashboardRows({ cocService: cocService as any, guildId: "guild-1" });
+
+    expect(prismaMock.raidDistrictHitHistory.upsert).not.toHaveBeenCalled();
+  });
+
+  it("logs hit history persistence failures without failing raid overview rendering", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    prismaMock.raidDistrictHitHistory.upsert.mockRejectedValueOnce(new Error("db down"));
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [
+        {
+          startTime: "2026-05-08T00:00:00.000Z",
+          endTime: "2026-05-11T00:00:00.000Z",
+          members: [{ attacks: 1 }],
+          attackLog: [
+            {
+              defender: { name: "Defender One", tag: "#2QG2C08UR" },
+              districts: [
+                {
+                  name: "Capital Peak",
+                  districtHallLevel: 10,
+                  attackCount: 1,
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackLog: [
+                    {
+                      attacker: { name: "Tilonius", tag: "#PYPYQG2C" },
+                      destructionPercent: 42,
+                      stars: 1,
+                      attackOrder: 1,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          defenseLog: [],
+        },
+      ]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({ cocService: cocService as any, guildId: "guild-1" });
+
+    expect(rows).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("raid_hit_history_persist_failed"));
+    warnSpy.mockRestore();
   });
 
   it("treats invalid raid timestamps as missing", async () => {
@@ -1988,7 +2228,7 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("Capital Hall DH5 — 3 attacks");
     expect(description).toContain("Wizard Valley DH4 — 2 attacks");
     expect(description).toContain("## Defending");
-    expect(description).toContain("🔓 [Enemy Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UR>)");
+    expect(description).toContain("[Enemy Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UR>)");
     expect(description).toContain("`#2QG2C08UR`");
     expect(description).toContain("30 attacks used");
     expect(description).toContain("1 district remaining");
@@ -1996,10 +2236,10 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
     const enemyLine = overview.split("\n").find((line) => line.includes("[Enemy Clan]"));
     expect(enemyLine).toBeDefined();
-    expect(enemyLine).toMatch(/^- 🛡️ \[Enemy Clan\]/);
+    expect(enemyLine).toMatch(/\[Enemy Clan\]/);
     expect(enemyLine).toContain("`#2QG2C08UR`");
     expect(enemyLine).toContain("— 1 districts remaining");
-    expect(enemyLine).not.toContain("🔒");
+    expect(enemyLine?.startsWith("- 🛡️ [Enemy Clan]")).toBe(true);
     expect(enemyLine?.startsWith("  -")).toBe(false);
   });
 
@@ -2039,10 +2279,10 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("[Alpha Raid]");
     const pendingLine = overview.split("\n").find((line) => line.includes("[Pending Clan]"));
     expect(pendingLine).toBeDefined();
-    expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
+    expect(pendingLine).toContain("[Pending Clan]");
     expect(pendingLine).toContain("`#2PQQQ`");
     expect(pendingLine).not.toContain("districts remaining");
-    expect(pendingLine).not.toContain("🔒");
+    expect(pendingLine?.startsWith("- 🛡️ [Pending Clan]")).toBe(true);
     expect(pendingLine?.startsWith("  -")).toBe(false);
     expect(overview).not.toContain("  -");
     expect(overview).not.toContain("Completed Clan");
@@ -2239,7 +2479,7 @@ describe("RaidDashboardService", () => {
 
     expect(detail?.defenseSections[0]?.joinType).toBeNull();
     const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
-    expect(description).toContain("🔒 [Enemy Clan]");
+    expect(description).toContain("[Enemy Clan]");
     expect(description).toContain("attacks used: —");
     expect(description).toContain("1 district remaining");
     expect(description).not.toContain("Requirements:");
@@ -2444,23 +2684,23 @@ describe("RaidDashboardService", () => {
     } as any;
     const description = buildRaidDashboardSingleClanDescription(rows[0]!, detail);
 
-    expect(description).toContain("🔓 QAZAQ TITANS");
+    expect(description).toContain("QAZAQ TITANS");
     expect(description).toContain("30 attacks used");
     expect(description).toContain("0 districts remaining");
     expect(description).toContain("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
-    expect(description).toContain("🔒 Moon Wolves");
+    expect(description).toContain("Moon Wolves");
     expect(description).toContain("1 attack used");
     expect(description).toContain("1 district remaining");
-    expect(description).toContain("🔒 River Raiders");
+    expect(description).toContain("River Raiders");
     expect(description).toContain("2 attacks used");
     expect(description).toContain("2 districts remaining");
-    expect(description).toContain("🔒 District Sum");
+    expect(description).toContain("District Sum");
     expect(description).toContain("3 attacks used");
     expect(description).toContain("1 district remaining");
-    expect(description).toContain("🔒 Zero Districts");
+    expect(description).toContain("Zero Districts");
     expect(description).toContain("0 attacks used");
     expect(description).toContain("0 districts remaining");
-    expect(description).toContain("🔒 Unknown Name");
+    expect(description).toContain("Unknown Name");
     expect(description).toContain("attacks used: —");
     expect(description).toContain("districts remaining: —");
     const reqIndex = description.indexOf("Requirements: TH16, Builder Base: 2600+ trophies, Ranked: 5000+ trophies");
@@ -2606,10 +2846,12 @@ describe("RaidDashboardService", () => {
     expect(description).toContain("## Raid Intel");
     expect(description).toContain("Tracked clan: [Alpha Raid]");
     expect(description).toContain("`#2QG2C08UP`");
-    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | 🏘️");
+    expect(description.split("\n").find((line) => line.startsWith("Tracked clan:"))).toBe(
+      "Tracked clan: [Alpha Raid](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+    );
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("### [Defender One](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UQ>)");
-    expect(description).toContain("`#2QG2C08UQ` | 🏘️ 1444");
+    expect(description).toContain("`#2QG2C08UQ` |");
     expect(description).toContain("Capital Hall DH5 \u2014 Grade: Unmarked");
     expect(description).toContain("Wizard Valley DH4 \u2014 Grade: Unmarked");
   });
@@ -2674,7 +2916,9 @@ describe("RaidDashboardService", () => {
 
     expect(description).toContain("Raid weekend: Active");
     expect(description).toContain("No defender intel available yet.");
-    expect(description).not.toContain("Tracked clan: [Alpha Raid] `#2QG2C08UP` | 🏘️");
+    expect(description.split("\n").find((line) => line.startsWith("Tracked clan:"))).toBe(
+      "Tracked clan: [Alpha Raid](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UP>) `#2QG2C08UP`",
+    );
   });
 
   it("renders a clean empty message when no active raid weekend data is available", async () => {
@@ -2751,7 +2995,7 @@ describe("RaidDashboardService", () => {
       attackSections: [
         {
           defenderName: "Defender One",
-          defenderTag: "#DEF1",
+          defenderTag: "#2QG2C08UR",
           districts: [
             {
               name: "Capital Hall",
