@@ -1040,6 +1040,11 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
     `Signups: ${view.totalSignupCount}`,
     `Min. TH: ${roster.minTownhall ?? "-"}`,
     `Max. TH: ${roster.maxTownhall ?? "-"}`,
+    `Min. Weight: ${
+      roster.minimumWeight === null || roster.minimumWeight === undefined
+        ? "-"
+        : formatRosterManageWeightK(roster.minimumWeight)
+    }`,
     ...buildRosterSignupRoleRequirementLines({
       requiredSignupRoleId: roster.requiredSignupRoleId,
       noRoleSignupLimit: roster.noRoleSignupLimit,
@@ -3578,6 +3583,7 @@ async function handleRosterCreateSubcommand(
   const maxAccountsPerUser = parseRosterIntegerOption(interaction.options.getInteger("max_accounts_per_user", false));
   const minTownhall = parseRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
   const maxTownhall = parseRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const minimumWeight = parseRosterIntegerOption(interaction.options.getInteger("minimum_weight", false));
   const requiredSignupRoleId = interaction.options.getRole("required-role", false)?.id ?? null;
   const noRoleSignupLimitRaw = interaction.options.getInteger("no-role-signup-limit", false);
   const noRoleSignupLimit = parseRosterNonNegativeIntegerOption(noRoleSignupLimitRaw);
@@ -3613,6 +3619,7 @@ async function handleRosterCreateSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    minimumWeight,
     requiredSignupRoleId,
     noRoleSignupLimit: noRoleSignupLimit ?? 0,
     rosterRoleId,
@@ -4200,6 +4207,7 @@ async function handleRosterEditSubcommand(
   );
   const minTownhall = optionalRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
   const maxTownhall = optionalRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const minimumWeight = optionalRosterIntegerOption(interaction.options.getInteger("minimum_weight", false));
   const allowMultiSignupRaw = interaction.options.getBoolean("allow_multi_signup", false);
   const allowMultiSignup = allowMultiSignupRaw === null ? undefined : allowMultiSignupRaw;
   const sortBySeed = interaction.options.getString("sort_by", false);
@@ -4228,6 +4236,7 @@ async function handleRosterEditSubcommand(
     maxAccountsPerUser === undefined &&
     minTownhall === undefined &&
     maxTownhall === undefined &&
+    minimumWeight === undefined &&
     allowMultiSignup === undefined &&
     sortBy === undefined &&
     importMembers === undefined
@@ -4352,6 +4361,7 @@ async function handleRosterEditSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    minimumWeight,
     requiredSignupRoleId: clearRequiredSignupRole ? null : requiredSignupRoleId ?? undefined,
     noRoleSignupLimit:
       noRoleSignupLimit !== null
@@ -4848,6 +4858,12 @@ export const Roster: Command = {
           required: false,
         },
         {
+          name: "minimum_weight",
+          description: "Minimum account weight",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
           name: "required-role",
           description: "Discord role required for signup",
           type: ApplicationCommandOptionType.Role,
@@ -5115,6 +5131,12 @@ export const Roster: Command = {
         {
           name: "max_townhall",
           description: "Maximum town hall",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
+          name: "minimum_weight",
+          description: "Minimum account weight",
           type: ApplicationCommandOptionType.Integer,
           required: false,
         },

@@ -99,6 +99,7 @@ function makeInteraction(input: {
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
   maxTownhall?: number | null;
+  minimumWeight?: number | null;
   requiredRole?: string | null;
   noRoleSignupLimit?: number | null;
   clearRequiredRole?: boolean | null;
@@ -154,6 +155,7 @@ function makeInteraction(input: {
         if (name === "max_accounts_per_user") return input.maxAccountsPerUser ?? null;
         if (name === "min_townhall") return input.minTownhall ?? null;
         if (name === "max_townhall") return input.maxTownhall ?? null;
+        if (name === "minimum_weight") return input.minimumWeight ?? null;
         if (name === "no-role-signup-limit") return input.noRoleSignupLimit ?? null;
         return null;
       }),
@@ -434,6 +436,7 @@ describe("/roster command", () => {
       clan: "#2QG2C08UP",
       title: "CWL Alpha Signup",
       timezone: "America/Los_Angeles",
+      minimumWeight: 145000,
     }) as any;
 
     await Roster.run({} as any, interaction as any);
@@ -441,6 +444,7 @@ describe("/roster command", () => {
     expect(rosterService.createRoster).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "CWL Alpha Signup",
+        minimumWeight: 145000,
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
@@ -1448,15 +1452,16 @@ describe("/roster command", () => {
         id: "roster-1",
         title: "CWL Alpha Signup",
         clanTag: "#2QG2C08UP",
-        lifecycleState: "OPEN",
-        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
-        postedChannelId: "channel-1",
-        postedMessageId: "message-1",
-        postButtonMode: "standard",
-        minTownhall: 13,
-        maxTownhall: null,
-        rosterRoleId: null,
-      },
+      lifecycleState: "OPEN",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postButtonMode: "standard",
+      minTownhall: 13,
+      maxTownhall: null,
+      minimumWeight: 145000,
+      rosterRoleId: null,
+    },
       clanDisplayName: "CWL Alpha",
       clanLeagueLabel: "Champion League II",
       groups: [],
@@ -1614,6 +1619,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1650,6 +1656,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1888,6 +1895,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1993,6 +2001,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -2022,6 +2031,7 @@ describe("/roster command", () => {
       }),
     );
     const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    expect(String(payload.embeds[0]?.toJSON?.().description ?? "")).toContain("Min. Weight: 145k");
     const menu = payload.components[0]?.toJSON?.().components?.[0];
     const optionValues = menu?.options?.map((option: any) => option.value) ?? [];
     expect(optionValues).toEqual([
@@ -4632,6 +4642,7 @@ describe("/roster command", () => {
       subcommand: "edit",
       roster: "roster-1",
       minTownhall: 14,
+      minimumWeight: 150000,
     }) as any;
     editMinTownhallInteraction.client.channels.fetch = interactionClientFetchMock;
     await Roster.run({} as any, editMinTownhallInteraction as any);
@@ -4639,6 +4650,7 @@ describe("/roster command", () => {
     expect(minTownhallPayload).toMatchObject({
       rosterId: "roster-1",
       minTownhall: 14,
+      minimumWeight: 150000,
       updatedByDiscordUserId: "111111111111111111",
     });
     expect(minTownhallPayload.maxTownhall).toBeUndefined();
