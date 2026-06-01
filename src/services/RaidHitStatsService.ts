@@ -61,7 +61,17 @@ function createEmptyRaidHitStats(attackerTag: string): RaidHitStats & {
   };
 }
 
-function buildTrackedRaidClanSourceTagFilter(tags: string[]): string[] {
+function buildCanonicalTrackedRaidClanSourceTags(tags: string[]): Set<string> {
+  const normalizedTags = new Set<string>();
+  for (const tag of tags) {
+    const normalized = normalizeRaidTrackedClanTag(tag);
+    if (!normalized) continue;
+    normalizedTags.add(normalized);
+  }
+  return normalizedTags;
+}
+
+function buildTrackedRaidClanSourceTagQueryFilter(tags: Iterable<string>): string[] {
   const normalizedTags = new Set<string>();
   for (const tag of tags) {
     const normalized = normalizeRaidTrackedClanTag(tag);
@@ -82,18 +92,21 @@ export async function buildRaidHitStatsByAttackerTag(
   const trackedClanRows = await prisma.raidTrackedClan.findMany({
     select: { clanTag: true },
   });
-  const trackedSourceTags = buildTrackedRaidClanSourceTagFilter(
+  const canonicalTrackedSourceTags = buildCanonicalTrackedRaidClanSourceTags(
     trackedClanRows.map((row) => row.clanTag),
   );
+  const trackedSourceTagQueryFilter = buildTrackedRaidClanSourceTagQueryFilter(
+    canonicalTrackedSourceTags,
+  );
 
-  if (trackedSourceTags.length <= 0) {
+  if (canonicalTrackedSourceTags.size <= 0) {
     return new Map();
   }
 
   const hitRows = await prisma.raidDistrictHitHistory.findMany({
     where: {
       ...(guildId ? { guildId } : {}),
-      sourceClanTag: { in: trackedSourceTags },
+      sourceClanTag: { in: trackedSourceTagQueryFilter },
       observedAt: { gte: cutoff },
     },
     select: {
@@ -114,7 +127,7 @@ export async function buildRaidHitStatsByAttackerTag(
 
   for (const row of hitRows as RaidDistrictHitHistoryRow[]) {
     const sourceClanTag = normalizeRaidTrackedClanTag(row.sourceClanTag);
-    if (!sourceClanTag || !trackedSourceTags.includes(sourceClanTag)) continue;
+    if (!sourceClanTag || !canonicalTrackedSourceTags.has(sourceClanTag)) continue;
 
     const attackerTag = normalizeRaidTrackedClanTag(row.attackerTag);
     if (!attackerTag) continue;
