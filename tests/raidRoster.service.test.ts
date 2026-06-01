@@ -291,6 +291,51 @@ describe("RaidRosterService", () => {
     );
   });
 
+  it("matches roster player tags with leading hashes to canonical raid hit stat keys", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2RVGJYLC0" },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
+      {
+        playerTag: "#2RVGJYLC0",
+        playerName: "Hash Stored",
+        townHall: 16,
+        raidAttacksUsed: 6,
+      },
+    ]);
+    raidHitStatsServiceMock.buildRaidHitStatsByAttackerTag.mockResolvedValueOnce(
+      new Map([
+        [
+          "2RVGJYLC0",
+          {
+            attackerTag: "2RVGJYLC0",
+            totalHits: 3,
+            oneShots: 1,
+            twoShots: 1,
+            threeShots: 1,
+            averageDestructionPercent: 90,
+            perfectHits: 1,
+            lastHitAt: new Date("2026-05-30T12:00:00.000Z"),
+          },
+        ],
+      ]),
+    );
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    expect(rows[0]?.playerTag).toBe("#2RVGJYLC0");
+    expect(rows[0]?.raidHitStats30d).toMatchObject({
+      totalHits: 3,
+      oneShots: 1,
+      twoShots: 1,
+      threeShots: 1,
+      averageDestructionPercent: 90,
+    });
+    expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
+      "30d: 1s 1 | 2s 1 | 3s 1 | avg 90%",
+    );
+  });
+
   it("aggregates 30-day raid hit stats across accounts linked to the same Discord user", async () => {
     prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
       { playerTag: "#2RVGJYLC0" },

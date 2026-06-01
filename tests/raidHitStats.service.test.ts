@@ -164,6 +164,32 @@ describe("RaidHitStatsService", () => {
     expect(stats.has("8G2RJCP0")).toBe(false);
   });
 
+  it("normalizes tracked source and attacker tags before matching and keying stats", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([{ clanTag: "#2QG2C08UP" }]);
+    prismaMock.raidDistrictHitHistory.findMany.mockResolvedValue([
+      makeHit({
+        sourceClanTag: "#2QG2C08UP",
+        attackerTag: "#PYPYQ0R2",
+      }),
+    ]);
+
+    const stats = await buildRaidHitStatsByAttackerTag({ now });
+
+    expect(prismaMock.raidDistrictHitHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          sourceClanTag: { in: ["2QG2C08UP", "#2QG2C08UP"] },
+        }),
+      }),
+    );
+    expect(stats.has("#PYPYQ0R2")).toBe(false);
+    expect(stats.get("PYPYQ0R2")).toMatchObject({
+      attackerTag: "PYPYQ0R2",
+      totalHits: 1,
+      oneShots: 1,
+    });
+  });
+
   it("averages destruction percent and tracks the latest hit time per attacker", async () => {
     prismaMock.raidDistrictHitHistory.findMany.mockResolvedValue([
       makeHit({
