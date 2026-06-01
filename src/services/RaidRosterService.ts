@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { normalizePlayerTag } from "./PlayerLinkService";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { todoSnapshotService } from "./TodoSnapshotService";
+import type { CoCService } from "./CoCService";
 import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
 
 export type RaidRosterAddResult = {
@@ -172,6 +173,7 @@ export async function addRaidRosterMembersForGuild(input: {
 
 export async function listRaidRosterStatusRowsForGuild(input: {
   guildId: string;
+  cocService?: CoCService | null;
 }): Promise<RaidRosterStatusRow[]> {
   const guildId = String(input.guildId ?? "").trim();
   if (!guildId) return [];
@@ -187,6 +189,19 @@ export async function listRaidRosterStatusRowsForGuild(input: {
     rosterRows.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean),
   );
   if (rosterTags.length <= 0) return [];
+
+  if (input.cocService) {
+    await todoSnapshotService
+      .refreshSnapshotsForPlayerTags({
+        playerTags: rosterTags,
+        cocService: input.cocService,
+      })
+      .catch((error) => {
+        console.warn(
+          `[raids-roster] event=status_snapshot_refresh_failed guildId=${guildId} playerCount=${rosterTags.length} error=${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
 
   const [snapshotRows, playerCurrentRows, playerLinkRows, playerActivityRows] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({ playerTags: rosterTags }),

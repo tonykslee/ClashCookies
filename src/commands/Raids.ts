@@ -1432,6 +1432,7 @@ export const Raids: Command = {
 
       const rows = await listRaidRosterStatusRowsForGuild({
         guildId: interaction.guildId,
+        cocService,
       });
       if (rows.length <= 0) {
         await safeReply(interaction, {
