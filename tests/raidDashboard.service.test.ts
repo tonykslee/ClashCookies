@@ -709,7 +709,7 @@ describe("RaidDashboardService", () => {
     expect(overview).toMatch(/🏠.*7\/9/);
     expect(overview).toContain("📈 24.5 att/raid");
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(2772);
-    expect(overview).toContain("- 🏅 Est. Offense ~2772 | Defense —");
+    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
     expect(overview).not.toContain("Total ~");
     expect(overview).not.toContain("- 🏘️");
   });
@@ -915,6 +915,83 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("- 🏅 Est. Offense ~1452 | Defense 123 | Total ~1575");
   });
 
+  it("predicts active-weekend defense medals from defense log and caps overview totals", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 1,
+          districtCount: 9,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 1,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [
+        {
+          attacker: { name: "Attacker", tag: "#ATTACKER" },
+          attackCount: 75,
+          districtCount: 1,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              id: 70000001,
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 75,
+              destructionPercent: 100,
+              stars: 3,
+              totalLooted: 1800,
+            },
+          ],
+        },
+      ],
+      defensiveReward: 0,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
+
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(8700);
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(445);
+    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense 350 | Total ~1970");
+    expect(overview).not.toContain("Defense 0");
+    expect(drilldown).toContain(
+      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 445 raw → 350 capped | Total 1970 capped",
+    );
+  });
+
   it("uses the current-state medal estimate for an early raid", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
@@ -977,7 +1054,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(5730);
-    expect(overview).toContain("- 🏅 Est. Offense ~5730 | Defense —");
+    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
   });
 
   it("keeps partial raid estimates based only on already destroyed districts", async () => {
@@ -1055,7 +1132,7 @@ describe("RaidDashboardService", () => {
     const overview = buildRaidDashboardOverviewDescription(rows);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1878);
-    expect(overview).toContain("- 🏅 Est. Offense ~1878 | Defense —");
+    expect(overview).toContain("- 🏅 Est. Offense ~1620 | Defense —");
   });
 
   it("uses current-state estimates for completed raids", async () => {
