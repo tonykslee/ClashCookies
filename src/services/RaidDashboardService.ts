@@ -18,6 +18,10 @@ import {
   loadRaidIntelDefenderProfileUpgradesForTags,
 } from "./RaidIntelDefenderProfileService";
 import {
+  estimateRaidMedals,
+  type RaidMedalEstimate,
+} from "./RaidMedalEstimator";
+import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
   normalizeRaidTrackedClanTag,
@@ -87,6 +91,7 @@ export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCoun
   maxDefenseAttacksUsed: number | null;
   offensiveDistrictsDestroyed: number | null;
   offensiveAverageAttacksPerCompletedRaid: number | null;
+  raidMedalEstimate?: RaidMedalEstimate | null;
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
@@ -582,6 +587,42 @@ function calculateAverageAttacksPerCompletedRaid(
   return sawUsableRaid && completedCount > 0 ? totalAttacks / completedCount : null;
 }
 
+function isRaidCapitalPeakDistrict(name: string): boolean {
+  const normalized = normalizeRaidDistrictName(name).replace(/['’]/g, "");
+  return normalized === "capital peak" || normalized === "capital hall";
+}
+
+function buildRaidDashboardMedalEstimate(input: {
+  attackSections: RaidDashboardAttackSection[];
+  attacksCompleted: number | null;
+}): RaidMedalEstimate | null {
+  if ((input.attacksCompleted ?? 0) <= 0) {
+    return null;
+  }
+
+  const destroyedDistrictHallLevels: number[] = [];
+  const destroyedCapitalHallLevels: number[] = [];
+  for (const section of input.attackSections) {
+    for (const district of section.districts) {
+      if (district.districtHallLevel === null || isDistrictFullyDestroyed(district) !== true) {
+        continue;
+      }
+      if (isRaidCapitalPeakDistrict(district.name)) {
+        destroyedCapitalHallLevels.push(district.districtHallLevel);
+      } else {
+        destroyedDistrictHallLevels.push(district.districtHallLevel);
+      }
+    }
+  }
+
+  return estimateRaidMedals({
+    destroyedDistrictHallLevels,
+    destroyedCapitalHallLevels,
+    totalClanOffensiveAttacksUsed: input.attacksCompleted ?? 0,
+    defensiveMedals: null,
+  });
+}
+
 function formatRaidDashboardAverageAttacksPerCompletedRaid(value: number | null): string {
   if (value === null) {
     return "—";
@@ -604,6 +645,27 @@ function buildRaidDashboardOverviewOffenseLine(row: RaidDashboardClanRow): strin
     row.offensiveAverageAttacksPerCompletedRaid,
   );
   return `- 🗡 ${totalAttacks} 🏠 ${destroyedDistricts}/9 📈 ${averageAttacks} att/raid`;
+}
+
+function buildRaidDashboardOverviewMedalLine(row: RaidDashboardClanRow): string {
+  if ((row.attacksCompleted ?? 0) <= 0) {
+    return "";
+  }
+
+  const estimate = row.raidMedalEstimate ?? null;
+  if (
+    estimate?.offensiveMedalsForSixAttacks === null ||
+    estimate?.offensiveMedalsForSixAttacks === undefined
+  ) {
+    return "";
+  }
+
+  const defensiveText = estimate.defensiveMedals === null ? "—" : String(estimate.defensiveMedals);
+  const totalText =
+    estimate.totalEstimatedMedals === null
+      ? ""
+      : ` | Total ~${estimate.totalEstimatedMedals}`;
+  return `- 🏅 Offense ~${estimate.offensiveMedalsForSixAttacks} | Defense ${defensiveText}${totalText}`;
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
@@ -1484,6 +1546,10 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const offensiveAverageAttacksPerCompletedRaid = calculateAverageAttacksPerCompletedRaid(
       snapshot.activeSeason?.attackLog,
     );
+    const raidMedalEstimate = buildRaidDashboardMedalEstimate({
+      attackSections: snapshot.attackSections,
+      attacksCompleted: snapshot.counts.attacksCompleted,
+    });
     const openDefenseSections = snapshot.activeSeason
       ? normalizeDefenseSections(snapshot.activeSeason, metadataByTag).filter(
           (section) => section.joinType === "open",
@@ -1498,6 +1564,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       maxDefenseAttacksUsed,
       offensiveDistrictsDestroyed,
       offensiveAverageAttacksPerCompletedRaid,
+      raidMedalEstimate,
       intelGradeScore,
       raidIntelMarks,
       hasOngoingRaid: snapshot.counts.hasOngoingRaid,
@@ -1699,6 +1766,10 @@ export function buildRaidDashboardOverviewDescription(rows: RaidDashboardClanRow
     const offenseLine = buildRaidDashboardOverviewOffenseLine(row);
     if (offenseLine) {
       lines.push(offenseLine);
+    }
+    const medalLine = buildRaidDashboardOverviewMedalLine(row);
+    if (medalLine) {
+      lines.push(medalLine);
     }
     for (const section of row.openDefenseSections ?? []) {
       const text = buildRaidDashboardOverviewOpenDefenseSectionText(section);
