@@ -2939,6 +2939,12 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     );
     return;
   }
+  if (!rosterId && result.outcome === "invalid_exclude_input") {
+    await interaction.editReply(
+      `These exclude values are not valid player tags: ${result.invalidTokens.join(", ")}. Use player tags separated by spaces or commas.`,
+    );
+    return;
+  }
   if (!rosterId && result.outcome === "invalid_excludes") {
     await interaction.editReply(
       `These exclude tags are not in the observed ${result.season} CWL roster for ${result.clanTag}: ${result.invalidTags.join(", ")}`,
@@ -4261,7 +4267,7 @@ export const Cwl: Command = {
             },
             {
               name: "exclude",
-              description: "Comma-separated player tags to exclude from planning",
+              description: "Player tags to exclude from planning, separated by spaces or commas",
               type: ApplicationCommandOptionType.String,
               required: false,
             },
