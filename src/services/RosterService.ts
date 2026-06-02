@@ -187,6 +187,7 @@ export type RosterSelectionOption = {
   value: string;
   label: string;
   description: string | null;
+  selectable?: boolean;
 };
 
 export type RosterAccountIdentity = {
@@ -2266,7 +2267,8 @@ function buildRosterSelectionDescription(input: {
   } else {
     lines.push(`Select your signup entries to remove from ${input.rosterTitle}.`);
   }
-  lines.push(`Selected: ${input.selectedTags.length} / ${input.options.length}`);
+  const selectableCount = input.options.filter((option) => option.selectable !== false).length;
+  lines.push(`Selected: ${input.selectedTags.length} / ${selectableCount}`);
   if (input.options.length > 25) {
     lines.push("Showing the first 25 options Discord can display in one select menu.");
   }
@@ -2392,6 +2394,34 @@ function buildRosterManagerSelectionPlayerSelectRows(session: RosterSelectionSes
       );
     return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
   });
+}
+
+function isRosterSelectionOptionSelectable(option: RosterSelectionOption): boolean {
+  return option.selectable !== false;
+}
+
+function buildRosterSelectionInfoSelectRow(
+  session: RosterSelectionSession,
+  infoOptions: RosterSelectionOption[],
+): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  if (infoOptions.length <= 0) {
+    return null;
+  }
+  const visibleOptions = infoOptions.slice(0, 25);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`roster-selection:weight-info:${String(session.sessionId ?? "").trim()}`)
+    .setPlaceholder("Minimum weight status")
+    .setMinValues(0)
+    .setMaxValues(Math.max(1, visibleOptions.length))
+    .setDisabled(true)
+    .addOptions(
+      visibleOptions.map((option) => ({
+        label: option.label.slice(0, 100),
+        value: option.value,
+        description: option.description ? option.description.slice(0, 100) : undefined,
+      })),
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
 function buildRosterManagerSelectionGroupSelectRow(
@@ -2539,17 +2569,19 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
   }
   const selectedTags = [...new Set(session.selectedTags)];
   const visibleOptions = session.options.slice(0, 25);
+  const selectableOptions = visibleOptions.filter(isRosterSelectionOptionSelectable);
+  const blockedWeightOptions = visibleOptions.filter((option) => !isRosterSelectionOptionSelectable(option));
   const accountSelect = new StringSelectMenuBuilder()
     .setCustomId(buildRosterSelectionMenuCustomId(session.sessionId))
     .setPlaceholder(
       session.mode === "signup" ? "Select linked accounts" : "Select signups to remove",
     )
     .setMinValues(0)
-    .setMaxValues(Math.max(1, visibleOptions.length))
-    .setDisabled(visibleOptions.length <= 0)
+    .setMaxValues(Math.max(1, selectableOptions.length))
+    .setDisabled(selectableOptions.length <= 0)
     .addOptions(
-      visibleOptions.length > 0
-        ? visibleOptions.map((option) => ({
+      selectableOptions.length > 0
+        ? selectableOptions.map((option) => ({
             label: option.label.slice(0, 100),
             value: option.value,
             description: option.description ? option.description.slice(0, 100) : undefined,
@@ -2560,9 +2592,11 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
               label: "No options available",
               value: "none",
               description: "Nothing to select",
-            },
+              },
           ],
     );
+
+  const infoSelect = buildRosterSelectionInfoSelectRow(session, blockedWeightOptions);
 
   const groupSelect =
     session.mode === "signup"
@@ -2612,12 +2646,13 @@ function buildRosterSelectionPayload(session: RosterSelectionSession): RosterSel
   const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [
     ...(groupSelect ? [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(groupSelect)] : []),
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(accountSelect),
+    ...(infoSelect ? [infoSelect] : []),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(buildRosterSelectionActionButtonCustomId("confirm", session.sessionId))
         .setLabel(session.mode === "signup" ? "Confirm Signup" : "Confirm Remove")
         .setStyle(confirmStyle)
-        .setDisabled(selectedTags.length <= 0 || visibleOptions.length <= 0),
+        .setDisabled(selectedTags.length <= 0 || selectableOptions.length <= 0),
       new ButtonBuilder()
         .setCustomId(buildRosterSelectionActionButtonCustomId("cancel", session.sessionId))
         .setLabel("Cancel")
@@ -3993,6 +4028,7 @@ async function loadRosterSelectionOptions(input: {
         const alreadySignedUp = existingTags.has(playerTag);
         const conflict = signupConflictLookup.get(playerTag) ?? null;
         const weightGateRecord = minimumWeight !== null ? minimumWeightLookup.get(playerTag) ?? null : null;
+        const selectable = alreadySignedUp || !weightGateRecord || weightGateRecord.status === "eligible";
         return {
           value: account.playerTag,
           label: account.linkedName ?? account.playerTag,
@@ -4000,9 +4036,10 @@ async function loadRosterSelectionOptions(input: {
             ? `${playerTag} | already signed up`
             : conflict
               ? `📝 ${formatRosterSignupConflictTitle(conflict.conflictingRosterTitle)}`
-              : weightGateRecord
-                ? `${playerTag} | ${formatRosterSignupWeightGateDescription(weightGateRecord)}`
-                : `${playerTag} | available`,
+            : weightGateRecord
+              ? `${playerTag} | ${formatRosterSignupWeightGateDescription(weightGateRecord)}`
+              : `${playerTag} | available`,
+          selectable,
         };
       }),
       emptyStateMessage,
@@ -8826,24 +8863,30 @@ export class RosterService {
         session.selectedTags = [];
         session.playerPageWindowStart = 0;
       } else {
-        session.selectedTags = normalizeRosterSelectionTags(session.selectedTags, session.options.map((option) => option.value));
+        session.selectedTags = normalizeRosterSelectionTags(
+          session.selectedTags,
+          session.options.filter(isRosterSelectionOptionSelectable).map((option) => option.value),
+        );
       }
     }
 
     if (Array.isArray(input.selectedTags)) {
       session.selectedTags = normalizeRosterSelectionTags(
         input.selectedTags,
-        session.options.map((option) => option.value),
+        session.options.filter(isRosterSelectionOptionSelectable).map((option) => option.value),
       );
     }
     if (Array.isArray(input.selectedPlayerTags)) {
       const pageIndex = Math.max(0, Math.trunc(Number(input.playerPageIndex ?? 0)));
       const pageStart = pageIndex * 25;
-      const pageOptions = session.options.slice(pageStart, pageStart + 25).map((option) => option.value);
+      const pageOptions = session.options
+        .slice(pageStart, pageStart + 25)
+        .filter(isRosterSelectionOptionSelectable)
+        .map((option) => option.value);
       const remaining = session.selectedTags.filter((tag) => !pageOptions.includes(tag));
       session.selectedTags = normalizeRosterSelectionTags(
         [...remaining, ...input.selectedPlayerTags],
-        session.options.map((option) => option.value),
+        session.options.filter(isRosterSelectionOptionSelectable).map((option) => option.value),
       );
     }
     if (input.selectedGroupKey !== undefined) {
