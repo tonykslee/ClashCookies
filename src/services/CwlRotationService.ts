@@ -102,6 +102,44 @@ type CwlRotationNotEnoughPlayersDiagnostics = {
   eligibleAfterExclusionsCount: number;
 };
 
+type ParsedCwlRotationExcludeTags = {
+  excludeTags: string[];
+  invalidTokens: string[];
+};
+
+function parseCwlRotationExcludeTags(raw: unknown): ParsedCwlRotationExcludeTags {
+  const rawValue = String(raw ?? "").trim();
+  if (!rawValue) {
+    return { excludeTags: [], invalidTokens: [] };
+  }
+
+  const excludeTags: string[] = [];
+  const invalidTokens: string[] = [];
+  const seenExcludeTags = new Set<string>();
+  const seenInvalidTokens = new Set<string>();
+
+  for (const token of rawValue.split(/[,\s]+/)) {
+    const trimmed = String(token ?? "").trim();
+    if (!trimmed) continue;
+
+    const normalizedTag = normalizePlayerTag(trimmed);
+    if (normalizedTag) {
+      if (!seenExcludeTags.has(normalizedTag)) {
+        seenExcludeTags.add(normalizedTag);
+        excludeTags.push(normalizedTag);
+      }
+      continue;
+    }
+
+    if (!seenInvalidTokens.has(trimmed)) {
+      seenInvalidTokens.add(trimmed);
+      invalidTokens.push(trimmed);
+    }
+  }
+
+  return { excludeTags, invalidTokens };
+}
+
 export type CreateCwlRotationPlanResult =
   | {
       outcome: "created";
@@ -141,6 +179,12 @@ export type CreateCwlRotationPlanResult =
       season: string;
       clanTag: string;
       invalidTags: string[];
+    }
+  | {
+      outcome: "invalid_exclude_input";
+      season: string;
+      clanTag: string;
+      invalidTokens: string[];
     }
   | {
       outcome: "not_enough_players";
@@ -1185,11 +1229,16 @@ export class CwlRotationService {
       };
     }
 
-    const rawExcludeTags = String(input.excludeTagsRaw ?? "")
-      .split(",")
-      .map((value) => normalizePlayerTag(value))
-      .filter(Boolean);
-    const excludeTags = [...new Set(rawExcludeTags)];
+    const parsedExcludeTags = parseCwlRotationExcludeTags(input.excludeTagsRaw);
+    if (parsedExcludeTags.invalidTokens.length > 0) {
+      return {
+        outcome: "invalid_exclude_input",
+        season,
+        clanTag,
+        invalidTokens: parsedExcludeTags.invalidTokens,
+      };
+    }
+    const excludeTags = parsedExcludeTags.excludeTags;
     const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));

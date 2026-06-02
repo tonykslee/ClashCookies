@@ -98,6 +98,69 @@ describe("CwlRotationService", () => {
     vi.spyOn(cwlStateService, "getCurrentPreparationSnapshotForClan").mockResolvedValue(null);
   });
 
+  function setupManualCreateRosterFixture(options?: {
+    excludeTagsRaw?: string | null;
+    rosterCount?: number;
+    roundState?: "preparation" | "inWar";
+    roundDay?: number;
+  }) {
+    const rosterCount = options?.rosterCount ?? 20;
+    const observedRosterRows = Array.from({ length: rosterCount }, (_value, index) => {
+      const digits = index
+        .toString(4)
+        .padStart(4, "0")
+        .split("")
+        .map((char) => ["0", "2", "8", "9"][Number(char)])
+        .join("");
+      const playerTag = `#PYLQ${digits}`;
+      return {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag,
+        playerName: `Observed ${index + 1}`,
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: index % 3,
+        currentRound: null,
+      };
+    });
+    const roundMembers = observedRosterRows.slice(0, 15).map((row, index) => ({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      playerTag: row.playerTag,
+      roundDay: options?.roundDay ?? 3,
+      playerName: row.playerName,
+      mapPosition: index + 1,
+      townHall: row.townHall,
+      attacksUsed: 0,
+      attacksAvailable: 1,
+      stars: 0,
+      destruction: 0,
+      subbedIn: true,
+      subbedOut: false,
+    }));
+
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: options?.roundDay ?? 3,
+      roundState: options?.roundState ?? "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-04-03T12:00:00.000Z"),
+      startTime: new Date("2026-04-04T12:00:00.000Z"),
+      endTime: new Date("2026-04-05T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-04T00:00:00.000Z"),
+      members: roundMembers,
+    });
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue(observedRosterRows);
+    return { observedRosterRows, roundMembers };
+  }
+
   it("creates a versioned current-season plan and warns when 5-day coverage is impossible", async () => {
     vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
       season: "2026-04",
@@ -384,6 +447,66 @@ describe("CwlRotationService", () => {
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       invalidTags: ["#Q2V8P9L2"],
+    });
+  });
+
+  it.each([
+    ["comma", (rows: Array<{ playerTag: string }>) => `${rows[0].playerTag},${rows[1].playerTag}`],
+    ["space", (rows: Array<{ playerTag: string }>) => `${rows[0].playerTag} ${rows[1].playerTag}`],
+    ["comma-space", (rows: Array<{ playerTag: string }>) => `${rows[0].playerTag}, ${rows[1].playerTag}`],
+    ["hash-space", (rows: Array<{ playerTag: string }>) => `${rows[0].playerTag} ${rows[1].playerTag}`],
+    ["newline", (rows: Array<{ playerTag: string }>) => `${rows[0].playerTag},\n${rows[1].playerTag}`],
+  ])("parses whitespace/comma exclude tags from %s", async (_label, buildRaw) => {
+    const { observedRosterRows } = setupManualCreateRosterFixture();
+    const expectedTags = [observedRosterRows[0].playerTag, observedRosterRows[1].playerTag];
+    const excludeTagsRaw = buildRaw(observedRosterRows);
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 15,
+      excludeTagsRaw,
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerTag) : []).toEqual(
+      expectedTags,
+    );
+    expect(result.outcome === "created" ? result.playersIncludedCount : 0).toBe(18);
+  });
+
+  it("de-dupes repeated exclude tags", async () => {
+    const { observedRosterRows } = setupManualCreateRosterFixture();
+    const repeatedTag = observedRosterRows[0].playerTag;
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 15,
+      excludeTagsRaw: `${repeatedTag} ${repeatedTag}`,
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerTag) : []).toEqual([
+      repeatedTag,
+    ]);
+  });
+
+  it("returns invalid exclude input when a non-empty token cannot be parsed as a player tag", async () => {
+    setupManualCreateRosterFixture();
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 15,
+      excludeTagsRaw: "G98QLYCJY-G8CUUYCYG",
+    });
+
+    expect(result).toEqual({
+      outcome: "invalid_exclude_input",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      invalidTokens: ["G98QLYCJY-G8CUUYCYG"],
     });
   });
 

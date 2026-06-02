@@ -1602,6 +1602,71 @@ describe("/cwl command", () => {
     expect(descriptions).toContain("Could not reach 5 planned CWL days");
   });
 
+  it("forwards whitespace-separated exclude tags and renders all excluded players for /cwl rotations create", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 5,
+      lineupSize: 15,
+      playersIncludedCount: 29,
+      excludedPlayers: [
+        { playerTag: "#P9", playerName: "Charlie" },
+        { playerTag: "#P8", playerName: "Delta" },
+      ],
+      warnings: [],
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 15,
+      exclude: "#P9 #P8",
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      excludeTagsRaw: "#P9 #P8",
+      lineupSize: 15,
+      overwrite: true,
+      guildId: "guild-1",
+    });
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction).join("\n");
+    expect(descriptions).toContain("Players excluded: 2");
+    expect(descriptions).toContain("- Charlie (#P9)");
+    expect(descriptions).toContain("- Delta (#P8)");
+  });
+
+  it("returns a clear invalid-input message for malformed CWL rotation excludes", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "invalid_exclude_input",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      invalidTokens: ["G98QLYCJY-G8CUUYCYG"],
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 15,
+      exclude: "G98QLYCJY-G8CUUYCYG",
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "These exclude values are not valid player tags: G98QLYCJY-G8CUUYCYG.",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Use player tags separated by spaces or commas.",
+    );
+  });
+
   it("returns the blocked-existing message for /cwl rotations create without roster", async () => {
     vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
       outcome: "blocked_existing",
