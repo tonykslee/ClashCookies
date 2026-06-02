@@ -305,6 +305,19 @@ function buildRosterDiscordDisplayNameMap(interaction: { guild?: { members?: { c
 }
 
 function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>>): string {
+  const warnings = result.warnings ?? [];
+  const issueWarning = warnings.find((warning) => warning.startsWith("Unable to sign up some accounts:")) ?? null;
+  if (issueWarning) {
+    const summary =
+      result.createdTags.length > 0
+        ? `Signed up ${result.createdTags.join(", ")} to ${result.groupName}${
+            result.duplicateTags.length > 0 ? ` (${result.duplicateTags.length} already signed up)` : ""
+          }.`
+        : issueWarning;
+    const extraWarnings = warnings.filter((warning) => warning !== issueWarning);
+    return extraWarnings.length > 0 ? `${summary}\n${extraWarnings.join("\n")}` : summary;
+  }
+
   if (result.outcome === "roster_not_found") {
     return "That roster is no longer available.";
   }

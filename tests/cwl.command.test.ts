@@ -919,36 +919,38 @@ describe("/cwl command", () => {
     (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
       outcome: "signup",
       result: {
-        outcome: "cwl_roster_conflict",
+        outcome: "created",
         rosterId: "roster-1",
         groupKey: "confirmed",
         groupName: "Confirmed",
         requestedTags: ["#P1", "#P2"],
-        linkedTags: ["#P1", "#P2"],
-        createdTags: [],
+        linkedTags: ["#P1", "#P2", "#P3"],
+        createdTags: ["#P3"],
         createdAccounts: [],
         duplicateTags: [],
         missingLinkedTags: [],
-        blockedTags: ["#P1", "#P2"],
-        blockedAccounts: [
-          { playerTag: "#P1", playerName: "Alpha" },
-          { playerTag: "#P2", playerName: null },
-        ],
-        conflictingAccounts: [
+        eligibilityIssues: [
           {
             playerTag: "#P1",
             playerName: "Alpha",
-            conflictingRosterId: "roster-a",
-            conflictingRosterTitle: "Champions CWL",
+            reason: "minimum_weight_below_minimum",
           },
           {
             playerTag: "#P2",
             playerName: null,
-            conflictingRosterId: "roster-b",
-            conflictingRosterTitle: "Alpha CWL",
+            reason: "cwl_roster_conflict",
+            rosterId: "roster-b",
+            rosterTitle: "Champions CWL",
+          },
+          {
+            playerTag: "#P2",
+            playerName: null,
+            reason: "townhall_out_of_range",
           },
         ],
-        conflictingRosterIds: ["roster-a", "roster-b"],
+        warnings: [
+          "Unable to sign up some accounts:\n- Alpha (#P1) → below minimum weight\n- #P2 → already signed up on Champions CWL; town hall out of range",
+        ],
       },
     });
 
@@ -978,15 +980,11 @@ describe("/cwl command", () => {
 
     expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("These accounts are already signed up on another CWL roster:"),
+        content: expect.stringContaining("Signed up #P3 to Confirmed."),
         embeds: [],
         components: [],
       }),
     );
-    expect(String(confirmInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
-      "- Alpha (#P1) → Champions CWL",
-    );
-    expect(String(confirmInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("- #P2 → Alpha CWL");
   });
 
   it("shows exactly which selected accounts are missing town hall data when selection confirm is blocked", async () => {

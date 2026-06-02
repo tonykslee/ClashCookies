@@ -314,6 +314,7 @@ import {
   ROSTER_DEFAULT_GROUPS,
   buildRosterSignupRoleRequirementLines,
   buildRosterMoveResultSummary,
+  formatRosterSignupEligibilityIssueBlock,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../src/services/RosterService";
@@ -2029,21 +2030,42 @@ describe("RosterService", () => {
       playerTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
     });
 
-      expect(result).toMatchObject({
-        outcome: "cwl_roster_conflict",
-        rosterId: "roster-1",
-        linkedTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
-        duplicateTags: ["#PQL0289"],
-        blockedTags: ["#QGRJ2222"],
-        conflictingAccounts: [
-          {
-            playerTag: "#QGRJ2222",
-            playerName: "#QGRJ2222",
-            conflictingRosterId: "conflicting-roster",
-            conflictingRosterTitle: "Champions CWL",
-          },
-        ],
+    expect(result).toMatchObject({
+      outcome: "created",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
+      duplicateTags: ["#PQL0289"],
+      createdTags: ["#G2RG9JCRL"],
+      eligibilityIssues: [
+        {
+          playerTag: "#QGRJ2222",
+          playerName: "#QGRJ2222",
+          reason: "cwl_roster_conflict",
+          rosterId: "conflicting-roster",
+          rosterTitle: "Champions CWL",
+        },
+      ],
     });
+  });
+
+  it("formats multi-reason signup eligibility issues by account", () => {
+    expect(
+      formatRosterSignupEligibilityIssueBlock([
+        { playerTag: "#P1", playerName: "Alpha", reason: "minimum_weight_below_minimum" },
+        {
+          playerTag: "#P2",
+          playerName: null,
+          reason: "cwl_roster_conflict",
+          rosterId: "roster-b",
+          rosterTitle: "Champions CWL",
+        },
+        { playerTag: "#P2", playerName: null, reason: "townhall_out_of_range" },
+      ]),
+    ).toBe(
+      "Unable to sign up some accounts:\n" +
+        "- Alpha (#P1) → below minimum weight\n" +
+        "- #P2 → already signed up on Champions CWL; town hall out of range",
+    );
   });
 
   it("renders grouped signup entries and shows the compact roster board header", async () => {
