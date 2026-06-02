@@ -139,6 +139,16 @@ function getRosterSignupAccountOptions(panel: any): any[] {
     .flatMap((component) => (Array.isArray(component?.options) ? component.options : []));
 }
 
+function getRosterSignupWeightInfoOptions(panel: any): any[] {
+  return flattenComponentRows(panel.components)
+    .filter((component) =>
+      String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith(
+        "roster-selection:weight-info:",
+      ),
+    )
+    .flatMap((component) => (Array.isArray(component?.options) ? component.options : []));
+}
+
 function makeValidRosterPlayerTag(index: number): string {
   const alphabet = ["0", "2", "8", "9"];
   const normalizedIndex = Math.max(0, Math.trunc(index));
@@ -726,19 +736,15 @@ describe("RosterService", () => {
 
     expect(result).toMatchObject({ outcome: "ready" });
     if (result.outcome !== "ready") return;
-    const options = result.panel.components
-      .flatMap((row) => {
-        const rowJson = row.toJSON?.() as any;
-        return Array.isArray(rowJson?.components) ? rowJson.components : [];
-      })
-      .flatMap((component: any) => (Array.isArray(component.options) ? component.options : []));
-    expect(options.find((option: any) => option.value === "#PQL0289")?.description).toBe(
-      "#PQL0289 | ⚠️ below minimum weight",
-    );
-    expect(options.find((option: any) => option.value === "#QGRJ2222")?.description).toBe("#QGRJ2222 | available");
-    expect(options.find((option: any) => option.value === "#2QG2C08UP")?.description).toBe(
-      "#2QG2C08UP | ⚠️ weight unavailable",
-    );
+    const accountOptions = getRosterSignupAccountOptions(result.panel);
+    const infoOptions = getRosterSignupWeightInfoOptions(result.panel);
+    expect(accountOptions.map((option) => [option.value, option.description, option.default] as const)).toEqual([
+      ["#QGRJ2222", "#QGRJ2222 | available", false],
+    ]);
+    expect(infoOptions.map((option) => [option.value, option.description] as const)).toEqual([
+      ["#PQL0289", "#PQL0289 | ⚠️ below minimum weight"],
+      ["#2QG2C08UP", "#2QG2C08UP | ⚠️ weight unavailable"],
+    ]);
   });
 
   it("applies town hall and minimum weight gates together when both are configured", async () => {
@@ -4126,14 +4132,17 @@ describe("RosterService", () => {
 
     expect(result).toMatchObject({ outcome: "ready" });
     if (result.outcome !== "ready") return;
-    const optionByValue = new Map(
+    const accountOptionByValue = new Map(
       getRosterSignupAccountOptions(result.panel).map((option) => [option.value, option] as const),
     );
-    expect(optionByValue.get(availableTag)?.description).toBe(`${availableTag} | available`);
-    expect(optionByValue.get(signedUpTag)?.description).toBe(`${signedUpTag} | already signed up`);
-    expect(optionByValue.get(conflictTag)?.description).toBe("📝 Champions CWL");
-    expect(optionByValue.get(lowWeightTag)?.description).toBe(`${lowWeightTag} | ⚠️ below minimum weight`);
-    expect(optionByValue.get(unavailableTag)?.description).toBe(`${unavailableTag} | ⚠️ weight unavailable`);
+    const weightInfoByValue = new Map(
+      getRosterSignupWeightInfoOptions(result.panel).map((option) => [option.value, option] as const),
+    );
+    expect(accountOptionByValue.get(availableTag)?.description).toBe(`${availableTag} | available`);
+    expect(accountOptionByValue.get(signedUpTag)?.description).toBe(`${signedUpTag} | already signed up`);
+    expect(accountOptionByValue.get(conflictTag)?.description).toBe("📝 Champions CWL");
+    expect(weightInfoByValue.get(lowWeightTag)?.description).toBe(`${lowWeightTag} | ⚠️ below minimum weight`);
+    expect(weightInfoByValue.get(unavailableTag)?.description).toBe(`${unavailableTag} | ⚠️ weight unavailable`);
   });
 
   it("keeps the current roster signed-up label when the account is already on this roster", async () => {
