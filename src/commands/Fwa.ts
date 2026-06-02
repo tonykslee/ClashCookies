@@ -328,6 +328,7 @@ type FwaBaseSwapAnnouncementState = {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
+  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -368,7 +369,10 @@ const FWA_BASE_SWAP_SWAP_TO_WAR_HEADER = "# Swap to WAR Bases";
 const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE IN CWL {emoji}";
 const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
-  "These players currently have an active FWA base in CWL. Please swap to an active war base.";
+  "These players currently have an active base in competitive CWL. Please swap to an active war base.";
+const CWL_BASE_SWAP_SWAP_BACK_HEADER = "# Swap Back to CWL Bases";
+const CWL_BASE_SWAP_SWAP_BACK_NOTE =
+  "Thanks for keeping active war bases up for competitive CWL. Please swap back to your CWL base for the next competitive CWL war.";
 const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
 type FwaBaseSwapAuditLogMode =
@@ -395,6 +399,7 @@ type FwaBaseSwapSplitPostPayload = {
   clanTag: string;
   clanName: string;
   clanRoleId: string | null;
+  pingRoleId?: string | null;
   commandText: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
@@ -515,21 +520,23 @@ export async function handleFwaBaseSwapSplitPostButton(
     return;
   }
 
-  const resolvedMailChannel = await resolveFwaBaseSwapMailChannel({
+  const resolvedPublishChannel = await resolveFwaBaseSwapPublishChannel({
     client: interaction.client,
     guildId: payload.guildId,
     clanDisplay: payload.clanName,
+    clanKind: payload.clanKind ?? "FWA",
     mailChannelId: payload.mailChannelId,
+    invocationChannel: interaction.channel,
   });
-  if ("error" in resolvedMailChannel) {
+  if ("error" in resolvedPublishChannel) {
     await interaction.reply({
       ephemeral: true,
-      content: resolvedMailChannel.error,
+      content: resolvedPublishChannel.error,
     });
     return;
   }
-  const { channel: mailChannel, channelId: mailChannelId } =
-    resolvedMailChannel;
+  const { channel: publishChannel, channelId: publishChannelId } =
+    resolvedPublishChannel;
   const latestActiveSyncPost = await trackedMessageService
     .resolveLatestActiveSyncPost(payload.guildId)
     .catch(() => null);
@@ -537,17 +544,37 @@ export async function handleFwaBaseSwapSplitPostButton(
 
   try {
     const clanKind = payload.clanKind ?? "FWA";
-    const postedA = await mailChannel.send({
+    const allowedMentions =
+      clanKind === "CWL" &&
+      Boolean(payload.swapReminder) &&
+      payload.pingRoleId
+        ? { users: payload.mentionUserIds, roles: [payload.pingRoleId] }
+        : { users: payload.mentionUserIds };
+    const postedA = await publishChannel.send({
       content: payload.splitContents[0],
-      allowedMentions: {
-        users: payload.mentionUserIds,
-      },
+      allowedMentions,
     });
-    const postedB = await mailChannel.send({
+    await bestEffortPinFwaBaseSwapMessage({
+      guildId: payload.guildId,
+      channelId: publishChannelId,
+      message: postedA,
+      clanKind,
+      clanTag: payload.clanTag,
+      clanName: payload.clanName,
+      context: "split",
+    });
+    const postedB = await publishChannel.send({
       content: payload.splitContents[1],
-      allowedMentions: {
-        users: payload.mentionUserIds,
-      },
+      allowedMentions,
+    });
+    await bestEffortPinFwaBaseSwapMessage({
+      guildId: payload.guildId,
+      channelId: publishChannelId,
+      message: postedB,
+      clanKind,
+      clanTag: payload.clanTag,
+      clanName: payload.clanName,
+      context: "split",
     });
 
     const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -559,7 +586,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       syncMessageId,
       messages: [
         {
-          channelId: mailChannelId,
+          channelId: publishChannelId,
           messageId: postedA.id,
           metadata: {
             clanKind,
@@ -572,13 +599,14 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
-            clanRoleId: payload.clanRoleId,
+            clanRoleId: clanKind === "CWL" ? null : payload.clanRoleId,
+            pingRoleId: payload.pingRoleId ?? null,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_1",
           },
         },
         {
-          channelId: mailChannelId,
+          channelId: publishChannelId,
           messageId: postedB.id,
           metadata: {
             clanKind,
@@ -591,7 +619,8 @@ export async function handleFwaBaseSwapSplitPostButton(
             phaseTimingLine: payload.phaseTimingLine,
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
-            clanRoleId: payload.clanRoleId,
+            clanRoleId: clanKind === "CWL" ? null : payload.clanRoleId,
+            pingRoleId: payload.pingRoleId ?? null,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_2",
           },
@@ -601,14 +630,14 @@ export async function handleFwaBaseSwapSplitPostButton(
 
     await postedA.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
       console.error(
-        `[fwa base-swap] react failed guild=${payload.guildId} channel=${mailChannelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${publishChannelId} message=${postedA.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
           err,
         )}`,
       );
     });
     await postedB.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
       console.error(
-        `[fwa base-swap] react failed guild=${payload.guildId} channel=${mailChannelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
+        `[fwa base-swap] react failed guild=${payload.guildId} channel=${publishChannelId} message=${postedB.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${payload.userId} error=${formatError(
           err,
         )}`,
       );
@@ -618,7 +647,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     await logFwaBaseSwapPublication({
       client: interaction.client,
       guildId: payload.guildId,
-      sourceChannelId: mailChannelId,
+      sourceChannelId: publishChannelId,
       userId: payload.userId,
       username: payload.username,
       displayName: payload.displayName ?? payload.username,
@@ -633,7 +662,7 @@ export async function handleFwaBaseSwapSplitPostButton(
       clanKind,
       entries: payload.entries,
       guildId: payload.guildId,
-      channelId: mailChannelId,
+      channelId: publishChannelId,
       clanTag: payload.clanTag,
       userId: payload.userId,
       sendDm: async (content) => interaction.user.send({ content }),
@@ -1668,6 +1697,95 @@ async function resolveFwaBaseSwapMailChannel(input: {
   };
 }
 
+async function resolveFwaBaseSwapPublishChannel(input: {
+  client: Client;
+  guildId: string | null;
+  clanDisplay: string;
+  clanKind: FwaBaseSwapClanKind;
+  mailChannelId: string | null;
+  invocationChannel: {
+    id?: string;
+    guildId?: string;
+    isTextBased?: () => boolean;
+    send?: (payload: {
+      content: string;
+      allowedMentions: { users?: string[]; roles?: string[] };
+    }) => Promise<any>;
+  } | null;
+}): Promise<
+  | {
+      channelId: string;
+      channel: {
+        send: (payload: {
+          content: string;
+          allowedMentions: { users?: string[]; roles?: string[] };
+        }) => Promise<any>;
+      };
+    }
+  | { error: string }
+> {
+  if (input.clanKind !== "CWL") {
+    return resolveFwaBaseSwapMailChannel({
+      client: input.client,
+      guildId: input.guildId,
+      clanDisplay: input.clanDisplay,
+      mailChannelId: input.mailChannelId,
+    });
+  }
+
+  const clanDisplay = String(input.clanDisplay ?? "").trim() || "unknown clan";
+  const invocationChannel = input.invocationChannel;
+  const invocationChannelId = String(invocationChannel?.id ?? "").trim();
+  if (!invocationChannel || !invocationChannelId) {
+    return {
+      error: `No publish channel available for ${clanDisplay}. Use the base-swap command in a server text channel.`,
+    };
+  }
+  if (typeof invocationChannel.isTextBased !== "function" || !invocationChannel.isTextBased()) {
+    return {
+      error: `The publish channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+  if (typeof invocationChannel.send !== "function") {
+    return {
+      error: `The publish channel for ${clanDisplay} is unavailable or not sendable.`,
+    };
+  }
+  if (input.guildId) {
+    const channelGuildId = String(invocationChannel.guildId ?? "").trim();
+    if (!channelGuildId || channelGuildId !== input.guildId) {
+      return {
+        error: `The publish channel for ${clanDisplay} is unavailable or not sendable.`,
+      };
+    }
+  }
+
+  return {
+    channelId: invocationChannelId,
+    channel: {
+      send: invocationChannel.send.bind(invocationChannel),
+    },
+  };
+}
+
+async function bestEffortPinFwaBaseSwapMessage(input: {
+  guildId: string | null;
+  channelId: string;
+  message: { id: string; pin?: () => Promise<unknown> } | null;
+  clanKind?: FwaBaseSwapClanKind;
+  clanTag: string;
+  clanName: string;
+  context: "single" | "split";
+}): Promise<void> {
+  if (input.clanKind !== "CWL") return;
+  if (!input.message || typeof input.message.pin !== "function") return;
+  await input.message.pin().catch((err: unknown) => {
+    console.warn(
+      `[fwa base-swap] pin failed guild=${input.guildId ?? "unknown"} channel=${input.channelId} message=${input.message?.id ?? "unknown"} clan=#${input.clanTag} clan_name=${input.clanName} context=${input.context} error=${formatError(err)}`,
+    );
+  });
+}
+
 function formatFwaBaseSwapAuditBlock(input: string | null | undefined): string {
   const normalized = String(input ?? "").trim();
   if (!normalized) return "(none)";
@@ -1693,7 +1811,9 @@ function buildFwaBaseSwapAuditLogContent(input: {
     .map((url) => String(url ?? "").trim())
     .filter(Boolean);
   const lines = [
-    "**FWA base-swap announcement posted**",
+    input.clanKind === "CWL"
+      ? "**CWL base-swap announcement posted**"
+      : "**FWA base-swap announcement posted**",
     `<@${input.userId}> (${displayName}, ${input.userId}) posted /fwa base-swap in ${input.sourceChannelId ? `<#${input.sourceChannelId}>` : "unknown"} for ${input.clanName} (#${input.clanTag})`,
     links.length > 0
       ? `Posted message link(s): ${links[0]}${links.length > 1 ? `\n${links.slice(1).map((link) => `- ${link}`).join("\n")}` : ""}`
@@ -1709,6 +1829,7 @@ function buildFwaBaseSwapCommandText(input: {
   fwaBases: string | null;
   baseErrors: string | null;
   swapReminder: boolean | null;
+  pingRoleId?: string | null;
 }): string {
   const parts = [`/fwa base-swap clan:${input.clanTag}`];
   const appendOption = (name: string, value: string | null) => {
@@ -1721,6 +1842,10 @@ function buildFwaBaseSwapCommandText(input: {
   appendOption("base-errors", input.baseErrors);
   if (input.swapReminder !== null) {
     parts.push(`swap-reminder:${input.swapReminder ? "true" : "false"}`);
+  }
+  const pingRoleId = normalizeDiscordRoleId(input.pingRoleId ?? null);
+  if (pingRoleId) {
+    parts.push(`ping_role:${pingRoleId}`);
   }
   return parts.join(" ");
 }
@@ -1948,6 +2073,7 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
+  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -2021,6 +2147,13 @@ function buildFwaBaseSwapAnnouncementLines(state: {
       lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
       if (layoutLinkLines.length > 0) lines.push(...layoutLinkLines);
       if (state.phaseTimingLine) lines.push(state.phaseTimingLine);
+      if (state.swapReminder) {
+        const reminderLines = buildFwaBaseSwapReminderLines({
+          clanKind,
+          roleId: state.pingRoleId ?? null,
+        });
+        if (reminderLines.length > 0) lines.push("", ...reminderLines);
+      }
     } else {
       lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
       if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
@@ -2033,18 +2166,33 @@ function buildFwaBaseSwapAnnouncementLines(state: {
 }
 
 function buildFwaBaseSwapReminderLines(input: {
-  clanRoleId: string;
+  clanKind: FwaBaseSwapClanKind;
+  roleId?: string | null;
 }): string[] {
-  const normalizedRoleId = normalizeDiscordRoleId(input.clanRoleId);
-  if (!normalizedRoleId) {
-    return [];
+  const normalizedRoleId = normalizeDiscordRoleId(input.roleId ?? null);
+  if (input.clanKind === "CWL") {
+    return normalizedRoleId
+      ? [
+          CWL_BASE_SWAP_SWAP_BACK_HEADER,
+          CWL_BASE_SWAP_SWAP_BACK_NOTE,
+          `<@&${normalizedRoleId}>`,
+        ]
+      : [
+          CWL_BASE_SWAP_SWAP_BACK_HEADER,
+          CWL_BASE_SWAP_SWAP_BACK_NOTE,
+        ];
   }
 
-  return [
-    FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
-    FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
-    `<@&${normalizedRoleId}>`,
-  ];
+  return normalizedRoleId
+    ? [
+        FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
+        FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
+        `<@&${normalizedRoleId}>`,
+      ]
+    : [
+        FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
+        FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
+      ];
 }
 
 export const buildFwaBaseSwapReminderLinesForTest = buildFwaBaseSwapReminderLines;
@@ -2100,6 +2248,7 @@ function buildFwaBaseSwapRenderPlan(state: {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
+  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -2128,6 +2277,7 @@ function renderFwaBaseSwapAnnouncement(
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
     clanRoleId?: string | null;
+    pingRoleId?: string | null;
     swapReminder?: boolean;
     phaseTimingLine?: string | null;
     alertEmoji?: string | null;
@@ -13497,15 +13647,22 @@ export const Fwa: Command = {
         {
           name: "fwa-bases",
           description:
-            "Comma-separated FWA-base positions that need a blacklist-war swap, e.g. 5,6,7",
+            "Comma-separated FWA/CWL base positions that need a swap back to war bases, e.g. 5,6,7",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
         {
           name: "swap-reminder",
           description:
-            "Optional battle-day swap-back reminder for fwa-bases flows (defaults to true)",
+            "Optional swap-back reminder for fwa-bases and CWL fwa-bases flows (defaults to true)",
           type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
+          name: "ping_role",
+          description:
+            "Optional role to ping for CWL swap-back reminders",
+          type: ApplicationCommandOptionType.Role,
           required: false,
         },
       ],
@@ -14153,6 +14310,8 @@ export const Fwa: Command = {
         "swap-reminder",
         false,
       );
+      const pingRoleOption = interaction.options.getRole("ping_role", false);
+      const pingRoleId = pingRoleOption ? String(pingRoleOption.id ?? "").trim() : null;
       const swapReminderError = validateFwaBaseSwapSwapReminderOption({
         warBasesRaw,
         baseErrorsRaw,
@@ -14216,7 +14375,15 @@ export const Fwa: Command = {
       const { clanKind, clanTag, clanName, rosterMembers, phaseTiming } =
         resolvedRosterResult.roster;
       const trackedConfig = await getTrackedClanBaseSwapRoutingConfig(clanTag);
-      if (swapReminder && !String(trackedConfig?.clanRoleId ?? "").trim()) {
+      const reminderRoleId =
+        clanKind === "CWL"
+          ? pingRoleId
+          : String(trackedConfig?.clanRoleId ?? "").trim() || null;
+      if (
+        swapReminder &&
+        clanKind !== "CWL" &&
+        !String(trackedConfig?.clanRoleId ?? "").trim()
+      ) {
         await editReplySafe(
           `No clan role configured for ${clanName}. Set the tracked clan clan role first.`,
         );
@@ -14228,6 +14395,7 @@ export const Fwa: Command = {
         fwaBases: fwaBasesRaw,
         baseErrors: baseErrorsRaw,
         swapReminder,
+        pingRoleId,
       });
       const baseSwapPhaseTimingLine = phaseTiming
         ? buildFwaBaseSwapPhaseTimingLine({
@@ -14253,18 +14421,20 @@ export const Fwa: Command = {
         return;
       }
 
-      const resolvedMailChannel = await resolveFwaBaseSwapMailChannel({
+      const resolvedPublishChannel = await resolveFwaBaseSwapPublishChannel({
         client: interaction.client,
         guildId: interaction.guildId,
         clanDisplay: clanName,
+        clanKind,
         mailChannelId: trackedConfig?.mailChannelId ?? null,
+        invocationChannel: interaction.channel,
       });
-      if ("error" in resolvedMailChannel) {
-        await editReplySafe(resolvedMailChannel.error);
+      if ("error" in resolvedPublishChannel) {
+        await editReplySafe(resolvedPublishChannel.error);
         return;
       }
-      const { channel: mailChannel, channelId: mailChannelId } =
-        resolvedMailChannel;
+      const { channel: publishChannel, channelId: publishChannelId } =
+        resolvedPublishChannel;
 
       const townhalls = collectBaseSwapTownhallLevels(entries);
       const layoutRows =
@@ -14290,7 +14460,8 @@ export const Fwa: Command = {
         clanKind,
         entries,
         layoutLinks,
-        clanRoleId: trackedConfig?.clanRoleId ?? null,
+        clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
+        pingRoleId: reminderRoleId,
         swapReminder: Boolean(swapReminder),
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
@@ -14298,6 +14469,10 @@ export const Fwa: Command = {
         layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
       });
       const mentionUserIds = buildFwaBaseSwapMentionUserIds(entries);
+      const allowedMentions =
+        clanKind === "CWL" && Boolean(swapReminder) && reminderRoleId
+          ? { users: mentionUserIds, roles: [reminderRoleId] }
+          : { users: mentionUserIds };
       const unlinked = entries.filter((entry) => !entry.discordUserId);
 
       if (!renderPlan.fitsSingleMessage) {
@@ -14315,8 +14490,9 @@ export const Fwa: Command = {
           displayName: resolveFwaBaseSwapDisplayName(interaction),
           guildId: interaction.guildId,
           channelId: interaction.channelId,
-          mailChannelId,
+          mailChannelId: publishChannelId,
           clanRoleId: trackedConfig?.clanRoleId ?? null,
+          pingRoleId: reminderRoleId,
           clanTag,
           clanName,
           clanKind,
@@ -14355,11 +14531,18 @@ export const Fwa: Command = {
         return;
       }
 
-      const posted = await mailChannel.send({
+      const posted = await publishChannel.send({
         content: renderPlan.singleContent,
-        allowedMentions: {
-          users: mentionUserIds,
-        },
+        allowedMentions,
+      });
+      await bestEffortPinFwaBaseSwapMessage({
+        guildId: interaction.guildId,
+        channelId: publishChannelId,
+        message: posted,
+        clanKind,
+        clanTag,
+        clanName,
+        context: "single",
       });
       const reminderMessages: string[] = [posted.url];
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
@@ -14374,7 +14557,7 @@ export const Fwa: Command = {
         syncMessageId,
         messages: [
           {
-            channelId: mailChannelId,
+            channelId: publishChannelId,
             messageId: posted.id,
             metadata: {
               clanName,
@@ -14388,7 +14571,8 @@ export const Fwa: Command = {
               fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
               clanKind,
-              clanRoleId: trackedConfig?.clanRoleId ?? null,
+              clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
+              pingRoleId: reminderRoleId,
               renderVariant: "single",
               swapReminder: Boolean(swapReminder),
             },
@@ -14398,7 +14582,7 @@ export const Fwa: Command = {
 
       await posted.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
         console.error(
-          `[fwa base-swap] react failed guild=${interaction.guildId} channel=${mailChannelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
+          `[fwa base-swap] react failed guild=${interaction.guildId} channel=${publishChannelId} message=${posted.id} emoji=${FWA_BASE_SWAP_ACK_EMOJI} user=${interaction.user.id} error=${formatError(
             err,
           )}`,
         );
@@ -14407,7 +14591,7 @@ export const Fwa: Command = {
       await logFwaBaseSwapPublication({
         client: interaction.client,
         guildId: interaction.guildId,
-        sourceChannelId: mailChannelId,
+        sourceChannelId: publishChannelId,
         userId: interaction.user.id,
         username: interaction.user.username,
         displayName: resolveFwaBaseSwapDisplayName(interaction),
@@ -14431,7 +14615,7 @@ export const Fwa: Command = {
         clanKind,
         entries,
         guildId: interaction.guildId,
-        channelId: mailChannelId,
+        channelId: publishChannelId,
         clanTag,
         userId: interaction.user.id,
         sendDm: async (content) => interaction.user.send({ content }),

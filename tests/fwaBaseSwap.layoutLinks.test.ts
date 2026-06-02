@@ -182,6 +182,7 @@ function makeBaseSwapCommandInteraction(input: {
   baseErrors?: string | null;
   fwaBases?: string | null;
   swapReminder?: boolean | null;
+  pingRoleId?: string | null;
   guildId?: string;
   invokeChannelId?: string;
   mailChannelId?: string | null;
@@ -262,6 +263,12 @@ function makeBaseSwapCommandInteraction(input: {
       }),
       getBoolean: vi.fn((name: string) => {
         if (name === "swap-reminder") return input.swapReminder ?? null;
+        return null;
+      }),
+      getRole: vi.fn((name: string) => {
+        if (name === "ping_role" && input.pingRoleId) {
+          return { id: input.pingRoleId } as any;
+        }
         return null;
       }),
       getChannel: vi.fn(() => null),
@@ -3135,7 +3142,7 @@ describe("CWL base-swap labels", () => {
       "# <a:alert_blue:10003> YOU HAVE AN ACTIVE FWA BASE IN CWL <a:alert_blue:10003>",
     );
     expect(announcementContent).toContain(
-      "These players currently have an active FWA base in CWL. Please swap to an active war base.",
+      "These players currently have an active base in competitive CWL. Please swap to an active war base.",
     );
     expect(announcementContent).toContain(
       "\n## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
@@ -3147,6 +3154,236 @@ describe("CWL base-swap labels", () => {
     expect(dmContent).toContain("CWL base error messages:");
     expect(dmContent).toContain("ACTIVE CWL LINEUP: swap to WAR BASE now");
     expect(dmContent).toContain("TH16 update CWL layout: !th16");
+  });
+
+  it("renders a competitive CWL swap-back reminder block with an optional role ping", () => {
+    const reminderContent = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "CWL",
+      swapReminder: true,
+      pingRoleId: "123456789012345678",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: null,
+      alertEmoji: "<a:alert:10001>",
+      fwaAlertEmoji: "<a:alert_blue:10003>",
+    });
+
+    expect(reminderContent).toContain("# Swap Back to CWL Bases");
+    expect(reminderContent).toContain(
+      "Thanks for keeping active war bases up for competitive CWL. Please swap back to your CWL base for the next competitive CWL war.",
+    );
+    expect(reminderContent).toContain("<@&123456789012345678>");
+    expect(reminderContent).toContain("React with");
+    expect(reminderContent).toContain("YOU HAVE AN ACTIVE FWA BASE IN CWL");
+  });
+
+  it("posts CWL base-swap announcements in the invocation channel and pins them", async () => {
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      null,
+    );
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: true,
+      pingRoleId: "123456789012345678",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: null,
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "CWL",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: 18,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: null,
+        clanRoleId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+      },
+    ]);
+    const posted = {
+      id: "msg-cwl-1",
+      url: "https://discord.com/channels/guild-1/invoke-1/msg-cwl-1",
+      react: vi.fn().mockResolvedValue(undefined),
+      pin: vi.fn().mockResolvedValue(undefined),
+    };
+    run.interactionChannelSend.mockResolvedValueOnce(posted);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.interactionChannelSend).toHaveBeenCalledTimes(1);
+    expect(run.mailChannelSend).not.toHaveBeenCalled();
+    expect(run.interactionChannelSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("# Swap Back to CWL Bases"),
+        allowedMentions: {
+          users: ["111"],
+          roles: ["123456789012345678"],
+        },
+      }),
+    );
+    expect(posted.pin).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.channelId).toBe("invoke-1");
+    expect(upsertCall.create.metadata.pingRoleId).toBe(
+      "123456789012345678",
+    );
+    expect(upsertCall.create.metadata.clanRoleId).toBeNull();
+    expect(String(run.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      posted.url,
+    );
+  });
+
+  it("publishes split CWL base-swap posts in the invocation channel and pins both posts", async () => {
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      null,
+    );
+    const key = "split-cwl-1";
+    setFwaBaseSwapSplitPostPayloadForTest(key, {
+      userId: "user-1",
+      username: "Requester",
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      mailChannelId: "invoke-1",
+      clanRoleId: null,
+      pingRoleId: "123456789012345678",
+      clanTag: "2QG2C08UP",
+      clanName: "Test Clan",
+      clanKind: "CWL",
+      commandText: buildFwaBaseSwapCommandTextForTest({
+        clanTag: "2QG2C08UP",
+        warBases: null,
+        fwaBases: "1",
+        baseErrors: null,
+        swapReminder: true,
+        pingRoleId: "123456789012345678",
+      }),
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "fwa_bases",
+          discordUserId: "111",
+          townhallLevel: 18,
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: null,
+      alertEmoji: null,
+      layoutBulletEmoji: null,
+      mentionUserIds: ["111"],
+      swapReminder: true,
+      createdAtIso: "2026-03-20T00:00:00.000Z",
+      splitContents: ["Part 1 content", "Part 2 content"],
+    });
+
+    const postedA = {
+      id: "msg-cwl-a",
+      url: "https://discord.com/channels/guild-1/invoke-1/msg-cwl-a",
+      react: vi.fn().mockResolvedValue(undefined),
+      pin: vi.fn().mockResolvedValue(undefined),
+    };
+    const postedB = {
+      id: "msg-cwl-b",
+      url: "https://discord.com/channels/guild-1/invoke-1/msg-cwl-b",
+      react: vi.fn().mockResolvedValue(undefined),
+      pin: vi.fn().mockResolvedValue(undefined),
+    };
+    const interaction = {
+      customId: buildFwaBaseSwapSplitPostCustomId({
+        userId: "user-1",
+        key,
+        action: "yes",
+      }),
+      user: {
+        id: "user-1",
+        username: "Requester",
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+      guildId: "guild-1",
+      channelId: "invoke-1",
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+      channel: {
+        id: "invoke-1",
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: vi
+          .fn()
+          .mockResolvedValueOnce(postedA)
+          .mockResolvedValueOnce(postedB),
+      },
+      followUp: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleFwaBaseSwapSplitPostButton(interaction as any);
+
+    expect(interaction.channel.send).toHaveBeenCalledTimes(2);
+    expect(interaction.channel.send).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        content: "Part 1 content",
+        allowedMentions: {
+          users: ["111"],
+          roles: ["123456789012345678"],
+        },
+      }),
+    );
+    expect(interaction.channel.send).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: "Part 2 content",
+        allowedMentions: {
+          users: ["111"],
+          roles: ["123456789012345678"],
+        },
+      }),
+    );
+    expect(postedA.pin).toHaveBeenCalledTimes(1);
+    expect(postedB.pin).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
+    for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
+      expect(call[0].create.channelId).toBe("invoke-1");
+      expect(call[0].create.metadata.clanKind).toBe("CWL");
+      expect(call[0].create.metadata.pingRoleId).toBe(
+        "123456789012345678",
+      );
+      expect(call[0].create.metadata.clanRoleId).toBeNull();
+    }
   });
 
   it("rejects out-of-range CWL lineup positions with a valid range", () => {
