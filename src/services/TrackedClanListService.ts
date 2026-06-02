@@ -155,7 +155,7 @@ function compareCwlTrackedClanDetailedRows(
   if (!leftRosterTitle) return 1;
   if (!rightRosterTitle) return -1;
 
-  const rosterTitleCompare = rightRosterTitle.localeCompare(leftRosterTitle, undefined, {
+  const rosterTitleCompare = leftRosterTitle.localeCompare(rightRosterTitle, undefined, {
     sensitivity: "base",
   });
   if (rosterTitleCompare !== 0) return rosterTitleCompare;

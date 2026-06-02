@@ -870,6 +870,56 @@ export const TrackedClan: Command = {
           let page = 0;
           let refreshing = false;
           let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+          let autoRefreshStopped = false;
+          type DetailedRefreshSummary = {
+            displayedCount: number;
+            failedCount: number;
+            matchedCount: number;
+            searchingCount: number;
+            idleCount: number;
+          };
+          const summarizeDetailedRows = (
+            rows: CwlTrackedClanDetailedDisplayRow[],
+            failedCount = 0,
+          ): DetailedRefreshSummary => {
+            let matchedCount = 0;
+            let searchingCount = 0;
+            let idleCount = 0;
+            for (const row of rows) {
+              if (row.spinStatus === "matched") {
+                matchedCount += 1;
+              } else if (row.spinStatus === "searching") {
+                searchingCount += 1;
+              } else {
+                idleCount += 1;
+              }
+            }
+            return {
+              displayedCount: rows.length,
+              failedCount,
+              matchedCount,
+              searchingCount,
+              idleCount,
+            };
+          };
+          let detailedRefreshSummary = summarizeDetailedRows(detailedRows);
+          const formatDetailedRefreshSummary = (summary: DetailedRefreshSummary = detailedRefreshSummary): string =>
+            `displayed_count=${summary.displayedCount} matched_count=${summary.matchedCount} searching_count=${summary.searchingCount} idle_count=${summary.idleCount} failed_count=${summary.failedCount}`;
+          const logDetailedRefresh = (
+            status: "started" | "tick_success" | "tick_failed" | "stopped",
+            reason?: string,
+            error?: unknown,
+          ) => {
+            const reasonSuffix = reason ? ` reason=${reason}` : "";
+            const errorSuffix = error ? ` error=${formatError(error)}` : "";
+            const logLine =
+              `[tracked-clan] stage=cwl_detailed_refresh_auto status=${status} season=${season} ${formatDetailedRefreshSummary()}${reasonSuffix}${errorSuffix}`;
+            if (status === "tick_failed") {
+              console.error(logLine);
+              return;
+            }
+            console.info(logLine);
+          };
           const renderDetailed = (refreshing: boolean) => {
             const blocks = detailedRows.map((clan) => buildCwlTrackedClanBlock(clan));
             const pages = paginateTrackedClanBlocks(blocks);
@@ -887,22 +937,42 @@ export const TrackedClan: Command = {
             };
           };
 
-          const stopAutoRefreshTimer = () => {
+          const stopAutoRefreshTimer = (reason: "all_matched" | "collector_ended" | "message_unavailable") => {
             if (autoRefreshTimer !== null) {
               clearInterval(autoRefreshTimer);
               autoRefreshTimer = null;
+            }
+            if (!autoRefreshStopped) {
+              autoRefreshStopped = true;
+              logDetailedRefresh("stopped", reason);
             }
           };
 
           const hasUnmatchedRows = () => detailedRows.some((row) => row.spinStatus !== "matched");
 
           const maybeStartAutoRefreshTimer = () => {
-            if (autoRefreshTimer !== null || !hasUnmatchedRows()) {
+            if (autoRefreshTimer !== null || autoRefreshStopped || refreshing || !hasUnmatchedRows()) {
               return;
             }
             autoRefreshTimer = setInterval(() => {
+              if (refreshing) {
+                return;
+              }
               void runDetailedRefresh("auto");
             }, 2 * 60 * 1000);
+            logDetailedRefresh("started");
+          };
+
+          const isPermanentDetailedEditFailure = (err: unknown): boolean => {
+            const normalized = formatError(err).toLowerCase();
+            return (
+              normalized.includes("unknown message") ||
+              normalized.includes("unknown interaction") ||
+              normalized.includes("unknown webhook") ||
+              normalized.includes("missing access") ||
+              normalized.includes("message unavailable") ||
+              normalized.includes("cannot edit")
+            );
           };
 
           const runDetailedRefresh = async (source: "manual" | "auto", button?: ButtonInteraction) => {
@@ -922,7 +992,11 @@ export const TrackedClan: Command = {
               if (source === "manual" && button) {
                 try {
                   await button.update(renderDetailed(true));
-                } catch {
+                } catch (err) {
+                  if (isPermanentDetailedEditFailure(err)) {
+                    stopAutoRefreshTimer("message_unavailable");
+                    return;
+                  }
                   if (!button.replied && !button.deferred) {
                     try {
                       await button.deferUpdate();
@@ -932,7 +1006,16 @@ export const TrackedClan: Command = {
                   }
                 }
               } else if (source === "auto") {
-                await interaction.editReply(renderDetailed(true));
+                try {
+                  await interaction.editReply(renderDetailed(true));
+                } catch (err) {
+                  if (isPermanentDetailedEditFailure(err)) {
+                    logDetailedRefresh("tick_failed", "message_unavailable", err);
+                    stopAutoRefreshTimer("message_unavailable");
+                    return;
+                  }
+                  throw err;
+                }
               }
 
               const refreshResult = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
@@ -941,9 +1024,24 @@ export const TrackedClan: Command = {
                 cocService,
               });
               detailedRows = refreshResult.rows;
-              await interaction.editReply(renderDetailed(false));
+              detailedRefreshSummary = summarizeDetailedRows(detailedRows, refreshResult.failedClanCount);
+              try {
+                await interaction.editReply(renderDetailed(false));
+              } catch (err) {
+                if (isPermanentDetailedEditFailure(err)) {
+                  if (source === "auto") {
+                    logDetailedRefresh("tick_failed", "message_unavailable", err);
+                  }
+                  stopAutoRefreshTimer("message_unavailable");
+                  return;
+                }
+                throw err;
+              }
+              if (source === "auto") {
+                logDetailedRefresh("tick_success");
+              }
               if (!hasUnmatchedRows()) {
-                stopAutoRefreshTimer();
+                stopAutoRefreshTimer("all_matched");
               }
               if (source === "manual" && button && refreshResult.failedClanCount > 0) {
                 const failedMessage =
@@ -957,10 +1055,19 @@ export const TrackedClan: Command = {
               }
             } catch (err) {
               console.error(`tracked-clan CWL detailed refresh failed: ${formatError(err)}`);
+              if (source === "auto") {
+                logDetailedRefresh("tick_failed", undefined, err);
+              }
               try {
                 await interaction.editReply(renderDetailed(false));
-              } catch {
-                // no-op
+              } catch (editErr) {
+                if (isPermanentDetailedEditFailure(editErr)) {
+                  if (source === "auto") {
+                    logDetailedRefresh("tick_failed", "message_unavailable", editErr);
+                  }
+                  stopAutoRefreshTimer("message_unavailable");
+                  return;
+                }
               }
               if (source === "manual" && button) {
                 if (!button.replied && !button.deferred) {
@@ -972,9 +1079,7 @@ export const TrackedClan: Command = {
               }
             } finally {
               refreshing = false;
-              if (!hasUnmatchedRows()) {
-                stopAutoRefreshTimer();
-              } else {
+              if (!autoRefreshStopped && hasUnmatchedRows()) {
                 maybeStartAutoRefreshTimer();
               }
             }
@@ -1032,7 +1137,14 @@ export const TrackedClan: Command = {
           });
 
           collector.on("end", async () => {
-            stopAutoRefreshTimer();
+            if (autoRefreshTimer !== null) {
+              clearInterval(autoRefreshTimer);
+              autoRefreshTimer = null;
+            }
+            if (!autoRefreshStopped) {
+              autoRefreshStopped = true;
+              logDetailedRefresh("stopped", "collector_ended");
+            }
             try {
               await interaction.editReply({
                 ...renderDetailed(false),

@@ -681,8 +681,8 @@ describe("/clan command behavior", () => {
     expect(description).toContain("Roster: Zulu Roster");
     expect(description).not.toContain("registry: CWL seasonal");
     expect(description.indexOf("Alpha Clan")).toBeLessThan(description.indexOf("Beta Clan"));
-    expect(description.indexOf("Beta Clan")).toBeLessThan(description.indexOf("Charlie Clan"));
-    expect(description.indexOf("Zulu Roster")).toBeLessThan(description.lastIndexOf("Alpha Roster"));
+    expect(description.indexOf("Charlie Clan")).toBeLessThan(description.indexOf("Beta Clan"));
+    expect(description.indexOf("Alpha Roster")).toBeLessThan(description.indexOf("Zulu Roster"));
     expect(payload?.components?.length).toBeGreaterThanOrEqual(1);
     expect(payload?.components?.[payload.components.length - 1]?.toJSON?.().components?.[0]?.custom_id).toBe(
       "tracked-clan-list:cwl:tracked-clan-itx-1:refresh",
@@ -839,9 +839,93 @@ describe("/clan command behavior", () => {
     expect(String(refreshedCall?.[0]?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
       "Roster: [Refreshed Roster](<https://discord.com/channels/1/2/99>)",
     );
+    const latestPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(JSON.stringify(latestPayload?.components?.map((row: any) => row.toJSON?.()) ?? [])).toContain(
+      '"disabled":false',
+    );
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(120000);
     expect(refreshHelperMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start the detailed CWL auto-refresh interval when all rows are matched", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Master League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValueOnce([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValueOnce([]);
+    prismaMock.roster.findMany.mockResolvedValueOnce([
+      {
+        id: "roster-before",
+        title: "Old Roster",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([{ clanTag: "#PYLQ0289", _count: { clanTag: 49 } }]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({ season: "2026-03", state: "matched" }),
+      getClan: vi.fn().mockResolvedValue({ name: "CWL Alpha", warLeague: { name: "Champion League I" } }),
+    };
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Master League I",
+        spinStatus: "matched",
+        observedCwlRosterCount: 31,
+        currentClanMemberCount: 49,
+        rosterTitle: "Old Roster",
+        rosterPostedMessageUrl: null,
+      },
+    ]);
+    const refreshHelperMock = vi
+      .spyOn(trackedClanListService, "refreshCwlTrackedClanDetailedDisplayWithQueueContext")
+      .mockResolvedValue({
+        season: "2026-03",
+        displayedClanCount: 1,
+        failedClanCount: 0,
+        failedClanTags: [],
+        metadataHydratedCount: 0,
+        metadataSkippedCount: 0,
+        matchedCount: 1,
+        searchingCount: 0,
+        idleCount: 0,
+        rows: [
+          {
+            season: "2026-03",
+            tag: "#PYLQ0289",
+            name: "CWL Alpha",
+            leagueLabel: "Champion League I",
+            spinStatus: "matched",
+            observedCwlRosterCount: 31,
+            currentClanMemberCount: 49,
+            rosterTitle: "Old Roster",
+            rosterPostedMessageUrl: null,
+          },
+        ],
+      });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(refreshHelperMock).not.toHaveBeenCalled();
   });
 
   it("runs the detailed CWL auto-refresh interval and stops it once all rows are matched", async () => {
