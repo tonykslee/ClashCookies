@@ -139,11 +139,16 @@ function resolveApplicationEmojiRendered(
   return null;
 }
 
-async function resolveCwlRosterSignupTagSet(input: {
+async function resolveCwlRosterContext(input: {
   guildId: string | null;
   clanTag: string;
   season: string;
-}): Promise<Set<string> | null> {
+}): Promise<{
+  rosterId: string | null;
+  rosterTitle: string | null;
+  rosterPostedMessageUrl: string | null;
+  signupTagSet: Set<string>;
+} | null> {
   const guildId = String(input.guildId ?? "").trim();
   if (!guildId) {
     return null;
@@ -158,16 +163,22 @@ async function resolveCwlRosterSignupTagSet(input: {
     return null;
   }
 
+  const rosterId = roster.id;
+  const rosterTitle = String(roster.title ?? "").trim() || null;
+  const rosterPostedMessageUrl = String(roster.postedMessageUrl ?? "").trim() || null;
   const rosterView = await rosterService.getRosterView(roster.id);
-  if (!rosterView) {
-    return null;
-  }
-
-  return new Set(
-    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter((tag): tag is string =>
+  const signupTagSet = new Set(
+    (rosterView?.signups ?? []).map((signup) => normalizePlayerTag(signup.playerTag)).filter((tag): tag is string =>
       Boolean(tag),
     ),
   );
+
+  return {
+    rosterId,
+    rosterTitle,
+    rosterPostedMessageUrl,
+    signupTagSet,
+  };
 }
 
 function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
@@ -343,6 +354,47 @@ function buildDescription(lines: string[]): string {
     return description;
   }
   return `${description.slice(0, DISCORD_DESCRIPTION_LIMIT - 13)}\n...truncated`;
+}
+
+function splitLinesIntoDiscordEmbedDescriptions(lines: string[]): string[] {
+  const descriptions: string[] = [];
+  const maxChars = DISCORD_DESCRIPTION_LIMIT;
+  let current = "";
+
+  for (const line of lines) {
+    if (current.length === 0) {
+      current = line;
+      continue;
+    }
+    const candidate = `${current}\n${line}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    descriptions.push(current);
+    current = line;
+  }
+
+  if (current.length > 0) {
+    descriptions.push(current);
+  }
+
+  return descriptions.length > 0 ? descriptions : [""];
+}
+
+function buildCwlMembersRosterLine(input: {
+  rosterTitle: string | null;
+  rosterPostedMessageUrl: string | null;
+}): string {
+  const rosterTitle = String(input.rosterTitle ?? "").trim();
+  if (!rosterTitle) {
+    return "Roster: none found";
+  }
+  const postedMessageUrl = String(input.rosterPostedMessageUrl ?? "").trim();
+  if (postedMessageUrl) {
+    return `Roster: [${rosterTitle}](<${postedMessageUrl}>)`;
+  }
+  return `Roster: ${rosterTitle} (not posted)`;
 }
 
 function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
@@ -2598,9 +2650,9 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
-  const [townHallEmojiByLevel, rosterSignupTagSet] = await Promise.all([
+  const [townHallEmojiByLevel, rosterContext] = await Promise.all([
     resolveTownHallEmojiMap(interaction.client),
-    resolveCwlRosterSignupTagSet({
+    resolveCwlRosterContext({
       guildId: interaction.guildId ?? null,
       clanTag,
       season,
@@ -2615,19 +2667,29 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
   const entries = inWarOnly
     ? roster.filter((entry) => entry.currentRound?.inCurrentLineup)
     : roster;
-  const lines = renderMembersListLines({
-    season,
-    clanTag,
-    clanName: trackedClan.name,
-    entries,
-    inWarOnly,
-    townHallEmojiByLevel,
-    rosterSignupTagSet,
-  });
+  const rosterSignupTagSet = rosterContext?.signupTagSet ?? null;
+  const hasRosterContext = Boolean(rosterContext);
+  const signedUpAndSpunCount = hasRosterContext
+    ? entries.filter((entry) => {
+        const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+        return Boolean(normalizedPlayerTag) && rosterSignupTagSet?.has(normalizedPlayerTag) === true;
+      }).length
+    : 0;
+  const notSignedUpIncludedTags = hasRosterContext
+    ? entries
+        .filter((entry) => {
+          const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+          return Boolean(normalizedPlayerTag) && rosterSignupTagSet?.has(normalizedPlayerTag) !== true;
+        })
+        .map((entry) => normalizePlayerTag(entry.playerTag)?.replace(/^#/, ""))
+        .filter((tag): tag is string => Boolean(tag))
+    : [];
+  const topInfoLines = [
+    `Season: ${season}`,
+    `Clan: ${trackedClan.name ? `${trackedClan.name} (${clanTag})` : clanTag}`,
+  ];
   if (currentRound) {
-    lines.splice(
-      2,
-      0,
+    topInfoLines.push(
       renderCurrentRoundSummary({
         clanTag,
         clanName: currentRound.clanName,
@@ -2639,17 +2701,47 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
           ? currentRound.startTime
           : currentRound.endTime,
       }),
-      "",
     );
   }
-
+  topInfoLines.push(
+    buildCwlMembersRosterLine({
+      rosterTitle: rosterContext?.rosterTitle ?? null,
+      rosterPostedMessageUrl: rosterContext?.rosterPostedMessageUrl ?? null,
+    }),
+    `Members spun in CWL: ${entries.length}`,
+    `Signed up + spun in CWL: ${signedUpAndSpunCount}`,
+    "",
+  );
+  const memberListLines = renderMembersListLines({
+    season,
+    clanTag,
+    clanName: trackedClan.name,
+    entries,
+    inWarOnly,
+    townHallEmojiByLevel,
+    rosterSignupTagSet,
+  });
+  const fullLines = [
+    ...topInfoLines,
+    ...memberListLines.slice(3),
+    "",
+    "Not signed up but included in CWL",
+    notSignedUpIncludedTags.length > 0 ? `\`${notSignedUpIncludedTags.join(" ")}\`` : "none",
+  ];
+  const descriptions = splitLinesIntoDiscordEmbedDescriptions(fullLines);
   await interaction.editReply({
-    embeds: [
+    embeds: descriptions.map((description, index) =>
       new EmbedBuilder()
         .setColor(CWL_EMBED_COLOR)
-        .setTitle(`/cwl members ${clanTag}`)
-        .setDescription(buildDescription(lines)),
-    ],
+        .setTitle(index === 0 ? `/cwl members ${clanTag}` : `/cwl members ${clanTag} (continued ${index + 1}/${descriptions.length})`)
+        .setDescription(description)
+        .setFooter({
+          text:
+            descriptions.length > 1
+              ? `Part ${index + 1}/${descriptions.length}`
+              : `/cwl members ${clanTag}`,
+        }),
+    ),
   });
 }
 
