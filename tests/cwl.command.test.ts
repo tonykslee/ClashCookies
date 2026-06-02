@@ -104,6 +104,7 @@ function makeInteraction(input: {
     },
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -185,6 +186,20 @@ function getAllEmbedDescriptions(interaction: any): string[] {
   const payload = (interaction.editReply?.mock.calls[0]?.[0] ?? interaction.update?.mock.calls[0]?.[0]) as any;
   const embeds = Array.isArray(payload?.embeds) ? payload.embeds : [];
   return embeds.map((embed: any) => String(embed?.toJSON?.().description ?? ""));
+}
+
+function getAllReplyPayloads(interaction: any): any[] {
+  const payloads: any[] = [];
+  if (interaction.editReply?.mock.calls.length > 0) {
+    payloads.push(interaction.editReply.mock.calls[0]?.[0]);
+  }
+  if (interaction.followUp?.mock.calls.length > 0) {
+    payloads.push(...interaction.followUp.mock.calls.map((call: any[]) => call[0]));
+  }
+  if (interaction.update?.mock.calls.length > 0) {
+    payloads.push(interaction.update.mock.calls[0]?.[0]);
+  }
+  return payloads.filter(Boolean);
 }
 
 function getUpdatedDescription(interaction: any): string {
@@ -449,6 +464,90 @@ describe("/cwl command", () => {
     expect(description).not.toContain("preparation 0/0");
   });
 
+  it("shows roster context but marks signups unavailable when the roster view cannot be loaded", async () => {
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 18,
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "alpha-user",
+        daysParticipated: 3,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: true,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 17,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 1,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: false,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+    ]);
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+      title: "CWL Alpha Signup",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue(null);
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: null,
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      members: [],
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "members",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getAllEmbedDescriptions(interaction).join("\n");
+    expect(description).toContain(
+      "Roster: [CWL Alpha Signup](<https://discord.com/channels/guild-1/channel-1/message-1>) (signups unavailable)",
+    );
+    expect(description).toContain("Members spun in CWL: 2");
+    expect(description).toContain("Signed up + spun in CWL: unavailable");
+    expect(description).not.toContain(":warning:");
+    expect(description).toContain("Not signed up but included in CWL");
+    expect(description).toContain("unavailable");
+  });
+
   it("adds town hall bullets and roster warnings for missing CWL signup members", async () => {
     (rosterService.findCwlRosterForClan as any).mockResolvedValue({
       id: "roster-1",
@@ -584,7 +683,7 @@ describe("/cwl command", () => {
     expect(description).not.toContain(":warning:");
     expect(description).toContain("Roster: none found");
     expect(description).toContain("Members spun in CWL: 2");
-    expect(description).toContain("Signed up + spun in CWL: 0");
+    expect(description).toContain("Signed up + spun in CWL: unavailable");
     expect(description).toContain("Not signed up but included in CWL");
     expect(description).toContain("none");
   });
@@ -741,13 +840,19 @@ describe("/cwl command", () => {
 
     await Cwl.run({} as any, interaction as any);
 
-    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    const embeds = Array.isArray(payload?.embeds) ? payload.embeds : [];
-    expect(embeds.length).toBeGreaterThan(1);
-    const descriptions = getAllEmbedDescriptions(interaction);
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(interaction.followUp.mock.calls.length).toBeGreaterThan(0);
+    const payloads = getAllReplyPayloads(interaction);
+    const descriptions = payloads.flatMap((payload) =>
+      Array.isArray(payload?.embeds)
+        ? payload.embeds.map((embed: any) => String(embed?.toJSON?.().description ?? ""))
+        : [],
+    );
     expect(descriptions.some((description) => description.includes("...truncated"))).toBe(false);
+    expect(descriptions.every((description) => description.length <= 4096)).toBe(true);
     expect(descriptions.join("\n")).toContain("Not signed up but included in CWL");
-    expect(descriptions.join("\n")).toMatch(/`[A-Z0-9]+(?: [A-Z0-9]+)+`/);
+    expect(descriptions.join("\n")).toContain("`");
+    expect(descriptions.join("\n")).not.toContain("...truncated");
   });
 
   it("posts a CWL signup roster with buttons and persistence", async () => {
