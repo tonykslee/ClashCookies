@@ -89,7 +89,7 @@ Required env vars:
 - `GOOGLE_OAUTH_REFRESH_TOKEN`
 
 Notes:
-- Refresh token scope: `https://www.googleapis.com/auth/spreadsheets.readonly` for read-only flows, or `https://www.googleapis.com/auth/spreadsheets` + `https://www.googleapis.com/auth/drive.file` when you need sheet export/write support.
+- Refresh token scope: `https://www.googleapis.com/auth/spreadsheets.readonly` for read-only flows. `/cwl rotations export` and any sheet write path require `https://www.googleapis.com/auth/spreadsheets` plus `https://www.googleapis.com/auth/drive.file`.
 - The Google account tied to the refresh token must have access to the source sheet for imports.
 - Viewer access is enough for `/cwl rotations import`; `/cwl rotations export` requires writable Sheets auth.
 

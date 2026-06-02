@@ -17,6 +17,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import { GoogleSheetsAuthError } from "../services/GoogleSheetsService";
 import {
   parseRosterSignupButtonCustomId,
   parseRosterRemoveButtonCustomId,
@@ -40,6 +41,7 @@ import {
 import { cwlStateService } from "../services/CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 import { normalizeSyncTimeZone, autocompleteSyncTimeZones } from "../services/syncTimeZone";
+import type { CreateCwlRotationRosterPlanResult } from "../services/CwlRotationService";
 
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
@@ -53,6 +55,7 @@ const CWL_ROTATION_SHOW_DAY_CHOICES = [1, 2, 3, 4, 5, 6, 7].map((day) => ({
   value: day,
 }));
 type CwlRotationPlanExport = Awaited<ReturnType<typeof cwlRotationService.listActivePlanExports>>[number];
+type CwlRotationRosterCreateSuccess = Extract<CreateCwlRotationRosterPlanResult, { outcome: "created" }>;
 
 type CwlRotationImportClanSession = {
   clanKey: string;
@@ -480,6 +483,69 @@ function buildCwlMembersExclusionCopyText(context: CwlRosterContext, tags: strin
     return "unavailable";
   }
   return tags.length > 0 ? `\`${tags.join(" ")}\`` : "none";
+}
+
+function formatCwlRotationClanLabel(clanName: string | null, clanTag: string): string {
+  return clanName ? `${clanName} (${clanTag})` : clanTag;
+}
+
+function formatCwlRotationCreateExcludedPlayerLabel(account: { playerTag: string; playerName: string | null }): string {
+  return formatRosterConflictAccountIdentity(account);
+}
+
+function buildCwlRotationCreateSourceLine(input: {
+  rosterId: string | null;
+  rosterTitle: string | null;
+  rosterPostedMessageUrl: string | null;
+}): string {
+  if (!input.rosterId) {
+    return "Source: observed CWL roster";
+  }
+  const rosterTitle = String(input.rosterTitle ?? "").trim() || "Roster";
+  const rosterPostedMessageUrl = String(input.rosterPostedMessageUrl ?? "").trim();
+  if (rosterPostedMessageUrl) {
+    return `Roster: [${rosterTitle}](<${rosterPostedMessageUrl}>)`;
+  }
+  return `Roster: ${rosterTitle} (not posted)`;
+}
+
+function buildCwlRotationCreateExcludedSectionLines(excludedPlayers: Array<{ playerTag: string; playerName: string | null }>): string[] {
+  if (excludedPlayers.length <= 0) {
+    return ["Players excluded: 0", "Excluded members: none"];
+  }
+  return [
+    `Players excluded: ${excludedPlayers.length}`,
+    "Excluded members:",
+    ...excludedPlayers.map((player) => `- ${formatCwlRotationCreateExcludedPlayerLabel(player)}`),
+  ];
+}
+
+function buildCwlRotationCreateMessageEmbeds(input: {
+  clanTag: string;
+  chunkLines: string[];
+  chunkIndex: number;
+  chunkCount: number;
+}): EmbedBuilder[] {
+  const descriptions = splitLinesIntoDiscordEmbedDescriptions(input.chunkLines);
+  return descriptions.map((description, descriptionIndex) => {
+    const embed = new EmbedBuilder().setColor(CWL_EMBED_COLOR).setDescription(description);
+    if (input.chunkIndex === 0 && descriptionIndex === 0) {
+      embed.setTitle(`/cwl rotations create ${input.clanTag}`);
+    } else if (descriptionIndex === 0) {
+      embed.setTitle(`/cwl rotations create ${input.clanTag} (continued ${input.chunkIndex + 1}/${input.chunkCount})`);
+    } else {
+      embed.setTitle(`/cwl rotations create ${input.clanTag} (continued)`);
+    }
+    if (input.chunkCount > 1 || descriptions.length > 1) {
+      embed.setFooter({
+        text:
+          input.chunkCount > 1
+            ? `Part ${descriptionIndex + 1}/${descriptions.length} | Message ${input.chunkIndex + 1}/${input.chunkCount}`
+            : `Part ${descriptionIndex + 1}/${descriptions.length}`,
+      });
+    }
+    return embed;
+  });
 }
 
 function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
@@ -2917,10 +2983,20 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
 
   const createdResult = result.outcome === "created" ? result : null;
   const rosterCreatedResult =
-    rosterId && createdResult && "sourceLabel" in createdResult ? createdResult : null;
+    rosterId && createdResult && "rosterTitle" in createdResult
+      ? (createdResult as CwlRotationRosterCreateSuccess)
+      : null;
+  const clanLabel = createdResult ? formatCwlRotationClanLabel(createdResult.clanName, createdResult.clanTag) : result.clanTag;
   const lines = [
-    `Created CWL rotation plan for ${result.clanTag}.`,
-    ...(rosterCreatedResult ? [`Source: ${rosterCreatedResult.sourceLabel}`] : []),
+    `Created CWL rotation plan for ${clanLabel}.`,
+    `Clan: ${clanLabel}`,
+    buildCwlRotationCreateSourceLine({
+      rosterId: rosterCreatedResult?.rosterId ?? null,
+      rosterTitle: rosterCreatedResult?.rosterTitle ?? null,
+      rosterPostedMessageUrl: rosterCreatedResult?.rosterPostedMessageUrl ?? null,
+    }),
+    `Players included in rotation: ${createdResult?.playersIncludedCount ?? 0}`,
+    ...buildCwlRotationCreateExcludedSectionLines(createdResult?.excludedPlayers ?? []),
     `Season: ${createdResult?.season ?? result.season}`,
     `Version: ${createdResult?.version ?? 0}`,
     `Lineup size: ${createdResult?.lineupSize ?? 0}`,
@@ -2929,14 +3005,22 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     lines.push("");
     lines.push(...createdResult.warnings);
   }
-  await interaction.editReply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(CWL_EMBED_COLOR)
-        .setTitle(`/cwl rotations create ${result.clanTag}`)
-        .setDescription(buildDescription(lines)),
-    ],
-  });
+  const messageChunks = chunkLinesForDiscordMessages(lines);
+  const payloads = messageChunks.map((chunkLines, chunkIndex) => ({
+    embeds: buildCwlRotationCreateMessageEmbeds({
+      clanTag: result.clanTag,
+      chunkLines,
+      chunkIndex,
+      chunkCount: messageChunks.length,
+    }),
+  }));
+  await interaction.editReply(payloads[0]);
+  for (const payload of payloads.slice(1)) {
+    await interaction.followUp({
+      ...payload,
+      ephemeral: true,
+    });
+  }
 }
 
 async function handleRotationShowSubcommand(client: Client, interaction: ChatInputCommandInteraction) {
@@ -3040,28 +3124,41 @@ async function handleRotationImportSubcommand(interaction: ChatInputCommandInter
 
 async function handleRotationExportSubcommand(interaction: ChatInputCommandInteraction) {
   const forceNew = interaction.options.getBoolean("new", false) ?? false;
-  const result = await cwlRotationSheetService.exportActivePlans({
-    new: forceNew,
-    createdByDiscordUserId: interaction.user.id,
-  });
-  const messagePrefix = result.reused
-    ? "Reused the existing public Google Sheet because no rotation updates were detected."
-    : forceNew
-      ? "Created a new public Google Sheet with the current CWL planner tabs."
-      : "Created a new public Google Sheet with the current CWL planner tabs.";
-  await interaction.editReply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(CWL_EMBED_COLOR)
-        .setTitle("/cwl rotations export")
-        .setDescription(
-          buildDescription([
-            `${messagePrefix} ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
-            `Link: ${result.spreadsheetUrl}`,
-          ]),
-        ),
-    ],
-  });
+  try {
+    const result = await cwlRotationSheetService.exportActivePlans({
+      new: forceNew,
+      createdByDiscordUserId: interaction.user.id,
+    });
+    const messagePrefix = result.reused
+      ? "Reused the existing public Google Sheet because no rotation updates were detected."
+      : forceNew
+        ? "Created a new public Google Sheet with the current CWL planner tabs."
+        : "Created a new public Google Sheet with the current CWL planner tabs.";
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CWL_EMBED_COLOR)
+          .setTitle("/cwl rotations export")
+          .setDescription(
+            buildDescription([
+              `${messagePrefix} ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
+              `Link: ${result.spreadsheetUrl}`,
+            ]),
+          ),
+      ],
+    });
+  } catch (err) {
+    if (err instanceof GoogleSheetsAuthError && err.meta.grantType === "refresh_token") {
+      console.error(
+        `[cwl] rotation_export_failed namespace=${err.meta.namespace} operation=${err.meta.operation} status=${err.meta.status} errorCode=${err.meta.errorCode} reason=${err.meta.reason} grantType=${err.meta.grantType} error=${formatError(err)}`,
+      );
+      await interaction.editReply(
+        "Google Sheets export auth failed. The configured Google OAuth refresh token is invalid or expired. Regenerate GOOGLE_OAUTH_REFRESH_TOKEN with Sheets write + Drive file scopes, redeploy, then retry.",
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 export async function handleRosterSignupSubcommand(

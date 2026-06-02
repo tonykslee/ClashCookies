@@ -38,6 +38,7 @@ import {
   type CwlRotationSheetImportPreview,
 } from "../src/services/CwlRotationSheetService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
+import { GoogleSheetsAuthError } from "../src/services/GoogleSheetsService";
 import { cwlStateService } from "../src/services/CwlStateService";
 import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
@@ -200,6 +201,13 @@ function getAllReplyPayloads(interaction: any): any[] {
     payloads.push(interaction.update.mock.calls[0]?.[0]);
   }
   return payloads.filter(Boolean);
+}
+
+function getAllEmbedDescriptionsAcrossReplies(interaction: any): string[] {
+  return getAllReplyPayloads(interaction).flatMap((payload) => {
+    const embeds = Array.isArray(payload?.embeds) ? payload.embeds : [];
+    return embeds.map((embed: any) => String(embed?.toJSON?.().description ?? ""));
+  });
 }
 
 function getUpdatedDescription(interaction: any): string {
@@ -1556,8 +1564,11 @@ describe("/cwl command", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       version: 2,
       lineupSize: 15,
+      playersIncludedCount: 31,
+      excludedPlayers: [{ playerTag: "#P9", playerName: "Charlie" }],
       warnings: ["Could not reach 5 planned CWL days for: Alpha (#P1) -> 4/5"],
     });
     const interaction = makeInteraction({
@@ -1578,10 +1589,17 @@ describe("/cwl command", () => {
       overwrite: true,
       guildId: "guild-1",
     });
-    expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
-    expect(getDescription(interaction)).toContain("Version: 2");
-    expect(getDescription(interaction)).toContain("Lineup size: 15");
-    expect(getDescription(interaction)).toContain("Could not reach 5 planned CWL days");
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction).join("\n");
+    expect(descriptions).toContain("Created CWL rotation plan for CWL Alpha (#2QG2C08UP).");
+    expect(descriptions).toContain("Clan: CWL Alpha (#2QG2C08UP)");
+    expect(descriptions).toContain("Source: observed CWL roster");
+    expect(descriptions).toContain("Players included in rotation: 31");
+    expect(descriptions).toContain("Players excluded: 1");
+    expect(descriptions).toContain("Excluded members:");
+    expect(descriptions).toContain("- Charlie (#P9)");
+    expect(descriptions).toContain("Version: 2");
+    expect(descriptions).toContain("Lineup size: 15");
+    expect(descriptions).toContain("Could not reach 5 planned CWL days");
   });
 
   it("returns the blocked-existing message for /cwl rotations create without roster", async () => {
@@ -1686,10 +1704,17 @@ describe("/cwl command", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       rosterId: "roster-1",
       rosterTitle: "CWL Alpha roster",
+      rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
       version: 3,
       lineupSize: 30,
+      playersIncludedCount: 30,
+      excludedPlayers: [
+        { playerTag: "#P3", playerName: "Charlie" },
+        { playerTag: "#P4", playerName: "Delta" },
+      ],
       warnings: ["Missing Town Hall data for confirmed roster players: Charlie (#P3)."],
       sourceLabel: "CWL roster - CWL Alpha roster",
     });
@@ -1711,11 +1736,52 @@ describe("/cwl command", () => {
       lineupSize: 30,
       overwrite: true,
     });
-    expect(getDescription(interaction)).toContain("Created CWL rotation plan for #2QG2C08UP.");
-    expect(getDescription(interaction)).toContain("Source: CWL roster - CWL Alpha roster");
-    expect(getDescription(interaction)).toContain("Version: 3");
-    expect(getDescription(interaction)).toContain("Lineup size: 30");
-    expect(getDescription(interaction)).toContain("Missing Town Hall data for confirmed roster players");
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction).join("\n");
+    expect(descriptions).toContain("Created CWL rotation plan for CWL Alpha (#2QG2C08UP).");
+    expect(descriptions).toContain("Clan: CWL Alpha (#2QG2C08UP)");
+    expect(descriptions).toContain("Roster: [CWL Alpha roster](<https://discord.com/channels/1/2/3>)");
+    expect(descriptions).toContain("Players included in rotation: 30");
+    expect(descriptions).toContain("Players excluded: 2");
+    expect(descriptions).toContain("- Charlie (#P3)");
+    expect(descriptions).toContain("- Delta (#P4)");
+    expect(descriptions).toContain("Version: 3");
+    expect(descriptions).toContain("Lineup size: 30");
+    expect(descriptions).toContain("Missing Town Hall data for confirmed roster players");
+  });
+
+  it("splits /cwl rotations create success output across multiple embeds and follow-ups when needed", async () => {
+    const excludedPlayers = Array.from({ length: 260 }, (_value, index) => ({
+      playerTag: `#P${String(index + 1).padStart(10, "0")}`,
+      playerName: `Excluded Player ${index + 1}`,
+    }));
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 4,
+      lineupSize: 30,
+      playersIncludedCount: 260,
+      excludedPlayers,
+      warnings: [],
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 30,
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(interaction.followUp).toHaveBeenCalled();
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction);
+    expect(descriptions.every((description) => description.length <= 4096)).toBe(true);
+    expect(descriptions.join("\n")).not.toContain("...truncated");
+    expect(descriptions.join("\n")).toContain("Players excluded: 260");
+    expect(descriptions.join("\n")).toContain("Excluded members:");
+    expect(descriptions.join("\n")).toContain("Excluded Player 1 (#P0000000001)");
   });
 
   it("returns the blocked-existing message for roster-backed /cwl rotations create", async () => {
@@ -4760,6 +4826,34 @@ describe("/cwl command", () => {
       new: true,
       createdByDiscordUserId: "111111111111111111",
     });
+  });
+
+  it("returns a Google auth failure message for /cwl rotations export when OAuth token exchange is invalid", async () => {
+    vi.mocked(cwlRotationSheetService.exportActivePlans).mockRejectedValue(
+      new GoogleSheetsAuthError("Google OAuth refresh token exchange failed with invalid_grant.", {
+        namespace: "google_oauth",
+        operation: "token_exchange",
+        status: "failure",
+        errorCode: "HTTP_400",
+        grantType: "refresh_token",
+        reason: "invalid_grant",
+      }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "export",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "Google Sheets export auth failed. The configured Google OAuth refresh token is invalid or expired. Regenerate GOOGLE_OAUTH_REFRESH_TOKEN with Sheets write + Drive file scopes, redeploy, then retry.",
+    );
+    expect(String(consoleErrorSpy.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "namespace=google_oauth operation=token_exchange status=failure errorCode=HTTP_400",
+    );
+    expect(String(consoleErrorSpy.mock.calls.at(-1)?.[0] ?? "")).toContain("grantType=refresh_token");
   });
 
   it("deletes an active CWL rotation plan and reports the clan, season, and version", async () => {
