@@ -1184,6 +1184,7 @@ describe("/roster command", () => {
       missingTags: [],
       blockedTags: [],
       blockedAccounts: [],
+      warnings: ["Override: Alpha (#PQL0289) was already signed up on Champions CWL."],
     });
     (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
       outcome: "updated",
@@ -1350,6 +1351,9 @@ describe("/roster command", () => {
     );
     expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Moved Alpha (#PQL0289) to Target Roster - Confirmed.",
+    );
+    expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Override: Alpha (#PQL0289) was already signed up on Champions CWL.",
     );
 
     const closeInteraction = makeInteraction({
