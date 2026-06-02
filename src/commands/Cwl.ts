@@ -361,6 +361,19 @@ function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; pl
 }
 
 function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.signupLinkedAccounts>>): string {
+  const warnings = result.warnings ?? [];
+  const issueWarning = warnings.find((warning) => warning.startsWith("Unable to sign up some accounts:")) ?? null;
+  if (issueWarning) {
+    const summary =
+      result.createdTags.length > 0
+        ? `Signed up ${result.createdTags.join(", ")} to ${result.groupName}${
+            result.duplicateTags.length > 0 ? ` (${result.duplicateTags.length} already signed up)` : ""
+          }.`
+        : issueWarning;
+    const extraWarnings = warnings.filter((warning) => warning !== issueWarning);
+    return extraWarnings.length > 0 ? `${summary}\n${extraWarnings.join("\n")}` : summary;
+  }
+
   let summary = "";
   if (result.outcome === "roster_not_found") {
     summary = "That roster no longer exists.";
