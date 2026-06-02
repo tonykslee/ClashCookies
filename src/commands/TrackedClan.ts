@@ -40,6 +40,9 @@ import {
 import {
   listFwaClanMemberCountsForTags,
   listFwaTrackedClansForDisplay,
+  listCwlTrackedClansForDetailedDisplay,
+  refreshCwlTrackedClanDetailedDisplayWithQueueContext,
+  type CwlTrackedClanDetailedDisplayRow,
 } from "../services/TrackedClanListService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
@@ -111,14 +114,43 @@ function buildTrackedClanBlock(clan: {
   ].join("\n");
 }
 
-function buildCwlTrackedClanBlock(clan: {
-  name: string | null;
-  tag: string;
-}): string {
+function buildRosterTitleMarkdownLink(title: string | null, url: string | null): string {
+  const normalizedTitle = String(title ?? "").replace(/\s+/g, " ").trim();
+  if (!normalizedTitle) return "Roster";
+  const normalizedUrl = String(url ?? "").trim();
+  if (!normalizedUrl) return normalizedTitle;
+  return `[${normalizedTitle}](<${normalizedUrl}>)`;
+}
+
+function buildCwlTrackedClanBlock(clan: CwlTrackedClanDetailedDisplayRow): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  const label = clan.name && clanTag ? `**${title}** \`${clanTag}\`` : `**${title}**`;
-  return [label, "registry: CWL seasonal"].join("\n");
+  const leagueLabel = String(clan.leagueLabel ?? "").trim() || "Unknown league";
+  const label = clan.name && clanTag ? `**${title}** \`${clanTag}\` ${leagueLabel}` : `**${title}** ${leagueLabel}`;
+  const rosterText = clan.rosterTitle
+    ? buildRosterTitleMarkdownLink(clan.rosterTitle, clan.rosterPostedMessageUrl)
+    : "none";
+  const currentClanMemberCount = clan.currentClanMemberCount === null ? "—" : String(clan.currentClanMemberCount);
+  return [
+    label,
+    `Spin status: ${clan.spinStatus}`,
+    `Members: ${clan.observedCwlRosterCount} CWL / ${currentClanMemberCount} clan`,
+    `Roster: ${rosterText}`,
+  ].join("\n");
+}
+
+function buildCwlTrackedClanListComponents(
+  prefix: string,
+  page: number,
+  totalPages: number,
+  refreshing: boolean,
+) {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  if (totalPages > 1) {
+    rows.push(buildTrackedClanListRow(prefix, page, totalPages, refreshing));
+  }
+  rows.push(buildTrackedClanSummaryRefreshRow(prefix, refreshing));
+  return rows;
 }
 
 function paginateTrackedClanBlocks(blocks: string[]): string[] {
@@ -830,19 +862,30 @@ export const TrackedClan: Command = {
             return;
           }
 
-          const blocks = tracked.map((clan) => buildCwlTrackedClanBlock(clan));
-          const pages = paginateTrackedClanBlocks(blocks);
-          let page = 0;
-          const paginatorPrefix = `tracked-clan-list:cwl:${interaction.id}`;
-          await interaction.editReply({
-            embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
-            components:
-              pages.length > 1 ? [buildTrackedClanListRow(paginatorPrefix, page, pages.length)] : [],
+          let detailedRows = await listCwlTrackedClansForDetailedDisplay({
+            season,
+            guildId: interaction.guildId ?? null,
           });
+          const paginatorPrefix = `tracked-clan-list:cwl:${interaction.id}`;
+          let page = 0;
+          const renderDetailed = (refreshing: boolean) => {
+            const blocks = detailedRows.map((clan) => buildCwlTrackedClanBlock(clan));
+            const pages = paginateTrackedClanBlocks(blocks);
+            const totalPages = Math.max(1, pages.length);
+            if (page >= totalPages) {
+              page = totalPages - 1;
+            }
+            const pageContent = pages[page] ?? "";
+            return {
+              embeds: [
+                buildCwlTrackedClanListEmbed(detailedRows.length, season, pageContent, page, totalPages),
+              ],
+              components: buildCwlTrackedClanListComponents(paginatorPrefix, page, totalPages, refreshing),
+              totalPages,
+            };
+          };
 
-          if (pages.length <= 1) {
-            return;
-          }
+          await interaction.editReply(renderDetailed(false));
 
           const message = await interaction.fetchReply();
           const collector = message.createMessageComponentCollector({
@@ -861,20 +904,56 @@ export const TrackedClan: Command = {
               }
               if (
                 button.customId !== `${paginatorPrefix}:prev` &&
-                button.customId !== `${paginatorPrefix}:next`
+                button.customId !== `${paginatorPrefix}:next` &&
+                button.customId !== `${paginatorPrefix}:refresh`
               ) {
                 return;
               }
 
-              if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
-              if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+              if (button.customId === `${paginatorPrefix}:refresh`) {
+                try {
+                  await button.update(renderDetailed(true));
+                } catch {
+                  if (!button.replied && !button.deferred) {
+                    try {
+                      await button.deferUpdate();
+                    } catch {
+                      // no-op
+                    }
+                  }
+                }
 
+                const refreshResult = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
+                  season,
+                  guildId: interaction.guildId ?? null,
+                  cocService,
+                });
+                detailedRows = refreshResult.rows;
+                await interaction.editReply(renderDetailed(false));
+                if (refreshResult.failedClanCount > 0) {
+                  const failedMessage =
+                    refreshResult.failedClanCount >= detailedRows.length
+                      ? "Failed to refresh detailed CWL clan data."
+                      : `Failed to refresh some CWL clan data: ${refreshResult.failedClanTags.join(", ")}`;
+                  await button.followUp({
+                    ephemeral: true,
+                    content: failedMessage,
+                  });
+                }
+                return;
+              }
+
+              const currentRender = renderDetailed(false);
+              if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+              if (button.customId.endsWith(":next")) page = Math.min(currentRender.totalPages - 1, page + 1);
+
+              const nextRender = renderDetailed(false);
               await button.update({
-                embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
-                components: [buildTrackedClanListRow(paginatorPrefix, page, pages.length)],
+                embeds: nextRender.embeds,
+                components: nextRender.components,
               });
             } catch (err) {
-              console.error(`tracked-clan CWL list paginator failed: ${formatError(err)}`);
+              console.error(`tracked-clan CWL detailed refresh failed: ${formatError(err)}`);
               if (!button.replied && !button.deferred) {
                 await button.reply({
                   ephemeral: true,
@@ -887,7 +966,7 @@ export const TrackedClan: Command = {
           collector.on("end", async () => {
             try {
               await interaction.editReply({
-                embeds: [buildCwlTrackedClanListEmbed(tracked.length, season, pages[page], page, pages.length)],
+                ...renderDetailed(false),
                 components: [],
               });
             } catch {
