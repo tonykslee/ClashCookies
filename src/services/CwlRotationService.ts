@@ -26,6 +26,11 @@ type CwlRotationMetadataRosterRow = {
   sourcePosition: number | null;
 };
 
+type CwlRotationPlayerIdentity = {
+  playerTag: string;
+  playerName: string | null;
+};
+
 type CwlRotationPlanDayWriteInput = {
   roundDay: number;
   lineupSize: number;
@@ -102,8 +107,11 @@ export type CreateCwlRotationPlanResult =
       outcome: "created";
       season: string;
       clanTag: string;
+      clanName: string | null;
       version: number;
       lineupSize: number;
+      playersIncludedCount: number;
+      excludedPlayers: CwlRotationPlayerIdentity[];
       warnings: string[];
     }
   | {
@@ -148,10 +156,14 @@ export type CreateCwlRotationRosterPlanResult =
       outcome: "created";
       season: string;
       clanTag: string;
+      clanName: string | null;
       rosterId: string;
       rosterTitle: string;
+      rosterPostedMessageUrl: string | null;
       version: number;
       lineupSize: number;
+      playersIncludedCount: number;
+      excludedPlayers: CwlRotationPlayerIdentity[];
       warnings: string[];
       sourceLabel: string;
     }
@@ -1297,8 +1309,14 @@ export class CwlRotationService {
       outcome: "created",
       season,
       clanTag,
+      clanName: sanitizeDisplayText(trackedClan.name) || null,
       version,
       lineupSize,
+      playersIncludedCount: sourceOrderedRoster.length,
+      excludedPlayers: excludeTags.map((playerTag) => ({
+        playerTag,
+        playerName: seasonRosterByTag.get(playerTag)?.playerName ?? null,
+      })),
       warnings,
     };
   }
@@ -1408,6 +1426,7 @@ export class CwlRotationService {
     }
 
     const rosterTitle = roster.title;
+    const rosterPostedMessageUrl = String(roster.postedMessageUrl ?? "").trim() || null;
     const rosterClanTag = normalizeClanTag(roster.clanTag ?? "");
     if (roster.rosterType !== "CWL") {
       return { outcome: "roster_not_cwl", season, clanTag, rosterId, rosterType: roster.rosterType };
@@ -1575,6 +1594,18 @@ export class CwlRotationService {
     const sourceLabel = buildCwlRosterRotationSourceLabel(rosterTitle);
     const rosterShortName = buildCwlRosterRotationShortName(rosterTitle) ?? rosterTitle;
     const rosterRows = buildRosterRowsForMetadata(rosterEntries);
+    const excludedPlayers: CwlRotationPlayerIdentity[] = [
+      ...confirmedSignups
+        .filter((signup) => !normalizePlayerTag(signup.playerTag))
+        .map((signup) => ({
+          playerTag: String(signup.playerTag ?? "").trim() || "unknown",
+          playerName: normalizePersistedPlayerName(signup.playerName) ?? null,
+        })),
+      ...notInCurrentCwlPlayers.map((signup) => ({
+        playerTag: signup.playerTag,
+        playerName: signup.playerName,
+      })),
+    ];
     const existingActivePlan = await loadActivePlan({ clanTag, season });
     if (existingActivePlan && !input.overwrite) {
       return {
@@ -1635,10 +1666,14 @@ export class CwlRotationService {
       outcome: "created",
       season,
       clanTag,
+      clanName: sanitizeDisplayText(trackedClan.name) || null,
       rosterId,
       rosterTitle,
+      rosterPostedMessageUrl,
       version,
       lineupSize,
+      playersIncludedCount: rosterEntries.length,
+      excludedPlayers,
       warnings,
       sourceLabel,
     };

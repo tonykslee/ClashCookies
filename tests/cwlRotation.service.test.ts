@@ -72,7 +72,7 @@ describe("CwlRotationService", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
 
-    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP" });
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
@@ -217,8 +217,11 @@ describe("CwlRotationService", () => {
     expect(result).toMatchObject({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       version: 1,
       lineupSize: 3,
+      playersIncludedCount: 4,
+      excludedPlayers: [],
     });
     expect(result.outcome === "created" ? result.warnings.join(" | ") : "").toContain(
       "Could not reach 5 planned CWL days",
@@ -464,10 +467,18 @@ describe("CwlRotationService", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       lineupSize: 30,
+      playersIncludedCount: 31,
     });
     expect(result.outcome === "created" ? result.warnings.join(" | ") : "").not.toContain(
       "Not in current CWL",
+    );
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerTag) : []).toEqual(
+      excludeTags,
+    );
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerName) : []).toEqual(
+      excludeTags.map((tag) => observedRosterRows.find((row) => row.playerTag === tag)?.playerName ?? null),
     );
     const createdMetadata = txMock.cwlRotationPlan.create.mock.calls[0]?.[0]?.data?.metadata as any;
     expect(createdMetadata?.rosterRows).toHaveLength(31);
@@ -683,9 +694,13 @@ describe("CwlRotationService", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       rosterId: "roster-1",
       rosterTitle: "CWL Alpha roster",
+      rosterPostedMessageUrl: null,
       lineupSize: 3,
+      playersIncludedCount: 4,
+      excludedPlayers: [],
       sourceLabel: "CWL roster - CWL Alpha roster",
     });
     expect(result.outcome === "created" ? result.warnings.join(" | ") : "").toContain(
@@ -874,12 +889,22 @@ describe("CwlRotationService", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       rosterId: "roster-1",
       rosterTitle: "CWL Alpha roster",
+      rosterPostedMessageUrl: null,
       lineupSize: 30,
+      playersIncludedCount: 31,
     });
     expect(result.outcome === "created" ? result.warnings.join(" | ") : "").toContain(
       "Skipped confirmed roster players not observed in current CWL",
+    );
+    expect(result.outcome === "created" ? result.excludedPlayers : []).toHaveLength(9);
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerTag) : []).toEqual(
+      confirmedSignups.slice(31).map((signup) => signup.playerTag),
+    );
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerName) : []).toEqual(
+      confirmedSignups.slice(31).map((signup) => signup.playerName),
     );
     expect(currentRoundSpy).not.toHaveBeenCalled();
     expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
@@ -1036,9 +1061,13 @@ describe("CwlRotationService", () => {
       outcome: "created",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
       rosterId: "roster-30",
       rosterTitle: "CWL Alpha roster",
+      rosterPostedMessageUrl: null,
       lineupSize: 30,
+      playersIncludedCount: 30,
+      excludedPlayers: [],
     });
     expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
       expect.objectContaining({
