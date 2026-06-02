@@ -1395,6 +1395,47 @@ describe("/cwl command", () => {
     );
   });
 
+  it("includes not-enough-player diagnostics for /cwl rotations create when present", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "not_enough_players",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      lineupSize: 30,
+      availablePlayers: 27,
+      diagnostics: {
+        sourceMode: "manual_observed_season_roster",
+        observedSeasonRosterCount: 37,
+        correspondingSignupRosterCount: null,
+        currentRoundMemberCount: 27,
+        excludedCount: 6,
+        eligibleAfterExclusionsCount: 27,
+      },
+    } as any);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 30,
+      exclude: "#A,#B,#C,#D,#E,#F",
+      overwrite: false,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Not enough CWL roster members remain after exclusions for #2QG2C08UP. Need 30, have 27.",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Source: manual_observed_season_roster",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Observed season roster: 37");
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Current round members: 27");
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Excluded: 6");
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Eligible after exclusions: 27",
+    );
+  });
+
   it("rejects invalid CWL rotation lineup sizes", async () => {
     vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
       outcome: "invalid_size",
