@@ -48,6 +48,9 @@ describe("/roster command shape", () => {
     expect(create?.options?.find((option: any) => option.name === "max_members")?.type).toBe(
       ApplicationCommandOptionType.Integer,
     );
+    expect(create?.options?.find((option: any) => option.name === "minimum_weight")?.type).toBe(
+      ApplicationCommandOptionType.Integer,
+    );
     expect(create?.options?.find((option: any) => option.name === "roster_role")?.required).toBe(false);
     expect(create?.options?.find((option: any) => option.name === "allow_multi_signup")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
@@ -126,6 +129,9 @@ describe("/roster command shape", () => {
     expect(edit?.options?.find((option: any) => option.name === "timezone")?.autocomplete).toBe(true);
     expect(edit?.options?.find((option: any) => option.name === "start_time")?.required).toBe(false);
     expect(edit?.options?.find((option: any) => option.name === "roster_role")?.required).toBe(false);
+    expect(edit?.options?.find((option: any) => option.name === "minimum_weight")?.type).toBe(
+      ApplicationCommandOptionType.Integer,
+    );
     expect(edit?.options?.find((option: any) => option.name === "delete_role")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );

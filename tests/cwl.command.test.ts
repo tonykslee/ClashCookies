@@ -166,6 +166,16 @@ function makeAutocompleteInteraction(
   };
 }
 
+function makeRosterSelectionApplyingRows(confirmCustomId: string): ActionRowBuilder<ButtonBuilder>[] {
+  const cancelCustomId = confirmCustomId.replace(":confirm:", ":cancel:");
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(confirmCustomId).setLabel("Confirm").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(cancelCustomId).setLabel("Cancel").setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
 function getDescription(interaction: any): string {
   const payload = (interaction.editReply?.mock.calls[0]?.[0] ?? interaction.update?.mock.calls[0]?.[0]) as any;
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
@@ -786,19 +796,22 @@ describe("/cwl command", () => {
         components: [],
       },
     });
-    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
-      outcome: "signup",
-      result: {
-        outcome: "created",
-        rosterId: "roster-1",
-        groupKey: "confirmed",
-        groupName: "Confirmed",
-        requestedTags: ["#P1", "#P2"],
-        linkedTags: ["#P1", "#P2"],
-        createdTags: ["#P1", "#P2"],
-        duplicateTags: [],
-        missingLinkedTags: [],
-      },
+    (rosterService.confirmRosterSelectionPanel as any).mockImplementation(async () => {
+      expect(confirmInteraction.update).toHaveBeenCalledTimes(1);
+      return {
+        outcome: "signup",
+        result: {
+          outcome: "created",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          groupName: "Confirmed",
+          requestedTags: ["#P1", "#P2"],
+          linkedTags: ["#P1", "#P2"],
+          createdTags: ["#P1", "#P2"],
+          duplicateTags: [],
+          missingLinkedTags: [],
+        },
+      };
     });
     (rosterService.createRosterRemoveSelectionPanel as any).mockResolvedValue({
       outcome: "ready",
@@ -843,15 +856,23 @@ describe("/cwl command", () => {
     const confirmInteraction = {
       customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
+      message: {
+        components: makeRosterSelectionApplyingRows("roster-selection:action:confirm:session-2"),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
-      update: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockImplementation(async () => {
+        (confirmInteraction as any).replied = true;
+        return undefined;
+      }),
       reply: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
           fetch: vi.fn().mockResolvedValue(null),
         },
       },
+      replied: false,
+      deferred: false,
     };
     await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
     expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledWith({
@@ -860,10 +881,14 @@ describe("/cwl command", () => {
       discordClient: confirmInteraction.client,
       cocService: null,
     });
-    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
-    expect(confirmInteraction.deferUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(confirmInteraction.update).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.update.mock.invocationCallOrder[0]).toBeLessThan(
       (rosterService.confirmRosterSelectionPanel as any).mock.invocationCallOrder[0],
     );
+    const applyingRows = confirmInteraction.update.mock.calls[0]?.[0]?.components ?? [];
+    const applyingButtons = (applyingRows[0]?.toJSON?.() ?? applyingRows[0] ?? {}).components ?? [];
+    expect(applyingButtons.map((button: any) => button.disabled)).toEqual([true, true]);
+    expect(String(applyingButtons[0]?.label ?? "")).toBe("Applying changes...");
     expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("Signed up #P1, #P2"),
@@ -871,7 +896,6 @@ describe("/cwl command", () => {
         components: [],
       }),
     );
-    expect(confirmInteraction.update).not.toHaveBeenCalled();
 
     const removeInteraction = {
       customId: "roster-post-action:optout:roster-1",
@@ -887,6 +911,78 @@ describe("/cwl command", () => {
       expect.objectContaining({
         ephemeral: true,
         embeds: [expect.any(EmbedBuilder)],
+      }),
+    );
+  });
+
+  it("shows conflicting CWL roster titles when self signup is blocked", async () => {
+    (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+      outcome: "signup",
+      result: {
+        outcome: "created",
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        groupName: "Confirmed",
+        requestedTags: ["#P1", "#P2"],
+        linkedTags: ["#P1", "#P2", "#P3"],
+        createdTags: ["#P3"],
+        createdAccounts: [],
+        duplicateTags: [],
+        missingLinkedTags: [],
+        eligibilityIssues: [
+          {
+            playerTag: "#P1",
+            playerName: "Alpha",
+            reason: "minimum_weight_below_minimum",
+          },
+          {
+            playerTag: "#P2",
+            playerName: null,
+            reason: "cwl_roster_conflict",
+            rosterId: "roster-b",
+            rosterTitle: "Champions CWL",
+          },
+          {
+            playerTag: "#P2",
+            playerName: null,
+            reason: "townhall_out_of_range",
+          },
+        ],
+        warnings: [
+          "Unable to sign up some accounts:\n- Alpha (#P1) → below minimum weight\n- #P2 → already signed up on Champions CWL; town hall out of range",
+        ],
+      },
+    });
+
+    const confirmInteraction = {
+      customId: "roster-selection:action:confirm:session-4",
+      user: { id: "111111111111111111" },
+      message: {
+        components: makeRosterSelectionApplyingRows("roster-selection:action:confirm:session-4"),
+      },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockImplementation(async () => {
+        (confirmInteraction as any).replied = true;
+        return undefined;
+      }),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(null),
+        },
+      },
+      replied: false,
+      deferred: false,
+    };
+
+    await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
+
+    expect(confirmInteraction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Signed up #P3 to Confirmed."),
+        embeds: [],
+        components: [],
       }),
     );
   });
@@ -915,20 +1011,28 @@ describe("/cwl command", () => {
     const confirmInteraction = {
       customId: "roster-selection:action:confirm:session-2",
       user: { id: "111111111111111111" },
+      message: {
+        components: makeRosterSelectionApplyingRows("roster-selection:action:confirm:session-2"),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
-      update: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockImplementation(async () => {
+        (confirmInteraction as any).replied = true;
+        return undefined;
+      }),
       reply: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
           fetch: vi.fn().mockResolvedValue(null),
         },
       },
+      replied: false,
+      deferred: false,
     };
 
     await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
 
-    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.update).toHaveBeenCalledTimes(1);
     expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("Town hall data is unavailable for: Alpha `#P1`, `#P2`."),
@@ -936,10 +1040,9 @@ describe("/cwl command", () => {
         components: [],
       }),
     );
-    expect(confirmInteraction.update).not.toHaveBeenCalled();
   });
 
-  it("defers and edits the roster selection when confirming self-service removal", async () => {
+  it("disables and edits the roster selection when confirming self-service removal", async () => {
     (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
       outcome: "remove_user",
       result: {
@@ -958,20 +1061,28 @@ describe("/cwl command", () => {
     const confirmInteraction = {
       customId: "roster-selection:action:confirm:session-3",
       user: { id: "111111111111111111" },
+      message: {
+        components: makeRosterSelectionApplyingRows("roster-selection:action:confirm:session-3"),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
-      update: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockImplementation(async () => {
+        (confirmInteraction as any).replied = true;
+        return undefined;
+      }),
       reply: vi.fn().mockResolvedValue(undefined),
       client: {
         channels: {
           fetch: vi.fn().mockResolvedValue(null),
         },
       },
+      replied: false,
+      deferred: false,
     };
 
     await handleRosterSelectionActionButtonInteraction(confirmInteraction as any);
 
-    expect(confirmInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(confirmInteraction.update).toHaveBeenCalledTimes(1);
     expect(confirmInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("Removed #P1, #P2"),
@@ -979,7 +1090,6 @@ describe("/cwl command", () => {
         components: [],
       }),
     );
-    expect(confirmInteraction.update).not.toHaveBeenCalled();
   });
 
   it("renders a manager readiness report for /cwl roster report", async () => {

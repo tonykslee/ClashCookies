@@ -3,7 +3,6 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
-  ComponentType,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonInteraction,
@@ -75,6 +74,7 @@ import {
   parseRosterManageWeightInput,
   rosterWeightService,
 } from "../services/RosterWeightService";
+import { showRosterMutationApplyingState } from "../services/RosterInteractionStateService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import { rosterExportService } from "../services/RosterExportService";
 
@@ -90,7 +90,6 @@ const ROSTER_POST_CHANGE_GROUP_EXPIRED_MESSAGE = "This Change Group panel expire
 const ROSTER_POST_CHANGE_GROUP_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
 const ROSTER_POST_CHANGE_ROSTER_EXPIRED_MESSAGE = "This Change Roster panel expired. Open Settings again.";
 const ROSTER_POST_CHANGE_ROSTER_PERMISSION_MESSAGE = "You don't have permission to manage this roster.";
-const ROSTER_MUTATION_APPLYING_LABEL = "Applying changes...";
 
 type RosterMutationAction =
   | "add"
@@ -141,72 +140,6 @@ function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; pl
   return accounts.map(formatRosterAccountIdentity).join(", ");
 }
 
-type RosterApplyingButtonComponent = {
-  type?: number;
-  custom_id?: string | null;
-  customId?: string | null;
-  label?: string | null;
-  style?: number | null;
-  disabled?: boolean | null;
-  emoji?: unknown;
-};
-
-type RosterApplyingSelectComponent = {
-  type?: number;
-  custom_id?: string | null;
-  customId?: string | null;
-  placeholder?: string | null;
-  min_values?: number | null;
-  max_values?: number | null;
-  disabled?: boolean | null;
-  options?: unknown[];
-};
-
-function cloneRosterApplyingComponents(
-  rows: ReadonlyArray<
-    | { toJSON?: () => { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number } }
-    | { components?: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent>; type?: number }
-  >,
-  confirmCustomId: string,
-): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
-  return rows.map((row) => {
-    const rawRow = typeof (row as { toJSON?: () => unknown }).toJSON === "function" ? (row as { toJSON: () => any }).toJSON() : row;
-    const clonedComponents = (rawRow.components ?? []).map(
-      (component: RosterApplyingButtonComponent | RosterApplyingSelectComponent) => {
-        const buttonComponent = component as RosterApplyingButtonComponent;
-        const selectComponent = component as RosterApplyingSelectComponent;
-        const customId = String(component.custom_id ?? component.customId ?? "");
-        if (component.type === ComponentType.Button) {
-          return {
-            ...component,
-            disabled: true,
-            label: customId === confirmCustomId ? ROSTER_MUTATION_APPLYING_LABEL : buttonComponent.label ?? null,
-            style: customId === confirmCustomId ? ButtonStyle.Secondary : buttonComponent.style ?? null,
-          };
-        }
-        if (component.type === ComponentType.StringSelect) {
-          return {
-            ...component,
-            disabled: true,
-          };
-        }
-        return {
-          ...selectComponent,
-          disabled: true,
-        };
-      },
-    );
-    return {
-      ...(rawRow ?? {}),
-      components: clonedComponents,
-    };
-  });
-}
-
-function buildRosterMutationApplyingComponents(interaction: ButtonInteraction): Array<{ type?: number; components: Array<RosterApplyingButtonComponent | RosterApplyingSelectComponent> }> {
-  return cloneRosterApplyingComponents((interaction.message?.components ?? []) as any, interaction.customId);
-}
-
 function logRosterMutationTiming(input: {
   flow: "add_user" | "remove_user" | "change_group" | "change_roster";
   sessionId: string;
@@ -236,17 +169,6 @@ function logRosterMutationSideEffectTiming(input: {
   console.info(
     `[roster] mutation_side_effect flow=${input.flow} sessionId=${input.sessionId} sideEffect=${input.sideEffect} rosterId=${input.rosterId} durationMs=${input.durationMs} outcome=${input.outcome}`,
   );
-}
-
-async function showRosterMutationApplyingState(interaction: ButtonInteraction): Promise<void> {
-  const components = buildRosterMutationApplyingComponents(interaction);
-  try {
-    await interaction.update({
-      components: components as any,
-    });
-  } catch {
-    await interaction.deferUpdate().catch(() => undefined);
-  }
 }
 
 function getAutocompleteUserOptionId(interaction: AutocompleteInteraction): string | null {
@@ -383,6 +305,19 @@ function buildRosterDiscordDisplayNameMap(interaction: { guild?: { members?: { c
 }
 
 function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof rosterService.addRosterSignupsForManager>>): string {
+  const warnings = result.warnings ?? [];
+  const issueWarning = warnings.find((warning) => warning.startsWith("Unable to sign up some accounts:")) ?? null;
+  if (issueWarning) {
+    const summary =
+      result.createdTags.length > 0
+        ? `Signed up ${result.createdTags.join(", ")} to ${result.groupName}${
+            result.duplicateTags.length > 0 ? ` (${result.duplicateTags.length} already signed up)` : ""
+          }.`
+        : issueWarning;
+    const extraWarnings = warnings.filter((warning) => warning !== issueWarning);
+    return extraWarnings.length > 0 ? `${summary}\n${extraWarnings.join("\n")}` : summary;
+  }
+
   if (result.outcome === "roster_not_found") {
     return "That roster is no longer available.";
   }
@@ -410,6 +345,19 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
   if (result.outcome === "roster_conflict") {
     return "Some selected accounts are already signed up on another roster of this type.";
   }
+  if (result.outcome === "cwl_roster_conflict") {
+    const lines =
+      result.conflictingAccounts.length > 0
+        ? result.conflictingAccounts.map(
+            (account) => `- ${formatRosterAccountIdentity(account)} → ${account.conflictingRosterTitle}`,
+          )
+        : [];
+    const summary =
+      lines.length > 0
+        ? `These accounts are already signed up on another CWL roster:\n${lines.join("\n")}`
+        : "Some selected accounts are already signed up on another CWL roster.";
+    return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
+  }
   if (result.outcome === "group_not_found") {
     return "That roster group is no longer available.";
   }
@@ -427,7 +375,8 @@ function buildRosterSignupResultSummary(result: Awaited<ReturnType<typeof roster
     result.duplicateTags.length > 0
       ? ` (${result.duplicateTags.length} already signed up)`
       : "";
-  return `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+  const summary = `Signed up ${created} to ${result.groupName}${duplicateNote}.`;
+  return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
 }
 
 function buildRosterRemoveResultSummary(
@@ -1118,6 +1067,11 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
     `Signups: ${view.totalSignupCount}`,
     `Min. TH: ${roster.minTownhall ?? "-"}`,
     `Max. TH: ${roster.maxTownhall ?? "-"}`,
+    `Min. Weight: ${
+      roster.minimumWeight === null || roster.minimumWeight === undefined
+        ? "-"
+        : formatRosterManageWeightK(roster.minimumWeight)
+    }`,
     ...buildRosterSignupRoleRequirementLines({
       requiredSignupRoleId: roster.requiredSignupRoleId,
       noRoleSignupLimit: roster.noRoleSignupLimit,
@@ -2138,7 +2092,7 @@ export async function handleRosterManageActionButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate().catch(() => undefined);
+  await showRosterMutationApplyingState(interaction);
   const result = await rosterService.confirmRosterManageSession({
     sessionId: parsed.sessionId,
     discordUserId: interaction.user.id,
@@ -3656,6 +3610,7 @@ async function handleRosterCreateSubcommand(
   const maxAccountsPerUser = parseRosterIntegerOption(interaction.options.getInteger("max_accounts_per_user", false));
   const minTownhall = parseRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
   const maxTownhall = parseRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const minimumWeight = parseRosterIntegerOption(interaction.options.getInteger("minimum_weight", false));
   const requiredSignupRoleId = interaction.options.getRole("required-role", false)?.id ?? null;
   const noRoleSignupLimitRaw = interaction.options.getInteger("no-role-signup-limit", false);
   const noRoleSignupLimit = parseRosterNonNegativeIntegerOption(noRoleSignupLimitRaw);
@@ -3691,6 +3646,7 @@ async function handleRosterCreateSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    minimumWeight,
     requiredSignupRoleId,
     noRoleSignupLimit: noRoleSignupLimit ?? 0,
     rosterRoleId,
@@ -4278,6 +4234,7 @@ async function handleRosterEditSubcommand(
   );
   const minTownhall = optionalRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
   const maxTownhall = optionalRosterIntegerOption(interaction.options.getInteger("max_townhall", false));
+  const minimumWeight = optionalRosterIntegerOption(interaction.options.getInteger("minimum_weight", false));
   const allowMultiSignupRaw = interaction.options.getBoolean("allow_multi_signup", false);
   const allowMultiSignup = allowMultiSignupRaw === null ? undefined : allowMultiSignupRaw;
   const sortBySeed = interaction.options.getString("sort_by", false);
@@ -4306,6 +4263,7 @@ async function handleRosterEditSubcommand(
     maxAccountsPerUser === undefined &&
     minTownhall === undefined &&
     maxTownhall === undefined &&
+    minimumWeight === undefined &&
     allowMultiSignup === undefined &&
     sortBy === undefined &&
     importMembers === undefined
@@ -4430,6 +4388,7 @@ async function handleRosterEditSubcommand(
     maxAccountsPerUser,
     minTownhall,
     maxTownhall,
+    minimumWeight,
     requiredSignupRoleId: clearRequiredSignupRole ? null : requiredSignupRoleId ?? undefined,
     noRoleSignupLimit:
       noRoleSignupLimit !== null
@@ -4926,6 +4885,12 @@ export const Roster: Command = {
           required: false,
         },
         {
+          name: "minimum_weight",
+          description: "Minimum account weight",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
           name: "required-role",
           description: "Discord role required for signup",
           type: ApplicationCommandOptionType.Role,
@@ -5193,6 +5158,12 @@ export const Roster: Command = {
         {
           name: "max_townhall",
           description: "Maximum town hall",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+        },
+        {
+          name: "minimum_weight",
+          description: "Minimum account weight",
           type: ApplicationCommandOptionType.Integer,
           required: false,
         },

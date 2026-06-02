@@ -133,6 +133,22 @@ function flattenComponentRows(components: any[]): any[] {
   });
 }
 
+function getRosterSignupAccountOptions(panel: any): any[] {
+  return flattenComponentRows(panel.components)
+    .filter((component) => String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith("roster-selection:account:"))
+    .flatMap((component) => (Array.isArray(component?.options) ? component.options : []));
+}
+
+function getRosterSignupWeightInfoOptions(panel: any): any[] {
+  return flattenComponentRows(panel.components)
+    .filter((component) =>
+      String(component?.custom_id ?? component?.customId ?? component?.data?.custom_id ?? component?.data?.customId ?? "").startsWith(
+        "roster-selection:weight-info:",
+      ),
+    )
+    .flatMap((component) => (Array.isArray(component?.options) ? component.options : []));
+}
+
 function makeValidRosterPlayerTag(index: number): string {
   const alphabet = ["0", "2", "8", "9"];
   const normalizedIndex = Math.max(0, Math.trunc(index));
@@ -145,7 +161,14 @@ function makeValidRosterPlayerTag(index: number): string {
   return `#PQL${digits.map((digit) => alphabet[digit] ?? "0").join("")}`;
 }
 
-function makeResolvedPlayerCurrent(playerTag: string, townHall: number | null): any {
+function makeResolvedPlayerCurrent(
+  playerTag: string,
+  townHall: number | null,
+  overrides?: Partial<{
+    currentWeight: number | null;
+    currentWeightMeasuredAt: Date | null;
+  }>,
+): any {
   return {
     playerTag,
     playerName: null,
@@ -158,9 +181,9 @@ function makeResolvedPlayerCurrent(playerTag: string, townHall: number | null): 
     expLevel: null,
     role: null,
     leagueName: null,
-    currentWeight: null,
+    currentWeight: overrides?.currentWeight ?? null,
     currentWeightSource: null,
-    currentWeightMeasuredAt: null,
+    currentWeightMeasuredAt: overrides?.currentWeightMeasuredAt ?? null,
     achievementsJson: null,
     lastSeenAt: null,
     lastFetchedAt: null,
@@ -211,6 +234,7 @@ function makeRosterRecord(overrides: Record<string, unknown> = {}): any {
     maxAccountsPerUser: null,
     minTownhall: null,
     maxTownhall: null,
+    minimumWeight: null,
     requiredSignupRoleId: null,
     noRoleSignupLimit: 0,
     rosterRoleId: null,
@@ -290,6 +314,7 @@ import {
   ROSTER_DEFAULT_GROUPS,
   buildRosterSignupRoleRequirementLines,
   buildRosterMoveResultSummary,
+  formatRosterSignupEligibilityIssueBlock,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
 } from "../src/services/RosterService";
@@ -299,22 +324,51 @@ import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentS
 describe("RosterService", () => {
   function mockConflictLookupForLifecycleState(
     conflictLifecycleState: "ACTIVE" | "OPEN" | "CLOSED" | "ARCHIVED",
+    options?: {
+      conflictingTags?: string[];
+      currentRosterTags?: string[];
+      conflictRosterId?: string;
+      conflictRosterTitle?: string;
+    },
   ) {
-    let rosterSignupFindManyCallCount = 0;
-    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
-      rosterSignupFindManyCallCount += 1;
-      if (rosterSignupFindManyCallCount === 1) {
+    const conflictRosterId = options?.conflictRosterId ?? "conflicting-roster";
+    const conflictRosterTitle = options?.conflictRosterTitle ?? "Champions CWL";
+    const conflictingTags = new Set(options?.conflictingTags ?? ["#PQL0289"]);
+    const currentRosterTags = new Set(options?.currentRosterTags ?? []);
+
+    prismaMock.roster.findMany.mockImplementation(async (args: any) => {
+      const lifecycleFilter = args?.where?.lifecycleState?.in as string[] | undefined;
+      if (!Array.isArray(lifecycleFilter) || !lifecycleFilter.includes(conflictLifecycleState)) {
         return [];
       }
 
-      const lifecycleFilter = args?.where?.roster?.lifecycleState?.in as string[] | undefined;
-      if (!Array.isArray(lifecycleFilter)) {
-        return [{ playerTag: "#PQL0289", rosterId: "archived-roster" }];
+      return [
+        {
+          id: conflictRosterId,
+          title: conflictRosterTitle,
+          startsAt: new Date("2026-04-19T00:00:00.000Z"),
+          createdAt: new Date("2026-04-18T00:00:00.000Z"),
+        },
+      ];
+    });
+
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterIds = args?.where?.rosterId?.in as string[] | undefined;
+      if (Array.isArray(rosterIds)) {
+        return rosterIds.includes(conflictRosterId)
+          ? [...conflictingTags].map((playerTag) => ({
+              playerTag,
+              rosterId: conflictRosterId,
+            }))
+          : [];
       }
 
-      return lifecycleFilter.includes(conflictLifecycleState)
-        ? [{ playerTag: "#PQL0289", rosterId: "archived-roster" }]
-        : [];
+      const rosterId = String(args?.where?.rosterId ?? "");
+      if (rosterId === "roster-1") {
+        return [...currentRosterTags].map((playerTag) => ({ playerTag }));
+      }
+
+      return [];
     });
   }
 
@@ -489,6 +543,7 @@ describe("RosterService", () => {
       rosterType: "cwl",
       title: "CWL Alpha Signup",
       timezone: "PST",
+      minimumWeight: 145000,
       createdByDiscordUserId: "111111111111111111",
     });
 
@@ -500,6 +555,7 @@ describe("RosterService", () => {
           title: "CWL Alpha Signup",
           timezone: "America/Los_Angeles",
           displayTimezone: "America/Los_Angeles",
+          minimumWeight: 145000,
         }),
       }),
     );
@@ -609,6 +665,467 @@ describe("RosterService", () => {
       ],
       skipDuplicates: true,
     });
+  });
+
+  it("marks signup selection accounts below the minimum weight while keeping eligible accounts available", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low Weight", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Eligible Weight", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#2QG2C08UP", linkedName: "Unknown Weight", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", trophies: 5200 },
+      { playerTag: "#QGRJ2222", trophies: 5400 },
+      { playerTag: "#2QG2C08UP", trophies: 5000 },
+    ] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#QGRJ2222",
+        weight: 165000,
+        measuredAt: new Date("2026-04-20T02:00:00.000Z"),
+      },
+    ] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15, { currentWeight: 140000 })],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 15, { currentWeight: 165000 })],
+        ["#2QG2C08UP", makeResolvedPlayerCurrent("#2QG2C08UP", 15, { currentWeight: null })],
+      ]),
+    );
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const accountOptions = getRosterSignupAccountOptions(result.panel);
+    const infoOptions = getRosterSignupWeightInfoOptions(result.panel);
+    expect(accountOptions.map((option) => [option.value, option.description, option.default] as const)).toEqual([
+      ["#QGRJ2222", "#QGRJ2222 | available", false],
+    ]);
+    expect(infoOptions.map((option) => [option.value, option.description] as const)).toEqual([
+      ["#PQL0289", "#PQL0289 | ⚠️ below minimum weight"],
+      ["#2QG2C08UP", "#2QG2C08UP | ⚠️ weight unavailable"],
+    ]);
+  });
+
+  it("applies town hall and minimum weight gates together when both are configured", async () => {
+    const playerTag = "#PQL0289";
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag, linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValue([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([] as any);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([[playerTag, makeResolvedPlayerCurrent(playerTag, 12, { currentWeight: 160000 })]]),
+    );
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([[playerTag, makeResolvedPlayerCurrent(playerTag, 12, { currentWeight: 160000 })]]),
+    );
+
+    const townhallBlocked = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(townhallBlocked).toMatchObject({
+      outcome: "townhall_out_of_range",
+      blockedTags: [playerTag],
+    });
+
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([
+        [
+          playerTag,
+          makeResolvedPlayerCurrent(playerTag, 13, {
+            currentWeight: 140000,
+            currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+          }),
+        ],
+      ]),
+    );
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        [
+          playerTag,
+          makeResolvedPlayerCurrent(playerTag, 13, {
+            currentWeight: 140000,
+            currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+          }),
+        ],
+      ]),
+    );
+
+    const weightBlocked = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(weightBlocked).toMatchObject({
+      outcome: "minimum_weight_unavailable",
+      blockedTags: [playerTag],
+    });
+  });
+
+  it("allows signup when the selected account meets the minimum weight requirement", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Eligible", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15)]]),
+    );
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [
+          "#PQL0289",
+          makeResolvedPlayerCurrent("#PQL0289", 15, {
+            currentWeight: 160000,
+            currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+          }),
+        ],
+      ]),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([] as any);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      createdTags: ["#PQL0289"],
+    });
+  });
+
+  it("rejects signup when the selected account is below the minimum weight", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Below Minimum", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15)]]),
+    );
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [
+          "#PQL0289",
+          makeResolvedPlayerCurrent("#PQL0289", 15, {
+            currentWeight: 140000,
+            currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+          }),
+        ],
+      ]),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([] as any);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "minimum_weight_below_minimum",
+      blockedTags: ["#PQL0289"],
+    });
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects signup when the selected account has unknown weight", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Unknown Weight", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 15)]]),
+    );
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([] as any);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "minimum_weight_unavailable",
+      blockedTags: ["#PQL0289"],
+    });
+    expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps TH-gated signup selection behavior while applying minimum weight labels to visible accounts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Eligible TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: 13,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValueOnce(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 12)],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 13)],
+      ]),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      { playerTag: "#QGRJ2222", trophies: 5400 },
+    ] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#QGRJ2222",
+        weight: 140000,
+        measuredAt: new Date("2026-04-20T02:00:00.000Z"),
+      },
+    ] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        ["#PQL0289", makeResolvedPlayerCurrent("#PQL0289", 12, { currentWeight: null })],
+        ["#QGRJ2222", makeResolvedPlayerCurrent("#QGRJ2222", 13, { currentWeight: 140000 })],
+      ]),
+    );
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const options = result.panel.components
+      .flatMap((row) => {
+        const rowJson = row.toJSON?.() as any;
+        return Array.isArray(rowJson?.components) ? rowJson.components : [];
+      })
+      .flatMap((component: any) => (Array.isArray(component.options) ? component.options : []));
+    const accountOptions = options.filter((option: any) => String(option.value ?? "").startsWith("#"));
+    expect(accountOptions.map((option: any) => option.value)).toEqual(["#QGRJ2222"]);
+    expect(accountOptions.find((option: any) => option.value === "#QGRJ2222")?.description).toBe(
+      "#QGRJ2222 | ⚠️ below minimum weight",
+    );
   });
 
   it("blocks signup without the required role when the no-role allowance is exhausted", async () => {
@@ -773,6 +1290,17 @@ describe("RosterService", () => {
       },
     ] as any);
     prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        title: "Champions CWL",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      { playerTag: "#PQL0289", rosterId: "conflicting-roster" },
+    ] as any);
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 1 });
 
     const result = await rosterService.addRosterSignupsForManager({
@@ -788,6 +1316,7 @@ describe("RosterService", () => {
       linkedTags: ["#PQL0289"],
       createdTags: ["#PQL0289"],
       missingLinkedTags: [],
+      warnings: ["Override: #PQL0289 (#PQL0289) was already signed up on Champions CWL."],
     });
     expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1345,7 +1874,7 @@ describe("RosterService", () => {
     expect(cwlStateServiceMock.listSeasonRosterForClan).not.toHaveBeenCalled();
   });
 
-  it.each(["OPEN", "CLOSED", "ACTIVE"] as const)(
+  it.each(["OPEN", "ACTIVE"] as const)(
     "blocks signup when the same player is already signed up on another relevant %s roster",
     async (conflictLifecycleState) => {
       playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
@@ -1360,18 +1889,25 @@ describe("RosterService", () => {
       });
 
       expect(result).toMatchObject({
-        outcome: "roster_conflict",
+        outcome: "cwl_roster_conflict",
         rosterId: "roster-1",
         blockedTags: ["#PQL0289"],
-        conflictingRosterIds: ["archived-roster"],
+        blockedAccounts: [{ playerTag: "#PQL0289", playerName: "#PQL0289" }],
+        conflictingRosterIds: ["conflicting-roster"],
+        conflictingAccounts: [
+          {
+            playerTag: "#PQL0289",
+            playerName: "#PQL0289",
+            conflictingRosterId: "conflicting-roster",
+            conflictingRosterTitle: "Champions CWL",
+          },
+        ],
       });
-      expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+      expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            roster: expect.objectContaining({
-              lifecycleState: expect.objectContaining({
-                in: expect.arrayContaining([conflictLifecycleState]),
-              }),
+            lifecycleState: expect.objectContaining({
+              in: expect.arrayContaining([conflictLifecycleState]),
             }),
           }),
         }),
@@ -1379,11 +1915,33 @@ describe("RosterService", () => {
     },
   );
 
-  it("does not block signup when the only prior signup is on an archived roster", async () => {
+  it("allows same-roster re-selection when the account is already signed up on the current roster", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
     ]);
-    mockConflictLookupForLifecycleState("ARCHIVED");
+    mockConflictLookupForLifecycleState("OPEN", { conflictingTags: [], currentRosterTags: ["#PQL0289"] });
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "already_signed_up",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289"],
+      duplicateTags: ["#PQL0289"],
+      missingLinkedTags: [],
+      createdTags: [],
+    });
+  });
+
+  it("does not block signup when the only prior signup is on a closed or archived roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    mockConflictLookupForLifecycleState("CLOSED");
 
     const result = await rosterService.signupLinkedAccounts({
       rosterId: "roster-1",
@@ -1400,16 +1958,113 @@ describe("RosterService", () => {
       duplicateTags: [],
       missingLinkedTags: [],
     });
-    expect(prismaMock.rosterSignup.findMany).toHaveBeenCalledWith(
+    expect(prismaMock.roster.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          roster: expect.objectContaining({
-            lifecycleState: expect.objectContaining({
-              in: expect.not.arrayContaining(["ARCHIVED"]),
-            }),
+          lifecycleState: expect.objectContaining({
+            in: expect.arrayContaining(["OPEN", "ACTIVE"]),
           }),
         }),
       }),
+    );
+  });
+
+  it("does not apply CWL conflict lookup to non-CWL rosters", async () => {
+    prismaMock.roster.findUnique.mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      duplicateTags: [],
+      missingLinkedTags: [],
+    });
+    expect(prismaMock.roster.findMany).not.toHaveBeenCalled();
+  });
+
+  it("blocks mixed selections when one linked account conflicts on another CWL roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#G2RG9JCRL", linkedName: "Charlie", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    mockConflictLookupForLifecycleState("OPEN", {
+      conflictingTags: ["#QGRJ2222"],
+      currentRosterTags: ["#PQL0289"],
+    });
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      playerTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      rosterId: "roster-1",
+      linkedTags: ["#PQL0289", "#QGRJ2222", "#G2RG9JCRL"],
+      duplicateTags: ["#PQL0289"],
+      createdTags: ["#G2RG9JCRL"],
+      eligibilityIssues: [
+        {
+          playerTag: "#QGRJ2222",
+          playerName: "#QGRJ2222",
+          reason: "cwl_roster_conflict",
+          rosterId: "conflicting-roster",
+          rosterTitle: "Champions CWL",
+        },
+      ],
+    });
+  });
+
+  it("formats multi-reason signup eligibility issues by account", () => {
+    expect(
+      formatRosterSignupEligibilityIssueBlock([
+        { playerTag: "#P1", playerName: "Alpha", reason: "minimum_weight_below_minimum" },
+        {
+          playerTag: "#P2",
+          playerName: null,
+          reason: "cwl_roster_conflict",
+          rosterId: "roster-b",
+          rosterTitle: "Champions CWL",
+        },
+        { playerTag: "#P2", playerName: null, reason: "townhall_out_of_range" },
+      ]),
+    ).toBe(
+      "Unable to sign up some accounts:\n" +
+        "- Alpha (#P1) → below minimum weight\n" +
+        "- #P2 → already signed up on Champions CWL; town hall out of range",
     );
   });
 
@@ -2052,6 +2707,103 @@ describe("RosterService", () => {
       expect(description).toContain("Manual");
       expect(description).toContain("0d 2h");
       expect(description).toContain("1d 3h");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders PlayerCurrent shared current weight in the roster board weight column when no FWA weight exists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-22T12:00:00.000Z"));
+    try {
+      prismaMock.roster.findUnique.mockResolvedValueOnce({
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        sortBy: null,
+        displayColumns: JSON.stringify(["player_name", "weight", "weight_source", "weight_age"]),
+        minTownhall: 13,
+        maxTownhall: null,
+        maxMembers: 50,
+        maxAccountsPerUser: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        importMembers: false,
+      } as any);
+      prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          discordUserId: "222222222222222222",
+          signedUpAt: new Date("2026-04-20T00:05:00.000Z"),
+          createdAt: new Date("2026-04-20T00:05:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:05:00.000Z"),
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any);
+      prismaMock.playerLink.findMany.mockResolvedValueOnce([
+        { playerTag: "#QGRJ2222", discordUsername: "bravo-user" },
+      ] as any);
+      prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+        {
+          playerTag: "#QGRJ2222",
+          trophies: 5400,
+          weight: null,
+          sourceSyncedAt: new Date("2026-04-22T08:00:00.000Z"),
+        },
+      ] as any);
+      prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+      playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+        new Map([
+          [
+            "#QGRJ2222",
+            makeResolvedPlayerCurrent("#QGRJ2222", 15, {
+              currentWeight: 160000,
+              currentWeightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+            }),
+          ],
+        ]),
+      );
+      todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValueOnce([
+        {
+          playerTag: "#QGRJ2222",
+          clanTag: "#2QG2C08UP",
+          clanName: "Rising Dawn",
+        },
+      ] as any);
+      prismaMock.cwlTrackedClan.findFirst.mockResolvedValueOnce(null as any);
+
+      const payload = await rosterService.buildRosterSignupPayload("roster-1");
+      const description = String(payload?.embed.toJSON().description ?? "");
+
+      expect(description).toContain("160k");
+      expect(description).toContain("1d 4h");
     } finally {
       vi.useRealTimers();
     }
@@ -3250,6 +4002,340 @@ describe("RosterService", () => {
     expect(payload.selectedTags).toEqual([]);
   });
 
+  it("shows the other CWL roster title for linked accounts already signed up elsewhere", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", linkedName: "Bravo", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterId = args?.where?.rosterId;
+      if (typeof rosterId === "string") {
+        return [] as any;
+      }
+      if (Array.isArray(rosterId?.in)) {
+        return [{ playerTag: "#QGRJ2222", rosterId: "roster-2" }] as any;
+      }
+      return [] as any;
+    });
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Beta Finals Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-05-01T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+    ]);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const options = getRosterSignupAccountOptions(result.panel);
+    const optionByValue = new Map(options.map((option) => [option.value, option] as const));
+    expect(optionByValue.get("#PQL0289")?.description).toBe("#PQL0289 | available");
+    expect(optionByValue.get("#QGRJ2222")?.description).toBe("📝 CWL Beta Finals Signup");
+    expect(String(optionByValue.get("#QGRJ2222")?.description ?? "").length).toBeLessThanOrEqual(100);
+  });
+
+  it("renders the roster signup availability matrix with available, signed up, conflict, below minimum weight, and unavailable states", async () => {
+    const availableTag = makeValidRosterPlayerTag(1);
+    const signedUpTag = makeValidRosterPlayerTag(2);
+    const conflictTag = makeValidRosterPlayerTag(3);
+    const lowWeightTag = makeValidRosterPlayerTag(4);
+    const unavailableTag = makeValidRosterPlayerTag(5);
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: availableTag, linkedName: "Available", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: signedUpTag, linkedName: "Signed Up", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: conflictTag, linkedName: "Conflict", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: lowWeightTag, linkedName: "Low Weight", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      { playerTag: unavailableTag, linkedName: "Unavailable", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterId = args?.where?.rosterId;
+      if (rosterId === "roster-1") {
+        return [{ playerTag: signedUpTag }] as any;
+      }
+      if (Array.isArray(rosterId?.in)) {
+        return [{ playerTag: conflictTag, rosterId: "conflicting-roster" }] as any;
+      }
+      return [] as any;
+    });
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Champions CWL",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-18T00:00:00.000Z"),
+      } as any,
+    ]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [availableTag, makeResolvedPlayerCurrent(availableTag, 15, { currentWeight: 160000 })],
+        [signedUpTag, makeResolvedPlayerCurrent(signedUpTag, 15, { currentWeight: 160000 })],
+        [conflictTag, makeResolvedPlayerCurrent(conflictTag, 15, { currentWeight: 160000 })],
+        [lowWeightTag, makeResolvedPlayerCurrent(lowWeightTag, 15, { currentWeight: 140000 })],
+        [unavailableTag, makeResolvedPlayerCurrent(unavailableTag, 15, { currentWeight: null })],
+      ]),
+    );
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const accountOptionByValue = new Map(
+      getRosterSignupAccountOptions(result.panel).map((option) => [option.value, option] as const),
+    );
+    const weightInfoByValue = new Map(
+      getRosterSignupWeightInfoOptions(result.panel).map((option) => [option.value, option] as const),
+    );
+    expect(accountOptionByValue.get(availableTag)?.description).toBe(`${availableTag} | available`);
+    expect(accountOptionByValue.get(signedUpTag)?.description).toBe(`${signedUpTag} | already signed up`);
+    expect(accountOptionByValue.get(conflictTag)?.description).toBe("📝 Champions CWL");
+    expect(weightInfoByValue.get(lowWeightTag)?.description).toBe(`${lowWeightTag} | ⚠️ below minimum weight`);
+    expect(weightInfoByValue.get(unavailableTag)?.description).toBe(`${unavailableTag} | ⚠️ weight unavailable`);
+  });
+
+  it("keeps the current roster signed-up label when the account is already on this roster", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterId = args?.where?.rosterId;
+      if (typeof rosterId === "string") {
+        return [{ playerTag: "#PQL0289" }] as any;
+      }
+      if (Array.isArray(rosterId?.in)) {
+        return [{ playerTag: "#PQL0289", rosterId: "roster-2" }] as any;
+      }
+      return [] as any;
+    });
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Beta Finals Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-05-01T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+    ]);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const options = getRosterSignupAccountOptions(result.panel);
+    expect(options.find((option) => option.value === "#PQL0289")?.description).toBe("#PQL0289 | already signed up");
+  });
+
+  it("ignores closed CWL rosters when showing signup conflicts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterId = args?.where?.rosterId;
+      if (typeof rosterId === "string") {
+        return [] as any;
+      }
+      if (Array.isArray(rosterId?.in)) {
+        return [{ playerTag: "#PQL0289", rosterId: "roster-closed" }] as any;
+      }
+      return [] as any;
+    });
+    prismaMock.roster.findMany.mockImplementation(async (args: any) => {
+      const lifecycleFilter = args?.where?.lifecycleState?.in as string[] | undefined;
+      return Array.isArray(lifecycleFilter) && lifecycleFilter.includes("CLOSED")
+        ? [
+            {
+              id: "roster-closed",
+              guildId: "guild-1",
+              rosterType: "CWL",
+              rosterCategory: "signup",
+              title: "CWL Closed Roster",
+              clanTag: "#2QG2C08UP",
+              startsAt: new Date("2026-04-10T00:00:00.000Z"),
+              endsAt: null,
+              timezone: "America/Los_Angeles",
+              displayTimezone: "America/Los_Angeles",
+              lifecycleState: "CLOSED",
+              postedChannelId: null,
+              postedMessageId: null,
+              postedMessageUrl: null,
+              postedAt: null,
+              createdByDiscordUserId: "111111111111111111",
+              updatedByDiscordUserId: "111111111111111111",
+              createdAt: new Date("2026-04-01T00:00:00.000Z"),
+              updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+            } as any,
+          ]
+        : [];
+    });
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const options = getRosterSignupAccountOptions(result.panel);
+    expect(options.find((option) => option.value === "#PQL0289")?.description).toBe("#PQL0289 | available");
+  });
+
+  it("ignores non-CWL rosters when showing signup conflicts", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-2",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Beta Finals Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-05-01T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+    ]);
+
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Spring Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      allowMultiSignup: true,
+    } as any);
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    expect(prismaMock.roster.findMany).not.toHaveBeenCalled();
+    if (result.outcome !== "ready") return;
+    const options = getRosterSignupAccountOptions(result.panel);
+    expect(options.find((option) => option.value === "#PQL0289")?.description).toBe("#PQL0289 | available");
+  });
+
   it("filters TH-gated signup selection options to only viable linked accounts", async () => {
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
       { playerTag: "#PQL0289", linkedName: "Low TH", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
@@ -3998,6 +5084,14 @@ describe("RosterService", () => {
       createdAt: new Date("2026-04-20T00:00:00.000Z"),
       updatedAt: new Date("2026-04-20T00:00:00.000Z"),
     } as any);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        title: "Champions CWL",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+      },
+    ] as any);
     prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
       {
         id: "group-confirmed",
@@ -4295,6 +5389,29 @@ describe("RosterService", () => {
         sortOrder: 0,
       },
     ] as any);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Champions CWL",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-18T00:00:00.000Z"),
+      } as any,
+    ]);
     prismaMock.rosterSignup.findMany
       .mockResolvedValueOnce([
         {
@@ -4527,30 +5644,68 @@ describe("RosterService", () => {
         sortOrder: 0,
       },
     ] as any);
-    prismaMock.rosterSignup.findMany
-      .mockResolvedValueOnce([
-        {
-          id: "signup-1",
-          rosterId: "roster-1",
-          groupId: "group-confirmed",
-          playerTag: "#PQL0289",
-          playerName: "Alpha",
-          discordUserId: "111111111111111111",
-          group: {
-            id: "group-confirmed",
-            key: "confirmed",
-            name: "Confirmed",
-            description: "Primary roster members",
-            sortOrder: 0,
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "conflicting-roster",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Champions CWL",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-19T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: "111111111111111111",
+        updatedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-04-18T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-18T00:00:00.000Z"),
+      } as any,
+    ]);
+    prismaMock.rosterSignup.findMany.mockImplementation(async (args: any) => {
+      const rosterId = args?.where?.rosterId;
+      if (rosterId === "roster-1") {
+        return [
+          {
+            id: "signup-1",
+            rosterId: "roster-1",
+            groupId: "group-confirmed",
+            playerTag: "#PQL0289",
+            playerName: "Alpha",
+            discordUserId: "111111111111111111",
+            group: {
+              id: "group-confirmed",
+              key: "confirmed",
+              name: "Confirmed",
+              description: "Primary roster members",
+              sortOrder: 0,
+            },
           },
-        },
-      ] as any)
-      .mockResolvedValueOnce([
-        {
-          playerTag: "#ZZZ99999",
-          discordUserId: "111111111111111111",
-        },
-      ] as any);
+        ] as any;
+      }
+      if (rosterId === "roster-2") {
+        return [
+          {
+            playerTag: "#ZZZ99999",
+            discordUserId: "111111111111111111",
+          },
+        ] as any;
+      }
+      if (Array.isArray(rosterId?.in)) {
+        return [
+          {
+            playerTag: "#PQL0289",
+            rosterId: "conflicting-roster",
+          },
+        ] as any;
+      }
+      return [] as any;
+    });
     prismaMock.rosterSignup.createMany.mockResolvedValue({ count: 1 });
     prismaMock.rosterSignup.deleteMany.mockResolvedValue({ count: 1 });
 
@@ -5086,6 +6241,7 @@ describe("RosterService", () => {
       playerCurrentServiceMock.resolveCurrentPlayersForTags.mockResolvedValue(new Map());
       prismaMock.rosterSignup.findMany
         .mockResolvedValueOnce([]) // add existing rows
+        .mockResolvedValueOnce([] as any) // add CWL conflict lookup
         .mockResolvedValueOnce([
           { playerTag: "#PQL0289", groupId: "group-confirmed" },
           { playerTag: "#QGRJ2222", groupId: "group-confirmed" },
@@ -5840,6 +6996,82 @@ describe("RosterService", () => {
     expect(prismaMock.rosterSignup.deleteMany).not.toHaveBeenCalled();
   });
 
+  it("keeps change group moves unaffected by CWL signup conflict warnings", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      importMembers: false,
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findFirst.mockResolvedValueOnce({
+      id: "group-substitute",
+      key: "substitute",
+      name: "Substitute",
+      description: "Reserve roster members",
+      sortOrder: 1,
+    });
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.rosterSignup.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await rosterService.moveRosterSignups({
+      rosterId: "roster-1",
+      groupKey: "substitute",
+      playerTags: ["#PQL0289"],
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "moved",
+      rosterId: "roster-1",
+      groupKey: "substitute",
+      groupName: "Substitute",
+      requestedTags: ["#PQL0289"],
+      movedTags: ["#PQL0289"],
+      duplicateTags: [],
+      missingTags: [],
+    });
+    expect(result).not.toHaveProperty("warnings");
+  });
+
   it("builds a manager roster report view from current CWL clan members, not stale season roster participants", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       {
@@ -6211,6 +7443,7 @@ describe("RosterService", () => {
       endsAt: null,
       timezone: "America/New_York",
       displayTimezone: "America/New_York",
+      minimumWeight: 155000,
       lifecycleState: "OPEN",
       postedChannelId: null,
       postedMessageId: null,
@@ -6228,6 +7461,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       timezone: "America/New_York",
       displayTimezone: "America/New_York",
+      minimumWeight: 155000,
       updatedByDiscordUserId: "999999999999999999",
     });
 
@@ -6237,6 +7471,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       timezone: "America/New_York",
       displayTimezone: "America/New_York",
+      minimumWeight: 155000,
     });
     expect(prismaMock.roster.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6246,6 +7481,7 @@ describe("RosterService", () => {
           clanTag: "#2QG2C08UP",
           timezone: "America/New_York",
           displayTimezone: "America/New_York",
+          minimumWeight: 155000,
           updatedByDiscordUserId: "999999999999999999",
         }),
       }),

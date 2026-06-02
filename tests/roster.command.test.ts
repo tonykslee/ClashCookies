@@ -33,7 +33,6 @@ import {
   handleRosterPostChangeRosterTargetGroupSelectInteraction,
   handleRosterPostChangeRosterTargetRosterSelectInteraction,
   handleRosterManageActionButtonInteraction,
-  handleRosterManageWeightOpenButtonInteraction,
   handleRosterManageWeightModalSubmit,
   handleRosterReportPingButtonInteraction,
   handleRosterPingActionButtonInteraction,
@@ -100,6 +99,7 @@ function makeInteraction(input: {
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
   maxTownhall?: number | null;
+  minimumWeight?: number | null;
   requiredRole?: string | null;
   noRoleSignupLimit?: number | null;
   clearRequiredRole?: boolean | null;
@@ -155,6 +155,7 @@ function makeInteraction(input: {
         if (name === "max_accounts_per_user") return input.maxAccountsPerUser ?? null;
         if (name === "min_townhall") return input.minTownhall ?? null;
         if (name === "max_townhall") return input.maxTownhall ?? null;
+        if (name === "minimum_weight") return input.minimumWeight ?? null;
         if (name === "no-role-signup-limit") return input.noRoleSignupLimit ?? null;
         return null;
       }),
@@ -435,6 +436,7 @@ describe("/roster command", () => {
       clan: "#2QG2C08UP",
       title: "CWL Alpha Signup",
       timezone: "America/Los_Angeles",
+      minimumWeight: 145000,
     }) as any;
 
     await Roster.run({} as any, interaction as any);
@@ -442,6 +444,7 @@ describe("/roster command", () => {
     expect(rosterService.createRoster).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "CWL Alpha Signup",
+        minimumWeight: 145000,
       }),
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
@@ -1121,6 +1124,7 @@ describe("/roster command", () => {
       createdTags: ["#PQL0289", "#QGRJ2222"],
       duplicateTags: [],
       missingLinkedTags: [],
+      warnings: ["Override: Alpha (#PQL0289) was already signed up on Champions CWL."],
     });
     (rosterService.moveRosterSignups as any)
       .mockResolvedValueOnce({
@@ -1180,6 +1184,7 @@ describe("/roster command", () => {
       missingTags: [],
       blockedTags: [],
       blockedAccounts: [],
+      warnings: ["Override: Alpha (#PQL0289) was already signed up on Champions CWL."],
     });
     (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
       outcome: "updated",
@@ -1204,6 +1209,9 @@ describe("/roster command", () => {
       }),
     );
     expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain("Signed up #PQL0289, #QGRJ2222");
+    expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Override: Alpha (#PQL0289) was already signed up on Champions CWL.",
+    );
     const getRosterViewCallsBeforeMove = rosterService.getRosterView.mock.calls.length;
 
     const moveInteraction = makeInteraction({
@@ -1344,6 +1352,9 @@ describe("/roster command", () => {
     expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Moved Alpha (#PQL0289) to Target Roster - Confirmed.",
     );
+    expect(String(changeInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Override: Alpha (#PQL0289) was already signed up on Champions CWL.",
+    );
 
     const closeInteraction = makeInteraction({
       subcommand: "manage",
@@ -1449,15 +1460,16 @@ describe("/roster command", () => {
         id: "roster-1",
         title: "CWL Alpha Signup",
         clanTag: "#2QG2C08UP",
-        lifecycleState: "OPEN",
-        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
-        postedChannelId: "channel-1",
-        postedMessageId: "message-1",
-        postButtonMode: "standard",
-        minTownhall: 13,
-        maxTownhall: null,
-        rosterRoleId: null,
-      },
+      lifecycleState: "OPEN",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postButtonMode: "standard",
+      minTownhall: 13,
+      maxTownhall: null,
+      minimumWeight: 145000,
+      rosterRoleId: null,
+    },
       clanDisplayName: "CWL Alpha",
       clanLeagueLabel: "Champion League II",
       groups: [],
@@ -1615,6 +1627,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1651,6 +1664,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1820,7 +1834,7 @@ describe("/roster command", () => {
     );
   });
 
-  it("does not sync roster roles when the interactive manage flow confirms", async () => {
+  it("disables the manage panel while the interactive manage flow confirms", async () => {
     const syncSpy = vi.spyOn(rosterRoleSyncService, "syncRosterRoleAssignments");
     (rosterService.confirmRosterManageSession as any).mockResolvedValue({
       outcome: "completed",
@@ -1837,7 +1851,11 @@ describe("/roster command", () => {
       memberPermissions: {
         has: vi.fn().mockReturnValue(true),
       },
+      message: {
+        components: makeRosterMutationPanelComponents("roster-manage:action:confirm:session-1"),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       client: {
@@ -1853,6 +1871,20 @@ describe("/roster command", () => {
       expect.objectContaining({
         sessionId: "session-1",
         discordUserId: "111111111111111111",
+      }),
+    );
+    expect(interaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            components: expect.arrayContaining([
+              expect.objectContaining({
+                disabled: true,
+                label: "Applying changes...",
+              }),
+            ]),
+          }),
+        ]),
       }),
     );
     expect(syncSpy).not.toHaveBeenCalled();
@@ -1871,6 +1903,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -1976,6 +2009,7 @@ describe("/roster command", () => {
         postButtonMode: "standard",
         minTownhall: 13,
         maxTownhall: null,
+        minimumWeight: 145000,
         rosterRoleId: null,
       },
       clanDisplayName: "CWL Alpha",
@@ -2005,6 +2039,7 @@ describe("/roster command", () => {
       }),
     );
     const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    expect(String(payload.embeds[0]?.toJSON?.().description ?? "")).toContain("Min. Weight: 145k");
     const menu = payload.components[0]?.toJSON?.().components?.[0];
     const optionValues = menu?.options?.map((option: any) => option.value) ?? [];
     expect(optionValues).toEqual([
@@ -4615,6 +4650,7 @@ describe("/roster command", () => {
       subcommand: "edit",
       roster: "roster-1",
       minTownhall: 14,
+      minimumWeight: 150000,
     }) as any;
     editMinTownhallInteraction.client.channels.fetch = interactionClientFetchMock;
     await Roster.run({} as any, editMinTownhallInteraction as any);
@@ -4622,6 +4658,7 @@ describe("/roster command", () => {
     expect(minTownhallPayload).toMatchObject({
       rosterId: "roster-1",
       minTownhall: 14,
+      minimumWeight: 150000,
       updatedByDiscordUserId: "111111111111111111",
     });
     expect(minTownhallPayload.maxTownhall).toBeUndefined();
