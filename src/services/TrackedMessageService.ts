@@ -31,6 +31,7 @@ export type FwaBaseSwapTrackedMetadata = {
   createdAtIso: string;
   syncMessageId?: string | null;
   clanRoleId?: string | null;
+  pingRoleId?: string | null;
   swapReminder: boolean;
   renderVariant?: "single" | "split_part_1" | "split_part_2";
   phaseTimingLine?: string | null;
@@ -694,6 +695,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     String(value.swapReminder ?? "").trim().toLowerCase() === "true";
   const syncMessageId = normalizeTrackedMessageId(value.syncMessageId as string | null | undefined);
   const clanRoleId = String(value.clanRoleId ?? "").trim() || null;
+  const pingRoleId = String(value.pingRoleId ?? "").trim() || null;
   const entries = value.entries
     .map((entry) => {
       if (!isObject(entry)) return null;
@@ -759,6 +761,7 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     createdAtIso,
     syncMessageId,
     clanRoleId,
+    pingRoleId,
     renderVariant,
     phaseTimingLine: phaseTimingLineRaw || null,
     alertEmoji: alertEmojiRaw || null,
