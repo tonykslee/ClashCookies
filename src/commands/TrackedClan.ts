@@ -868,6 +868,8 @@ export const TrackedClan: Command = {
           });
           const paginatorPrefix = `tracked-clan-list:cwl:${interaction.id}`;
           let page = 0;
+          let refreshing = false;
+          let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
           const renderDetailed = (refreshing: boolean) => {
             const blocks = detailedRows.map((clan) => buildCwlTrackedClanBlock(clan));
             const pages = paginateTrackedClanBlocks(blocks);
@@ -885,7 +887,101 @@ export const TrackedClan: Command = {
             };
           };
 
+          const stopAutoRefreshTimer = () => {
+            if (autoRefreshTimer !== null) {
+              clearInterval(autoRefreshTimer);
+              autoRefreshTimer = null;
+            }
+          };
+
+          const hasUnmatchedRows = () => detailedRows.some((row) => row.spinStatus !== "matched");
+
+          const maybeStartAutoRefreshTimer = () => {
+            if (autoRefreshTimer !== null || !hasUnmatchedRows()) {
+              return;
+            }
+            autoRefreshTimer = setInterval(() => {
+              void runDetailedRefresh("auto");
+            }, 2 * 60 * 1000);
+          };
+
+          const runDetailedRefresh = async (source: "manual" | "auto", button?: ButtonInteraction) => {
+            if (refreshing) {
+              if (source === "manual" && button && !button.replied && !button.deferred) {
+                try {
+                  await button.deferUpdate();
+                } catch {
+                  // no-op
+                }
+              }
+              return;
+            }
+
+            refreshing = true;
+            try {
+              if (source === "manual" && button) {
+                try {
+                  await button.update(renderDetailed(true));
+                } catch {
+                  if (!button.replied && !button.deferred) {
+                    try {
+                      await button.deferUpdate();
+                    } catch {
+                      // no-op
+                    }
+                  }
+                }
+              } else if (source === "auto") {
+                await interaction.editReply(renderDetailed(true));
+              }
+
+              const refreshResult = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
+                season,
+                guildId: interaction.guildId ?? null,
+                cocService,
+              });
+              detailedRows = refreshResult.rows;
+              await interaction.editReply(renderDetailed(false));
+              if (!hasUnmatchedRows()) {
+                stopAutoRefreshTimer();
+              }
+              if (source === "manual" && button && refreshResult.failedClanCount > 0) {
+                const failedMessage =
+                  refreshResult.failedClanCount >= detailedRows.length
+                    ? "Failed to refresh detailed CWL clan data."
+                    : `Failed to refresh some CWL clan data: ${refreshResult.failedClanTags.join(", ")}`;
+                await button.followUp({
+                  ephemeral: true,
+                  content: failedMessage,
+                });
+              }
+            } catch (err) {
+              console.error(`tracked-clan CWL detailed refresh failed: ${formatError(err)}`);
+              try {
+                await interaction.editReply(renderDetailed(false));
+              } catch {
+                // no-op
+              }
+              if (source === "manual" && button) {
+                if (!button.replied && !button.deferred) {
+                  await button.reply({
+                    ephemeral: true,
+                    content: "Failed to update clan CWL list page.",
+                  });
+                }
+              }
+            } finally {
+              refreshing = false;
+              if (!hasUnmatchedRows()) {
+                stopAutoRefreshTimer();
+              } else {
+                maybeStartAutoRefreshTimer();
+              }
+            }
+          };
+
           await interaction.editReply(renderDetailed(false));
+          maybeStartAutoRefreshTimer();
 
           const message = await interaction.fetchReply();
           const collector = message.createMessageComponentCollector({
@@ -911,35 +1007,7 @@ export const TrackedClan: Command = {
               }
 
               if (button.customId === `${paginatorPrefix}:refresh`) {
-                try {
-                  await button.update(renderDetailed(true));
-                } catch {
-                  if (!button.replied && !button.deferred) {
-                    try {
-                      await button.deferUpdate();
-                    } catch {
-                      // no-op
-                    }
-                  }
-                }
-
-                const refreshResult = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
-                  season,
-                  guildId: interaction.guildId ?? null,
-                  cocService,
-                });
-                detailedRows = refreshResult.rows;
-                await interaction.editReply(renderDetailed(false));
-                if (refreshResult.failedClanCount > 0) {
-                  const failedMessage =
-                    refreshResult.failedClanCount >= detailedRows.length
-                      ? "Failed to refresh detailed CWL clan data."
-                      : `Failed to refresh some CWL clan data: ${refreshResult.failedClanTags.join(", ")}`;
-                  await button.followUp({
-                    ephemeral: true,
-                    content: failedMessage,
-                  });
-                }
+                await runDetailedRefresh("manual", button);
                 return;
               }
 
@@ -964,6 +1032,7 @@ export const TrackedClan: Command = {
           });
 
           collector.on("end", async () => {
+            stopAutoRefreshTimer();
             try {
               await interaction.editReply({
                 ...renderDetailed(false),
