@@ -443,6 +443,40 @@ function formatRosterSignupResultSummary(result: Awaited<ReturnType<typeof roste
   return result.warnings && result.warnings.length > 0 ? `${summary}\n${result.warnings.join("\n")}` : summary;
 }
 
+function formatCwlRotationNotEnoughPlayersResult(result: {
+  clanTag: string;
+  lineupSize: number;
+  availablePlayers: number;
+  diagnostics?:
+    | {
+        sourceMode: "manual_observed_season_roster" | "explicit_signup_roster";
+        observedSeasonRosterCount: number;
+        correspondingSignupRosterCount: number | null;
+        currentRoundMemberCount: number | null;
+        excludedCount: number;
+        eligibleAfterExclusionsCount: number;
+      }
+    | null;
+}): string {
+  const lines = [
+    `Not enough CWL roster members remain after exclusions for ${result.clanTag}. Need ${result.lineupSize}, have ${result.availablePlayers}.`,
+  ];
+  if (result.diagnostics) {
+    const diagnostics = result.diagnostics;
+    lines.push(`Source: ${diagnostics.sourceMode}`);
+    lines.push(`Observed season roster: ${diagnostics.observedSeasonRosterCount}`);
+    if (diagnostics.correspondingSignupRosterCount !== null) {
+      lines.push(`Confirmed signup roster: ${diagnostics.correspondingSignupRosterCount}`);
+    }
+    if (diagnostics.currentRoundMemberCount !== null) {
+      lines.push(`Current round members: ${diagnostics.currentRoundMemberCount}`);
+    }
+    lines.push(`Excluded: ${diagnostics.excludedCount}`);
+    lines.push(`Eligible after exclusions: ${diagnostics.eligibleAfterExclusionsCount}`);
+  }
+  return lines.join("\n");
+}
+
 function formatRosterRemoveResultSummary(
   result: Awaited<ReturnType<typeof rosterService.removeRosterSignups>>,
 ): string {
@@ -2672,9 +2706,7 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     return;
   }
   if (result.outcome === "not_enough_players") {
-    await interaction.editReply(
-      `Not enough CWL roster members remain after exclusions for ${result.clanTag}. Need ${result.lineupSize}, have ${result.availablePlayers}.`,
-    );
+    await interaction.editReply(formatCwlRotationNotEnoughPlayersResult(result));
     return;
   }
 

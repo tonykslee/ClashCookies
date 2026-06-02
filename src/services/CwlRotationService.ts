@@ -86,6 +86,17 @@ export type CwlRotationPlanExport = {
 
 type CwlRotationPlanWriteTx = Prisma.TransactionClient;
 
+type CwlRotationEligibilitySourceMode = "manual_observed_season_roster" | "explicit_signup_roster";
+
+type CwlRotationNotEnoughPlayersDiagnostics = {
+  sourceMode: CwlRotationEligibilitySourceMode;
+  observedSeasonRosterCount: number;
+  correspondingSignupRosterCount: number | null;
+  currentRoundMemberCount: number | null;
+  excludedCount: number;
+  eligibleAfterExclusionsCount: number;
+};
+
 export type CreateCwlRotationPlanResult =
   | {
       outcome: "created";
@@ -129,6 +140,7 @@ export type CreateCwlRotationPlanResult =
       clanTag: string;
       lineupSize: number;
       availablePlayers: number;
+      diagnostics?: CwlRotationNotEnoughPlayersDiagnostics;
     };
 
 export type CreateCwlRotationRosterPlanResult =
@@ -209,6 +221,7 @@ export type CreateCwlRotationRosterPlanResult =
       rosterTitle: string;
       lineupSize: number;
       availablePlayers: number;
+      diagnostics?: CwlRotationNotEnoughPlayersDiagnostics;
     }
   | {
       outcome: "no_confirmed_players";
@@ -556,14 +569,8 @@ function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; 
   return playerName ? `${playerName} (${input.playerTag})` : input.playerTag;
 }
 
-function buildCurrentCwlParticipationTagSet(
-  currentRound: Awaited<ReturnType<typeof cwlStateService.getCurrentRoundForClan>> | null,
-): Set<string> {
-  return new Set(
-    (currentRound?.members ?? [])
-      .map((member) => normalizePlayerTag(member.playerTag))
-      .filter((tag): tag is string => Boolean(tag)),
-  );
+function buildCwlRotationNotEnoughPlayersDiagnostics(input: CwlRotationNotEnoughPlayersDiagnostics): CwlRotationNotEnoughPlayersDiagnostics {
+  return input;
 }
 
 const CWL_ROTATION_ALLOWED_LINEUP_SIZES = new Set([15, 30]);
@@ -1144,7 +1151,6 @@ export class CwlRotationService {
       cwlStateService.getCurrentRoundForClan({ clanTag, season }),
       cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
     ]);
-    const currentCwlParticipationTagSet = buildCurrentCwlParticipationTagSet(currentRound);
     const currentRoundState = currentRound?.roundState.toLowerCase() ?? "";
     const hasOverlapPreparation =
       currentRound !== null &&
@@ -1172,35 +1178,12 @@ export class CwlRotationService {
       .map((value) => normalizePlayerTag(value))
       .filter(Boolean);
     const excludeTags = [...new Set(rawExcludeTags)];
-    const [seasonRoster, correspondingRoster] = await Promise.all([
-      cwlStateService.listSeasonRosterForClan({ clanTag, season }),
-      input.guildId
-        ? (async () => {
-            const roster = await rosterService.findCwlRosterForClan({
-              guildId: input.guildId ?? "",
-              clanTag,
-              season,
-            });
-            if (!roster) return null;
-            return rosterService.getRosterView(roster.id);
-          })()
-        : Promise.resolve(null),
-    ]);
+    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));
     if (invalidTags.length > 0) {
       return { outcome: "invalid_excludes", season, clanTag, invalidTags };
     }
-
-    const rosterSignups = correspondingRoster?.signups ?? [];
-    const rosterSignupByTag = new Map(
-      rosterSignups
-        .map((signup) => {
-          const playerTag = normalizePlayerTag(signup.playerTag);
-          return playerTag ? ([playerTag, signup] as const) : null;
-        })
-        .filter((entry): entry is readonly [string, (typeof rosterSignups)[number]] => Boolean(entry)),
-    );
     const liveSourcePositionByTag = new Map(
       currentRound.members
         .map((member) => {
@@ -1213,31 +1196,14 @@ export class CwlRotationService {
         })
         .filter((entry): entry is readonly [string, number | null] => Boolean(entry)),
     );
-    const notInCurrentCwlRosterPlayers = seasonRoster.filter(
-      (entry) => !currentCwlParticipationTagSet.has(entry.playerTag),
-    );
-    const eligibleRosterEntriesBase = correspondingRoster
-      ? seasonRoster
-          .filter((entry) => rosterSignupByTag.has(entry.playerTag))
-          .filter((entry) => currentCwlParticipationTagSet.has(entry.playerTag))
-          .map((entry) => {
-            const signup = rosterSignupByTag.get(entry.playerTag) ?? null;
-            return {
-              ...entry,
-              weight: signup?.weight ?? entry.currentWeight ?? null,
-              sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
-            };
-          })
-      : seasonRoster
-          .filter((entry) => currentCwlParticipationTagSet.has(entry.playerTag))
-          .map((entry) => ({
-            ...entry,
-            weight: entry.currentWeight ?? null,
-            sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
-          }));
-    const eligibleRosterEntries = eligibleRosterEntriesBase.filter(
-      (entry) => !excludeTags.includes(entry.playerTag),
-    );
+    const excludeTagSet = new Set(excludeTags);
+    const eligibleRosterEntries = seasonRoster
+      .filter((entry) => !excludeTagSet.has(entry.playerTag))
+      .map((entry) => ({
+        ...entry,
+        weight: entry.currentWeight ?? null,
+        sourcePosition: liveSourcePositionByTag.get(entry.playerTag) ?? null,
+      }));
     const currentLineupTags = currentRound.members
       .filter((member) => member.subbedIn)
       .map((member) => member.playerTag);
@@ -1257,6 +1223,14 @@ export class CwlRotationService {
         clanTag,
         lineupSize,
         availablePlayers: eligibleRosterEntries.length,
+        diagnostics: buildCwlRotationNotEnoughPlayersDiagnostics({
+          sourceMode: "manual_observed_season_roster",
+          observedSeasonRosterCount: seasonRoster.length,
+          correspondingSignupRosterCount: null,
+          currentRoundMemberCount: currentRound.members.length,
+          excludedCount: excludeTags.length,
+          eligibleAfterExclusionsCount: eligibleRosterEntries.length,
+        }),
       };
     }
 
@@ -1278,18 +1252,6 @@ export class CwlRotationService {
       currentRoundDay: currentRound.roundDay,
       seedRoundAlreadyCountedInParticipation,
     });
-    if (notInCurrentCwlRosterPlayers.length > 0) {
-      warnings.unshift(
-        `Not in current CWL: ${notInCurrentCwlRosterPlayers
-          .map((entry) =>
-            formatCwlRosterRotationPlayerLabel({
-              playerName: entry.playerName,
-              playerTag: entry.playerTag,
-            }),
-          )
-          .join(", ")}.`,
-      );
-    }
     const rosterRows = buildRosterRowsForMetadata(sourceOrderedRoster);
 
     await prisma.$transaction(async (tx) => {
@@ -1477,8 +1439,8 @@ export class CwlRotationService {
       };
     }
 
-    const currentRound = await cwlStateService.getCurrentRoundForClan({ clanTag, season });
-    const currentCwlParticipationTagSet = buildCurrentCwlParticipationTagSet(currentRound);
+    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
+    const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
     const normalizedConfirmedSignups = confirmedSignups
       .map((signup) => ({
@@ -1514,10 +1476,10 @@ export class CwlRotationService {
     }
 
     const eligibleConfirmedSignups = dedupedConfirmedSignups.filter((signup) =>
-      currentCwlParticipationTagSet.has(signup.playerTag),
+      seasonRosterByTag.has(signup.playerTag),
     );
     const notInCurrentCwlPlayers = dedupedConfirmedSignups.filter(
-      (signup) => !currentCwlParticipationTagSet.has(signup.playerTag),
+      (signup) => !seasonRosterByTag.has(signup.playerTag),
     );
     if (eligibleConfirmedSignups.length <= 0) {
       return {
@@ -1528,6 +1490,14 @@ export class CwlRotationService {
         rosterTitle,
         lineupSize: explicitLineupSize ?? 1,
         availablePlayers: 0,
+        diagnostics: buildCwlRotationNotEnoughPlayersDiagnostics({
+          sourceMode: "explicit_signup_roster",
+          observedSeasonRosterCount: seasonRoster.length,
+          correspondingSignupRosterCount: dedupedConfirmedSignups.length,
+          currentRoundMemberCount: null,
+          excludedCount: 0,
+          eligibleAfterExclusionsCount: 0,
+        }),
       };
     }
 
@@ -1543,6 +1513,14 @@ export class CwlRotationService {
         rosterTitle,
         lineupSize,
         availablePlayers: eligibleConfirmedSignups.length,
+        diagnostics: buildCwlRotationNotEnoughPlayersDiagnostics({
+          sourceMode: "explicit_signup_roster",
+          observedSeasonRosterCount: seasonRoster.length,
+          correspondingSignupRosterCount: dedupedConfirmedSignups.length,
+          currentRoundMemberCount: null,
+          excludedCount: 0,
+          eligibleAfterExclusionsCount: eligibleConfirmedSignups.length,
+        }),
       };
     }
     const rosterEntries = eligibleConfirmedSignups.map<CwlRotationSeedRosterEntry>((signup, index) => ({
@@ -1574,7 +1552,7 @@ export class CwlRotationService {
         : []),
       ...(notInCurrentCwlPlayers.length > 0
         ? [
-            `Not in current CWL: ${notInCurrentCwlPlayers
+            `Skipped confirmed roster players not observed in current CWL: ${notInCurrentCwlPlayers
               .map((entry) => formatCwlRosterRotationPlayerLabel({
                 playerName: entry.playerName,
                 playerTag: entry.playerTag,
