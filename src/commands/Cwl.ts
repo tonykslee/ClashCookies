@@ -17,6 +17,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
+import { GoogleSheetsAuthError } from "../services/GoogleSheetsService";
 import {
   parseRosterSignupButtonCustomId,
   parseRosterRemoveButtonCustomId,
@@ -3123,28 +3124,41 @@ async function handleRotationImportSubcommand(interaction: ChatInputCommandInter
 
 async function handleRotationExportSubcommand(interaction: ChatInputCommandInteraction) {
   const forceNew = interaction.options.getBoolean("new", false) ?? false;
-  const result = await cwlRotationSheetService.exportActivePlans({
-    new: forceNew,
-    createdByDiscordUserId: interaction.user.id,
-  });
-  const messagePrefix = result.reused
-    ? "Reused the existing public Google Sheet because no rotation updates were detected."
-    : forceNew
-      ? "Created a new public Google Sheet with the current CWL planner tabs."
-      : "Created a new public Google Sheet with the current CWL planner tabs.";
-  await interaction.editReply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(CWL_EMBED_COLOR)
-        .setTitle("/cwl rotations export")
-        .setDescription(
-          buildDescription([
-            `${messagePrefix} ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
-            `Link: ${result.spreadsheetUrl}`,
-          ]),
-        ),
-    ],
-  });
+  try {
+    const result = await cwlRotationSheetService.exportActivePlans({
+      new: forceNew,
+      createdByDiscordUserId: interaction.user.id,
+    });
+    const messagePrefix = result.reused
+      ? "Reused the existing public Google Sheet because no rotation updates were detected."
+      : forceNew
+        ? "Created a new public Google Sheet with the current CWL planner tabs."
+        : "Created a new public Google Sheet with the current CWL planner tabs.";
+    await interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CWL_EMBED_COLOR)
+          .setTitle("/cwl rotations export")
+          .setDescription(
+            buildDescription([
+              `${messagePrefix} ${result.tabCount} active CWL planner tab${result.tabCount === 1 ? "" : "s"}.`,
+              `Link: ${result.spreadsheetUrl}`,
+            ]),
+          ),
+      ],
+    });
+  } catch (err) {
+    if (err instanceof GoogleSheetsAuthError && err.meta.grantType === "refresh_token") {
+      console.error(
+        `[cwl] rotation_export_failed namespace=${err.meta.namespace} operation=${err.meta.operation} status=${err.meta.status} errorCode=${err.meta.errorCode} reason=${err.meta.reason} grantType=${err.meta.grantType} error=${formatError(err)}`,
+      );
+      await interaction.editReply(
+        "Google Sheets export auth failed. The configured Google OAuth refresh token is invalid or expired. Regenerate GOOGLE_OAUTH_REFRESH_TOKEN with Sheets write + Drive file scopes, redeploy, then retry.",
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 export async function handleRosterSignupSubcommand(

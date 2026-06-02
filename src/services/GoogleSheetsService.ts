@@ -88,6 +88,27 @@ class GoogleSheetTransportError extends Error {
   }
 }
 
+export type GoogleSheetsAuthFailureGrantType = "refresh_token" | "jwt_bearer";
+
+export type GoogleSheetsAuthErrorMeta = {
+  namespace: "google_oauth";
+  operation: "token_exchange";
+  status: "failure";
+  errorCode: "HTTP_400";
+  grantType: GoogleSheetsAuthFailureGrantType;
+  reason: "invalid_grant";
+};
+
+export class GoogleSheetsAuthError extends Error {
+  readonly meta: GoogleSheetsAuthErrorMeta;
+
+  constructor(message: string, meta: GoogleSheetsAuthErrorMeta) {
+    super(message);
+    this.name = "GoogleSheetsAuthError";
+    this.meta = meta;
+  }
+}
+
 export type CompoLinkedSheet = {
   sheetId: string;
   tabName: string | null;
@@ -835,6 +856,19 @@ export class GoogleSheetsService {
           errorCode: failure.errorCode,
           timeout: failure.timeout,
         });
+        if (this.isGoogleOAuthInvalidGrantFailure(err)) {
+          throw new GoogleSheetsAuthError(
+            "Google OAuth refresh token exchange failed with invalid_grant.",
+            {
+              namespace: "google_oauth",
+              operation: "token_exchange",
+              status: "failure",
+              errorCode: "HTTP_400",
+              grantType: "refresh_token",
+              reason: "invalid_grant",
+            },
+          );
+        }
         throw err;
       }
     }
@@ -878,8 +912,35 @@ export class GoogleSheetsService {
         errorCode: failure.errorCode,
         timeout: failure.timeout,
       });
+      if (this.isGoogleOAuthInvalidGrantFailure(err)) {
+        throw new GoogleSheetsAuthError(
+          "Google OAuth JWT bearer token exchange failed with invalid_grant.",
+          {
+            namespace: "google_oauth",
+            operation: "token_exchange",
+            status: "failure",
+            errorCode: "HTTP_400",
+            grantType: "jwt_bearer",
+            reason: "invalid_grant",
+          },
+        );
+      }
       throw err;
     }
+  }
+
+  private isGoogleOAuthInvalidGrantFailure(err: unknown): boolean {
+    const status = this.readStatusFromUnknown(err);
+    if (status !== 400) {
+      return false;
+    }
+    const haystack = [
+      this.errorTextFromUnknown(err) ?? "",
+      this.errorMessageFromUnknown(err, ""),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes("invalid_grant");
   }
 
   /** Purpose: build service account assertion. */
