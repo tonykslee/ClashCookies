@@ -38,6 +38,7 @@ import {
   type CwlRotationSheetImportPreview,
 } from "../src/services/CwlRotationSheetService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
+import { GoogleSheetsAuthError } from "../src/services/GoogleSheetsService";
 import { cwlStateService } from "../src/services/CwlStateService";
 import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
@@ -4825,6 +4826,34 @@ describe("/cwl command", () => {
       new: true,
       createdByDiscordUserId: "111111111111111111",
     });
+  });
+
+  it("returns a Google auth failure message for /cwl rotations export when OAuth token exchange is invalid", async () => {
+    vi.mocked(cwlRotationSheetService.exportActivePlans).mockRejectedValue(
+      new GoogleSheetsAuthError("Google OAuth refresh token exchange failed with invalid_grant.", {
+        namespace: "google_oauth",
+        operation: "token_exchange",
+        status: "failure",
+        errorCode: "HTTP_400",
+        grantType: "refresh_token",
+        reason: "invalid_grant",
+      }),
+    );
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "export",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "Google Sheets export auth failed. The configured Google OAuth refresh token is invalid or expired. Regenerate GOOGLE_OAUTH_REFRESH_TOKEN with Sheets write + Drive file scopes, redeploy, then retry.",
+    );
+    expect(String(consoleErrorSpy.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "namespace=google_oauth operation=token_exchange status=failure errorCode=HTTP_400",
+    );
+    expect(String(consoleErrorSpy.mock.calls.at(-1)?.[0] ?? "")).toContain("grantType=refresh_token");
   });
 
   it("deletes an active CWL rotation plan and reports the clan, season, and version", async () => {
