@@ -43,6 +43,7 @@ import { normalizeSyncTimeZone, autocompleteSyncTimeZones } from "../services/sy
 
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
+const CWL_MEMBERS_SAFE_MESSAGE_CHAR_BUDGET = 5500;
 const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
 const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
 const CWL_ROTATION_SHOW_SESSION_PREFIX = "cwl-rot-show";
@@ -139,14 +140,32 @@ function resolveApplicationEmojiRendered(
   return null;
 }
 
-async function resolveCwlRosterSignupTagSet(input: {
+type CwlRosterContext =
+  | {
+      kind: "none";
+    }
+  | {
+      kind: "loaded";
+      rosterId: string;
+      rosterTitle: string | null;
+      rosterPostedMessageUrl: string | null;
+      signupTagSet: Set<string>;
+    }
+  | {
+      kind: "unavailable";
+      rosterId: string;
+      rosterTitle: string | null;
+      rosterPostedMessageUrl: string | null;
+    };
+
+async function resolveCwlRosterContext(input: {
   guildId: string | null;
   clanTag: string;
   season: string;
-}): Promise<Set<string> | null> {
+}): Promise<CwlRosterContext> {
   const guildId = String(input.guildId ?? "").trim();
   if (!guildId) {
-    return null;
+    return { kind: "none" };
   }
 
   const roster = await rosterService.findCwlRosterForClan({
@@ -155,19 +174,33 @@ async function resolveCwlRosterSignupTagSet(input: {
     season: input.season,
   });
   if (!roster) {
-    return null;
+    return { kind: "none" };
   }
 
+  const rosterId = roster.id;
+  const rosterTitle = String(roster.title ?? "").trim() || null;
+  const rosterPostedMessageUrl = String(roster.postedMessageUrl ?? "").trim() || null;
   const rosterView = await rosterService.getRosterView(roster.id);
   if (!rosterView) {
-    return null;
+    return {
+      kind: "unavailable",
+      rosterId,
+      rosterTitle,
+      rosterPostedMessageUrl,
+    };
   }
 
-  return new Set(
-    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter((tag): tag is string =>
-      Boolean(tag),
-    ),
+  const signupTagSet = new Set(
+    rosterView.signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter((tag): tag is string => Boolean(tag)),
   );
+
+  return {
+    kind: "loaded",
+    rosterId,
+    rosterTitle,
+    rosterPostedMessageUrl,
+    signupTagSet,
+  };
 }
 
 function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
@@ -343,6 +376,110 @@ function buildDescription(lines: string[]): string {
     return description;
   }
   return `${description.slice(0, DISCORD_DESCRIPTION_LIMIT - 13)}\n...truncated`;
+}
+
+function splitLinesIntoDiscordEmbedDescriptions(lines: string[]): string[] {
+  const descriptions: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    if (current.length === 0) {
+      current = line;
+      continue;
+    }
+    const candidate = `${current}\n${line}`;
+    if (candidate.length <= DISCORD_DESCRIPTION_LIMIT) {
+      current = candidate;
+      continue;
+    }
+    descriptions.push(current);
+    current = line;
+  }
+
+  if (current.length > 0) {
+    descriptions.push(current);
+  }
+
+  return descriptions.length > 0 ? descriptions : [""];
+}
+
+function chunkLinesForDiscordMessages(lines: string[]): string[][] {
+  const chunks: string[][] = [];
+  let currentChunk: string[] = [];
+  let currentLength = 0;
+
+  for (const line of lines) {
+    const candidateLength = currentLength + (currentChunk.length > 0 ? 1 : 0) + line.length;
+    if (currentChunk.length > 0 && candidateLength > CWL_MEMBERS_SAFE_MESSAGE_CHAR_BUDGET) {
+      chunks.push(currentChunk);
+      currentChunk = [line];
+      currentLength = line.length;
+      continue;
+    }
+    currentChunk.push(line);
+    currentLength = candidateLength;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+function buildCwlMembersMessageEmbeds(input: {
+  clanTag: string;
+  chunkLines: string[];
+  chunkIndex: number;
+  chunkCount: number;
+}): EmbedBuilder[] {
+  const descriptions = splitLinesIntoDiscordEmbedDescriptions(input.chunkLines);
+  return descriptions.map((description, descriptionIndex) => {
+    const embed = new EmbedBuilder().setColor(CWL_EMBED_COLOR).setDescription(description);
+    if (input.chunkIndex === 0 && descriptionIndex === 0) {
+      embed.setTitle(`/cwl members ${input.clanTag}`);
+    } else if (descriptionIndex === 0) {
+      embed.setTitle(`/cwl members ${input.clanTag} (continued ${input.chunkIndex + 1}/${input.chunkCount})`);
+    } else {
+      embed.setTitle(`/cwl members ${input.clanTag} (continued)`);
+    }
+    if (input.chunkCount > 1 || descriptions.length > 1) {
+      embed.setFooter({
+        text:
+          input.chunkCount > 1
+            ? `Part ${descriptionIndex + 1}/${descriptions.length} | Message ${input.chunkIndex + 1}/${input.chunkCount}`
+            : `Part ${descriptionIndex + 1}/${descriptions.length}`,
+      });
+    }
+    return embed;
+  });
+}
+
+function buildCwlMembersRosterLine(input: CwlRosterContext): string {
+  if (input.kind === "none") {
+    return "Roster: none found";
+  }
+  const rosterTitle = String(input.rosterTitle ?? "").trim() || "Roster";
+  const postedMessageUrl = String(input.rosterPostedMessageUrl ?? "").trim();
+  const rosterLabel = postedMessageUrl ? `[${rosterTitle}](<${postedMessageUrl}>)` : rosterTitle;
+  if (input.kind === "unavailable") {
+    return `Roster: ${rosterLabel} (signups unavailable)`;
+  }
+  return `Roster: ${rosterLabel}`;
+}
+
+function buildCwlMembersSignedUpCountLabel(context: CwlRosterContext, count: number | null): string {
+  return context.kind === "loaded" && count !== null ? String(count) : "unavailable";
+}
+
+function buildCwlMembersExclusionCopyText(context: CwlRosterContext, tags: string[]): string {
+  if (context.kind === "none") {
+    return "none";
+  }
+  if (context.kind === "unavailable") {
+    return "unavailable";
+  }
+  return tags.length > 0 ? `\`${tags.join(" ")}\`` : "none";
 }
 
 function formatRosterAccountIdentity(account: { playerTag: string; playerName: string | null }): string {
@@ -2598,9 +2735,9 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
-  const [townHallEmojiByLevel, rosterSignupTagSet] = await Promise.all([
+  const [townHallEmojiByLevel, rosterContext] = await Promise.all([
     resolveTownHallEmojiMap(interaction.client),
-    resolveCwlRosterSignupTagSet({
+    resolveCwlRosterContext({
       guildId: interaction.guildId ?? null,
       clanTag,
       season,
@@ -2615,19 +2752,28 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
   const entries = inWarOnly
     ? roster.filter((entry) => entry.currentRound?.inCurrentLineup)
     : roster;
-  const lines = renderMembersListLines({
-    season,
-    clanTag,
-    clanName: trackedClan.name,
-    entries,
-    inWarOnly,
-    townHallEmojiByLevel,
-    rosterSignupTagSet,
-  });
+  const rosterSignupTagSet = rosterContext.kind === "loaded" ? rosterContext.signupTagSet : null;
+  const signedUpAndSpunCount = rosterContext.kind === "loaded"
+    ? entries.filter((entry) => {
+        const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+        return Boolean(normalizedPlayerTag) && rosterSignupTagSet?.has(normalizedPlayerTag) === true;
+      }).length
+    : null;
+  const notSignedUpIncludedTags = rosterContext.kind === "loaded"
+    ? entries
+        .filter((entry) => {
+          const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+          return Boolean(normalizedPlayerTag) && rosterSignupTagSet?.has(normalizedPlayerTag) !== true;
+        })
+        .map((entry) => normalizePlayerTag(entry.playerTag)?.replace(/^#/, ""))
+        .filter((tag): tag is string => Boolean(tag))
+    : [];
+  const topInfoLines = [
+    `Season: ${season}`,
+    `Clan: ${trackedClan.name ? `${trackedClan.name} (${clanTag})` : clanTag}`,
+  ];
   if (currentRound) {
-    lines.splice(
-      2,
-      0,
+    topInfoLines.push(
       renderCurrentRoundSummary({
         clanTag,
         clanName: currentRound.clanName,
@@ -2639,18 +2785,46 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
           ? currentRound.startTime
           : currentRound.endTime,
       }),
-      "",
     );
   }
-
-  await interaction.editReply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(CWL_EMBED_COLOR)
-        .setTitle(`/cwl members ${clanTag}`)
-        .setDescription(buildDescription(lines)),
-    ],
+  topInfoLines.push(
+    buildCwlMembersRosterLine(rosterContext),
+    `Members spun in CWL: ${entries.length}`,
+    `Signed up + spun in CWL: ${buildCwlMembersSignedUpCountLabel(rosterContext, signedUpAndSpunCount)}`,
+    "",
+  );
+  const memberListLines = renderMembersListLines({
+    season,
+    clanTag,
+    clanName: trackedClan.name,
+    entries,
+    inWarOnly,
+    townHallEmojiByLevel,
+    rosterSignupTagSet,
   });
+  const fullLines = [
+    ...topInfoLines,
+    ...memberListLines.slice(3),
+    "",
+    "Not signed up but included in CWL",
+    buildCwlMembersExclusionCopyText(rosterContext, notSignedUpIncludedTags),
+  ];
+  const messageChunks = chunkLinesForDiscordMessages(fullLines);
+  const payloads = messageChunks.map((chunkLines, chunkIndex) => ({
+    embeds: buildCwlMembersMessageEmbeds({
+      clanTag,
+      chunkLines,
+      chunkIndex,
+      chunkCount: messageChunks.length,
+    }),
+  }));
+  await interaction.editReply(payloads[0]);
+  for (const payload of payloads.slice(1)) {
+    await interaction.followUp({
+      ...payload,
+      ephemeral: true,
+    });
+  }
 }
 
 async function handleRotationCreateSubcommand(interaction: ChatInputCommandInteraction) {
