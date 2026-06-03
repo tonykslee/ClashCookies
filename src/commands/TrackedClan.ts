@@ -1011,7 +1011,9 @@ export const TrackedClan: Command = {
             };
           };
 
-          const stopAutoRefreshTimer = (reason: "all_matched" | "collector_ended" | "message_unavailable") => {
+          const stopAutoRefreshTimer = (
+            reason: "all_matched" | "collector_ended" | "message_unavailable" | "no_searching_rows",
+          ) => {
             if (autoRefreshTimer !== null) {
               clearInterval(autoRefreshTimer);
               autoRefreshTimer = null;
@@ -1022,10 +1024,10 @@ export const TrackedClan: Command = {
             }
           };
 
-          const hasUnmatchedRows = () => detailedRows.some((row) => row.spinStatus !== "matched");
+          const hasSearchingRows = () => detailedRows.some((row) => row.spinStatus === "searching");
 
           const maybeStartAutoRefreshTimer = () => {
-            if (autoRefreshTimer !== null || autoRefreshStopped || refreshing || !hasUnmatchedRows()) {
+            if (autoRefreshTimer !== null || autoRefreshStopped || refreshing || !hasSearchingRows()) {
               return;
             }
             autoRefreshTimer = setInterval(() => {
@@ -1114,8 +1116,8 @@ export const TrackedClan: Command = {
               if (source === "auto") {
                 logDetailedRefresh("tick_success");
               }
-              if (!hasUnmatchedRows()) {
-                stopAutoRefreshTimer("all_matched");
+              if (!hasSearchingRows()) {
+                stopAutoRefreshTimer("no_searching_rows");
               }
               if (source === "manual" && button && refreshResult.failedClanCount > 0) {
                 const failedMessage =
@@ -1153,7 +1155,7 @@ export const TrackedClan: Command = {
               }
             } finally {
               refreshing = false;
-              if (!autoRefreshStopped && hasUnmatchedRows()) {
+              if (!autoRefreshStopped && hasSearchingRows()) {
                 maybeStartAutoRefreshTimer();
               }
             }
