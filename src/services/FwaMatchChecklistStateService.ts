@@ -12,6 +12,7 @@ import {
   trackedMessageService,
   buildFwaMatchCompactCopyLine,
   resolveTrackedMessageSyncIdentity,
+  normalizeTrackedMessageId,
 } from "./TrackedMessageService";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { WarMailLifecycleService } from "./WarMailLifecycleService";
@@ -208,11 +209,16 @@ function buildChecklistContextKeyByTag(
 async function buildFwaMatchBasesRenderStateForGuild(params: {
   guildId: string;
   client: Client;
+  syncMessageId?: string | null;
 }): Promise<FwaMatchChecklistRenderState> {
-  const latestActiveSyncPost = await trackedMessageService
-    .resolveLatestActiveSyncPost(params.guildId)
-    .catch(() => null);
-  const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+  const overrideSyncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
+  const latestActiveSyncPost = overrideSyncIdentity
+    ? null
+    : await trackedMessageService
+        .resolveLatestActiveSyncPost(params.guildId)
+        .catch(() => null);
+  const currentSyncIdentity =
+    overrideSyncIdentity ?? resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, clanBadge: true, name: true, shortName: true },
@@ -299,7 +305,15 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           messageId: activeBaseSwap.messageId,
         })
       : null;
-    const allGoodCompletion =
+    const activeBaseSwapSyncIdentity = normalizeTrackedMessageId(
+      activeBaseSwap?.metadata.syncMessageId ?? null,
+    );
+    const baseSwapSource = activeBaseSwap
+      ? activeBaseSwapSyncIdentity === currentSyncIdentity
+        ? "matched_sync"
+        : "matched_unscoped"
+      : "none";
+    const exactCompletion =
       issueSummary.hasIssues || !currentSyncIdentity
         ? null
         : await trackedMessageService
@@ -312,11 +326,34 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
               syncMessageId: currentSyncIdentity,
             })
             .catch(() => null);
+    const fallbackCompletion =
+      exactCompletion || issueSummary.hasIssues || !currentSyncIdentity
+        ? null
+        : await trackedMessageService
+            .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+              guildId: params.guildId,
+              clanTag,
+              warId: activeCurrentWar?.warId ?? null,
+              warStartTime: activeCurrentWar?.startTime ?? null,
+              opponentTag: activeCurrentWar?.opponentTag ?? null,
+              syncMessageId: currentSyncIdentity,
+            })
+            .catch(() => null);
+    const allGoodCompletion = exactCompletion ?? fallbackCompletion;
+    const completionSource = exactCompletion
+      ? "exact"
+      : fallbackCompletion
+        ? "sync_fallback"
+        : "none";
+    const visibleReaction = issueSummary.hasIssues || Boolean(allGoodCompletion);
     const statusText = issueSummary.hasIssues
       ? `${issueSummary.statusText}${issueLink ? `: [base-swap post](${issueLink})` : ""}`
       : allGoodCompletion
         ? "\u2705 Bases checked and all good"
         : "\u274c Bases not checked";
+    console.debug(
+      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} baseSwap=${baseSwapSource} completion=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
+    );
     rows.push({
       clanTag,
       compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}`,
@@ -434,11 +471,13 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   client: Client;
   warLookupCache?: Map<string, Promise<any> | any>;
   viewType?: FwaMatchChecklistViewType;
+  syncMessageId?: string | null;
 }): Promise<FwaMatchChecklistRenderState> {
   if ((params.viewType ?? "Mail") === "Bases") {
     return buildFwaMatchBasesRenderStateForGuild({
       guildId: params.guildId,
       client: params.client,
+      syncMessageId: params.syncMessageId ?? null,
     });
   }
   const latestActiveSyncPost = await trackedMessageService
