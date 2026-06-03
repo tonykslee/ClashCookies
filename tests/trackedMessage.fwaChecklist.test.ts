@@ -824,6 +824,25 @@ describe("fwa checklist tracked messages", () => {
   it("resolves current-sync base-swap rows using explicit sync metadata", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
+        id: "swap-unscoped",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "swap-message-unscoped",
+        referenceId: null,
+        clanTag: "#PYPY",
+        createdAt: new Date("2026-05-13T16:30:00.000Z"),
+        expiresAt: new Date("2026-05-13T18:30:00.000Z"),
+        metadata: {
+          clanKind: "FWA",
+          clanName: "Alpha",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T16:30:00.000Z",
+          clanRoleId: null,
+          swapReminder: true,
+          entries: [],
+        },
+      } as any,
+      {
         id: "swap-1",
         guildId: "guild-1",
         channelId: "channel-1",
@@ -1812,6 +1831,24 @@ describe("fwa checklist tracked messages", () => {
         opponentTag: "#OPP1",
       }),
     );
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
+      }),
+    );
+    expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
+      }),
+    );
     expect(edit).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),
@@ -2174,6 +2211,15 @@ describe("fwa checklist tracked messages", () => {
         warId: "1001",
         warStartTime: new Date("2026-06-13T18:00:00.000Z"),
         opponentTag: "#OPP1",
+      }),
+    );
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
       }),
     );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("❌ Bases not checked");

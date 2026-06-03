@@ -470,6 +470,7 @@ export async function handleFwaMatchChecklistRefreshButton(
         warLookupCache: new Map(),
         client: interaction.client,
         viewType: trackedViewType === "Bases" ? "Bases" : "Mail",
+        syncMessageId: trackedViewType === "Bases" ? trackedBeforeRefresh.referenceId ?? null : null,
       });
       const updated = await trackedMessageService
         .refreshFwaMatchChecklistMessage(
