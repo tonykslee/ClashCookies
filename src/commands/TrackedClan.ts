@@ -41,9 +41,11 @@ import {
   listFwaClanMemberCountsForTags,
   listFwaTrackedClansForDisplay,
   listCwlTrackedClansForDetailedDisplay,
+  resolveCwlTrackedClanEmojiTokens,
   refreshCwlTrackedClanDetailedDisplayWithQueueContext,
-  formatCwlLeagueEmoji,
-  formatCwlSpinStatusEmoji,
+  formatCwlLeagueEmojiResolved,
+  formatCwlSpinStatusEmojiResolved,
+  type CwlTrackedClanEmojiTokens,
   type CwlTrackedClanDetailedDisplayRow,
 } from "../services/TrackedClanListService";
 
@@ -124,10 +126,13 @@ function buildRosterTitleMarkdownLink(title: string | null, url: string | null):
   return `[${normalizedTitle}](<${normalizedUrl}>)`;
 }
 
-function buildCwlTrackedClanBlock(clan: CwlTrackedClanDetailedDisplayRow): string {
+function buildCwlTrackedClanBlock(
+  clan: CwlTrackedClanDetailedDisplayRow,
+  emojiTokens: CwlTrackedClanEmojiTokens,
+): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  const leagueEmoji = formatCwlLeagueEmoji(clan.leagueLabel) ?? "-";
+  const leagueEmoji = formatCwlLeagueEmojiResolved(clan.leagueLabel, emojiTokens) ?? "-";
   const label = clan.name && clanTag ? `**${title}** \`${clanTag}\` ${leagueEmoji}` : `**${title}** ${leagueEmoji}`;
   const rosterText = clan.rosterTitle
     ? buildRosterTitleMarkdownLink(clan.rosterTitle, clan.rosterPostedMessageUrl)
@@ -135,17 +140,20 @@ function buildCwlTrackedClanBlock(clan: CwlTrackedClanDetailedDisplayRow): strin
   const currentClanMemberCount = clan.currentClanMemberCount === null ? "—" : String(clan.currentClanMemberCount);
   return [
     label,
-    `Spin status: ${formatCwlSpinStatusEmoji(clan.spinStatus)}`,
+    `Spin status: ${formatCwlSpinStatusEmojiResolved(clan.spinStatus, emojiTokens)}`,
     `Members: ${clan.observedCwlRosterCount} CWL / ${currentClanMemberCount} clan`,
     `Roster: ${rosterText}`,
   ].join("\n");
 }
 
-function buildCwlTrackedClanMinimalLine(clan: CwlTrackedClanDetailedDisplayRow & { currentClanMemberCount: number | null }): string {
+function buildCwlTrackedClanMinimalLine(
+  clan: CwlTrackedClanDetailedDisplayRow & { currentClanMemberCount: number | null },
+  emojiTokens: CwlTrackedClanEmojiTokens,
+): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  const leagueEmoji = formatCwlLeagueEmoji(clan.leagueLabel) ?? "-";
-  const spinEmoji = formatCwlSpinStatusEmoji(clan.spinStatus);
+  const leagueEmoji = formatCwlLeagueEmojiResolved(clan.leagueLabel, emojiTokens) ?? "-";
+  const spinEmoji = formatCwlSpinStatusEmojiResolved(clan.spinStatus, emojiTokens);
   const memberCountText = formatTrackedClanMemberCount(clan.currentClanMemberCount);
   return clan.name && clanTag
     ? `${leagueEmoji} ${title} \`${clanTag}\` | ${spinEmoji} | ${memberCountText}`
@@ -654,7 +662,7 @@ export const TrackedClan: Command = {
     },
   ],
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     cocService: CoCService
   ) => {
@@ -810,6 +818,8 @@ export const TrackedClan: Command = {
             return;
           }
 
+          const cwlEmojiTokens = await resolveCwlTrackedClanEmojiTokens(client);
+
           if (displayMode === "minimal") {
             const refreshPrefix = `tracked-clan-list:cwl-summary:${interaction.id}`;
             let detailedRows = await listCwlTrackedClansForDetailedDisplay({
@@ -826,7 +836,7 @@ export const TrackedClan: Command = {
                     input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ??
                     clan.currentClanMemberCount ??
                     null,
-                }),
+                }, cwlEmojiTokens),
               );
               return {
                 embeds: [
@@ -958,7 +968,7 @@ export const TrackedClan: Command = {
             console.info(logLine);
           };
           const buildDetailedLayout = (refreshing: boolean) => {
-            const blocks = detailedRows.map((clan) => buildCwlTrackedClanBlock(clan));
+            const blocks = detailedRows.map((clan) => buildCwlTrackedClanBlock(clan, cwlEmojiTokens));
             const pageContents = paginateTrackedClanBlocks(blocks);
             const aggregateChars =
               pageContents.reduce((sum, value) => sum + value.length, 0) +

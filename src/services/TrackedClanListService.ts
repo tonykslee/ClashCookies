@@ -1,9 +1,11 @@
+import { Client } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import { emojiResolverService } from "./emoji/EmojiResolverService";
 import {
   refreshCwlTrackedClanMetadataForSeason,
   resolveCurrentCwlSeasonKey,
@@ -83,6 +85,35 @@ const CWL_LEAGUE_EMOJI_BY_LABEL = new Map<string, string>([
   ["CHAMPION LEAGUE I", "<:CWL_Champion_1:1511515166313939116>"],
 ]);
 
+const CWL_LEAGUE_EMOJI_NAME_BY_LABEL = new Map<string, string>([
+  ["BRONZE LEAGUE III", "CWL_Bronze_3"],
+  ["BRONZE LEAGUE II", "CWL_Bronze_2"],
+  ["BRONZE LEAGUE I", "CWL_Bronze_1"],
+  ["SILVER LEAGUE III", "CWL_Silver_3"],
+  ["SILVER LEAGUE II", "CWL_Silver_2"],
+  ["SILVER LEAGUE I", "CWL_Silver_1"],
+  ["GOLD LEAGUE III", "CWL_Gold_3"],
+  ["GOLD LEAGUE II", "CWL_Gold_2"],
+  ["GOLD LEAGUE I", "CWL_Gold_1"],
+  ["CRYSTAL LEAGUE III", "CWL_Crystal_3"],
+  ["CRYSTAL LEAGUE II", "CWL_Crystal_2"],
+  ["CRYSTAL LEAGUE I", "CWL_Crystal_1"],
+  ["MASTER LEAGUE III", "CWL_Master_3"],
+  ["MASTER LEAGUE II", "CWL_Master_2"],
+  ["MASTER LEAGUE I", "CWL_Master_1"],
+  ["CHAMPION LEAGUE III", "CWL_Champion_3"],
+  ["CHAMPION LEAGUE II", "CWL_Champion_2"],
+  ["CHAMPION LEAGUE I", "CWL_Champion_1"],
+]);
+
+const CWL_SEARCHING_EMOJI_NAME = "a_search_2";
+const CWL_SEARCHING_EMOJI_FALLBACK = "<a:a_search_2:1511522352356397179>";
+
+export type CwlTrackedClanEmojiTokens = {
+  leagueEmojiByLabel: Map<string, string>;
+  searchingEmoji: string;
+};
+
 function sanitizeDisplayText(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
@@ -102,6 +133,49 @@ export function formatCwlLeagueEmoji(label: string | null): string | null {
 export function formatCwlSpinStatusEmoji(status: CwlTrackedClanSpinStatus): string {
   if (status === "matched") return "⚔️";
   if (status === "searching") return "<a:a_search_2:1511522352356397179>";
+  return "💤";
+}
+
+/** Purpose: resolve bot-owned CWL league and spin emojis by application emoji name when available. */
+export async function resolveCwlTrackedClanEmojiTokens(
+  client: Client,
+): Promise<CwlTrackedClanEmojiTokens> {
+  const leagueEmojiByLabel = new Map<string, string>();
+  for (const [label, emojiName] of CWL_LEAGUE_EMOJI_NAME_BY_LABEL.entries()) {
+    const resolved = await emojiResolverService.resolveByName(client, emojiName).catch(() => null);
+    leagueEmojiByLabel.set(label, resolved?.rendered ?? CWL_LEAGUE_EMOJI_BY_LABEL.get(label) ?? "-");
+  }
+
+  const searchingResolved = await emojiResolverService
+    .resolveByName(client, CWL_SEARCHING_EMOJI_NAME)
+    .catch(() => null);
+
+  return {
+    leagueEmojiByLabel,
+    searchingEmoji: searchingResolved?.rendered ?? CWL_SEARCHING_EMOJI_FALLBACK,
+  };
+}
+
+export function formatCwlLeagueEmojiResolved(
+  label: string | null,
+  emojiTokens?: CwlTrackedClanEmojiTokens | null,
+): string | null {
+  const normalized = normalizeCwlLeagueLabel(label);
+  if (!normalized) return null;
+  if (normalized === "UNRANKED" || normalized === "UNKNOWN") return null;
+  return (
+    emojiTokens?.leagueEmojiByLabel.get(normalized) ??
+    CWL_LEAGUE_EMOJI_BY_LABEL.get(normalized) ??
+    null
+  );
+}
+
+export function formatCwlSpinStatusEmojiResolved(
+  status: CwlTrackedClanSpinStatus,
+  emojiTokens?: CwlTrackedClanEmojiTokens | null,
+): string {
+  if (status === "matched") return "⚔️";
+  if (status === "searching") return emojiTokens?.searchingEmoji ?? CWL_SEARCHING_EMOJI_FALLBACK;
   return "💤";
 }
 

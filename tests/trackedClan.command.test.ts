@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityService } from "../src/services/ActivityService";
+import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 import * as trackedClanListService from "../src/services/TrackedClanListService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -176,6 +177,7 @@ describe("/clan command behavior", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(ActivityService.prototype, "observeClan").mockResolvedValue(undefined as any);
+    vi.spyOn(emojiResolverService, "resolveByName").mockResolvedValue(null as any);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -779,6 +781,105 @@ describe("/clan command behavior", () => {
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+  });
+
+  it("resolves CWL league and spin emojis through the application emoji resolver by name", async () => {
+    const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
+    resolveByNameMock.mockImplementation(async (_client, name) => {
+      const lookup = String(name ?? "");
+      if (lookup === "CWL_Champion_1") {
+        return { rendered: "<resolved:cwl_champion_1>" } as any;
+      }
+      if (lookup === "a_search_2") {
+        return { rendered: "<resolved:a_search_2>" } as any;
+      }
+      return null;
+    });
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        spinStatus: "searching",
+        observedCwlRosterCount: 37,
+        currentClanMemberCount: 49,
+        rosterTitle: "Alpha Roster",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      },
+    ]);
+
+    const client = { application: { fetch: vi.fn().mockResolvedValue(undefined) } } as any;
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run(client, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("<resolved:cwl_champion_1>");
+    expect(description).toContain("Spin status: <resolved:a_search_2>");
+    expect(resolveByNameMock).toHaveBeenCalledWith(client, "CWL_Champion_1");
+    expect(resolveByNameMock).toHaveBeenCalledWith(client, "a_search_2");
+  });
+
+  it("falls back to the literal CWL emoji token when resolver lookup fails", async () => {
+    const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
+    resolveByNameMock.mockResolvedValue(null as any);
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        spinStatus: "searching",
+        observedCwlRosterCount: 37,
+        currentClanMemberCount: 49,
+        rosterTitle: "Alpha Roster",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      },
+    ]);
+
+    const client = { application: { fetch: vi.fn().mockResolvedValue(undefined) } } as any;
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run(client, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("<:CWL_Champion_1:1511515166313939116>");
+    expect(description).toContain("Spin status: <a:a_search_2:1511522352356397179>");
   });
 
   it("packs many short FWA clan blocks onto one page when they fit", async () => {
