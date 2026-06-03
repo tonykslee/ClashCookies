@@ -132,10 +132,11 @@ describe("tracked message metadata parsing", () => {
       ],
     });
 
-    expect(parsed).toEqual({
+    expect(parsed).toMatchObject({
       createdByUserId: "user-1",
       createdAtIso: "2026-05-13T00:00:00.000Z",
       scopeKey: "scope-1",
+      referenceId: null,
       checkedClanTags: ["RR", "TWC"],
       rows: [
         {

@@ -108,6 +108,7 @@ export type FwaMatchChecklistTrackedMetadata = {
   createdByUserId: string;
   createdAtIso: string;
   scopeKey?: string | null;
+  referenceId?: string | null;
   checkedClanTags?: string[];
   rows: FwaMatchChecklistTrackedRow[];
   guildId?: string | null;
@@ -911,9 +912,67 @@ export function parseFwaMatchChecklistMetadata(
     createdByUserId,
     createdAtIso,
     scopeKey: scopeKey || null,
+    referenceId: String(value.referenceId ?? "").trim() || null,
     checkedClanTags,
     rows,
   };
+}
+
+type FwaMatchChecklistReactionCacheEntry = {
+  emoji: { id: string | null; name: string | null };
+  count?: number | null;
+};
+
+type FwaMatchChecklistReactionCache = {
+  size?: number;
+  values(): IterableIterator<FwaMatchChecklistReactionCacheEntry>;
+};
+
+async function hydrateFwaMatchChecklistReactionCache(params: {
+  guildId: string;
+  messageId: string;
+  message: {
+    reactions: {
+      cache: FwaMatchChecklistReactionCache;
+    };
+    fetch?: () => Promise<any>;
+    partial?: boolean;
+  };
+}): Promise<FwaMatchChecklistReactionCache> {
+  const currentCache = params.message.reactions.cache;
+  const currentEntries = [...currentCache.values()];
+  const shouldHydrate = params.message.partial === true || currentEntries.length === 0;
+  if (!shouldHydrate) return currentCache;
+
+  if (typeof params.message.fetch !== "function") {
+    console.error(
+      `[tracked-message] fwa checklist bases reaction hydration unavailable guild=${params.guildId} message=${params.messageId} reason=fetch_unavailable cache_size=${currentEntries.length}`,
+    );
+    return currentCache;
+  }
+
+  try {
+    const fetchedMessage = await params.message.fetch();
+    const fetchedCache = fetchedMessage?.reactions?.cache as FwaMatchChecklistReactionCache | null;
+    if (fetchedCache) {
+      const fetchedEntries = [...fetchedCache.values()];
+      if (fetchedEntries.length > 0) {
+        return fetchedCache;
+      }
+      console.error(
+        `[tracked-message] fwa checklist bases reaction hydration unavailable guild=${params.guildId} message=${params.messageId} reason=empty_after_fetch cache_size=${currentEntries.length}`,
+      );
+      return fetchedCache;
+    }
+    console.error(
+      `[tracked-message] fwa checklist bases reaction hydration unavailable guild=${params.guildId} message=${params.messageId} reason=no_reaction_cache cache_size=${currentEntries.length}`,
+    );
+  } catch (err) {
+    console.error(
+      `[tracked-message] fwa checklist bases reaction hydration failed guild=${params.guildId} message=${params.messageId} error=${formatError(err)}`,
+    );
+  }
+  return currentCache;
 }
 
 export function resolveFwaMatchChecklistViewType(
@@ -1167,12 +1226,41 @@ export class TrackedMessageService {
       },
     });
 
+    let unscopedFallback: FwaBaseSwapTrackedMessageSnapshot | null = null;
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
+      const rowSyncIdentity =
+        normalizeTrackedMessageId(metadata.syncMessageId ?? null) ??
+        normalizeTrackedMessageId(row.referenceId ?? null);
       if (syncIdentity) {
-        const rowSyncIdentity = metadata.syncMessageId ?? normalizeTrackedMessageId(row.referenceId ?? null);
-        if (rowSyncIdentity !== syncIdentity) continue;
+        if (rowSyncIdentity === syncIdentity) {
+          return {
+            id: row.id,
+            guildId: row.guildId,
+            channelId: row.channelId,
+            messageId: row.messageId,
+            referenceId: row.referenceId ?? null,
+            clanTag: row.clanTag ?? null,
+            createdAt: row.createdAt,
+            expiresAt: row.expiresAt ?? null,
+            metadata,
+          };
+        }
+        if (!rowSyncIdentity && !unscopedFallback) {
+          unscopedFallback = {
+            id: row.id,
+            guildId: row.guildId,
+            channelId: row.channelId,
+            messageId: row.messageId,
+            referenceId: row.referenceId ?? null,
+            clanTag: row.clanTag ?? null,
+            createdAt: row.createdAt,
+            expiresAt: row.expiresAt ?? null,
+            metadata,
+          };
+        }
+        continue;
       }
       return {
         id: row.id,
@@ -1186,7 +1274,7 @@ export class TrackedMessageService {
         metadata,
       };
     }
-    return null;
+    return unscopedFallback;
   }
 
   async getActiveByMessageId(messageId: string) {
@@ -2356,8 +2444,11 @@ export class TrackedMessageService {
 
   async refreshFwaMatchChecklistMessage(message: {
     id: string;
+    partial?: boolean;
+    fetch?: () => Promise<any>;
     reactions: {
       cache: {
+        size?: number;
         values(): IterableIterator<{
           emoji: { id: string | null; name: string | null };
           count?: number | null;
@@ -2396,51 +2487,76 @@ export class TrackedMessageService {
 
     const viewType = resolveFwaMatchChecklistViewType(tracked.metadata);
     if (viewType === "Bases") {
+      const syncReferenceId = normalizeTrackedMessageId(tracked.referenceId ?? null);
+      const hydratedReactionCache = await hydrateFwaMatchChecklistReactionCache({
+        guildId: tracked.guildId,
+        messageId: message.id,
+        message,
+      });
+      const sourceRows = options?.rows ?? metadata.rows;
+      const persistBasesCheckedStateForRow = async (
+        row: FwaMatchChecklistTrackedRow,
+        checked: boolean,
+      ): Promise<void> => {
+        const warStartTime = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
+        const hasWarIdentity = Boolean(row.warId || row.opponentTag || warStartTime);
+        const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+          guildId: tracked.guildId,
+          clanTag: row.clanTag,
+          syncMessageId: syncReferenceId,
+        }).catch(() => null);
+        if (checked && activeBaseSwap) {
+          const issueSummary = buildFwaBaseSwapIssueSummary(
+            activeBaseSwap.metadata,
+            String(row.matchType ?? "").trim() || null,
+          );
+          if (issueSummary.hasIssues) {
+            return;
+          }
+        }
+        await this.setFwaMatchChecklistBasesCompletion({
+          guildId: tracked.guildId,
+          channelId: tracked.channelId,
+          createdByUserId: metadata.createdByUserId,
+          clanTag: row.clanTag,
+          clanName: null,
+          ...(hasWarIdentity
+            ? {
+                warId: row.warId ?? null,
+                warStartTime,
+                opponentTag: row.opponentTag ?? null,
+              }
+            : {
+                syncReferenceId,
+              }),
+          checked,
+        });
+      };
       const changedRowTag = change
-        ? findChecklistRowTagForReaction(metadata.rows, change.reaction)
+        ? findChecklistRowTagForReaction(sourceRows, change.reaction)
         : null;
       if (change && changedRowTag) {
         const reactionChange = change;
-        const matchedRow = metadata.rows.find(
+        const matchedRow = sourceRows.find(
           (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
         );
         if (matchedRow) {
-          const warStartTime = matchedRow.warStartTimeIso
-            ? new Date(matchedRow.warStartTimeIso)
-            : null;
-          const syncMessageId = normalizeTrackedMessageId(tracked.referenceId ?? null);
           const checked =
             reactionChange.kind === "add" ||
             (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
-          if (checked) {
-            await this.setFwaMatchChecklistBasesCompletion({
-              guildId: tracked.guildId,
-              channelId: tracked.channelId,
-              createdByUserId: metadata.createdByUserId,
-              clanTag: matchedRow.clanTag,
-              clanName: null,
-              warId: matchedRow.warId ?? null,
-              warStartTime,
-              opponentTag: matchedRow.opponentTag ?? null,
-              checked: true,
-              syncMessageId,
-            });
-          } else if (
-            reactionChange.kind === "remove" &&
-            (reactionChange.reaction.count ?? 0) <= 1
-          ) {
-            await this.setFwaMatchChecklistBasesCompletion({
-              guildId: tracked.guildId,
-              channelId: tracked.channelId,
-              createdByUserId: metadata.createdByUserId,
-              clanTag: matchedRow.clanTag,
-              clanName: null,
-              warId: matchedRow.warId ?? null,
-              warStartTime,
-              opponentTag: matchedRow.opponentTag ?? null,
-              checked: false,
-              syncMessageId,
-            });
+          await persistBasesCheckedStateForRow(matchedRow, checked);
+        }
+      } else if (!change) {
+        for (const row of sourceRows) {
+          const reaction = [...hydratedReactionCache.values()].find((candidate) =>
+            emojiMatches(candidate, {
+              emojiId: row.badgeEmojiId,
+              emojiName: row.badgeEmojiName,
+            }),
+          );
+          if (!reaction) continue;
+          if ((reaction.count ?? 0) > 1) {
+            await persistBasesCheckedStateForRow(row, true);
           }
         }
       }
@@ -2455,8 +2571,9 @@ export class TrackedMessageService {
         client: (message as { client?: Client }).client ?? ({} as Client),
         viewType: "Bases",
       });
+      const effectiveRows = checklistState.rows;
       const content = checklistService.buildFwaMatchBasesMessageContent({
-        rows: checklistState.rows,
+        rows: effectiveRows,
       });
       const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
         tracked.expiresAt ?? null,
@@ -2475,8 +2592,9 @@ export class TrackedMessageService {
             createdByUserId: metadata.createdByUserId,
             createdAtIso: metadata.createdAtIso,
             scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
+            referenceId: tracked.referenceId ?? null,
             checkedClanTags: [],
-            rows: checklistState.rows.map((row) => ({ ...row })),
+            rows: effectiveRows.map((row) => ({ ...row })),
             guildId: tracked.guildId,
             channelId: tracked.channelId,
             messageId: tracked.messageId,
@@ -2540,6 +2658,7 @@ export class TrackedMessageService {
           createdByUserId: metadata.createdByUserId,
           createdAtIso: metadata.createdAtIso,
           scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
+          referenceId: tracked.referenceId ?? null,
           checkedClanTags: [...reactedTags],
           rows: effectiveRows.map((row) => ({ ...row })),
         } as any,

@@ -951,17 +951,17 @@ describe("/clan command behavior", () => {
       getClan: vi.fn().mockResolvedValue({ name: "CWL Alpha", warLeague: { name: "Champion League I" } }),
     };
     vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
-      {
-        season: "2026-03",
-        tag: "#PYLQ0289",
-        name: "CWL Alpha",
-        leagueLabel: "Master League I",
-        spinStatus: "idle",
-        observedCwlRosterCount: 31,
-        currentClanMemberCount: 49,
-        rosterTitle: "Old Roster",
-        rosterPostedMessageUrl: null,
-      },
+        {
+          season: "2026-03",
+          tag: "#PYLQ0289",
+          name: "CWL Alpha",
+          leagueLabel: "Master League I",
+          spinStatus: "searching",
+          observedCwlRosterCount: 31,
+          currentClanMemberCount: 49,
+          rosterTitle: "Old Roster",
+          rosterPostedMessageUrl: null,
+        },
     ]);
     const refreshHelperMock = vi
       .spyOn(trackedClanListService, "refreshCwlTrackedClanDetailedDisplayWithQueueContext")
@@ -1009,7 +1009,7 @@ describe("/clan command behavior", () => {
     const refreshingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
     const refreshingComponents = refreshingPayload?.components?.map((row: any) => row.toJSON?.());
     expect(String(refreshingPayload?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
-      "Spin status: 💤",
+      "Spin status: <a:a_search_2:1511522352356397179>",
     );
     expect(JSON.stringify(refreshingComponents)).toContain('"tracked-clan-list:cwl:tracked-clan-itx-1:refresh"');
     expect(JSON.stringify(refreshingComponents)).toContain('"disabled":true');
@@ -1170,6 +1170,85 @@ describe("/clan command behavior", () => {
     expect(refreshHelperMock).not.toHaveBeenCalled();
   });
 
+  it("does not start the detailed CWL auto-refresh interval when all rows are idle", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Master League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValueOnce([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValueOnce([]);
+    prismaMock.roster.findMany.mockResolvedValueOnce([
+      {
+        id: "roster-before",
+        title: "Old Roster",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([{ clanTag: "#PYLQ0289", _count: { clanTag: 49 } }]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({ season: "2026-03", state: "idle" }),
+      getClan: vi.fn().mockResolvedValue({ name: "CWL Alpha", warLeague: { name: "Champion League I" } }),
+    };
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Master League I",
+        spinStatus: "idle",
+        observedCwlRosterCount: 31,
+        currentClanMemberCount: 49,
+        rosterTitle: "Old Roster",
+        rosterPostedMessageUrl: null,
+      },
+    ]);
+    const refreshHelperMock = vi
+      .spyOn(trackedClanListService, "refreshCwlTrackedClanDetailedDisplayWithQueueContext")
+      .mockResolvedValue({
+        season: "2026-03",
+        displayedClanCount: 1,
+        failedClanCount: 0,
+        failedClanTags: [],
+        metadataSkippedCount: 0,
+        matchedCount: 0,
+        searchingCount: 0,
+        idleCount: 1,
+        rows: [
+          {
+            season: "2026-03",
+            tag: "#PYLQ0289",
+            name: "CWL Alpha",
+            leagueLabel: "Master League I",
+            spinStatus: "idle",
+            observedCwlRosterCount: 31,
+            currentClanMemberCount: 49,
+            rosterTitle: "Old Roster",
+            rosterPostedMessageUrl: null,
+          },
+        ],
+      });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(refreshHelperMock).not.toHaveBeenCalled();
+  });
+
   it("runs the detailed CWL auto-refresh interval and stops it once all rows are matched", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
       {
@@ -1204,7 +1283,7 @@ describe("/clan command behavior", () => {
         tag: "#PYLQ0289",
         name: "CWL Alpha",
         leagueLabel: "Master League I",
-        spinStatus: "idle",
+        spinStatus: "searching",
         observedCwlRosterCount: 31,
         currentClanMemberCount: 49,
         rosterTitle: "Old Roster",
@@ -1292,7 +1371,7 @@ describe("/clan command behavior", () => {
         tag: "#PYLQ0289",
         name: "CWL Alpha",
         leagueLabel: "Master League I",
-        spinStatus: "idle",
+        spinStatus: "searching",
         observedCwlRosterCount: 31,
         currentClanMemberCount: 49,
         rosterTitle: "Old Roster",
