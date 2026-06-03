@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityService } from "../src/services/ActivityService";
+import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 import * as trackedClanListService from "../src/services/TrackedClanListService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -139,6 +140,13 @@ function getFirstEmbedDescription(interaction: any): string {
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
 }
 
+function getEmbedDescriptions(interaction: any): string[] {
+  const payload =
+    (interaction.editReply.mock.calls.find((call) => Array.isArray((call[0] as any)?.embeds))?.[0] as any) ??
+    (interaction.editReply.mock.calls[0]?.[0] as any);
+  return (payload?.embeds ?? []).map((embed: any) => String(embed?.toJSON?.().description ?? ""));
+}
+
 function makeButtonInteraction(customId: string) {
   return {
     customId,
@@ -169,6 +177,7 @@ describe("/clan command behavior", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(ActivityService.prototype, "observeClan").mockResolvedValue(undefined as any);
+    vi.spyOn(emojiResolverService, "resolveByName").mockResolvedValue(null as any);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -538,6 +547,21 @@ describe("/clan command behavior", () => {
           season: "2026-03",
           tag: "#PYLQ0289",
           name: "CWL Alpha",
+          leagueLabel: "Champion League I",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+        {
+          season: "2026-03",
+          tag: "#QGRJ2222",
+          name: "CWL Beta",
+          leagueLabel: "Master League I",
+          createdAt: new Date("2026-03-02T00:00:00.000Z"),
+        },
+        {
+          season: "2026-03",
+          tag: "#G2R9RQLJQ",
+          name: "CWL Charlie",
+          leagueLabel: "Master League I",
           createdAt: new Date("2026-03-01T00:00:00.000Z"),
         },
       ])
@@ -546,9 +570,62 @@ describe("/clan command behavior", () => {
           season: "2026-03",
           tag: "#PYLQ0289",
           name: "CWL Alpha",
+          leagueLabel: "Champion League I",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+        {
+          season: "2026-03",
+          tag: "#QGRJ2222",
+          name: "CWL Beta",
+          leagueLabel: "Master League I",
+          createdAt: new Date("2026-03-02T00:00:00.000Z"),
+        },
+        {
+          season: "2026-03",
+          tag: "#G2R9RQLJQ",
+          name: "CWL Charlie",
+          leagueLabel: "Master League I",
           createdAt: new Date("2026-03-01T00:00:00.000Z"),
         },
       ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "CWL Beta",
+        leagueLabel: "Master League I",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "CWL Charlie",
+        leagueLabel: "Master League I",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValueOnce([
+      { cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 37 } },
+      { cwlClanTag: "#QGRJ2222", _count: { cwlClanTag: 31 } },
+      { cwlClanTag: "#G2R9RQLJQ", _count: { cwlClanTag: 27 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+      { clanTag: "#QGRJ2222", _count: { clanTag: 50 } },
+      { clanTag: "#G2R9RQLJQ", _count: { clanTag: 51 } },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValueOnce([
+      { cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 37 } },
+      { cwlClanTag: "#QGRJ2222", _count: { cwlClanTag: 31 } },
+      { cwlClanTag: "#G2R9RQLJQ", _count: { cwlClanTag: 27 } },
+    ]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -560,7 +637,17 @@ describe("/clan command behavior", () => {
     const description = getFirstEmbedDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(description).toContain("**CWL**");
-    expect(description).toContain("CWL Alpha");
+    expect(description).toContain(
+      "<:CWL_Champion_1:1511515166313939116> [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | ⚔️ | 49 👥",
+    );
+    expect(description).toContain(
+      "<:CWL_Master_1:1511515179236593674> [CWL Charlie](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=G2R9RQLJQ>) `#G2R9RQLJQ` | ⚔️ | 51 👥",
+    );
+    expect(description).toContain(
+      "<:CWL_Master_1:1511515179236593674> [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
+    );
+    expect(description.indexOf("CWL Alpha")).toBeLessThan(description.indexOf("CWL Charlie"));
+    expect(description.indexOf("CWL Charlie")).toBeLessThan(description.indexOf("CWL Beta"));
     expect(description).not.toContain("registry: CWL seasonal");
     expect(payload?.components).toHaveLength(1);
     expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -674,12 +761,16 @@ describe("/clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
-    expect(description).toContain("**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289` Champion League I");
-    expect(description).toContain("Spin status: matched");
+    expect(description).toContain(
+      "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289` <:CWL_Champion_1:1511515166313939116>",
+    );
+    expect(description).toContain("Spin status: ⚔️");
     expect(description).toContain("Members: 37 CWL / 49 clan");
     expect(description).toContain("Roster: [Alpha Roster](<https://discord.com/channels/1/2/3>)");
     expect(description).toContain("Roster: Zulu Roster");
     expect(description).not.toContain("registry: CWL seasonal");
+    expect(description).not.toContain("Champion League I");
+    expect(description).not.toContain("Master League I");
     expect(description.indexOf("Alpha Clan")).toBeLessThan(description.indexOf("Beta Clan"));
     expect(description.indexOf("Charlie Clan")).toBeLessThan(description.indexOf("Beta Clan"));
     expect(description.indexOf("Alpha Roster")).toBeLessThan(description.indexOf("Zulu Roster"));
@@ -690,6 +781,105 @@ describe("/clan command behavior", () => {
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+  });
+
+  it("resolves CWL league and spin emojis through the application emoji resolver by name", async () => {
+    const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
+    resolveByNameMock.mockImplementation(async (_client, name) => {
+      const lookup = String(name ?? "");
+      if (lookup === "CWL_Champion_1") {
+        return { rendered: "<resolved:cwl_champion_1>" } as any;
+      }
+      if (lookup === "a_search_2") {
+        return { rendered: "<resolved:a_search_2>" } as any;
+      }
+      return null;
+    });
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        spinStatus: "searching",
+        observedCwlRosterCount: 37,
+        currentClanMemberCount: 49,
+        rosterTitle: "Alpha Roster",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      },
+    ]);
+
+    const client = { application: { fetch: vi.fn().mockResolvedValue(undefined) } } as any;
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run(client, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("<resolved:cwl_champion_1>");
+    expect(description).toContain("Spin status: <resolved:a_search_2>");
+    expect(resolveByNameMock).toHaveBeenCalledWith(client, "CWL_Champion_1");
+    expect(resolveByNameMock).toHaveBeenCalledWith(client, "a_search_2");
+  });
+
+  it("falls back to the literal CWL emoji token when resolver lookup fails", async () => {
+    const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
+    resolveByNameMock.mockResolvedValue(null as any);
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Champion League I",
+        spinStatus: "searching",
+        observedCwlRosterCount: 37,
+        currentClanMemberCount: 49,
+        rosterTitle: "Alpha Roster",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      },
+    ]);
+
+    const client = { application: { fetch: vi.fn().mockResolvedValue(undefined) } } as any;
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run(client, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("<:CWL_Champion_1:1511515166313939116>");
+    expect(description).toContain("Spin status: <a:a_search_2:1511522352356397179>");
   });
 
   it("packs many short FWA clan blocks onto one page when they fit", async () => {
@@ -819,7 +1009,7 @@ describe("/clan command behavior", () => {
     const refreshingPayload = refreshButton.update.mock.calls[0]?.[0] as any;
     const refreshingComponents = refreshingPayload?.components?.map((row: any) => row.toJSON?.());
     expect(String(refreshingPayload?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
-      "Spin status: idle",
+      "Spin status: 💤",
     );
     expect(JSON.stringify(refreshingComponents)).toContain('"tracked-clan-list:cwl:tracked-clan-itx-1:refresh"');
     expect(JSON.stringify(refreshingComponents)).toContain('"disabled":true');
@@ -831,7 +1021,9 @@ describe("/clan command behavior", () => {
       }),
     );
     const refreshedCall = interaction.editReply.mock.calls.find((call) =>
-      String(call[0]?.embeds?.[0]?.toJSON?.().description ?? "").includes("Champion League I"),
+      String(call[0]?.embeds?.[0]?.toJSON?.().description ?? "").includes(
+        "<:CWL_Champion_1:1511515166313939116>",
+      ),
     );
     expect(String(refreshedCall?.[0]?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
       "Members: 31 CWL / 50 clan",
@@ -846,6 +1038,56 @@ describe("/clan command behavior", () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(120000);
     expect(refreshHelperMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders detailed CWL overflow as seamless multi-embed output without page footers", async () => {
+    const rows = Array.from({ length: 4 }, (_, index) => {
+      const tag = "#PYLQ0289";
+      return {
+        season: "2026-03",
+        tag,
+        name: `CWL Overflow Clan ${String(index + 1).padStart(2, "0")} `.repeat(24).trim(),
+        leagueLabel: "Champion League I",
+        createdAt: new Date(`2026-03-${String((index % 27) + 1).padStart(2, "0")}T00:00:00.000Z`),
+      };
+    });
+    const cwlSeasonCounts = [{ cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 40 } }];
+    const fwaCounts = [{ clanTag: "#PYLQ0289", _count: { clanTag: 50 } }];
+    const rosterRows = [
+      {
+        id: "roster-overflow",
+        title: "CWL Overflow Roster ".repeat(24).trim(),
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/1/2/overflow",
+        postedAt: new Date("2026-03-01T00:00:00.000Z"),
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ];
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows).mockResolvedValue(rows);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValueOnce(cwlSeasonCounts).mockResolvedValue(cwlSeasonCounts);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce(fwaCounts).mockResolvedValue(fwaCounts);
+    prismaMock.roster.findMany.mockResolvedValueOnce(rosterRows).mockResolvedValue(rosterRows);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload =
+      (interaction.editReply.mock.calls.find((call) => Array.isArray((call[0] as any)?.embeds))?.[0] as any) ??
+      (interaction.editReply.mock.calls[0]?.[0] as any);
+    const descriptions = getEmbedDescriptions(interaction);
+    expect((payload?.embeds ?? []).length).toBeGreaterThan(1);
+    expect(descriptions.every((description) => description.length <= 4096)).toBe(true);
+    expect(descriptions.every((description) => !description.includes("Page 1/1"))).toBe(true);
+    expect(JSON.stringify(payload?.embeds ?? [])).not.toContain("Page 1/1");
+    expect(descriptions.join("\n")).toContain("Roster:");
+    expect(payload?.components?.[payload.components.length - 1]?.toJSON?.().components?.[0]?.custom_id).toBe(
+      "tracked-clan-list:cwl:tracked-clan-itx-1:refresh",
+    );
   });
 
   it("does not start the detailed CWL auto-refresh interval when all rows are matched", async () => {
@@ -1009,10 +1251,10 @@ describe("/clan command behavior", () => {
     expect(refreshHelperMock).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
     const refreshedCall = interaction.editReply.mock.calls.find((call) =>
-      String(call[0]?.embeds?.[0]?.toJSON?.().description ?? "").includes("Spin status: matched"),
+      String(call[0]?.embeds?.[0]?.toJSON?.().description ?? "").includes("Spin status: ⚔️"),
     );
     expect(String(refreshedCall?.[0]?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
-      "Spin status: matched",
+      "Spin status: ⚔️",
     );
   });
 
@@ -1539,6 +1781,14 @@ describe("/clan command behavior", () => {
       },
     ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       {
         season: "2026-03",
         tag: "#PYLQ0289",
