@@ -2561,52 +2561,17 @@ export class TrackedMessageService {
         }
       }
 
-      let effectiveRows = options?.rows ?? null;
-      if (!effectiveRows) {
-        const [stateService, checklistService] = await Promise.all([
-          import("./FwaMatchChecklistStateService"),
-          import("./FwaMatchChecklistService"),
-        ]);
-        const checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
-          cocService: {} as any,
-          guildId: tracked.guildId,
-          client: (message as { client?: Client }).client ?? ({} as Client),
-          viewType: "Bases",
-        });
-        effectiveRows = checklistState.rows;
-        const content = checklistService.buildFwaMatchBasesMessageContent({
-          rows: effectiveRows,
-        });
-        const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
-          tracked.expiresAt ?? null,
-          options?.expiresAt ?? null,
-        );
-        await message.edit({
-          content,
-          allowedMentions: { parse: [] },
-        });
-        await prisma.trackedMessage.update({
-          where: { messageId: message.id },
-          data: {
-            ...(extendedExpiresAt ? { expiresAt: extendedExpiresAt } : {}),
-            metadata: {
-              kind: "bases_checklist",
-              createdByUserId: metadata.createdByUserId,
-              createdAtIso: metadata.createdAtIso,
-              scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
-              referenceId: tracked.referenceId ?? null,
-              checkedClanTags: [],
-              rows: effectiveRows.map((row) => ({ ...row })),
-              guildId: tracked.guildId,
-              channelId: tracked.channelId,
-              messageId: tracked.messageId,
-              clanTag: tracked.clanTag ?? null,
-            } as any,
-          },
-        });
-        return true;
-      }
-      const checklistService = await import("./FwaMatchChecklistService");
+      const [stateService, checklistService] = await Promise.all([
+        import("./FwaMatchChecklistStateService"),
+        import("./FwaMatchChecklistService"),
+      ]);
+      const checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
+        cocService: {} as any,
+        guildId: tracked.guildId,
+        client: (message as { client?: Client }).client ?? ({} as Client),
+        viewType: "Bases",
+      });
+      const effectiveRows = checklistState.rows;
       const content = checklistService.buildFwaMatchBasesMessageContent({
         rows: effectiveRows,
       });

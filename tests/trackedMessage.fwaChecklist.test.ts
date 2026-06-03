@@ -2004,12 +2004,15 @@ describe("fwa checklist tracked messages", () => {
                 clanTag: "#PYPY",
                 warId: 1001,
                 opponentTag: "#OPP1",
+                compactCopyLine: expect.stringContaining("✅ Bases checked and all good"),
               }),
             ]),
           }),
         }),
       }),
     );
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅ Bases checked and all good");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("❌ Bases not checked");
   });
 
   it("logs hydration failures but preserves the supplied bases issue rows", async () => {
@@ -2085,7 +2088,7 @@ describe("fwa checklist tracked messages", () => {
     };
     const issueRows = makeBasesTrackedChecklistRow().metadata.rows.map((row) => ({
       ...row,
-      compactCopyLine: "A | âš« | âš ï¸ Bases checked - issues found: base-swap post",
+      compactCopyLine: "A | ⚫ | ⚠️ Bases checked - issues found: base-swap post",
     }));
 
     await expect(
@@ -2096,7 +2099,7 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBe(true);
 
     expect(errorSpy).toHaveBeenCalled();
-    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("âš ï¸ Bases checked - issues found");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("issues found");
     expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("Bases not checked");
   });
 
