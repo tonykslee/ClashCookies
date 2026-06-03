@@ -397,6 +397,7 @@ describe("FWA match checklist service", () => {
 
     trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
       status: "ACTIVE",
+      referenceId: "sync-message-1",
       metadata: {
         kind: "bases_checklist",
       },
@@ -432,6 +433,7 @@ describe("FWA match checklist service", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({
         viewType: "Bases",
+        syncMessageId: "sync-message-1",
       }),
     );
     expect(

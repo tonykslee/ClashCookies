@@ -371,7 +371,7 @@ function normalizeDateTimeIso(input: Date | null | undefined): string | null {
   return Number.isFinite(input.getTime()) ? input.toISOString() : null;
 }
 
-function normalizeTrackedMessageId(input: string | null | undefined): string | null {
+export function normalizeTrackedMessageId(input: string | null | undefined): string | null {
   const trimmed = String(input ?? "").trim();
   return trimmed || null;
 }
@@ -1230,9 +1230,7 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
-      const rowSyncIdentity =
-        normalizeTrackedMessageId(metadata.syncMessageId ?? null) ??
-        normalizeTrackedMessageId(row.referenceId ?? null);
+      const rowSyncIdentity = normalizeTrackedMessageId(metadata.syncMessageId ?? null);
       if (syncIdentity) {
         if (rowSyncIdentity === syncIdentity) {
           return {
@@ -1262,17 +1260,19 @@ export class TrackedMessageService {
         }
         continue;
       }
-      return {
-        id: row.id,
-        guildId: row.guildId,
-        channelId: row.channelId,
-        messageId: row.messageId,
-        referenceId: row.referenceId ?? null,
-        clanTag: row.clanTag ?? null,
-        createdAt: row.createdAt,
-        expiresAt: row.expiresAt ?? null,
-        metadata,
-      };
+      if (!rowSyncIdentity) {
+        return {
+          id: row.id,
+          guildId: row.guildId,
+          channelId: row.channelId,
+          messageId: row.messageId,
+          referenceId: row.referenceId ?? null,
+          clanTag: row.clanTag ?? null,
+          createdAt: row.createdAt,
+          expiresAt: row.expiresAt ?? null,
+          metadata,
+        };
+      }
     }
     return unscopedFallback;
   }
@@ -2493,6 +2493,9 @@ export class TrackedMessageService {
         messageId: message.id,
         message,
       });
+      console.debug(
+        `[fwa_checklist_bases_refresh_state] checklistMessageId=${message.id} trackedReferenceId=${tracked.referenceId ?? "none"} syncIdentityUsed=${syncReferenceId ?? "none"} rowCount=${(options?.rows ?? metadata.rows).length}`,
+      );
       const sourceRows = options?.rows ?? metadata.rows;
       const persistBasesCheckedStateForRow = async (
         row: FwaMatchChecklistTrackedRow,
@@ -2540,6 +2543,9 @@ export class TrackedMessageService {
         const matchedRow = sourceRows.find(
           (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
         );
+        console.debug(
+          `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? "matched_row" : "row_not_found"}`,
+        );
         if (matchedRow) {
           const checked =
             reactionChange.kind === "add" ||
@@ -2553,6 +2559,9 @@ export class TrackedMessageService {
               emojiId: row.badgeEmojiId,
               emojiName: row.badgeEmojiName,
             }),
+          );
+          console.debug(
+            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=${Boolean(reaction && (reaction.count ?? 0) > 1)} reason=${reaction ? (reaction.count ?? 0) > 1 ? "reaction_count_gt_1" : "reaction_count_le_1" : "no_reaction"}`,
           );
           if (!reaction) continue;
           if ((reaction.count ?? 0) > 1) {
@@ -2570,6 +2579,7 @@ export class TrackedMessageService {
         guildId: tracked.guildId,
         client: (message as { client?: Client }).client ?? ({} as Client),
         viewType: "Bases",
+        syncMessageId: syncReferenceId,
       });
       const effectiveRows = checklistState.rows;
       const content = checklistService.buildFwaMatchBasesMessageContent({

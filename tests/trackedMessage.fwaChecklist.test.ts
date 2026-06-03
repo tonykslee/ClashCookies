@@ -824,6 +824,25 @@ describe("fwa checklist tracked messages", () => {
   it("resolves current-sync base-swap rows using explicit sync metadata", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
+        id: "swap-unscoped",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "swap-message-unscoped",
+        referenceId: null,
+        clanTag: "#PYPY",
+        createdAt: new Date("2026-05-13T16:30:00.000Z"),
+        expiresAt: new Date("2026-05-13T18:30:00.000Z"),
+        metadata: {
+          clanKind: "FWA",
+          clanName: "Alpha",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T16:30:00.000Z",
+          clanRoleId: null,
+          swapReminder: true,
+          entries: [],
+        },
+      } as any,
+      {
         id: "swap-1",
         guildId: "guild-1",
         channelId: "channel-1",
@@ -1812,6 +1831,24 @@ describe("fwa checklist tracked messages", () => {
         opponentTag: "#OPP1",
       }),
     );
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
+      }),
+    );
+    expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
+      }),
+    );
     expect(edit).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),
@@ -2176,6 +2213,15 @@ describe("fwa checklist tracked messages", () => {
         opponentTag: "#OPP1",
       }),
     );
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-1",
+      }),
+    );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("❌ Bases not checked");
   });
 
@@ -2377,6 +2423,141 @@ describe("fwa checklist tracked messages", () => {
 
     expect(refreshChecklist).toHaveBeenCalled();
     expect(recordSync).not.toHaveBeenCalled();
+  });
+
+  it("ignores bot users for SYNC_TIME_POST reactions without recording sync claims", async () => {
+    vi.resetModules();
+    const { default: messageReactionAddFresh } = await import("../src/listeners/messageReactionAdd");
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionAddFresh(client);
+
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionAdd")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    const recordSync = vi
+      .spyOn(trackedMessageService, "recordSyncClaim")
+      .mockResolvedValue(true);
+    const refreshSync = vi.spyOn(trackedMessageService, "refreshSyncSpinStatusMessage");
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "sync-tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-1",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "source-sync-1",
+    } as any);
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "sync-message-1" },
+        emoji: { id: "111", name: "rr" },
+        count: 2,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: true,
+        id: "bot-user-1",
+      },
+    );
+
+    expect(recordSync).not.toHaveBeenCalled();
+    expect(refreshSync).not.toHaveBeenCalled();
+  });
+
+  it("ignores bot users for SYNC_TIME_POST removals without removing sync claims", async () => {
+    vi.resetModules();
+    const { default: messageReactionRemoveFresh } = await import("../src/listeners/messageReactionRemove");
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionRemoveFresh(client);
+
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionRemove")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    const removeSync = vi
+      .spyOn(trackedMessageService, "removeSyncClaim")
+      .mockResolvedValue(true);
+    const refreshSync = vi.spyOn(trackedMessageService, "refreshSyncSpinStatusMessage");
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "sync-tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-1",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "source-sync-1",
+    } as any);
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "sync-message-1" },
+        emoji: { id: "111", name: "rr" },
+        count: 1,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: true,
+        id: "bot-user-1",
+      },
+    );
+
+    expect(removeSync).not.toHaveBeenCalled();
+    expect(refreshSync).not.toHaveBeenCalled();
+  });
+
+  it("logs checklist bot_user diagnostics while ignoring bot reactions", async () => {
+    vi.resetModules();
+    const { default: messageReactionAddFresh } = await import("../src/listeners/messageReactionAdd");
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionAddFresh(client);
+
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionAdd")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    const refreshChecklist = vi.spyOn(trackedMessageService, "refreshFwaMatchChecklistMessage");
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeTrackedChecklistRow(),
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+    } as any);
+
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "checklist-message-1" },
+        emoji: { id: "111", name: "rr" },
+        count: 2,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: true,
+        id: "bot-user-1",
+      },
+    );
+
+    expect(refreshChecklist).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("reason=bot_user"),
+    );
   });
 });
 

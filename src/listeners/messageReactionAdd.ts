@@ -1,7 +1,11 @@
 import { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
 import { formatError } from "../helper/formatError";
 import { FWA_BASE_SWAP_ACK_EMOJI, handleFwaBaseSwapReaction } from "../commands/Fwa";
-import { trackedMessageService, TRACKED_MESSAGE_FEATURE_TYPE } from "../services/TrackedMessageService";
+import {
+  trackedMessageService,
+  TRACKED_MESSAGE_FEATURE_TYPE,
+  resolveFwaMatchChecklistViewType,
+} from "../services/TrackedMessageService";
 
 let isRegistered = false;
 
@@ -41,9 +45,26 @@ export default (client: Client): void => {
     try {
       const fullReaction = await materializeReaction(reaction);
       const fullUser = await materializeUser(user);
-      if (!fullReaction || !fullUser || fullUser.bot) return;
-
+      if (!fullReaction || !fullUser) {
+        return;
+      }
       const tracked = await trackedMessageService.getActiveByMessageId(fullReaction.message.id);
+      const isChecklist =
+        tracked?.status === "ACTIVE" &&
+        tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST;
+      if (isChecklist) {
+        console.debug(
+          `[fwa_checklist_reaction_received] guildId=${tracked.guildId} messageId=${fullReaction.message.id} featureType=${tracked.featureType} viewType=${resolveFwaMatchChecklistViewType(tracked.metadata)} emojiId=${fullReaction.emoji.id ?? "none"} emojiName=${fullReaction.emoji.name ?? "none"} reactionCount=${fullReaction.count ?? 0}`,
+        );
+      }
+      if (fullUser.bot) {
+        if (isChecklist) {
+          console.debug(
+            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${fullReaction.message.id} matched=false reason=bot_user`,
+          );
+        }
+        return;
+      }
       if (!tracked || tracked.status !== "ACTIVE") return;
 
       if (tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP) {
