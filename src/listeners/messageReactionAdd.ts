@@ -45,27 +45,24 @@ export default (client: Client): void => {
     try {
       const fullReaction = await materializeReaction(reaction);
       const fullUser = await materializeUser(user);
-      const tracked = await trackedMessageService.getActiveByMessageId(fullReaction?.message.id ?? "");
+      if (!fullReaction || !fullUser) {
+        return;
+      }
+      const tracked = await trackedMessageService.getActiveByMessageId(fullReaction.message.id);
       const isChecklist =
         tracked?.status === "ACTIVE" &&
         tracked.featureType === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST;
-      if (isChecklist && fullReaction && fullUser) {
+      if (isChecklist) {
         console.debug(
           `[fwa_checklist_reaction_received] guildId=${tracked.guildId} messageId=${fullReaction.message.id} featureType=${tracked.featureType} viewType=${resolveFwaMatchChecklistViewType(tracked.metadata)} emojiId=${fullReaction.emoji.id ?? "none"} emojiName=${fullReaction.emoji.name ?? "none"} reactionCount=${fullReaction.count ?? 0}`,
         );
       }
-      if (!fullReaction || !fullUser) {
+      if (fullUser.bot) {
         if (isChecklist) {
           console.debug(
-            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${fullReaction?.message.id ?? "unknown"} matched=false reason=reaction_or_user_unavailable`,
+            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${fullReaction.message.id} matched=false reason=bot_user`,
           );
         }
-        return;
-      }
-      if (isChecklist && fullUser.bot) {
-        console.debug(
-          `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${fullReaction.message.id} matched=false reason=bot_user`,
-        );
         return;
       }
       if (!tracked || tracked.status !== "ACTIVE") return;
