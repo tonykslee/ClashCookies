@@ -3090,6 +3090,36 @@ export class WarEventLogService {
         : currentState === "notInWar"
           ? syncContext.previousSync
           : syncContext.activeSync;
+    const frozenEndedWarContext =
+      currentState === "notInWar"
+        ? typeof this.history.resolveExactCanonicalWarEndedHistoryRow ===
+          "function"
+          ? await this.history.resolveExactCanonicalWarEndedHistoryRow({
+              clanTag: sub.clanTag,
+              opponentTag:
+                nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+              warStartTime: sub.startTime ?? nextWarStartTime,
+            })
+          : null
+        : null;
+    const freezeEndedWarMatchDecision = Boolean(frozenEndedWarContext);
+    const restoreFrozenEndedWarContext = () => {
+      if (!frozenEndedWarContext) return;
+      nextFwaPoints = sub.fwaPoints;
+      nextOpponentFwaPoints = sub.opponentFwaPoints;
+      nextOutcome = normalizeOutcome(
+        frozenEndedWarContext.expectedOutcome ??
+          frozenEndedWarContext.actualOutcome ??
+          sub.outcome,
+      );
+      nextMatchType = frozenEndedWarContext.matchType ?? sub.matchType;
+      nextInferredMatchType = sub.inferredMatchType;
+      nextWarStartFwaPoints = sub.warStartFwaPoints;
+      nextWarEndFwaPoints =
+        frozenEndedWarContext.pointsAfterWar ?? sub.warEndFwaPoints;
+      nextClanStars = sub.clanStars;
+      nextOpponentStars = sub.opponentStars;
+    };
 
     const currentMatchTypeForResolution = effectiveWarIdentityChanged
       ? null
@@ -3218,45 +3248,47 @@ export class WarEventLogService {
         b.balance !== null &&
         Number.isFinite(b.balance)
       ) {
-        const syncResolution = chooseMatchTypeResolution({
-          confirmedCurrent: currentWarResolution.confirmed,
-          liveOpponent: liveOpponentResolution,
-          storedSync: null,
-          unconfirmedCurrent: currentWarResolution.unconfirmed,
-        });
-        const syncMatchType =
-          syncResolution?.matchType ?? sub.matchType ?? null;
-        const syncIsFwa =
-          syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
-        await this.currentSyncs
-          .upsertPointsSync({
-            guildId: sub.guildId,
-            clanTag: projectionClanTag,
-            warId:
-              sub.warId !== null &&
-              sub.warId !== undefined &&
-              Number.isFinite(sub.warId)
-                ? String(Math.trunc(sub.warId))
-                : null,
-            warStartTime: nextWarStartTime,
-            syncNum: observedSync,
-            opponentTag: projectionOpponentTag,
-            clanPoints: a.balance,
-            opponentPoints: b.balance,
-            outcome: deriveExpectedOutcome(
-              projectionClanTag,
-              projectionOpponentTag,
-              a.balance,
-              b.balance,
-              observedSync,
-            ),
-            isFwa: syncIsFwa,
-            fetchedAt: new Date(a.fetchedAtMs),
-            fetchReason: projectionReason,
-            matchType: syncMatchType,
-            needsValidation: false,
-          })
-          .catch(() => null);
+        if (!freezeEndedWarMatchDecision) {
+          const syncResolution = chooseMatchTypeResolution({
+            confirmedCurrent: currentWarResolution.confirmed,
+            liveOpponent: liveOpponentResolution,
+            storedSync: null,
+            unconfirmedCurrent: currentWarResolution.unconfirmed,
+          });
+          const syncMatchType =
+            syncResolution?.matchType ?? sub.matchType ?? null;
+          const syncIsFwa =
+            syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
+          await this.currentSyncs
+            .upsertPointsSync({
+              guildId: sub.guildId,
+              clanTag: projectionClanTag,
+              warId:
+                sub.warId !== null &&
+                sub.warId !== undefined &&
+                Number.isFinite(sub.warId)
+                  ? String(Math.trunc(sub.warId))
+                  : null,
+              warStartTime: nextWarStartTime,
+              syncNum: observedSync,
+              opponentTag: projectionOpponentTag,
+              clanPoints: a.balance,
+              opponentPoints: b.balance,
+              outcome: deriveExpectedOutcome(
+                projectionClanTag,
+                projectionOpponentTag,
+                a.balance,
+                b.balance,
+                observedSync,
+              ),
+              isFwa: syncIsFwa,
+              fetchedAt: new Date(a.fetchedAtMs),
+              fetchReason: projectionReason,
+              matchType: syncMatchType,
+              needsValidation: false,
+            })
+            .catch(() => null);
+        }
       }
       if (eventType === "war_started") {
         nextWarStartFwaPoints = a.balance;
@@ -3334,6 +3366,9 @@ export class WarEventLogService {
         outcome: normalizeOutcome(nextOutcome),
         teamSize: nextTeamSize,
       });
+    }
+    if (freezeEndedWarMatchDecision) {
+      restoreFrozenEndedWarContext();
     }
 
     const detectedEventPayload = eventType
