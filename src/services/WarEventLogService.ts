@@ -3090,6 +3090,19 @@ export class WarEventLogService {
         : currentState === "notInWar"
           ? syncContext.previousSync
           : syncContext.activeSync;
+    const frozenEndedWarContext =
+      currentState === "notInWar"
+        ? typeof this.history.resolveExactCanonicalWarEndedHistoryRow ===
+          "function"
+          ? await this.history.resolveExactCanonicalWarEndedHistoryRow({
+              clanTag: sub.clanTag,
+              opponentTag:
+                nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+              warStartTime: sub.startTime ?? nextWarStartTime,
+            })
+          : null
+        : null;
+    const freezeEndedWarMatchDecision = Boolean(frozenEndedWarContext);
 
     const currentMatchTypeForResolution = effectiveWarIdentityChanged
       ? null
@@ -3224,10 +3237,12 @@ export class WarEventLogService {
           storedSync: null,
           unconfirmedCurrent: currentWarResolution.unconfirmed,
         });
-        const syncMatchType =
-          syncResolution?.matchType ?? sub.matchType ?? null;
-        const syncIsFwa =
-          syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
+        const syncMatchType = freezeEndedWarMatchDecision
+          ? sub.matchType ?? null
+          : syncResolution?.matchType ?? sub.matchType ?? null;
+        const syncIsFwa = freezeEndedWarMatchDecision
+          ? toSyncIsFwa(syncMatchType) ?? false
+          : syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
         await this.currentSyncs
           .upsertPointsSync({
             guildId: sub.guildId,
@@ -3308,6 +3323,17 @@ export class WarEventLogService {
       nextMatchType = sub.matchType;
       nextOutcome = normalizeOutcome(sub.outcome);
     }
+    if (freezeEndedWarMatchDecision) {
+      nextFwaPoints = sub.fwaPoints;
+      nextOpponentFwaPoints = sub.opponentFwaPoints;
+      nextOutcome = normalizeOutcome(sub.outcome);
+      nextMatchType = sub.matchType;
+      nextInferredMatchType = sub.inferredMatchType;
+      nextWarStartFwaPoints = sub.warStartFwaPoints;
+      nextWarEndFwaPoints = sub.warEndFwaPoints;
+      nextClanStars = sub.clanStars;
+      nextOpponentStars = sub.opponentStars;
+    }
     if (eventType === "war_ended") {
       const finalResult = await this.history.getWarEndResultSnapshot({
         clanTag: sub.clanTag,
@@ -3334,6 +3360,17 @@ export class WarEventLogService {
         outcome: normalizeOutcome(nextOutcome),
         teamSize: nextTeamSize,
       });
+    }
+    if (freezeEndedWarMatchDecision) {
+      nextFwaPoints = sub.fwaPoints;
+      nextOpponentFwaPoints = sub.opponentFwaPoints;
+      nextOutcome = normalizeOutcome(sub.outcome);
+      nextMatchType = sub.matchType;
+      nextInferredMatchType = sub.inferredMatchType;
+      nextWarStartFwaPoints = sub.warStartFwaPoints;
+      nextWarEndFwaPoints = sub.warEndFwaPoints;
+      nextClanStars = sub.clanStars;
+      nextOpponentStars = sub.opponentStars;
     }
 
     const detectedEventPayload = eventType

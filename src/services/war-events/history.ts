@@ -76,6 +76,81 @@ export class WarEventHistoryService {
   }
 
   /** Purpose: resolve canonical persisted ended-war identity/metadata for downstream notify rendering. */
+  async resolveExactCanonicalWarEndedHistoryRow(input: {
+    clanTag: string;
+    opponentTag: string | null | undefined;
+    warStartTime: Date | null;
+  }): Promise<{
+    warId: number;
+    syncNumber: number | null;
+    matchType: MatchType | null;
+    expectedOutcome: string | null;
+    actualOutcome: string | null;
+    pointsAfterWar: number | null;
+    clanName: string | null;
+    opponentTag: string | null;
+    opponentName: string | null;
+    warStartTime: Date;
+    warEndTime: Date | null;
+  } | null> {
+    const clanTag = normalizeTag(input.clanTag);
+    const opponentTag = normalizeTag(input.opponentTag ?? "");
+    if (!clanTag || !opponentTag || !input.warStartTime) return null;
+
+    const row = await prisma.clanWarHistory.findFirst({
+      where: {
+        clanTag,
+        warStartTime: input.warStartTime,
+        opponentTag,
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      select: {
+        warId: true,
+        syncNumber: true,
+        matchType: true,
+        expectedOutcome: true,
+        actualOutcome: true,
+        pointsAfterWar: true,
+        clanName: true,
+        opponentTag: true,
+        opponentName: true,
+        warStartTime: true,
+        warEndTime: true,
+      },
+    });
+    if (!row) return null;
+
+    return {
+      warId:
+        row.warId !== null &&
+        row.warId !== undefined &&
+        Number.isFinite(Number(row.warId))
+          ? Math.trunc(Number(row.warId))
+          : 0,
+      syncNumber:
+        row.syncNumber !== null &&
+        row.syncNumber !== undefined &&
+        Number.isFinite(Number(row.syncNumber))
+          ? Math.trunc(Number(row.syncNumber))
+          : null,
+      matchType: row.matchType ?? null,
+      expectedOutcome: row.expectedOutcome ?? null,
+      actualOutcome: row.actualOutcome ?? null,
+      pointsAfterWar:
+        row.pointsAfterWar !== null &&
+        row.pointsAfterWar !== undefined &&
+        Number.isFinite(Number(row.pointsAfterWar))
+          ? Math.trunc(Number(row.pointsAfterWar))
+          : null,
+      clanName: row.clanName ?? null,
+      opponentTag: normalizeTag(row.opponentTag ?? "") || null,
+      opponentName: row.opponentName ?? null,
+      warStartTime: row.warStartTime,
+      warEndTime: row.warEndTime ?? null,
+    };
+  }
+
+  /** Purpose: resolve canonical persisted ended-war identity/metadata for downstream notify rendering. */
   async resolveCanonicalWarEndedContext(input: {
     clanTag: string;
     opponentTag: string | null | undefined;
@@ -103,13 +178,24 @@ export class WarEventHistoryService {
       warEndTime: Date | null;
     } | null = null;
     if (input.warStartTime) {
+      const exactRow = await this.resolveExactCanonicalWarEndedHistoryRow({
+        clanTag,
+        opponentTag,
+        warStartTime: input.warStartTime,
+      });
+      if (exactRow) {
+        return exactRow;
+      }
       row = await prisma.clanWarHistory.findFirst({
         where: {
           clanTag,
-          warStartTime: input.warStartTime,
           ...(opponentTag ? { opponentTag } : {}),
         },
-        orderBy: [{ updatedAt: "desc" }],
+        orderBy: [
+          { warEndTime: "desc" },
+          { warStartTime: "desc" },
+          { updatedAt: "desc" },
+        ],
         select: {
           warId: true,
           syncNumber: true,

@@ -96,6 +96,34 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
   });
 
+  it("renders a preserved ended FWA outcome for a notInWar current-war row", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+        outcome: "WIN",
+        state: "notInWar",
+      },
+    ]);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0].compactCopyLine).toContain("\u{1F7E2}");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F534}");
+  });
+
   it("falls back to the existing 30-minute expiry when war timing is unavailable", async () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {

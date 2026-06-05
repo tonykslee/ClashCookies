@@ -226,6 +226,7 @@ describe("War-end expected points persistence via processSubscription", () => {
       getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
     };
     (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
       getWarEndResultSnapshot: vi.fn().mockResolvedValue(input.finalResult),
     };
 
@@ -431,6 +432,297 @@ describe("War-end expected points persistence via processSubscription", () => {
   });
 });
 
+describe("Post-war same-war freeze guard", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function buildLiveSnapshot(balance: number, opponentTag: string) {
+    return {
+      balance,
+      activeFwa: false,
+      notFound: false,
+      winnerBoxTags: [opponentTag],
+      winnerBoxText: "not marked as an fwa match",
+      effectiveSync: 111,
+      fetchedAtMs: Date.now(),
+    };
+  }
+
+  async function runFrozenPostWarPollCase(input: {
+    subOverrides?: Partial<Record<string, unknown>>;
+    liveClanBalance: number;
+    liveOpponentBalance: number;
+    historyRow: {
+      warId: number;
+      syncNumber: number | null;
+      matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+      expectedOutcome: string | null;
+      actualOutcome: string | null;
+      pointsAfterWar: number | null;
+      clanName: string | null;
+      opponentTag: string | null;
+      opponentName: string | null;
+      warStartTime: Date;
+      warEndTime: Date | null;
+    };
+  }): Promise<Record<string, unknown> | undefined> {
+    vi.restoreAllMocks();
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = {
+      ...makeSubscription(input.subOverrides),
+      state: "notInWar",
+      inferredMatchType: true,
+    };
+    sub.state = "notInWar";
+    sub.inferredMatchType = true;
+
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: null,
+      observation: { kind: "success" },
+    });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points = {
+      fetchSnapshot: vi.fn().mockImplementation(async (clanTag: string) => {
+        const normalized = String(clanTag ?? "").replace(/^#/, "").toUpperCase();
+        const self = String(sub.clanTag ?? "").replace(/^#/, "").toUpperCase();
+        const opponent = String(sub.opponentTag ?? "").replace(/^#/, "").toUpperCase();
+        if (normalized === self) {
+          return buildLiveSnapshot(input.liveClanBalance, `#${opponent}`);
+        }
+        if (normalized === opponent) {
+          return buildLiveSnapshot(input.liveOpponentBalance, `#${self}`);
+        }
+        return buildLiveSnapshot(input.liveClanBalance, `#${opponent}`);
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+      upsertPointsSync: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi
+        .fn()
+        .mockResolvedValue(input.historyRow),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: input.historyRow.warEndTime,
+        resultLabel: "UNKNOWN",
+      }),
+    };
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    return updateSpy.mock.calls[0]?.[0]?.data;
+  }
+
+  it("keeps an ended FWA WIN stable after a post-war reconciliation poll", async () => {
+    const updateData = await runFrozenPostWarPollCase({
+      subOverrides: {
+        outcome: "WIN",
+        matchType: "FWA",
+        warEndFwaPoints: 99,
+        fwaPoints: 100,
+      },
+      liveClanBalance: 200,
+      liveOpponentBalance: 201,
+      historyRow: {
+        warId: 1001,
+        syncNumber: 10,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        actualOutcome: "WIN",
+        pointsAfterWar: 99,
+        clanName: "Alpha",
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+      },
+    });
+
+    expect(updateData?.matchType).toBe("FWA");
+    expect(updateData?.outcome).toBe("WIN");
+    expect(updateData?.inferredMatchType).toBe(true);
+    expect(updateData?.warEndFwaPoints).toBe(99);
+  });
+
+  it("keeps an ended FWA LOSE stable after a post-war reconciliation poll", async () => {
+    const updateData = await runFrozenPostWarPollCase({
+      subOverrides: {
+        outcome: "LOSE",
+        matchType: "FWA",
+        warEndFwaPoints: 101,
+        fwaPoints: 100,
+      },
+      liveClanBalance: 203,
+      liveOpponentBalance: 202,
+      historyRow: {
+        warId: 1002,
+        syncNumber: 11,
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        actualOutcome: "LOSE",
+        pointsAfterWar: 101,
+        clanName: "Alpha",
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+      },
+    });
+
+    expect(updateData?.matchType).toBe("FWA");
+    expect(updateData?.outcome).toBe("LOSE");
+    expect(updateData?.inferredMatchType).toBe(true);
+    expect(updateData?.warEndFwaPoints).toBe(101);
+  });
+
+  it("keeps paired tracked clans from flipping each other's ended-war outcome", async () => {
+    vi.restoreAllMocks();
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const clanRows = [
+      {
+        ...makeSubscription({
+          clanTag: "#AAA111",
+          opponentTag: "#BBB222",
+          outcome: "WIN",
+          matchType: "FWA",
+          warEndFwaPoints: 99,
+          fwaPoints: 100,
+        }),
+        state: "notInWar",
+        inferredMatchType: true,
+      },
+      {
+        ...makeSubscription({
+          clanTag: "#BBB222",
+          opponentTag: "#AAA111",
+          outcome: "LOSE",
+          matchType: "FWA",
+          warEndFwaPoints: 101,
+          fwaPoints: 100,
+        }),
+        state: "notInWar",
+        inferredMatchType: true,
+      },
+    ];
+    clanRows[0].state = "notInWar";
+    clanRows[0].inferredMatchType = true;
+    clanRows[1].state = "notInWar";
+    clanRows[1].inferredMatchType = true;
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    let callIndex = 0;
+    vi.spyOn(prisma, "$queryRaw").mockImplementation(async () => [clanRows[callIndex++] as any] as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: null,
+      observation: { kind: "success" },
+    });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points = {
+      fetchSnapshot: vi.fn().mockImplementation(async (clanTag: string) => {
+        const normalized = String(clanTag ?? "").replace(/^#/, "").toUpperCase();
+        if (normalized === "AAA111") {
+          return buildLiveSnapshot(200, "#BBB222");
+        }
+        if (normalized === "BBB222") {
+          return buildLiveSnapshot(201, "#AAA111");
+        }
+        return buildLiveSnapshot(200, "#BBB222");
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+      upsertPointsSync: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue({
+        warId: 1001,
+        syncNumber: 10,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        actualOutcome: "WIN",
+        pointsAfterWar: 99,
+        clanName: "Alpha",
+        opponentTag: "#BBB222",
+        opponentName: "Bravo",
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+      }),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: null,
+        opponentStars: null,
+        clanDestruction: null,
+        opponentDestruction: null,
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+        resultLabel: "UNKNOWN",
+      }),
+    };
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+    await (service as any).processSubscription("guild-1", "#BBB222", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(updateSpy.mock.calls[0]?.[0]?.data?.outcome).toBe("WIN");
+    expect(updateSpy.mock.calls[0]?.[0]?.data?.matchType).toBe("FWA");
+    expect(updateSpy.mock.calls[1]?.[0]?.data?.outcome).toBe("LOSE");
+    expect(updateSpy.mock.calls[1]?.[0]?.data?.matchType).toBe("FWA");
+  });
+});
+
 describe("Match-type confirmation rollover via processSubscription", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -514,6 +806,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       upsertPointsSync: vi.fn().mockResolvedValue(undefined),
     };
     (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
       getWarEndResultSnapshot: vi.fn().mockResolvedValue({
         clanStars: 100,
         opponentStars: 99,
