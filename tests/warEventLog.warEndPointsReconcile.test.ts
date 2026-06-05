@@ -466,7 +466,10 @@ describe("Post-war same-war freeze guard", () => {
       warStartTime: Date;
       warEndTime: Date | null;
     };
-  }): Promise<Record<string, unknown> | undefined> {
+  }): Promise<{
+    updateData: Record<string, unknown> | undefined;
+    upsertPointsSync: ReturnType<typeof vi.fn>;
+  }> {
     vi.restoreAllMocks();
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
@@ -541,11 +544,17 @@ describe("Post-war same-war freeze guard", () => {
     });
 
     expect(updateSpy).toHaveBeenCalledTimes(1);
-    return updateSpy.mock.calls[0]?.[0]?.data;
+    const upsertPointsSync = (service as any).currentSyncs.upsertPointsSync as ReturnType<
+      typeof vi.fn
+    >;
+    return {
+      updateData: updateSpy.mock.calls[0]?.[0]?.data,
+      upsertPointsSync,
+    };
   }
 
   it("keeps an ended FWA WIN stable after a post-war reconciliation poll", async () => {
-    const updateData = await runFrozenPostWarPollCase({
+    const { updateData, upsertPointsSync } = await runFrozenPostWarPollCase({
       subOverrides: {
         outcome: "WIN",
         matchType: "FWA",
@@ -573,10 +582,11 @@ describe("Post-war same-war freeze guard", () => {
     expect(updateData?.outcome).toBe("WIN");
     expect(updateData?.inferredMatchType).toBe(true);
     expect(updateData?.warEndFwaPoints).toBe(99);
+    expect(upsertPointsSync).not.toHaveBeenCalled();
   });
 
   it("keeps an ended FWA LOSE stable after a post-war reconciliation poll", async () => {
-    const updateData = await runFrozenPostWarPollCase({
+    const { updateData, upsertPointsSync } = await runFrozenPostWarPollCase({
       subOverrides: {
         outcome: "LOSE",
         matchType: "FWA",
@@ -604,6 +614,40 @@ describe("Post-war same-war freeze guard", () => {
     expect(updateData?.outcome).toBe("LOSE");
     expect(updateData?.inferredMatchType).toBe(true);
     expect(updateData?.warEndFwaPoints).toBe(101);
+    expect(upsertPointsSync).not.toHaveBeenCalled();
+  });
+
+  it("restores canonical history values when CurrentWar is wrong during frozen post-war reconciliation", async () => {
+    const { updateData, upsertPointsSync } = await runFrozenPostWarPollCase({
+      subOverrides: {
+        outcome: "LOSE",
+        matchType: "BL",
+        inferredMatchType: false,
+        warEndFwaPoints: 500,
+        fwaPoints: 508,
+      },
+      liveClanBalance: 220,
+      liveOpponentBalance: 221,
+      historyRow: {
+        warId: 1003,
+        syncNumber: 12,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        actualOutcome: "WIN",
+        pointsAfterWar: 99,
+        clanName: "Alpha",
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+      },
+    });
+
+    expect(updateData?.matchType).toBe("FWA");
+    expect(updateData?.outcome).toBe("WIN");
+    expect(updateData?.inferredMatchType).toBe(true);
+    expect(updateData?.warEndFwaPoints).toBe(99);
+    expect(upsertPointsSync).not.toHaveBeenCalled();
   });
 
   it("keeps paired tracked clans from flipping each other's ended-war outcome", async () => {
@@ -683,19 +727,38 @@ describe("Post-war same-war freeze guard", () => {
       upsertPointsSync: vi.fn().mockResolvedValue(undefined),
     };
     (service as any).history = {
-      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue({
-        warId: 1001,
-        syncNumber: 10,
-        matchType: "FWA",
-        expectedOutcome: "WIN",
-        actualOutcome: "WIN",
-        pointsAfterWar: 99,
-        clanName: "Alpha",
-        opponentTag: "#BBB222",
-        opponentName: "Bravo",
-        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
-        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
-      }),
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockImplementation(
+        async ({ clanTag }: { clanTag: string }) => {
+          if (clanTag === "#AAA111") {
+            return {
+              warId: 1001,
+              syncNumber: 10,
+              matchType: "FWA",
+              expectedOutcome: "WIN",
+              actualOutcome: "WIN",
+              pointsAfterWar: 99,
+              clanName: "Alpha",
+              opponentTag: "#BBB222",
+              opponentName: "Bravo",
+              warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+              warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+            };
+          }
+          return {
+            warId: 1002,
+            syncNumber: 10,
+            matchType: "FWA",
+            expectedOutcome: "LOSE",
+            actualOutcome: "LOSE",
+            pointsAfterWar: 101,
+            clanName: "Bravo",
+            opponentTag: "#AAA111",
+            opponentName: "Alpha",
+            warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+            warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+          };
+        },
+      ),
       getWarEndResultSnapshot: vi.fn().mockResolvedValue({
         clanStars: null,
         opponentStars: null,
@@ -720,6 +783,7 @@ describe("Post-war same-war freeze guard", () => {
     expect(updateSpy.mock.calls[0]?.[0]?.data?.matchType).toBe("FWA");
     expect(updateSpy.mock.calls[1]?.[0]?.data?.outcome).toBe("LOSE");
     expect(updateSpy.mock.calls[1]?.[0]?.data?.matchType).toBe("FWA");
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
   });
 });
 

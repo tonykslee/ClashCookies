@@ -168,67 +168,34 @@ export class WarEventHistoryService {
     if (!clanTag) return null;
     const opponentTag = normalizeTag(input.opponentTag ?? "");
 
-    let row: {
-      warId: number;
-      syncNumber: number | null;
-      clanName: string | null;
-      opponentTag: string | null;
-      opponentName: string | null;
-      warStartTime: Date;
-      warEndTime: Date | null;
-    } | null = null;
     if (input.warStartTime) {
       const exactRow = await this.resolveExactCanonicalWarEndedHistoryRow({
         clanTag,
         opponentTag,
         warStartTime: input.warStartTime,
       });
-      if (exactRow) {
-        return exactRow;
-      }
-      row = await prisma.clanWarHistory.findFirst({
-        where: {
-          clanTag,
-          ...(opponentTag ? { opponentTag } : {}),
-        },
-        orderBy: [
-          { warEndTime: "desc" },
-          { warStartTime: "desc" },
-          { updatedAt: "desc" },
-        ],
-        select: {
-          warId: true,
-          syncNumber: true,
-          clanName: true,
-          opponentTag: true,
-          opponentName: true,
-          warStartTime: true,
-          warEndTime: true,
-        },
-      });
+      return exactRow;
     }
-    if (!row) {
-      row = await prisma.clanWarHistory.findFirst({
-        where: {
-          clanTag,
-          ...(opponentTag ? { opponentTag } : {}),
-        },
-        orderBy: [
-          { warEndTime: "desc" },
-          { warStartTime: "desc" },
-          { updatedAt: "desc" },
-        ],
-        select: {
-          warId: true,
-          syncNumber: true,
-          clanName: true,
-          opponentTag: true,
-          opponentName: true,
-          warStartTime: true,
-          warEndTime: true,
-        },
-      });
-    }
+    const row = await prisma.clanWarHistory.findFirst({
+      where: {
+        clanTag,
+        ...(opponentTag ? { opponentTag } : {}),
+      },
+      orderBy: [
+        { warEndTime: "desc" },
+        { warStartTime: "desc" },
+        { updatedAt: "desc" },
+      ],
+      select: {
+        warId: true,
+        syncNumber: true,
+        clanName: true,
+        opponentTag: true,
+        opponentName: true,
+        warStartTime: true,
+        warEndTime: true,
+      },
+    });
     if (!row) return null;
 
     return {
