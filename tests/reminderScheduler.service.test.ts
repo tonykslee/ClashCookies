@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ReminderDispatchStatus, ReminderType } from "@prisma/client";
+import { ReminderDispatchStatus, ReminderTargetClanType, ReminderType } from "@prisma/client";
 
 const prismaMock = vi.hoisted(() => ({
   reminder: {
@@ -1113,6 +1113,106 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     });
   });
 
+  it("retries a failed 24h CWL attack_window_not_active reminder while battle day becomes active", async () => {
+    const nowMs = Date.parse("2026-06-05T22:37:13.120Z");
+    const reminder = {
+      id: "rem-cwl",
+      guildId: "guild-1",
+      channelId: "channel-cwl",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-06-05T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({
+      cwlRows: [
+        {
+          cwlClanTag: "#2C80JCVJQ",
+          cwlClanName: "Rising Dynasty",
+          cwlPhase: "preparation",
+          cwlEndsAt: new Date(nowMs),
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+
+    const fireLogs = installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-cwl-retry",
+        }),
+    };
+    const infoSpy = vi.spyOn(dozzleConsoleSink, "info").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(dozzleConsoleSink, "warn").mockImplementation(() => undefined);
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+
+    const thirdCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 150_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(thirdCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
+    expect(
+      warnSpy.mock.calls.some(([message]) => String(message).includes("cwl_retryable_failure")),
+    ).toBe(true);
+    expect(
+      infoSpy.mock.calls.some(([message]) => String(message).includes("cwl_retry_claim")),
+    ).toBe(true);
+    expect(fireLogs.byId.size).toBe(1);
+    expect(fireLogs.byId.values().next().value).toMatchObject({
+      dispatchStatus: ReminderDispatchStatus.SENT,
+      messageId: "msg-cwl-retry",
+      errorMessage: null,
+    });
+  });
+
   it("does not retry a failed 24h WAR_CWL fire log when the failure is non-retryable", async () => {
     const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
     const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
@@ -1161,6 +1261,81 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     });
     expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
     expect(fireLogs.byId.size).toBe(0);
+  });
+
+  it("does not retry a failed 24h CWL fire log after the retry window expires", async () => {
+    const nowMs = Date.parse("2026-06-05T22:37:13.120Z");
+    const reminder = {
+      id: "rem-cwl-expired",
+      guildId: "guild-1",
+      channelId: "channel-cwl",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-06-05T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({
+      cwlRows: [
+        {
+          cwlClanTag: "#2C80JCVJQ",
+          cwlClanName: "Rising Dynasty",
+          cwlPhase: "preparation",
+          cwlEndsAt: new Date(nowMs),
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const fireLogs = installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-should-not-send",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 16 * 60 * 1000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(fireLogs.byId.values().next().value).toMatchObject({
+      dispatchStatus: ReminderDispatchStatus.FAILED,
+      errorMessage: "attack_window_not_active",
+    });
   });
 
   it("does not retry a 12h attack_window_not_active reminder", async () => {
@@ -1240,6 +1415,77 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry a 12h CWL attack_window_not_active reminder", async () => {
+    const nowMs = Date.parse("2026-06-05T22:37:13.120Z");
+    const reminder = {
+      id: "rem-cwl-12h",
+      guildId: "guild-1",
+      channelId: "channel-cwl",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-06-05T00:00:00.000Z"),
+      times: [{ offsetSeconds: 12 * 60 * 60 }],
+      targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({
+      cwlRows: [
+        {
+          cwlClanTag: "#2C80JCVJQ",
+          cwlClanName: "Rising Dynasty",
+          cwlPhase: "preparation",
+          cwlEndsAt: new Date(nowMs - 12 * 60 * 60 * 1000),
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "attack_window_not_active",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-should-not-send",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a channel failure for a 24h WAR_CWL reminder", async () => {
     const nowMs = Date.parse("2026-04-29T13:01:38.901Z");
     const eventEndsAt = new Date(nowMs + 24 * 60 * 60 * 1000);
@@ -1274,6 +1520,77 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
       startTime: new Date("2026-04-28T14:03:35.852Z"),
       endTime: eventEndsAt,
       updatedAt: new Date(nowMs),
+    });
+    installReminderFireLogStore();
+    const dispatch = {
+      dispatchReminder: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "failed",
+          errorMessage: "channel_unavailable_or_not_text_based",
+        })
+        .mockResolvedValueOnce({
+          status: "sent",
+          messageId: "msg-should-not-send",
+        }),
+    };
+
+    const firstCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+    const secondCounts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs: nowMs + 90_000,
+      intervalMs: 60_000,
+    });
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 0,
+      failed: 1,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      fired: 0,
+      deduped: 1,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a channel failure for a 24h CWL reminder", async () => {
+    const nowMs = Date.parse("2026-06-05T22:37:13.120Z");
+    const reminder = {
+      id: "rem-cwl-channel",
+      guildId: "guild-1",
+      channelId: "channel-cwl",
+      type: ReminderType.WAR_CWL,
+      isEnabled: true,
+      createdAt: new Date("2026-06-05T00:00:00.000Z"),
+      times: [{ offsetSeconds: 24 * 60 * 60 }],
+      targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
+    };
+    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({
+      cwlRows: [
+        {
+          cwlClanTag: "#2C80JCVJQ",
+          cwlClanName: "Rising Dynasty",
+          cwlPhase: "preparation",
+          cwlEndsAt: new Date(nowMs),
+          updatedAt: new Date(nowMs),
+        },
+      ],
     });
     installReminderFireLogStore();
     const dispatch = {

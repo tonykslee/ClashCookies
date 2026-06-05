@@ -290,6 +290,11 @@ export async function runReminderSchedulerCycle(input: {
           continue;
         }
 
+        if (String(context.eventIdentity ?? "").startsWith("CWL:")) {
+          dozzleLog.info(
+            `[reminders] cwl_retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
+          );
+        }
         dozzleLog.debug(
           `[reminders] retry_claim reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=claimed`,
         );
@@ -335,6 +340,12 @@ export async function runReminderSchedulerCycle(input: {
             : dispatchResult.errorMessage.slice(0, 500),
           nowMs,
         });
+        if (retryableAgain && String(context.eventIdentity ?? "").startsWith("CWL:")) {
+          const dueAtMs = context.eventEndsAt.getTime() - latestDueOffsetSeconds * 1000;
+          dozzleLog.warn(
+            `[reminders] cwl_retryable_failure reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_error=${dispatchResult.errorMessage} due_at=${new Date(dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active`,
+          );
+        }
         if (retryableAgain) {
           dozzleLog.warn(
             `[reminders] retry_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_status=${retryableWar24hFireLog.fireLog.dispatchStatus} prior_error=${retryableWar24hFireLog.fireLog.errorMessage ?? ""} retry_attempt=1 due_at=${new Date(retryableWar24hFireLog.dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active error=${dispatchResult.errorMessage}`,
@@ -408,6 +419,20 @@ export async function runReminderSchedulerCycle(input: {
         errorMessage: dispatchResult.errorMessage.slice(0, 500),
         nowMs,
       });
+      const retryableAgain = isRetryableWar24hAttackWindowInactiveFailure({
+        reminderType: reminder.type,
+        offsetSeconds: latestDueOffsetSeconds,
+        eventIdentity: context.eventIdentity,
+        eventEndsAtMs: context.eventEndsAt.getTime(),
+        nowMs,
+        errorMessage: dispatchResult.errorMessage,
+      });
+      if (retryableAgain && String(context.eventIdentity ?? "").startsWith("CWL:")) {
+        const dueAtMs = context.eventEndsAt.getTime() - latestDueOffsetSeconds * 1000;
+        dozzleLog.warn(
+          `[reminders] cwl_retryable_failure reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} prior_error=${dispatchResult.errorMessage} due_at=${new Date(dueAtMs).toISOString()} now=${new Date(nowMs).toISOString()} outcome=retryable_attack_window_not_active`,
+        );
+      }
       dozzleLog.error(
         `[reminders] dispatch_failed reminder_id=${reminder.id} clan=${context.clanTag} offset_s=${latestDueOffsetSeconds} identity=${context.eventIdentity} error=${dispatchResult.errorMessage}`,
       );
@@ -890,7 +915,7 @@ async function resolveRetryableWar24hFireLog(input: {
   if (
     input.reminder.type !== ReminderType.WAR_CWL ||
     input.offsetSeconds !== RETRYABLE_WAR_24H_OFFSET_SECONDS ||
-    !String(input.context.eventIdentity ?? "").startsWith("WAR:")
+    !isRetryable24hEventIdentity(input.context.eventIdentity)
   ) {
     return null;
   }
@@ -1068,7 +1093,7 @@ async function finalizeReminderFireLogFailure(input: {
   });
 }
 
-/** Purpose: detect whether a retryable 24h WAR reminder failure should remain retryable after the latest attempt. */
+/** Purpose: detect whether a retryable 24h WAR/CWL reminder failure should remain retryable after the latest attempt. */
 function isRetryableWar24hAttackWindowInactiveFailure(input: {
   reminderType: ReminderType;
   offsetSeconds: number;
@@ -1080,7 +1105,7 @@ function isRetryableWar24hAttackWindowInactiveFailure(input: {
   if (
     input.reminderType !== ReminderType.WAR_CWL ||
     input.offsetSeconds !== RETRYABLE_WAR_24H_OFFSET_SECONDS ||
-    !String(input.eventIdentity ?? "").startsWith("WAR:")
+    !isRetryable24hEventIdentity(input.eventIdentity)
   ) {
     return false;
   }
@@ -1088,6 +1113,12 @@ function isRetryableWar24hAttackWindowInactiveFailure(input: {
   if (!Number.isFinite(dueAtMs)) return false;
   if (input.nowMs > dueAtMs + RETRYABLE_WAR_24H_RETRY_WINDOW_MS) return false;
   return String(input.errorMessage ?? "").trim() === RETRYABLE_WAR_24H_ERROR_MESSAGE;
+}
+
+/** Purpose: identify retryable 24h WAR/CWL event identities that share the attack-window retry path. */
+function isRetryable24hEventIdentity(eventIdentity: string): boolean {
+  const identity = String(eventIdentity ?? "");
+  return identity.startsWith("WAR:") || identity.startsWith("CWL:");
 }
 
 /** Purpose: choose one applicable context for a clan-target based on reminder type semantics. */
