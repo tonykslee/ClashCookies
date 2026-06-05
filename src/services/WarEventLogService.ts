@@ -3108,8 +3108,8 @@ export class WarEventLogService {
       nextFwaPoints = sub.fwaPoints;
       nextOpponentFwaPoints = sub.opponentFwaPoints;
       nextOutcome = normalizeOutcome(
-        frozenEndedWarContext.actualOutcome ??
-          frozenEndedWarContext.expectedOutcome ??
+        frozenEndedWarContext.expectedOutcome ??
+          frozenEndedWarContext.actualOutcome ??
           sub.outcome,
       );
       nextMatchType = frozenEndedWarContext.matchType ?? sub.matchType;

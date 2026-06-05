@@ -632,7 +632,7 @@ describe("Post-war same-war freeze guard", () => {
         warId: 1003,
         syncNumber: 12,
         matchType: "FWA",
-        expectedOutcome: "WIN",
+        expectedOutcome: "LOSE",
         actualOutcome: "WIN",
         pointsAfterWar: 99,
         clanName: "Alpha",
@@ -644,7 +644,7 @@ describe("Post-war same-war freeze guard", () => {
     });
 
     expect(updateData?.matchType).toBe("FWA");
-    expect(updateData?.outcome).toBe("WIN");
+    expect(updateData?.outcome).toBe("LOSE");
     expect(updateData?.inferredMatchType).toBe(true);
     expect(updateData?.warEndFwaPoints).toBe(99);
     expect(upsertPointsSync).not.toHaveBeenCalled();
