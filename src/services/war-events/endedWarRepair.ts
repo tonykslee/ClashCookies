@@ -5,6 +5,7 @@ import {
   type MatchType,
 } from "./core";
 import {
+  parseFwaMatchChecklistMetadata,
   resolveFwaMatchChecklistViewType,
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
@@ -49,7 +50,7 @@ export type EndedWarRepairLogger = Pick<
 export type EndedWarRepairDb = {
   currentWar: {
     findMany: (args: any) => Promise<CurrentWarRow[]>;
-    update: (args: any) => Promise<unknown>;
+    updateMany: (args: any) => Promise<{ count: number }>;
   };
   clanWarHistory: {
     findFirst: (args: any) => Promise<CurrentWarHistoryRow | null>;
@@ -125,6 +126,7 @@ function formatRepairContext(row: CurrentWarRow, repair: CurrentWarHistoryRow | 
 async function findChecklistRefreshTargets(params: {
   db: EndedWarRepairDb;
   clans: string[];
+  guildIds: string[];
 }): Promise<
   Array<{
     guildId: string;
@@ -134,12 +136,12 @@ async function findChecklistRefreshTargets(params: {
     viewType: "Mail" | "Bases";
   }>
 > {
-  if (!params.db.trackedMessage || params.clans.length === 0) return [];
+  if (!params.db.trackedMessage || params.clans.length === 0 || params.guildIds.length === 0) return [];
   const rows = await params.db.trackedMessage.findMany({
     where: {
       status: TRACKED_MESSAGE_STATUS.ACTIVE,
       featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
-      clanTag: { in: params.clans },
+      guildId: { in: params.guildIds },
     },
     select: {
       guildId: true,
@@ -149,13 +151,22 @@ async function findChecklistRefreshTargets(params: {
       metadata: true,
     },
   });
-  return rows.map((row) => ({
-    guildId: row.guildId,
-    channelId: row.channelId,
-    messageId: row.messageId,
-    clanTag: normalizeTag(row.clanTag ?? "") || row.clanTag || "unknown",
-    viewType: resolveFwaMatchChecklistViewType(row.metadata),
-  }));
+  return rows
+    .filter((row) => {
+      const metadata = parseFwaMatchChecklistMetadata(row.metadata);
+      if (!metadata) return false;
+      const rowClanTags = metadata.rows
+        .map((entry) => normalizeTag(entry.clanTag))
+        .filter((clanTag): clanTag is string => Boolean(clanTag));
+      return rowClanTags.some((clanTag) => params.clans.includes(clanTag));
+    })
+    .map((row) => ({
+      guildId: row.guildId,
+      channelId: row.channelId,
+      messageId: row.messageId,
+      clanTag: normalizeTag(row.clanTag ?? "") || row.clanTag || "unknown",
+      viewType: resolveFwaMatchChecklistViewType(row.metadata),
+    }));
 }
 
 export async function repairEndedWarRows(
@@ -197,6 +208,7 @@ export async function repairEndedWarRows(
     refreshTargets: 0,
   };
   const repairedClanTags = new Set<string>();
+  const repairedGuildIds = new Set<string>();
 
   for (const row of currentWars) {
     summary.scanned += 1;
@@ -255,6 +267,7 @@ export async function repairEndedWarRows(
 
       summary.mismatched += 1;
       repairedClanTags.add(clanTag);
+      repairedGuildIds.add(String(row.guildId ?? "").trim());
       const context = formatRepairContext(row, history);
       logger.log(
         JSON.stringify({
@@ -266,12 +279,13 @@ export async function repairEndedWarRows(
 
       if (!apply) continue;
 
-      await db.currentWar.update({
+      const result = await db.currentWar.updateMany({
         where: {
-          clanTag_guildId: {
-            clanTag: row.clanTag,
-            guildId: row.guildId,
-          },
+          clanTag: row.clanTag,
+          guildId: row.guildId,
+          state: "notInWar",
+          startTime,
+          opponentTag: row.opponentTag,
         },
         data: {
           matchType: canonicalMatchType,
@@ -279,17 +293,33 @@ export async function repairEndedWarRows(
           warEndFwaPoints: canonicalWarEndFwaPoints,
         },
       });
-      summary.repaired += 1;
-      logger.log(
-        JSON.stringify({
-          event: "ended_war_repaired",
-          clanTag,
-          opponentTag,
-          warStartTime: startTime.toISOString(),
-          before: context.current,
-          after: context.canonical,
-        }),
-      );
+      if (result.count === 1) {
+        summary.repaired += 1;
+        logger.log(
+          JSON.stringify({
+            event: "ended_war_repaired",
+            clanTag,
+            opponentTag,
+            warStartTime: startTime.toISOString(),
+            before: context.current,
+            after: context.canonical,
+          }),
+        );
+      } else {
+        summary.skipped += 1;
+        logger.warn(
+          JSON.stringify({
+            event: "ended_war_repair_race",
+            clanTag,
+            guildId: row.guildId,
+            opponentTag,
+            warStartTime: startTime.toISOString(),
+            count: result.count,
+            before: context.current,
+            after: context.canonical,
+          }),
+        );
+      }
     } catch (error) {
       summary.errors += 1;
       logger.error(
@@ -306,6 +336,7 @@ export async function repairEndedWarRows(
   const refreshTargets = await findChecklistRefreshTargets({
     db,
     clans: Array.from(repairedClanTags),
+    guildIds: Array.from(repairedGuildIds),
   });
   summary.refreshTargets = refreshTargets.length;
 
