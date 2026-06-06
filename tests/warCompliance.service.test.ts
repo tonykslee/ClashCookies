@@ -975,14 +975,14 @@ describe("WarComplianceService", () => {
     const participants = [
       {
         playerName: "lower-20",
-        playerTag: "#LOSS2",
+        playerTag: "#L0SS2",
         attacksUsed: 1,
         playerPosition: 7,
       },
     ];
     const attacks = [
       {
-        playerTag: "#LOSS2",
+        playerTag: "#L0SS2",
         playerName: "lower-20",
         playerPosition: 7,
         defenderPosition: 31,
@@ -1019,7 +1019,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     expect(report?.notFollowingPlan).toHaveLength(1);
-    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#LOSS2");
+    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#L0SS2");
     expect(report?.notFollowingPlan[0]?.breachContext).toBeNull();
     expect(report?.notFollowingPlan[0]?.reasonLabel).toBe(
       "attacked outside top-30",
@@ -1487,7 +1487,7 @@ describe("WarComplianceService", () => {
       },
       {
         playerName: "outsider",
-        playerTag: "#LROUT",
+        playerTag: "#LR0UT",
         attacksUsed: 1,
         playerPosition: 10,
       },
@@ -1505,7 +1505,7 @@ describe("WarComplianceService", () => {
         attackOrder: 1,
       },
       {
-        playerTag: "#LROUT",
+        playerTag: "#LR0UT",
         playerName: "outsider",
         playerPosition: 10,
         defenderPosition: 5,
@@ -1554,7 +1554,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
-    expect(violatedTags).toContain("#LROUT");
+    expect(violatedTags).toContain("#LR0UT");
     expect(violatedTags).not.toContain("#LROWNER");
   });
 
