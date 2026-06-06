@@ -821,7 +821,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Use `/bot-logs type:maintenance channel:<channel>` to save the channel used for maintenance start/end notices.",
       "Use `/bot-logs type:sync channel:<channel>` to save the channel used for `/sync time post` and scheduled sync spin status embeds.",
       "Use `/bot-logs type:checklist channel:<channel>` to save the destination for auto-posted `/fwa match-checklist type:Mail` and `type:Bases` checklist posts.",
-      "Use `/bot-logs` with no arguments to view the currently configured generic channel mention, `/bot-logs type:base-swap` to view base-swap audit routing, or `/bot-logs type:maintenance|sync|checklist` to view typed destinations.",
+      "Use `/bot-logs` with no arguments to list all bot-log configurations in the guild, or `/bot-logs type:base-swap` / `type:maintenance|sync|checklist` to inspect one specific configuration.",
       "If a saved channel no longer exists, the command reports stale config and clears it.",
       "If a typed base-swap channel no longer exists, the command reports stale config and clears only that typed setting.",
       "If a typed maintenance channel no longer exists, the command reports stale config and clears only that typed setting.",
