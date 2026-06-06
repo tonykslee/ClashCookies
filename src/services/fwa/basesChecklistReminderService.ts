@@ -246,9 +246,23 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
           syncMessageId: currentSyncIdentity,
         })
         .catch(() => null);
-      if (activeBaseSwap) {
+      const activeCompletion = await trackedMessageService
+        .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+          guildId,
+          clanTag,
+          warId: row.warId,
+          warStartTime: battleDayStart,
+          opponentTag: row.opponentTag,
+          syncMessageId: currentSyncIdentity,
+          syncReferenceId: currentSyncIdentity,
+        })
+        .catch(() => null);
+      if (activeBaseSwap || activeCompletion) {
+        const suppressionReason = activeBaseSwap
+          ? "base_swap_exists"
+          : "bases_completion_exists";
         dozzleLog.debug(
-          `[fwa bases-check reminder] candidate_suppressed guildId=${guildId} clanTag=${clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} reason=base_swap_exists syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} trackedMessageId=${activeBaseSwap.messageId} messageId=${activeBaseSwap.messageId}`,
+          `[fwa bases-check reminder] candidate_suppressed guildId=${guildId} clanTag=${clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} reason=${suppressionReason} syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapMessageId=${activeBaseSwap?.messageId ?? "missing"} completionMessageId=${activeCompletion?.messageId ?? "missing"}`,
         );
         continue;
       }

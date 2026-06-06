@@ -216,7 +216,7 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(client.channels.fetch).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
-      expect.stringContaining("reason=no_longer_unchecked"),
+      expect.stringContaining("reason=bases_completion_exists"),
     );
   });
 

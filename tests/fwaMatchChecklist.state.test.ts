@@ -89,14 +89,14 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the latest current-war start time as the checklist expiry", async () => {
+  it("uses the latest current-war end time as the checklist expiry", async () => {
     const state = await buildFwaMatchChecklistRenderStateForGuild({
       cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
       guildId: "guild-1",
       client: {} as any,
     });
 
-    expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
+    expect(state.expiresAt?.toISOString()).toBe("2026-05-14T22:00:00.000Z");
   });
 
   it("renders a preserved ended FWA outcome for a notInWar current-war row", async () => {
@@ -289,7 +289,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       }),
     );
     expect(state.referenceId).toBe("sync-message-2");
-    expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
+    expect(state.expiresAt?.toISOString()).toBe("2026-05-14T22:00:00.000Z");
     expect(getCurrentWar).not.toHaveBeenCalled();
   });
 
