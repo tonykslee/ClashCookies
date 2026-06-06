@@ -970,7 +970,7 @@ describe("fwa checklist tracked messages", () => {
     });
   });
 
-  it("resolves the latest relevant expired sync post for a clan war and ignores stale prior-sync rows", async () => {
+  it("resolves the latest relevant expired sync post for a clan war in the real 24h prep-window case", async () => {
     vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockRestore();
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
@@ -1003,11 +1003,11 @@ describe("fwa checklist tracked messages", () => {
         channelId: "channel-1",
         messageId: "sync-message-relevant",
         referenceId: null,
-        createdAt: new Date("2026-05-13T12:00:00.000Z"),
-        expiresAt: new Date("2026-05-13T13:00:00.000Z"),
+        createdAt: new Date("2026-06-05T11:20:00.000Z"),
+        expiresAt: new Date("2026-06-05T12:20:00.000Z"),
         metadata: {
-          syncTimeIso: "2026-05-13T12:00:00.000Z",
-          syncEpochSeconds: 1778673600,
+          syncTimeIso: "2026-06-05T11:20:00.000Z",
+          syncEpochSeconds: Math.floor(new Date("2026-06-05T11:20:00.000Z").getTime() / 1000),
           roleId: "role-1",
           clans: [
             {
@@ -1027,11 +1027,11 @@ describe("fwa checklist tracked messages", () => {
         channelId: "channel-1",
         messageId: "sync-message-irrelevant",
         referenceId: null,
-        createdAt: new Date("2026-05-13T12:30:00.000Z"),
-        expiresAt: new Date("2026-05-13T13:30:00.000Z"),
+        createdAt: new Date("2026-06-05T10:30:00.000Z"),
+        expiresAt: new Date("2026-06-05T11:30:00.000Z"),
         metadata: {
-          syncTimeIso: "2026-05-13T12:30:00.000Z",
-          syncEpochSeconds: 1778675400,
+          syncTimeIso: "2026-06-05T10:30:00.000Z",
+          syncEpochSeconds: Math.floor(new Date("2026-06-05T10:30:00.000Z").getTime() / 1000),
           roleId: "role-1",
           clans: [
             {
@@ -1051,10 +1051,91 @@ describe("fwa checklist tracked messages", () => {
       trackedMessageService.resolveLatestRelevantSyncPostForClanWar({
         guildId: "guild-1",
         clanTag: "#PYPY",
-        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
-        now: new Date("2026-05-13T19:00:00.000Z"),
+        battleDayStart: new Date("2026-06-06T11:20:00.000Z"),
+        prepStartTime: new Date("2026-06-05T11:20:00.000Z"),
+        now: new Date("2026-06-06T12:00:00.000Z"),
       }),
     ).resolves.toBe("sync-message-relevant");
+  });
+
+  it("rejects stale prior-sync rows that are too old for the current battle day", async () => {
+    vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockRestore();
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "sync-stale-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "sync-message-stale",
+        referenceId: null,
+        createdAt: new Date("2026-06-03T11:20:00.000Z"),
+        expiresAt: new Date("2026-06-03T12:20:00.000Z"),
+        metadata: {
+          syncTimeIso: "2026-06-03T11:20:00.000Z",
+          syncEpochSeconds: Math.floor(new Date("2026-06-03T11:20:00.000Z").getTime() / 1000),
+          roleId: "role-1",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#PYPY",
+              clanName: "Alpha",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      } as any,
+    ]);
+
+    await expect(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        battleDayStart: new Date("2026-06-06T11:20:00.000Z"),
+        prepStartTime: new Date("2026-06-05T11:20:00.000Z"),
+        now: new Date("2026-06-06T12:00:00.000Z"),
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects sync posts that do not include the clan in metadata", async () => {
+    vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockRestore();
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "sync-mismatch-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "sync-message-mismatch",
+        referenceId: null,
+        createdAt: new Date("2026-06-05T11:20:00.000Z"),
+        expiresAt: new Date("2026-06-05T12:20:00.000Z"),
+        metadata: {
+          syncTimeIso: "2026-06-05T11:20:00.000Z",
+          syncEpochSeconds: Math.floor(new Date("2026-06-05T11:20:00.000Z").getTime() / 1000),
+          roleId: "role-1",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#AAAA",
+              clanName: "Other",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      } as any,
+    ]);
+
+    await expect(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        battleDayStart: new Date("2026-06-06T11:20:00.000Z"),
+        prepStartTime: new Date("2026-06-05T11:20:00.000Z"),
+        now: new Date("2026-06-06T12:00:00.000Z"),
+      }),
+    ).resolves.toBeNull();
   });
 
   it("repairs stale legacy bases checklist markers without touching current-sync base-swap rows", async () => {

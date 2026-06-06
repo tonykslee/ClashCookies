@@ -301,6 +301,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       {
         clanTag: "#PYPY",
         warId: 1,
+        prepStartTime: new Date("2026-05-13T17:00:00.000Z"),
         startTime: new Date("2026-05-13T18:00:00.000Z"),
         opponentTag: "#OPP1",
         matchType: "BL",
@@ -362,7 +363,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       expect.objectContaining({
         guildId: "guild-1",
         clanTag: "#PYPY",
-        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        battleDayStart: new Date("2026-05-13T18:00:00.000Z"),
+        prepStartTime: new Date("2026-05-13T17:00:00.000Z"),
       }),
     );
     expect(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).toHaveBeenCalledWith(

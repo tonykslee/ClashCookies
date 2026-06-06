@@ -43,6 +43,8 @@ type TrackedClanRow = {
 type CurrentWarGuildRow = {
   guildId: string;
   clanTag: string;
+  prepStartTime: Date | null;
+  startTime: Date | null;
   state: string | null;
 };
 
@@ -147,6 +149,8 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
     select: {
       guildId: true,
       clanTag: true,
+      prepStartTime: true,
+      startTime: true,
       state: true,
     },
   })) as CurrentWarGuildRow[];
@@ -161,10 +165,20 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
   if (activeGuildIds.length === 0) return [];
 
   const trackedClanByTag = new Map<string, TrackedClanRow>();
+  const currentWarByGuildAndTag = new Map<string, { prepStartTime: Date | null; startTime: Date | null }>();
   for (const clan of trackedClans) {
     const clanTag = normalizeClanTag(clan.tag);
     if (!clanTag) continue;
     trackedClanByTag.set(clanTag, clan);
+  }
+  for (const row of currentWarRows) {
+    const guildId = String(row.guildId ?? "").trim();
+    const clanTag = normalizeClanTag(String(row.clanTag ?? ""));
+    if (!guildId || !clanTag) continue;
+    currentWarByGuildAndTag.set(`${guildId}:${clanTag}`, {
+      prepStartTime: row.prepStartTime instanceof Date ? row.prepStartTime : null,
+      startTime: row.startTime instanceof Date ? row.startTime : null,
+    });
   }
 
   const candidates: FwaBasesChecklistReminderCandidate[] = [];
@@ -191,6 +205,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
       if (!clanTag) continue;
       const trackedClan = trackedClanByTag.get(clanTag) ?? null;
       if (!trackedClan) continue;
+      const currentWar = currentWarByGuildAndTag.get(`${guildId}:${clanTag}`) ?? null;
 
       const dueOffsets = resolveDueFwaBasesChecklistDueOffsets({
         now,
@@ -212,7 +227,8 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
           .resolveLatestRelevantSyncPostForClanWar({
             guildId,
             clanTag,
-            warStartTime: battleDayStart,
+            battleDayStart,
+            prepStartTime: currentWar?.prepStartTime ?? null,
             now,
           })
           .catch(() => null);

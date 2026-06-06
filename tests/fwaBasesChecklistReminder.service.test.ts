@@ -409,7 +409,7 @@ describe("fwa bases checklist reminder service", () => {
       expect.objectContaining({
         guildId: "guild-1",
         clanTag: "#PYPY",
-        warStartTime: new Date("2026-05-26T18:00:00.000Z"),
+        battleDayStart: new Date("2026-05-26T18:00:00.000Z"),
       }),
     );
   });

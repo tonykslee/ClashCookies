@@ -256,6 +256,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     select: {
       clanTag: true,
       warId: true,
+      prepStartTime: true,
       startTime: true,
       opponentTag: true,
       matchType: true,
@@ -285,7 +286,8 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         .resolveLatestRelevantSyncPostForClanWar({
           guildId: params.guildId,
           clanTag,
-          warStartTime: activeCurrentWar.startTime,
+          battleDayStart: activeCurrentWar.startTime,
+          prepStartTime: activeCurrentWar.prepStartTime ?? null,
           now,
         })
         .catch(() => null);

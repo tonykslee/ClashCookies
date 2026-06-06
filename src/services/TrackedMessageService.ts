@@ -208,7 +208,8 @@ export type FwaBasesChecklistReminderSnapshot = {
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
-const FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS = 18 * 60 * 60 * 1000;
+const FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS = 30 * 60 * 60 * 1000;
+const FWA_CHECKLIST_SYNC_FALLBACK_PREP_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 const FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
 const FWA_CHECKLIST_SYNC_FALLBACK_LIMIT = 25;
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
@@ -2104,20 +2105,26 @@ export class TrackedMessageService {
   async resolveLatestRelevantSyncPostForClanWar(params: {
     guildId: string;
     clanTag: string;
-    warStartTime?: Date | null;
+    battleDayStart?: Date | null;
+    prepStartTime?: Date | null;
     now?: Date;
   }): Promise<string | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
-    const warStartTimeMs = normalizeDateMs(params.warStartTime ?? null);
+    const battleDayStartMs = normalizeDateMs(params.battleDayStart ?? null);
+    const prepStartTimeMs = normalizeDateMs(params.prepStartTime ?? null);
+    const referenceTimeMs = prepStartTimeMs ?? battleDayStartMs;
     const now =
       params.now instanceof Date && Number.isFinite(params.now.getTime())
         ? params.now
         : new Date();
-    if (!guildId || !normalizedClanTag || warStartTimeMs === null) return null;
+    if (!guildId || !normalizedClanTag || referenceTimeMs === null) return null;
 
-    const lowerBoundMs = warStartTimeMs - FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS;
-    const upperBoundMs = warStartTimeMs + FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS;
+    const lowerBoundMs =
+      prepStartTimeMs !== null
+        ? referenceTimeMs - FWA_CHECKLIST_SYNC_FALLBACK_PREP_LOOKBACK_MS
+        : referenceTimeMs - FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS;
+    const upperBoundMs = referenceTimeMs + FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS;
     const rows = await prisma.trackedMessage.findMany({
       where: {
         guildId,
