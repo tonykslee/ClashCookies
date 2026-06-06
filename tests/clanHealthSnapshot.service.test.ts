@@ -51,9 +51,10 @@ describe("ClanHealthSnapshotService", () => {
       name: "Alpha",
     });
     prismaMock.clanWarHistory.findMany.mockResolvedValue([
-      { matchType: "FWA", actualOutcome: "WIN" },
-      { matchType: "BL", actualOutcome: "LOSE" },
-      { matchType: "FWA", actualOutcome: "WIN" },
+      ...Array.from({ length: 14 }, () => ({ matchType: "FWA", actualOutcome: "WIN" })),
+      ...Array.from({ length: 12 }, () => ({ matchType: "FWA", actualOutcome: "LOSE" })),
+      ...Array.from({ length: 3 }, () => ({ matchType: "BL", actualOutcome: "WIN" })),
+      { matchType: "MM", actualOutcome: "LOSE" },
     ]);
     prismaMock.clanWarParticipation.findMany
       .mockResolvedValueOnce([
@@ -78,18 +79,23 @@ describe("ClanHealthSnapshotService", () => {
       clanTag: "aaa111",
       warWindowSize: 30,
       inactiveWarWindowSize: 3,
-      inactiveDaysThreshold: 7,
       inactiveStaleHours: 6,
     });
 
     expect(snapshot).not.toBeNull();
     expect(snapshot?.clanTag).toBe("#AAA111");
-    expect(snapshot?.warMetrics.endedWarSampleSize).toBe(3);
-    expect(snapshot?.warMetrics.fwaMatchCount).toBe(2);
-    expect(snapshot?.warMetrics.winCount).toBe(2);
+    expect(snapshot?.warMetrics.endedWarSampleSize).toBe(30);
+    expect(snapshot?.warMetrics.fwaMatchCount).toBe(26);
+    expect(snapshot?.warMetrics.fwaWinCount).toBe(14);
+    expect(snapshot?.warMetrics.fwaLossCount).toBe(12);
+    expect(snapshot?.warMetrics.blMatchCount).toBe(3);
+    expect(snapshot?.warMetrics.mmMatchCount).toBe(1);
+    expect(snapshot?.warMetrics.blInclusiveMatchCount).toBe(29);
+    expect(snapshot?.warMetrics.winCount).toBe(17);
     expect(snapshot?.inactiveWars.warsAvailable).toBe(2);
     expect(snapshot?.inactiveWars.warsSampled).toBe(2);
     expect(snapshot?.inactiveWars.inactivePlayerCount).toBe(1);
+    expect(snapshot?.inactiveDays.thresholdDays).toBe(6);
     expect(snapshot?.inactiveDays.inactivePlayerCount).toBe(2);
     expect(snapshot?.missingLinks.missingMemberCount).toBe(1);
     expect(snapshot?.missingLinks.observedMemberCount).toBe(3);

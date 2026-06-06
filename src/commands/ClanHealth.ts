@@ -25,17 +25,14 @@ function formatRate(numerator: number, denominator: number): string {
   return `${pct.toFixed(1)}% (${numerator}/${denominator})`;
 }
 
+/** Purpose: render a percentage-only rate while preserving n/a for empty denominators. */
+function formatPercent(numerator: number, denominator: number): string {
+  if (!Number.isFinite(denominator) || denominator <= 0) return "n/a";
+  return `${((numerator / denominator) * 100).toFixed(1)}%`;
+}
+
 /** Purpose: build response embed for a clan-health snapshot. */
 function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
-  const warSampleSuffix =
-    snapshot.warMetrics.endedWarSampleSize < snapshot.warMetrics.windowSize
-      ? ` (sample ${snapshot.warMetrics.endedWarSampleSize}/${snapshot.warMetrics.windowSize} ended wars)`
-      : "";
-  const inactiveWarSampleSuffix =
-    snapshot.inactiveWars.warsAvailable < snapshot.inactiveWars.windowSize
-      ? ` (sample ${snapshot.inactiveWars.warsSampled}/${snapshot.inactiveWars.windowSize} wars)`
-      : "";
-
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
     .setDescription("Leadership snapshot from persisted data only (no live API calls in command path).")
@@ -46,7 +43,12 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
           `Match rate (last ${snapshot.warMetrics.windowSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
             snapshot.warMetrics.endedWarSampleSize
-          )}**${warSampleSuffix}`,
+          )}**`,
+          `:green_circle: ${snapshot.warMetrics.fwaWinCount} | :red_circle: ${snapshot.warMetrics.fwaLossCount} | :black_circle: ${snapshot.warMetrics.blMatchCount} | :white_circle: ${snapshot.warMetrics.mmMatchCount}`,
+          `Match rate (including BL): **${formatPercent(
+            snapshot.warMetrics.blInclusiveMatchCount,
+            snapshot.warMetrics.endedWarSampleSize
+          )}**`,
           `Win rate (same window): **${formatRate(
             snapshot.warMetrics.winCount,
             snapshot.warMetrics.endedWarSampleSize
@@ -57,7 +59,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "Inactivity",
         value: [
-          `Inactive (wars, last ${snapshot.inactiveWars.windowSize} ended FWA wars): **${snapshot.inactiveWars.inactivePlayerCount}**${inactiveWarSampleSuffix}`,
+          `Missed both attacks (distinct players, >=1 of last ${snapshot.inactiveWars.windowSize} ended FWA wars): **${snapshot.inactiveWars.inactivePlayerCount}**`,
           `Inactive (days, >=${snapshot.inactiveDays.thresholdDays}d): **${snapshot.inactiveDays.inactivePlayerCount}**`,
           `Observed members (updated in last ${snapshot.inactiveDays.staleHours}h): **${snapshot.inactiveDays.observedMemberCount}**`,
         ].join("\n"),

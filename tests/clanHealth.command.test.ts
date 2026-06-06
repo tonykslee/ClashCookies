@@ -55,7 +55,12 @@ describe("/clan-health command", () => {
         windowSize: 30,
         endedWarSampleSize: 20,
         fwaMatchCount: 14,
-        winCount: 11,
+        fwaWinCount: 10,
+        fwaLossCount: 4,
+        blMatchCount: 3,
+        mmMatchCount: 3,
+        blInclusiveMatchCount: 17,
+        winCount: 13,
       },
       inactiveWars: {
         windowSize: 3,
@@ -64,7 +69,7 @@ describe("/clan-health command", () => {
         inactivePlayerCount: 2,
       },
       inactiveDays: {
-        thresholdDays: 7,
+        thresholdDays: 6,
         staleHours: 6,
         observedMemberCount: 40,
         inactivePlayerCount: 5,
@@ -102,6 +107,18 @@ describe("/clan-health command", () => {
       "Inactivity",
       "Discord Links",
     ]);
+    expect(String(embedJson.fields[0].value)).toContain(
+      "Match rate (last 30 ended wars): **70.0% (14/20)**"
+    );
+    expect(String(embedJson.fields[0].value)).toContain(
+      ":green_circle: 10 | :red_circle: 4 | :black_circle: 3 | :white_circle: 3"
+    );
+    expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
+    expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
+    expect(String(embedJson.fields[1].value)).toContain(
+      "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**"
+    );
+    expect(String(embedJson.fields[1].value)).toContain("Inactive (days, >=6d): **5**");
   });
 
   it("supports tracked-clan autocomplete for tag", async () => {

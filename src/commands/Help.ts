@@ -178,8 +178,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary:
       "Leadership snapshot for one tracked clan using persisted data only.",
     details: [
-      "Shows match rate and win rate from the last 30 ended wars.",
-      "Shows inactivity counts from two signals: missed both attacks in last 3 ended FWA wars, and last-seen inactivity >= 7 days.",
+      "Shows last-30 ended-war match metrics with an FWA win/loss/BL/MM breakdown plus a BL-inclusive match rate.",
+      "Shows inactivity counts from two signals: missed both attacks in at least one of the last 3 ended FWA wars, and last-seen inactivity >= 6 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
       "Command path is DB-only (no live CoC/points HTTP calls).",
     ],
