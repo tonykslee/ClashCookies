@@ -12,6 +12,7 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "../services/WeightInputDefermentService";
@@ -113,9 +114,7 @@ const ACCOUNTS_TRUNCATION_LINE = "…and more accounts not shown.";
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
 
 function normalizeTag(input: string): string {
-  const trimmed = input.trim().toUpperCase();
-  if (!trimmed) return "";
-  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  return normalizeClashTagBareInput(input);
 }
 
 function sanitizeDisplayText(input: unknown): string | null {

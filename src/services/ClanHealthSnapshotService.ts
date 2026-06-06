@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { normalizeClashTagInput } from "../helper/clashTag";
 
 export type ClanHealthSnapshot = {
   clanTag: string;
@@ -62,8 +63,7 @@ const DEFAULT_INACTIVE_STALE_HOURS = 6;
 
 /** Purpose: normalize clan tags into canonical uppercase + leading-# format. */
 function normalizeClanTag(input: string): string {
-  const raw = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
-  return raw ? `#${raw}` : "";
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: derive ended-war rate metrics from the most recent history window. */

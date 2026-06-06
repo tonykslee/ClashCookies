@@ -16,6 +16,9 @@ import { InactiveWarService, type InactiveWarSummary } from "../services/Inactiv
 import { formatError } from "../helper/formatError";
 import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
 import {
+  normalizeClashTagBareInput,
+} from "../helper/clashTag";
+import {
   normalizeTownHallLevel,
   renderTownHallIcon,
   resolveTownHallEmojiMap,
@@ -33,7 +36,7 @@ const MAX_DESCRIPTION_LENGTH = 3900;
 type InactiveDisplayMode = "tag" | "weight";
 
 function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 function formatInactiveClanTag(tag: string): string {

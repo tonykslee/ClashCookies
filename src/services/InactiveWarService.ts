@@ -1,5 +1,6 @@
 import { prisma } from "../prisma";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 
 type TrackedClanRow = {
   tag: string;
@@ -81,7 +82,7 @@ export type InactiveWarMetricRow = Pick<
 export type InactiveWarMetricMap = Map<string, InactiveWarMetricRow>;
 
 function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 function normalizePlayerTagInput(input: string): string {
