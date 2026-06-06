@@ -95,6 +95,7 @@ describe("/bot-logs command shape", () => {
 describe("/bot-logs behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
     vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(null);
     vi.spyOn(BotLogChannelService.prototype, "getBaseSwapRoutingConfig").mockResolvedValue(null);
     vi.spyOn(BotLogChannelService.prototype, "setBaseSwapRoutingConfig").mockResolvedValue(undefined);
@@ -380,19 +381,39 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("returns the configured channel mention when no update args are provided", async () => {
+  it("shows all configured bot-log channels when no args are provided", async () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      "333333333333333333"
+      "333333333333333333",
+    );
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "222222222222222222",
+      legacy: false,
+    });
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockImplementation(
+      async (_guildId, type) => {
+        if (type === "maintenance") return "444444444444444444";
+        if (type === "sync") return "555555555555555555";
+        if (type === "checklist") return "666666666666666666";
+        return null;
+      },
     );
     const interaction = createInteraction({
-      cacheChannelId: "333333333333333333",
+      fetchChannel: { id: "fetched-channel" },
     });
 
     await BotLogs.run({} as any, interaction as any, {} as any);
 
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "Current bot-log channel: <#333333333333333333>.",
+      content: [
+        "Bot-log configurations",
+        "Generic: <#333333333333333333>",
+        "Base-swap: custom <#222222222222222222>",
+        "Maintenance: <#444444444444444444>",
+        "Sync: <#555555555555555555>",
+        "Checklist: <#666666666666666666>",
+      ].join("\n"),
     });
   });
 
@@ -484,15 +505,123 @@ describe("/bot-logs behavior", () => {
     });
   });
 
-  it("returns no-config message when no channel is configured", async () => {
-    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
+  it("shows unset bot-log rows when no args are provided", async () => {
     const interaction = createInteraction();
 
     await BotLogs.run({} as any, interaction as any, {} as any);
 
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content: "No bot-log channel is configured yet.",
+      content: [
+        "Bot-log configurations",
+        "Generic: Not configured",
+        "Base-swap: Default",
+        "Maintenance: Not configured",
+        "Sync: Not configured",
+        "Checklist: Not configured",
+      ].join("\n"),
+    });
+  });
+
+  it("shows non-custom base-swap routing in the no-arg summary", async () => {
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CLAN_LOG",
+      channelId: null,
+      legacy: false,
+    });
+    const interaction = createInteraction();
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: [
+        "Bot-log configurations",
+        "Generic: Not configured",
+        "Base-swap: clan-log channel",
+        "Maintenance: Not configured",
+        "Sync: Not configured",
+        "Checklist: Not configured",
+      ].join("\n"),
+    });
+  });
+
+  it("shows inaccessible bot-log rows without clearing config", async () => {
+    const clearChannelId = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelId")
+      .mockResolvedValue(undefined);
+    const clearChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "333333333333333333",
+    );
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "222222222222222222",
+      legacy: false,
+    });
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockImplementation(
+      async (_guildId, type) => {
+        if (type === "maintenance") return "444444444444444444";
+        if (type === "sync") return "555555555555555555";
+        if (type === "checklist") return "666666666666666666";
+        return null;
+      },
+    );
+    const interaction = createInteraction({
+      fetchError: { code: 50013 },
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(clearChannelId).not.toHaveBeenCalled();
+    expect(clearChannelIdForType).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: [
+        "Bot-log configurations",
+        "Generic: Inaccessible <#333333333333333333>",
+        "Base-swap: Inaccessible custom <#222222222222222222>",
+        "Maintenance: Inaccessible <#444444444444444444>",
+        "Sync: Inaccessible <#555555555555555555>",
+        "Checklist: Inaccessible <#666666666666666666>",
+      ].join("\n"),
+    });
+  });
+
+  it("clears only the stale typed setting in the no-arg summary", async () => {
+    const clearChannelIdForType = vi
+      .spyOn(BotLogChannelService.prototype, "clearChannelIdForType")
+      .mockResolvedValue(undefined);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(null);
+    vi.mocked(BotLogChannelService.prototype.getBaseSwapRoutingConfig).mockResolvedValue(null);
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockImplementation(
+      async (_guildId, type) => {
+        if (type === "maintenance") return "444444444444444444";
+        return null;
+      },
+    );
+    const interaction = createInteraction({
+      fetchChannel: null,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(clearChannelIdForType).toHaveBeenCalledWith("100", "maintenance");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "sync");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "checklist");
+    expect(clearChannelIdForType).not.toHaveBeenCalledWith("100", "base-swap");
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: [
+        "Bot-log configurations",
+        "Generic: Not configured",
+        "Base-swap: Default",
+        "Maintenance: Stale <#444444444444444444> (cleared)",
+        "Sync: Not configured",
+        "Checklist: Not configured",
+      ].join("\n"),
     });
   });
 
@@ -570,8 +699,12 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content:
-        "Configured bot-log channel <#444444444444444444> no longer exists. " +
-        "I cleared the saved setting. Set a new one with `/bot-logs channel:<channel>`.",
+        "Bot-log configurations\n" +
+        "Generic: Stale <#444444444444444444> (cleared)\n" +
+        "Base-swap: Default\n" +
+        "Maintenance: Not configured\n" +
+        "Sync: Not configured\n" +
+        "Checklist: Not configured",
     });
   });
 
@@ -696,8 +829,12 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content:
-        "Configured bot-log channel <#555555555555555555> is no longer accessible. " +
-        "Set a new one with `/bot-logs channel:<channel>`.",
+        "Bot-log configurations\n" +
+        "Generic: Inaccessible <#555555555555555555>\n" +
+        "Base-swap: Default\n" +
+        "Maintenance: Not configured\n" +
+        "Sync: Not configured\n" +
+        "Checklist: Not configured",
     });
   });
 

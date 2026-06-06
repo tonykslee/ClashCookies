@@ -115,6 +115,147 @@ function formatSimpleTypedCommandHint(type: BotLogChannelType): string {
   return "/bot-logs type:maintenance channel:<channel>";
 }
 
+function formatChannelMention(channelId: string): string {
+  return `<#${channelId}>`;
+}
+
+function formatStaleChannelRowLabel(label: string, channelId: string): string {
+  return `${label}: Stale ${formatChannelMention(channelId)} (cleared)`;
+}
+
+function formatInaccessibleChannelRowLabel(label: string, channelId: string): string {
+  return `${label}: Inaccessible ${formatChannelMention(channelId)}`;
+}
+
+async function renderSimpleTypedBotLogRow(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+  type: "maintenance" | "sync" | "checklist",
+): Promise<string> {
+  const label = formatSimpleTypedDestinationLabel(type);
+  const configuredChannelId = await botLogChannelService.getChannelIdForType(
+    guildId,
+    type,
+  );
+  if (!configuredChannelId) {
+    return `${label}: Not configured`;
+  }
+
+  const channelState = await resolveConfiguredChannelState(
+    interaction,
+    configuredChannelId,
+  );
+  if (channelState === "found") {
+    return `${label}: ${formatChannelMention(configuredChannelId)}`;
+  }
+
+  if (channelState === "missing") {
+    await botLogChannelService.clearChannelIdForType(guildId, type);
+    return formatStaleChannelRowLabel(label, configuredChannelId);
+  }
+
+  return formatInaccessibleChannelRowLabel(label, configuredChannelId);
+}
+
+async function renderGenericBotLogRow(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+): Promise<string> {
+  const configuredChannelId = await botLogChannelService.getChannelId(
+    guildId,
+  );
+  if (!configuredChannelId) {
+    return "Generic: Not configured";
+  }
+
+  const channelState = await resolveConfiguredChannelState(
+    interaction,
+    configuredChannelId,
+  );
+  if (channelState === "found") {
+    return `Generic: ${formatChannelMention(configuredChannelId)}`;
+  }
+
+  if (channelState === "missing") {
+    await botLogChannelService.clearChannelId(guildId);
+    return formatStaleChannelRowLabel("Generic", configuredChannelId);
+  }
+
+  return formatInaccessibleChannelRowLabel("Generic", configuredChannelId);
+}
+
+async function renderBaseSwapBotLogRow(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+): Promise<string> {
+  const routingConfig =
+    await botLogChannelService.getBaseSwapRoutingConfig(guildId);
+  if (!routingConfig) {
+    return "Base-swap: Default";
+  }
+
+  if (routingConfig.routingMode !== "CUSTOM") {
+    return `Base-swap: ${formatBaseSwapRoutingMode(routingConfig.routingMode)}`;
+  }
+
+  const configuredChannelId = routingConfig.channelId;
+  if (!configuredChannelId) {
+    return "Base-swap: custom (no channel)";
+  }
+
+  const channelState = await resolveConfiguredChannelState(
+    interaction,
+    configuredChannelId,
+  );
+  if (channelState === "found") {
+    return `Base-swap: custom ${formatChannelMention(configuredChannelId)}`;
+  }
+
+  if (channelState === "missing") {
+    await botLogChannelService.clearBaseSwapRoutingConfig(guildId);
+    await botLogChannelService.clearChannelIdForType(
+      guildId,
+      BOT_LOGS_BASE_SWAP_TYPE,
+    );
+    return `Base-swap: Stale custom ${formatChannelMention(configuredChannelId)} (cleared)`;
+  }
+
+  return `Base-swap: Inaccessible custom ${formatChannelMention(configuredChannelId)}`;
+}
+
+async function renderBotLogConfigurationSummary(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+): Promise<string> {
+  const rows = [
+    await renderGenericBotLogRow(interaction, botLogChannelService, guildId),
+    await renderBaseSwapBotLogRow(interaction, botLogChannelService, guildId),
+    await renderSimpleTypedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      "maintenance",
+    ),
+    await renderSimpleTypedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      "sync",
+    ),
+    await renderSimpleTypedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      "checklist",
+    ),
+  ];
+  return ["Bot-log configurations", ...rows].join("\n");
+}
+
 /** Purpose: classify configured channel state for clear user-facing status responses. */
 async function resolveConfiguredChannelState(
   interaction: ChatInputCommandInteraction,
@@ -364,6 +505,9 @@ export const BotLogs: Command = {
       return;
     }
 
+    const requestedNoArgs =
+      requestedType === null && !enableRaw && !requestedChannel;
+
     if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
       const routingConfig =
         await botLogChannelService.getBaseSwapRoutingConfig(interaction.guildId);
@@ -489,6 +633,19 @@ export const BotLogs: Command = {
         content:
           `Configured ${label} bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
           `Set a new one with \`${hint}\`.`,
+      });
+      return;
+    }
+
+    if (requestedNoArgs) {
+      const summary = await renderBotLogConfigurationSummary(
+        interaction,
+        botLogChannelService,
+        interaction.guildId,
+      );
+      await interaction.reply({
+        ephemeral: true,
+        content: summary,
       });
       return;
     }
