@@ -12,7 +12,11 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
-import { normalizeClashTagBareInput } from "../helper/clashTag";
+import {
+  normalizeClashTagBareInput,
+  normalizeClashTagInput,
+  normalizeClashTagWithHash,
+} from "../helper/clashTag";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "../services/WeightInputDefermentService";
@@ -114,7 +118,7 @@ const ACCOUNTS_TRUNCATION_LINE = "…and more accounts not shown.";
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
 
 function normalizeTag(input: string): string {
-  return normalizeClashTagBareInput(input);
+  return normalizeClashTagInput(input);
 }
 
 function sanitizeDisplayText(input: unknown): string | null {
@@ -188,10 +192,7 @@ function pickPreferredFwaMemberRow(
 }
 
 function normalizeAutocompleteQuery(input: string): string {
-  return String(input ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^#+/, "");
+  return normalizeClashTagBareInput(input).toLowerCase();
 }
 
 function buildClanProfileMarkdownLink(
@@ -882,7 +883,7 @@ export const Accounts: Command = {
       linkedDiscordHeaderId = selectedDiscordUser.id;
       sourceLabel = `Discord user <@${selectedDiscordUser.id}>`;
     } else if (rawTag) {
-      const tag = normalizeTag(rawTag);
+      const tag = normalizeClashTagWithHash(rawTag);
       if (!tag) {
         await interaction.editReply("Invalid `tag`.");
         return;

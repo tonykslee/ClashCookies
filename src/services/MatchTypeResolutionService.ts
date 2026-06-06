@@ -50,7 +50,7 @@ export type MatchTypeWarIdentity = {
 };
 
 function normalizeTag(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 function normalizeWarId(input: string | number | null | undefined): string | null {
@@ -319,3 +319,4 @@ export function chooseMatchTypeResolution(input: {
     null
   );
 }
+import { normalizeClashTagBareInput } from "../helper/clashTag";

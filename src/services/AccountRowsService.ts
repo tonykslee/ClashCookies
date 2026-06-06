@@ -1,7 +1,7 @@
 import { prisma } from "../prisma";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "./WeightInputDefermentService";
-import { normalizeClashTagBareInput } from "../helper/clashTag";
+import { normalizeClashTagInput } from "../helper/clashTag";
 
 type AccountRow = {
   tag: string;
@@ -68,7 +68,7 @@ type AccountWeightContext = {
 };
 
 function normalizeTag(input: string): string {
-  return normalizeClashTagBareInput(input);
+  return normalizeClashTagInput(input);
 }
 
 function sanitizeDisplayText(input: unknown): string | null {
