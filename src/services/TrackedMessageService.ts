@@ -208,6 +208,10 @@ export type FwaBasesChecklistReminderSnapshot = {
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
+const FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS = 30 * 60 * 60 * 1000;
+const FWA_CHECKLIST_SYNC_FALLBACK_PREP_LOOKBACK_MS = 6 * 60 * 60 * 1000;
+const FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
+const FWA_CHECKLIST_SYNC_FALLBACK_LIMIT = 25;
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
 
 export type FwaBasesChecklistRepairSummary = {
@@ -369,6 +373,20 @@ function normalizeWarIdText(input: string | number | null | undefined): string |
 function normalizeDateTimeIso(input: Date | null | undefined): string | null {
   if (!(input instanceof Date)) return null;
   return Number.isFinite(input.getTime()) ? input.toISOString() : null;
+}
+
+function normalizeDateMs(input: Date | null | undefined): number | null {
+  if (!(input instanceof Date)) return null;
+  return Number.isFinite(input.getTime()) ? input.getTime() : null;
+}
+
+function resolveSyncTrackedMetadataTimeMs(metadata: SyncTimeTrackedMetadata): number | null {
+  const syncEpochSeconds = Number(metadata.syncEpochSeconds);
+  if (Number.isFinite(syncEpochSeconds) && syncEpochSeconds > 0) {
+    return Math.trunc(syncEpochSeconds) * 1000;
+  }
+  const parsed = Date.parse(metadata.syncTimeIso);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function normalizeTrackedMessageId(input: string | null | undefined): string | null {
@@ -2082,6 +2100,63 @@ export class TrackedMessageService {
       },
       orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
     });
+  }
+
+  async resolveLatestRelevantSyncPostForClanWar(params: {
+    guildId: string;
+    clanTag: string;
+    battleDayStart?: Date | null;
+    prepStartTime?: Date | null;
+    now?: Date;
+  }): Promise<string | null> {
+    const guildId = String(params.guildId ?? "").trim();
+    const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
+    const battleDayStartMs = normalizeDateMs(params.battleDayStart ?? null);
+    const prepStartTimeMs = normalizeDateMs(params.prepStartTime ?? null);
+    const referenceTimeMs = prepStartTimeMs ?? battleDayStartMs;
+    const now =
+      params.now instanceof Date && Number.isFinite(params.now.getTime())
+        ? params.now
+        : new Date();
+    if (!guildId || !normalizedClanTag || referenceTimeMs === null) return null;
+
+    const lowerBoundMs =
+      prepStartTimeMs !== null
+        ? referenceTimeMs - FWA_CHECKLIST_SYNC_FALLBACK_PREP_LOOKBACK_MS
+        : referenceTimeMs - FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS;
+    const upperBoundMs = referenceTimeMs + FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS;
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+        status: TRACKED_MESSAGE_STATUS.EXPIRED,
+        referenceId: null,
+        createdAt: {
+          lte: now,
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { expiresAt: "desc" }],
+      take: FWA_CHECKLIST_SYNC_FALLBACK_LIMIT,
+      select: {
+        messageId: true,
+        metadata: true,
+      },
+    });
+
+    for (const row of rows) {
+      const metadata = parseSyncTimeMetadata(row.metadata);
+      if (!metadata) continue;
+      const clanMatches = metadata.clans.some(
+        (clan) => normalizeChecklistClanTag(clan.clanTag) === normalizedClanTag,
+      );
+      if (!clanMatches) continue;
+      const syncTimeMs = resolveSyncTrackedMetadataTimeMs(metadata);
+      if (syncTimeMs === null) continue;
+      if (syncTimeMs < lowerBoundMs || syncTimeMs > upperBoundMs) continue;
+      return normalizeTrackedMessageId(row.messageId);
+    }
+
+    return null;
   }
 
   async repairStaleFwaBasesChecklistState(params: {
