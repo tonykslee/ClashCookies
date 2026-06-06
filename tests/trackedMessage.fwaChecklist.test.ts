@@ -145,6 +145,9 @@ describe("fwa checklist tracked messages", () => {
       expiresAt: null,
       metadata: {} as any,
     } as any);
+    vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
+      null as any,
+    );
   });
 
   it("checklist post gets clan badge reactions", async () => {
@@ -965,6 +968,93 @@ describe("fwa checklist tracked messages", () => {
       messageId: "swap-message-unscoped",
       referenceId: null,
     });
+  });
+
+  it("resolves the latest relevant expired sync post for a clan war and ignores stale prior-sync rows", async () => {
+    vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockRestore();
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "sync-old-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "sync-message-old",
+        referenceId: null,
+        createdAt: new Date("2026-05-12T12:00:00.000Z"),
+        expiresAt: new Date("2026-05-12T13:00:00.000Z"),
+        metadata: {
+          syncTimeIso: "2026-05-12T12:00:00.000Z",
+          syncEpochSeconds: 1778587200,
+          roleId: "role-1",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#PYPY",
+              clanName: "Alpha",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      } as any,
+      {
+        id: "sync-relevant-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "sync-message-relevant",
+        referenceId: null,
+        createdAt: new Date("2026-05-13T12:00:00.000Z"),
+        expiresAt: new Date("2026-05-13T13:00:00.000Z"),
+        metadata: {
+          syncTimeIso: "2026-05-13T12:00:00.000Z",
+          syncEpochSeconds: 1778673600,
+          roleId: "role-1",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#PYPY",
+              clanName: "Alpha",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      } as any,
+      {
+        id: "sync-irrelevant-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "sync-message-irrelevant",
+        referenceId: null,
+        createdAt: new Date("2026-05-13T12:30:00.000Z"),
+        expiresAt: new Date("2026-05-13T13:30:00.000Z"),
+        metadata: {
+          syncTimeIso: "2026-05-13T12:30:00.000Z",
+          syncEpochSeconds: 1778675400,
+          roleId: "role-1",
+          clans: [
+            {
+              code: "TWC",
+              clanTag: "#ZZZZ",
+              clanName: "Other",
+              emojiId: "222",
+              emojiName: "twc",
+              emojiInline: "<:twc:222>",
+            },
+          ],
+        },
+      } as any,
+    ]);
+
+    await expect(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        now: new Date("2026-05-13T19:00:00.000Z"),
+      }),
+    ).resolves.toBe("sync-message-relevant");
   });
 
   it("repairs stale legacy bases checklist markers without touching current-sync base-swap rows", async () => {

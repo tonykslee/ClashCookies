@@ -19,6 +19,11 @@ import { WarMailLifecycleService } from "./WarMailLifecycleService";
 import { formatError } from "../helper/formatError";
 
 type FwaMatchChecklistViewType = "Mail" | "Bases";
+type FwaChecklistSyncIdentitySource =
+  | "override"
+  | "active_sync_post"
+  | "expired_sync_post_fallback"
+  | "none";
 
 type FwaMatchChecklistSingleView = {
   liveRevisionFields?: {
@@ -211,14 +216,21 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   client: Client;
   syncMessageId?: string | null;
 }): Promise<FwaMatchChecklistRenderState> {
+  const now = new Date();
   const overrideSyncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
   const latestActiveSyncPost = overrideSyncIdentity
     ? null
     : await trackedMessageService
         .resolveLatestActiveSyncPost(params.guildId)
         .catch(() => null);
-  const currentSyncIdentity =
+  let currentSyncIdentity =
     overrideSyncIdentity ?? resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+  let currentSyncIdentitySource: FwaChecklistSyncIdentitySource =
+    overrideSyncIdentity
+      ? "override"
+      : currentSyncIdentity
+        ? "active_sync_post"
+        : "none";
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, clanBadge: true, name: true, shortName: true },
@@ -266,12 +278,29 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? currentWar
         : null;
     checklistExpiresAtCandidates.push(activeCurrentWar?.startTime ?? null);
-    const activeBaseSwap = currentSyncIdentity
+    let rowSyncIdentity = currentSyncIdentity;
+    let rowSyncIdentitySource: FwaChecklistSyncIdentitySource = currentSyncIdentitySource;
+    if (!rowSyncIdentity && activeCurrentWar?.startTime instanceof Date) {
+      rowSyncIdentity = await trackedMessageService
+        .resolveLatestRelevantSyncPostForClanWar({
+          guildId: params.guildId,
+          clanTag,
+          warStartTime: activeCurrentWar.startTime,
+          now,
+        })
+        .catch(() => null);
+      rowSyncIdentitySource = rowSyncIdentity ? "expired_sync_post_fallback" : "none";
+      if (!currentSyncIdentity && rowSyncIdentity) {
+        currentSyncIdentity = rowSyncIdentity;
+        currentSyncIdentitySource = rowSyncIdentitySource;
+      }
+    }
+    const activeBaseSwap = rowSyncIdentity
       ? await trackedMessageService
           .findLatestActiveFwaBaseSwapTrackedMessageForClan({
             guildId: params.guildId,
             clanTag,
-            syncMessageId: currentSyncIdentity,
+            syncMessageId: rowSyncIdentity,
           })
           .catch(() => null)
       : null;
@@ -309,12 +338,12 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       activeBaseSwap?.metadata.syncMessageId ?? null,
     );
     const baseSwapSource = activeBaseSwap
-      ? activeBaseSwapSyncIdentity === currentSyncIdentity
+      ? activeBaseSwapSyncIdentity === rowSyncIdentity
         ? "matched_sync"
         : "matched_unscoped"
       : "none";
     const exactCompletion =
-      issueSummary.hasIssues || !currentSyncIdentity
+      issueSummary.hasIssues || !rowSyncIdentity
         ? null
         : await trackedMessageService
             .findLatestFwaMatchChecklistBasesCompletionForClan({
@@ -323,11 +352,11 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
               warId: activeCurrentWar?.warId ?? null,
               warStartTime: activeCurrentWar?.startTime ?? null,
               opponentTag: activeCurrentWar?.opponentTag ?? null,
-              syncMessageId: currentSyncIdentity,
+              syncMessageId: rowSyncIdentity,
             })
             .catch(() => null);
     const fallbackCompletion =
-      exactCompletion || issueSummary.hasIssues || !currentSyncIdentity
+      exactCompletion || issueSummary.hasIssues || !rowSyncIdentity
         ? null
         : await trackedMessageService
             .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
@@ -336,7 +365,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
               warId: activeCurrentWar?.warId ?? null,
               warStartTime: activeCurrentWar?.startTime ?? null,
               opponentTag: activeCurrentWar?.opponentTag ?? null,
-              syncMessageId: currentSyncIdentity,
+              syncMessageId: rowSyncIdentity,
             })
             .catch(() => null);
     const allGoodCompletion = exactCompletion ?? fallbackCompletion;
@@ -352,7 +381,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? "\u2705 Bases checked and all good"
         : "\u274c Bases not checked";
     console.debug(
-      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} baseSwap=${baseSwapSource} completion=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
+      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwap=${baseSwapSource} completion=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
     );
     rows.push({
       clanTag,

@@ -53,6 +53,9 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       },
     ]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
+    vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
+      null as any,
+    );
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
       null as any,
     );
@@ -288,6 +291,87 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.referenceId).toBe("sync-message-2");
     expect(state.expiresAt?.toISOString()).toBe("2026-05-13T22:00:00.000Z");
     expect(getCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("renders a bases checklist from an expired sync post fallback when the active sync post is missing", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "preparation",
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockResolvedValueOnce(
+      "sync-message-expired",
+    );
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockImplementation(
+      async ({ clanTag, syncMessageId }) => {
+        if (clanTag !== "#PYPY") return null;
+        if (syncMessageId !== "sync-message-expired") return null;
+        return {
+          id: "tracked-expired-1",
+          guildId: "guild-1",
+          channelId: "channel-1",
+          messageId: "message-expired-1",
+          referenceId: "fwa-base-swap:split-expired-1",
+          clanTag: "#PYPY",
+          createdAt: new Date("2026-05-13T17:00:00.000Z"),
+          expiresAt: null,
+          metadata: {
+            clanName: "Alpha",
+            createdByUserId: "user-1",
+            createdAtIso: "2026-05-13T17:00:00.000Z",
+            syncMessageId: "sync-message-expired",
+            clanRoleId: null,
+            swapReminder: true,
+            entries: [
+              {
+                position: 12,
+                playerTag: "#AAA",
+                playerName: "PlayerOne",
+                discordUserId: "111",
+                townhallLevel: 15,
+                section: "war_bases",
+                acknowledged: false,
+              },
+            ],
+          } as any,
+        } as any;
+      },
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.referenceId).toBe("sync-message-expired");
+    expect(state.rows[0].compactCopyLine).not.toContain("âŒ Bases not checked");
+    expect(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+      }),
+    );
+    expect(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: "sync-message-expired",
+      }),
+    );
   });
 
   it("keeps MM clans visible in the bases checklist", async () => {
