@@ -285,6 +285,14 @@ describe("command coverage", () => {
     expect(inactiveHelpText).toContain("toggles between player tags and compact weights");
   });
 
+  it("documents the /clan-health war breakdown and six-day inactivity threshold", () => {
+    const clanHealthHelpText = helpEmbedText("clan-health");
+    expect(clanHealthHelpText).toContain("FWA win/loss/BL/MM breakdown");
+    expect(clanHealthHelpText).toContain("BL-inclusive match rate");
+    expect(clanHealthHelpText).toContain("missed both attacks in at least one of the last 3 ended FWA wars");
+    expect(clanHealthHelpText).toContain("last-seen inactivity >= 6 days");
+  });
+
   it("documents recruitment countdown reminder settings in the recruitment help detail text", () => {
     const recruitmentHelpText = helpEmbedText("recruitment");
     const normalized = recruitmentHelpText.toLowerCase();

@@ -11,14 +11,13 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocompleteService";
-
-function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
-}
+import {
+  normalizeClashTagBareInput,
+  normalizeClashTagWithHash,
+} from "../helper/clashTag";
 
 function normalizeClanTag(input: string): string {
-  const tag = normalizeClanTagInput(input);
-  return tag ? `#${tag}` : "";
+  return normalizeClashTagWithHash(input);
 }
 
 function formatPercent(value: number | null): string {
@@ -122,7 +121,7 @@ export const War: Command = {
       }
       const requestedLimit = interaction.options.getInteger("limit", false) ?? 10;
       const limit = Math.max(1, Math.min(50, requestedLimit));
-      const tagBare = normalizeClanTagInput(clanTag);
+      const tagBare = normalizeClashTagBareInput(clanTag);
 
       const rows = await prisma.$queryRaw<WarHistoryRow[]>(
         Prisma.sql`
@@ -172,7 +171,7 @@ export const War: Command = {
         await interaction.editReply("Invalid clan tag.");
         return;
       }
-      const tagBare = normalizeClanTagInput(clanTag);
+      const tagBare = normalizeClashTagBareInput(clanTag);
       const warId = String(interaction.options.getString("war-id", true) ?? "").trim();
       if (!warId) {
         await interaction.editReply("Invalid war ID.");
@@ -331,14 +330,14 @@ export const War: Command = {
       await interaction.respond([]);
       return;
     }
-    const query = normalizeClanTagInput(String(focused.value ?? "")).toLowerCase();
+    const query = normalizeClashTagBareInput(String(focused.value ?? "")).toLowerCase();
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { name: true, tag: true },
     });
     const choices = tracked
       .map((clan) => {
-        const tag = normalizeClanTagInput(clan.tag);
+        const tag = normalizeClashTagBareInput(clan.tag);
         const label = clan.name?.trim() ? `${clan.name.trim()} (#${tag})` : `#${tag}`;
         return { name: label.slice(0, 100), value: tag };
       })

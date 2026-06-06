@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { normalizeClashTagInput } from "../helper/clashTag";
 
 export type ClanHealthSnapshot = {
   clanTag: string;
@@ -7,6 +8,11 @@ export type ClanHealthSnapshot = {
     windowSize: number;
     endedWarSampleSize: number;
     fwaMatchCount: number;
+    fwaWinCount: number;
+    fwaLossCount: number;
+    blMatchCount: number;
+    mmMatchCount: number;
+    blInclusiveMatchCount: number;
     winCount: number;
   };
   inactiveWars: {
@@ -52,21 +58,36 @@ type ActivityMetricRow = {
 
 const DEFAULT_WAR_WINDOW_SIZE = 30;
 const DEFAULT_INACTIVE_WAR_WINDOW_SIZE = 3;
-const DEFAULT_INACTIVE_DAYS_THRESHOLD = 7;
+const DEFAULT_INACTIVE_DAYS_THRESHOLD = 6;
 const DEFAULT_INACTIVE_STALE_HOURS = 6;
 
 /** Purpose: normalize clan tags into canonical uppercase + leading-# format. */
 function normalizeClanTag(input: string): string {
-  const raw = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
-  return raw ? `#${raw}` : "";
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: derive ended-war rate metrics from the most recent history window. */
 function computeWarMetrics(rows: WarHistoryMetricRow[], windowSize: number) {
   const endedWarSampleSize = rows.length;
-  const fwaMatchCount = rows.filter((row) => String(row.matchType ?? "").toUpperCase() === "FWA").length;
+  const fwaRows = rows.filter((row) => String(row.matchType ?? "").toUpperCase() === "FWA");
+  const fwaMatchCount = fwaRows.length;
+  const fwaWinCount = fwaRows.filter((row) => String(row.actualOutcome ?? "").toUpperCase() === "WIN").length;
+  const fwaLossCount = fwaRows.filter((row) => String(row.actualOutcome ?? "").toUpperCase() === "LOSE").length;
+  const blMatchCount = rows.filter((row) => String(row.matchType ?? "").toUpperCase() === "BL").length;
+  const mmMatchCount = rows.filter((row) => String(row.matchType ?? "").toUpperCase() === "MM").length;
+  const blInclusiveMatchCount = fwaMatchCount + blMatchCount;
   const winCount = rows.filter((row) => String(row.actualOutcome ?? "").toUpperCase() === "WIN").length;
-  return { windowSize, endedWarSampleSize, fwaMatchCount, winCount };
+  return {
+    windowSize,
+    endedWarSampleSize,
+    fwaMatchCount,
+    fwaWinCount,
+    fwaLossCount,
+    blMatchCount,
+    mmMatchCount,
+    blInclusiveMatchCount,
+    winCount,
+  };
 }
 
 /** Purpose: count players with at least one missed-both war in the selected recent window. */

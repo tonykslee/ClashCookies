@@ -1,6 +1,7 @@
 import { Client } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { prisma } from "../prisma";
 import { recruitmentCountdownReminderPreferenceService } from "./RecruitmentCountdownReminderPreferenceService";
 
@@ -35,7 +36,7 @@ const PLATFORM_DURATION_MS: Record<RecruitmentPlatform, number> = {
 
 /** Purpose: normalize clan tag. */
 export function normalizeClanTag(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 /** Purpose: format clan tag. */

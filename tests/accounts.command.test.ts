@@ -1117,6 +1117,40 @@ describe("/accounts command", () => {
     );
   });
 
+  it("normalizes O to 0 when looking up a player tag through /accounts tag", async () => {
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "222222222222222222",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#P0YLGQ",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#P0YLGQ",
+        playerName: "Linked Alpha",
+        currentClanTag: "#PQL0289",
+        currentClanName: "Current Clan",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const interaction = makeInteraction({ tag: "POYLGQ" });
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    expect(prismaMock.playerLink.findUnique).toHaveBeenCalledWith({
+      where: { playerTag: "#P0YLGQ" },
+      select: { discordUserId: true },
+    });
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain("Linked Alpha");
+    expect(description).toContain("#P0YLGQ");
+    expect(description).not.toContain("POYLGQ");
+  });
+
   it("defaults to the caller's Discord account when discord-id is omitted", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {

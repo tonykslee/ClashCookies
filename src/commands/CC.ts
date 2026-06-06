@@ -7,12 +7,12 @@ import {
 import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
 import { formatError } from "../helper/formatError";
+import {
+  normalizeClashTagBareInput,
+  normalizeClashTagBare,
+} from "../helper/clashTag";
 import { CoCService } from "../services/CoCService";
 import { prisma } from "../prisma";
-
-function normalizeTag(input: string): string {
-  return input.trim().replace(/^#/, "");
-}
 
 export const CC: Command = {
   name: "cc",
@@ -54,7 +54,7 @@ export const CC: Command = {
     try {
       const subcommand = interaction.options.getSubcommand(true);
       const rawTag = interaction.options.getString("tag", true);
-      const tag = normalizeTag(rawTag);
+      const tag = normalizeClashTagBare(rawTag);
 
       if (!tag) {
         await safeReply(interaction, {
@@ -109,7 +109,7 @@ export const CC: Command = {
 
     const choices = tracked
       .map((c) => {
-        const normalized = c.tag.trim().replace(/^#/, "");
+        const normalized = normalizeClashTagBareInput(c.tag);
         const label = c.name?.trim() ? `${c.name.trim()} (#${normalized})` : `#${normalized}`;
         return { name: label.slice(0, 100), value: normalized };
       })

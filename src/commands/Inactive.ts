@@ -16,6 +16,9 @@ import { InactiveWarService, type InactiveWarSummary } from "../services/Inactiv
 import { formatError } from "../helper/formatError";
 import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
 import {
+  normalizeClashTagBareInput,
+} from "../helper/clashTag";
+import {
   normalizeTownHallLevel,
   renderTownHallIcon,
   resolveTownHallEmojiMap,
@@ -23,6 +26,8 @@ import {
 } from "../helper/townHallEmoji";
 import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
+import { normalizePlayerTag } from "../services/PlayerLinkService";
+import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
 
 const DEFAULT_STALE_HOURS = 6;
 const DEFAULT_MIN_COVERAGE = 0.8;
@@ -31,7 +36,7 @@ const MAX_DESCRIPTION_LENGTH = 3900;
 type InactiveDisplayMode = "tag" | "weight";
 
 function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 function formatInactiveClanTag(tag: string): string {
@@ -98,72 +103,19 @@ function buildInactiveWarEmojiSequence(missedWarStates: { emoji: string }[]): st
   return missedWarStates.map((state) => state.emoji).join(" ");
 }
 
-async function loadInactiveDisplayWeightsByTags(tags: string[]): Promise<Map<string, number>> {
-  const normalizedTags = [...new Set(tags.map((tag) => normalizeClanTagInput(tag)).filter(Boolean))];
-  if (normalizedTags.length === 0) return new Map();
-
-  const [memberRows, catalogRows, currentRows] = await Promise.all([
-    prisma.fwaClanMemberCurrent.findMany({
-      where: { playerTag: { in: normalizedTags } },
-      orderBy: [{ playerTag: "asc" }, { sourceSyncedAt: "desc" }, { clanTag: "asc" }],
-      select: {
-        playerTag: true,
-        weight: true,
-        sourceSyncedAt: true,
-      },
-    }),
-    prisma.fwaPlayerCatalog.findMany({
-      where: { playerTag: { in: normalizedTags } },
-      orderBy: [{ playerTag: "asc" }],
-      select: {
-        playerTag: true,
-        latestKnownWeight: true,
-        lastSyncedAt: true,
-      },
-    }),
-    prisma.playerCurrent.findMany({
-      where: { playerTag: { in: normalizedTags } },
-      orderBy: [{ playerTag: "asc" }],
-      select: {
-        playerTag: true,
-        currentWeight: true,
-        updatedAt: true,
-      },
-    }),
-  ]);
-
-  const weightByTag = new Map<string, number>();
-  for (const row of memberRows) {
-    const playerTag = normalizeClanTagInput(row.playerTag);
-    if (!playerTag || weightByTag.has(playerTag)) continue;
-    const weight = normalizePositiveInteger(row.weight);
-    if (weight !== null) weightByTag.set(playerTag, weight);
-  }
-
-  for (const row of catalogRows) {
-    const playerTag = normalizeClanTagInput(row.playerTag);
-    if (!playerTag || weightByTag.has(playerTag)) continue;
-    const weight = normalizePositiveInteger(row.latestKnownWeight);
-    if (weight !== null) weightByTag.set(playerTag, weight);
-  }
-
-  for (const row of currentRows) {
-    const playerTag = normalizeClanTagInput(row.playerTag);
-    if (!playerTag || weightByTag.has(playerTag)) continue;
-    const weight = normalizePositiveInteger(row.currentWeight);
-    if (weight !== null) weightByTag.set(playerTag, weight);
-  }
-
-  return weightByTag;
+async function loadInactiveDisplayWeightsByTags(tags: string[]): Promise<Map<string, number | null>> {
+  return resolveLinkListDisplayWeightsByPlayerTags({
+    playerTagsInOrder: tags.map((tag) => formatInactivePlayerTag(tag)),
+  });
 }
 
 function buildInactivePlayerDisplayValue(
   mode: InactiveDisplayMode,
   playerTag: string,
-  weightByTag: Map<string, number>,
+  weightByTag: Map<string, number | null>,
 ): string {
   if (mode === "tag") return formatInactivePlayerTag(playerTag);
-  const normalizedTag = normalizeClanTagInput(playerTag);
+  const normalizedTag = normalizePlayerTag(playerTag);
   return formatCompactWeightK(weightByTag.get(normalizedTag) ?? null);
 }
 
@@ -278,7 +230,7 @@ function buildInactiveWarGroupedPages(input: {
   townHallEmojiByLevel: TownHallEmojiMap;
   requestedWars: number;
   displayMode: InactiveDisplayMode;
-  weightByPlayerTag: Map<string, number>;
+  weightByPlayerTag: Map<string, number | null>;
 }): string[] {
   const rowsByClan = new Map<string, InactiveWarSummary["results"]>();
   for (const row of input.rows) {
