@@ -16,6 +16,7 @@ import {
   signalKeyLabel,
   type SignalKey,
 } from "../services/ActivitySignalService";
+import { normalizePlayerTag } from "../services/PlayerLinkService";
 
 function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime();
@@ -31,12 +32,6 @@ function formatRelativeTime(date: Date): string {
 function toDiscordTime(date: Date): string {
   const unix = Math.floor(date.getTime() / 1000);
   return `<t:${unix}:F> (<t:${unix}:R>)`;
-}
-
-function normalizePlayerTag(input: string): string {
-  const trimmed = input.trim().toUpperCase();
-  if (!trimmed) return "";
-  return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
 function getSeasonStart(): Date {

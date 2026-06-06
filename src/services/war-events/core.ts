@@ -1,4 +1,8 @@
 /** Purpose: shared core types and pure helper logic for war event processing. */
+import {
+  normalizeClashTagBareInput,
+  normalizeClashTagInput,
+} from "../../helper/clashTag";
 
 export type WarState = "notInWar" | "preparation" | "inWar";
 export type EventType = "war_started" | "battle_day" | "war_ended";
@@ -47,14 +51,12 @@ export type WarComplianceWinGateConfig = {
 
 /** Purpose: normalize a clan/player tag to uppercase with leading '#'. */
 export function normalizeTag(input: string | null | undefined): string {
-  const raw = String(input ?? "").trim().toUpperCase();
-  if (!raw) return "";
-  return raw.startsWith("#") ? raw : `#${raw}`;
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: normalize a clan/player tag to uppercase without leading '#'. */
 export function normalizeTagBare(input: string | null | undefined): string {
-  return normalizeTag(input).replace(/^#/, "");
+  return normalizeClashTagBareInput(input);
 }
 
 /** Purpose: map CoC war state text to internal state enum. */

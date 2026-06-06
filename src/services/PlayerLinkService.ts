@@ -4,6 +4,7 @@ import {
   PlayerLinkVerificationStatus,
 } from "@prisma/client";
 import { prisma } from "../prisma";
+import { normalizeClashTagWithHash } from "../helper/clashTag";
 
 export type PlayerLinkCreateOutcome =
   | "created"
@@ -91,18 +92,12 @@ export const PLAYER_LINK_DISCORD_USERNAME_FALLBACK = "unknown";
 
 /** Purpose: normalize a player tag into uppercase #TAG format. */
 export function normalizePlayerTag(input: string): string {
-  const trimmed = String(input ?? "").trim().toUpperCase();
-  if (!trimmed) return "";
-  const normalized = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
-  return /^#[PYLQGRJCUV0289]{4,15}$/.test(normalized) ? normalized : "";
+  return normalizeClashTagWithHash(input);
 }
 
 /** Purpose: normalize a clan tag into uppercase #TAG format. */
 export function normalizeClanTag(input: string): string {
-  const trimmed = String(input ?? "").trim().toUpperCase();
-  if (!trimmed) return "";
-  const normalized = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
-  return /^#[PYLQGRJCUV0289]{4,15}$/.test(normalized) ? normalized : "";
+  return normalizeClashTagWithHash(input);
 }
 
 /** Purpose: normalize a Discord user snowflake. */

@@ -15,15 +15,11 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { WarEventLogService } from "../services/WarEventLogService";
-
-function normalizeClanTag(input: string): string {
-  const raw = input.trim().toUpperCase().replace(/^#/, "");
-  return raw ? `#${raw}` : "";
-}
-
-function normalizeClanTagInput(input: string): string {
-  return input.trim().toUpperCase().replace(/^#/, "");
-}
+import { normalizeClanTag } from "../services/PlayerLinkService";
+import {
+  normalizeClashTagBareInput,
+  normalizeClashTagBare,
+} from "../helper/clashTag";
 
 const NOTIFY_WAR_PREVIEW_POST_PREFIX = "notify-war-preview-post";
 const notifyWarPreviewRequests = new Map<
@@ -262,7 +258,7 @@ export const Notify: Command = {
     if (sub === "show") {
       const rawTag = interaction.options.getString("clan", false);
       const displayFilterTag = rawTag ? normalizeClanTag(rawTag) : "";
-      const persistedFilterTag = rawTag ? normalizeClanTagInput(rawTag) : "";
+      const persistedFilterTag = rawTag ? normalizeClashTagBare(rawTag) : "";
 
       const tracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
@@ -276,13 +272,13 @@ export const Notify: Command = {
       });
 
       const configByTag = new Map(
-        configs.map((c) => [normalizeClanTagInput(c.clanTag), c])
+        configs.map((c) => [normalizeClashTagBareInput(c.clanTag), c])
       );
 
       const rows = tracked
         .map((clan) => {
           const clanTag = normalizeClanTag(clan.tag);
-          const config = configByTag.get(normalizeClanTagInput(clan.tag));
+          const config = configByTag.get(normalizeClashTagBareInput(clan.tag));
           return {
             clanName: clan.name?.trim() || clanTag,
             clanTag,
@@ -329,14 +325,14 @@ export const Notify: Command = {
           ? await prisma.clanNotifyConfig.updateMany({
               where: {
                 guildId: interaction.guildId,
-                clanTag: normalizeClanTagInput(clanTag),
+                clanTag: normalizeClashTagBare(clanTag),
               },
               data: { embedEnabled: enabled, updatedAt: new Date() },
             })
           : await prisma.clanNotifyConfig.updateMany({
               where: {
                 guildId: interaction.guildId,
-                clanTag: normalizeClanTagInput(clanTag),
+                clanTag: normalizeClashTagBare(clanTag),
               },
               data: { pingEnabled: enabled, updatedAt: new Date() },
             });
@@ -365,7 +361,7 @@ export const Notify: Command = {
         where: {
           guildId_clanTag: {
             guildId: interaction.guildId,
-            clanTag: normalizeClanTagInput(clanTag),
+            clanTag: normalizeClashTagBare(clanTag),
           },
         },
       });
@@ -448,12 +444,12 @@ export const Notify: Command = {
       where: {
         guildId_clanTag: {
           guildId: interaction.guildId,
-          clanTag: normalizeClanTagInput(clanTag),
+          clanTag: normalizeClashTagBare(clanTag),
         },
       },
       create: {
         guildId: interaction.guildId,
-        clanTag: normalizeClanTagInput(clanTag),
+        clanTag: normalizeClashTagBare(clanTag),
         channelId: channel.id,
         roleId: role?.id ?? null,
         pingEnabled,
@@ -481,7 +477,7 @@ export const Notify: Command = {
       return;
     }
 
-    const query = normalizeClanTagInput(String(focused.value ?? "")).toLowerCase();
+    const query = normalizeClashTagBareInput(String(focused.value ?? "")).toLowerCase();
     const tracked = await prisma.trackedClan.findMany({
       orderBy: { createdAt: "asc" },
       select: { name: true, tag: true },
@@ -489,7 +485,7 @@ export const Notify: Command = {
 
     const choices = tracked
       .map((clan) => {
-        const normalizedTag = normalizeClanTagInput(clan.tag);
+        const normalizedTag = normalizeClashTagBareInput(clan.tag);
         const label = clan.name?.trim()
           ? `${clan.name.trim()} (#${normalizedTag})`
           : `#${normalizedTag}`;

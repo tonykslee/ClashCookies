@@ -9,13 +9,13 @@ import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { ClanHealthSnapshotService, type ClanHealthSnapshot } from "../services/ClanHealthSnapshotService";
+import { normalizeClashTagInput } from "../helper/clashTag";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
 /** Purpose: normalize clan tags to uppercase with optional leading '#'. */
 function normalizeClanTag(input: string): string {
-  const bare = String(input ?? "").trim().toUpperCase().replace(/^#/, "");
-  return bare ? `#${bare}` : "";
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: render rates with percentage + numerator/denominator for leadership readability. */

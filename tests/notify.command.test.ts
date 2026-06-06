@@ -87,7 +87,7 @@ describe("/notify show", () => {
       },
       {
         name: "Tracked Clan Two",
-        tag: "#AAA111",
+        tag: "#QGRJ2222",
       },
     ]);
     prismaMock.clanNotifyConfig.findMany.mockResolvedValue([
@@ -102,7 +102,7 @@ describe("/notify show", () => {
       },
       {
         guildId: "guild-1",
-        clanTag: "AAA111",
+        clanTag: "QGRJ2222",
         channelId: "channel-2",
         roleId: "role-1",
         embedEnabled: false,
@@ -123,7 +123,7 @@ describe("/notify show", () => {
     const replyText = String(interaction.editReply.mock.calls[0]?.[0] ?? "");
     expect(replyText).toContain("- **Tracked Clan One** (#2QVGPQP0U)");
     expect(replyText).toContain("Channel: <#channel-1>");
-    expect(replyText).toContain("- **Tracked Clan Two** (#AAA111)");
+    expect(replyText).toContain("- **Tracked Clan Two** (#QGRJ2222)");
     expect(replyText).toContain("Channel: <#channel-2>");
   });
 });

@@ -1,3 +1,5 @@
+import { normalizeClashTagInput } from "../helper/clashTag";
+
 type CurrentWarPhase = "preparation" | "inWar";
 
 export type CurrentWarRemainingRow = {
@@ -39,9 +41,7 @@ const DEFAULT_CLUSTER_PROXIMITY_MINUTES = 10;
 
 /** Purpose: normalize tags to uppercase with leading '#'. */
 export function normalizeClanTag(input: string): string {
-  const raw = String(input ?? "").trim().toUpperCase();
-  if (!raw) return "";
-  return raw.startsWith("#") ? raw : `#${raw}`;
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: classify current-war phase from persisted state value. */

@@ -115,7 +115,7 @@ describe("War-end opponent tag rendering", () => {
     });
     const fields = message.embeds[0]?.data?.fields ?? [];
     const opponentField = fields.find((field) => field.name === "Opponent");
-    expect(opponentField?.value).toBe("Enemy (#OPP123)");
+    expect(opponentField?.value).toBe("Enemy (#0PP123)");
     expect(opponentField?.value).not.toContain("##OPP123");
   });
 
@@ -152,7 +152,7 @@ describe("War-end opponent tag rendering", () => {
     const sent = send.mock.calls[0]?.[0];
     const fields = sent?.embeds?.[0]?.data?.fields ?? [];
     const opponentField = fields.find((field: any) => field.name === "Opponent");
-    expect(opponentField?.value).toBe("Enemy (#OPP123)");
+    expect(opponentField?.value).toBe("Enemy (#0PP123)");
     expect(opponentField?.value).not.toContain("##OPP123");
   });
 

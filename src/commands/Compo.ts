@@ -16,6 +16,7 @@
   StringSelectMenuInteraction,
 } from "discord.js";
 import { Command } from "../Command";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 import type { HeatMapRef } from "@prisma/client";
 import {
   COMPO_ADVICE_VIEW_LABELS,
@@ -1092,7 +1093,7 @@ function extractSupplementalRowsFromMessage(
 }
 
 function normalizeTag(value: string): string {
-  return value.trim().toUpperCase().replace(/^#/, "");
+  return normalizeClashTagBareInput(value);
 }
 
 function abbreviateClan(value: string): string {
