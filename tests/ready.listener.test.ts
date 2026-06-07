@@ -26,6 +26,7 @@ const trackedMessageSyncRemindersMock = vi.hoisted(() => vi.fn().mockResolvedVal
 const warEventPollMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const warEventRefreshMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mirrorSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const fwaMatchChecklistAutoPostSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn().mockResolvedValue([]),
@@ -289,6 +290,17 @@ vi.mock("../src/services/fwa/basesChecklistReminderSchedulerService", () => ({
   })),
 }));
 
+vi.mock("../src/services/fwa/matchChecklistAutoPostSchedulerService", () => ({
+  DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS: 60_000,
+  FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY:
+    "fwa_match_checklist_auto_post_scheduler",
+  FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME:
+    "FWA match checklist auto-post scheduler",
+  FwaMatchChecklistAutoPostSchedulerService: vi.fn().mockImplementation(() => ({
+    start: fwaMatchChecklistAutoPostSchedulerStart,
+  })),
+}));
+
 vi.mock("../src/services/MirrorSyncService", () => ({
   MirrorSyncService: vi.fn().mockImplementation(() => ({
     syncNow: mirrorSyncMock,
@@ -541,6 +553,8 @@ describe("ready listener startup", () => {
         "war_event_poll_cycle",
         "fwa_feed_scheduler",
         "fwa_base_swap_dm_reminder_scheduler",
+        "fwa_match_checklist_auto_post_scheduler",
+        "fwa_bases_checklist_reminder_scheduler",
         "user_activity_reminder_scheduler",
       ]),
     );
@@ -560,6 +574,12 @@ describe("ready listener startup", () => {
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
         displayName: "FWA base-swap DM reminder scheduler",
+      }),
+    );
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "fwa_match_checklist_auto_post_scheduler",
+      expect.objectContaining({
+        displayName: "FWA match checklist auto-post scheduler",
       }),
     );
     expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(

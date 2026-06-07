@@ -45,6 +45,10 @@ describe("fwa bases checklist reminder service", () => {
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
       null as any,
     );
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaMatchChecklistBasesCompletionForClan",
+    ).mockResolvedValue(null as any);
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
         tag: "#PYPY",
@@ -294,6 +298,80 @@ describe("fwa bases checklist reminder service", () => {
       guildId: "guild-1",
       clanTag: "#PYPY",
       syncMessageId: "sync-message-1",
+    });
+  });
+
+  it("suppresses a reminder when an active sync-scoped bases completion exists even if the render is unchecked", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "sync-track-2",
+      guildId: "guild-1",
+      channelId: "sync-channel-1",
+      messageId: "sync-message-2",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-26T12:00:00.000Z"),
+      expiresAt: null,
+      metadata: {},
+    } as any);
+    vi.mocked(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan,
+    ).mockResolvedValueOnce({
+      id: "completion-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-26T18:00:00.000Z|sync=sync-message-2",
+      referenceId: "sync-message-2",
+      clanTag: "#PYPY",
+      createdAt: new Date("2026-05-26T12:15:00.000Z"),
+      expiresAt: null,
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-26T12:15:00.000Z",
+        syncMessageId: "sync-message-2",
+        syncReferenceId: null,
+        clanTag: "#PYPY",
+        clanName: "Alpha Clan",
+        checked: true,
+        warId: "1001",
+        opponentTag: "OPP1",
+        warStartTimeIso: "2026-05-26T18:00:00.000Z",
+      },
+    } as any);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T15:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+    expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan,
+    ).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      warId: 1001,
+      warStartTime: new Date("2026-05-26T18:00:00.000Z"),
+      opponentTag: "#OPP1",
+      syncMessageId: "sync-message-2",
+      syncReferenceId: "sync-message-2",
     });
   });
 

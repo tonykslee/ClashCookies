@@ -49,6 +49,12 @@ import {
   DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS,
   FwaBasesChecklistReminderSchedulerService,
 } from "../services/fwa/basesChecklistReminderSchedulerService";
+import {
+  DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+  FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME,
+  FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
+  FwaMatchChecklistAutoPostSchedulerService,
+} from "../services/fwa/matchChecklistAutoPostSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
@@ -93,6 +99,7 @@ const BOT_POLL_STATUS_JOB_KEYS = {
   fwaFeedScheduler: "fwa_feed_scheduler",
   fwaBaseSwapDmReminderScheduler: "fwa_base_swap_dm_reminder_scheduler",
   fwaBasesChecklistReminderScheduler: "fwa_bases_checklist_reminder_scheduler",
+  fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
   mirrorSyncCycle: "mirror_sync_cycle",
   userActivityReminderScheduler: "user_activity_reminder_scheduler",
 } as const;
@@ -106,6 +113,7 @@ const BOT_POLL_STATUS_DISPLAY_NAMES = {
   fwaFeedScheduler: "FWA feed scheduler",
   fwaBaseSwapDmReminderScheduler: "FWA base-swap DM reminder scheduler",
   fwaBasesChecklistReminderScheduler: "FWA bases checklist reminder scheduler",
+  fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME,
   mirrorSyncCycle: "Mirror sync",
   userActivityReminderScheduler: "User activity reminder scheduler",
 } as const;
@@ -1282,6 +1290,72 @@ export default (client: Client, cocService: CoCService): void => {
       console.log("FWA feed scheduler loops initialized.");
 
       if (runtimeEnvironment !== "staging") {
+        const fwaMatchChecklistAutoPostScheduler = new FwaMatchChecklistAutoPostSchedulerService(client);
+        startupPhase = "fwa_match_checklist_auto_post_scheduler";
+        await markStartupPhase(startupPhase, { pollingMode });
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+          intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS),
+          metadata: {
+            started: true,
+          },
+        });
+        try {
+          const startResult = fwaMatchChecklistAutoPostScheduler.start();
+          if (startResult.started) {
+            await markPollJobSucceeded({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+              intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS),
+              metadata: {
+                started: true,
+              },
+            });
+            console.log("FWA match checklist auto-post scheduler loop initialized.");
+          } else {
+            await markPollJobSkipped({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+              intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS),
+              metadata: {
+                started: false,
+                reason: startResult.reason,
+              },
+            });
+            dozzleLog.info(
+              `[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=${startResult.reason}`,
+            );
+          }
+        } catch (err) {
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+            error: err,
+            intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+            nextDueAt: new Date(Date.now() + DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS),
+            metadata: {
+              started: true,
+            },
+          });
+          throw err;
+        }
+      } else {
+        await markPollJobDisabled({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+          intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+          metadata: { reason: "staging" },
+        });
+        dozzleLog.info(
+          "[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=staging",
+        );
+      }
+
+      if (runtimeEnvironment !== "staging") {
         const fwaBaseSwapDmReminderScheduler = new FwaBaseSwapDmReminderSchedulerService(client);
         startupPhase = "fwa_base_swap_dm_reminder_scheduler";
         await markStartupPhase(startupPhase, { pollingMode });
@@ -1361,6 +1435,12 @@ export default (client: Client, cocService: CoCService): void => {
         intervalMs: DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
         metadata: { reason: "mirror" },
       });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
+        intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
+        metadata: { reason: "mirror" },
+      });
       console.log(
         "[polling-mode] event=poller_skipped job=war_event_poll_cycle mode=mirror",
       );
@@ -1369,6 +1449,9 @@ export default (client: Client, cocService: CoCService): void => {
       );
       console.log(
         "[polling-mode] event=poller_skipped job=fwa_base_swap_dm_reminder_scheduler mode=mirror",
+      );
+      console.log(
+        "[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=mirror",
       );
     }
 

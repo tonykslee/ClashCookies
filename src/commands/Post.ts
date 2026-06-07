@@ -35,7 +35,6 @@ import {
   trackedMessageService,
 } from "../services/TrackedMessageService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
-import { fwaMatchChecklistAutoPostService } from "../services/fwa/matchChecklistAutoPostService";
 import {
   autocompleteSyncTimeZones,
   normalizeSyncTimeZone,
@@ -1113,22 +1112,6 @@ export async function handlePostModalSubmit(
       })),
     },
   });
-  await fwaMatchChecklistAutoPostService
-    .postForSyncTrackedMessage({
-      client: interaction.client,
-      tracked: {
-        guildId: interaction.guildId,
-        channelId: postedMessage.channelId,
-        messageId: postedMessage.id,
-        expiresAt: new Date(epochSeconds * 1000 + 60 * 60 * 1000),
-      },
-      createdByUserId: interaction.user.id,
-    })
-    .catch((err) => {
-      console.error(
-        `[post sync time] checklist auto-post failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(err)}`,
-      );
-    });
 
   try {
     const pinned = await channel.messages.fetchPinned();

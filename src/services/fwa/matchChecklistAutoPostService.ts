@@ -22,6 +22,7 @@ type SyncTrackedMessageLike = {
   channelId: string;
   messageId: string;
   expiresAt?: Date | null;
+  fallbackExpiresAt?: Date | null;
 };
 
 type ChecklistDestinationChannel = {
@@ -34,7 +35,6 @@ type ChecklistDestinationChannel = {
 type CoCServiceFactory = () => CoCService;
 
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
-
 function checklistKindForViewType(viewType: ChecklistViewType): "mail_checklist" | "bases_checklist" {
   return viewType === "Bases" ? "bases_checklist" : "mail_checklist";
 }
@@ -95,11 +95,40 @@ export class FwaMatchChecklistAutoPostService {
     client: Client;
     tracked: SyncTrackedMessageLike;
     createdByUserId?: string | null;
+    viewType?: ChecklistViewType;
   }): Promise<{ posted: number; skipped: number; failed: number }> {
     const guildId = String(params.tracked.guildId ?? "").trim();
     const syncMessageId = String(params.tracked.messageId ?? "").trim();
     if (!guildId || !syncMessageId) {
-      return { posted: 0, skipped: CHECKLIST_VIEW_TYPES.length, failed: 0 };
+      const emptyCount = params.viewType ? 1 : CHECKLIST_VIEW_TYPES.length;
+      return { posted: 0, skipped: emptyCount, failed: 0 };
+    }
+
+    const viewTypes = params.viewType ? [params.viewType] : CHECKLIST_VIEW_TYPES;
+
+    let posted = 0;
+    let skipped = 0;
+    let failed = 0;
+    const pendingViewTypes: ChecklistViewType[] = [];
+    for (const viewType of viewTypes) {
+      const kind = checklistKindForViewType(viewType);
+      const duplicate = await hasChecklistForSyncReference({
+        guildId,
+        syncMessageId,
+        viewType,
+      });
+      if (duplicate) {
+        skipped += 1;
+        console.info(
+          `[fwa match checklist auto-post] event=skipped_duplicate_before_discord_fetch guild=${guildId} sync_message=${syncMessageId} kind=${kind}`,
+        );
+        continue;
+      }
+      pendingViewTypes.push(viewType);
+    }
+
+    if (pendingViewTypes.length === 0) {
+      return { posted, skipped, failed };
     }
 
     const configuredChannelId = await this.botLogChannelService.getChannelIdForType(
@@ -107,10 +136,11 @@ export class FwaMatchChecklistAutoPostService {
       "checklist",
     );
     if (!configuredChannelId) {
+      skipped += pendingViewTypes.length;
       console.info(
         `[fwa match checklist auto-post] event=skipped_no_channel guild=${guildId} sync_message=${syncMessageId}`,
       );
-      return { posted: 0, skipped: CHECKLIST_VIEW_TYPES.length, failed: 0 };
+      return { posted, skipped, failed };
     }
 
     const guild = await params.client.guilds.fetch(guildId).catch((err) => {
@@ -120,7 +150,8 @@ export class FwaMatchChecklistAutoPostService {
       return null;
     });
     if (!guild) {
-      return { posted: 0, skipped: 0, failed: CHECKLIST_VIEW_TYPES.length };
+      failed += pendingViewTypes.length;
+      return { posted, skipped, failed };
     }
 
     let channelFetchFailed = false;
@@ -146,38 +177,24 @@ export class FwaMatchChecklistAutoPostService {
           `[fwa match checklist auto-post] event=stale_channel_cleared guild=${guildId} configured_channel=${configuredChannelId} sync_message=${syncMessageId}`,
         );
       }
-      return { posted: 0, skipped: 0, failed: CHECKLIST_VIEW_TYPES.length };
+      failed += pendingViewTypes.length;
+      return { posted, skipped, failed };
     }
     if (!isSupportedChecklistDestination(channel)) {
       console.error(
         `[fwa match checklist auto-post] event=channel_not_sendable guild=${guildId} configured_channel=${configuredChannelId} sync_message=${syncMessageId}`,
       );
-      return { posted: 0, skipped: 0, failed: CHECKLIST_VIEW_TYPES.length };
+      failed += pendingViewTypes.length;
+      return { posted, skipped, failed };
     }
 
-    let posted = 0;
-    let skipped = 0;
-    let failed = 0;
     let cocService: CoCService | null = null;
     const getCocService = (): CoCService => {
       cocService ??= this.cocServiceFactory();
       return cocService;
     };
-    for (const viewType of CHECKLIST_VIEW_TYPES) {
+    for (const viewType of pendingViewTypes) {
       const kind = checklistKindForViewType(viewType);
-      const duplicate = await hasChecklistForSyncReference({
-        guildId,
-        syncMessageId,
-        viewType,
-      });
-      if (duplicate) {
-        skipped += 1;
-        console.info(
-          `[fwa match checklist auto-post] event=skipped_duplicate guild=${guildId} sync_message=${syncMessageId} kind=${kind}`,
-        );
-        continue;
-      }
-
       let state: FwaMatchChecklistRenderState;
       try {
         state = await buildFwaMatchChecklistRenderStateForGuild({
@@ -186,6 +203,7 @@ export class FwaMatchChecklistAutoPostService {
           client: params.client,
           warLookupCache: new Map(),
           viewType,
+          fallbackExpiresAt: params.tracked.fallbackExpiresAt ?? null,
         });
       } catch (err) {
         failed += 1;

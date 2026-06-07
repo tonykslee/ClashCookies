@@ -242,6 +242,38 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
+  it("extends checklist expiry from a sync-based fallback to the known war end", async () => {
+    const currentExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const refreshedExpiresAt = new Date(Date.now() + 49 * 60 * 60 * 1000);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeTrackedChecklistRow(),
+      expiresAt: currentExpiresAt,
+    });
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map(),
+      },
+      edit,
+    };
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        expiresAt: refreshedExpiresAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          expiresAt: refreshedExpiresAt,
+        }),
+      }),
+    );
+  });
+
   it("stores and resolves bases completion for the current war identity", async () => {
     const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
     await trackedMessageService.setFwaMatchChecklistBasesCompletion({
