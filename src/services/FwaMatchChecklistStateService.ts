@@ -99,8 +99,17 @@ function parseTrackedClanBadge(
   };
 }
 
-function buildFallbackChecklistExpiresAt(nowMs: number = Date.now()): Date {
-  return new Date(nowMs + 30 * 60 * 1000);
+function buildFallbackChecklistExpiresAt(params?: {
+  nowMs?: number;
+  fallbackExpiresAt?: Date | null;
+}): Date {
+  if (
+    params?.fallbackExpiresAt instanceof Date &&
+    Number.isFinite(params.fallbackExpiresAt.getTime())
+  ) {
+    return params.fallbackExpiresAt;
+  }
+  return new Date((params?.nowMs ?? Date.now()) + 30 * 60 * 1000);
 }
 
 function resolveChecklistWarEndTime(input: {
@@ -126,6 +135,7 @@ function resolveChecklistWarEndTime(input: {
 function resolveChecklistExpiresAt(params: {
   warTimingRows: Array<Date | null | undefined>;
   nowMs?: number;
+  fallbackExpiresAt?: Date | null;
 }): Date {
   const latestWarEndMs = (params.warTimingRows ?? [])
     .map((time) => (time instanceof Date && Number.isFinite(time.getTime()) ? time.getTime() : null))
@@ -137,7 +147,10 @@ function resolveChecklistExpiresAt(params: {
   if (latestWarEndMs !== null) {
     return new Date(latestWarEndMs);
   }
-  return buildFallbackChecklistExpiresAt(params.nowMs);
+  return buildFallbackChecklistExpiresAt({
+    nowMs: params.nowMs,
+    fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+  });
 }
 
 function buildBasesScopeKey(params: {
@@ -235,6 +248,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   guildId: string;
   client: Client;
   syncMessageId?: string | null;
+  fallbackExpiresAt?: Date | null;
 }): Promise<FwaMatchChecklistRenderState> {
   const now = new Date();
   const overrideSyncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
@@ -266,7 +280,10 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       }),
       checkedClanTags: [],
       referenceId: currentSyncIdentity,
-      expiresAt: buildFallbackChecklistExpiresAt(),
+      expiresAt: buildFallbackChecklistExpiresAt({
+        nowMs: Date.now(),
+        fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+      }),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
     };
   }
@@ -446,6 +463,8 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
       warTimingRows: checklistExpiresAtCandidates,
+      fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+      nowMs: Date.now(),
     }),
     emptyMessage: null,
   };
@@ -530,12 +549,14 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   warLookupCache?: Map<string, Promise<any> | any>;
   viewType?: FwaMatchChecklistViewType;
   syncMessageId?: string | null;
+  fallbackExpiresAt?: Date | null;
 }): Promise<FwaMatchChecklistRenderState> {
   if ((params.viewType ?? "Mail") === "Bases") {
     return buildFwaMatchBasesRenderStateForGuild({
       guildId: params.guildId,
       client: params.client,
       syncMessageId: params.syncMessageId ?? null,
+      fallbackExpiresAt: params.fallbackExpiresAt ?? null,
     });
   }
   const latestActiveSyncPost = await trackedMessageService
@@ -557,7 +578,10 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       }),
       checkedClanTags: [],
       referenceId: currentSyncIdentity,
-      expiresAt: buildFallbackChecklistExpiresAt(),
+      expiresAt: buildFallbackChecklistExpiresAt({
+        nowMs: Date.now(),
+        fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+      }),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
     };
   }
@@ -669,6 +693,8 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
       warTimingRows: checklistExpiresAtCandidates,
+      fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+      nowMs: Date.now(),
     }),
     emptyMessage: null,
   };

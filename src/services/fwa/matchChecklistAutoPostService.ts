@@ -22,6 +22,7 @@ type SyncTrackedMessageLike = {
   channelId: string;
   messageId: string;
   expiresAt?: Date | null;
+  fallbackExpiresAt?: Date | null;
 };
 
 type ChecklistDestinationChannel = {
@@ -34,7 +35,6 @@ type ChecklistDestinationChannel = {
 type CoCServiceFactory = () => CoCService;
 
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
-
 function checklistKindForViewType(viewType: ChecklistViewType): "mail_checklist" | "bases_checklist" {
   return viewType === "Bases" ? "bases_checklist" : "mail_checklist";
 }
@@ -190,6 +190,7 @@ export class FwaMatchChecklistAutoPostService {
           client: params.client,
           warLookupCache: new Map(),
           viewType,
+          fallbackExpiresAt: params.tracked.fallbackExpiresAt ?? null,
         });
       } catch (err) {
         failed += 1;

@@ -48,6 +48,10 @@ function resolveChecklistDueAt(syncEpochSeconds: number, viewType: ChecklistView
   return new Date(syncEpochSeconds * 1000 + offsetMs);
 }
 
+function resolveChecklistFallbackExpiresAt(syncEpochSeconds: number): Date {
+  return new Date(syncEpochSeconds * 1000 + 48 * 60 * 60 * 1000);
+}
+
 /** Purpose: run the active-mode FWA checklist auto-post loop without owning checklist state. */
 export class FwaMatchChecklistAutoPostSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -159,6 +163,7 @@ export class FwaMatchChecklistAutoPostSchedulerService {
         for (const viewType of ["Mail", "Bases"] as const) {
           const dueAt = resolveChecklistDueAt(metadata.syncEpochSeconds, viewType);
           if (nowMs < dueAt.getTime()) continue;
+          const fallbackExpiresAt = resolveChecklistFallbackExpiresAt(metadata.syncEpochSeconds);
 
           due += 1;
           dozzleLog.info(
@@ -173,6 +178,7 @@ export class FwaMatchChecklistAutoPostSchedulerService {
                 channelId: tracked.channelId,
                 messageId: tracked.messageId,
                 expiresAt: tracked.expiresAt ?? null,
+                fallbackExpiresAt,
               },
               createdByUserId: "system",
               viewType,

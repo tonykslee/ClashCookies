@@ -25,6 +25,9 @@ const dozzleLogMock = vi.hoisted(() => ({
 const SYNC_EPOCH_SECONDS = Math.floor(
   new Date("2026-05-13T00:00:00.000Z").getTime() / 1000,
 );
+const SYNC_FALLBACK_EXPIRES_AT = new Date(
+  (SYNC_EPOCH_SECONDS * 1000) + 48 * 60 * 60 * 1000,
+);
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -111,6 +114,7 @@ describe("FwaMatchChecklistAutoPostSchedulerService", () => {
         viewType: "Mail",
         tracked: expect.objectContaining({
           messageId: "sync-message-1",
+          fallbackExpiresAt: SYNC_FALLBACK_EXPIRES_AT,
         }),
       }),
     );
@@ -122,6 +126,7 @@ describe("FwaMatchChecklistAutoPostSchedulerService", () => {
         viewType: "Bases",
         tracked: expect.objectContaining({
           messageId: "sync-message-1",
+          fallbackExpiresAt: SYNC_FALLBACK_EXPIRES_AT,
         }),
       }),
     );
