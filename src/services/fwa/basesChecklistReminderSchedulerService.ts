@@ -229,8 +229,11 @@ export class FwaBasesChecklistReminderSchedulerService {
           .catch(() => null);
         if (activeBaseSwap || activeCompletion) {
           skipped += 1;
+          const suppressionReason = activeBaseSwap
+            ? "base_swap_exists"
+            : "bases_completion_exists";
           dozzleLog.info(
-            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=no_longer_unchecked`,
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=${suppressionReason} syncIdentitySource=${currentSyncIdentity ? "active_sync_post" : "expired_sync_post_fallback"} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapMessageId=${activeBaseSwap?.messageId ?? "missing"} completionMessageId=${activeCompletion?.messageId ?? "missing"}`,
           );
           continue;
         }

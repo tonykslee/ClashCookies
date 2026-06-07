@@ -143,7 +143,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("clan:<tag-or-short-name>");
     expect(normalized).toContain("checked:true|false");
     expect(normalized).toContain("can be refreshed to rebuild the current match state");
-    expect(normalized).toContain("auto-post to `/bot-logs type:checklist channel:<channel>`");
+    expect(normalized).toContain("active sync scheduler posts mail at sync+1m and bases at sync+2m");
     expect(normalized).toContain("snapshot-only");
   });
 
@@ -200,7 +200,7 @@ describe("command coverage", () => {
     expect(botLogsHelpText).toContain("type:sync");
     expect(normalized).toContain("scheduled sync spin status");
     expect(botLogsHelpText).toContain("type:checklist");
-    expect(normalized).toContain("auto-posted `/fwa match-checklist type:mail`");
+    expect(normalized).toContain("scheduled `/fwa match-checklist type:mail`");
     expect(normalized).toContain("type:base-swap");
     expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false>");
     expect(normalized).toContain("enable:false");

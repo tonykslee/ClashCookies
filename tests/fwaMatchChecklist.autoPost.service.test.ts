@@ -20,6 +20,13 @@ const publishMock = vi.hoisted(() => ({
   publishFwaMatchChecklistMessageToChannel: vi.fn(),
 }));
 
+const SYNC_EPOCH_SECONDS = Math.floor(
+  new Date("2026-05-13T00:00:00.000Z").getTime() / 1000,
+);
+const SYNC_FALLBACK_EXPIRES_AT = new Date(
+  (SYNC_EPOCH_SECONDS * 1000) + 48 * 60 * 60 * 1000,
+);
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -78,8 +85,15 @@ describe("FwaMatchChecklistAutoPostService", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     botLogChannelServiceMock.getChannelIdForType.mockResolvedValue("checklist-channel");
     botLogChannelServiceMock.clearChannelIdForType.mockResolvedValue(undefined);
+    publishMock.publishFwaMatchChecklistMessageToChannel.mockResolvedValue("posted-message");
     renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockImplementation(
-      async ({ viewType }: { viewType?: "Mail" | "Bases" }) => ({
+      async ({
+        viewType,
+        fallbackExpiresAt,
+      }: {
+        viewType?: "Mail" | "Bases";
+        fallbackExpiresAt?: Date | null;
+      }) => ({
         viewType: viewType ?? "Mail",
         rows: [
           {
@@ -96,16 +110,14 @@ describe("FwaMatchChecklistAutoPostService", () => {
         scopeKey: `${viewType ?? "Mail"}-scope`,
         checkedClanTags: [],
         referenceId: "sync-message-1",
-        expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+        expiresAt:
+          fallbackExpiresAt ?? new Date("2026-05-13T00:30:00.000Z"),
         emptyMessage: null,
       }),
     );
-    publishMock.publishFwaMatchChecklistMessageToChannel
-      .mockResolvedValueOnce("mail-message-1")
-      .mockResolvedValueOnce("bases-message-1");
   });
 
-  it("posts Mail and Bases checklists once to the configured checklist channel", async () => {
+  it("posts only the Mail checklist when requested", async () => {
     const channel = makeChecklistChannel();
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
@@ -119,9 +131,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
         expiresAt: new Date("2026-05-13T01:00:00.000Z"),
       },
       createdByUserId: "user-1",
+      viewType: "Mail",
     });
 
-    expect(result).toEqual({ posted: 2, skipped: 0, failed: 0 });
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
     expect(botLogChannelServiceMock.getChannelIdForType).toHaveBeenCalledWith(
       "guild-1",
       "checklist",
@@ -129,9 +142,6 @@ describe("FwaMatchChecklistAutoPostService", () => {
     expect(cocFactory).toHaveBeenCalledTimes(1);
     expect(renderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: "guild-1", viewType: "Mail" }),
-    );
-    expect(renderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
-      expect.objectContaining({ guildId: "guild-1", viewType: "Bases" }),
     );
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -142,6 +152,111 @@ describe("FwaMatchChecklistAutoPostService", () => {
         referenceId: "sync-message-1",
       }),
     );
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a sync-based fallback expiry when war timing is still unknown", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        fallbackExpiresAt: SYNC_FALLBACK_EXPIRES_AT,
+      },
+      createdByUserId: "user-1",
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(renderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        viewType: "Mail",
+        fallbackExpiresAt: SYNC_FALLBACK_EXPIRES_AT,
+      }),
+    );
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+        referenceId: "sync-message-1",
+        expiresAt: SYNC_FALLBACK_EXPIRES_AT,
+      }),
+    );
+  });
+
+  it("preserves a known war-end expiry when render state already knows it", async () => {
+    const knownWarEnd = new Date("2026-05-14T22:00:00.000Z");
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+        },
+      ],
+      scopeKey: "Bases-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: knownWarEnd,
+      emptyMessage: null,
+    });
+
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        fallbackExpiresAt: SYNC_FALLBACK_EXPIRES_AT,
+      },
+      createdByUserId: "user-1",
+      viewType: "Bases",
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Bases",
+        referenceId: "sync-message-1",
+        expiresAt: knownWarEnd,
+      }),
+    );
+  });
+
+  it("posts only the Bases checklist when requested", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+      },
+      createdByUserId: "user-1",
+      viewType: "Bases",
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(cocFactory).toHaveBeenCalledTimes(1);
+    expect(renderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: "guild-1", viewType: "Bases" }),
+    );
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
       expect.objectContaining({
         viewType: "Bases",
@@ -151,6 +266,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
         referenceId: "sync-message-1",
       }),
     );
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
   });
 
   it("skips without throwing when no checklist channel is configured", async () => {
@@ -165,9 +281,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
         channelId: "source-channel",
         messageId: "sync-message-1",
       },
+      viewType: "Mail",
     });
 
-    expect(result).toEqual({ posted: 0, skipped: 2, failed: 0 });
+    expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
     expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });
@@ -183,9 +300,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
         channelId: "source-channel",
         messageId: "sync-message-1",
       },
+      viewType: "Mail",
     });
 
-    expect(result).toEqual({ posted: 0, skipped: 0, failed: 2 });
+    expect(result).toEqual({ posted: 0, skipped: 0, failed: 1 });
     expect(cocFactory).not.toHaveBeenCalled();
     expect(botLogChannelServiceMock.clearChannelIdForType).toHaveBeenCalledWith(
       "guild-1",
@@ -208,30 +326,74 @@ describe("FwaMatchChecklistAutoPostService", () => {
         channelId: "source-channel",
         messageId: "sync-message-1",
       },
+      viewType: "Bases",
     });
 
-    expect(result).toEqual({ posted: 0, skipped: 0, failed: 2 });
+    expect(result).toEqual({ posted: 0, skipped: 0, failed: 1 });
     expect(cocFactory).not.toHaveBeenCalled();
     expect(botLogChannelServiceMock.clearChannelIdForType).not.toHaveBeenCalled();
   });
 
-  it("does not duplicate either checklist for the same sync identity", async () => {
-    prismaMock.trackedMessage.findMany
-      .mockResolvedValueOnce([{ metadata: { kind: "mail_checklist", createdByUserId: "system", createdAtIso: "2026-05-13T00:00:00.000Z", rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }] } }])
-      .mockResolvedValueOnce([{ metadata: { kind: "bases_checklist", createdByUserId: "system", createdAtIso: "2026-05-13T00:00:00.000Z", rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }] } }]);
+  it("does not duplicate the Mail checklist for the same sync identity", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        metadata: {
+          kind: "mail_checklist",
+          createdByUserId: "system",
+          createdAtIso: "2026-05-13T00:00:00.000Z",
+          rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }],
+        },
+      },
+    ]);
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const client = makeClient({ channel: makeChecklistChannel() });
 
     const result = await service.postForSyncTrackedMessage({
-      client: makeClient({ channel: makeChecklistChannel() }),
+      client,
       tracked: {
         guildId: "guild-1",
         channelId: "source-channel",
         messageId: "sync-message-1",
       },
+      viewType: "Mail",
     });
 
-    expect(result).toEqual({ posted: 0, skipped: 2, failed: 0 });
+    expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelIdForType).not.toHaveBeenCalled();
+    expect(cocFactory).not.toHaveBeenCalled();
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate the Bases checklist for the same sync identity", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        metadata: {
+          kind: "bases_checklist",
+          createdByUserId: "system",
+          createdAtIso: "2026-05-13T00:00:00.000Z",
+          rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }],
+        },
+      },
+    ]);
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const client = makeClient({ channel: makeChecklistChannel() });
+
+    const result = await service.postForSyncTrackedMessage({
+      client,
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Bases",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelIdForType).not.toHaveBeenCalled();
     expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });

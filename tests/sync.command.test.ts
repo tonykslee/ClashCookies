@@ -499,17 +499,9 @@ describe("/sync time post modal submit", () => {
     expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-1",
-      }),
-    );
-    expect(checklistAutoPostMock.postForSyncTrackedMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        client: interaction.client,
-        tracked: expect.objectContaining({
-          guildId: "guild-1",
-          channelId: "channel-1",
-          messageId: "posted-message-channel-1",
+        metadata: expect.objectContaining({
+          syncEpochSeconds: expect.any(Number),
         }),
-        createdByUserId: "user-1",
       }),
     );
     expect(interaction.channel.send).toHaveBeenCalledTimes(1);
