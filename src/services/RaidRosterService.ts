@@ -7,6 +7,21 @@ import type { CoCService } from "./CoCService";
 import { getCachedTownHallEmojiMap, renderTownHallIcon, type TownHallEmojiMap } from "../helper/townHallEmoji";
 import { buildRaidHitStatsByAttackerTag, type RaidHitStats } from "./RaidHitStatsService";
 
+type RaidRosterPlayerLinkRow = {
+  discordUserId: string | null;
+  linkedName: string | null;
+};
+
+type RaidRosterFwaClanMemberCurrentRow = {
+  townHall: number | null;
+  sourceSyncedAt: Date;
+};
+
+type RaidRosterFwaPlayerCatalogRow = {
+  latestTownHall: number | null;
+  latestName: string | null;
+};
+
 export type RaidRosterAddResult = {
   added: string[];
   alreadyOnRoster: string[];
@@ -57,6 +72,11 @@ function uniquePreserveOrder(values: string[]): string[] {
 function normalizeText(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizePositiveInteger(input: unknown): number | null {
+  const parsed = Math.trunc(Number(input));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function clampInt(value: unknown, min: number, max: number): number {
@@ -148,6 +168,13 @@ function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: st
   if (!normalizedPlayerTag) return label;
   const encodedTag = normalizedPlayerTag.replace(/^#/, "");
   return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
+}
+
+function formatRaidRosterHitStatsSummaryCompact(
+  stats: RaidRosterHitStatsSummary | null | undefined,
+): string | null {
+  if (!stats || stats.totalHits <= 0) return null;
+  return `30d: 1s ${stats.oneShots} | 2s ${stats.twoShots} | 3s ${stats.threeShots}`;
 }
 
 export function parseRaidRosterPlayerTagsInput(rawInput: string): ParsedRaidRosterPlayerTagsInput {
@@ -292,7 +319,15 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       });
   }
 
-  const [snapshotRows, playerCurrentRows, playerLinkRows, playerActivityRows, hitStatsByAttackerTag] = await Promise.all([
+  const [
+    snapshotRows,
+    playerCurrentRows,
+    playerLinkRows,
+    playerActivityRows,
+    fwaClanMemberRows,
+    fwaPlayerCatalogRows,
+    hitStatsByAttackerTag,
+  ] = await Promise.all([
     todoSnapshotService.listSnapshotsByPlayerTags({ playerTags: rosterTags }),
     playerCurrentService.listPlayerCurrentByTags(rosterTags),
     prisma.playerLink.findMany({
@@ -300,6 +335,8 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       select: {
         playerTag: true,
         discordUserId: true,
+        playerName: true,
+        discordUsername: true,
       },
     }),
     prisma.playerActivity.findMany({
@@ -307,6 +344,22 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       select: {
         tag: true,
         name: true,
+      },
+    }),
+    prisma.fwaClanMemberCurrent.findMany({
+      where: { playerTag: { in: rosterTags } },
+      select: {
+        playerTag: true,
+        townHall: true,
+        sourceSyncedAt: true,
+      },
+    }),
+    prisma.fwaPlayerCatalog.findMany({
+      where: { playerTag: { in: rosterTags } },
+      select: {
+        playerTag: true,
+        latestTownHall: true,
+        latestName: true,
       },
     }),
     buildRaidHitStatsByAttackerTag({ guildId }),
@@ -320,13 +373,54 @@ export async function listRaidRosterStatusRowsForGuild(input: {
   );
   const playerCurrentByTag = new Map(playerCurrentRows);
   const playerLinkByTag = new Map(
-    playerLinkRows.map((row) => [normalizePlayerTag(row.playerTag), row.discordUserId ?? null] as const).filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
+    playerLinkRows
+      .map((row) => {
+        const playerTag = normalizePlayerTag(row.playerTag);
+        if (!playerTag) return null;
+        return [
+          playerTag,
+          {
+            discordUserId: row.discordUserId ?? null,
+            linkedName: normalizeText(row.playerName) ?? normalizeText(row.discordUsername),
+          },
+        ] as const;
+      })
+      .filter((entry): entry is readonly [string, RaidRosterPlayerLinkRow] => Boolean(entry)),
   );
   const playerActivityByTag = new Map(
     playerActivityRows
       .map((row) => [normalizePlayerTag(row.tag), normalizeText(row.name)] as const)
       .filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
   );
+  const fwaClanMemberCurrentByTag = new Map<string, RaidRosterFwaClanMemberCurrentRow>();
+  for (const row of fwaClanMemberRows as Array<{
+    playerTag: string;
+    townHall: number | null;
+    sourceSyncedAt: Date;
+  }>) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    const existing = fwaClanMemberCurrentByTag.get(playerTag);
+    if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
+      fwaClanMemberCurrentByTag.set(playerTag, {
+        townHall: normalizePositiveInteger(row.townHall),
+        sourceSyncedAt: row.sourceSyncedAt,
+      });
+    }
+  }
+  const fwaPlayerCatalogByTag = new Map<string, RaidRosterFwaPlayerCatalogRow>();
+  for (const row of fwaPlayerCatalogRows as Array<{
+    playerTag: string;
+    latestTownHall: number | null;
+    latestName: string | null;
+  }>) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    fwaPlayerCatalogByTag.set(playerTag, {
+      latestTownHall: normalizePositiveInteger(row.latestTownHall),
+      latestName: normalizeText(row.latestName),
+    });
+  }
 
   const directStatsByRosterTag = new Map<string, RaidHitStats>();
   for (const playerTag of rosterTags) {
@@ -345,7 +439,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
     }
   >();
   for (const playerTag of rosterTags) {
-    const discordUserId = playerLinkByTag.get(playerTag) ?? null;
+    const discordUserId = playerLinkByTag.get(playerTag)?.discordUserId ?? null;
     if (!discordUserId) continue;
     const stats = directStatsByRosterTag.get(playerTag) ?? null;
     if (!stats) continue;
@@ -358,15 +452,25 @@ export async function listRaidRosterStatusRowsForGuild(input: {
   return rosterTags.map((playerTag) => {
     const snapshot = snapshotByTag.get(playerTag) ?? null;
     const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
+    const playerLink = playerLinkByTag.get(playerTag) ?? null;
     const activityName = playerActivityByTag.get(playerTag) ?? null;
+    const fwaMemberCurrent = fwaClanMemberCurrentByTag.get(playerTag) ?? null;
+    const fwaPlayerCatalog = fwaPlayerCatalogByTag.get(playerTag) ?? null;
     const playerName =
       normalizeText(snapshot?.playerName) ??
       normalizeText(playerCurrent?.playerName) ??
+      playerLink?.linkedName ??
       activityName ??
+      fwaPlayerCatalog?.latestName ??
       playerTag;
-    const townHall = snapshot?.townHall ?? playerCurrent?.townHall ?? null;
+    const townHall =
+      normalizePositiveInteger(snapshot?.townHall) ??
+      normalizePositiveInteger(playerCurrent?.townHall) ??
+      fwaMemberCurrent?.townHall ??
+      fwaPlayerCatalog?.latestTownHall ??
+      null;
     const completedRaidAttacks = clampInt(snapshot?.raidAttacksUsed ?? 0, 0, 6);
-    const discordUserId = playerLinkByTag.get(playerTag) ?? null;
+    const discordUserId = playerLink?.discordUserId ?? null;
     const raidHitStats30d =
       finalizeRaidRosterHitStatsSummary(
         discordUserId
@@ -414,7 +518,7 @@ export function buildRaidRosterStatusLine(
   const playerLink = buildPlayerProfileMarkdownLink(row.playerName, row.playerTag);
   const tag = `\`${normalizePlayerTag(row.playerTag) || row.playerTag}\``;
   const discordPart = row.discordUserId ? `<@${row.discordUserId}>` : "unlinked";
-  const statsPart = formatRaidRosterHitStatsSummary(row.raidHitStats30d);
+  const statsPart = formatRaidRosterHitStatsSummaryCompact(row.raidHitStats30d);
   return `- ${townHallIcon} ${playerLink} ${tag} ${discordPart} - ${row.completedRaidAttacks}/6${statsPart ? ` | ${statsPart}` : ""}`;
 }
 
