@@ -11,6 +11,12 @@ const prismaMock = vi.hoisted(() => ({
   playerActivity: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
 }));
 
 const todoSnapshotServiceMock = vi.hoisted(() => ({
@@ -58,6 +64,8 @@ describe("RaidRosterService", () => {
     prismaMock.raidRosterMember.createMany.mockResolvedValue({ count: 0 });
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([]);
     todoSnapshotServiceMock.refreshSnapshotsForPlayerTags.mockResolvedValue({ playerCount: 0, updatedCount: 0 });
     playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(new Map());
@@ -131,6 +139,8 @@ describe("RaidRosterService", () => {
       { playerTag: "#2QG2C08UP" },
       { playerTag: "#2QG2C08UQ" },
       { playerTag: "#2QG2C08UR" },
+      { playerTag: "#2QG2C08UU" },
+      { playerTag: "#2QG2C08UV" },
     ]);
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([
       {
@@ -154,21 +164,43 @@ describe("RaidRosterService", () => {
     );
     prismaMock.playerLink.findMany.mockResolvedValueOnce([
       { playerTag: "#2QG2C08UP", discordUserId: "123456789012345678" },
+      { playerTag: "#2QG2C08UU", discordUserId: "987654321098765432", playerName: "Linked Delta", discordUsername: "Discord Delta" },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValueOnce([
       { tag: "#2QG2C08UQ", name: "Activity Charlie" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UV",
+        townHall: 13,
+        sourceSyncedAt: new Date("2026-05-30T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UV",
+        latestTownHall: 12,
+        latestName: "Catalog Echo",
+      },
+      {
+        playerTag: "#2QG2C08UU",
+        latestTownHall: 11,
+        latestName: "Catalog Delta",
+      },
     ]);
 
     const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
 
     expect(todoSnapshotServiceMock.listSnapshotsByPlayerTags).toHaveBeenCalledWith({
-      playerTags: ["#2RVGJYLC0", "#2QG2C08UP", "#2QG2C08UQ", "#2QG2C08UR"],
+      playerTags: ["#2RVGJYLC0", "#2QG2C08UP", "#2QG2C08UQ", "#2QG2C08UR", "#2QG2C08UU", "#2QG2C08UV"],
     });
     expect(playerCurrentServiceMock.listPlayerCurrentByTags).toHaveBeenCalledWith([
       "#2RVGJYLC0",
       "#2QG2C08UP",
       "#2QG2C08UQ",
       "#2QG2C08UR",
+      "#2QG2C08UU",
+      "#2QG2C08UV",
     ]);
     expect(rows).toEqual([
       {
@@ -193,12 +225,26 @@ describe("RaidRosterService", () => {
         completedRaidAttacks: 0,
       },
       {
-        playerTag: "#2QG2C08UR",
-        playerName: "#2QG2C08UR",
-        townHall: null,
-        discordUserId: null,
-        completedRaidAttacks: 0,
-      },
+      playerTag: "#2QG2C08UR",
+      playerName: "#2QG2C08UR",
+      townHall: null,
+      discordUserId: null,
+      completedRaidAttacks: 0,
+    },
+    {
+      playerTag: "#2QG2C08UU",
+      playerName: "Linked Delta",
+      townHall: 11,
+      discordUserId: "987654321098765432",
+      completedRaidAttacks: 0,
+    },
+    {
+      playerTag: "#2QG2C08UV",
+      playerName: "Catalog Echo",
+      townHall: 13,
+      discordUserId: null,
+      completedRaidAttacks: 0,
+    },
     ]);
   });
 
@@ -287,8 +333,9 @@ describe("RaidRosterService", () => {
       perfectHits: 5,
     });
     expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
-      "30d: 1s 3 | 2s 8 | 3s 2 | avg 74%",
+      "30d: 1s 3 | 2s 8 | 3s 2",
     );
+    expect(buildRaidRosterStatusLine(rows[0]!)).not.toContain("avg");
   });
 
   it("matches roster player tags with leading hashes to canonical raid hit stat keys", async () => {
@@ -332,8 +379,9 @@ describe("RaidRosterService", () => {
       averageDestructionPercent: 90,
     });
     expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
-      "30d: 1s 1 | 2s 1 | 3s 1 | avg 90%",
+      "30d: 1s 1 | 2s 1 | 3s 1",
     );
+    expect(buildRaidRosterStatusLine(rows[0]!)).not.toContain("avg");
   });
 
   it("aggregates 30-day raid hit stats across accounts linked to the same Discord user", async () => {
@@ -394,8 +442,86 @@ describe("RaidRosterService", () => {
       });
     }
     expect(buildRaidRosterStatusLine(rows[0]!)).toContain(
-      "30d: 1s 3 | 2s 6 | 3s 4 | avg 73%",
+      "30d: 1s 3 | 2s 6 | 3s 4",
     );
+    expect(buildRaidRosterStatusLine(rows[0]!)).not.toContain("avg");
+  });
+
+  it("falls back to FwaClanMemberCurrent townHall when snapshot and current data are missing", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2QG2C08UJ" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UJ",
+        townHall: 16,
+        sourceSyncedAt: new Date("2026-05-30T00:00:00.000Z"),
+      },
+    ]);
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    expect(rows[0]).toMatchObject({
+      playerTag: "#2QG2C08UJ",
+      townHall: 16,
+      playerName: "#2QG2C08UJ",
+    });
+    expect(buildRaidRosterStatusLine(rows[0]!, new Map([[16, "TH16"]]))).toContain("TH16");
+  });
+
+  it("falls back to FwaPlayerCatalog townHall and latestName when newer sources are missing", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2QG2C08UY" },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UY",
+        latestTownHall: 17,
+        latestName: "Catalog Foxtrot",
+      },
+    ]);
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    expect(rows[0]).toMatchObject({
+      playerTag: "#2QG2C08UY",
+      townHall: 17,
+      playerName: "Catalog Foxtrot",
+    });
+    expect(buildRaidRosterStatusLine(rows[0]!)).not.toContain("avg");
+  });
+
+  it("prefers linked display names before player activity and catalog fallbacks", async () => {
+    prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
+      { playerTag: "#2QG2C08UG" },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UG",
+        discordUserId: "123456789012345678",
+        playerName: "Linked Golf",
+        discordUsername: "Discord Golf",
+      },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValueOnce([
+      { tag: "#2QG2C08UG", name: "Activity Golf" },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UG",
+        latestTownHall: 14,
+        latestName: "Catalog Golf",
+      },
+    ]);
+
+    const rows = await listRaidRosterStatusRowsForGuild({ guildId: "guild-1" });
+
+    expect(rows[0]).toMatchObject({
+      playerTag: "#2QG2C08UG",
+      playerName: "Linked Golf",
+      townHall: 14,
+      discordUserId: "123456789012345678",
+    });
   });
 
   it("omits the 30-day stats segment when no raid hit stats exist", () => {
