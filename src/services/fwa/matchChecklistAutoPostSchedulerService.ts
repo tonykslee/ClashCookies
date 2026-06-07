@@ -52,6 +52,14 @@ function resolveChecklistFallbackExpiresAt(syncEpochSeconds: number): Date {
   return new Date(syncEpochSeconds * 1000 + 48 * 60 * 60 * 1000);
 }
 
+function isValidFutureExpiry(expiresAt: Date | null | undefined, nowMs: number): boolean {
+  return (
+    expiresAt instanceof Date &&
+    Number.isFinite(expiresAt.getTime()) &&
+    expiresAt.getTime() > nowMs
+  );
+}
+
 /** Purpose: run the active-mode FWA checklist auto-post loop without owning checklist state. */
 export class FwaMatchChecklistAutoPostSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -132,6 +140,9 @@ export class FwaMatchChecklistAutoPostSchedulerService {
           featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
           status: TRACKED_MESSAGE_STATUS.ACTIVE,
           referenceId: null,
+          expiresAt: {
+            gt: new Date(nowMs),
+          },
         },
         orderBy: [{ createdAt: "asc" }],
         select: {
@@ -144,13 +155,24 @@ export class FwaMatchChecklistAutoPostSchedulerService {
         },
       });
 
-      let evaluated = syncPosts.length;
+      let evaluated = 0;
       let due = 0;
       let posted = 0;
       let skipped = 0;
       let failed = 0;
 
       for (const tracked of syncPosts) {
+        if (!isValidFutureExpiry(tracked.expiresAt, nowMs)) {
+          const expiresAtText =
+            tracked.expiresAt instanceof Date && Number.isFinite(tracked.expiresAt.getTime())
+              ? tracked.expiresAt.toISOString()
+              : "missing";
+          skipped += 1;
+          dozzleLog.info(
+            `[fwa match checklist auto-post] event=skipped_expired_or_outside_window guild=${tracked.guildId} sync_message=${tracked.messageId} expires_at=${expiresAtText} now=${new Date(nowMs).toISOString()}`,
+          );
+          continue;
+        }
         const metadata = parseSyncTimeMetadata(tracked.metadata);
         if (!metadata) {
           skipped += 1;
@@ -159,6 +181,7 @@ export class FwaMatchChecklistAutoPostSchedulerService {
           );
           continue;
         }
+        evaluated += 1;
 
         for (const viewType of ["Mail", "Bases"] as const) {
           const dueAt = resolveChecklistDueAt(metadata.syncEpochSeconds, viewType);

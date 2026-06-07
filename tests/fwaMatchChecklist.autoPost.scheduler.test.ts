@@ -132,6 +132,24 @@ describe("FwaMatchChecklistAutoPostSchedulerService", () => {
     );
   });
 
+  it("ignores expired sync posts and does not call auto-post", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        ...makeTrackedSyncMessage(SYNC_EPOCH_SECONDS),
+        expiresAt: new Date("2026-05-13T00:00:30.000Z"),
+      },
+    ]);
+    const scheduler = new FwaMatchChecklistAutoPostSchedulerService(makeClient());
+
+    const counts = await scheduler.runCycle(new Date("2026-05-13T00:02:00.000Z").getTime());
+
+    expect(counts).toEqual({ evaluated: 0, due: 0, posted: 0, skipped: 1, failed: 0 });
+    expect(autoPostMock.postForSyncTrackedMessage).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("event=skipped_expired_or_outside_window"),
+    );
+  });
+
   it("does not duplicate checklist posts on a rerun", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([makeTrackedSyncMessage(SYNC_EPOCH_SECONDS)]);
     const scheduler = new FwaMatchChecklistAutoPostSchedulerService(makeClient());

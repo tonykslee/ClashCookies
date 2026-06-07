@@ -347,9 +347,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
     ]);
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const client = makeClient({ channel: makeChecklistChannel() });
 
     const result = await service.postForSyncTrackedMessage({
-      client: makeClient({ channel: makeChecklistChannel() }),
+      client,
       tracked: {
         guildId: "guild-1",
         channelId: "source-channel",
@@ -359,6 +360,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelIdForType).not.toHaveBeenCalled();
     expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });
@@ -376,9 +379,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
     ]);
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const client = makeClient({ channel: makeChecklistChannel() });
 
     const result = await service.postForSyncTrackedMessage({
-      client: makeClient({ channel: makeChecklistChannel() }),
+      client,
       tracked: {
         guildId: "guild-1",
         channelId: "source-channel",
@@ -388,6 +392,8 @@ describe("FwaMatchChecklistAutoPostService", () => {
     });
 
     expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
+    expect(botLogChannelServiceMock.getChannelIdForType).not.toHaveBeenCalled();
     expect(cocFactory).not.toHaveBeenCalled();
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });
