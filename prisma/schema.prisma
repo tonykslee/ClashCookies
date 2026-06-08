@@ -190,6 +190,32 @@ model PlayerLink {
   @@index([discordUserId, verificationStatus])
 }
 
+enum BanTargetKind {
+  PLAYER
+  USER
+}
+
+model BanRecord {
+  id                     String         @id @default(cuid())
+  guildId                String
+  targetKind             BanTargetKind
+  playerTag              String?        @db.VarChar(16)
+  discordUserId          String?
+  reason                 String?
+  bannedByDiscordUserId  String
+  createdAt              DateTime       @default(now())
+  expiresAt              DateTime?
+  removedAt              DateTime?
+  removedByDiscordUserId String?
+  removeReason           String?
+  updatedAt              DateTime       @updatedAt
+
+  @@index([guildId, targetKind])
+  @@index([guildId, playerTag])
+  @@index([guildId, discordUserId])
+  @@index([guildId, removedAt, expiresAt])
+}
+
 model FillerAccount {
   id                     String   @id @default(cuid())
   guildId                String
