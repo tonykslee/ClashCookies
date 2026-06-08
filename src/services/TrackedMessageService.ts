@@ -1244,55 +1244,50 @@ export class TrackedMessageService {
       },
     });
 
-    let unscopedFallback: FwaBaseSwapTrackedMessageSnapshot | null = null;
+    let rejectedStaleUnscopedCount = 0;
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
       const rowSyncIdentity = normalizeTrackedMessageId(metadata.syncMessageId ?? null);
+      const snapshot = {
+        id: row.id,
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        referenceId: row.referenceId ?? null,
+        clanTag: row.clanTag ?? null,
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt ?? null,
+        metadata,
+      };
       if (syncIdentity) {
         if (rowSyncIdentity === syncIdentity) {
-          return {
-            id: row.id,
-            guildId: row.guildId,
-            channelId: row.channelId,
-            messageId: row.messageId,
-            referenceId: row.referenceId ?? null,
-            clanTag: row.clanTag ?? null,
-            createdAt: row.createdAt,
-            expiresAt: row.expiresAt ?? null,
-            metadata,
-          };
+          console.debug(
+            `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} syncMessageId=${syncIdentity} selection=matched_sync messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
+          );
+          return snapshot;
         }
-        if (!rowSyncIdentity && !unscopedFallback) {
-          unscopedFallback = {
-            id: row.id,
-            guildId: row.guildId,
-            channelId: row.channelId,
-            messageId: row.messageId,
-            referenceId: row.referenceId ?? null,
-            clanTag: row.clanTag ?? null,
-            createdAt: row.createdAt,
-            expiresAt: row.expiresAt ?? null,
-            metadata,
-          };
+        if (!rowSyncIdentity) {
+          rejectedStaleUnscopedCount += 1;
+          console.debug(
+            `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} syncMessageId=${syncIdentity} selection=rejected_stale_unscoped messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
+          );
         }
         continue;
       }
       if (!rowSyncIdentity) {
-        return {
-          id: row.id,
-          guildId: row.guildId,
-          channelId: row.channelId,
-          messageId: row.messageId,
-          referenceId: row.referenceId ?? null,
-          clanTag: row.clanTag ?? null,
-          createdAt: row.createdAt,
-          expiresAt: row.expiresAt ?? null,
-          metadata,
-        };
+        console.debug(
+          `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} selection=matched_unscoped messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
+        );
+        return snapshot;
       }
     }
-    return unscopedFallback;
+    if (syncIdentity) {
+      console.debug(
+        `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} syncMessageId=${syncIdentity} selection=no_match rejectedStaleUnscopedCount=${rejectedStaleUnscopedCount}`,
+      );
+    }
+    return null;
   }
 
   async getActiveByMessageId(messageId: string) {

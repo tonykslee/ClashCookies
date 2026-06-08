@@ -274,6 +274,62 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
+  it("keeps the current expiry when stale current-war timing would otherwise suggest an older expiry", async () => {
+    const currentExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const staleRefreshedExpiresAt = new Date(Date.now() - 60 * 60 * 1000);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      expiresAt: currentExpiresAt,
+    });
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        prepStartTime: new Date("2026-05-10T14:00:00.000Z"),
+        startTime: new Date("2026-05-10T18:00:00.000Z"),
+        endTime: new Date("2026-05-11T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "battle",
+      },
+    ]);
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "bases-message-1",
+      reactions: {
+        cache: new Map(),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        expiresAt: staleRefreshedExpiresAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-1" },
+        data: expect.objectContaining({
+          expiresAt: currentExpiresAt,
+        }),
+      }),
+    );
+    expect(prismaMock.trackedMessage.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-1" },
+        data: expect.objectContaining({
+          expiresAt: staleRefreshedExpiresAt,
+        }),
+      }),
+    );
+    expect(edit).toHaveBeenCalled();
+  });
+
   it("stores and resolves bases completion for the current war identity", async () => {
     const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
     await trackedMessageService.setFwaMatchChecklistBasesCompletion({
@@ -930,7 +986,7 @@ describe("fwa checklist tracked messages", () => {
     });
   });
 
-  it("falls back to an unscoped active base-swap row when no sync-scoped row matches", async () => {
+  it("does not fall back to an unscoped active base-swap row when a sync identity is supplied", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
         id: "swap-sync-other",
@@ -988,6 +1044,7 @@ describe("fwa checklist tracked messages", () => {
         },
       } as any,
     ]);
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
     const found = await trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
       guildId: "guild-1",
@@ -995,11 +1052,11 @@ describe("fwa checklist tracked messages", () => {
       syncMessageId: "sync-message-1",
     });
 
-    expect(found).toMatchObject({
-      id: "swap-unscoped",
-      messageId: "swap-message-unscoped",
-      referenceId: null,
-    });
+    expect(found).toBeNull();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("selection=rejected_stale_unscoped"),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("selection=no_match"));
   });
 
   it("resolves the latest relevant expired sync post for a clan war in the real 24h prep-window case", async () => {
