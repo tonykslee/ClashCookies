@@ -301,6 +301,54 @@ describe("fwa bases checklist reminder service", () => {
     });
   });
 
+  it("still creates a reminder when only a stale unscoped base-swap row exists", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "sync-track-1",
+      guildId: "guild-1",
+      channelId: "sync-channel-1",
+      messageId: "sync-message-1",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-26T12:00:00.000Z"),
+      expiresAt: null,
+      metadata: {},
+    } as any);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockImplementationOnce(
+      async ({ syncMessageId }) => {
+        expect(syncMessageId).toBe("sync-message-1");
+        return null;
+      },
+    );
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      dueBucketHours: 3,
+    });
+  });
+
   it("suppresses a reminder when an active sync-scoped bases completion exists even if the render is unchecked", async () => {
     vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
       id: "sync-track-2",

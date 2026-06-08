@@ -112,43 +112,67 @@ function buildFallbackChecklistExpiresAt(params?: {
   return new Date((params?.nowMs ?? Date.now()) + 30 * 60 * 1000);
 }
 
-function resolveChecklistWarEndTime(input: {
+type ChecklistExpiryCandidate = {
+  label: string;
+  value: Date | null | undefined;
+};
+
+function buildChecklistWarTimingCandidates(input: {
   prepStartTime?: Date | null;
   startTime?: Date | null;
   endTime?: Date | null;
-} | null | undefined): Date | null {
+} | null | undefined): ChecklistExpiryCandidate[] {
   if (!input) {
-    return null;
+    return [];
   }
-  if (input.endTime instanceof Date && Number.isFinite(input.endTime.getTime())) {
-    return input.endTime;
-  }
-  if (input.startTime instanceof Date && Number.isFinite(input.startTime.getTime())) {
-    return new Date(input.startTime.getTime() + 24 * 60 * 60 * 1000);
-  }
-  if (input.prepStartTime instanceof Date && Number.isFinite(input.prepStartTime.getTime())) {
-    return new Date(input.prepStartTime.getTime() + 47 * 60 * 60 * 1000);
-  }
-  return null;
+  return [
+    { label: "currentWar.endTime", value: input.endTime ?? null },
+    {
+      label: "currentWar.startTime+24h",
+      value:
+        input.startTime instanceof Date && Number.isFinite(input.startTime.getTime())
+          ? new Date(input.startTime.getTime() + 24 * 60 * 60 * 1000)
+          : null,
+    },
+    {
+      label: "currentWar.prepStartTime+47h",
+      value:
+        input.prepStartTime instanceof Date && Number.isFinite(input.prepStartTime.getTime())
+          ? new Date(input.prepStartTime.getTime() + 47 * 60 * 60 * 1000)
+          : null,
+    },
+  ];
 }
 
 function resolveChecklistExpiresAt(params: {
-  warTimingRows: Array<Date | null | undefined>;
+  warTimingCandidates: ChecklistExpiryCandidate[];
   nowMs?: number;
   fallbackExpiresAt?: Date | null;
+  logPrefix: string;
 }): Date {
-  const latestWarEndMs = (params.warTimingRows ?? [])
-    .map((time) => (time instanceof Date && Number.isFinite(time.getTime()) ? time.getTime() : null))
-    .filter((time): time is number => time !== null)
-    .reduce<number | null>((latest, current) => {
-      if (latest === null) return current;
-      return current > latest ? current : latest;
-    }, null);
-  if (latestWarEndMs !== null) {
+  const nowMs = params.nowMs ?? Date.now();
+  const validFutureWarEndTimes: Date[] = [];
+  for (const candidate of params.warTimingCandidates ?? []) {
+    if (!(candidate.value instanceof Date) || !Number.isFinite(candidate.value.getTime())) {
+      continue;
+    }
+    const candidateMs = candidate.value.getTime();
+    if (candidateMs <= nowMs) {
+      console.debug(
+        `${params.logPrefix} expiry_candidate_ignored reason=past label=${candidate.label} candidateIso=${candidate.value.toISOString()} nowIso=${new Date(nowMs).toISOString()}`,
+      );
+      continue;
+    }
+    validFutureWarEndTimes.push(candidate.value);
+  }
+  if (validFutureWarEndTimes.length > 0) {
+    const latestWarEndMs = validFutureWarEndTimes.reduce<number>((latest, current) => {
+      return current.getTime() > latest ? current.getTime() : latest;
+    }, validFutureWarEndTimes[0]!.getTime());
     return new Date(latestWarEndMs);
   }
   return buildFallbackChecklistExpiresAt({
-    nowMs: params.nowMs,
+    nowMs,
     fallbackExpiresAt: params.fallbackExpiresAt ?? null,
   });
 }
@@ -307,7 +331,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
   const rows: FwaMatchChecklistTrackedRow[] = [];
-  const checklistExpiresAtCandidates: Array<Date | null> = [];
+  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
 
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
@@ -316,13 +340,15 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       currentWar && String(currentWar.state ?? "").trim().toLowerCase() !== "notinwar"
         ? currentWar
         : null;
-    checklistExpiresAtCandidates.push(
-      resolveChecklistWarEndTime({
-        prepStartTime: currentWar?.prepStartTime ?? null,
-        startTime: currentWar?.startTime ?? null,
-        endTime: currentWar?.endTime ?? null,
-      }),
-    );
+    if (activeCurrentWar) {
+      checklistExpiresAtCandidates.push(
+        ...buildChecklistWarTimingCandidates({
+          prepStartTime: activeCurrentWar.prepStartTime ?? null,
+          startTime: activeCurrentWar.startTime ?? null,
+          endTime: activeCurrentWar.endTime ?? null,
+        }),
+      );
+    }
     let rowSyncIdentity = currentSyncIdentity;
     let rowSyncIdentitySource: FwaChecklistSyncIdentitySource = currentSyncIdentitySource;
     if (!rowSyncIdentity && activeCurrentWar?.startTime instanceof Date) {
@@ -387,7 +413,9 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       ? activeBaseSwapSyncIdentity === rowSyncIdentity
         ? "matched_sync"
         : "matched_unscoped"
-      : "none";
+      : rowSyncIdentity
+        ? "no_match"
+        : "no_sync";
     const exactCompletion =
       issueSummary.hasIssues || !rowSyncIdentity
         ? null
@@ -462,9 +490,10 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     checkedClanTags: [],
     referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
-      warTimingRows: checklistExpiresAtCandidates,
+      warTimingCandidates: checklistExpiresAtCandidates,
       fallbackExpiresAt: params.fallbackExpiresAt ?? null,
       nowMs: Date.now(),
+      logPrefix: `[fwa checklist state] view=Bases guild=${params.guildId}`,
     }),
     emptyMessage: null,
   };
@@ -606,7 +635,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const warMailLifecycleService = new WarMailLifecycleService();
   const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
   const copyLines: string[] = [];
-  const checklistExpiresAtCandidates: Array<Date | null> = [];
+  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
 
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
@@ -628,7 +657,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       currentWar?.startTime ??
       (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
     checklistExpiresAtCandidates.push(
-      resolveChecklistWarEndTime({
+      ...buildChecklistWarTimingCandidates({
         prepStartTime: currentWar?.prepStartTime ?? null,
         startTime: warStartTime,
         endTime: currentWar?.endTime ?? null,
@@ -692,9 +721,10 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     checkedClanTags,
     referenceId: currentSyncIdentity,
     expiresAt: resolveChecklistExpiresAt({
-      warTimingRows: checklistExpiresAtCandidates,
+      warTimingCandidates: checklistExpiresAtCandidates,
       fallbackExpiresAt: params.fallbackExpiresAt ?? null,
       nowMs: Date.now(),
+      logPrefix: `[fwa checklist state] view=Mail guild=${params.guildId}`,
     }),
     emptyMessage: null,
   };
