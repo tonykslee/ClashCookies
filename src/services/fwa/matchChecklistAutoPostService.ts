@@ -1,6 +1,5 @@
 import { Client, ChannelType } from "discord.js";
 import { formatError } from "../../helper/formatError";
-import { prisma } from "../../prisma";
 import { BotLogChannelService } from "../BotLogChannelService";
 import { CoCService } from "../CoCService";
 import {
@@ -9,10 +8,8 @@ import {
 } from "../FwaMatchChecklistStateService";
 import { publishFwaMatchChecklistMessageToChannel } from "../FwaMatchChecklistService";
 import {
-  parseFwaMatchChecklistMetadata,
-  resolveFwaMatchChecklistViewType,
-  TRACKED_MESSAGE_FEATURE_TYPE,
-  TRACKED_MESSAGE_STATUS,
+  resolveFwaMatchChecklistKindFromViewType,
+  trackedMessageService,
 } from "../TrackedMessageService";
 
 type ChecklistViewType = "Mail" | "Bases";
@@ -35,10 +32,6 @@ type ChecklistDestinationChannel = {
 type CoCServiceFactory = () => CoCService;
 
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
-function checklistKindForViewType(viewType: ChecklistViewType): "mail_checklist" | "bases_checklist" {
-  return viewType === "Bases" ? "bases_checklist" : "mail_checklist";
-}
-
 function isSupportedChecklistDestination(
   channel: unknown,
 ): channel is ChecklistDestinationChannel {
@@ -49,33 +42,6 @@ function isSupportedChecklistDestination(
     candidate.type === ChannelType.GuildText ||
     candidate.type === ChannelType.GuildAnnouncement
   );
-}
-
-async function hasChecklistForSyncReference(params: {
-  guildId: string;
-  syncMessageId: string;
-  viewType: ChecklistViewType;
-}): Promise<boolean> {
-  const kind = checklistKindForViewType(params.viewType);
-  const rows = await prisma.trackedMessage.findMany({
-    where: {
-      guildId: params.guildId,
-      referenceId: params.syncMessageId,
-      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-      status: {
-        in: [
-          TRACKED_MESSAGE_STATUS.ACTIVE,
-          TRACKED_MESSAGE_STATUS.REPLACED,
-          TRACKED_MESSAGE_STATUS.EXPIRED,
-        ],
-      },
-    },
-    select: { metadata: true },
-  });
-  return rows.some((row) => {
-    const metadata = parseFwaMatchChecklistMetadata(row.metadata);
-    return Boolean(metadata && resolveFwaMatchChecklistViewType(row.metadata) === params.viewType && metadata.kind === kind);
-  });
 }
 
 export class FwaMatchChecklistAutoPostService {
@@ -109,25 +75,53 @@ export class FwaMatchChecklistAutoPostService {
     let posted = 0;
     let skipped = 0;
     let failed = 0;
-    const pendingViewTypes: ChecklistViewType[] = [];
+    const pendingPublications: Array<{
+      viewType: ChecklistViewType;
+      claim: {
+        claimed: boolean;
+        claimKey: string | null;
+        sourceTrackedMessageId: string | null;
+      };
+    }> = [];
     for (const viewType of viewTypes) {
-      const kind = checklistKindForViewType(viewType);
-      const duplicate = await hasChecklistForSyncReference({
+      const kind = resolveFwaMatchChecklistKindFromViewType(viewType);
+      const claim = await trackedMessageService.claimFwaMatchChecklistPublication({
         guildId,
         syncMessageId,
         viewType,
       });
-      if (duplicate) {
+      if (!claim.claimed) {
+        if (!claim.sourceTrackedMessageId) {
+          failed += 1;
+          console.error(
+            `[fwa match checklist auto-post] event=post_failed guild=${guildId} sync_message=${syncMessageId} kind=${kind} reason=missing_source`,
+          );
+          continue;
+        }
         skipped += 1;
         console.info(
-          `[fwa match checklist auto-post] event=skipped_duplicate_before_discord_fetch guild=${guildId} sync_message=${syncMessageId} kind=${kind}`,
+          `[fwa match checklist auto-post] event=skipped_duplicate_claimed guild=${guildId} sync_message=${syncMessageId} kind=${kind}`,
         );
         continue;
       }
-      pendingViewTypes.push(viewType);
+
+      const existingMessage = await trackedMessageService.findFwaMatchChecklistPublicationBySyncReference({
+        guildId,
+        syncMessageId,
+        viewType,
+      });
+      if (existingMessage) {
+        skipped += 1;
+        console.info(
+          `[fwa match checklist auto-post] event=skipped_existing_message guild=${guildId} sync_message=${syncMessageId} kind=${kind} message=${existingMessage.messageId}`,
+        );
+        continue;
+      }
+
+      pendingPublications.push({ viewType, claim });
     }
 
-    if (pendingViewTypes.length === 0) {
+    if (pendingPublications.length === 0) {
       return { posted, skipped, failed };
     }
 
@@ -136,7 +130,15 @@ export class FwaMatchChecklistAutoPostService {
       "checklist",
     );
     if (!configuredChannelId) {
-      skipped += pendingViewTypes.length;
+      for (const publication of pendingPublications) {
+        if (publication.claim.sourceTrackedMessageId && publication.claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: publication.claim.sourceTrackedMessageId,
+            claimKey: publication.claim.claimKey,
+          }).catch(() => undefined);
+        }
+      }
+      skipped += pendingPublications.length;
       console.info(
         `[fwa match checklist auto-post] event=skipped_no_channel guild=${guildId} sync_message=${syncMessageId}`,
       );
@@ -150,7 +152,15 @@ export class FwaMatchChecklistAutoPostService {
       return null;
     });
     if (!guild) {
-      failed += pendingViewTypes.length;
+      for (const publication of pendingPublications) {
+        if (publication.claim.sourceTrackedMessageId && publication.claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: publication.claim.sourceTrackedMessageId,
+            claimKey: publication.claim.claimKey,
+          }).catch(() => undefined);
+        }
+      }
+      failed += pendingPublications.length;
       return { posted, skipped, failed };
     }
 
@@ -177,14 +187,30 @@ export class FwaMatchChecklistAutoPostService {
           `[fwa match checklist auto-post] event=stale_channel_cleared guild=${guildId} configured_channel=${configuredChannelId} sync_message=${syncMessageId}`,
         );
       }
-      failed += pendingViewTypes.length;
+      for (const publication of pendingPublications) {
+        if (publication.claim.sourceTrackedMessageId && publication.claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: publication.claim.sourceTrackedMessageId,
+            claimKey: publication.claim.claimKey,
+          }).catch(() => undefined);
+        }
+      }
+      failed += pendingPublications.length;
       return { posted, skipped, failed };
     }
     if (!isSupportedChecklistDestination(channel)) {
       console.error(
         `[fwa match checklist auto-post] event=channel_not_sendable guild=${guildId} configured_channel=${configuredChannelId} sync_message=${syncMessageId}`,
       );
-      failed += pendingViewTypes.length;
+      for (const publication of pendingPublications) {
+        if (publication.claim.sourceTrackedMessageId && publication.claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: publication.claim.sourceTrackedMessageId,
+            claimKey: publication.claim.claimKey,
+          }).catch(() => undefined);
+        }
+      }
+      failed += pendingPublications.length;
       return { posted, skipped, failed };
     }
 
@@ -193,8 +219,9 @@ export class FwaMatchChecklistAutoPostService {
       cocService ??= this.cocServiceFactory();
       return cocService;
     };
-    for (const viewType of pendingViewTypes) {
-      const kind = checklistKindForViewType(viewType);
+    for (const publication of pendingPublications) {
+      const { viewType, claim } = publication;
+      const kind = resolveFwaMatchChecklistKindFromViewType(viewType);
       let state: FwaMatchChecklistRenderState;
       try {
         state = await buildFwaMatchChecklistRenderStateForGuild({
@@ -206,6 +233,12 @@ export class FwaMatchChecklistAutoPostService {
           fallbackExpiresAt: params.tracked.fallbackExpiresAt ?? null,
         });
       } catch (err) {
+        if (claim.sourceTrackedMessageId && claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: claim.sourceTrackedMessageId,
+            claimKey: claim.claimKey,
+          }).catch(() => undefined);
+        }
         failed += 1;
         console.error(
           `[fwa match checklist auto-post] event=state_failed guild=${guildId} sync_message=${syncMessageId} kind=${kind} error=${formatError(err)}`,
@@ -213,7 +246,7 @@ export class FwaMatchChecklistAutoPostService {
         continue;
       }
 
-      const messageId = await publishFwaMatchChecklistMessageToChannel({
+      const publishResult = await publishFwaMatchChecklistMessageToChannel({
         viewType,
         channel,
         guildId,
@@ -226,16 +259,29 @@ export class FwaMatchChecklistAutoPostService {
         referenceId: syncMessageId,
         expiresAt: state.expiresAt ?? params.tracked.expiresAt ?? null,
       });
-      if (!messageId) {
+      if (!publishResult.sent || !publishResult.messageId) {
+        if (claim.sourceTrackedMessageId && claim.claimKey) {
+          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+            sourceTrackedMessageId: claim.sourceTrackedMessageId,
+            claimKey: claim.claimKey,
+          }).catch(() => undefined);
+        }
         failed += 1;
         console.error(
-          `[fwa match checklist auto-post] event=post_failed guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId}`,
+          `[fwa match checklist auto-post] event=send_failed_claim_released guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId}`,
+        );
+        continue;
+      }
+      if (!publishResult.finalized) {
+        failed += 1;
+        console.error(
+          `[fwa match checklist auto-post] event=send_failed_claim_retained guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId} message=${publishResult.messageId}`,
         );
         continue;
       }
       posted += 1;
       console.info(
-        `[fwa match checklist auto-post] event=posted guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId} message=${messageId}`,
+        `[fwa match checklist auto-post] event=posted guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId} message=${publishResult.messageId}`,
       );
     }
 
