@@ -3,10 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ban, buildBanListEmbeds, parseBanDuration } from "../src/commands/Ban";
 import { BanService } from "../src/services/BanService";
 
+const prismaMock = vi.hoisted(() => ({
+  trackedClan: {
+    findMany: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
 function createInteraction(input: {
   subcommand: "add" | "list" | "remove";
   player?: string | null;
   user?: { id: string } | null;
+  clan?: string | null;
   reason?: string | null;
   duration?: string | null;
   guildId?: string;
@@ -26,6 +37,7 @@ function createInteraction(input: {
       getSubcommandGroup: vi.fn().mockReturnValue(null),
       getString: vi.fn((name: string) => {
         if (name === "player") return input.player ?? null;
+        if (name === "clan") return input.clan ?? null;
         if (name === "reason") return input.reason ?? null;
         if (name === "duration") return input.duration ?? null;
         return null;
@@ -50,6 +62,17 @@ function createInteraction(input: {
   interaction.replied = false;
   interaction.deferred = false;
 
+  return interaction;
+}
+
+function createAutocompleteInteraction(input: { value?: string; subcommand?: "add" | "list" | "remove" } = {}) {
+  const interaction: any = {
+    options: {
+      getFocused: vi.fn().mockReturnValue({ name: "clan", value: input.value ?? "" }),
+      getSubcommand: vi.fn().mockReturnValue(input.subcommand ?? "add"),
+    },
+    respond: vi.fn().mockResolvedValue(undefined),
+  };
   return interaction;
 }
 
@@ -94,6 +117,10 @@ describe("/ban command shape", () => {
     expect(add?.options?.find((option: any) => option.name === "user")?.type).toBe(
       ApplicationCommandOptionType.User,
     );
+    expect(add?.options?.find((option: any) => option.name === "clan")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(add?.options?.find((option: any) => option.name === "clan")?.autocomplete).toBe(true);
     expect(add?.options?.find((option: any) => option.name === "reason")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
@@ -145,9 +172,10 @@ describe("ban duration parsing", () => {
 describe("/ban command behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    prismaMock.trackedClan.findMany.mockReset();
   });
 
-  it("adds a player ban with normalized tag, reason, and duration", async () => {
+  it("adds a player ban with normalized tag, reason, duration, and clan context", async () => {
     const addPlayerBan = vi
       .spyOn(BanService.prototype, "addPlayerBan")
       .mockResolvedValue({
@@ -158,6 +186,8 @@ describe("/ban command behavior", () => {
           targetKind: "PLAYER",
           playerTag: "#PYLQ0289",
           discordUserId: null,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
           reason: "spam",
           bannedByDiscordUserId: "111111111111111111",
           createdAt: new Date("2026-01-31T12:00:00.000Z"),
@@ -171,6 +201,7 @@ describe("/ban command behavior", () => {
     const interaction = createInteraction({
       subcommand: "add",
       player: "pylq0289",
+      clan: "2qg2c08up",
       reason: "  spam  ",
       duration: "3mo",
     });
@@ -182,6 +213,7 @@ describe("/ban command behavior", () => {
       expect.objectContaining({
         guildId: "guild-1",
         playerTag: "#PYLQ0289",
+        clanTag: "2qg2c08up",
         reason: "spam",
         bannedByDiscordUserId: "111111111111111111",
       }),
@@ -203,6 +235,8 @@ describe("/ban command behavior", () => {
         targetKind: "USER",
         playerTag: null,
         discordUserId: "222222222222222222",
+        clanTag: null,
+        clanName: null,
         reason: null,
         bannedByDiscordUserId: "111111111111111111",
         createdAt: new Date("2026-06-08T12:00:00.000Z"),
@@ -232,6 +266,26 @@ describe("/ban command behavior", () => {
     expect(interaction.editReply).toHaveBeenCalledWith({
       ephemeral: true,
       content: "created: user ban for <@222222222222222222>. indefinite.",
+    });
+  });
+
+  it("returns a clear error for invalid clan values", async () => {
+    vi.spyOn(BanService.prototype, "addPlayerBan").mockResolvedValue({
+      outcome: "invalid_clan",
+      record: null,
+    } as any);
+    const interaction = createInteraction({
+      subcommand: "add",
+      player: "#PYLQ0289",
+      clan: "#ZZZ999999",
+    });
+
+    await Ban.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "invalid_clan: select a tracked clan from autocomplete or use a tracked clan tag.",
     });
   });
 
@@ -379,6 +433,71 @@ describe("/ban command behavior", () => {
     );
   });
 
+  it("includes clan context in list embeds when present and omits it when absent", () => {
+    const withClan = buildBanListEmbeds([
+      {
+        id: "ban-1",
+        guildId: "guild-1",
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        discordUserId: null,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+        reason: "spam",
+        bannedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-06-08T12:00:00.000Z"),
+        expiresAt: null,
+        removedAt: null,
+        removedByDiscordUserId: null,
+        removeReason: null,
+        updatedAt: new Date("2026-06-08T12:00:00.000Z"),
+        linkedPlayerTags: [],
+      } as any,
+    ]);
+    const withoutClan = buildBanListEmbeds([
+      {
+        id: "ban-2",
+        guildId: "guild-1",
+        targetKind: "USER",
+        playerTag: null,
+        discordUserId: "222222222222222222",
+        clanTag: null,
+        clanName: null,
+        reason: null,
+        bannedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-06-08T12:00:00.000Z"),
+        expiresAt: null,
+        removedAt: null,
+        removedByDiscordUserId: null,
+        removeReason: null,
+        updatedAt: new Date("2026-06-08T12:00:00.000Z"),
+        linkedPlayerTags: ["#PYLQ0289"],
+      } as any,
+    ]);
+
+    expect(withClan[0]?.toJSON().description).toContain("clan: Alpha Clan (#2QG2C08UP)");
+    expect(withoutClan[0]?.toJSON().description).not.toContain("clan:");
+  });
+
+  it("autocompletes tracked clans with stable tag values", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Alpha Clan" },
+      { tag: "#QGRJ0222", name: "Beta Clan" },
+    ]);
+    const interaction = createAutocompleteInteraction({ value: "clan" });
+
+    await Ban.autocomplete?.(interaction as any);
+
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith({
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { name: true, tag: true },
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Clan (#2QG2C08UP)", value: "#2QG2C08UP" },
+      { name: "Beta Clan (#QGRJ0222)", value: "#QGRJ0222" },
+    ]);
+  });
+
   it("renders list rows without reason text when no reason is stored", () => {
     const embeds = buildBanListEmbeds([
       {
@@ -387,6 +506,8 @@ describe("/ban command behavior", () => {
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
         discordUserId: null,
+        clanTag: null,
+        clanName: null,
         reason: null,
         bannedByDiscordUserId: "111111111111111111",
         createdAt: new Date("2026-06-08T12:00:00.000Z"),
