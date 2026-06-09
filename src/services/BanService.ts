@@ -2,11 +2,12 @@ import { BanRecord, BanTargetKind } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
   listPlayerLinksForDiscordUser,
+  normalizeClanTag,
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
 
-export type BanMutationOutcome = "created" | "updated" | "invalid_target";
+export type BanMutationOutcome = "created" | "updated" | "invalid_target" | "invalid_clan";
 export type BanRemovalOutcome = "removed" | "not_found" | "invalid_target";
 
 export type BanMutationResult = {
@@ -29,11 +30,17 @@ type BanTimestampInput = {
   bannedByDiscordUserId: string;
   expiresAt?: Date | null;
   now?: Date;
+  clanTag?: string | null;
+  clanName?: string | null;
 };
 
-function normalizeBanReason(input: unknown): string | null {
+function normalizeBanText(input: unknown): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeBanReason(input: unknown): string | null {
+  return normalizeBanText(input);
 }
 
 function isActiveBanRecord(record: Pick<BanRecord, "removedAt" | "expiresAt">, now: Date): boolean {
@@ -81,6 +88,30 @@ async function findActiveBanRecord(input: {
   });
 }
 
+async function resolveBanClanContext(input: {
+  clanTag?: string | null;
+  clanName?: string | null;
+}): Promise<{ clanTag: string; clanName: string | null } | null | "invalid_clan"> {
+  const rawClanTag = normalizeBanText(input.clanTag);
+  if (!rawClanTag) return null;
+
+  const clanTag = normalizeClanTag(rawClanTag);
+  if (!clanTag) return "invalid_clan";
+
+  const trackedClan = await prisma.trackedClan.findUnique({
+    where: { tag: clanTag },
+    select: { tag: true, name: true },
+  });
+  if (!trackedClan) {
+    return "invalid_clan";
+  }
+
+  return {
+    clanTag: normalizeClanTag(trackedClan.tag) || clanTag,
+    clanName: normalizeBanText(trackedClan.name) ?? normalizeBanText(input.clanName),
+  };
+}
+
 async function upsertActiveBanRecord(input: {
   guildId: string;
   targetKind: BanTargetKind;
@@ -90,10 +121,19 @@ async function upsertActiveBanRecord(input: {
   bannedByDiscordUserId: string;
   expiresAt?: Date | null;
   now?: Date;
+  clanTag?: string | null;
+  clanName?: string | null;
 }): Promise<BanMutationResult> {
   const now = input.now ?? new Date();
   const reason = normalizeBanReason(input.reason);
   const expiresAt = input.expiresAt ?? null;
+  const clanContext = await resolveBanClanContext({
+    clanTag: input.clanTag ?? null,
+    clanName: input.clanName ?? null,
+  });
+  if (clanContext === "invalid_clan") {
+    return { outcome: "invalid_clan", record: null };
+  }
 
   const existing = await findActiveBanRecord({
     guildId: input.guildId,
@@ -109,6 +149,8 @@ async function upsertActiveBanRecord(input: {
       data: {
         reason,
         expiresAt,
+        clanTag: clanContext?.clanTag ?? null,
+        clanName: clanContext?.clanName ?? null,
         bannedByDiscordUserId: input.bannedByDiscordUserId,
         removedAt: null,
         removedByDiscordUserId: null,
@@ -125,6 +167,8 @@ async function upsertActiveBanRecord(input: {
         targetKind: input.targetKind,
         playerTag: input.playerTag ?? null,
         discordUserId: input.discordUserId ?? null,
+        clanTag: clanContext?.clanTag ?? null,
+        clanName: clanContext?.clanName ?? null,
         reason,
         bannedByDiscordUserId: input.bannedByDiscordUserId,
         expiresAt,
@@ -151,6 +195,8 @@ async function upsertActiveBanRecord(input: {
       data: {
         reason,
         expiresAt,
+        clanTag: clanContext?.clanTag ?? null,
+        clanName: clanContext?.clanName ?? null,
         bannedByDiscordUserId: input.bannedByDiscordUserId,
         removedAt: null,
         removedByDiscordUserId: null,
@@ -209,6 +255,8 @@ export class BanService {
       bannedByDiscordUserId: input.bannedByDiscordUserId,
       expiresAt: input.expiresAt ?? null,
       now: input.now,
+      clanTag: input.clanTag ?? null,
+      clanName: input.clanName ?? null,
     });
   }
 
@@ -257,6 +305,8 @@ export class BanService {
       bannedByDiscordUserId: input.bannedByDiscordUserId,
       expiresAt: input.expiresAt ?? null,
       now: input.now,
+      clanTag: input.clanTag ?? null,
+      clanName: input.clanName ?? null,
     });
   }
 

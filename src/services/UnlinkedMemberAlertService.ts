@@ -151,6 +151,8 @@ function buildBannedPlayerJoinAlertContent(input: {
   ban: {
     targetKind: BanTargetKind;
     discordUserId: string | null;
+    clanTag: string | null;
+    clanName: string | null;
     reason: string | null;
     expiresAt: Date | null;
   };
@@ -164,9 +166,15 @@ function buildBannedPlayerJoinAlertContent(input: {
     input.ban.expiresAt !== null
       ? `<t:${Math.floor(input.ban.expiresAt.getTime() / 1000)}:R>`
       : "Indefinite";
+  const banClanTag = normalizeClanTag(input.ban.clanTag ?? "");
+  const banClanName = normalizeDisplayText(input.ban.clanName, "");
+  const banClanLine = banClanTag
+    ? `Ban clan: ${banClanName ? `${banClanName} (\`${banClanTag}\`)` : `\`${banClanTag}\``}`
+    : null;
   return [
     `A banned player, ${input.playerName} (\`${input.playerTag}\`), has joined **${input.clanName}**.`,
-    `Ban: ${banDescription}`,
+    `Ban target: ${banDescription}`,
+    ...(banClanLine ? [banClanLine] : []),
     `Reason: ${reason}`,
     `Expires: ${expiresAt}`,
   ].join("\n");
@@ -1162,6 +1170,8 @@ export class UnlinkedMemberAlertService {
             ban: {
               targetKind: activeBan.targetKind,
               discordUserId: normalizeDiscordUserId(activeBan.discordUserId),
+              clanTag: normalizeClanTag(activeBan.clanTag ?? ""),
+              clanName: normalizeDisplayText(activeBan.clanName, ""),
               reason: normalizeDisplayText(activeBan.reason, "No reason provided"),
               expiresAt: activeBan.expiresAt ?? null,
             },
