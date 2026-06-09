@@ -31,11 +31,3 @@ CREATE INDEX "BanRecord_guildId_discordUserId_idx" ON "BanRecord"("guildId", "di
 
 -- CreateIndex
 CREATE INDEX "BanRecord_guildId_removedAt_expiresAt_idx" ON "BanRecord"("guildId", "removedAt", "expiresAt");
-
--- Enforce one active ban per player target within a guild.
-CREATE UNIQUE INDEX "BanRecord_active_player_unique" ON "BanRecord"("guildId", "playerTag")
-WHERE "targetKind" = 'PLAYER' AND "removedAt" IS NULL;
-
--- Enforce one active ban per discord user target within a guild.
-CREATE UNIQUE INDEX "BanRecord_active_user_unique" ON "BanRecord"("guildId", "discordUserId")
-WHERE "targetKind" = 'USER' AND "removedAt" IS NULL;

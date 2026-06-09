@@ -47,6 +47,64 @@ function makeBanRecord(overrides: Partial<Record<string, any>> = {}) {
   };
 }
 
+function matchesBanWhere(row: ReturnType<typeof makeBanRecord>, where: any) {
+  if (where.guildId !== undefined && row.guildId !== where.guildId) return false;
+  if (where.targetKind !== undefined && row.targetKind !== where.targetKind) return false;
+  if (where.playerTag !== undefined && row.playerTag !== where.playerTag) return false;
+  if (where.discordUserId !== undefined && row.discordUserId !== where.discordUserId) return false;
+  if (Object.prototype.hasOwnProperty.call(where, "removedAt")) {
+    if (where.removedAt === null && row.removedAt !== null) return false;
+    if (where.removedAt !== null && row.removedAt !== where.removedAt) return false;
+  }
+  if (Array.isArray(where.OR) && where.OR.length > 0) {
+    const matchesOr = where.OR.some((clause: any) => {
+      if (!Object.prototype.hasOwnProperty.call(clause, "expiresAt")) return true;
+      if (clause.expiresAt === null) return row.expiresAt === null;
+      if (clause.expiresAt?.gt instanceof Date) {
+        return row.expiresAt !== null && row.expiresAt > clause.expiresAt.gt;
+      }
+      return true;
+    });
+    if (!matchesOr) return false;
+  }
+  return true;
+}
+
+function createBanStore(initialRows: ReturnType<typeof makeBanRecord>[] = []) {
+  const rows = [...initialRows];
+
+  prismaMock.banRecord.findFirst.mockImplementation(async ({ where }: any) => {
+    return rows.find((row) => matchesBanWhere(row, where)) ?? null;
+  });
+
+  prismaMock.banRecord.findMany.mockImplementation(async ({ where }: any) => {
+    return rows.filter((row) => matchesBanWhere(row, where));
+  });
+
+  prismaMock.banRecord.create.mockImplementation(async ({ data }: any) => {
+    const created = makeBanRecord(data);
+    rows.push(created);
+    return created;
+  });
+
+  prismaMock.banRecord.update.mockImplementation(async ({ where, data }: any) => {
+    const index = rows.findIndex((row) => row.id === where.id);
+    if (index === -1) {
+      throw new Error(`Missing ban record ${where.id}`);
+    }
+
+    const updated = {
+      ...rows[index],
+      ...data,
+      updatedAt: data.updatedAt ?? new Date("2026-06-08T12:00:00.000Z"),
+    };
+    rows[index] = updated;
+    return updated;
+  });
+
+  return { rows };
+}
+
 describe("BanService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -131,6 +189,167 @@ describe("BanService", () => {
     });
     expect(result.outcome).toBe("created");
     expect(result.record?.discordUserId).toBe("222222222222222222");
+  });
+
+  it("re-bans a player when only an expired player ban exists and keeps the expired row for history", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const expiredPlayer = makeBanRecord({
+      id: "player-expired",
+      targetKind: "PLAYER",
+      playerTag: "#PYLQ0289",
+      expiresAt: new Date("2026-06-08T11:00:00.000Z"),
+      createdAt: new Date("2026-06-08T09:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T09:00:00.000Z"),
+    });
+    const store = createBanStore([expiredPlayer]);
+
+    const result = await service.addPlayerBan({
+      guildId: "guild-1",
+      playerTag: "#pylq0289",
+      reason: "repeat abuse",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+      now,
+    });
+
+    expect(prismaMock.banRecord.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.banRecord.update).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("created");
+    expect(store.rows).toHaveLength(2);
+    expect(store.rows.some((row) => row.id === "player-expired")).toBe(true);
+
+    const activeRows = await service.listActiveBans({ guildId: "guild-1", now });
+    expect(activeRows).toHaveLength(1);
+    expect(activeRows[0].playerTag).toBe("#PYLQ0289");
+    expect(activeRows[0].reason).toBe("repeat abuse");
+    expect(activeRows[0].linkedPlayerTags).toEqual([]);
+  });
+
+  it("re-bans a user when only an expired user ban exists and keeps the expired row for history", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const expiredUser = makeBanRecord({
+      id: "user-expired",
+      targetKind: "USER",
+      playerTag: null,
+      discordUserId: "222222222222222222",
+      expiresAt: new Date("2026-06-08T11:00:00.000Z"),
+      createdAt: new Date("2026-06-08T09:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T09:00:00.000Z"),
+    });
+    const store = createBanStore([expiredUser]);
+    listPlayerLinksForDiscordUserMock.mockResolvedValue([
+      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
+      { playerTag: "#QGRJ0222", linkedAt: new Date("2026-06-02T00:00:00.000Z"), linkedName: null },
+    ]);
+
+    const result = await service.addUserBan({
+      guildId: "guild-1",
+      discordUserId: "222222222222222222",
+      reason: "ban evasion",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+      now,
+    });
+
+    expect(prismaMock.banRecord.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.banRecord.update).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("created");
+    expect(store.rows).toHaveLength(2);
+    expect(store.rows.some((row) => row.id === "user-expired")).toBe(true);
+
+    const activeRows = await service.listActiveBans({ guildId: "guild-1", now });
+    expect(activeRows).toHaveLength(1);
+    expect(activeRows[0].discordUserId).toBe("222222222222222222");
+    expect(activeRows[0].linkedPlayerTags).toEqual(["#PYLQ0289", "#QGRJ0222"]);
+  });
+
+  it("updates an active player ban instead of creating a duplicate row", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const activePlayer = makeBanRecord({
+      id: "player-active",
+      targetKind: "PLAYER",
+      playerTag: "#PYLQ0289",
+      reason: "old reason",
+      expiresAt: new Date("2026-06-08T13:00:00.000Z"),
+      createdAt: new Date("2026-06-08T10:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T10:00:00.000Z"),
+    });
+    const expiredPlayer = makeBanRecord({
+      id: "player-expired",
+      targetKind: "PLAYER",
+      playerTag: "#PYLQ0289",
+      reason: "history",
+      expiresAt: new Date("2026-06-08T09:00:00.000Z"),
+      createdAt: new Date("2026-06-08T08:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T08:00:00.000Z"),
+    });
+    const store = createBanStore([expiredPlayer, activePlayer]);
+
+    const result = await service.addPlayerBan({
+      guildId: "guild-1",
+      playerTag: "#pylq0289",
+      reason: "extended reason",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-08-08T12:00:00.000Z"),
+      now,
+    });
+
+    expect(prismaMock.banRecord.update).toHaveBeenCalledTimes(1);
+    expect(prismaMock.banRecord.create).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("updated");
+    expect(result.record?.id).toBe("player-active");
+    expect(store.rows).toHaveLength(2);
+    expect(store.rows.find((row) => row.id === "player-active")?.reason).toBe("extended reason");
+    expect(store.rows.find((row) => row.id === "player-expired")?.reason).toBe("history");
+  });
+
+  it("updates an active user ban instead of creating a duplicate row", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const activeUser = makeBanRecord({
+      id: "user-active",
+      targetKind: "USER",
+      playerTag: null,
+      discordUserId: "222222222222222222",
+      reason: "old reason",
+      expiresAt: new Date("2026-06-08T13:00:00.000Z"),
+      createdAt: new Date("2026-06-08T10:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T10:00:00.000Z"),
+    });
+    const expiredUser = makeBanRecord({
+      id: "user-expired",
+      targetKind: "USER",
+      playerTag: null,
+      discordUserId: "222222222222222222",
+      reason: "history",
+      expiresAt: new Date("2026-06-08T09:00:00.000Z"),
+      createdAt: new Date("2026-06-08T08:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T08:00:00.000Z"),
+    });
+    const store = createBanStore([expiredUser, activeUser]);
+    listPlayerLinksForDiscordUserMock.mockResolvedValue([
+      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
+    ]);
+
+    const result = await service.addUserBan({
+      guildId: "guild-1",
+      discordUserId: "222222222222222222",
+      reason: "extended reason",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-08-08T12:00:00.000Z"),
+      now,
+    });
+
+    expect(prismaMock.banRecord.update).toHaveBeenCalledTimes(1);
+    expect(prismaMock.banRecord.create).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("updated");
+    expect(result.record?.id).toBe("user-active");
+    expect(store.rows).toHaveLength(2);
+    expect(store.rows.find((row) => row.id === "user-active")?.reason).toBe("extended reason");
+    expect(store.rows.find((row) => row.id === "user-expired")?.reason).toBe("history");
   });
 
   it("lists active bans and resolves linked player tags for active user bans", async () => {
