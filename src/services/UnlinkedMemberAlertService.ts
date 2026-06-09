@@ -13,6 +13,7 @@ import {
   normalizePlayerTag,
 } from "./PlayerLinkService";
 import { botLogChannelService } from "./BotLogChannelService";
+import { BanRecord, BanTargetKind } from "@prisma/client";
 
 type DiscordClientLike = {
   guilds: {
@@ -143,6 +144,60 @@ export function buildUnlinkedAlertContent(input: {
   return `An unlinked player, ${input.playerName} (\`${input.playerTag}\`), has joined **${input.clanName}**.`;
 }
 
+function buildBannedPlayerJoinAlertContent(input: {
+  playerName: string;
+  playerTag: string;
+  clanName: string;
+  ban: {
+    targetKind: BanTargetKind;
+    discordUserId: string | null;
+    reason: string | null;
+    expiresAt: Date | null;
+  };
+}): string {
+  const banDescription =
+    input.ban.targetKind === BanTargetKind.PLAYER
+      ? "direct player ban"
+      : `Discord user ban ${input.ban.discordUserId ? `<@${input.ban.discordUserId}>` : "(unknown)"}`;
+  const reason = normalizeDisplayText(input.ban.reason, "No reason provided");
+  const expiresAt =
+    input.ban.expiresAt !== null
+      ? `<t:${Math.floor(input.ban.expiresAt.getTime() / 1000)}:R>`
+      : "Indefinite";
+  return [
+    `A banned player, ${input.playerName} (\`${input.playerTag}\`), has joined **${input.clanName}**.`,
+    `Ban: ${banDescription}`,
+    `Reason: ${reason}`,
+    `Expires: ${expiresAt}`,
+  ].join("\n");
+}
+
+type BannedPlayerJoinAlertRecord = {
+  playerTag: string;
+  clanTag: string;
+  alertedAt?: Date | null;
+  playerName?: string;
+  clanName?: string;
+  banRecordId?: string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
+
+const bannedPlayerJoinAlertTable = prisma as typeof prisma & {
+  bannedPlayerJoinAlert: {
+    findMany: (args: {
+      where: { guildId: string };
+      select?: { playerTag: true; clanTag: true } | null;
+      orderBy?: unknown;
+    }) => Promise<BannedPlayerJoinAlertRecord[]>;
+    deleteMany: (args: {
+      where: { guildId: string; OR: Array<{ playerTag: string; clanTag: string }> };
+    }) => Promise<{ count: number }>;
+    upsert: (args: unknown) => Promise<unknown>;
+    update: (args: unknown) => Promise<unknown>;
+  };
+};
+
 function normalizeGuildId(input: string): string {
   return String(input ?? "").trim();
 }
@@ -203,6 +258,10 @@ function resolveLegacyUnlinkedAlertRoutingMode(input: {
 function normalizeDisplayText(input: string | null | undefined, fallback: string): string {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized || fallback;
+}
+
+function buildBannedJoinAlertKey(input: { playerTag: string; clanTag: string }): string {
+  return `${normalizePlayerTag(input.playerTag)}::${normalizeClanTag(input.clanTag)}`;
 }
 
 function getGuildFromClient(client: DiscordClientLike, guildId: string): unknown | null {
@@ -569,16 +628,12 @@ export class UnlinkedMemberAlertService {
     return routingConfig.routingMode === "CUSTOM" ? routingConfig.channelId : null;
   }
 
-  /** Purpose: resolve the current live unlinked-member set across tracked FWA and active CWL clans. */
-  async listCurrentUnlinkedMembers(input: {
-    guildId: string;
+  /** Purpose: resolve the current live tracked-member set across tracked FWA and active CWL clans. */
+  async listCurrentTrackedMembers(input: {
     cocService: CoCService;
     clanTag?: string | null;
     observedFwaClans?: ObservedFwaClan[];
   }): Promise<CurrentUnlinkedTrackedMember[]> {
-    const guildId = normalizeGuildId(input.guildId);
-    if (!guildId) return [];
-
     const [fwaMembers, cwlMembers] = await Promise.all([
       loadLiveFwaMembers({
         cocService: input.cocService,
@@ -589,10 +644,24 @@ export class UnlinkedMemberAlertService {
       }),
     ]);
 
-    const currentMembers = dedupeTrackedMembers(
-      [...fwaMembers, ...cwlMembers],
-      input.clanTag ?? null,
-    );
+    return dedupeTrackedMembers([...fwaMembers, ...cwlMembers], input.clanTag ?? null);
+  }
+
+  /** Purpose: resolve the current live unlinked-member set across tracked FWA and active CWL clans. */
+  async listCurrentUnlinkedMembers(input: {
+    guildId: string;
+    cocService: CoCService;
+    clanTag?: string | null;
+    observedFwaClans?: ObservedFwaClan[];
+  }): Promise<CurrentUnlinkedTrackedMember[]> {
+    const guildId = normalizeGuildId(input.guildId);
+    if (!guildId) return [];
+
+    const currentMembers = await this.listCurrentTrackedMembers({
+      cocService: input.cocService,
+      clanTag: input.clanTag ?? null,
+      observedFwaClans: input.observedFwaClans,
+    });
     if (currentMembers.length <= 0) {
       return [];
     }
@@ -871,11 +940,274 @@ export class UnlinkedMemberAlertService {
       });
     }
 
+    try {
+      await this.reconcileBannedPlayerJoinAlerts({
+        client: input.client,
+        guildId,
+        routingConfig,
+        trackedClanAlertChannelsByTag,
+        botLogChannelId,
+        currentMembers,
+        linkedRows,
+      });
+    } catch (err) {
+      console.error(
+        `[banned] reconcile_failed guild=${guildId} error=${formatError(err)}`,
+      );
+    }
+
     return {
       unresolvedCount: currentUnlinked.length,
       alertedCount,
       resolvedCount: resolvedTags.length,
     };
+  }
+
+  /** Purpose: reconcile alerted banned joins without disturbing the unlinked pipeline. */
+  private async reconcileBannedPlayerJoinAlerts(input: {
+    client: DiscordClientLike;
+    guildId: string;
+    routingConfig: UnlinkedAlertRoutingConfig;
+    trackedClanAlertChannelsByTag: {
+      logChannelByTag: Map<string, string | null>;
+      leaderChannelByTag: Map<string, string | null>;
+    };
+    botLogChannelId: string | null;
+    currentMembers: CurrentUnlinkedTrackedMember[];
+    linkedRows: Array<{ playerTag: string; discordUserId: string | null }>;
+  }): Promise<void> {
+    const now = new Date();
+    if (input.currentMembers.length <= 0) {
+      const existingRows = await bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.findMany({
+        where: { guildId: input.guildId },
+        select: { playerTag: true, clanTag: true },
+      });
+      if (existingRows.length > 0) {
+        await bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.deleteMany({
+          where: {
+            guildId: input.guildId,
+            OR: existingRows.map((row: { playerTag: string; clanTag: string }) => ({
+              playerTag: row.playerTag,
+              clanTag: row.clanTag,
+            })),
+          },
+        });
+        console.info(
+          `[banned] banned_join_resolved guild=${input.guildId} resolved_count=${existingRows.length}`,
+        );
+      }
+      console.info(
+        `[banned] banned_join_current_summary guild=${input.guildId} current_member_count=0 active_banned_count=0 existing_alert_count=${existingRows.length}`,
+      );
+      return;
+    }
+
+    const linkedDiscordUserByPlayerTag = new Map<string, string>();
+    for (const row of input.linkedRows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      if (!playerTag || !discordUserId) continue;
+      linkedDiscordUserByPlayerTag.set(playerTag, discordUserId);
+    }
+    const linkedDiscordUserIds = [...new Set(linkedDiscordUserByPlayerTag.values())];
+    const currentPlayerTags = input.currentMembers.map((member) => member.playerTag);
+
+    const [directBanRows, userBanRows, existingRows] = await Promise.all([
+      prisma.banRecord.findMany({
+        where: {
+          guildId: input.guildId,
+          targetKind: BanTargetKind.PLAYER,
+          playerTag: { in: currentPlayerTags },
+          removedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      }),
+      linkedDiscordUserIds.length > 0
+        ? prisma.banRecord.findMany({
+            where: {
+              guildId: input.guildId,
+              targetKind: BanTargetKind.USER,
+              discordUserId: { in: linkedDiscordUserIds },
+              removedAt: null,
+              OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+            },
+            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+          })
+        : Promise.resolve([] as BanRecord[]),
+      bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.findMany({
+        where: { guildId: input.guildId },
+        orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
+      }),
+    ]);
+
+    const activePlayerBanByTag = new Map<string, BanRecord>();
+    for (const row of directBanRows) {
+      if (!row.playerTag) continue;
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!playerTag) continue;
+      if (!activePlayerBanByTag.has(playerTag)) {
+        activePlayerBanByTag.set(playerTag, row);
+      }
+    }
+
+    const activeUserBanByDiscordUserId = new Map<string, BanRecord>();
+    for (const row of userBanRows) {
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      if (!discordUserId) continue;
+      if (!activeUserBanByDiscordUserId.has(discordUserId)) {
+        activeUserBanByDiscordUserId.set(discordUserId, row);
+      }
+    }
+
+    const existingByKey = new Map(
+      existingRows.map((row) => [buildBannedJoinAlertKey(row), row] as const),
+    );
+
+    const currentBannedMembers = input.currentMembers.flatMap((member) => {
+      const directBan = activePlayerBanByTag.get(member.playerTag) ?? null;
+      const linkedDiscordUserId = linkedDiscordUserByPlayerTag.get(member.playerTag) ?? null;
+      const userBan =
+        linkedDiscordUserId !== null
+          ? activeUserBanByDiscordUserId.get(linkedDiscordUserId) ?? null
+          : null;
+      const activeBan = directBan ?? userBan;
+      if (!activeBan) return [];
+      return [
+        {
+          member,
+          activeBan,
+        },
+      ];
+    });
+
+    console.info(
+      `[banned] banned_join_current_summary guild=${input.guildId} current_member_count=${input.currentMembers.length} active_banned_count=${currentBannedMembers.length} existing_alert_count=${existingRows.length}`,
+    );
+
+    const activeKeySet = new Set<string>();
+    let alertedCount = 0;
+    for (const { member, activeBan } of currentBannedMembers) {
+      const key = buildBannedJoinAlertKey({
+        playerTag: member.playerTag,
+        clanTag: member.clanTag,
+      });
+      activeKeySet.add(key);
+
+      const existing = existingByKey.get(key) ?? null;
+      await bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.upsert({
+        where: {
+          guildId_playerTag_clanTag: {
+            guildId: input.guildId,
+            playerTag: member.playerTag,
+            clanTag: member.clanTag,
+          },
+        },
+        create: {
+          guildId: input.guildId,
+          playerTag: member.playerTag,
+          clanTag: member.clanTag,
+          playerName: member.playerName,
+          clanName: member.clanName,
+          banRecordId: activeBan.id,
+          alertedAt: existing?.alertedAt ?? null,
+        },
+        update: {
+          playerName: member.playerName,
+          clanName: member.clanName,
+          banRecordId: activeBan.id,
+        },
+      });
+
+      if (existing?.alertedAt) {
+        continue;
+      }
+
+      const candidate = this.resolveAlertChannelCandidate({
+        routingConfig: input.routingConfig,
+        trackedClanLogChannelByTag: input.trackedClanAlertChannelsByTag.logChannelByTag,
+        trackedClanLeaderChannelByTag: input.trackedClanAlertChannelsByTag.leaderChannelByTag,
+        botLogChannelId: input.botLogChannelId,
+        clanTag: member.clanTag,
+      });
+      if (!candidate) {
+        continue;
+      }
+
+      if (!candidate.channelId) {
+        console.info(
+          `[banned] banned_join_alert_destination_unusable guild=${input.guildId} player=${member.playerTag} clan=${member.clanTag} destination=none source=${candidate.source} reason=${candidate.source === "clan_lead" ? "missing_leader_channel" : "missing_channel"}`,
+        );
+        continue;
+      }
+
+      const channel = await resolveSendableGuildChannel({
+        client: input.client,
+        guildId: input.guildId,
+        channelId: candidate.channelId,
+      });
+      if (!channel) {
+        console.info(
+          `[banned] banned_join_alert_destination_unusable guild=${input.guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} reason=unavailable_or_not_sendable`,
+        );
+        continue;
+      }
+
+      try {
+        await channel.send({
+          content: buildBannedPlayerJoinAlertContent({
+            playerName: member.playerName,
+            playerTag: member.playerTag,
+            clanName: member.clanName,
+            ban: {
+              targetKind: activeBan.targetKind,
+              discordUserId: normalizeDiscordUserId(activeBan.discordUserId),
+              reason: normalizeDisplayText(activeBan.reason, "No reason provided"),
+              expiresAt: activeBan.expiresAt ?? null,
+            },
+          }),
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        console.error(
+          `[banned] banned_join_send_failed guild=${input.guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} error=${formatError(err)}`,
+        );
+        continue;
+      }
+
+      alertedCount += 1;
+      console.info(
+        `[banned] banned_join_alert_sent guild=${input.guildId} player=${member.playerTag} clan=${member.clanTag} destination=${candidate.channelId} source=${candidate.source} ban_kind=${activeBan.targetKind.toLowerCase()}`,
+      );
+      await bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.update({
+        where: {
+          guildId_playerTag_clanTag: {
+            guildId: input.guildId,
+            playerTag: member.playerTag,
+            clanTag: member.clanTag,
+          },
+        },
+        data: {
+          alertedAt: new Date(),
+        },
+      });
+    }
+
+    const resolvedRows = existingRows.filter((row) => !activeKeySet.has(buildBannedJoinAlertKey(row)));
+    if (resolvedRows.length > 0) {
+      await bannedPlayerJoinAlertTable.bannedPlayerJoinAlert.deleteMany({
+        where: {
+          guildId: input.guildId,
+          OR: resolvedRows.map((row: { playerTag: string; clanTag: string }) => ({
+            playerTag: row.playerTag,
+            clanTag: row.clanTag,
+          })),
+        },
+      });
+      console.info(
+        `[banned] banned_join_resolved guild=${input.guildId} resolved_count=${resolvedRows.length}`,
+      );
+    }
   }
 
   /** Purpose: resolve one explicit unlinked-alert destination for the configured routing mode. */

@@ -51,6 +51,10 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "sync:time:post",
   "bot-logs",
   "bot:poll:status",
+  "ban",
+  "ban:add",
+  "ban:list",
+  "ban:remove",
   "notify:war",
   "link:embed",
   "link:create:admin",
@@ -118,6 +122,23 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Set `visibility:public` to post the help response directly in channel.",
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
+  },
+  ban: {
+    summary: "Maintain persisted player and Discord-user ban records.",
+    details: [
+      "Use `/ban add player:<player tag> ...` or `/ban add user:<discord user> ...` to create or update one active ban record.",
+      "`player` and `user` are mutually exclusive; runtime validation rejects requests that provide neither or both.",
+      "The `reason` field is optional and `duration` accepts `mo`, `w`, `d`, or `h` suffixes like `3mo`, `2w`, `10d`, and `12h`.",
+      "Use `/ban list` to show active bans only, with pagination and linked player tags shown for user bans.",
+      "Use `/ban remove player:<player tag>` or `/ban remove user:<discord user>` to soft-remove the active ban and keep the history row for audit purposes.",
+      "Ban commands are admin-only by default unless explicit role access is granted with `/permission add`.",
+    ],
+    examples: [
+      "/ban add player:#ABC123 reason:Spam duration:3mo",
+      "/ban add user:@Offender reason:Alt-account abuse",
+      "/ban list",
+      "/ban remove player:#ABC123",
+    ],
   },
   emoji: {
     summary: "Resolve or browse bot-owned application emojis by shortcode name.",
@@ -855,6 +876,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
       "`set-alert` stores explicit unlinked-alert routing in dedicated feature-owned persistence instead of `BotSetting`.",
+      "The same routing is also used for banned-player join alerts, so the clan-log, clan-lead, bot-log, custom, and disabled modes apply to both alert types.",
       "Use `enable:clan-log channel`, `enable:clan-lead channel`, `enable:bot-log channel`, `enable:custom`, or `enable:false`; `channel` is only used with `enable:custom`.",
       "Clan-log mode sends to each tracked clan's `log-channel`, clan-lead mode sends to each tracked clan's `leader-channel`, bot-log mode sends to the global `/bot-logs` channel, custom mode sends to the saved guild channel or thread, and `false` disables delivery.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",
