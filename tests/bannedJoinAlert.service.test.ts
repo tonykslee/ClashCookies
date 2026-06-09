@@ -75,6 +75,7 @@ const todoSnapshotMock = vi.hoisted(() => ({
 
 const botLogChannelServiceMock = vi.hoisted(() => ({
   getChannelId: vi.fn(),
+  getRoutingConfigForType: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -86,6 +87,7 @@ vi.mock("../src/services/TodoSnapshotService", () => todoSnapshotMock);
 vi.mock("../src/services/BotLogChannelService", () => ({
   botLogChannelService: {
     getChannelId: botLogChannelServiceMock.getChannelId,
+    getRoutingConfigForType: botLogChannelServiceMock.getRoutingConfigForType,
   },
 }));
 
@@ -252,6 +254,12 @@ function configureCommonMocks(input: {
     channelId: null,
   });
   botLogChannelServiceMock.getChannelId.mockResolvedValue(null);
+  botLogChannelServiceMock.getRoutingConfigForType.mockResolvedValue({
+    routingMode: input.routingMode,
+    channelId: null,
+    legacy: false,
+    configured: true,
+  });
   prismaMock.playerLink.findMany.mockResolvedValue([
     {
       playerTag: "#PYLQ0289",
@@ -285,6 +293,7 @@ describe("banned join alerts", () => {
     prismaMock.botSetting.updateMany.mockReset();
     prismaMock.botSetting.upsert.mockReset();
     botLogChannelServiceMock.getChannelId.mockReset();
+    botLogChannelServiceMock.getRoutingConfigForType.mockReset();
     todoSnapshotMock.loadActiveCwlWarsByClan.mockResolvedValue(new Map());
     todoSnapshotMock.buildActiveCwlClanByPlayerTag.mockReturnValue(new Map());
   });

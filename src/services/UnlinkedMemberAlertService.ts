@@ -12,7 +12,7 @@ import {
   normalizeDiscordUserId,
   normalizePlayerTag,
 } from "./PlayerLinkService";
-import { botLogChannelService } from "./BotLogChannelService";
+import { botLogChannelService, type RoutedBotLogRoutingConfig } from "./BotLogChannelService";
 import { BanRecord, BanTargetKind } from "@prisma/client";
 
 type DiscordClientLike = {
@@ -784,7 +784,7 @@ export class UnlinkedMemberAlertService {
 
     const trackedClanAlertChannelsByTag = await loadTrackedClanAlertChannelsByTag();
     const trackedClanLogChannelByTag = trackedClanAlertChannelsByTag.logChannelByTag;
-    const [fwaMembers, cwlMembers, routingConfig, existingRows] =
+    const [fwaMembers, cwlMembers, routingConfig, banJoinAlertRoutingConfig, existingRows] =
       await Promise.all([
         loadLiveFwaMembers({
           cocService: input.cocService,
@@ -796,13 +796,18 @@ export class UnlinkedMemberAlertService {
           trackedClanLogChannelByTag,
         }),
         this.getAlertRoutingConfig(guildId),
+        botLogChannelService.getRoutingConfigForType(
+          guildId,
+          "ban-join-alert",
+        ),
         prisma.unlinkedPlayer.findMany({
           where: { guildId },
           orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
         }),
       ]);
     const botLogChannelId =
-      routingConfig.routingMode === "BOT_LOG"
+      routingConfig.routingMode === "BOT_LOG" ||
+      banJoinAlertRoutingConfig.routingMode === "BOT_LOG"
         ? await botLogChannelService.getChannelId(guildId)
         : null;
 
@@ -952,7 +957,7 @@ export class UnlinkedMemberAlertService {
       await this.reconcileBannedPlayerJoinAlerts({
         client: input.client,
         guildId,
-        routingConfig,
+        routingConfig: banJoinAlertRoutingConfig,
         trackedClanAlertChannelsByTag,
         botLogChannelId,
         currentMembers,
@@ -975,7 +980,7 @@ export class UnlinkedMemberAlertService {
   private async reconcileBannedPlayerJoinAlerts(input: {
     client: DiscordClientLike;
     guildId: string;
-    routingConfig: UnlinkedAlertRoutingConfig;
+    routingConfig: RoutedBotLogRoutingConfig;
     trackedClanAlertChannelsByTag: {
       logChannelByTag: Map<string, string | null>;
       leaderChannelByTag: Map<string, string | null>;
@@ -1131,10 +1136,11 @@ export class UnlinkedMemberAlertService {
         continue;
       }
 
-      const candidate = this.resolveAlertChannelCandidate({
+      const candidate = this.resolveBannedJoinAlertChannelCandidate({
         routingConfig: input.routingConfig,
         trackedClanLogChannelByTag: input.trackedClanAlertChannelsByTag.logChannelByTag,
-        trackedClanLeaderChannelByTag: input.trackedClanAlertChannelsByTag.leaderChannelByTag,
+        trackedClanLeaderChannelByTag:
+          input.trackedClanAlertChannelsByTag.leaderChannelByTag,
         botLogChannelId: input.botLogChannelId,
         clanTag: member.clanTag,
       });
@@ -1229,6 +1235,41 @@ export class UnlinkedMemberAlertService {
     clanTag: string;
   }): AlertChannelCandidate | null {
     const clanTag = normalizeClanTag(input.clanTag);
+    if (input.routingConfig.routingMode === "CLAN_LOG") {
+      const channelId = normalizeChannelId(
+        input.trackedClanLogChannelByTag.get(clanTag) ?? null,
+      );
+      return { channelId, source: "clan_log" };
+    }
+    if (input.routingConfig.routingMode === "CLAN_LEAD") {
+      const channelId = normalizeChannelId(
+        input.trackedClanLeaderChannelByTag.get(clanTag) ?? null,
+      );
+      return { channelId, source: "clan_lead" };
+    }
+    if (input.routingConfig.routingMode === "BOT_LOG") {
+      const channelId = normalizeChannelId(input.botLogChannelId);
+      return { channelId, source: "bot_log" };
+    }
+    if (input.routingConfig.routingMode === "CUSTOM") {
+      const channelId = normalizeChannelId(input.routingConfig.channelId);
+      return { channelId, source: "custom" };
+    }
+    return null;
+  }
+
+  /** Purpose: resolve one explicit banned-join alert destination for the configured routing mode. */
+  private resolveBannedJoinAlertChannelCandidate(input: {
+    routingConfig: RoutedBotLogRoutingConfig;
+    trackedClanLogChannelByTag: Map<string, string | null>;
+    trackedClanLeaderChannelByTag: Map<string, string | null>;
+    botLogChannelId: string | null;
+    clanTag: string;
+  }): AlertChannelCandidate | null {
+    const clanTag = normalizeClanTag(input.clanTag);
+    if (input.routingConfig.routingMode === "DISABLED") {
+      return null;
+    }
     if (input.routingConfig.routingMode === "CLAN_LOG") {
       const channelId = normalizeChannelId(
         input.trackedClanLogChannelByTag.get(clanTag) ?? null,

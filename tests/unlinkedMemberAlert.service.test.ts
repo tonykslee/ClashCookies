@@ -49,6 +49,7 @@ const todoSnapshotMock = vi.hoisted(() => ({
 
 const botLogChannelServiceMock = vi.hoisted(() => ({
   getChannelId: vi.fn(),
+  getRoutingConfigForType: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -60,6 +61,7 @@ vi.mock("../src/services/TodoSnapshotService", () => todoSnapshotMock);
 vi.mock("../src/services/BotLogChannelService", () => ({
   botLogChannelService: {
     getChannelId: botLogChannelServiceMock.getChannelId,
+    getRoutingConfigForType: botLogChannelServiceMock.getRoutingConfigForType,
   },
 }));
 
@@ -129,6 +131,12 @@ describe("UnlinkedMemberAlertService", () => {
     todoSnapshotMock.loadActiveCwlWarsByClan.mockResolvedValue(new Map());
     todoSnapshotMock.buildActiveCwlClanByPlayerTag.mockReturnValue(new Map());
     botLogChannelServiceMock.getChannelId.mockResolvedValue(null);
+    botLogChannelServiceMock.getRoutingConfigForType.mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+      legacy: false,
+      configured: false,
+    });
   });
 
   it("renders the required plain-text alert copy", () => {
