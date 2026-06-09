@@ -314,7 +314,7 @@ describe("CwlRotationSheetService", () => {
     vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
       spreadsheetId: "sheet-1",
       title: "Imported CWL Planner",
-      sheets: [{ sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false }],
+      sheets: [{ sheetId: 1, title: "CWL Alpha roster", index: 0, hidden: false, tables: [] }],
     });
     vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue([
       ["Member", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
@@ -1106,7 +1106,7 @@ describe("CwlRotationSheetService", () => {
     vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
       spreadsheetId: "sheet-new",
       title: "Canonical CWL Export",
-      sheets: [{ sheetId: 1, title: "CWL Alpha #2QG2C08UP", index: 0, hidden: false }],
+      sheets: [{ sheetId: 1, title: "CWL Alpha #2QG2C08UP", index: 0, hidden: false, tables: [] }],
     });
     vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue(exportedValues);
 

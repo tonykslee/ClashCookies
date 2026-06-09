@@ -16,13 +16,13 @@ describe("GoogleSheetsService formatting", () => {
     vi.clearAllMocks();
   });
 
-  it("formats exported CWL tables with a header, filter, trimmed bounds, and exact IN/OUT fills", async () => {
+  it("creates native Google Sheets tables with trimmed bounds and exact IN/OUT fills", async () => {
     const service = new GoogleSheetsService({} as any);
     vi.spyOn(service as any, "getAccessToken").mockResolvedValue("test-token");
     vi.spyOn(service, "getSpreadsheetMetadata").mockResolvedValue({
       spreadsheetId: "sheet-1",
       title: "CWL Export",
-      sheets: [{ sheetId: 123, title: "Tab 1", index: 0, hidden: false }],
+      sheets: [{ sheetId: 123, title: "Tab 1", index: 0, hidden: false, tables: [] }],
     });
     const postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: {} });
 
@@ -71,8 +71,10 @@ describe("GoogleSheetsService formatting", () => {
             }),
           }),
           expect.objectContaining({
-            setBasicFilter: expect.objectContaining({
-              filter: expect.objectContaining({
+            addTable: expect.objectContaining({
+              table: expect.objectContaining({
+                tableId: "cwl_Tab_1_1_123_5_8_0_10",
+                name: "CWL Rotation Export Tab_1 1",
                 range: expect.objectContaining({
                   sheetId: 123,
                   startRowIndex: 5,
@@ -86,25 +88,6 @@ describe("GoogleSheetsService formatting", () => {
           expect.objectContaining({
             repeatCell: expect.objectContaining({
               range: expect.objectContaining({
-                sheetId: 123,
-                startRowIndex: 5,
-                endRowIndex: 6,
-                startColumnIndex: 0,
-                endColumnIndex: 10,
-              }),
-              cell: expect.objectContaining({
-                userEnteredFormat: expect.objectContaining({
-                  textFormat: expect.objectContaining({
-                    bold: true,
-                  }),
-                }),
-              }),
-            }),
-          }),
-          expect.objectContaining({
-            repeatCell: expect.objectContaining({
-              range: expect.objectContaining({
-                sheetId: 123,
                 startRowIndex: 6,
                 endRowIndex: 7,
                 startColumnIndex: 3,
@@ -124,7 +107,6 @@ describe("GoogleSheetsService formatting", () => {
           expect.objectContaining({
             repeatCell: expect.objectContaining({
               range: expect.objectContaining({
-                sheetId: 123,
                 startRowIndex: 6,
                 endRowIndex: 7,
                 startColumnIndex: 4,
@@ -144,7 +126,6 @@ describe("GoogleSheetsService formatting", () => {
           expect.objectContaining({
             repeatCell: expect.objectContaining({
               range: expect.objectContaining({
-                sheetId: 123,
                 startRowIndex: 7,
                 endRowIndex: 8,
                 startColumnIndex: 3,
@@ -167,6 +148,103 @@ describe("GoogleSheetsService formatting", () => {
         headers: expect.objectContaining({
           Authorization: "Bearer test-token",
         }),
+      }),
+    );
+
+    const requests = (postSpy.mock.calls[0]?.[1] as any)?.requests as Array<Record<string, unknown>>;
+    expect(requests.some((request) => "setBasicFilter" in request)).toBe(false);
+  });
+
+  it("recreates cached export tables without leaving duplicate native table state behind", async () => {
+    const service = new GoogleSheetsService({} as any);
+    vi.spyOn(service as any, "getAccessToken").mockResolvedValue("test-token");
+    vi.spyOn(service, "getSpreadsheetMetadata")
+      .mockResolvedValueOnce({
+        spreadsheetId: "sheet-1",
+        title: "CWL Export",
+        sheets: [{ sheetId: 123, title: "Tab 1", index: 0, hidden: false, tables: [] }],
+      })
+      .mockResolvedValueOnce({
+        spreadsheetId: "sheet-1",
+        title: "CWL Export",
+        sheets: [
+          {
+            sheetId: 123,
+            title: "Tab 1",
+            index: 0,
+            hidden: false,
+            tables: [
+              {
+                tableId: "existing-table",
+                name: "CWL Rotation Export Tab_1 1",
+                range: {
+                  sheetId: 123,
+                  startRowIndex: 5,
+                  endRowIndex: 8,
+                  startColumnIndex: 0,
+                  endColumnIndex: 10,
+                },
+              },
+            ],
+          },
+        ],
+      });
+    const postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: {} });
+
+    const payload = {
+      spreadsheetId: "sheet-1",
+      tabs: [
+        {
+          tabName: "Tab 1",
+          values: [
+            ["Season: 2026-04"],
+            ["Roster: Master Roster"],
+            ["Clan: CWL Alpha"],
+            ["Clan Tag: #2QG2C08UP"],
+            [],
+            ["Member", "Player Tag", "Total Wars", "Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"],
+            ["Alpha", "#PYLQ0289", "1", "IN", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+            ["Bravo", "#QGRJ2222", "0", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT", "OUT"],
+          ],
+          tableRanges: [
+            {
+              startRowIndex: 5,
+              endRowIndex: 8,
+              startColumnIndex: 0,
+              endColumnIndex: 10,
+              headerRowIndex: 5,
+            },
+          ],
+        },
+      ],
+    } as const;
+
+    await service.formatSpreadsheetTabs(payload);
+    await service.formatSpreadsheetTabs(payload);
+
+    expect(postSpy).toHaveBeenCalledTimes(3);
+    expect(postSpy.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        requests: [
+          expect.objectContaining({
+            deleteTable: {
+              tableId: "existing-table",
+            },
+          }),
+        ],
+      }),
+    );
+    expect(postSpy.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({
+        requests: expect.arrayContaining([
+          expect.objectContaining({
+            addTable: expect.objectContaining({
+              table: expect.objectContaining({
+                tableId: "cwl_Tab_1_1_123_5_8_0_10",
+              }),
+            }),
+          }),
+        ]),
       }),
     );
   });
