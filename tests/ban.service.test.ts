@@ -352,6 +352,62 @@ describe("BanService", () => {
     expect(store.rows.find((row) => row.id === "user-expired")?.reason).toBe("history");
   });
 
+  it("finds a direct active ban for a player before checking linked user bans", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const directBan = makeBanRecord({
+      id: "direct-ban",
+      targetKind: "PLAYER",
+      playerTag: "#PYLQ0289",
+      reason: "direct reason",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+    });
+    createBanStore([directBan]);
+
+    const result = await service.findActiveBanForPlayer({
+      guildId: "guild-1",
+      playerTag: "#pylq0289",
+      now,
+    });
+
+    expect(result?.id).toBe("direct-ban");
+    expect(result?.targetKind).toBe("PLAYER");
+    expect(prismaMock.playerLink.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("finds an active user ban through the linked Discord user when no direct ban exists", async () => {
+    const service = new BanService();
+    const now = new Date("2026-06-08T12:00:00.000Z");
+    const userBan = makeBanRecord({
+      id: "user-ban",
+      targetKind: "USER",
+      playerTag: null,
+      discordUserId: "222222222222222222",
+      reason: "user reason",
+      bannedByDiscordUserId: "111111111111111111",
+      expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+    });
+    createBanStore([userBan]);
+    prismaMock.playerLink.findUnique.mockResolvedValue({
+      discordUserId: "222222222222222222",
+    });
+
+    const result = await service.findActiveBanForPlayer({
+      guildId: "guild-1",
+      playerTag: "#PYLQ0289",
+      now,
+    });
+
+    expect(prismaMock.playerLink.findUnique).toHaveBeenCalledWith({
+      where: { playerTag: "#PYLQ0289" },
+      select: { discordUserId: true },
+    });
+    expect(result?.id).toBe("user-ban");
+    expect(result?.targetKind).toBe("USER");
+    expect(result?.discordUserId).toBe("222222222222222222");
+  });
+
   it("lists active bans and resolves linked player tags for active user bans", async () => {
     const service = new BanService();
     const now = new Date("2026-06-08T12:00:00.000Z");

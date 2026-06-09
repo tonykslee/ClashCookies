@@ -876,6 +876,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Alert leaders when tracked-clan members are not linked to Discord, and list unresolved players.",
     details: [
       "`set-alert` stores explicit unlinked-alert routing in dedicated feature-owned persistence instead of `BotSetting`.",
+      "The same routing is also used for banned-player join alerts, so the clan-log, clan-lead, bot-log, custom, and disabled modes apply to both alert types.",
       "Use `enable:clan-log channel`, `enable:clan-lead channel`, `enable:bot-log channel`, `enable:custom`, or `enable:false`; `channel` is only used with `enable:custom`.",
       "Clan-log mode sends to each tracked clan's `log-channel`, clan-lead mode sends to each tracked clan's `leader-channel`, bot-log mode sends to the global `/bot-logs` channel, custom mode sends to the saved guild channel or thread, and `false` disables delivery.",
       "`list` resolves the current live unresolved set across tracked FWA clans and active current-season CWL clans.",

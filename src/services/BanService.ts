@@ -62,6 +62,25 @@ function buildUserBanWhere(guildId: string, discordUserId: string, now: Date) {
   };
 }
 
+async function findActiveBanRecord(input: {
+  guildId: string;
+  targetKind: BanTargetKind;
+  playerTag?: string | null;
+  discordUserId?: string | null;
+  now?: Date;
+}): Promise<BanRecord | null> {
+  const now = input.now ?? new Date();
+  const where =
+    input.targetKind === BanTargetKind.PLAYER
+      ? buildPlayerBanWhere(input.guildId, String(input.playerTag ?? ""), now)
+      : buildUserBanWhere(input.guildId, String(input.discordUserId ?? ""), now);
+
+  return prisma.banRecord.findFirst({
+    where,
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+  });
+}
+
 async function upsertActiveBanRecord(input: {
   guildId: string;
   targetKind: BanTargetKind;
@@ -76,29 +95,12 @@ async function upsertActiveBanRecord(input: {
   const reason = normalizeBanReason(input.reason);
   const expiresAt = input.expiresAt ?? null;
 
-  const where =
-    input.targetKind === BanTargetKind.PLAYER
-      ? buildPlayerBanWhere(input.guildId, String(input.playerTag ?? ""), now)
-      : buildUserBanWhere(input.guildId, String(input.discordUserId ?? ""), now);
-
-  const existing = await prisma.banRecord.findFirst({
-    where,
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-    select: {
-      id: true,
-      guildId: true,
-      targetKind: true,
-      playerTag: true,
-      discordUserId: true,
-      reason: true,
-      bannedByDiscordUserId: true,
-      createdAt: true,
-      expiresAt: true,
-      removedAt: true,
-      removedByDiscordUserId: true,
-      removeReason: true,
-      updatedAt: true,
-    },
+  const existing = await findActiveBanRecord({
+    guildId: input.guildId,
+    targetKind: input.targetKind,
+    playerTag: input.playerTag ?? null,
+    discordUserId: input.discordUserId ?? null,
+    now,
   });
 
   if (existing) {
@@ -133,9 +135,12 @@ async function upsertActiveBanRecord(input: {
     const code = (error as { code?: string } | null | undefined)?.code ?? "";
     if (code !== "P2002") throw error;
 
-    const racedExisting = await prisma.banRecord.findFirst({
-      where,
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    const racedExisting = await findActiveBanRecord({
+      guildId: input.guildId,
+      targetKind: input.targetKind,
+      playerTag: input.playerTag ?? null,
+      discordUserId: input.discordUserId ?? null,
+      now,
     });
     if (!racedExisting) {
       throw error;
@@ -203,6 +208,37 @@ export class BanService {
       reason: input.reason,
       bannedByDiscordUserId: input.bannedByDiscordUserId,
       expiresAt: input.expiresAt ?? null,
+      now: input.now,
+    });
+  }
+
+  async findActiveBanForPlayer(input: {
+    guildId: string;
+    playerTag: string;
+    now?: Date;
+  }): Promise<BanRecord | null> {
+    const playerTag = normalizePlayerTag(input.playerTag);
+    if (!playerTag) return null;
+
+    const directBan = await findActiveBanRecord({
+      guildId: input.guildId,
+      targetKind: BanTargetKind.PLAYER,
+      playerTag,
+      now: input.now,
+    });
+    if (directBan) return directBan;
+
+    const linked = await prisma.playerLink.findUnique({
+      where: { playerTag },
+      select: { discordUserId: true },
+    });
+    const discordUserId = normalizeDiscordUserId(linked?.discordUserId);
+    if (!discordUserId) return null;
+
+    return findActiveBanRecord({
+      guildId: input.guildId,
+      targetKind: BanTargetKind.USER,
+      discordUserId,
       now: input.now,
     });
   }
@@ -307,29 +343,6 @@ export class BanService {
     playerTag: string;
     now?: Date;
   }): Promise<boolean> {
-    const now = input.now ?? new Date();
-    const playerTag = normalizePlayerTag(input.playerTag);
-    if (!playerTag) return false;
-
-    const directBan = await prisma.banRecord.findFirst({
-      where: buildPlayerBanWhere(input.guildId, playerTag, now),
-      select: { id: true, removedAt: true, expiresAt: true },
-    });
-    if (directBan && isActiveBanRecord(directBan, now)) {
-      return true;
-    }
-
-    const linked = await prisma.playerLink.findUnique({
-      where: { playerTag },
-      select: { discordUserId: true },
-    });
-    const discordUserId = normalizeDiscordUserId(linked?.discordUserId);
-    if (!discordUserId) return false;
-
-    const userBan = await prisma.banRecord.findFirst({
-      where: buildUserBanWhere(input.guildId, discordUserId, now),
-      select: { id: true, removedAt: true, expiresAt: true },
-    });
-    return Boolean(userBan && isActiveBanRecord(userBan, now));
+    return Boolean(await this.findActiveBanForPlayer(input));
   }
 }

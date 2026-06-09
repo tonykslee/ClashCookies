@@ -216,6 +216,23 @@ model BanRecord {
   @@index([guildId, removedAt, expiresAt])
 }
 
+model BannedPlayerJoinAlert {
+  id          String   @id @default(cuid())
+  guildId     String
+  playerTag   String   @db.VarChar(16)
+  clanTag     String   @db.VarChar(16)
+  playerName  String
+  clanName    String
+  banRecordId String?
+  alertedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([guildId, playerTag, clanTag])
+  @@index([guildId, playerTag])
+  @@index([guildId, clanTag])
+}
+
 model FillerAccount {
   id                     String   @id @default(cuid())
   guildId                String
