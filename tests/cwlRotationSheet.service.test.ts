@@ -41,6 +41,7 @@ describe("CwlRotationSheetService", () => {
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationExport.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationExport.upsert.mockResolvedValue({});
+    vi.spyOn(GoogleSheetsService.prototype, "formatSpreadsheetTabs").mockResolvedValue(undefined);
     vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
       {
         season: "2026-04",
@@ -674,6 +675,25 @@ describe("CwlRotationSheetService", () => {
         ]),
       }),
     );
+    expect(GoogleSheetsService.prototype.formatSpreadsheetTabs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spreadsheetId: "sheet-new",
+        tabs: expect.arrayContaining([
+          expect.objectContaining({
+            tabName: "M1 [A] | Rising Thrones",
+            tableRanges: [
+              {
+                startRowIndex: 6,
+                endRowIndex: 9,
+                startColumnIndex: 0,
+                endColumnIndex: 10,
+                headerRowIndex: 6,
+              },
+            ],
+          }),
+        ]),
+      }),
+    );
     const exportedTabValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][] | undefined;
     expect(exportedTabValues).toEqual([
       ["Season: 2026-04"],
@@ -785,6 +805,25 @@ describe("CwlRotationSheetService", () => {
       tabCount: 1,
       reused: false,
     });
+    expect(GoogleSheetsService.prototype.formatSpreadsheetTabs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spreadsheetId: "sheet-live",
+        tabs: expect.arrayContaining([
+          expect.objectContaining({
+            tabName: "manual | Rising Thrones",
+            tableRanges: [
+              {
+                startRowIndex: 5,
+                endRowIndex: 9,
+                startColumnIndex: 0,
+                endColumnIndex: 10,
+                headerRowIndex: 5,
+              },
+            ],
+          }),
+        ]),
+      }),
+    );
     expect(publicSpy).toHaveBeenCalledWith("sheet-live");
   });
 
@@ -841,6 +880,11 @@ describe("CwlRotationSheetService", () => {
     });
     expect(createSpreadsheet).not.toHaveBeenCalled();
     expect(writeTabs).not.toHaveBeenCalled();
+    expect(GoogleSheetsService.prototype.formatSpreadsheetTabs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spreadsheetId: "sheet-old",
+      }),
+    );
     expect(publicSpy).not.toHaveBeenCalled();
     expect(prismaMock.cwlRotationExport.upsert).not.toHaveBeenCalled();
   });

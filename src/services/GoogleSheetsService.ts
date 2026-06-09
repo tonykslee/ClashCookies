@@ -133,6 +133,18 @@ export type GoogleSpreadsheetWriteTab = {
   values: string[][];
 };
 
+export type GoogleSpreadsheetTableRange = {
+  startRowIndex: number;
+  endRowIndex: number;
+  startColumnIndex: number;
+  endColumnIndex: number;
+  headerRowIndex: number;
+};
+
+export type GoogleSpreadsheetFormatTab = GoogleSpreadsheetWriteTab & {
+  tableRanges: GoogleSpreadsheetTableRange[];
+};
+
 export type GoogleSpreadsheetCreateResult = {
   spreadsheetId: string;
   spreadsheetUrl: string;
@@ -419,6 +431,180 @@ export class GoogleSheetsService {
         timeout: failure.timeout,
       });
       throw new Error(this.errorMessageFromUnknown(err, "Google Sheets write request failed."));
+    }
+  }
+
+  /** Purpose: apply table-style formatting to exported spreadsheet tabs. */
+  async formatSpreadsheetTabs(input: {
+    spreadsheetId: string;
+    tabs: GoogleSpreadsheetFormatTab[];
+  }): Promise<void> {
+    if (input.tabs.length <= 0) return;
+
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const metadata = await this.getSpreadsheetMetadata(input.spreadsheetId);
+    const sheetIdsByTitle = new Map(metadata.sheets.map((sheet) => [sheet.title, sheet.sheetId] as const));
+    const requests: Record<string, unknown>[] = [];
+
+    for (const tab of input.tabs) {
+      const sheetId = sheetIdsByTitle.get(tab.tabName);
+      if (sheetId === undefined) {
+        throw new Error(`Google Sheets formatting request could not find tab "${tab.tabName}".`);
+      }
+
+      const usedRowCount = Math.max(1, tab.values.length);
+      const usedColumnCount = Math.max(1, ...tab.values.map((row) => row.length), 1);
+      requests.push({
+        updateSheetProperties: {
+          properties: {
+            sheetId,
+            gridProperties: {
+              rowCount: usedRowCount,
+              columnCount: usedColumnCount,
+            },
+          },
+          fields: "gridProperties(rowCount,columnCount)",
+        },
+      });
+
+      for (const [tableIndex, tableRange] of tab.tableRanges.entries()) {
+        const gridRange = {
+          sheetId,
+          startRowIndex: tableRange.startRowIndex,
+          endRowIndex: tableRange.endRowIndex,
+          startColumnIndex: tableRange.startColumnIndex,
+          endColumnIndex: tableRange.endColumnIndex,
+        };
+
+        requests.push({
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: tableRange.headerRowIndex,
+              endRowIndex: tableRange.headerRowIndex + 1,
+              startColumnIndex: tableRange.startColumnIndex,
+              endColumnIndex: tableRange.endColumnIndex,
+            },
+            cell: {
+              userEnteredFormat: {
+                textFormat: {
+                  bold: true,
+                },
+              },
+            },
+            fields: "userEnteredFormat.textFormat.bold",
+          },
+        });
+
+        if (tab.tableRanges.length === 1 && tableIndex === 0) {
+          requests.push({
+            setBasicFilter: {
+              filter: {
+                range: gridRange,
+              },
+            },
+          });
+        }
+
+        for (let rowIndex = tableRange.headerRowIndex + 1; rowIndex < tableRange.endRowIndex; rowIndex += 1) {
+          const row = tab.values[rowIndex] ?? [];
+          let runStartColumnIndex: number | null = null;
+          let runFill: GoogleSheetColor | null = null;
+
+          for (let columnIndex = tableRange.startColumnIndex; columnIndex < tableRange.endColumnIndex; columnIndex += 1) {
+            const cellValue = String(row[columnIndex] ?? "");
+            const fill = getGoogleSheetsExportCellFill(cellValue);
+
+            if (!fill) {
+              if (runFill && runStartColumnIndex !== null) {
+                requests.push(buildRepeatCellFillRequest({
+                  sheetId,
+                  rowIndex,
+                  startColumnIndex: runStartColumnIndex,
+                  endColumnIndex: columnIndex,
+                  fill: runFill,
+                }));
+              }
+              runStartColumnIndex = null;
+              runFill = null;
+              continue;
+            }
+
+            if (runFill && runStartColumnIndex !== null && googleSheetsColorEquals(runFill, fill)) {
+              continue;
+            }
+
+            if (runFill && runStartColumnIndex !== null) {
+              requests.push(buildRepeatCellFillRequest({
+                sheetId,
+                rowIndex,
+                startColumnIndex: runStartColumnIndex,
+                endColumnIndex: columnIndex,
+                fill: runFill,
+              }));
+            }
+
+            runStartColumnIndex = columnIndex;
+            runFill = fill;
+          }
+
+          if (runFill && runStartColumnIndex !== null) {
+            requests.push(buildRepeatCellFillRequest({
+              sheetId,
+              rowIndex,
+              startColumnIndex: runStartColumnIndex,
+              endColumnIndex: tableRange.endColumnIndex,
+              fill: runFill,
+            }));
+          }
+        }
+      }
+    }
+
+    if (requests.length <= 0) {
+      return;
+    }
+
+    const encodedSheetId = encodeURIComponent(input.spreadsheetId);
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}:batchUpdate`;
+
+    try {
+      await axios.post(
+        url,
+        {
+          requests,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: GOOGLE_API_TIMEOUT_MS,
+        },
+      );
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "format_sheet",
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} tabs=${input.tabs.length}`,
+        durationMs: Date.now() - startedAtMs,
+        status: "success",
+      });
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: "format_sheet",
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} tabs=${input.tabs.length} result=error`,
+        durationMs: Date.now() - startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Sheets formatting request failed."));
     }
   }
 
@@ -1048,4 +1234,58 @@ function sanitizeSheetTabName(tabName: string): string {
     .replace(/\s+/g, " ")
     .slice(0, 100)
     .trim() || "Sheet";
+}
+
+type GoogleSheetColor = {
+  red: number;
+  green: number;
+  blue: number;
+};
+
+const GOOGLE_SHEETS_IN_FILL: GoogleSheetColor = {
+  red: 0.7176470588,
+  green: 0.8823529412,
+  blue: 0.8039215686,
+};
+
+const GOOGLE_SHEETS_OUT_FILL: GoogleSheetColor = {
+  red: 0.9568627451,
+  green: 0.7803921569,
+  blue: 0.7647058824,
+};
+
+function getGoogleSheetsExportCellFill(value: string): GoogleSheetColor | null {
+  if (value === "IN") return GOOGLE_SHEETS_IN_FILL;
+  if (value === "OUT") return GOOGLE_SHEETS_OUT_FILL;
+  return null;
+}
+
+function googleSheetsColorEquals(left: GoogleSheetColor, right: GoogleSheetColor): boolean {
+  return left.red === right.red && left.green === right.green && left.blue === right.blue;
+}
+
+function buildRepeatCellFillRequest(input: {
+  sheetId: number;
+  rowIndex: number;
+  startColumnIndex: number;
+  endColumnIndex: number;
+  fill: GoogleSheetColor;
+}): Record<string, unknown> {
+  return {
+    repeatCell: {
+      range: {
+        sheetId: input.sheetId,
+        startRowIndex: input.rowIndex,
+        endRowIndex: input.rowIndex + 1,
+        startColumnIndex: input.startColumnIndex,
+        endColumnIndex: input.endColumnIndex,
+      },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: input.fill,
+        },
+      },
+      fields: "userEnteredFormat.backgroundColor",
+    },
+  };
 }
