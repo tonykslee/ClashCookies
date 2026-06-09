@@ -8,17 +8,23 @@ import {
   Client,
   ComponentType,
   EmbedBuilder,
+  AutocompleteInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
+import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
   getCommandTargetsFromInteraction,
   CommandPermissionService,
 } from "../services/CommandPermissionService";
 import { BanService, type BanListRecord } from "../services/BanService";
-import { normalizeDiscordUserId, normalizePlayerTag } from "../services/PlayerLinkService";
+import {
+  normalizeClanTag,
+  normalizeDiscordUserId,
+  normalizePlayerTag,
+} from "../services/PlayerLinkService";
 
 const BAN_PAGINATION_TIMEOUT_MS = 5 * 60 * 1000;
 const BAN_LIST_PAGE_CHAR_LIMIT = 3500;
@@ -42,6 +48,11 @@ function truncateInlineText(input: string, maxLength: number): string {
   if (input.length <= maxLength) return input;
   if (maxLength <= 3) return input.slice(0, maxLength);
   return `${input.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeDisplayText(input: string | null | undefined): string | null {
+  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function addUtcMonths(input: Date, months: number): Date {
@@ -156,6 +167,15 @@ function formatUnixTimestamp(value: Date | null | undefined): string {
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
 }
 
+function formatBanClanContext(record: BanListRecord): string | null {
+  const clanTag = normalizeClanTag(record.clanTag ?? "");
+  if (!clanTag) return null;
+  const clanName = normalizeDisplayText(record.clanName);
+  return clanName
+    ? `clan: ${truncateInlineText(`${clanName} (${clanTag})`, 120)}`
+    : `clan: ${clanTag}`;
+}
+
 function formatBanRow(record: BanListRecord): string {
   const baseParts: string[] = [
     record.targetKind,
@@ -165,6 +185,11 @@ function formatBanRow(record: BanListRecord): string {
         ? `<@${record.discordUserId}>`
         : "unknown",
   ];
+
+  const clanContext = formatBanClanContext(record);
+  if (clanContext) {
+    baseParts.push(clanContext);
+  }
 
   if (record.targetKind === "USER") {
     const linkedTags = record.linkedPlayerTags.length > 0 ? record.linkedPlayerTags.join(", ") : "none";
@@ -180,6 +205,34 @@ function formatBanRow(record: BanListRecord): string {
   }
 
   return truncateInlineText(baseParts.join(" | "), BAN_LIST_ROW_CHAR_LIMIT);
+}
+
+async function autocompleteTrackedClanChoice(
+  interaction: AutocompleteInteraction,
+): Promise<Array<{ name: string; value: string }>> {
+  const query = String(interaction.options.getFocused(true).value ?? "")
+    .trim()
+    .toLowerCase();
+  const trackedClans = await prisma.trackedClan.findMany({
+    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+    select: { name: true, tag: true },
+  });
+
+  return trackedClans
+    .map((clan) => {
+      const tag = normalizeClanTag(clan.tag);
+      if (!tag) return null;
+      const label = normalizeDisplayText(clan.name)
+        ? `${normalizeDisplayText(clan.name)} (${tag})`
+        : tag;
+      return { name: label.slice(0, 100), value: tag };
+    })
+    .filter(
+      (choice): choice is { name: string; value: string } =>
+        choice !== null &&
+        (choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)),
+    )
+    .slice(0, 25);
 }
 
 function buildBanListPages(rows: BanListRecord[]): string[] {
@@ -283,6 +336,13 @@ export const Ban: Command = {
           description: "Discord user to ban",
           type: ApplicationCommandOptionType.User,
           required: false,
+        },
+        {
+          name: "clan",
+          description: "Optional tracked clan context for the ban",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
         },
         {
           name: "reason",
@@ -434,6 +494,7 @@ export const Ban: Command = {
         reason,
         bannedByDiscordUserId: interaction.user.id,
         expiresAt: durationResult.expiresAt,
+        clanTag: interaction.options.getString("clan", false),
       };
 
       const result =
@@ -447,12 +508,14 @@ export const Ban: Command = {
               discordUserId: targetResult.target.discordUserId,
             });
 
-      if (result.outcome === "invalid_target") {
+      if (result.outcome === "invalid_target" || result.outcome === "invalid_clan") {
         await replyTargetValidationError(
           interaction,
-          targetResult.target.kind === "player"
-            ? "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
-            : "invalid_user: expected a Discord user.",
+          result.outcome === "invalid_clan"
+            ? "invalid_clan: select a tracked clan from autocomplete or use a tracked clan tag."
+            : targetResult.target.kind === "player"
+              ? "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`."
+              : "invalid_user: expected a Discord user.",
         );
         return;
       }
@@ -511,5 +574,20 @@ export const Ban: Command = {
         }),
       });
     }
+  },
+  autocomplete: async (interaction: AutocompleteInteraction) => {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== "clan") {
+      await interaction.respond([]);
+      return;
+    }
+
+    const subcommand = interaction.options.getSubcommand(false);
+    if (subcommand !== "add") {
+      await interaction.respond([]);
+      return;
+    }
+
+    await interaction.respond(await autocompleteTrackedClanChoice(interaction));
   },
 };

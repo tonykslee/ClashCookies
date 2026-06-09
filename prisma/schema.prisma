@@ -201,6 +201,8 @@ model BanRecord {
   targetKind             BanTargetKind
   playerTag              String?        @db.VarChar(16)
   discordUserId          String?
+  clanTag                String?        @db.VarChar(16)
+  clanName               String?
   reason                 String?
   bannedByDiscordUserId  String
   createdAt              DateTime       @default(now())
@@ -213,6 +215,7 @@ model BanRecord {
   @@index([guildId, targetKind])
   @@index([guildId, playerTag])
   @@index([guildId, discordUserId])
+  @@index([guildId, clanTag])
   @@index([guildId, removedAt, expiresAt])
 }
 
