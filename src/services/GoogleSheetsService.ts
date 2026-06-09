@@ -1432,10 +1432,17 @@ function sanitizeGoogleSheetsTableToken(input: string): string {
 }
 
 function sanitizeGoogleSheetsTableName(input: string): string {
-  return String(input ?? "")
-    .trim()
-    .replace(/[\u0000-\u001f]/g, " ")
+  return replaceAsciiControlCharactersWithSpaces(String(input ?? "").trim())
     .replace(/\s+/g, " ")
     .slice(0, 100)
     .trim() || GOOGLE_SHEETS_EXPORT_TABLE_PREFIX;
+}
+
+function replaceAsciiControlCharactersWithSpaces(input: string): string {
+  return Array.from(input)
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0 && code <= 31 ? " " : char;
+    })
+    .join("");
 }
