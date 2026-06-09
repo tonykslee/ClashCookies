@@ -1,6 +1,7 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ban, buildBanListEmbeds, parseBanDuration } from "../src/commands/Ban";
+import { banLogService } from "../src/services/BanLogService";
 import { BanService } from "../src/services/BanService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -173,6 +174,7 @@ describe("/ban command behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
+    vi.spyOn(banLogService, "postBanActionLog").mockResolvedValue(undefined);
   });
 
   it("adds a player ban with normalized tag, reason, duration, and clan context", async () => {
@@ -224,6 +226,14 @@ describe("/ban command behavior", () => {
       content: expect.stringContaining("created: player ban for #PYLQ0289."),
     });
     expect((interaction.editReply.mock.calls[0]?.[0] as any).content).toContain("expires <t:");
+    expect(banLogService.postBanActionLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: {},
+        guildId: "guild-1",
+        action: "created",
+        actorDiscordUserId: "111111111111111111",
+      }),
+    );
   });
 
   it("adds a user ban with the provided Discord user target", async () => {
@@ -267,6 +277,14 @@ describe("/ban command behavior", () => {
       ephemeral: true,
       content: "created: user ban for <@222222222222222222>. indefinite.",
     });
+    expect(banLogService.postBanActionLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: {},
+        guildId: "guild-1",
+        action: "created",
+        actorDiscordUserId: "111111111111111111",
+      }),
+    );
   });
 
   it("returns a clear error for invalid clan values", async () => {
@@ -346,6 +364,7 @@ describe("/ban command behavior", () => {
       ephemeral: true,
       content: "invalid_duration: use 3mo, 2w, 10d, or 12h.",
     });
+    expect(banLogService.postBanActionLog).not.toHaveBeenCalled();
   });
 
   it("returns a no-op message when removing a missing active ban", async () => {
@@ -364,6 +383,55 @@ describe("/ban command behavior", () => {
       ephemeral: true,
       content: "no_active_ban: #PYLQ0289 is not actively banned.",
     });
+  });
+
+  it("removes an active player ban and posts a ban-log entry", async () => {
+    const removePlayerBan = vi.spyOn(BanService.prototype, "removePlayerBan").mockResolvedValue({
+      outcome: "removed",
+      record: {
+        id: "ban-1",
+        guildId: "guild-1",
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        discordUserId: null,
+        clanTag: null,
+        clanName: null,
+        reason: "spam",
+        bannedByDiscordUserId: "111111111111111111",
+        createdAt: new Date("2026-06-08T12:00:00.000Z"),
+        expiresAt: null,
+        removedAt: new Date("2026-06-08T13:00:00.000Z"),
+        removedByDiscordUserId: "111111111111111111",
+        removeReason: null,
+        updatedAt: new Date("2026-06-08T13:00:00.000Z"),
+      },
+    } as any);
+    const interaction = createInteraction({
+      subcommand: "remove",
+      player: "#PYLQ0289",
+    });
+
+    await Ban.run({} as any, interaction as any, {} as any);
+
+    expect(removePlayerBan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        removedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "removed: player ban for #PYLQ0289.",
+    });
+    expect(banLogService.postBanActionLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: {},
+        guildId: "guild-1",
+        action: "removed",
+        actorDiscordUserId: "111111111111111111",
+      }),
+    );
   });
 
   it("renders paginated list embeds and advances pages with the navigation buttons", async () => {

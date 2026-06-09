@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import { GoogleSheetsService } from "./GoogleSheetsService";
 import { PublicGoogleSheetsService } from "./PublicGoogleSheetsService";
+import type { GoogleSpreadsheetFormatTab, GoogleSpreadsheetTableRange } from "./GoogleSheetsService";
 import {
   cwlRotationService,
   buildCwlRosterRotationShortName,
@@ -499,6 +500,10 @@ export class CwlRotationSheetService {
         orderBy: [{ createdAt: "desc" }],
       });
       if (cachedExport) {
+        await this.sheets.formatSpreadsheetTabs({
+          spreadsheetId: cachedExport.spreadsheetId,
+          tabs: payload.tabs,
+        });
         return {
           spreadsheetId: cachedExport.spreadsheetId,
           spreadsheetUrl: cachedExport.spreadsheetUrl,
@@ -518,6 +523,10 @@ export class CwlRotationSheetService {
         tabName: tab.tabName,
         values: tab.values,
       })),
+    });
+    await this.sheets.formatSpreadsheetTabs({
+      spreadsheetId: spreadsheet.spreadsheetId,
+      tabs: payload.tabs,
     });
     await this.sheets.makeSpreadsheetPublic(spreadsheet.spreadsheetId);
     await prisma.cwlRotationExport.upsert({
@@ -635,19 +644,24 @@ function buildCwlRotationExportPayload(input: {
   season: string;
   plans: CwlRotationPlanExport[];
 }): {
-  tabs: Array<{ tabName: string; values: string[][] }>;
+  tabs: GoogleSpreadsheetFormatTab[];
   fingerprint: string;
 } {
-  const baseTabs = input.plans.map((plan) => ({
-    tabName: buildCwlRotationExportTabName(plan),
-    values: buildExportTabValues(plan),
-  }));
+  const baseTabs = input.plans.map((plan) => {
+    const values = buildExportTabValues(plan);
+    return {
+      tabName: buildCwlRotationExportTabName(plan),
+      values,
+      tableRanges: buildCwlRotationExportTableRanges(values),
+    };
+  });
   const tabNames = ensureUniqueCwlRotationExportTabNames(
     baseTabs.map((tab) => tab.tabName),
   );
   const tabs = baseTabs.map((tab, index) => ({
     tabName: tabNames[index] ?? tab.tabName,
     values: tab.values,
+    tableRanges: tab.tableRanges,
   }));
   const fingerprint = crypto
     .createHash("sha256")
@@ -744,8 +758,7 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
   }
   values.push([]);
 
-  const dayHeaders = Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
-  values.push(["Member", "Player Tag", "Total Wars", ...dayHeaders]);
+  values.push(buildCwlRotationExportHeaderRow());
 
   const playerRows = new Map<
     string,
@@ -793,7 +806,7 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
       player.playerName,
       player.playerTag,
       String(totalWars),
-      ...dayHeaders.map((_, index) => (player.dayMap.get(index + 1) ? "IN" : "OUT")),
+      ...buildCwlRotationExportDayHeaders().map((_, index) => (player.dayMap.get(index + 1) ? "IN" : "OUT")),
     ]);
   }
 
@@ -804,6 +817,55 @@ function buildExportTabValues(plan: CwlRotationPlanExport): string[][] {
     values.pop();
   }
   return values;
+}
+
+function buildCwlRotationExportHeaderRow(): string[] {
+  return ["Member", "Player Tag", "Total Wars", ...buildCwlRotationExportDayHeaders()];
+}
+
+function buildCwlRotationExportDayHeaders(): string[] {
+  return Array.from({ length: 7 }, (_, index) => `Day ${index + 1}`);
+}
+
+function buildCwlRotationExportTableRanges(values: string[][]): GoogleSpreadsheetTableRange[] {
+  const headerRow = buildCwlRotationExportHeaderRow();
+  const tableRanges: GoogleSpreadsheetTableRange[] = [];
+
+  let rowIndex = 0;
+  while (rowIndex < values.length) {
+    if (!rowsAreEqual(values[rowIndex] ?? [], headerRow)) {
+      rowIndex += 1;
+      continue;
+    }
+
+    let endRowIndex = rowIndex + 1;
+    while (endRowIndex < values.length) {
+      const row = values[endRowIndex] ?? [];
+      if (row.every((cell) => sanitizeCwlRotationExportTabText(cell).length <= 0)) {
+        break;
+      }
+      if (rowsAreEqual(row, headerRow)) {
+        break;
+      }
+      endRowIndex += 1;
+    }
+
+    tableRanges.push({
+      startRowIndex: rowIndex,
+      endRowIndex,
+      startColumnIndex: 0,
+      endColumnIndex: headerRow.length,
+      headerRowIndex: rowIndex,
+    });
+    rowIndex = endRowIndex;
+  }
+
+  return tableRanges;
+}
+
+function rowsAreEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((cell, index) => sanitizeCwlRotationExportTabText(cell) === sanitizeCwlRotationExportTabText(right[index] ?? ""));
 }
 
 type CwlRotationExportSortMode = "live" | "roster" | "import" | "fallback";

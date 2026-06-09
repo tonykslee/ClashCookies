@@ -120,6 +120,19 @@ export type GoogleSpreadsheetTabMetadata = {
   title: string;
   index: number;
   hidden: boolean;
+  tables: GoogleSpreadsheetTableMetadata[];
+};
+
+export type GoogleSpreadsheetTableMetadata = {
+  tableId: string;
+  name: string;
+  range: {
+    sheetId: number;
+    startRowIndex: number;
+    endRowIndex: number;
+    startColumnIndex: number;
+    endColumnIndex: number;
+  };
 };
 
 export type GoogleSpreadsheetMetadata = {
@@ -131,6 +144,18 @@ export type GoogleSpreadsheetMetadata = {
 export type GoogleSpreadsheetWriteTab = {
   tabName: string;
   values: string[][];
+};
+
+export type GoogleSpreadsheetTableRange = {
+  startRowIndex: number;
+  endRowIndex: number;
+  startColumnIndex: number;
+  endColumnIndex: number;
+  headerRowIndex: number;
+};
+
+export type GoogleSpreadsheetFormatTab = GoogleSpreadsheetWriteTab & {
+  tableRanges: GoogleSpreadsheetTableRange[];
 };
 
 export type GoogleSpreadsheetCreateResult = {
@@ -230,7 +255,7 @@ export class GoogleSheetsService {
     const encodedSheetId = encodeURIComponent(sheetId);
     const url =
       `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}` +
-      "?fields=spreadsheetId,properties.title,sheets.properties.sheetId,sheets.properties.title,sheets.properties.index,sheets.properties.hidden";
+      "?fields=spreadsheetId,properties.title,sheets.properties.sheetId,sheets.properties.title,sheets.properties.index,sheets.properties.hidden,sheets.tables.tableId,sheets.tables.name,sheets.tables.range.sheetId,sheets.tables.range.startRowIndex,sheets.tables.range.endRowIndex,sheets.tables.range.startColumnIndex,sheets.tables.range.endColumnIndex";
 
     try {
       const response = await axios.get<{
@@ -243,6 +268,17 @@ export class GoogleSheetsService {
             index?: number;
             hidden?: boolean;
           };
+          tables?: Array<{
+            tableId?: string;
+            name?: string;
+            range?: {
+              sheetId?: number;
+              startRowIndex?: number;
+              endRowIndex?: number;
+              startColumnIndex?: number;
+              endColumnIndex?: number;
+            };
+          }>;
         }>;
       }>(url, {
         headers: {
@@ -262,23 +298,18 @@ export class GoogleSheetsService {
         spreadsheetId: String(response.data.spreadsheetId ?? sheetId),
         title: response.data.properties?.title?.trim() || null,
         sheets: (Array.isArray(response.data.sheets) ? response.data.sheets : [])
-          .map((sheet) => sheet.properties)
-          .filter(
-            (
-              props,
-            ): props is {
-              sheetId?: number;
-              title?: string;
-              index?: number;
-              hidden?: boolean;
-            } => Boolean(props),
-          )
-          .map((props) => ({
-            sheetId: Number(props.sheetId ?? 0),
-            title: String(props.title ?? "").trim(),
-            index: Number(props.index ?? 0),
-            hidden: Boolean(props.hidden),
-          }))
+          .map((sheet) => {
+            const props = sheet.properties;
+            if (!props) return null;
+            return {
+              sheetId: Number(props.sheetId ?? 0),
+              title: String(props.title ?? "").trim(),
+              index: Number(props.index ?? 0),
+              hidden: Boolean(props.hidden),
+              tables: mapGoogleSpreadsheetTables(sheet.tables),
+            };
+          })
+          .filter((sheet): sheet is GoogleSpreadsheetTabMetadata => Boolean(sheet))
           .filter((sheet) => sheet.sheetId > 0 && sheet.title.length > 0)
           .sort((a, b) => a.index - b.index),
       };
@@ -419,6 +450,201 @@ export class GoogleSheetsService {
         timeout: failure.timeout,
       });
       throw new Error(this.errorMessageFromUnknown(err, "Google Sheets write request failed."));
+    }
+  }
+
+  /** Purpose: apply table-style formatting to exported spreadsheet tabs. */
+  async formatSpreadsheetTabs(input: {
+    spreadsheetId: string;
+    tabs: GoogleSpreadsheetFormatTab[];
+  }): Promise<void> {
+    if (input.tabs.length <= 0) return;
+
+    const startedAtMs = Date.now();
+    const token = await this.getAccessToken();
+    const metadata = await this.getSpreadsheetMetadata(input.spreadsheetId);
+    const sheetsByTitle = new Map(metadata.sheets.map((sheet) => [sheet.title, sheet] as const));
+    const deleteRequests: Record<string, unknown>[] = [];
+    const requests: Record<string, unknown>[] = [];
+
+    for (const tab of input.tabs) {
+      const sheet = sheetsByTitle.get(tab.tabName);
+      if (!sheet) {
+        throw new Error(`Google Sheets formatting request could not find tab "${tab.tabName}".`);
+      }
+
+      const usedRowCount = Math.max(1, tab.values.length);
+      const usedColumnCount = Math.max(1, ...tab.values.map((row) => row.length), 1);
+      const exportTablesOnSheet = sheet.tables.filter((table) => table.name.startsWith(GOOGLE_SHEETS_EXPORT_TABLE_PREFIX));
+      if (exportTablesOnSheet.length > 0) {
+        for (const table of exportTablesOnSheet) {
+          deleteRequests.push({
+            deleteTable: {
+              tableId: table.tableId,
+            },
+          });
+        }
+      }
+
+      requests.push({
+        updateSheetProperties: {
+          properties: {
+            sheetId: sheet.sheetId,
+            gridProperties: {
+              rowCount: usedRowCount,
+              columnCount: usedColumnCount,
+            },
+          },
+          fields: "gridProperties(rowCount,columnCount)",
+        },
+      });
+
+      for (const [tableIndex, tableRange] of tab.tableRanges.entries()) {
+        const table = buildGoogleSheetsTableSpec({
+          spreadsheetId: input.spreadsheetId,
+          tabName: tab.tabName,
+          tableIndex,
+          tableRange,
+          sheetId: sheet.sheetId,
+        });
+        requests.push({
+          addTable: {
+            table: {
+              tableId: table.tableId,
+              name: table.name,
+              range: table.range,
+            },
+          },
+        });
+
+        for (let rowIndex = tableRange.headerRowIndex + 1; rowIndex < tableRange.endRowIndex; rowIndex += 1) {
+          const row = tab.values[rowIndex] ?? [];
+          let runStartColumnIndex: number | null = null;
+          let runFill: GoogleSheetColor | null = null;
+
+          for (let columnIndex = tableRange.startColumnIndex; columnIndex < tableRange.endColumnIndex; columnIndex += 1) {
+            const cellValue = String(row[columnIndex] ?? "");
+            const fill = getGoogleSheetsExportCellFill(cellValue);
+
+            if (!fill) {
+              if (runFill && runStartColumnIndex !== null) {
+                requests.push(buildRepeatCellFillRequest({
+                  sheetId: sheet.sheetId,
+                  rowIndex,
+                  startColumnIndex: runStartColumnIndex,
+                  endColumnIndex: columnIndex,
+                  fill: runFill,
+                }));
+              }
+              runStartColumnIndex = null;
+              runFill = null;
+              continue;
+            }
+
+            if (runFill && runStartColumnIndex !== null && googleSheetsColorEquals(runFill, fill)) {
+              continue;
+            }
+
+            if (runFill && runStartColumnIndex !== null) {
+              requests.push(buildRepeatCellFillRequest({
+                sheetId: sheet.sheetId,
+                rowIndex,
+                startColumnIndex: runStartColumnIndex,
+                endColumnIndex: columnIndex,
+                fill: runFill,
+              }));
+            }
+
+            runStartColumnIndex = columnIndex;
+            runFill = fill;
+          }
+
+          if (runFill && runStartColumnIndex !== null) {
+            requests.push(buildRepeatCellFillRequest({
+              sheetId: sheet.sheetId,
+              rowIndex,
+              startColumnIndex: runStartColumnIndex,
+              endColumnIndex: tableRange.endColumnIndex,
+              fill: runFill,
+            }));
+          }
+        }
+      }
+    }
+
+    if (deleteRequests.length > 0) {
+      await this.submitSpreadsheetBatchUpdate({
+        spreadsheetId: input.spreadsheetId,
+        token,
+        requests: deleteRequests,
+        startedAtMs,
+        operation: "format_sheet_delete_tables",
+      });
+    }
+
+    if (requests.length <= 0) {
+      return;
+    }
+
+    await this.submitSpreadsheetBatchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      token,
+      requests,
+      startedAtMs,
+      operation: "format_sheet",
+    });
+  }
+
+  private async submitSpreadsheetBatchUpdate(input: {
+    spreadsheetId: string;
+    token: string;
+    requests: Record<string, unknown>[];
+    startedAtMs: number;
+    operation: string;
+  }): Promise<void> {
+    if (input.requests.length <= 0) {
+      return;
+    }
+
+    const encodedSheetId = encodeURIComponent(input.spreadsheetId);
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodedSheetId}:batchUpdate`;
+
+    try {
+      await axios.post(
+        url,
+        {
+          requests: input.requests,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${input.token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: GOOGLE_API_TIMEOUT_MS,
+        },
+      );
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: input.operation,
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} requests=${input.requests.length}`,
+        durationMs: Date.now() - input.startedAtMs,
+        status: "success",
+      });
+    } catch (err) {
+      const failure = toFailureTelemetry(err);
+      recordFetchEvent({
+        namespace: "google_sheets",
+        operation: input.operation,
+        source: "api",
+        detail: `sheet=${input.spreadsheetId} requests=${input.requests.length} result=error`,
+        durationMs: Date.now() - input.startedAtMs,
+        status: "failure",
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
+        timeout: failure.timeout,
+      });
+      throw new Error(this.errorMessageFromUnknown(err, "Google Sheets formatting request failed."));
     }
   }
 
@@ -1048,4 +1274,175 @@ function sanitizeSheetTabName(tabName: string): string {
     .replace(/\s+/g, " ")
     .slice(0, 100)
     .trim() || "Sheet";
+}
+
+const GOOGLE_SHEETS_EXPORT_TABLE_PREFIX = "CWL Rotation Export";
+
+type GoogleSheetColor = {
+  red: number;
+  green: number;
+  blue: number;
+};
+
+const GOOGLE_SHEETS_IN_FILL: GoogleSheetColor = {
+  red: 0.7176470588,
+  green: 0.8823529412,
+  blue: 0.8039215686,
+};
+
+const GOOGLE_SHEETS_OUT_FILL: GoogleSheetColor = {
+  red: 0.9568627451,
+  green: 0.7803921569,
+  blue: 0.7647058824,
+};
+
+function getGoogleSheetsExportCellFill(value: string): GoogleSheetColor | null {
+  if (value === "IN") return GOOGLE_SHEETS_IN_FILL;
+  if (value === "OUT") return GOOGLE_SHEETS_OUT_FILL;
+  return null;
+}
+
+function googleSheetsColorEquals(left: GoogleSheetColor, right: GoogleSheetColor): boolean {
+  return left.red === right.red && left.green === right.green && left.blue === right.blue;
+}
+
+function buildRepeatCellFillRequest(input: {
+  sheetId: number;
+  rowIndex: number;
+  startColumnIndex: number;
+  endColumnIndex: number;
+  fill: GoogleSheetColor;
+}): Record<string, unknown> {
+  return {
+    repeatCell: {
+      range: {
+        sheetId: input.sheetId,
+        startRowIndex: input.rowIndex,
+        endRowIndex: input.rowIndex + 1,
+        startColumnIndex: input.startColumnIndex,
+        endColumnIndex: input.endColumnIndex,
+      },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: input.fill,
+        },
+      },
+      fields: "userEnteredFormat.backgroundColor",
+    },
+  };
+}
+
+function mapGoogleSpreadsheetTables(
+  tables: Array<{
+    tableId?: string;
+    name?: string;
+    range?: {
+      sheetId?: number;
+      startRowIndex?: number;
+      endRowIndex?: number;
+      startColumnIndex?: number;
+      endColumnIndex?: number;
+    };
+  }> | undefined,
+): GoogleSpreadsheetTableMetadata[] {
+  return (Array.isArray(tables) ? tables : [])
+    .map((table) => {
+      const tableId = String(table.tableId ?? "").trim();
+      const name = String(table.name ?? "").trim();
+      const range = table.range;
+      if (!tableId || !name || !range) return null;
+      const sheetId = Number(range.sheetId ?? 0);
+      const startRowIndex = Number(range.startRowIndex ?? 0);
+      const endRowIndex = Number(range.endRowIndex ?? 0);
+      const startColumnIndex = Number(range.startColumnIndex ?? 0);
+      const endColumnIndex = Number(range.endColumnIndex ?? 0);
+      if (
+        !Number.isFinite(sheetId) ||
+        !Number.isFinite(startRowIndex) ||
+        !Number.isFinite(endRowIndex) ||
+        !Number.isFinite(startColumnIndex) ||
+        !Number.isFinite(endColumnIndex)
+      ) {
+        return null;
+      }
+      return {
+        tableId,
+        name,
+        range: {
+          sheetId,
+          startRowIndex,
+          endRowIndex,
+          startColumnIndex,
+          endColumnIndex,
+        },
+      };
+    })
+    .filter((table): table is GoogleSpreadsheetTableMetadata => Boolean(table));
+}
+
+function buildGoogleSheetsTableSpec(input: {
+  spreadsheetId: string;
+  tabName: string;
+  tableIndex: number;
+  tableRange: GoogleSpreadsheetTableRange;
+  sheetId: number;
+}): {
+  tableId: string;
+  name: string;
+  range: {
+    sheetId: number;
+    startRowIndex: number;
+    endRowIndex: number;
+    startColumnIndex: number;
+    endColumnIndex: number;
+  };
+} {
+  const tableToken = sanitizeGoogleSheetsTableToken(input.tabName);
+  const rangeToken = [
+    input.sheetId,
+    input.tableRange.startRowIndex,
+    input.tableRange.endRowIndex,
+    input.tableRange.startColumnIndex,
+    input.tableRange.endColumnIndex,
+  ].join("_");
+  return {
+    tableId: sanitizeGoogleSheetsTableToken(
+      `cwl_${tableToken}_${input.tableIndex + 1}_${rangeToken}`,
+    ),
+    name: sanitizeGoogleSheetsTableName(
+      `${GOOGLE_SHEETS_EXPORT_TABLE_PREFIX} ${tableToken} ${input.tableIndex + 1}`,
+    ),
+    range: {
+      sheetId: input.sheetId,
+      startRowIndex: input.tableRange.startRowIndex,
+      endRowIndex: input.tableRange.endRowIndex,
+      startColumnIndex: input.tableRange.startColumnIndex,
+      endColumnIndex: input.tableRange.endColumnIndex,
+    },
+  };
+}
+
+function sanitizeGoogleSheetsTableToken(input: string): string {
+  return String(input ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "table";
+}
+
+function sanitizeGoogleSheetsTableName(input: string): string {
+  return replaceAsciiControlCharactersWithSpaces(String(input ?? "").trim())
+    .replace(/\s+/g, " ")
+    .slice(0, 100)
+    .trim() || GOOGLE_SHEETS_EXPORT_TABLE_PREFIX;
+}
+
+function replaceAsciiControlCharactersWithSpaces(input: string): string {
+  return Array.from(input)
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0 && code <= 31 ? " " : char;
+    })
+    .join("");
 }

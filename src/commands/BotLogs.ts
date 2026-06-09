@@ -13,15 +13,19 @@ import {
   BotLogChannelService,
   type BaseSwapBotLogRoutingMode,
   type BotLogChannelType,
+  type RoutedBotLogChannelType,
+  type SimpleBotLogChannelType,
 } from "../services/BotLogChannelService";
 
 const BOT_LOGS_TYPE_OPTION = "type";
 const BOT_LOGS_ENABLE_OPTION = "enable";
 const BOT_LOGS_CHANNEL_OPTION = "channel";
-const BOT_LOGS_BASE_SWAP_TYPE: BotLogChannelType = "base-swap";
-const BOT_LOGS_MAINTENANCE_TYPE: BotLogChannelType = "maintenance";
-const BOT_LOGS_SYNC_TYPE: BotLogChannelType = "sync";
-const BOT_LOGS_CHECKLIST_TYPE: BotLogChannelType = "checklist";
+const BOT_LOGS_BASE_SWAP_TYPE: SimpleBotLogChannelType = "base-swap";
+const BOT_LOGS_MAINTENANCE_TYPE: SimpleBotLogChannelType = "maintenance";
+const BOT_LOGS_SYNC_TYPE: SimpleBotLogChannelType = "sync";
+const BOT_LOGS_CHECKLIST_TYPE: SimpleBotLogChannelType = "checklist";
+const BOT_LOGS_BAN_LOG_TYPE: RoutedBotLogChannelType = "ban-log";
+const BOT_LOGS_BAN_JOIN_ALERT_TYPE: RoutedBotLogChannelType = "ban-join-alert";
 const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
@@ -62,6 +66,75 @@ function formatBaseSwapRoutingMode(mode: BaseSwapBotLogRoutingMode): string {
   return "false";
 }
 
+function isRoutedBotLogType(
+  type: BotLogChannelType | null,
+): type is RoutedBotLogChannelType {
+  return type === BOT_LOGS_BAN_LOG_TYPE || type === BOT_LOGS_BAN_JOIN_ALERT_TYPE;
+}
+
+function formatRoutedBotLogLabel(type: RoutedBotLogChannelType): string {
+  return type === BOT_LOGS_BAN_LOG_TYPE ? "Ban log" : "Ban join alert";
+}
+
+function formatRoutedBotLogCommandHint(type: RoutedBotLogChannelType): string {
+  return `/bot-logs type:${type} channel:<channel>`;
+}
+
+function formatRoutedBotLogModeLabel(mode: BaseSwapBotLogRoutingMode): string {
+  if (mode === "CLAN_LOG") return "clan-log channel";
+  if (mode === "CLAN_LEAD") return "clan-lead channel";
+  if (mode === "BOT_LOG") return "bot-log channel";
+  if (mode === "CUSTOM") return "custom";
+  return "disabled";
+}
+
+function parseRoutedBotLogRoutingMode(
+  type: RoutedBotLogChannelType,
+  value: string | null,
+): BaseSwapBotLogRoutingMode | null {
+  if (value === "bot-log channel") return "BOT_LOG";
+  if (value === "custom") return "CUSTOM";
+  if (value === "false") return "DISABLED";
+  if (type === BOT_LOGS_BAN_JOIN_ALERT_TYPE) {
+    if (value === "clan-log channel") return "CLAN_LOG";
+    if (value === "clan-lead channel") return "CLAN_LEAD";
+  }
+  return null;
+}
+
+function formatRoutedBotLogSummary(
+  type: RoutedBotLogChannelType,
+  config: {
+    configured: boolean;
+    routingMode: BaseSwapBotLogRoutingMode;
+    channelId: string | null;
+  },
+): string {
+  const label = formatRoutedBotLogLabel(type);
+  if (!config.configured) {
+    return type === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+      ? `${label}: Default clan-lead channel`
+      : `${label}: Disabled`;
+  }
+
+  if (config.routingMode === "DISABLED") {
+    return `${label}: Disabled`;
+  }
+  if (config.routingMode === "CLAN_LOG") {
+    return `${label}: clan-log channel`;
+  }
+  if (config.routingMode === "CLAN_LEAD") {
+    return `${label}: clan-lead channel`;
+  }
+  if (config.routingMode === "BOT_LOG") {
+    return `${label}: bot-log channel`;
+  }
+  if (!config.channelId) {
+    return `${label}: custom (no channel)`;
+  }
+  return `${label}: custom ${formatChannelMention(config.channelId)}`;
+}
+
 function legacySyncPostChannelKey(guildId: string): string {
   return `${LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX}:${guildId}`;
 }
@@ -93,7 +166,7 @@ function isSupportedSyncBotLogsChannel(channel: BotLogsChannel): boolean {
   );
 }
 
-function isSimpleTypedDestination(type: BotLogChannelType | null): boolean {
+function isSimpleTypedDestination(type: BotLogChannelType | null): type is SimpleBotLogChannelType {
   return (
     type === BOT_LOGS_MAINTENANCE_TYPE ||
     type === BOT_LOGS_SYNC_TYPE ||
@@ -101,13 +174,13 @@ function isSimpleTypedDestination(type: BotLogChannelType | null): boolean {
   );
 }
 
-function formatSimpleTypedDestinationLabel(type: BotLogChannelType): string {
+function formatSimpleTypedDestinationLabel(type: SimpleBotLogChannelType): string {
   if (type === BOT_LOGS_SYNC_TYPE) return "Sync";
   if (type === BOT_LOGS_CHECKLIST_TYPE) return "Checklist";
   return "Maintenance";
 }
 
-function formatSimpleTypedCommandHint(type: BotLogChannelType): string {
+function formatSimpleTypedCommandHint(type: SimpleBotLogChannelType): string {
   if (type === BOT_LOGS_SYNC_TYPE) return "/bot-logs type:sync channel:<channel>";
   if (type === BOT_LOGS_CHECKLIST_TYPE) {
     return "/bot-logs type:checklist channel:<channel>";
@@ -226,6 +299,148 @@ async function renderBaseSwapBotLogRow(
   return `Base-swap: Inaccessible custom ${formatChannelMention(configuredChannelId)}`;
 }
 
+async function renderRoutedBotLogRow(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+  type: RoutedBotLogChannelType,
+): Promise<string> {
+  const routingConfig = await botLogChannelService.getRoutingConfigForType(
+    guildId,
+    type,
+  );
+  const label = formatRoutedBotLogLabel(type);
+
+  if (!routingConfig.configured) {
+    return formatRoutedBotLogSummary(type, routingConfig);
+  }
+
+  if (routingConfig.routingMode === "DISABLED") {
+    return `${label}: Disabled`;
+  }
+  if (routingConfig.routingMode === "CLAN_LOG") {
+    return `${label}: clan-log channel`;
+  }
+  if (routingConfig.routingMode === "CLAN_LEAD") {
+    return `${label}: clan-lead channel`;
+  }
+  if (routingConfig.routingMode === "BOT_LOG") {
+    const configuredChannelId = await botLogChannelService.getChannelId(
+      guildId,
+    );
+    if (!configuredChannelId) {
+      return `${label}: bot-log channel unavailable`;
+    }
+
+    const channelState = await resolveConfiguredChannelState(
+      interaction,
+      configuredChannelId,
+    );
+    if (channelState === "found") {
+      return `${label}: bot-log ${formatChannelMention(configuredChannelId)}`;
+    }
+
+    if (channelState === "missing") {
+      await botLogChannelService.clearChannelId(guildId);
+      return `${label}: bot-log channel ${formatChannelMention(configuredChannelId)} no longer exists (cleared)`;
+    }
+
+    return `${label}: bot-log channel ${formatChannelMention(configuredChannelId)} is no longer accessible`;
+  }
+
+  const configuredChannelId = routingConfig.channelId;
+  if (!configuredChannelId) {
+    return `${label}: custom (no channel)`;
+  }
+
+  const channelState = await resolveConfiguredChannelState(
+    interaction,
+    configuredChannelId,
+  );
+  if (channelState === "found") {
+    return `${label}: custom ${formatChannelMention(configuredChannelId)}`;
+  }
+
+  if (channelState === "missing") {
+    await botLogChannelService.clearRoutingConfigForType(guildId, type);
+    return `${label}: Stale custom ${formatChannelMention(configuredChannelId)} (cleared)`;
+  }
+
+  return `${label}: Inaccessible custom ${formatChannelMention(configuredChannelId)}`;
+}
+
+async function formatRoutedBotLogInspectResponse(
+  interaction: ChatInputCommandInteraction,
+  botLogChannelService: BotLogChannelService,
+  guildId: string,
+  type: RoutedBotLogChannelType,
+): Promise<string> {
+  const label = formatRoutedBotLogLabel(type);
+  const routingConfig = await botLogChannelService.getRoutingConfigForType(
+    guildId,
+    type,
+  );
+
+  if (!routingConfig.configured) {
+    return type === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+      ? `${label} routing defaults to clan-lead channel.`
+      : `${label} routing is disabled.`;
+  }
+
+  if (routingConfig.routingMode === "DISABLED") {
+    return `${label} routing is disabled.`;
+  }
+  if (routingConfig.routingMode === "CLAN_LOG") {
+    return `Current ${label.toLowerCase()} routing: clan-log channel.`;
+  }
+  if (routingConfig.routingMode === "CLAN_LEAD") {
+    return `Current ${label.toLowerCase()} routing: clan-lead channel.`;
+  }
+  if (routingConfig.routingMode === "BOT_LOG") {
+    const configuredChannelId = await botLogChannelService.getChannelId(
+      guildId,
+    );
+    if (!configuredChannelId) {
+      return `${label} routing points at the generic /bot-logs channel, but no bot-log channel is configured yet.`;
+    }
+
+    const channelState = await resolveConfiguredChannelState(
+      interaction,
+      configuredChannelId,
+    );
+    if (channelState === "found") {
+      return `Current ${label.toLowerCase()} routing: bot-log ${formatChannelMention(configuredChannelId)}.`;
+    }
+
+    if (channelState === "missing") {
+      await botLogChannelService.clearChannelId(guildId);
+      return `Configured /bot-logs channel <#${configuredChannelId}> no longer exists. I cleared the saved setting. Set a new one with \`/bot-logs channel:<channel>\`.`;
+    }
+
+    return `Configured /bot-logs channel <#${configuredChannelId}> is no longer accessible. Set a new one with \`/bot-logs channel:<channel>\`.`;
+  }
+
+  const configuredChannelId = routingConfig.channelId;
+  if (!configuredChannelId) {
+    return `${label} routing is custom, but no channel is configured yet.`;
+  }
+
+  const channelState = await resolveConfiguredChannelState(
+    interaction,
+    configuredChannelId,
+  );
+  if (channelState === "found") {
+    return `Current ${label.toLowerCase()} routing: custom ${formatChannelMention(configuredChannelId)}.`;
+  }
+
+  if (channelState === "missing") {
+    await botLogChannelService.clearRoutingConfigForType(guildId, type);
+    return `Configured ${label.toLowerCase()} custom channel <#${configuredChannelId}> no longer exists. I cleared the saved setting. Set a new one with \`${formatRoutedBotLogCommandHint(type)}\`.`;
+  }
+
+  return `Configured ${label.toLowerCase()} custom channel <#${configuredChannelId}> is no longer accessible. Set a new one with \`${formatRoutedBotLogCommandHint(type)}\`.`;
+}
+
 async function renderBotLogConfigurationSummary(
   interaction: ChatInputCommandInteraction,
   botLogChannelService: BotLogChannelService,
@@ -251,6 +466,18 @@ async function renderBotLogConfigurationSummary(
       botLogChannelService,
       guildId,
       "checklist",
+    ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_BAN_LOG_TYPE,
+    ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_BAN_JOIN_ALERT_TYPE,
     ),
   ];
   return ["Bot-log configurations", ...rows].join("\n");
@@ -341,10 +568,14 @@ export const BotLogs: Command = {
       false,
     ) as BotLogsChannel | null;
 
-    if (enableRaw && requestedType !== BOT_LOGS_BASE_SWAP_TYPE) {
+    const isRoutingConfigType =
+      requestedType === BOT_LOGS_BASE_SWAP_TYPE ||
+      isRoutedBotLogType(requestedType);
+
+    if (enableRaw && !isRoutingConfigType) {
       await interaction.reply({
         ephemeral: true,
-        content: "`enable` is only supported with `type:base-swap`.",
+        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, or `type:ban-join-alert`.",
       });
       return;
     }
@@ -355,22 +586,31 @@ export const BotLogs: Command = {
       requestedType !== BOT_LOGS_SYNC_TYPE &&
       requestedType !== BOT_LOGS_MAINTENANCE_TYPE &&
       requestedType !== BOT_LOGS_CHECKLIST_TYPE &&
+      requestedType !== BOT_LOGS_BAN_LOG_TYPE &&
+      requestedType !== BOT_LOGS_BAN_JOIN_ALERT_TYPE &&
       requestedType !== null
     ) {
       await interaction.reply({
         ephemeral: true,
         content:
-          "`channel` is only supported for generic, maintenance, sync, checklist, or base-swap custom routing.",
+          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert custom routing.",
       });
       return;
     }
 
     if (enableRaw) {
-      const routingMode = parseBaseSwapRoutingMode(enableRaw);
+      const routingMode = isRoutedBotLogType(requestedType)
+        ? parseRoutedBotLogRoutingMode(requestedType, enableRaw)
+        : parseBaseSwapRoutingMode(enableRaw);
       if (!routingMode) {
         await interaction.reply({
           ephemeral: true,
-          content: "Invalid base-swap routing mode.",
+          content:
+            requestedType === BOT_LOGS_BAN_LOG_TYPE
+              ? "Invalid ban-log routing mode. Use bot-log channel, custom, or false."
+              : requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+                ? "Invalid ban-join alert routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
+                : "Invalid base-swap routing mode.",
         });
         return;
       }
@@ -378,7 +618,9 @@ export const BotLogs: Command = {
       if (requestedChannel && routingMode !== "CUSTOM") {
         await interaction.reply({
           ephemeral: true,
-          content: "`channel` is only valid with `type:base-swap enable:custom`.",
+          content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+            ? `\`channel\` is only valid with \`type:${requestedType} enable:custom\`.`
+            : "`channel` is only valid with `type:base-swap enable:custom`.",
         });
         return;
       }
@@ -386,7 +628,9 @@ export const BotLogs: Command = {
       if (routingMode === "CUSTOM" && !requestedChannel) {
         await interaction.reply({
           ephemeral: true,
-          content: "`enable:custom` requires `channel`.",
+          content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+            ? "`enable:custom` requires `channel`."
+            : "`enable:custom` requires `channel`.",
         });
         return;
       }
@@ -410,15 +654,29 @@ export const BotLogs: Command = {
         }
       }
 
-      await botLogChannelService.setBaseSwapRoutingConfig({
-        guildId: interaction.guildId,
-        routingMode,
-        channelId: routingMode === "CUSTOM" ? requestedChannel?.id : null,
-      });
+      if (requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE) {
+        await botLogChannelService.setRoutingConfigForType({
+          guildId: interaction.guildId,
+          type: requestedType,
+          routingMode,
+          channelId: routingMode === "CUSTOM" ? requestedChannel?.id : null,
+        });
+      } else {
+        await botLogChannelService.setBaseSwapRoutingConfig({
+          guildId: interaction.guildId,
+          routingMode,
+          channelId: routingMode === "CUSTOM" ? requestedChannel?.id : null,
+        });
+      }
       await interaction.reply({
         ephemeral: true,
-        content:
-          routingMode === "CUSTOM"
+        content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+          ? `${formatRoutedBotLogLabel(requestedType)} routing saved: ${
+              routingMode === "CUSTOM"
+                ? `custom <#${requestedChannel?.id}>`
+                : formatRoutedBotLogModeLabel(routingMode)
+            }.`
+          : routingMode === "CUSTOM"
             ? `Base-swap audit-log routing saved: custom <#${requestedChannel?.id}>.`
             : `Base-swap audit-log routing saved: ${formatBaseSwapRoutingMode(routingMode)}.`,
       });
@@ -434,25 +692,18 @@ export const BotLogs: Command = {
         return;
       }
 
-      const channelSupported =
-        requestedType === BOT_LOGS_SYNC_TYPE ||
-        requestedType === BOT_LOGS_MAINTENANCE_TYPE ||
-        requestedType === BOT_LOGS_CHECKLIST_TYPE ||
-        requestedType === null
-          ? isSupportedSyncBotLogsChannel(requestedChannel)
-          : isSupportedBotLogsChannel(requestedChannel);
-      if (!channelSupported) {
-        await interaction.reply({
-          ephemeral: true,
-          content:
-            requestedType === BOT_LOGS_SYNC_TYPE
-            || requestedType === BOT_LOGS_MAINTENANCE_TYPE
-            || requestedType === BOT_LOGS_CHECKLIST_TYPE
-            || requestedType === null
-              ? "Selected channel must be a server text or announcement channel."
-              : "Selected channel must be a server text, announcement, or thread channel.",
-        });
-        return;
+      if (
+        requestedType === BOT_LOGS_BASE_SWAP_TYPE ||
+        isRoutedBotLogType(requestedType)
+      ) {
+        if (!isSupportedBotLogsChannel(requestedChannel)) {
+          await interaction.reply({
+            ephemeral: true,
+            content:
+              "Selected channel must be a server text, announcement, or thread channel.",
+          });
+          return;
+        }
       }
 
       if (requestedType === BOT_LOGS_BASE_SWAP_TYPE) {
@@ -469,6 +720,41 @@ export const BotLogs: Command = {
         await interaction.reply({
           ephemeral: true,
           content: `Base-swap audit-log routing saved: custom <#${requestedChannel.id}>.`,
+        });
+        return;
+      }
+
+      if (isRoutedBotLogType(requestedType)) {
+        await botLogChannelService.setRoutingConfigForType({
+          guildId: interaction.guildId,
+          type: requestedType,
+          routingMode: "CUSTOM",
+          channelId: requestedChannel.id,
+        });
+        await interaction.reply({
+          ephemeral: true,
+          content: `${formatRoutedBotLogLabel(requestedType)} routing saved: custom <#${requestedChannel.id}>.`,
+        });
+        return;
+      }
+
+      const channelSupported =
+        requestedType === BOT_LOGS_SYNC_TYPE ||
+        requestedType === BOT_LOGS_MAINTENANCE_TYPE ||
+        requestedType === BOT_LOGS_CHECKLIST_TYPE ||
+        requestedType === null
+          ? isSupportedSyncBotLogsChannel(requestedChannel)
+          : isSupportedBotLogsChannel(requestedChannel);
+      if (!channelSupported) {
+        await interaction.reply({
+          ephemeral: true,
+          content:
+          requestedType === BOT_LOGS_SYNC_TYPE
+          || requestedType === BOT_LOGS_MAINTENANCE_TYPE
+          || requestedType === BOT_LOGS_CHECKLIST_TYPE
+          || requestedType === null
+            ? "Selected channel must be a server text or announcement channel."
+              : "Selected channel must be a server text, announcement, or thread channel.",
         });
         return;
       }
@@ -633,6 +919,20 @@ export const BotLogs: Command = {
         content:
           `Configured ${label} bot-log channel <#${configuredChannelId}> is no longer accessible. ` +
           `Set a new one with \`${hint}\`.`,
+      });
+      return;
+    }
+
+    if (requestedType && isRoutedBotLogType(requestedType)) {
+      const response = await formatRoutedBotLogInspectResponse(
+        interaction,
+        botLogChannelService,
+        interaction.guildId,
+        requestedType,
+      );
+      await interaction.reply({
+        ephemeral: true,
+        content: response,
       });
       return;
     }
