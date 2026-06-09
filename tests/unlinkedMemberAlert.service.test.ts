@@ -14,9 +14,19 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
   },
+  banRecord: {
+    findMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
   unlinkedAlertConfig: {
     findUnique: vi.fn(),
     upsert: vi.fn(),
+  },
+  bannedPlayerJoinAlert: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+    upsert: vi.fn(),
+    update: vi.fn(),
   },
   unlinkedPlayer: {
     findMany: vi.fn(),
@@ -103,8 +113,14 @@ describe("UnlinkedMemberAlertService", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.banRecord.findMany.mockResolvedValue([]);
+    prismaMock.banRecord.findFirst.mockResolvedValue(null);
     prismaMock.unlinkedAlertConfig.findUnique.mockResolvedValue(null);
     prismaMock.unlinkedAlertConfig.upsert.mockResolvedValue(undefined);
+    prismaMock.bannedPlayerJoinAlert.findMany.mockResolvedValue([]);
+    prismaMock.bannedPlayerJoinAlert.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.bannedPlayerJoinAlert.upsert.mockResolvedValue(undefined);
+    prismaMock.bannedPlayerJoinAlert.update.mockResolvedValue(undefined);
     prismaMock.unlinkedPlayer.findMany.mockResolvedValue([]);
     prismaMock.unlinkedPlayer.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.unlinkedPlayer.upsert.mockResolvedValue(undefined);
