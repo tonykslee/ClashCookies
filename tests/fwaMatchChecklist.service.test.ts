@@ -666,7 +666,7 @@ describe("FWA match checklist service", () => {
       pin,
     });
 
-    const messageId = await publishFwaMatchChecklistMessageToChannel({
+    const publishResult = await publishFwaMatchChecklistMessageToChannel({
       viewType: "Mail",
       channel: { send },
       guildId: "guild-1",
@@ -680,7 +680,11 @@ describe("FWA match checklist service", () => {
       expiresAt: new Date("2026-05-13T00:30:00.000Z"),
     });
 
-    expect(messageId).toBe("mail-message-1");
+    expect(publishResult).toEqual({
+      messageId: "mail-message-1",
+      sent: true,
+      finalized: true,
+    });
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Mail Checklist"),
@@ -726,7 +730,7 @@ describe("FWA match checklist service", () => {
       },
     ];
 
-    const messageId = await publishFwaMatchChecklistMessageToChannel({
+    const publishResult = await publishFwaMatchChecklistMessageToChannel({
       viewType: "Bases",
       channel: { send },
       guildId: "guild-1",
@@ -740,7 +744,11 @@ describe("FWA match checklist service", () => {
       expiresAt: new Date("2026-05-13T00:30:00.000Z"),
     });
 
-    expect(messageId).toBe("bases-message-1");
+    expect(publishResult).toEqual({
+      messageId: "bases-message-1",
+      sent: true,
+      finalized: true,
+    });
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),

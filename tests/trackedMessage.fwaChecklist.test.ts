@@ -28,8 +28,10 @@ import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
   buildFwaMatchChecklistContent,
+  buildFwaMatchChecklistPublicationClaimKey,
   buildFwaMatchChecklistMessageContent,
   findLatestFwaMatchChecklistCheckedClanTags,
+  normalizeFwaMatchChecklistKind,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
 import {
@@ -148,6 +150,28 @@ describe("fwa checklist tracked messages", () => {
     vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
       null as any,
     );
+  });
+
+  it("normalizes checklist kinds and keeps mail and bases claim keys separate", () => {
+    expect(normalizeFwaMatchChecklistKind("mail")).toBe("mail_checklist");
+    expect(normalizeFwaMatchChecklistKind("mail_checklist")).toBe("mail_checklist");
+    expect(normalizeFwaMatchChecklistKind("bases")).toBe("bases_checklist");
+    expect(normalizeFwaMatchChecklistKind("bases_checklist")).toBe("bases_checklist");
+
+    const mailKey = buildFwaMatchChecklistPublicationClaimKey({
+      guildId: "guild-1",
+      syncMessageId: "sync-message-1",
+      viewType: "Mail",
+    });
+    const basesKey = buildFwaMatchChecklistPublicationClaimKey({
+      guildId: "guild-1",
+      syncMessageId: "sync-message-1",
+      viewType: "Bases",
+    });
+
+    expect(mailKey).toContain("kind=mail_checklist");
+    expect(basesKey).toContain("kind=bases_checklist");
+    expect(mailKey).not.toEqual(basesKey);
   });
 
   it("checklist post gets clan badge reactions", async () => {

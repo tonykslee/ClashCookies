@@ -50,6 +50,7 @@ vi.mock("../src/services/FwaMatchChecklistService", () => ({
 }));
 
 import { FwaMatchChecklistAutoPostService } from "../src/services/fwa/matchChecklistAutoPostService";
+import { trackedMessageService } from "../src/services/TrackedMessageService";
 
 function makeClient(input?: {
   channel?: unknown | null;
@@ -82,10 +83,13 @@ function makeChecklistChannel() {
 describe("FwaMatchChecklistAutoPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     botLogChannelServiceMock.getChannelIdForType.mockResolvedValue("checklist-channel");
     botLogChannelServiceMock.clearChannelIdForType.mockResolvedValue(undefined);
-    publishMock.publishFwaMatchChecklistMessageToChannel.mockResolvedValue("posted-message");
+    publishMock.publishFwaMatchChecklistMessageToChannel.mockResolvedValue({
+      messageId: "posted-message",
+      sent: true,
+      finalized: true,
+    });
     renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockImplementation(
       async ({
         viewType,
@@ -115,6 +119,19 @@ describe("FwaMatchChecklistAutoPostService", () => {
         emptyMessage: null,
       }),
     );
+    vi.spyOn(trackedMessageService, "claimFwaMatchChecklistPublication").mockResolvedValue({
+      claimed: true,
+      claimKey: "claim-key",
+      sourceTrackedMessageId: "source-tracked-message-id",
+    });
+    vi.spyOn(
+      trackedMessageService,
+      "findFwaMatchChecklistPublicationBySyncReference",
+    ).mockResolvedValue(null);
+    vi.spyOn(
+      trackedMessageService,
+      "releaseFwaMatchChecklistPublicationClaim",
+    ).mockResolvedValue(true);
   });
 
   it("posts only the Mail checklist when requested", async () => {
@@ -335,16 +352,11 @@ describe("FwaMatchChecklistAutoPostService", () => {
   });
 
   it("does not duplicate the Mail checklist for the same sync identity", async () => {
-    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
-      {
-        metadata: {
-          kind: "mail_checklist",
-          createdByUserId: "system",
-          createdAtIso: "2026-05-13T00:00:00.000Z",
-          rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }],
-        },
-      },
-    ]);
+    vi.mocked(trackedMessageService.claimFwaMatchChecklistPublication).mockResolvedValueOnce({
+      claimed: false,
+      claimKey: "claim-key",
+      sourceTrackedMessageId: "source-tracked-message-id",
+    });
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
     const client = makeClient({ channel: makeChecklistChannel() });
@@ -367,16 +379,11 @@ describe("FwaMatchChecklistAutoPostService", () => {
   });
 
   it("does not duplicate the Bases checklist for the same sync identity", async () => {
-    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
-      {
-        metadata: {
-          kind: "bases_checklist",
-          createdByUserId: "system",
-          createdAtIso: "2026-05-13T00:00:00.000Z",
-          rows: [{ clanTag: "#PYPY", compactCopyLine: "row", badgeEmojiInline: "" }],
-        },
-      },
-    ]);
+    vi.mocked(trackedMessageService.claimFwaMatchChecklistPublication).mockResolvedValueOnce({
+      claimed: false,
+      claimKey: "claim-key",
+      sourceTrackedMessageId: "source-tracked-message-id",
+    });
     const cocFactory = vi.fn(() => ({} as any));
     const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
     const client = makeClient({ channel: makeChecklistChannel() });
@@ -395,6 +402,141 @@ describe("FwaMatchChecklistAutoPostService", () => {
     expect(client.guilds.fetch).not.toHaveBeenCalled();
     expect(botLogChannelServiceMock.getChannelIdForType).not.toHaveBeenCalled();
     expect(cocFactory).not.toHaveBeenCalled();
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+  });
+
+  it("skips when an existing checklist row is already stored for the same source sync and kind", async () => {
+    vi.mocked(
+      trackedMessageService.findFwaMatchChecklistPublicationBySyncReference,
+    ).mockResolvedValueOnce({
+      id: "tracked-checklist-1",
+      messageId: "message-1",
+      referenceId: "sync-message-1",
+      status: "ACTIVE",
+      metadata: {
+        kind: "mail_checklist",
+      },
+    } as any);
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel: makeChecklistChannel() }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).not.toHaveBeenCalled();
+  });
+
+  it("blocks reposting when the prior checklist row was deleted", async () => {
+    vi.mocked(
+      trackedMessageService.findFwaMatchChecklistPublicationBySyncReference,
+    ).mockResolvedValueOnce({
+      id: "tracked-checklist-1",
+      messageId: "deleted-message-1",
+      referenceId: "sync-message-1",
+      status: "DELETED",
+      metadata: {
+        kind: "mail_checklist",
+      },
+    } as any);
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel: makeChecklistChannel() }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim when Discord send fails before persistence", async () => {
+    publishMock.publishFwaMatchChecklistMessageToChannel.mockResolvedValueOnce({
+      messageId: null,
+      sent: false,
+      finalized: false,
+    });
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel: makeChecklistChannel() }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 0, failed: 1 });
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).toHaveBeenCalledWith({
+      sourceTrackedMessageId: "source-tracked-message-id",
+      claimKey: "claim-key",
+    });
+  });
+
+  it("retains the claim when send succeeds but persistence fails", async () => {
+    publishMock.publishFwaMatchChecklistMessageToChannel.mockResolvedValueOnce({
+      messageId: "posted-message",
+      sent: true,
+      finalized: false,
+    });
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel: makeChecklistChannel() }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 0, failed: 1 });
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).not.toHaveBeenCalled();
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the claim when checklist rendering fails before send", async () => {
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockRejectedValueOnce(
+      new Error("COC_QUEUE_CONTEXT_MISSING:getCurrentWar"),
+    );
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel: makeChecklistChannel() }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+      },
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 0, skipped: 0, failed: 1 });
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).toHaveBeenCalledWith({
+      sourceTrackedMessageId: "source-tracked-message-id",
+      claimKey: "claim-key",
+    });
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
   });
 
