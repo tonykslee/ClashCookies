@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   BotLogChannelService,
-  type BotLogChannelType,
 } from "../src/services/BotLogChannelService";
 
 function createSettingsStub() {
@@ -28,17 +27,17 @@ describe("BotLogChannelService typed routing", () => {
     await service.setChannelId("guild-1", "111111111111111111");
     await service.setChannelIdForType(
       "guild-1",
-      "base-swap" as BotLogChannelType,
+      "base-swap",
       "222222222222222222",
     );
     await service.setChannelIdForType(
       "guild-1",
-      "sync" as BotLogChannelType,
+      "sync",
       "333333333333333333",
     );
     await service.setChannelIdForType(
       "guild-1",
-      "checklist" as BotLogChannelType,
+      "checklist",
       "444444444444444444",
     );
 
@@ -79,6 +78,60 @@ describe("BotLogChannelService typed routing", () => {
     );
     expect(await service.getChannelId("guild-1")).toBe("111111111111111111");
     expect(await service.getChannelIdForType("guild-1", "base-swap")).toBeNull();
+  });
+
+  it("keeps routed ban-log settings separate from the typed bot-log channels", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "ban-log",
+      routingMode: "BOT_LOG",
+    });
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "ban-join-alert",
+      routingMode: "CUSTOM",
+      channelId: "555555555555555555",
+    });
+
+    expect(stub.storage.get("bot_logs_routing:guild-1:ban-log")).toBe(
+      JSON.stringify({ routingMode: "BOT_LOG", channelId: null }),
+    );
+    expect(stub.storage.get("bot_logs_routing:guild-1:ban-join-alert")).toBe(
+      JSON.stringify({ routingMode: "CUSTOM", channelId: "555555555555555555" }),
+    );
+    await expect(service.getRoutingConfigForType("guild-1", "ban-log")).resolves.toEqual({
+      routingMode: "BOT_LOG",
+      channelId: null,
+      legacy: false,
+      configured: true,
+    });
+    await expect(service.getRoutingConfigForType("guild-1", "ban-join-alert")).resolves.toEqual({
+      routingMode: "CUSTOM",
+      channelId: "555555555555555555",
+      legacy: false,
+      configured: true,
+    });
+  });
+
+  it("defaults ban-log to disabled and ban-join-alert to clan-lead when unset", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+
+    await expect(service.getRoutingConfigForType("guild-1", "ban-log")).resolves.toEqual({
+      routingMode: "DISABLED",
+      channelId: null,
+      legacy: false,
+      configured: false,
+    });
+    await expect(service.getRoutingConfigForType("guild-1", "ban-join-alert")).resolves.toEqual({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+      legacy: false,
+      configured: false,
+    });
   });
 
   it("persists base-swap routing config separately from legacy typed channels", async () => {
@@ -122,7 +175,7 @@ describe("BotLogChannelService typed routing", () => {
 
     await service.setChannelIdForType(
       "guild-1",
-      "base-swap" as BotLogChannelType,
+      "base-swap",
       "222222222222222222",
     );
 

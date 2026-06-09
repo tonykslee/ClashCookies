@@ -20,6 +20,7 @@ import {
   CommandPermissionService,
 } from "../services/CommandPermissionService";
 import { BanService, type BanListRecord } from "../services/BanService";
+import { banLogService } from "../services/BanLogService";
 import {
   normalizeClanTag,
   normalizeDiscordUserId,
@@ -528,6 +529,16 @@ export const Ban: Command = {
           expiresAt: result.record?.expiresAt ?? durationResult.expiresAt,
         }),
       });
+
+      if (result.record && (result.outcome === "created" || result.outcome === "updated")) {
+        await banLogService.postBanActionLog({
+          client: _client,
+          guildId,
+          action: result.outcome,
+          record: result.record,
+          actorDiscordUserId: interaction.user.id,
+        });
+      }
       return;
     }
 
@@ -573,6 +584,16 @@ export const Ban: Command = {
           target: targetResult.target,
         }),
       });
+
+      if (result.record && result.outcome === "removed") {
+        await banLogService.postBanActionLog({
+          client: _client,
+          guildId,
+          action: "removed",
+          record: result.record,
+          actorDiscordUserId: interaction.user.id,
+        });
+      }
     }
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {

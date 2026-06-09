@@ -190,7 +190,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("custom");
   });
 
-  it("documents maintenance bot-log routing in the bot-logs help detail text", () => {
+  it("documents ban bot-log routing in the bot-logs help detail text", () => {
     const botLogsHelpText = helpEmbedText("bot-logs");
     const normalized = botLogsHelpText.toLowerCase();
     expect(botLogsHelpText).not.toContain("set-channel");
@@ -204,6 +204,17 @@ describe("command coverage", () => {
     expect(normalized).toContain("type:base-swap");
     expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false>");
     expect(normalized).toContain("enable:false");
+    expect(botLogsHelpText).toContain("type:ban-log");
+    expect(botLogsHelpText).toContain("type:ban-join-alert");
+    expect(normalized).toContain("defaults to clan-lead channel when unset");
+  });
+
+  it("documents ban routing in the ban help detail text", () => {
+    const banHelpText = helpEmbedText("ban");
+    const normalized = banHelpText.toLowerCase();
+    expect(normalized).toContain("ban action logs route through `/bot-logs type:ban-log`");
+    expect(normalized).toContain("banned-player join alerts route through `/bot-logs type:ban-join-alert`");
+    expect(normalized).toContain("clan:<tracked clan>");
   });
 
   it("documents the /clan root in clan help detail text", () => {
@@ -223,6 +234,7 @@ describe("command coverage", () => {
     const unlinkedHelpText = helpEmbedText("unlinked");
     expect(unlinkedHelpText).toContain("clan-lead channel");
     expect(unlinkedHelpText).toContain("leader-channel");
+    expect(unlinkedHelpText).toContain("/bot-logs type:ban-join-alert");
   });
 
   it("documents /raids overview source modes in the raids help detail text", () => {

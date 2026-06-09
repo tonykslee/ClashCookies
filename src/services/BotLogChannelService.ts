@@ -2,8 +2,30 @@ import { SettingsService } from "./SettingsService";
 
 const BOT_LOG_CHANNEL_SETTING_PREFIX = "bot_logs_channel";
 const BASE_SWAP_ROUTING_SETTING_PREFIX = "bot_logs_base_swap_routing";
-export const BOT_LOG_CHANNEL_TYPES = ["base-swap", "maintenance", "sync", "checklist"] as const;
+const ROUTED_BOT_LOG_ROUTING_SETTING_PREFIX = "bot_logs_routing";
+export const BOT_LOG_CHANNEL_TYPES = [
+  "base-swap",
+  "maintenance",
+  "sync",
+  "checklist",
+  "ban-log",
+  "ban-join-alert",
+] as const;
 export type BotLogChannelType = (typeof BOT_LOG_CHANNEL_TYPES)[number];
+export const SIMPLE_BOT_LOG_CHANNEL_TYPES = [
+  "base-swap",
+  "maintenance",
+  "sync",
+  "checklist",
+] as const;
+export type SimpleBotLogChannelType =
+  (typeof SIMPLE_BOT_LOG_CHANNEL_TYPES)[number];
+export const ROUTED_BOT_LOG_CHANNEL_TYPES = [
+  "ban-log",
+  "ban-join-alert",
+] as const;
+export type RoutedBotLogChannelType =
+  (typeof ROUTED_BOT_LOG_CHANNEL_TYPES)[number];
 export type BaseSwapBotLogRoutingMode =
   | "CLAN_LOG"
   | "CLAN_LEAD"
@@ -14,6 +36,12 @@ export type BaseSwapBotLogRoutingConfig = {
   routingMode: BaseSwapBotLogRoutingMode;
   channelId: string | null;
   legacy: boolean;
+};
+export type RoutedBotLogRoutingConfig = {
+  routingMode: BaseSwapBotLogRoutingMode;
+  channelId: string | null;
+  legacy: boolean;
+  configured: boolean;
 };
 
 /** Purpose: build per-guild setting key for bot-log channel configuration. */
@@ -28,6 +56,13 @@ function botLogChannelKey(
 
 function baseSwapRoutingKey(guildId: string): string {
   return `${BASE_SWAP_ROUTING_SETTING_PREFIX}:${guildId}`;
+}
+
+function routedBotLogRoutingKey(
+  guildId: string,
+  type: RoutedBotLogChannelType,
+): string {
+  return `${ROUTED_BOT_LOG_ROUTING_SETTING_PREFIX}:${guildId}:${type}`;
 }
 
 function normalizeChannelId(input: string | null | undefined): string | null {
@@ -49,6 +84,72 @@ function normalizeBaseSwapRoutingMode(
     return value;
   }
   return null;
+}
+
+function getAllowedRoutingModes(
+  type: RoutedBotLogChannelType,
+): ReadonlySet<BaseSwapBotLogRoutingMode> {
+  if (type === "ban-log") {
+    return new Set<BaseSwapBotLogRoutingMode>([
+      "BOT_LOG",
+      "CUSTOM",
+      "DISABLED",
+    ]);
+  }
+  return new Set<BaseSwapBotLogRoutingMode>([
+    "CLAN_LOG",
+    "CLAN_LEAD",
+    "BOT_LOG",
+    "CUSTOM",
+    "DISABLED",
+  ]);
+}
+
+function getDefaultRoutingMode(
+  type: RoutedBotLogChannelType,
+): BaseSwapBotLogRoutingMode {
+  return type === "ban-join-alert" ? "CLAN_LEAD" : "DISABLED";
+}
+
+function buildDefaultRoutedBotLogRoutingConfig(
+  type: RoutedBotLogChannelType,
+): RoutedBotLogRoutingConfig {
+  return {
+    routingMode: getDefaultRoutingMode(type),
+    channelId: null,
+    legacy: false,
+    configured: false,
+  };
+}
+
+function parseRoutedBotLogRoutingConfig(
+  raw: string | null,
+  type: RoutedBotLogChannelType,
+): RoutedBotLogRoutingConfig {
+  if (!raw) {
+    return buildDefaultRoutedBotLogRoutingConfig(type);
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      routingMode?: string | null;
+      channelId?: string | null;
+    };
+    const routingMode = normalizeBaseSwapRoutingMode(parsed.routingMode);
+    const allowedModes = getAllowedRoutingModes(type);
+    if (!routingMode || !allowedModes.has(routingMode)) {
+      return buildDefaultRoutedBotLogRoutingConfig(type);
+    }
+
+    return {
+      routingMode,
+      channelId: routingMode === "CUSTOM" ? normalizeChannelId(parsed.channelId) : null,
+      legacy: false,
+      configured: true,
+    };
+  } catch {
+    return buildDefaultRoutedBotLogRoutingConfig(type);
+  }
 }
 
 function parseBaseSwapRoutingConfig(
@@ -88,7 +189,7 @@ export class BotLogChannelService {
   /** Purpose: get configured typed bot-log channel id for a guild. */
   async getChannelIdForType(
     guildId: string,
-    type: BotLogChannelType,
+    type: SimpleBotLogChannelType,
   ): Promise<string | null> {
     const raw = await this.settings.get(botLogChannelKey(guildId, type));
     if (!raw) return null;
@@ -145,6 +246,53 @@ export class BotLogChannelService {
     await this.settings.delete(baseSwapRoutingKey(guildId));
   }
 
+  /** Purpose: load persisted routed bot-log config for ban-log or banned-join alerts. */
+  async getRoutingConfigForType(
+    guildId: string,
+    type: RoutedBotLogChannelType,
+  ): Promise<RoutedBotLogRoutingConfig> {
+    const raw = await this.settings.get(routedBotLogRoutingKey(guildId, type));
+    return parseRoutedBotLogRoutingConfig(raw, type);
+  }
+
+  /** Purpose: persist routed bot-log config for ban-log or banned-join alerts. */
+  async setRoutingConfigForType(input: {
+    guildId: string;
+    type: RoutedBotLogChannelType;
+    routingMode: BaseSwapBotLogRoutingMode;
+    channelId?: string | null;
+  }): Promise<void> {
+    const allowedModes = getAllowedRoutingModes(input.type);
+    const routingMode = normalizeBaseSwapRoutingMode(input.routingMode);
+    if (!routingMode || !allowedModes.has(routingMode)) {
+      throw new Error("INVALID_ROUTED_BOT_LOG_ROUTING");
+    }
+
+    const channelId = normalizeChannelId(input.channelId);
+    if (routingMode === "CUSTOM" && !channelId) {
+      throw new Error("INVALID_ROUTED_BOT_LOG_CHANNEL");
+    }
+    if (routingMode !== "CUSTOM" && channelId) {
+      throw new Error("INVALID_ROUTED_BOT_LOG_CHANNEL");
+    }
+
+    await this.settings.set(
+      routedBotLogRoutingKey(input.guildId, input.type),
+      JSON.stringify({
+        routingMode,
+        channelId: routingMode === "CUSTOM" ? channelId : null,
+      }),
+    );
+  }
+
+  /** Purpose: clear routed bot-log config for ban-log or banned-join alerts. */
+  async clearRoutingConfigForType(
+    guildId: string,
+    type: RoutedBotLogChannelType,
+  ): Promise<void> {
+    await this.settings.delete(routedBotLogRoutingKey(guildId, type));
+  }
+
   /** Purpose: persist configured bot-log channel id for a guild. */
   async setChannelId(guildId: string, channelId: string): Promise<void> {
     await this.settings.set(botLogChannelKey(guildId), channelId);
@@ -167,7 +315,7 @@ export class BotLogChannelService {
   /** Purpose: clear configured typed bot-log channel id for a guild. */
   async clearChannelIdForType(
     guildId: string,
-    type: BotLogChannelType,
+    type: SimpleBotLogChannelType,
   ): Promise<void> {
     await this.settings.delete(botLogChannelKey(guildId, type));
   }
