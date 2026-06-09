@@ -223,6 +223,12 @@ type FwaMatchChecklistPublicationInput = {
   onPinFailure?: (err: unknown) => void | Promise<void>;
 };
 
+export type FwaMatchChecklistPublishResult = {
+  messageId: string | null;
+  sent: boolean;
+  finalized: boolean;
+};
+
 /** Purpose: finalize a public checklist publication after the message has been created. */
 export async function finalizeFwaMatchChecklistPublication(
   params: FwaMatchChecklistPublicationInput,
@@ -378,7 +384,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
   createdByUserId: string;
   referenceId?: string | null;
   expiresAt?: Date | null;
-}): Promise<string | null> {
+}): Promise<FwaMatchChecklistPublishResult> {
   const viewType = params.viewType ?? "Mail";
   const content =
     viewType === "Bases"
@@ -397,8 +403,8 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
     );
     return null;
   })) as { id: string } | null;
-  if (!postedMessage) return null;
-  await finalizeFwaMatchChecklistPublication({
+  if (!postedMessage) return { messageId: null, sent: false, finalized: false };
+  const finalized = await finalizeFwaMatchChecklistPublication({
     guildId: params.guildId,
     channelId: params.channelId,
     message: postedMessage as any,
@@ -410,13 +416,19 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? null,
     viewType,
-  }).catch((err) => {
-    console.error(
-      `[fwa match checklist] finalize failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
-    );
-    return null;
-  });
-  return postedMessage.id;
+  })
+    .then(() => true)
+    .catch((err) => {
+      console.error(
+        `[fwa match checklist] finalize failed message=${postedMessage.id} channel=${params.channelId} guild=${params.guildId} error=${formatError(err)}`,
+      );
+      return false;
+    });
+  return {
+    messageId: postedMessage.id,
+    sent: true,
+    finalized,
+  };
 }
 
 /** Purpose: refresh a public checklist message in place without touching reactions. */

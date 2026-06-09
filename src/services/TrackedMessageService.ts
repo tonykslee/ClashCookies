@@ -404,6 +404,46 @@ export function resolveTrackedMessageSyncIdentity(input: {
   );
 }
 
+export type FwaMatchChecklistKind = "mail_checklist" | "bases_checklist";
+export type FwaMatchChecklistViewType = "Mail" | "Bases";
+
+export function normalizeFwaMatchChecklistKind(
+  value: unknown,
+): FwaMatchChecklistKind | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "mail" || normalized === "mail_checklist") {
+    return "mail_checklist";
+  }
+  if (normalized === "bases" || normalized === "bases_checklist") {
+    return "bases_checklist";
+  }
+  return null;
+}
+
+export function resolveFwaMatchChecklistKindFromViewType(
+  viewType: FwaMatchChecklistViewType | string | null | undefined,
+): FwaMatchChecklistKind {
+  return normalizeFwaMatchChecklistKind(viewType) ?? "mail_checklist";
+}
+
+export function buildFwaMatchChecklistPublicationClaimKey(params: {
+  guildId: string;
+  syncMessageId: string;
+  viewType: FwaMatchChecklistViewType | string | null | undefined;
+}): string | null {
+  const guildId = String(params.guildId ?? "").trim();
+  const syncMessageId = normalizeTrackedMessageId(params.syncMessageId ?? null);
+  if (!guildId || !syncMessageId) return null;
+  const kind = resolveFwaMatchChecklistKindFromViewType(params.viewType);
+  return [
+    "fwa_match_checklist_publication",
+    `guild=${guildId}`,
+    `sync=${syncMessageId}`,
+    `feature=${TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST}`,
+    `kind=${kind}`,
+  ].join("|");
+}
+
 function buildFwaMatchChecklistBasesCompletionKey(params: {
   guildId: string;
   clanTag: string;
@@ -921,12 +961,7 @@ export function parseFwaMatchChecklistMetadata(
     );
   if (rows.length === 0) return null;
   return {
-    kind:
-      value.kind === "bases_checklist"
-        ? "bases_checklist"
-        : value.kind === "mail_checklist"
-          ? "mail_checklist"
-          : undefined,
+    kind: normalizeFwaMatchChecklistKind(value.kind) ?? undefined,
     createdByUserId,
     createdAtIso,
     scopeKey: scopeKey || null,
@@ -997,7 +1032,7 @@ export function resolveFwaMatchChecklistViewType(
   metadata: unknown,
 ): "Mail" | "Bases" {
   if (!isObject(metadata)) return "Mail";
-  return String(metadata.kind ?? "").trim() === "bases_checklist" ? "Bases" : "Mail";
+  return normalizeFwaMatchChecklistKind(metadata.kind) === "bases_checklist" ? "Bases" : "Mail";
 }
 
 /** Purpose: render the current sync spin/claim state into one embed shared by the scheduler and the manual command. */
@@ -1642,6 +1677,130 @@ export class TrackedMessageService {
         metadata: params.metadata as any,
       },
     });
+  }
+
+  async claimFwaMatchChecklistPublication(params: {
+    guildId: string;
+    syncMessageId: string;
+    viewType: FwaMatchChecklistViewType | string | null | undefined;
+  }): Promise<{
+    claimed: boolean;
+    claimKey: string | null;
+    sourceTrackedMessageId: string | null;
+  }> {
+    const guildId = String(params.guildId ?? "").trim();
+    const syncMessageId = normalizeTrackedMessageId(params.syncMessageId ?? null);
+    const claimKey = buildFwaMatchChecklistPublicationClaimKey({
+      guildId,
+      syncMessageId: syncMessageId ?? "",
+      viewType: params.viewType,
+    });
+    if (!guildId || !syncMessageId || !claimKey) {
+      return {
+        claimed: false,
+        claimKey: null,
+        sourceTrackedMessageId: null,
+      };
+    }
+
+    const sourceTracked = await prisma.trackedMessage.findUnique({
+      where: { messageId: syncMessageId },
+      select: { id: true, guildId: true, messageId: true, featureType: true },
+    });
+    if (
+      !sourceTracked ||
+      sourceTracked.guildId !== guildId ||
+      (sourceTracked.featureType as string) !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST
+    ) {
+      return {
+        claimed: false,
+        claimKey,
+        sourceTrackedMessageId: sourceTracked?.id ?? null,
+      };
+    }
+
+    const claimed = await prisma.trackedMessageClaim.createMany({
+      data: [
+        {
+          trackedMessageId: sourceTracked.id,
+          userId: claimKey,
+          clanTag: claimKey,
+        },
+      ],
+      skipDuplicates: true,
+    });
+
+    return {
+      claimed: claimed.count > 0,
+      claimKey,
+      sourceTrackedMessageId: sourceTracked.id,
+    };
+  }
+
+  async releaseFwaMatchChecklistPublicationClaim(params: {
+    sourceTrackedMessageId: string;
+    claimKey: string;
+  }): Promise<boolean> {
+    const sourceTrackedMessageId = String(params.sourceTrackedMessageId ?? "").trim();
+    const claimKey = String(params.claimKey ?? "").trim();
+    if (!sourceTrackedMessageId || !claimKey) return false;
+
+    const result = await prisma.trackedMessageClaim.deleteMany({
+      where: {
+        trackedMessageId: sourceTrackedMessageId,
+        userId: claimKey,
+        clanTag: claimKey,
+      },
+    });
+    return result.count > 0;
+  }
+
+  async findFwaMatchChecklistPublicationBySyncReference(params: {
+    guildId: string;
+    syncMessageId: string;
+    viewType: FwaMatchChecklistViewType | string | null | undefined;
+  }): Promise<{
+    id: string;
+    messageId: string;
+    referenceId: string | null;
+    status: (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS];
+    metadata: unknown;
+  } | null> {
+    const guildId = String(params.guildId ?? "").trim();
+    const syncMessageId = normalizeTrackedMessageId(params.syncMessageId ?? null);
+    const kind = normalizeFwaMatchChecklistKind(params.viewType);
+    if (!guildId || !syncMessageId || !kind) return null;
+
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId,
+        referenceId: syncMessageId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        id: true,
+        messageId: true,
+        referenceId: true,
+        status: true,
+        metadata: true,
+      },
+    });
+
+    for (const row of rows) {
+      const metadata = parseFwaMatchChecklistMetadata(row.metadata);
+      if (!metadata) continue;
+      if (metadata.kind !== kind) continue;
+      return {
+        id: row.id,
+        messageId: row.messageId,
+        referenceId: row.referenceId ?? null,
+        status: row.status,
+        metadata: row.metadata,
+      };
+    }
+
+    return null;
   }
 
   async claimFwaBasesChecklistReminderMarker(params: {
