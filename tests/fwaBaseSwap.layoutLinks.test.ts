@@ -83,6 +83,7 @@ import {
   FwaBaseSwapTrackedMetadata,
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
+  trackedMessageService,
   TrackedMessageService,
 } from "../src/services/TrackedMessageService";
 
@@ -117,6 +118,13 @@ beforeEach(() => {
     return null;
   });
   baseSwapRosterMock.resolveBaseSwapRosterForClan.mockReset();
+  vi.spyOn(
+    trackedMessageService,
+    "resolveFwaBaseSwapSyncIdentityForClanWar",
+  ).mockResolvedValue({
+    syncMessageId: null,
+    source: "none",
+  });
   emojiResolverMock.fetchApplicationEmojiInventory.mockReset();
   emojiResolverMock.fetchApplicationEmojiInventory.mockResolvedValue({
     ok: false,
@@ -1568,6 +1576,7 @@ describe("FWA base-swap split-post prompt actions", () => {
       mentionUserIds: ["user-1"],
       swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
+      syncMessageId: "sync-message-1",
       splitContents: [
         "Part 1 content\nline 2",
         `Part 2 content\n\nReact with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
@@ -1794,6 +1803,12 @@ describe("FWA base-swap mail-channel routing", () => {
         clanRoleId: null,
       },
     ]);
+    vi.mocked(
+      trackedMessageService.resolveFwaBaseSwapSyncIdentityForClanWar,
+    ).mockResolvedValueOnce({
+      syncMessageId: "sync-message-1",
+      source: "expired_sync_post_fallback",
+    } as any);
     const posted = {
       id: "msg-1",
       url: "https://discord.com/channels/guild-1/mail-1/msg-1",
@@ -1823,6 +1838,8 @@ describe("FWA base-swap mail-channel routing", () => {
     const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
     expect(upsertCall.create.channelId).toBe("mail-1");
     expect(upsertCall.update.channelId).toBe("mail-1");
+    expect(upsertCall.create.metadata.syncMessageId).toBe("sync-message-1");
+    expect(upsertCall.update.metadata.syncMessageId).toBe("sync-message-1");
     expect(botLogSendSpy).toHaveBeenCalledTimes(1);
     expect(String(run.botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "Source channel:",
@@ -2444,6 +2461,7 @@ describe("FWA base-swap mail-channel routing", () => {
       mentionUserIds: ["111"],
       swapReminder: false,
       createdAtIso: "2026-03-20T00:00:00.000Z",
+      syncMessageId: "sync-message-1",
       splitContents: ["Part 1 content", "Part 2 content"],
     });
 
@@ -2522,10 +2540,12 @@ describe("FWA base-swap mail-channel routing", () => {
     for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
       expect(call[0].create.channelId).toBe("mail-1");
       expect(call[0].update.channelId).toBe("mail-1");
+      expect(call[0].create.metadata.syncMessageId).toBe("sync-message-1");
+      expect(call[0].update.metadata.syncMessageId).toBe("sync-message-1");
     }
     expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
-  expect(interaction.update).toHaveBeenCalledWith(
+    expect(interaction.update).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining(postedA.url),
         components: [],
@@ -2574,6 +2594,7 @@ describe("FWA base-swap mail-channel routing", () => {
       mentionUserIds: ["111", "222"],
       swapReminder: true,
       createdAtIso: "2026-03-20T00:00:00.000Z",
+      syncMessageId: "sync-message-1",
       splitContents: ["Part 1 content", "Part 2 content"],
     });
 
@@ -2649,6 +2670,10 @@ describe("FWA base-swap mail-channel routing", () => {
     );
     expect(interaction.channel.send).not.toHaveBeenCalled();
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
+    for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
+      expect(call[0].create.metadata.syncMessageId).toBe("sync-message-1");
+      expect(call[0].update.metadata.syncMessageId).toBe("sync-message-1");
+    }
     const updatedContent = String(
       interaction.update.mock.calls[0]?.[0]?.content ?? "",
     );
@@ -3303,6 +3328,7 @@ describe("CWL base-swap labels", () => {
       mentionUserIds: ["111"],
       swapReminder: true,
       createdAtIso: "2026-03-20T00:00:00.000Z",
+      syncMessageId: "sync-message-1",
       splitContents: ["Part 1 content", "Part 2 content"],
     });
 
