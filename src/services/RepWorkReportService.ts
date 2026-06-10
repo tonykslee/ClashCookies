@@ -1,6 +1,8 @@
 import { Prisma, RepWorkActivityType } from "@prisma/client";
 import { EmbedBuilder } from "discord.js";
+import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
+import { TRACKED_MESSAGE_FEATURE_TYPE } from "./TrackedMessageService";
 
 const DEFAULT_RESULT_LIMIT = 15;
 const MAX_RESULT_LIMIT = 15;
@@ -51,9 +53,9 @@ type RepWorkActivityAggregateRow = {
 };
 
 type RepWorkSyncClaimAggregateRow = {
-  discordUserId: string;
-  syncsParticipated: bigint | number | string;
-  clanClaims: bigint | number | string;
+  userId: string;
+  trackedMessageId: string;
+  clanTag: string;
 };
 
 type RepWorkTelemetryAggregateRow = {
@@ -122,6 +124,19 @@ function ensureUserRow(
   };
   users.set(discordUserId, row);
   return row;
+}
+
+function logBuildFailure(input: {
+  guildId: string;
+  since: string;
+  start: Date;
+  end: Date;
+  stage: string;
+  error: unknown;
+}): void {
+  console.error(
+    `[rep-work-report] build_failed guildId=${input.guildId} since=${input.since} start=${input.start.toISOString()} end=${input.end.toISOString()} stage=${input.stage} error=${formatError(input.error)}`,
+  );
 }
 
 function sortReportUsers(rows: RepWorkReportUserRow[]): RepWorkReportUserRow[] {
@@ -242,101 +257,137 @@ export class RepWorkReportService {
       : DEFAULT_RESULT_LIMIT;
     const limit = Math.max(1, Math.min(MAX_RESULT_LIMIT, requestedLimit));
 
-    const activityRows = await prisma.$queryRaw<RepWorkActivityAggregateRow[]>(Prisma.sql`
-      SELECT
-        "discordUserId",
-        "activityType",
-        COUNT(*)::int AS "totalCount",
-        AVG("prepTimeLeftSeconds")::double precision AS "avgPrepTimeLeftSeconds"
-      FROM "RepWorkActivityEvent"
-      WHERE
-        "guildId" = ${guildId}
-        AND "eventAt" >= ${start}
-        AND "eventAt" < ${end}
-      GROUP BY "discordUserId", "activityType"
-    `);
+    let stage = "activity_query";
+    try {
+      const activityRows = await prisma.$queryRaw<RepWorkActivityAggregateRow[]>(Prisma.sql`
+        SELECT
+          "discordUserId",
+          "activityType",
+          COUNT(*)::int AS "totalCount",
+          AVG("prepTimeLeftSeconds")::double precision AS "avgPrepTimeLeftSeconds"
+        FROM "RepWorkActivityEvent"
+        WHERE
+          "guildId" = ${guildId}
+          AND "eventAt" >= ${start}
+          AND "eventAt" < ${end}
+        GROUP BY "discordUserId", "activityType"
+      `);
 
-    const syncClaimRows = await prisma.$queryRaw<RepWorkSyncClaimAggregateRow[]>(Prisma.sql`
-      SELECT
-        c."userId" AS "discordUserId",
-        COUNT(DISTINCT c."trackedMessageId")::int AS "syncsParticipated",
-        COUNT(*)::int AS "clanClaims"
-      FROM "TrackedMessageClaim" c
-      INNER JOIN "TrackedMessage" tm
-        ON tm."id" = c."trackedMessageId"
-      WHERE
-        tm."guildId" = ${guildId}
-        AND tm."featureType" = ${"SYNC_TIME_POST"}
-        AND c."createdAt" >= ${start}
-        AND c."createdAt" < ${end}
-      GROUP BY c."userId"
-    `);
+      stage = "sync_claim_query";
+      const syncClaimRows = await prisma.trackedMessageClaim.findMany({
+        where: {
+          createdAt: { gte: start, lt: end },
+          trackedMessage: {
+            guildId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          },
+        },
+        select: {
+          userId: true,
+          trackedMessageId: true,
+          clanTag: true,
+        },
+      });
 
-    const users = new Map<string, RepWorkReportUserRow>();
-    const activityUserIds = new Set<string>();
-    for (const row of activityRows) {
-      const discordUserId = String(row.discordUserId ?? "").trim();
-      if (!discordUserId) continue;
-      activityUserIds.add(discordUserId);
-      const user = ensureUserRow(users, discordUserId);
-      if (row.activityType === RepWorkActivityType.BASES_CHECKED) {
-        user.basesChecked += toNumber(row.totalCount);
-        user.basesAvgPrepTimeLeftSeconds =
-          row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
-      } else if (row.activityType === RepWorkActivityType.MAIL_CHECKED) {
-        user.mailsChecked += toNumber(row.totalCount);
-        user.mailsAvgPrepTimeLeftSeconds =
-          row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
+      stage = "aggregate_sync_claims";
+      const users = new Map<string, RepWorkReportUserRow>();
+      const activityUserIds = new Set<string>();
+      for (const row of activityRows) {
+        const discordUserId = String(row.discordUserId ?? "").trim();
+        if (!discordUserId) continue;
+        activityUserIds.add(discordUserId);
+        const user = ensureUserRow(users, discordUserId);
+        if (row.activityType === RepWorkActivityType.BASES_CHECKED) {
+          user.basesChecked += toNumber(row.totalCount);
+          user.basesAvgPrepTimeLeftSeconds =
+            row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
+        } else if (row.activityType === RepWorkActivityType.MAIL_CHECKED) {
+          user.mailsChecked += toNumber(row.totalCount);
+          user.mailsAvgPrepTimeLeftSeconds =
+            row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
+        }
       }
+
+      const syncParticipationByUser = new Map<
+        string,
+        {
+          trackedMessageIds: Set<string>;
+          trackedMessageIdClanTags: Set<string>;
+        }
+      >();
+      for (const row of syncClaimRows as RepWorkSyncClaimAggregateRow[]) {
+        const discordUserId = String(row.userId ?? "").trim();
+        const trackedMessageId = String(row.trackedMessageId ?? "").trim();
+        const clanTag = String(row.clanTag ?? "").trim();
+        if (!discordUserId || !trackedMessageId || !clanTag) continue;
+        activityUserIds.add(discordUserId);
+        const entry =
+          syncParticipationByUser.get(discordUserId) ??
+          {
+            trackedMessageIds: new Set<string>(),
+            trackedMessageIdClanTags: new Set<string>(),
+          };
+        entry.trackedMessageIds.add(trackedMessageId);
+        entry.trackedMessageIdClanTags.add(`${trackedMessageId}|${clanTag.toUpperCase()}`);
+        syncParticipationByUser.set(discordUserId, entry);
+      }
+
+      for (const [discordUserId, entry] of syncParticipationByUser.entries()) {
+        const user = ensureUserRow(users, discordUserId);
+        user.syncsParticipated += entry.trackedMessageIds.size;
+        user.clanClaims += entry.trackedMessageIdClanTags.size;
+      }
+
+      const activeUserIds = [...activityUserIds];
+      stage = "telemetry_query";
+      const commandRows =
+        activeUserIds.length === 0
+          ? []
+          : await prisma.$queryRaw<RepWorkTelemetryAggregateRow[]>(Prisma.sql`
+              SELECT
+                "userId" AS "discordUserId",
+                "commandName",
+                "subcommand",
+                SUM("count")::int AS "totalCount"
+              FROM "TelemetryUserCommandAggregate"
+              WHERE
+                "guildId" = ${guildId}
+                AND "bucketStart" >= ${start}
+                AND "bucketStart" < ${end}
+                AND "userId" IN (${Prisma.join(activeUserIds)})
+              GROUP BY "userId", "commandName", "subcommand"
+            `);
+
+      stage = "build_report";
+      const topCommandsByUser = buildTopCommands(commandRows);
+      for (const [discordUserId, row] of users.entries()) {
+        row.topCommands = topCommandsByUser.get(discordUserId) ?? [];
+      }
+
+      const sortedUsers = sortReportUsers([...users.values()]);
+      const visibleUsers = sortedUsers.slice(0, limit);
+
+      return {
+        guildId,
+        start,
+        end,
+        duration,
+        totalUsers: sortedUsers.length,
+        visibleUsers: visibleUsers.length,
+        limit,
+        users: visibleUsers,
+      };
+    } catch (error) {
+      logBuildFailure({
+        guildId,
+        since: input.since,
+        start,
+        end,
+        stage,
+        error,
+      });
+      throw error;
     }
-
-    const syncUserIds = new Set<string>();
-    for (const row of syncClaimRows) {
-      const discordUserId = String(row.discordUserId ?? "").trim();
-      if (!discordUserId) continue;
-      syncUserIds.add(discordUserId);
-      const user = ensureUserRow(users, discordUserId);
-      user.syncsParticipated += toNumber(row.syncsParticipated);
-      user.clanClaims += toNumber(row.clanClaims);
-    }
-
-    const activeUserIds = [...new Set([...activityUserIds, ...syncUserIds])];
-    const commandRows =
-      activeUserIds.length === 0
-        ? []
-        : await prisma.$queryRaw<RepWorkTelemetryAggregateRow[]>(Prisma.sql`
-            SELECT
-              "userId" AS "discordUserId",
-              "commandName",
-              "subcommand",
-              SUM("count")::int AS "totalCount"
-            FROM "TelemetryUserCommandAggregate"
-            WHERE
-              "guildId" = ${guildId}
-              AND "bucketStart" >= ${start}
-              AND "bucketStart" < ${end}
-              AND "userId" IN (${Prisma.join(activeUserIds)})
-            GROUP BY "userId", "commandName", "subcommand"
-          `);
-
-    const topCommandsByUser = buildTopCommands(commandRows);
-    for (const [discordUserId, row] of users.entries()) {
-      row.topCommands = topCommandsByUser.get(discordUserId) ?? [];
-    }
-
-    const sortedUsers = sortReportUsers([...users.values()]);
-    const visibleUsers = sortedUsers.slice(0, limit);
-
-    return {
-      guildId,
-      start,
-      end,
-      duration,
-      totalUsers: sortedUsers.length,
-      visibleUsers: visibleUsers.length,
-      limit,
-      users: visibleUsers,
-    };
   }
 }
 
