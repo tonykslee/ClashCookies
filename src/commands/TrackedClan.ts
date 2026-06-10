@@ -38,8 +38,10 @@ import {
   upsertRaidTrackedClansForTags,
 } from "../services/RaidTrackedClanService";
 import {
+  buildFwaTrackedClanMinimalListRender,
   listFwaClanMemberCountsForTags,
   listFwaTrackedClansForDisplay,
+  loadFwaTrackedClanMinimalListState,
   listCwlTrackedClansForDetailedDisplay,
   resolveCwlTrackedClanEmojiTokens,
   refreshCwlTrackedClanDetailedDisplayWithQueueContext,
@@ -1476,8 +1478,8 @@ export const TrackedClan: Command = {
         }
 
         if (listType === "FWA" && displayMode === "minimal") {
-          const tracked = await listFwaTrackedClansForDisplay();
-          if (tracked.length === 0) {
+          const fwaMinimalState = await loadFwaTrackedClanMinimalListState();
+          if (fwaMinimalState.trackedClans.length === 0) {
             await safeReply(interaction, {
               ephemeral: true,
               content:
@@ -1486,26 +1488,14 @@ export const TrackedClan: Command = {
             return;
           }
           const refreshPrefix = `tracked-clan-list:fwa-summary:${interaction.id}`;
-          const refreshTags = tracked.map((clan) => clan.tag);
-          let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
-          const renderFwaMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
-            const lines = tracked.map((clan) =>
-              buildTrackedClanSummaryLine({
-                ...clan,
-                memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
-              }),
-            );
-            return {
-              embeds: [
-                buildTrackedClanSectionEmbed(
-                  "FWA",
-                  tracked.length,
-                  buildCombinedTrackedClanListDescription([{ title: "FWA", lines }]),
-                ),
-              ],
-              components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
-            };
-          };
+          let memberCountByTag = fwaMinimalState.memberCountByTag;
+          const renderFwaMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) =>
+            buildFwaTrackedClanMinimalListRender({
+              refreshPrefix,
+              trackedClans: fwaMinimalState.trackedClans,
+              memberCountByTag: input.memberCountByTag,
+              refreshing: input.refreshing,
+            });
           await interaction.editReply(renderFwaMinimal({ memberCountByTag, refreshing: false }));
 
           const message = await interaction.fetchReply();
@@ -1527,7 +1517,7 @@ export const TrackedClan: Command = {
                 interaction,
                 cocService,
                 viewName: "fwa-minimal",
-                displayedClanTags: refreshTags,
+                displayedClanTags: fwaMinimalState.refreshTags,
                 currentMemberCounts: memberCountByTag,
                 render: ({ memberCountByTag: counts, refreshing }) =>
                   renderFwaMinimal({ memberCountByTag: counts, refreshing }),

@@ -1824,6 +1824,114 @@ describe("/clan command behavior", () => {
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
   });
 
+  it("uses the shared FWA minimal list helper for the typed minimal view", async () => {
+    const loadSpy = vi
+      .spyOn(trackedClanListService, "loadFwaTrackedClanMinimalListState")
+      .mockResolvedValueOnce({
+        trackedClans: [
+          {
+            tag: "#2QG2C08UP",
+            name: "Alpha Clan",
+            loseStyle: "TRADITIONAL",
+            mailChannelId: null,
+            logChannelId: null,
+            leaderChannelId: "leader-channel-1",
+            clanRoleId: null,
+            leadRoleId: "lead-role-1",
+            clanBadge: null,
+            shortName: "AC",
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          },
+        ],
+        refreshTags: ["#2QG2C08UP"],
+        memberCountByTag: new Map([["#2QG2C08UP", 49]]),
+      });
+    const renderSpy = vi.spyOn(
+      trackedClanListService,
+      "buildFwaTrackedClanMinimalListRender",
+    );
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    expect(renderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        refreshPrefix: "tracked-clan-list:fwa-summary:tracked-clan-itx-1",
+        refreshing: false,
+        trackedClans: expect.arrayContaining([
+          expect.objectContaining({
+            tag: "#2QG2C08UP",
+            name: "Alpha Clan",
+          }),
+        ]),
+      }),
+    );
+    expect(getFirstEmbedDescription(interaction)).toContain("Alpha Clan");
+    expect(getFirstEmbedDescription(interaction)).toContain("49");
+  });
+
+  it("refreshes the typed FWA minimal overview section in place", async () => {
+    const loadSpy = vi
+      .spyOn(trackedClanListService, "loadFwaTrackedClanMinimalListState")
+      .mockResolvedValueOnce({
+        trackedClans: [
+          {
+            tag: "#2QG2C08UP",
+            name: "Alpha Clan",
+            loseStyle: "TRADITIONAL",
+            mailChannelId: null,
+            logChannelId: null,
+            leaderChannelId: "leader-channel-1",
+            clanRoleId: null,
+            leadRoleId: "lead-role-1",
+            clanBadge: null,
+            shortName: "AC",
+            createdAt: new Date("2026-04-01T00:00:00.000Z"),
+          },
+        ],
+        refreshTags: ["#2QG2C08UP"],
+        memberCountByTag: new Map([["#2QG2C08UP", 49]]),
+      });
+    vi.spyOn(trackedClanListService, "buildFwaTrackedClanMinimalListRender");
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 50 } },
+    ]);
+    fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags.mockResolvedValueOnce({
+      clanCount: 1,
+      rowCount: 1,
+      changedRowCount: 1,
+      failedClans: [],
+    });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "FWA", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    const refreshButton = makeButtonInteraction("tracked-clan-list:fwa-summary:tracked-clan-itx-1:refresh");
+    await collectHandler?.(refreshButton);
+
+    expect(fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags).toHaveBeenCalledWith(
+      ["#2QG2C08UP"],
+      { cocService: expect.any(Object) },
+    );
+    expect(refreshButton.update).toHaveBeenCalledTimes(1);
+    expect(String(interaction.editReply.mock.calls[1]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "")).toContain(
+      "50",
+    );
+  });
+
   it("renders a typed CWL minimal overview section and ignores display when type is omitted", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValueOnce([
       {
