@@ -410,6 +410,7 @@ type FwaBaseSwapSplitPostPayload = {
   mentionUserIds: string[];
   swapReminder: boolean;
   createdAtIso: string;
+  syncMessageId?: string | null;
   splitContents: [string, string];
 };
 
@@ -537,10 +538,7 @@ export async function handleFwaBaseSwapSplitPostButton(
   }
   const { channel: publishChannel, channelId: publishChannelId } =
     resolvedPublishChannel;
-  const latestActiveSyncPost = await trackedMessageService
-    .resolveLatestActiveSyncPost(payload.guildId)
-    .catch(() => null);
-  const syncMessageId = latestActiveSyncPost?.messageId ?? null;
+  const syncMessageId = payload.syncMessageId ?? null;
 
   try {
     const clanKind = payload.clanKind ?? "FWA";
@@ -14484,6 +14482,16 @@ export const Fwa: Command = {
         }
 
         const key = createTransientFwaKey();
+        const syncIdentity = await trackedMessageService
+          .resolveFwaBaseSwapSyncIdentityForClanWar({
+            guildId: interaction.guildId,
+            clanTag,
+            battleDayStart: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
+            prepStartTime:
+              resolvedRosterResult.roster.currentWarIdentity?.prepStartTime ?? null,
+          })
+          .catch(() => ({ syncMessageId: null, source: "none" as const }));
+        const syncMessageId = syncIdentity.syncMessageId ?? null;
         fwaBaseSwapSplitPostPayloads.set(key, {
           userId: interaction.user.id,
           username: interaction.user.username,
@@ -14506,6 +14514,7 @@ export const Fwa: Command = {
           mentionUserIds,
           swapReminder: Boolean(swapReminder),
           createdAtIso,
+          syncMessageId,
           splitContents: renderPlan.splitContents,
         });
 
@@ -14546,10 +14555,16 @@ export const Fwa: Command = {
       });
       const reminderMessages: string[] = [posted.url];
       const expiresAt = new Date(Date.now() + FWA_BASE_SWAP_TTL_MS);
-      const latestActiveSyncPost = await trackedMessageService
-        .resolveLatestActiveSyncPost(interaction.guildId)
+      const syncIdentity = await trackedMessageService
+        .resolveFwaBaseSwapSyncIdentityForClanWar({
+          guildId: interaction.guildId,
+          clanTag,
+          battleDayStart: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
+          prepStartTime:
+            resolvedRosterResult.roster.currentWarIdentity?.prepStartTime ?? null,
+        })
         .catch(() => null);
-      const syncMessageId = latestActiveSyncPost?.messageId ?? null;
+      const syncMessageId = syncIdentity?.syncMessageId ?? null;
       await trackedMessageService.createFwaBaseSwapTrackedMessages({
         guildId: interaction.guildId,
         clanTag,

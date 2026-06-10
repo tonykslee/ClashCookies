@@ -123,6 +123,44 @@ function makeBasesTrackedChecklistRow() {
   };
 }
 
+function makeUnscopedBaseSwapRow(params: {
+  id: string;
+  messageId: string;
+  clanTag: string;
+  createdAtIso: string;
+}) {
+  return {
+    id: params.id,
+    guildId: "guild-1",
+    channelId: "channel-1",
+    messageId: params.messageId,
+    featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+    status: TRACKED_MESSAGE_STATUS.ACTIVE,
+    referenceId: null,
+    clanTag: params.clanTag,
+    createdAt: new Date(params.createdAtIso),
+    expiresAt: new Date("2026-06-30T00:00:00.000Z"),
+    metadata: {
+      clanName: "Alpha",
+      createdByUserId: "user-1",
+      createdAtIso: params.createdAtIso,
+      swapReminder: false,
+      entries: [
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          discordUserId: null,
+          townhallLevel: 17,
+          section: "war_bases",
+          acknowledged: false,
+        },
+      ],
+      layoutLinks: [],
+    },
+  } as any;
+}
+
 describe("fwa checklist tracked messages", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -172,6 +210,110 @@ describe("fwa checklist tracked messages", () => {
     expect(mailKey).toContain("kind=mail_checklist");
     expect(basesKey).toContain("kind=bases_checklist");
     expect(mailKey).not.toEqual(basesKey);
+  });
+
+  it("resolves the active sync post before falling back to the expired sync history", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "active-sync-tracked",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "active-sync-message",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-06-10T00:00:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+
+    await expect(
+      trackedMessageService.resolveFwaBaseSwapSyncIdentityForClanWar({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        battleDayStart: new Date("2026-06-10T00:00:00.000Z"),
+        prepStartTime: new Date("2026-06-09T18:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      syncMessageId: "active-sync-message",
+      source: "active_sync_post",
+    });
+  });
+
+  it("falls back to the expired sync post when no active sync exists", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar,
+    ).mockResolvedValueOnce("expired-sync-message");
+
+    await expect(
+      trackedMessageService.resolveFwaBaseSwapSyncIdentityForClanWar({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        battleDayStart: new Date("2026-06-10T00:00:00.000Z"),
+        prepStartTime: new Date("2026-06-09T18:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      syncMessageId: "expired-sync-message",
+      source: "expired_sync_post_fallback",
+    });
+  });
+
+  it("repairs eligible unscoped base-swap rows by backfilling the resolved sync identity", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      makeUnscopedBaseSwapRow({
+        id: "tracked-base-swap-1",
+        messageId: "base-swap-message-1",
+        clanTag: "#PYPY",
+        createdAtIso: "2026-06-10T00:30:00.000Z",
+      }),
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "#PYPY",
+        state: "battle",
+        prepStartTime: new Date("2026-06-09T18:00:00.000Z"),
+        startTime: new Date("2026-06-10T00:00:00.000Z"),
+        endTime: new Date("2026-06-10T01:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:05:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce({
+      id: "sync-row-1",
+      messageId: "expired-sync-message",
+      createdAt: new Date("2026-06-10T00:00:00.000Z"),
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar,
+    ).mockResolvedValueOnce("expired-sync-message");
+
+    const summary = await trackedMessageService.repairUnscopedFwaBaseSwapSyncIdentity({
+      guildId: "guild-1",
+      apply: true,
+      now: new Date("2026-06-10T02:00:00.000Z"),
+    });
+
+    expect(summary).toEqual(
+      expect.objectContaining({
+        guildId: "guild-1",
+        scannedRows: 1,
+        eligibleRows: 1,
+        repairedRows: 1,
+        skippedNoCurrentWar: 0,
+        skippedNoSyncIdentity: 0,
+        skippedInvalidMetadata: 0,
+        skippedOutsideWindow: 0,
+      }),
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "tracked-base-swap-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            syncMessageId: "expired-sync-message",
+          }),
+        }),
+      }),
+    );
   });
 
   it("checklist post gets clan badge reactions", async () => {
