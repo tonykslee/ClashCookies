@@ -92,6 +92,7 @@ export default (client: Client): void => {
       if ((tracked.featureType as string) === TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) {
         await trackedMessageService.refreshFwaMatchChecklistMessage(fullReaction.message, {
           kind: "add",
+          reactorUserId: fullUser.id,
           reaction: {
             emoji: {
               id: fullReaction.emoji.id,

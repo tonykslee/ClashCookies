@@ -21,6 +21,7 @@ import { Remaining } from "./commands/Remaining";
 import { WarPlan } from "./commands/WarPlan";
 import { Telemetry } from "./commands/Telemetry";
 import { ClanHealth } from "./commands/ClanHealth";
+import { RepWork } from "./commands/RepWork";
 import { Defer } from "./commands/Defer";
 import { Link } from "./commands/Link";
 import { Dump } from "./commands/Dump";
@@ -66,6 +67,7 @@ export const Commands = [
   Telemetry,
   Fillers,
   ClanHealth,
+  RepWork,
   Defer,
   Force,
   Dump,

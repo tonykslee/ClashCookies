@@ -87,6 +87,7 @@ ReminderFireLog / UserActivityReminderDelivery
 Operational state:
 
 TrackedMessageService -> TrackedMessage / TrackedMessageClaim
+RepWorkActivityService -> RepWorkActivityEvent
 TelemetryIngestService -> Telemetry aggregates / report schedules
 UnlinkedMemberAlertService -> UnlinkedAlertConfig / UnlinkedPlayer
 
@@ -132,6 +133,7 @@ Each domain concept must have exactly one authoritative owner.
 | Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
+| Rep-work attribution snapshots | RepWorkActivityEvent |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
@@ -199,6 +201,7 @@ Rules:
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.
+- `RepWorkActivityEvent` owns durable rep-work attribution snapshots only. It does not own mail lifecycle, sync claims, base-swap active state, or command telemetry.
 - Do not collapse these responsibilities into one generic table or back into config blobs.
 
 ## 8) Notification routing

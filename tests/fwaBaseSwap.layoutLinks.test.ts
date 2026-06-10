@@ -86,6 +86,7 @@ import {
   trackedMessageService,
   TrackedMessageService,
 } from "../src/services/TrackedMessageService";
+import { repWorkActivityService } from "../src/services/RepWorkActivityService";
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -1809,6 +1810,9 @@ describe("FWA base-swap mail-channel routing", () => {
       syncMessageId: "sync-message-1",
       source: "expired_sync_post_fallback",
     } as any);
+    const recordBasesChecked = vi
+      .spyOn(repWorkActivityService, "recordBasesChecked")
+      .mockResolvedValue(true);
     const posted = {
       id: "msg-1",
       url: "https://discord.com/channels/guild-1/mail-1/msg-1",
@@ -1840,6 +1844,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(upsertCall.update.channelId).toBe("mail-1");
     expect(upsertCall.create.metadata.syncMessageId).toBe("sync-message-1");
     expect(upsertCall.update.metadata.syncMessageId).toBe("sync-message-1");
+    expect(recordBasesChecked).toHaveBeenCalledTimes(1);
     expect(botLogSendSpy).toHaveBeenCalledTimes(1);
     expect(String(run.botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "Source channel:",
@@ -2482,6 +2487,9 @@ describe("FWA base-swap mail-channel routing", () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       null,
     );
+    const recordBasesChecked = vi
+      .spyOn(repWorkActivityService, "recordBasesChecked")
+      .mockResolvedValue(true);
     const interaction = {
       customId: buildFwaBaseSwapSplitPostCustomId({
         userId: "user-1",
@@ -2545,6 +2553,7 @@ describe("FWA base-swap mail-channel routing", () => {
     }
     expect(postedA.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
     expect(postedB.react).toHaveBeenCalledWith(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(recordBasesChecked).toHaveBeenCalledTimes(1);
     expect(interaction.update).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining(postedA.url),
@@ -2615,6 +2624,9 @@ describe("FWA base-swap mail-channel routing", () => {
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       null,
     );
+    const recordBasesChecked = vi
+      .spyOn(repWorkActivityService, "recordBasesChecked")
+      .mockResolvedValue(true);
     const interaction = {
       customId: buildFwaBaseSwapSplitPostCustomId({
         userId: "user-1",
@@ -2674,6 +2686,7 @@ describe("FWA base-swap mail-channel routing", () => {
       expect(call[0].create.metadata.syncMessageId).toBe("sync-message-1");
       expect(call[0].update.metadata.syncMessageId).toBe("sync-message-1");
     }
+    expect(recordBasesChecked).toHaveBeenCalledTimes(1);
     const updatedContent = String(
       interaction.update.mock.calls[0]?.[0]?.content ?? "",
     );
