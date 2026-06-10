@@ -34,6 +34,7 @@ import {
   normalizeFwaMatchChecklistKind,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
+import { repWorkActivityService } from "../src/services/RepWorkActivityService";
 import {
   addFwaMatchChecklistReactionsForTest,
   buildFwaMatchChecklistRowsFromCopyView,
@@ -1953,6 +1954,9 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(
       makeTrackedChecklistRowWithState(["RR"]),
     );
+    const recordMailChecked = vi
+      .spyOn(repWorkActivityService, "recordMailChecked")
+      .mockResolvedValue(true);
 
     const edit = vi.fn().mockResolvedValue(undefined);
     const message = {
@@ -1981,6 +1985,7 @@ describe("fwa checklist tracked messages", () => {
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
         kind: "add",
+        reactorUserId: "111111111111111111",
         reaction: {
           emoji: { id: "222", name: "twc" },
           count: 2,
@@ -2005,12 +2010,25 @@ describe("fwa checklist tracked messages", () => {
         }),
       }),
     );
+    expect(recordMailChecked).toHaveBeenCalledTimes(1);
+    expect(recordMailChecked).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        discordUserId: "111111111111111111",
+        clanTag: "TWC",
+        sourceMessageId: "checklist-message-1",
+        sourceTrackedMessageId: "tracked-1",
+      }),
+    );
   });
 
   it("removes only the reacted clan from persisted checked state on reaction remove", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(
       makeTrackedChecklistRowWithState(["RR", "TWC"]),
     );
+    const recordMailChecked = vi
+      .spyOn(repWorkActivityService, "recordMailChecked")
+      .mockResolvedValue(true);
 
     const edit = vi.fn().mockResolvedValue(undefined);
     const message = {
@@ -2063,6 +2081,7 @@ describe("fwa checklist tracked messages", () => {
         }),
       }),
     );
+    expect(recordMailChecked).not.toHaveBeenCalled();
   });
 
   it("keeps persisted checked clans when a refresh sees only bot-seeded reactions", async () => {
@@ -2182,6 +2201,9 @@ describe("fwa checklist tracked messages", () => {
         state: "battle",
       },
     ]);
+    const recordMailChecked = vi
+      .spyOn(repWorkActivityService, "recordMailChecked")
+      .mockResolvedValue(true);
     const setCompletion = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
       .mockResolvedValue(true);
@@ -2275,6 +2297,7 @@ describe("fwa checklist tracked messages", () => {
         syncMessageId: "sync-message-1",
       }),
     );
+    expect(recordMailChecked).not.toHaveBeenCalled();
     expect(edit).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),
@@ -2804,11 +2827,17 @@ describe("fwa checklist tracked messages", () => {
         partial: false,
         fetch: vi.fn(),
         bot: false,
-        id: "user-1",
+        id: "111111111111111111",
       },
     );
 
     expect(refreshChecklist).toHaveBeenCalled();
+    expect(refreshChecklist.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        kind: "remove",
+        reactorUserId: "111111111111111111",
+      }),
+    );
     expect(recordSync).not.toHaveBeenCalled();
   });
 
@@ -2843,11 +2872,17 @@ describe("fwa checklist tracked messages", () => {
         partial: false,
         fetch: vi.fn(),
         bot: false,
-        id: "user-1",
+        id: "111111111111111111",
       },
     );
 
     expect(refreshChecklist).toHaveBeenCalled();
+    expect(refreshChecklist.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        kind: "add",
+        reactorUserId: "111111111111111111",
+      }),
+    );
     expect(recordSync).not.toHaveBeenCalled();
   });
 

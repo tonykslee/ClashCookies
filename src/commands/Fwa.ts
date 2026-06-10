@@ -115,6 +115,7 @@ import {
   parseMatchMailConfig,
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
+import { repWorkActivityService } from "../services/RepWorkActivityService";
 import {
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
@@ -411,6 +412,8 @@ type FwaBaseSwapSplitPostPayload = {
   swapReminder: boolean;
   createdAtIso: string;
   syncMessageId?: string | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
   splitContents: [string, string];
 };
 
@@ -480,6 +483,55 @@ export async function handleFwaBaseSwapReaction(
       return (channel as any).messages.fetch(targetMessageId).catch(() => null);
     },
   });
+}
+
+async function recordFwaBaseSwapRepWorkActivity(params: {
+  guildId: string;
+  clanTag: string;
+  discordUserId: string;
+  sourceMessageId: string;
+  syncMessageId?: string | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+  source?: "single" | "split";
+  clanKind?: BaseSwapClanKind;
+}): Promise<void> {
+  try {
+    const sourceTrackedMessage = await trackedMessageService
+      .findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        syncMessageId: params.syncMessageId ?? null,
+      })
+      .catch(() => null);
+    await repWorkActivityService.recordBasesChecked({
+      guildId: params.guildId,
+      discordUserId: params.discordUserId,
+      clanTag: params.clanTag,
+      syncMessageId: params.syncMessageId ?? null,
+      sourceMessageId: params.sourceMessageId,
+      sourceTrackedMessageId: sourceTrackedMessage?.id ?? null,
+      warStartTime: params.warStartTime ?? null,
+      opponentTag: params.opponentTag ?? null,
+      eventAt: new Date(),
+      metadata: {
+        source: "fwa_base_swap",
+        sourceVariant: params.source ?? "single",
+        clanKind: params.clanKind ?? "FWA",
+        sourceMessageId: params.sourceMessageId,
+        sourceTrackedMessageId: sourceTrackedMessage?.id ?? null,
+        syncMessageId: params.syncMessageId ?? null,
+        warStartTimeIso: params.warStartTime?.toISOString() ?? null,
+        opponentTag: params.opponentTag ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[fwa base-swap] rep-work capture failed guild=${params.guildId} clan=${params.clanTag} user=${params.discordUserId} error=${formatError(
+        err,
+      )}`,
+    );
+  }
 }
 
 export async function handleFwaBaseSwapSplitPostButton(
@@ -624,6 +676,18 @@ export async function handleFwaBaseSwapSplitPostButton(
           },
         },
       ],
+    });
+
+    await recordFwaBaseSwapRepWorkActivity({
+      guildId: payload.guildId,
+      clanTag: payload.clanTag,
+      discordUserId: payload.userId,
+      sourceMessageId: postedA.id,
+      syncMessageId,
+      warStartTime: payload.warStartTime ?? null,
+      opponentTag: payload.opponentTag ?? null,
+      source: "split",
+      clanKind,
     });
 
     await postedA.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {
@@ -14515,6 +14579,8 @@ export const Fwa: Command = {
           swapReminder: Boolean(swapReminder),
           createdAtIso,
           syncMessageId,
+          warStartTime: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
+          opponentTag: null,
           splitContents: renderPlan.splitContents,
         });
 
@@ -14593,6 +14659,18 @@ export const Fwa: Command = {
             },
           },
         ],
+      });
+
+      await recordFwaBaseSwapRepWorkActivity({
+        guildId: interaction.guildId,
+        clanTag,
+        discordUserId: interaction.user.id,
+        sourceMessageId: posted.id,
+        syncMessageId,
+        warStartTime: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
+        opponentTag: null,
+        source: "single",
+        clanKind,
       });
 
       await posted.react(FWA_BASE_SWAP_ACK_EMOJI).catch((err: unknown) => {

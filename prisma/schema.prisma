@@ -955,6 +955,11 @@ enum TrackedMessageStatus {
   DELETED
 }
 
+enum RepWorkActivityType {
+  BASES_CHECKED
+  MAIL_CHECKED
+}
+
 
 
 model TrackedMessage {
@@ -994,6 +999,32 @@ model TrackedMessageClaim {
   @@index([trackedMessageId])
   @@index([userId])
   @@index([clanTag])
+}
+
+model RepWorkActivityEvent {
+  id                     String               @id @default(cuid())
+  guildId                String
+  activityType           RepWorkActivityType
+  discordUserId          String
+  clanTag                String
+  syncMessageId          String?
+  sourceMessageId        String
+  sourceTrackedMessageId String?
+  warId                  String?
+  warStartTime           DateTime?
+  opponentTag            String?
+  eventAt                DateTime
+  prepTimeLeftSeconds    Int?
+  metadata               Json?
+  dedupeKey              String               @unique
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  @@index([guildId, eventAt])
+  @@index([guildId, discordUserId, eventAt])
+  @@index([guildId, activityType, eventAt])
+  @@index([guildId, clanTag, eventAt])
+  @@index([syncMessageId])
 }
 
 enum RosterLifecycleState {
