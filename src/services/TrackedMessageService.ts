@@ -212,6 +212,7 @@ const FWA_CHECKLIST_SYNC_FALLBACK_LOOKBACK_MS = 30 * 60 * 60 * 1000;
 const FWA_CHECKLIST_SYNC_FALLBACK_PREP_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 const FWA_CHECKLIST_SYNC_FALLBACK_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
 const FWA_CHECKLIST_SYNC_FALLBACK_LIMIT = 25;
+const FWA_BASE_SWAP_SYNC_REPAIR_WINDOW_MS = 48 * 60 * 60 * 1000;
 const CUSTOM_EMOJI_INLINE_PATTERN = /^<(a?):([A-Za-z0-9_]{2,32}):(\d{1,22})>$/;
 
 export type FwaBasesChecklistRepairSummary = {
@@ -225,6 +226,37 @@ export type FwaBasesChecklistRepairSummary = {
   baseSwapExpiredCandidates: number;
   baseSwapOlderThanCurrentSyncCandidates: number;
   baseSwapReplaced: number;
+};
+
+export type FwaBaseSwapSyncIdentitySource =
+  | "active_sync_post"
+  | "expired_sync_post_fallback"
+  | "none";
+
+export type FwaBaseSwapSyncIdentityResolution = {
+  syncMessageId: string | null;
+  source: FwaBaseSwapSyncIdentitySource;
+};
+
+export type FwaBaseSwapSyncIdentityRepairSummary = {
+  guildId: string;
+  dryRun: boolean;
+  scannedRows: number;
+  eligibleRows: number;
+  repairedRows: number;
+  skippedNoCurrentWar: number;
+  skippedNoSyncIdentity: number;
+  skippedInvalidMetadata: number;
+  skippedOutsideWindow: number;
+};
+
+type FwaBaseSwapCurrentWarSnapshot = {
+  clanTag: string;
+  state: string | null;
+  prepStartTime: Date | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  updatedAt: Date | null;
 };
 
 const FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX = "fwa_match_checklist_bases_completion|";
@@ -2313,6 +2345,47 @@ export class TrackedMessageService {
     return null;
   }
 
+  async resolveFwaBaseSwapSyncIdentityForClanWar(params: {
+    guildId: string;
+    clanTag: string;
+    battleDayStart?: Date | null;
+    prepStartTime?: Date | null;
+    now?: Date;
+  }): Promise<FwaBaseSwapSyncIdentityResolution> {
+    const guildId = String(params.guildId ?? "").trim();
+    if (!guildId) {
+      return { syncMessageId: null, source: "none" };
+    }
+
+    const latestActiveSyncPost = await this.resolveLatestActiveSyncPost(guildId).catch(() => null);
+    const activeSyncMessageId = normalizeTrackedMessageId(latestActiveSyncPost?.messageId ?? null);
+    if (activeSyncMessageId) {
+      return {
+        syncMessageId: activeSyncMessageId,
+        source: "active_sync_post",
+      };
+    }
+
+    const fallbackSyncMessageId = await this.resolveLatestRelevantSyncPostForClanWar({
+      guildId,
+      clanTag: params.clanTag,
+      battleDayStart: params.battleDayStart ?? null,
+      prepStartTime: params.prepStartTime ?? null,
+      now: params.now,
+    }).catch(() => null);
+    if (fallbackSyncMessageId) {
+      return {
+        syncMessageId: fallbackSyncMessageId,
+        source: "expired_sync_post_fallback",
+      };
+    }
+
+    return {
+      syncMessageId: null,
+      source: "none",
+    };
+  }
+
   async repairStaleFwaBasesChecklistState(params: {
     guildId: string;
     now?: Date;
@@ -2434,6 +2507,184 @@ export class TrackedMessageService {
       baseSwapExpiredCandidates: baseSwapExpiredRows.length,
       baseSwapOlderThanCurrentSyncCandidates: baseSwapOlderRows.length,
       baseSwapReplaced: baseSwapIds.length,
+    };
+  }
+
+  async repairUnscopedFwaBaseSwapSyncIdentity(params: {
+    guildId: string;
+    now?: Date;
+    apply?: boolean;
+  }): Promise<FwaBaseSwapSyncIdentityRepairSummary> {
+    const guildId = String(params.guildId ?? "").trim();
+    const now = params.now instanceof Date && Number.isFinite(params.now.getTime())
+      ? params.now
+      : new Date();
+    const apply = params.apply ?? false;
+    if (!guildId) {
+      return {
+        guildId,
+        dryRun: !apply,
+        scannedRows: 0,
+        eligibleRows: 0,
+        repairedRows: 0,
+        skippedNoCurrentWar: 0,
+        skippedNoSyncIdentity: 0,
+        skippedInvalidMetadata: 0,
+        skippedOutsideWindow: 0,
+      };
+    }
+
+    const [candidateRows, currentWarRows] = await Promise.all([
+      prisma.trackedMessage.findMany({
+        where: {
+          guildId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        },
+        select: {
+          id: true,
+          clanTag: true,
+          createdAt: true,
+          expiresAt: true,
+          metadata: true,
+        },
+      }),
+      prisma.currentWar.findMany({
+        where: { guildId },
+        select: {
+          clanTag: true,
+          state: true,
+          prepStartTime: true,
+          startTime: true,
+          endTime: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    const currentWarByClan = new Map<string, FwaBaseSwapCurrentWarSnapshot>();
+    for (const row of currentWarRows) {
+      const normalizedClanTag = normalizeChecklistClanTag(row.clanTag);
+      if (!normalizedClanTag) continue;
+      const updatedAt = row.updatedAt instanceof Date && Number.isFinite(row.updatedAt.getTime())
+        ? row.updatedAt
+        : null;
+      const existing = currentWarByClan.get(normalizedClanTag);
+      if (!existing) {
+        currentWarByClan.set(normalizedClanTag, {
+          clanTag: normalizedClanTag,
+          state: String(row.state ?? "").trim() || null,
+          prepStartTime: row.prepStartTime ?? null,
+          startTime: row.startTime ?? null,
+          endTime: row.endTime ?? null,
+          updatedAt,
+        });
+        continue;
+      }
+      const existingUpdatedAtMs = existing.updatedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const nextUpdatedAtMs = updatedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (nextUpdatedAtMs >= existingUpdatedAtMs) {
+        currentWarByClan.set(normalizedClanTag, {
+          clanTag: normalizedClanTag,
+          state: String(row.state ?? "").trim() || null,
+          prepStartTime: row.prepStartTime ?? null,
+          startTime: row.startTime ?? null,
+          endTime: row.endTime ?? null,
+          updatedAt,
+        });
+      }
+    }
+
+    let scannedRows = 0;
+    let eligibleRows = 0;
+    let repairedRows = 0;
+    let skippedNoCurrentWar = 0;
+    let skippedNoSyncIdentity = 0;
+    let skippedInvalidMetadata = 0;
+    let skippedOutsideWindow = 0;
+
+    for (const row of candidateRows) {
+      scannedRows += 1;
+      const metadata = parseFwaBaseSwapMetadata(row.metadata);
+      if (!metadata) {
+        skippedInvalidMetadata += 1;
+        continue;
+      }
+      if (normalizeTrackedMessageId(metadata.syncMessageId ?? null)) {
+        continue;
+      }
+
+      const normalizedClanTag = normalizeChecklistClanTag(row.clanTag ?? "");
+      const currentWar = normalizedClanTag ? currentWarByClan.get(normalizedClanTag) ?? null : null;
+      if (!currentWar) {
+        skippedNoCurrentWar += 1;
+        continue;
+      }
+
+      const syncIdentity = await this.resolveFwaBaseSwapSyncIdentityForClanWar({
+        guildId,
+        clanTag: normalizedClanTag,
+        battleDayStart: currentWar.startTime,
+        prepStartTime: currentWar.prepStartTime,
+        now,
+      }).catch(() => ({ syncMessageId: null, source: "none" as const }));
+      const syncMessageId = normalizeTrackedMessageId(syncIdentity.syncMessageId ?? null);
+      if (!syncMessageId) {
+        skippedNoSyncIdentity += 1;
+        continue;
+      }
+
+      const syncRow = await prisma.trackedMessage.findUnique({
+        where: { messageId: syncMessageId },
+        select: {
+          createdAt: true,
+          messageId: true,
+        },
+      }).catch(() => null);
+      if (
+        !syncRow ||
+        !(syncRow.createdAt instanceof Date) ||
+        !Number.isFinite(syncRow.createdAt.getTime())
+      ) {
+        skippedInvalidMetadata += 1;
+        continue;
+      }
+
+      const rowCreatedAtMs = row.createdAt.getTime();
+      const syncCreatedAtMs = syncRow.createdAt.getTime();
+      if (
+        rowCreatedAtMs < syncCreatedAtMs ||
+        rowCreatedAtMs > syncCreatedAtMs + FWA_BASE_SWAP_SYNC_REPAIR_WINDOW_MS
+      ) {
+        skippedOutsideWindow += 1;
+        continue;
+      }
+
+      eligibleRows += 1;
+      if (!apply) continue;
+
+      await prisma.trackedMessage.update({
+        where: { id: row.id },
+        data: {
+          metadata: {
+            ...metadata,
+            syncMessageId,
+          } as any,
+        },
+      });
+      repairedRows += 1;
+    }
+
+    return {
+      guildId,
+      dryRun: !apply,
+      scannedRows,
+      eligibleRows,
+      repairedRows,
+      skippedNoCurrentWar,
+      skippedNoSyncIdentity,
+      skippedInvalidMetadata,
+      skippedOutsideWindow,
     };
   }
 

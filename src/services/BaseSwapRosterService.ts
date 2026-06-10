@@ -32,6 +32,12 @@ export type BaseSwapRosterResolution = {
   clanName: string;
   rosterMembers: BaseSwapRosterMember[];
   phaseTiming: BaseSwapPhaseTiming | null;
+  currentWarIdentity: {
+    state: string | null;
+    prepStartTime: Date | null;
+    startTime: Date | null;
+    endTime: Date | null;
+  } | null;
 };
 
 export type BaseSwapRosterResolutionResult =
@@ -208,6 +214,7 @@ async function loadFwaBaseSwapRoster(input: {
     orderBy: [{ updatedAt: "desc" }],
     select: {
       state: true,
+      prepStartTime: true,
       startTime: true,
       endTime: true,
     },
@@ -249,6 +256,14 @@ async function loadFwaBaseSwapRoster(input: {
       clanTag: input.clanTag,
       clanName: normalizeDisplayName(trackedClan.name) ?? `#${input.clanTag}`,
       rosterMembers,
+      currentWarIdentity: currentWarRow
+        ? {
+            state: String(currentWarRow.state ?? "").trim() || null,
+            prepStartTime: currentWarRow.prepStartTime ?? null,
+            startTime: currentWarRow.startTime ?? null,
+            endTime: currentWarRow.endTime ?? null,
+          }
+        : null,
       phaseTiming: currentWarRow
         ? buildPhaseTimingLineSource({
             roundState: String(currentWarRow.state ?? "").trim(),
@@ -350,6 +365,7 @@ async function loadCwlBaseSwapRoster(input: {
         normalizeDisplayName(trackedClan.name) ??
         formatClanTagForDisplay(input.clanTag),
       rosterMembers: linkedRosterMembers,
+      currentWarIdentity: null,
       phaseTiming: buildPhaseTimingLineSource({
         roundState: activeLineup.roundState,
         startTime: activeLineup.startTime,
