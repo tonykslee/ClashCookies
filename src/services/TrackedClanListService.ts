@@ -1,5 +1,12 @@
-import { Client } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  Client,
+  EmbedBuilder,
+} from "discord.js";
 import { formatError } from "../helper/formatError";
+import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
@@ -23,6 +30,24 @@ export type FwaTrackedClanDisplayRow = {
   clanBadge: string | null;
   shortName: string | null;
   createdAt: Date;
+};
+
+export type FwaTrackedClanMinimalListState = {
+  trackedClans: FwaTrackedClanDisplayRow[];
+  refreshTags: string[];
+  memberCountByTag: Map<string, number>;
+};
+
+export type FwaTrackedClanMinimalListRenderInput = {
+  refreshPrefix: string;
+  trackedClans: FwaTrackedClanDisplayRow[];
+  memberCountByTag: Map<string, number>;
+  refreshing: boolean;
+};
+
+export type FwaTrackedClanMinimalListRender = {
+  embeds: EmbedBuilder[];
+  components: ActionRowBuilder<ButtonBuilder>[];
 };
 
 export type CwlTrackedClanSpinStatus = "idle" | "searching" | "matched";
@@ -177,6 +202,41 @@ export function formatCwlSpinStatusEmojiResolved(
   if (status === "matched") return "⚔️";
   if (status === "searching") return emojiTokens?.searchingEmoji ?? CWL_SEARCHING_EMOJI_FALLBACK;
   return "💤";
+}
+
+function formatFwaTrackedClanMemberCount(memberCount: number | null): string {
+  return memberCount === null ? "— 👥" : `${memberCount} 👥`;
+}
+
+function buildFwaTrackedClanMinimalListLine(clan: {
+  name: string | null;
+  tag: string;
+  memberCount: number | null;
+}): string {
+  const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
+  const clanTag = normalizeClanTag(clan.tag);
+  const memberCountText = formatFwaTrackedClanMemberCount(clan.memberCount);
+  return clan.name && clanTag
+    ? `- ${title} \`${clanTag}\` | ${memberCountText}`
+    : `- ${title} | ${memberCountText}`;
+}
+
+function buildFwaTrackedClanMinimalListSummaryDescription(lines: string[]): string {
+  return ["**FWA**", ...lines].join("\n");
+}
+
+function buildFwaTrackedClanMinimalListRefreshRow(
+  prefix: string,
+  refreshing: boolean,
+): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:refresh`)
+      .setEmoji("🔄")
+      .setLabel(refreshing ? "Refreshing..." : "Refresh")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(refreshing),
+  );
 }
 
 function parseRomanNumeral(input: string): number | null {
@@ -579,6 +639,41 @@ export async function listFwaClanMemberCountsForTags(tags: string[]): Promise<Ma
     counts.set(tag, row._count.clanTag);
   }
   return counts;
+}
+
+/** Purpose: load the minimal FWA tracked-clan list state from persisted clan and member-count rows. */
+export async function loadFwaTrackedClanMinimalListState(): Promise<FwaTrackedClanMinimalListState> {
+  const trackedClans = await listFwaTrackedClansForDisplay();
+  const refreshTags = trackedClans.map((clan) => clan.tag);
+  const memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
+
+  return {
+    trackedClans,
+    refreshTags,
+    memberCountByTag,
+  };
+}
+
+/** Purpose: build the exact minimal FWA tracked-clan list embed and refresh button payload. */
+export function buildFwaTrackedClanMinimalListRender(
+  input: FwaTrackedClanMinimalListRenderInput,
+): FwaTrackedClanMinimalListRender {
+  const lines = input.trackedClans.map((clan) =>
+    buildFwaTrackedClanMinimalListLine({
+      ...clan,
+      memberCount: input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ?? null,
+    }),
+  );
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(`Tracked Clans (FWA) (${input.trackedClans.length})`)
+        .setDescription(buildFwaTrackedClanMinimalListSummaryDescription(lines))
+        .setColor(0x57f287),
+    ],
+    components: [buildFwaTrackedClanMinimalListRefreshRow(input.refreshPrefix, input.refreshing)],
+  };
 }
 
 /** Purpose: load CWL tracked clans for detailed list rendering using DB-backed counts and roster context. */
