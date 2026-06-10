@@ -4,6 +4,7 @@ import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import { BotLogChannelService } from "./BotLogChannelService";
+import { repWorkActivityService } from "./RepWorkActivityService";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
@@ -141,6 +142,7 @@ export type FwaBaseSwapIssueSummary = {
 
 export type FwaMatchChecklistReactionChange = {
   kind: "add" | "remove";
+  reactorUserId?: string | null;
   reaction: {
     emoji: { id: string | null; name: string | null };
     count?: number | null;
@@ -3101,7 +3103,46 @@ export class TrackedMessageService {
         .filter((clanTag): clanTag is string => Boolean(clanTag)),
     );
     const reactedTags = new Set<string>(persistedCheckedTags);
-    for (const row of metadata.rows) {
+    const sourceRows = options?.rows ?? metadata.rows;
+    const changedRowTag = change
+      ? findChecklistRowTagForReaction(sourceRows, change.reaction)
+      : null;
+    if (change && changedRowTag) {
+      const reactionChange = change;
+      const matchedRow = sourceRows.find(
+        (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
+      );
+      console.debug(
+        `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? "matched_row" : "row_not_found"}`,
+      );
+      if (matchedRow && reactionChange.kind === "add" && reactionChange.reactorUserId) {
+        const warStartTime = matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null;
+        await repWorkActivityService.recordMailChecked({
+          guildId: tracked.guildId,
+          discordUserId: reactionChange.reactorUserId,
+          clanTag: matchedRow.clanTag,
+          syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
+          sourceMessageId: message.id,
+          sourceTrackedMessageId: tracked.id,
+          warId: matchedRow.warId ?? null,
+          warStartTime,
+          opponentTag: matchedRow.opponentTag ?? null,
+          eventAt: new Date(),
+          metadata: {
+            source: "fwa_match_checklist",
+            viewType: "Mail",
+            scopeKey: metadata.scopeKey ?? null,
+            rowContextKey: matchedRow.contextKey ?? null,
+            reactionEmojiId: reactionChange.reaction.emoji.id,
+            reactionEmojiName: reactionChange.reaction.emoji.name,
+            reactionCount: reactionChange.reaction.count ?? null,
+            checklistMessageId: tracked.messageId,
+            checklistReferenceId: tracked.referenceId ?? null,
+          },
+        });
+      }
+    }
+    for (const row of sourceRows) {
       const reaction = [...message.reactions.cache.values()].find((candidate) =>
         emojiMatches(candidate, {
           emojiId: row.badgeEmojiId,
@@ -3113,15 +3154,12 @@ export class TrackedMessageService {
         reactedTags.add(normalizeChecklistClanTag(row.clanTag));
       }
     }
-    if (change) {
-      const changedRowTag = findChecklistRowTagForReaction(metadata.rows, change.reaction);
-      if (changedRowTag) {
-        const changeCount = Math.trunc(Number(change.reaction.count ?? 0));
-        if (change.kind === "add") {
-          reactedTags.add(changedRowTag);
-        } else if (change.kind === "remove" && changeCount <= 1) {
-          reactedTags.delete(changedRowTag);
-        }
+    if (change && changedRowTag) {
+      const changeCount = Math.trunc(Number(change.reaction.count ?? 0));
+      if (change.kind === "add") {
+        reactedTags.add(changedRowTag);
+      } else if (change.kind === "remove" && changeCount <= 1) {
+        reactedTags.delete(changedRowTag);
       }
     }
 
