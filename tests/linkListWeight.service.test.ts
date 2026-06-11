@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as WeightInputDefermentService from "../src/services/WeightInputDefermentService";
 
 const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
@@ -85,5 +86,90 @@ describe("resolveLinkListDisplayWeightsByPlayerTags", () => {
           }),
       }),
     );
+  });
+
+  it("prefers the higher of FWA and deferred weights and keeps FWA on ties", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 150000,
+        sourceSyncedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        weight: 150000,
+        sourceSyncedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    const deferredSpy = vi
+      .spyOn(
+        WeightInputDefermentService,
+        "listOpenDeferredWeightsByClanAndPlayerTags",
+      )
+      .mockResolvedValue(
+        new Map([
+          [
+            "#PQL0289",
+            new Map([["#PQL0289", 150000], ["#QGRJ2222", 145000], ["#LCUV0289", 150000]]),
+          ],
+        ]),
+      );
+
+    const resolved = await resolveLinkListDisplayWeightsByPlayerTags({
+      playerTagsInOrder: ["#PQL0289", "#QGRJ2222", "#LCUV0289"],
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+    });
+
+    expect(resolved.get("#PQL0289")).toBe(150000);
+    expect(resolved.get("#QGRJ2222")).toBe(150000);
+    expect(resolved.get("#LCUV0289")).toBe(150000);
+    expect(deferredSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanPlayerTags: [
+          {
+            clanTag: "#PQL0289",
+            playerTags: ["#PQL0289", "#QGRJ2222", "#LCUV0289"],
+          },
+        ],
+      }),
+    );
+  });
+
+  it("skips deferred lookup when guildId or clanTag is missing", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    const deferredSpy = vi
+      .spyOn(
+        WeightInputDefermentService,
+        "listOpenDeferredWeightsByClanAndPlayerTags",
+      )
+      .mockResolvedValue(new Map());
+
+    const withoutGuild = await resolveLinkListDisplayWeightsByPlayerTags({
+      playerTagsInOrder: ["#PQL0289"],
+      guildId: null,
+      clanTag: "#PQL0289",
+    });
+    const withoutClan = await resolveLinkListDisplayWeightsByPlayerTags({
+      playerTagsInOrder: ["#PQL0289"],
+      guildId: "guild-1",
+      clanTag: null,
+    });
+
+    expect(withoutGuild.get("#PQL0289")).toBe(145000);
+    expect(withoutClan.get("#PQL0289")).toBe(145000);
+    expect(deferredSpy).not.toHaveBeenCalled();
   });
 });

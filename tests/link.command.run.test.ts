@@ -37,6 +37,9 @@ const prismaMock = vi.hoisted(() => ({
   playerActivity: {
     findMany: vi.fn(),
   },
+  weightInputDeferment: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -327,6 +330,7 @@ describe("/link run", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
+    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -334,6 +338,7 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("creates a self-link when tag is unlinked", async () => {
@@ -2226,6 +2231,7 @@ describe("/link list select menu", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -2257,6 +2263,7 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("updates same message in place for valid selection", async () => {
@@ -2589,6 +2596,7 @@ describe("/link list sort button", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -2667,6 +2675,7 @@ describe("/link list sort button", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
   it("cycles sort mode in stable order and rerenders rows", async () => {
@@ -2936,6 +2945,135 @@ describe("/link list sort button", () => {
         ["player-name", "weight"],
       ),
     );
+  });
+
+  it("renders the higher of FWA and deferred weights in the weight view", async () => {
+    const clanTag = "#PQL0289";
+    prismaMock.currentWar.findMany.mockResolvedValue([{ clanTag }]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: clanTag,
+        name: "Tracked Alpha",
+        clanBadge: null,
+        mailConfig: null,
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: clanTag,
+      name: "Tracked Alpha",
+      clanBadge: null,
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Alpha Discord",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "222222222222222222",
+        discordUsername: "Bravo Discord",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        discordUserId: "333333333333333333",
+        discordUsername: "Charlie Discord",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        townHall: 18,
+        role: "member",
+        rank: 1,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 18,
+        role: "member",
+        rank: 2,
+        weight: 150000,
+        sourceSyncedAt: new Date("2026-03-21T09:08:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        playerName: "Charlie",
+        townHall: 18,
+        role: "member",
+        rank: 3,
+        weight: 150000,
+        sourceSyncedAt: new Date("2026-03-21T09:09:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#PQL0289",
+        deferredWeight: 150000,
+        createdAt: new Date("2026-04-20T02:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#QGRJ2222",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-20T02:00:00.000Z"),
+      },
+      {
+        scopeKey: "guild:guild-1|clan:PQL0289",
+        playerTag: "#LCUV0289",
+        deferredWeight: 150000,
+        createdAt: new Date("2026-04-20T02:00:00.000Z"),
+      },
+    ]);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        clanTag,
+        "discord",
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, { getClan: vi.fn() } as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(prismaMock.weightInputDeferment.findMany).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds[0].toJSON().footer?.text).toBe("Sort: Weight Desc");
+    const description = payload.embeds
+      .map((embed: { toJSON: () => any }) => String(embed.toJSON().description ?? ""))
+      .join("\n");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => getInlineRowSegments(row).value)).toEqual([
+      "150k",
+      "150k",
+      "150k",
+    ]);
   });
 
   it("renders a realistic 50-member Player Tags view without aggressively trimming", async () => {
@@ -3392,6 +3530,9 @@ describe("/link list sort button", () => {
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
     ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
 
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
