@@ -1,8 +1,12 @@
 import { RepWorkActivityType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TRACKED_MESSAGE_FEATURE_TYPE } from "../src/services/TrackedMessageService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  trackedMessageClaim: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -19,6 +23,7 @@ describe("rep work report service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.$queryRaw.mockReset();
+    prismaMock.trackedMessageClaim.findMany.mockReset();
   });
 
   it("parses valid rep-work durations", () => {
@@ -88,18 +93,6 @@ describe("rep work report service", () => {
       .mockResolvedValueOnce([
         {
           discordUserId: "111111111111111111",
-          syncsParticipated: 30,
-          clanClaims: 30,
-        },
-        {
-          discordUserId: "222222222222222222",
-          syncsParticipated: 6,
-          clanClaims: 30,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          discordUserId: "111111111111111111",
           commandName: "fwa",
           subcommand: "base-swap",
           totalCount: 12,
@@ -129,6 +122,20 @@ describe("rep work report service", () => {
           totalCount: 6,
         },
       ]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([
+      ...Array.from({ length: 30 }, (_, index) => ({
+        userId: "111111111111111111",
+        trackedMessageId: `sync-${index + 1}`,
+        clanTag: "#AAA111",
+      })),
+      ...Array.from({ length: 6 }, (_, syncIndex) =>
+        Array.from({ length: 5 }, (_, clanIndex) => ({
+          userId: "222222222222222222",
+          trackedMessageId: `sync-${syncIndex + 1}`,
+          clanTag: `#BBB${clanIndex + 1}`,
+        })),
+      ).flat(),
+    ]);
 
     const report = await repWorkReportService.buildReport({
       guildId: "guild-1",
@@ -193,18 +200,18 @@ describe("rep work report service", () => {
       .mockResolvedValueOnce([
         {
           discordUserId: "111111111111111111",
-          syncsParticipated: 1,
-          clanClaims: 1,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          discordUserId: "111111111111111111",
           commandName: "clan-health",
           subcommand: "",
           totalCount: 1,
         },
       ]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([
+      {
+        userId: "111111111111111111",
+        trackedMessageId: "sync-1",
+        clanTag: "#AAA111",
+      },
+    ]);
 
     const report = await repWorkReportService.buildReport({
       guildId: "guild-1",
@@ -220,6 +227,7 @@ describe("rep work report service", () => {
     prismaMock.$queryRaw
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
 
     const report = await repWorkReportService.buildReport({
       guildId: "guild-1",
@@ -228,6 +236,37 @@ describe("rep work report service", () => {
     });
 
     expect(report?.users).toEqual([]);
-    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses Prisma enum filtering for sync claims instead of raw text SQL", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([
+      {
+        userId: "111111111111111111",
+        trackedMessageId: "sync-1",
+        clanTag: "#AAA111",
+      },
+    ]);
+
+    await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    expect(prismaMock.trackedMessageClaim.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          trackedMessage: expect.objectContaining({
+            guildId: "guild-1",
+          }),
+        }),
+      }),
+    );
+    const callArg = prismaMock.trackedMessageClaim.findMany.mock.calls[0]?.[0] as any;
+    expect(callArg.where.trackedMessage.featureType).toBe(TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST);
   });
 });
