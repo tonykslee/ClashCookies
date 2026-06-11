@@ -29,7 +29,7 @@ export type SyncTimeFwaClanListMessagePayload = {
   trackedClanCount: number;
 };
 
-function buildSyncTimeMessageContent(epochSeconds: number, roleId: string): string {
+export function buildSyncTimeMessageContent(epochSeconds: number, roleId: string): string {
   return `# Sync time :gem:\n\n<t:${epochSeconds}:F> (<t:${epochSeconds}:R>)\n\n<@&${roleId}>`;
 }
 
@@ -98,6 +98,16 @@ function isFwaClanListRefreshWindowExpired(metadata: SyncTimeTrackedMetadata, no
   return !expiresAt || expiresAt.getTime() <= now.getTime();
 }
 
+function logRefreshFailed(input: {
+  guildId: string;
+  messageId: string;
+  reason: string;
+}): void {
+  console.error(
+    `[sync-time-fwa-list] refresh_failed guild_id=${input.guildId} message_id=${input.messageId} reason=${input.reason}`,
+  );
+}
+
 export function isSyncTimeFwaClanListRefreshButtonCustomId(customId: string): boolean {
   return String(customId ?? "").trim() === SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID;
 }
@@ -108,6 +118,11 @@ export async function handleSyncTimeFwaClanListRefreshButton(
   if (!isSyncTimeFwaClanListRefreshButtonCustomId(interaction.customId)) return;
 
   if (!interaction.inGuild() || !interaction.guildId) {
+    logRefreshFailed({
+      guildId: "unknown",
+      messageId: interaction.message.id,
+      reason: "no_guild",
+    });
     await interaction.reply({
       ephemeral: true,
       content: "This button can only be used in a server.",
@@ -115,66 +130,97 @@ export async function handleSyncTimeFwaClanListRefreshButton(
     return;
   }
 
-  const tracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(interaction.message.id);
-  const metadata = tracked ? parseSyncTimeMetadata(tracked.metadata) : null;
-  const now = new Date();
-  if (
-    !tracked ||
-    tracked.guildId !== interaction.guildId ||
-    tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
-    tracked.status === TRACKED_MESSAGE_STATUS.DELETED ||
-    tracked.status === TRACKED_MESSAGE_STATUS.REPLACED ||
-    !metadata ||
-    metadata.fwaClanListEnabled !== true
-  ) {
-    await interaction.reply({
-      ephemeral: true,
-      content: "Could not refresh the FWA clan list for that sync-time post.",
-    });
-    return;
-  }
-
-  if (isFwaClanListRefreshWindowExpired(metadata, now)) {
-    console.info(
-      `[sync-time-fwa-list] refresh_expired guild_id=${interaction.guildId} message_id=${interaction.message.id} expires_at=${metadata.fwaClanListRefreshExpiresAtIso ?? "missing"} now=${now.toISOString()}`,
-    );
-    await interaction.reply({
-      ephemeral: true,
-      content: "The FWA clan-list refresh window has expired.",
-    });
-    return;
-  }
-
-  await interaction.deferUpdate();
-
   try {
-    const payload = await buildSyncTimeFwaClanListMessagePayload({
-      baseMetadata: metadata,
-      guildId: tracked.guildId,
-      now,
-      refreshExpiresAt: parseOptionalIsoDate(metadata.fwaClanListRefreshExpiresAtIso ?? null),
-    });
+    const tracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(interaction.message.id);
+    const metadata = tracked ? parseSyncTimeMetadata(tracked.metadata) : null;
+    const now = new Date();
+    if (
+      !tracked ||
+      tracked.guildId !== interaction.guildId ||
+      tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+      tracked.status === TRACKED_MESSAGE_STATUS.DELETED ||
+      tracked.status === TRACKED_MESSAGE_STATUS.REPLACED ||
+      !metadata ||
+      metadata.fwaClanListEnabled !== true
+    ) {
+      logRefreshFailed({
+        guildId: interaction.guildId,
+        messageId: interaction.message.id,
+        reason: !tracked
+          ? "missing_tracked_message"
+          : tracked.guildId !== interaction.guildId
+            ? "guild_mismatch"
+            : tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST
+              ? "wrong_feature"
+              : tracked.status === TRACKED_MESSAGE_STATUS.DELETED ||
+                  tracked.status === TRACKED_MESSAGE_STATUS.REPLACED
+                ? "inactive_status"
+                : "missing_or_disabled_metadata",
+      });
+      await interaction.reply({
+        ephemeral: true,
+        content: "Could not refresh the FWA clan list for that sync-time post.",
+      });
+      return;
+    }
 
-    await interaction.message.edit({
-      content: payload.content,
-      embeds: payload.embeds,
-      components: payload.components,
-    });
+    if (isFwaClanListRefreshWindowExpired(metadata, now)) {
+      console.info(
+        `[sync-time-fwa-list] refresh_expired guild_id=${interaction.guildId} message_id=${interaction.message.id} expires_at=${metadata.fwaClanListRefreshExpiresAtIso ?? "missing"} now=${now.toISOString()}`,
+      );
+      await interaction.reply({
+        ephemeral: true,
+        content: "The FWA clan-list refresh window has expired.",
+      });
+      return;
+    }
 
-    await prisma.trackedMessage.update({
-      where: { messageId: tracked.messageId },
-      data: {
-        metadata: payload.metadata as any,
-      },
-    });
+    await interaction.deferUpdate();
 
-    console.info(
-      `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} tracked_clan_count=${payload.trackedClanCount}`,
-    );
+    try {
+      const payload = await buildSyncTimeFwaClanListMessagePayload({
+        baseMetadata: metadata,
+        guildId: tracked.guildId,
+        now,
+        refreshExpiresAt: parseOptionalIsoDate(metadata.fwaClanListRefreshExpiresAtIso ?? null),
+      });
+
+      await interaction.message.edit({
+        content: payload.content,
+        embeds: payload.embeds,
+        components: payload.components,
+      });
+
+      await prisma.trackedMessage.update({
+        where: { messageId: tracked.messageId },
+        data: {
+          metadata: payload.metadata as any,
+        },
+      });
+
+      console.info(
+        `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} tracked_clan_count=${payload.trackedClanCount}`,
+      );
+    } catch (err) {
+      console.error(
+        `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${tracked.messageId} error=${formatError(err)}`,
+      );
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Failed to refresh the FWA clan list.",
+      });
+    }
   } catch (err) {
     console.error(
-      `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${tracked.messageId} error=${formatError(err)}`,
+      `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${interaction.message.id} error=${formatError(err)}`,
     );
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        ephemeral: true,
+        content: "Failed to refresh the FWA clan list.",
+      });
+      return;
+    }
     await interaction.followUp({
       ephemeral: true,
       content: "Failed to refresh the FWA clan list.",

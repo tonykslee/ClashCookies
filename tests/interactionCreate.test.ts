@@ -327,3 +327,51 @@ describe("interactionCreate /link list columns select menu routing", () => {
     expect(selectSpy).not.toHaveBeenCalled();
   }, 30000);
 });
+
+describe("interactionCreate /sync time FWA clan list refresh routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("routes the refresh button to the sync-time FWA clan list handler", async () => {
+    const SyncTimeModule = await import(
+      "../src/services/SyncTimeFwaClanListViewService"
+    );
+    const refreshSpy = vi
+      .spyOn(SyncTimeModule, "handleSyncTimeFwaClanListRefreshButton")
+      .mockResolvedValue(undefined);
+
+    const { handler } = await loadInteractionHandler();
+    const interaction = {
+      customId: SyncTimeModule.SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
+      isAutocomplete: () => false,
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      isUserSelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => false,
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      deferred: false,
+      replied: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+      message: {
+        id: "sync-message-1",
+        edit: vi.fn().mockResolvedValue(undefined),
+      },
+      inGuild: () => true,
+    };
+
+    await handler(interaction as any);
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+  }, 30000);
+});

@@ -31,11 +31,13 @@ import {
 import { SettingsService } from "../services/SettingsService";
 import {
   buildSyncTimeFwaClanListMessagePayload,
+  buildSyncTimeMessageContent,
 } from "../services/SyncTimeFwaClanListViewService";
 import {
   buildSyncSpinStatusEmbed,
   parseSyncTimeMetadata,
   trackedMessageService,
+  type SyncTimeTrackedMetadata,
 } from "../services/TrackedMessageService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
@@ -1013,22 +1015,47 @@ export async function handlePostModalSubmit(
     ? { roles: [role.id] }
     : { parse: [] };
 
-  const syncTimePayload = await buildSyncTimeFwaClanListMessagePayload({
-    guildId: interaction.guildId,
-    baseMetadata: {
-      syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
-      syncEpochSeconds: epochSeconds,
-      roleId: role.id,
-      clans: badges.map((badge) => ({
-        code: badge.code,
-        clanTag: badge.clanTag,
-        clanName: badge.label,
-        emojiId: badge.id,
-        emojiName: badge.name,
-        emojiInline: badge.emojiInline,
-      })),
-    },
-  });
+  const badges = await getSyncBadgesWithTrackedClanFallback(
+    interaction.client.user?.id,
+    interaction.guild
+  );
+  if (badges.length === 0) {
+    await interaction.editReply("No badge emoji configuration found for this bot ID.");
+    return;
+  }
+
+  const baseMetadata = {
+    syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
+    syncEpochSeconds: epochSeconds,
+    roleId: role.id,
+    clans: badges.map((badge) => ({
+      code: badge.code,
+      clanTag: badge.clanTag,
+      clanName: badge.label,
+      emojiId: badge.id,
+      emojiName: badge.name,
+      emojiInline: badge.emojiInline,
+    })),
+  } satisfies SyncTimeTrackedMetadata;
+
+  let syncTimePayload;
+  try {
+    syncTimePayload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: interaction.guildId,
+      baseMetadata,
+    });
+  } catch (err) {
+    console.error(
+      `[sync-time-fwa-list] render_failed guild_id=${interaction.guildId} error=${formatError(err)}`
+    );
+    syncTimePayload = {
+      content: buildSyncTimeMessageContent(epochSeconds, role.id),
+      embeds: [],
+      components: [],
+      metadata: baseMetadata,
+      trackedClanCount: 0,
+    };
+  }
   const {
     metadata: syncTimeMetadata,
     trackedClanCount,
@@ -1070,11 +1097,6 @@ export async function handlePostModalSubmit(
     notices.push(configuredChannelFallbackNotice);
   }
   const destinationLine = channel.id !== interaction.channelId ? `\nPosted in <#${channel.id}>.` : "";
-
-  const badges = await getSyncBadgesWithTrackedClanFallback(
-    interaction.client.user?.id,
-    interaction.guild
-  );
   const badgeEmojiIdentifiers = badges.map((badge) => badge.reactionIdentifier);
   if (badgeEmojiIdentifiers.length > 0) {
     let reactedCount = 0;
