@@ -3,10 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { SettingsService } from "../src/services/SettingsService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
+import * as syncTimeFwaClanListViewService from "../src/services/SyncTimeFwaClanListViewService";
+import { SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID } from "../src/services/SyncTimeFwaClanListViewService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
+  },
+  fwaClanMemberCurrent: {
+    groupBy: vi.fn(),
   },
 }));
 
@@ -323,6 +328,7 @@ describe("/sync post status reaction scan", () => {
       failed: 0,
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
       if (key === "fwa_leader_role:guild-1") return "123456789012345678";
       if (key === "command_roles:post") return null;
@@ -476,6 +482,7 @@ describe("/sync time post modal submit", () => {
       failed: 0,
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     vi.spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
@@ -540,6 +547,90 @@ describe("/sync time post modal submit", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Posted in <#222222222222222222>."),
     );
+  });
+
+  it("attaches the FWA minimal clan list embed and refresh button to the sync-time post", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: "leader-channel-1",
+        clanRoleId: null,
+        leadRoleId: "lead-role-1",
+        clanBadge: null,
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
+    ]);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
+    const payload = interaction.channel.send.mock.calls[0]?.[0] as any;
+    expect(String(payload.content ?? "")).toContain("# Sync time :gem:");
+    expect(payload.embeds).toHaveLength(1);
+    expect(payload.embeds[0].toJSON().title).toBe("Tracked Clans (FWA) (1)");
+    expect(payload.components).toHaveLength(1);
+    expect(payload.components[0].toJSON().components[0].custom_id).toBe(
+      SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
+    );
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          fwaClanListEnabled: true,
+          fwaClanListRefreshExpiresAtIso: expect.any(String),
+          fwaClanListLastRefreshedAtIso: expect.any(String),
+        }),
+      }),
+    );
+  });
+
+  it("posts the sync-time message normally if the clan-list render fails", async () => {
+    const renderSpy = vi
+      .spyOn(syncTimeFwaClanListViewService, "buildSyncTimeFwaClanListMessagePayload")
+      .mockRejectedValueOnce(new Error("render blew up"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
+    const payload = interaction.channel.send.mock.calls[0]?.[0] as any;
+    expect(String(payload.content ?? "")).toContain("# Sync time :gem:");
+    expect(payload.embeds ?? []).toHaveLength(0);
+    expect(payload.components ?? []).toHaveLength(0);
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          syncTimeIso: expect.any(String),
+          syncEpochSeconds: expect.any(Number),
+          roleId: "123456789012345678",
+          clans: expect.any(Array),
+        }),
+      }),
+    );
+    const metadata = (trackedMessageService.createSyncTimeTrackedMessage as any).mock.calls[0]?.[0]
+      ?.metadata;
+    expect(metadata.fwaClanListEnabled).toBeUndefined();
+    expect(consoleErrorSpy.mock.calls.flat().join(" ")).toContain("[sync-time-fwa-list] render_failed");
+    renderSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   });
 
   it("falls back to the legacy saved destination channel when typed sync is not configured", async () => {
