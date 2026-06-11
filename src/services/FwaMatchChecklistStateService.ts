@@ -229,6 +229,62 @@ function normalizeOutcome(
   return null;
 }
 
+function normalizeWarState(
+  value: string | null | undefined,
+): "preparation" | "inWar" | "notInWar" | "unknown" {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "preparation" || normalized === "prep") {
+    return "preparation";
+  }
+  if (normalized === "inwar" || normalized === "in_war") {
+    return "inWar";
+  }
+  if (normalized === "notinwar" || normalized === "not_in_war") {
+    return "notInWar";
+  }
+  return "unknown";
+}
+
+function isFreshMailChecklistWarIdentity(input: {
+  currentWar: {
+    state?: string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null;
+  liveWar: {
+    state?: string | null;
+    startTime?: string | null;
+    opponent?: {
+      tag?: string | null;
+    } | null;
+  } | null;
+}): boolean {
+  const currentWar = input.currentWar;
+  const liveWar = input.liveWar;
+  if (!currentWar || !liveWar) return false;
+
+  const liveWarState = normalizeWarState(liveWar.state ?? null);
+  if (liveWarState !== "preparation" && liveWarState !== "inWar") return false;
+
+  if (!(currentWar.startTime instanceof Date) || !Number.isFinite(currentWar.startTime.getTime())) {
+    return false;
+  }
+  const liveWarStartMs = parseCocApiTime(liveWar.startTime ?? null);
+  if (liveWarStartMs === null || currentWar.startTime.getTime() !== liveWarStartMs) {
+    return false;
+  }
+
+  const currentOpponentTag = normalizeChecklistClanTag(currentWar.opponentTag ?? "");
+  const liveOpponentTag = normalizeChecklistClanTag(liveWar.opponent?.tag ?? "");
+  if (!currentOpponentTag || !liveOpponentTag || currentOpponentTag !== liveOpponentTag) {
+    return false;
+  }
+
+  return true;
+}
+
 function getCurrentWarCached(
   cocService: CoCService,
   clanTag: string,
@@ -627,6 +683,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       matchType: true,
       inferredMatchType: true,
       outcome: true,
+      state: true,
     },
   });
   const currentWarByTag = new Map(
@@ -656,6 +713,22 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     const warStartTime =
       currentWar?.startTime ??
       (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
+    const shouldResolveMailStatus = isFreshMailChecklistWarIdentity({
+      currentWar: currentWar
+        ? {
+            state: currentWar.state ?? null,
+            startTime: currentWar.startTime ?? null,
+            opponentTag: currentWar.opponentTag ?? null,
+          }
+        : null,
+      liveWar: liveWar
+        ? {
+            state: liveWar.state ?? null,
+            startTime: liveWar.startTime ?? null,
+            opponent: liveWar.opponent ?? null,
+          }
+        : null,
+    });
     checklistExpiresAtCandidates.push(
       ...buildChecklistWarTimingCandidates({
         prepStartTime: currentWar?.prepStartTime ?? null,
@@ -663,16 +736,22 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
         endTime: currentWar?.endTime ?? null,
       }),
     );
-    const mailStatus = await warMailLifecycleService.resolveStatusForCurrentWar({
-      client: params.client,
-      guildId: params.guildId,
-      clanTag,
-      warId,
-      warStartTime,
-      opponentTag: liveOpponentTag || currentWar?.opponentTag || null,
-      sentEmoji: MAILBOX_SENT_EMOJI,
-      unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
-    });
+    const mailStatus = shouldResolveMailStatus
+      ? await warMailLifecycleService.resolveStatusForCurrentWar({
+          client: params.client,
+          guildId: params.guildId,
+          clanTag,
+          warId,
+          warStartTime,
+          opponentTag: liveOpponentTag || currentWar?.opponentTag || null,
+          sentEmoji: MAILBOX_SENT_EMOJI,
+          unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
+        })
+      : {
+          status: "not_posted" as const,
+          mailStatusEmoji: MAILBOX_NOT_SENT_EMOJI,
+          debug: null,
+        };
     const matchType = normalizeMatchType(currentWar?.matchType ?? null);
     const outcome = normalizeOutcome(currentWar?.outcome ?? null);
     const effectiveOutcome = matchType === "FWA" ? outcome ?? "UNKNOWN" : outcome;
