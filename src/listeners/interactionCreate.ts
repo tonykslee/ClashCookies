@@ -121,6 +121,10 @@ import {
   isLinkListSortButtonCustomId,
 } from "../commands/Link";
 import {
+  handleSyncTimeFwaClanListRefreshButton,
+  isSyncTimeFwaClanListRefreshButtonCustomId,
+} from "../services/SyncTimeFwaClanListViewService";
+import {
   handleCwlRotationImportButtonInteraction,
   isCwlRotationImportButtonCustomId,
   handleCwlRotationImportSelectMenuInteraction,
@@ -1106,6 +1110,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to refresh link list data.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isSyncTimeFwaClanListRefreshButtonCustomId(interaction.customId)) {
+    try {
+      await handleSyncTimeFwaClanListRefreshButton(interaction as any);
+    } catch (err) {
+      console.error(`Sync time FWA clan list refresh button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to refresh the FWA clan list.",
         });
       }
     }

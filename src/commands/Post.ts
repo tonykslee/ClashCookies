@@ -30,6 +30,9 @@ import {
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 import {
+  buildSyncTimeFwaClanListMessagePayload,
+} from "../services/SyncTimeFwaClanListViewService";
+import {
   buildSyncSpinStatusEmbed,
   parseSyncTimeMetadata,
   trackedMessageService,
@@ -751,14 +754,6 @@ async function resolveSyncTimePostDestination(input: {
   return { channel: input.invocationChannel, fallbackNotice: null };
 }
 
-function buildSyncMessage(epochSeconds: number, roleId: string): string {
-  return `# Sync time :gem:
-
-<t:${epochSeconds}:F> (<t:${epochSeconds}:R>)
-
-<@&${roleId}>`;
-}
-
 function summarizePermissionIssue(err: unknown, action: string): string {
   const code = (err as { code?: number } | null | undefined)?.code;
   if (code === 50013 || code === 50001) {
@@ -1018,10 +1013,32 @@ export async function handlePostModalSubmit(
     ? { roles: [role.id] }
     : { parse: [] };
 
-  const content = buildSyncMessage(epochSeconds, role.id);
+  const syncTimePayload = await buildSyncTimeFwaClanListMessagePayload({
+    guildId: interaction.guildId,
+    baseMetadata: {
+      syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
+      syncEpochSeconds: epochSeconds,
+      roleId: role.id,
+      clans: badges.map((badge) => ({
+        code: badge.code,
+        clanTag: badge.clanTag,
+        clanName: badge.label,
+        emojiId: badge.id,
+        emojiName: badge.name,
+        emojiInline: badge.emojiInline,
+      })),
+    },
+  });
+  const {
+    metadata: syncTimeMetadata,
+    trackedClanCount,
+    ...syncTimeMessagePayload
+  } = syncTimePayload;
+  void trackedClanCount;
+
   const postedMessage = await channel
     .send({
-      content,
+      ...syncTimeMessagePayload,
       allowedMentions,
     })
       .catch(async (err) => {
@@ -1098,19 +1115,7 @@ export async function handlePostModalSubmit(
     messageId: postedMessage.id,
     remindAt: new Date(epochSeconds * 1000 - 5 * 60 * 1000),
     expiresAt: new Date(epochSeconds * 1000 + 60 * 60 * 1000),
-    metadata: {
-      syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
-      syncEpochSeconds: epochSeconds,
-      roleId: role.id,
-      clans: badges.map((badge) => ({
-        code: badge.code,
-        clanTag: badge.clanTag,
-        clanName: badge.label,
-        emojiId: badge.id,
-        emojiName: badge.name,
-        emojiInline: badge.emojiInline,
-      })),
-    },
+    metadata: syncTimeMetadata,
   });
 
   try {
