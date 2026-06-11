@@ -178,6 +178,94 @@ describe("RosterWeightService", () => {
     }
   });
 
+  it("prefers the higher of FWA and manual weights and keeps FWA on ties", async () => {
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        latestKnownWeight: 145000,
+        lastSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        latestKnownWeight: 150000,
+        lastSyncedAt: new Date("2026-04-22T11:00:00.000Z"),
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        latestKnownWeight: 150000,
+        lastSyncedAt: new Date("2026-04-22T11:30:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        trophies: 5100,
+      },
+      {
+        playerTag: "#QGRJ2222",
+        trophies: 5400,
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        trophies: 5600,
+      },
+      {
+        playerTag: "#PQL0288",
+        trophies: 4800,
+      },
+    ]);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        weight: 150000,
+        measuredAt: new Date("2026-04-21T08:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        weight: 145000,
+        measuredAt: new Date("2026-04-21T09:00:00.000Z"),
+      },
+      {
+        playerTag: "#LQ9P8R2",
+        weight: 150000,
+        measuredAt: new Date("2026-04-21T10:00:00.000Z"),
+      },
+    ]);
+
+    const resolved = await resolveRosterCurrentWeightRecords({
+      playerTags: ["#PQL0289", "#QGRJ2222", "#LQ9P8R2", "#PQL0288"],
+    });
+
+    expect(resolved.get("#PQL0289")).toEqual({
+      playerTag: "#PQL0289",
+      weight: 150000,
+      weightSource: "Manual",
+      weightMeasuredAt: new Date("2026-04-21T08:00:00.000Z"),
+      trophies: 5100,
+    });
+    expect(resolved.get("#QGRJ2222")).toEqual({
+      playerTag: "#QGRJ2222",
+      weight: 150000,
+      weightSource: "FWA",
+      weightMeasuredAt: new Date("2026-04-22T11:00:00.000Z"),
+      trophies: 5400,
+    });
+    expect(resolved.get("#LQ9P8R2")).toEqual({
+      playerTag: "#LQ9P8R2",
+      weight: 150000,
+      weightSource: "FWA",
+      weightMeasuredAt: new Date("2026-04-22T11:30:00.000Z"),
+      trophies: 5600,
+    });
+    expect(resolved.get("#PQL0288")).toEqual({
+      playerTag: "#PQL0288",
+      weight: null,
+      weightSource: "Unknown",
+      weightMeasuredAt: null,
+      trophies: 4800,
+    });
+  });
+
   it("falls back to PlayerCurrent shared current weight when FWA and manual sources are missing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-22T12:00:00.000Z"));

@@ -1,6 +1,8 @@
+import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
 import { prisma } from "../prisma";
 import { toPositiveCompoWeight } from "../helper/compoActualWeight";
-import { normalizePlayerTag } from "./PlayerLinkService";
+import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { listOpenDeferredWeightsByClanAndPlayerTags } from "./WeightInputDefermentService";
 
 type FwaClanMemberCurrentRow = {
   playerTag: string;
@@ -21,6 +23,8 @@ type PlayerCurrentRow = {
 /** Purpose: resolve the display weight for link-list rows using persisted weight precedence. */
 export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
   playerTagsInOrder: string[];
+  guildId?: string | null;
+  clanTag?: string | null;
 }): Promise<Map<string, number | null>> {
   const normalizedOrdered = input.playerTagsInOrder
     .map((tag) => normalizePlayerTag(tag))
@@ -59,6 +63,20 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
       },
     }),
   ]);
+  let deferredByPlayerTag = new Map<string, number>();
+  if (input.guildId && input.clanTag) {
+    const normalizedClanTag = normalizeClanTag(input.clanTag);
+    const rowsByClan = await listOpenDeferredWeightsByClanAndPlayerTags({
+      guildId: input.guildId,
+      clanPlayerTags: [
+        {
+          clanTag: normalizedClanTag,
+          playerTags: uniqueOrdered,
+        },
+      ],
+    });
+    deferredByPlayerTag = rowsByClan.get(normalizedClanTag) ?? new Map<string, number>();
+  }
 
   const memberWeightByTag = new Map<string, number | null>();
   for (const row of memberRows as FwaClanMemberCurrentRow[]) {
@@ -82,13 +100,17 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
   }
 
   for (const playerTag of normalizedOrdered) {
-    result.set(
-      playerTag,
-      memberWeightByTag.get(playerTag) ??
-        catalogWeightByTag.get(playerTag) ??
-        currentWeightByTag.get(playerTag) ??
-        null,
-    );
+    const resolved = resolveEffectivePlayerWeight({
+      primaryCandidates: [
+        { source: "member", weight: memberWeightByTag.get(playerTag) ?? null },
+        { source: "catalog", weight: catalogWeightByTag.get(playerTag) ?? null },
+      ],
+      overrideCandidates: [
+        { source: "defer", weight: deferredByPlayerTag.get(playerTag) ?? null },
+      ],
+      fallbackCandidates: [{ source: "current", weight: currentWeightByTag.get(playerTag) ?? null }],
+    });
+    result.set(playerTag, resolved.resolvedWeight);
   }
 
   return result;

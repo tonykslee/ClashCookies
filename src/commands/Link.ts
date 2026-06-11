@@ -1432,6 +1432,8 @@ async function buildLinkListView(input: {
   });
   const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
     playerTagsInOrder: memberTags,
+    guildId: input.interaction.guildId,
+    clanTag: input.clanTag,
   });
   const fillerTags = input.interaction.guildId
     ? await listFillerAccountTagsForGuild({

@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { formatPendingAge } from "./WeightInputDefermentService";
 import { normalizePlayerTag } from "./PlayerLinkService";
+import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
 
 export const ROSTER_MANAGE_WEIGHT_SOURCE = "ROSTER_MANAGE" as const;
 
@@ -163,32 +164,24 @@ export async function resolveRosterCurrentWeightRecords(input: {
     const fwa = latestFwaByTag.get(playerTag) ?? null;
     const manual = manualByTag.get(playerTag) ?? null;
     const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
-    if (fwa && fwa.weight !== null && fwa.weight > 0) {
+    const resolved = resolveEffectivePlayerWeight({
+      primaryCandidates: [{ source: "FWA", weight: fwa?.weight ?? null }],
+      overrideCandidates: [{ source: "Manual", weight: manual?.weight ?? null }],
+      fallbackCandidates: [{ source: "PlayerCurrent", weight: playerCurrent?.weight ?? null }],
+    });
+    if (resolved.resolvedWeight !== null) {
       result.set(playerTag, {
         playerTag,
-        weight: fwa.weight,
-        weightSource: "FWA",
-        weightMeasuredAt: fwa.measuredAt,
-        trophies: trophiesByTag.get(playerTag) ?? null,
-      });
-      continue;
-    }
-    if (manual) {
-      result.set(playerTag, {
-        playerTag,
-        weight: manual.weight,
-        weightSource: "Manual",
-        weightMeasuredAt: manual.measuredAt,
-        trophies: trophiesByTag.get(playerTag) ?? null,
-      });
-      continue;
-    }
-    if (playerCurrent) {
-      result.set(playerTag, {
-        playerTag,
-        weight: playerCurrent.weight,
-        weightSource: "PlayerCurrent",
-        weightMeasuredAt: playerCurrent.measuredAt,
+        weight: resolved.resolvedWeight,
+        weightSource: resolved.resolvedWeightSource ?? "Unknown",
+        weightMeasuredAt:
+          resolved.resolvedWeightSource === "FWA"
+            ? fwa?.measuredAt ?? null
+            : resolved.resolvedWeightSource === "Manual"
+              ? manual?.measuredAt ?? null
+              : resolved.resolvedWeightSource === "PlayerCurrent"
+                ? playerCurrent?.measuredAt ?? null
+                : null,
         trophies: trophiesByTag.get(playerTag) ?? null,
       });
       continue;

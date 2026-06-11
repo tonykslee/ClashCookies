@@ -88,6 +88,9 @@ export type SyncTimeTrackedMetadata = {
   }>;
   reminderSentAt?: string | null;
   statusPostedAt?: string | null;
+  fwaClanListEnabled?: boolean;
+  fwaClanListRefreshExpiresAtIso?: string | null;
+  fwaClanListLastRefreshedAtIso?: string | null;
 };
 
 export type FwaMatchChecklistTrackedRow = {
@@ -899,6 +902,15 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
   if (clans.length === 0) return null;
   const reminderSentAt = typeof value.reminderSentAt === "string" ? value.reminderSentAt : null;
   const statusPostedAt = typeof value.statusPostedAt === "string" ? value.statusPostedAt : null;
+  const fwaClanListEnabled = value.fwaClanListEnabled === true;
+  const fwaClanListRefreshExpiresAtIso =
+    typeof value.fwaClanListRefreshExpiresAtIso === "string"
+      ? value.fwaClanListRefreshExpiresAtIso
+      : null;
+  const fwaClanListLastRefreshedAtIso =
+    typeof value.fwaClanListLastRefreshedAtIso === "string"
+      ? value.fwaClanListLastRefreshedAtIso
+      : null;
   return {
     syncTimeIso,
     syncEpochSeconds: Math.trunc(syncEpochSeconds),
@@ -906,6 +918,9 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     clans,
     ...(reminderSentAt ? { reminderSentAt } : {}),
     ...(statusPostedAt ? { statusPostedAt } : {}),
+    ...(fwaClanListEnabled ? { fwaClanListEnabled } : {}),
+    ...(fwaClanListRefreshExpiresAtIso ? { fwaClanListRefreshExpiresAtIso } : {}),
+    ...(fwaClanListLastRefreshedAtIso ? { fwaClanListLastRefreshedAtIso } : {}),
   };
 }
 

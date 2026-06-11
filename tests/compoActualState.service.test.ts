@@ -306,6 +306,76 @@ describe("CompoActualStateService", () => {
     expect(clan?.members.find((member) => member.playerTag === "#P000088")?.resolvedWeightSource).toBeNull();
   });
 
+  it("prefers the higher of FWA and deferred weights and keeps FWA on ties before current and war fallbacks", async () => {
+    const clanTag = makeValidPlayerTag(0);
+    const playerTagA = makeValidPlayerTag(1);
+    const playerTagB = makeValidPlayerTag(2);
+    const playerTagC = makeValidPlayerTag(3);
+    const playerTagD = makeValidPlayerTag(4);
+    const playerTagE = makeValidPlayerTag(5);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan(clanTag, "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag, playerTag: playerTagA, weight: 145000 }),
+      makeMember({ clanTag, playerTag: playerTagB, weight: 150000 }),
+      makeMember({ clanTag, playerTag: playerTagC, weight: 150000 }),
+      makeMember({ clanTag, playerTag: playerTagD, weight: 0 }),
+      makeMember({ clanTag, playerTag: playerTagE, weight: 0 }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      makeCatalog({ playerTag: playerTagC, latestKnownWeight: 150000 }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrent({ playerTag: playerTagD, currentWeight: 160000 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: `guild:guild-1|clan:${clanTag.replace(/^#/, "")}`,
+        playerTag: playerTagA,
+        deferredWeight: 150000,
+      }),
+      makeOpenDeferment({
+        scopeKey: `guild:guild-1|clan:${clanTag.replace(/^#/, "")}`,
+        playerTag: playerTagB,
+        deferredWeight: 145000,
+      }),
+      makeOpenDeferment({
+        scopeKey: `guild:guild-1|clan:${clanTag.replace(/^#/, "")}`,
+        playerTag: playerTagC,
+        deferredWeight: 145000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      makeWarFallback({
+        clanTag,
+        playerTag: playerTagE,
+        effectiveWeight: 170000,
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 1_000_000,
+        th18Count: 1,
+      }),
+    ]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const clan = context.clans[0];
+
+    expect(clan?.members.find((member) => member.playerTag === playerTagA)?.resolvedWeight).toBe(150000);
+    expect(clan?.members.find((member) => member.playerTag === playerTagA)?.resolvedWeightSource).toBe("defer");
+    expect(clan?.members.find((member) => member.playerTag === playerTagB)?.resolvedWeight).toBe(150000);
+    expect(clan?.members.find((member) => member.playerTag === playerTagB)?.resolvedWeightSource).toBe("member");
+    expect(clan?.members.find((member) => member.playerTag === playerTagC)?.resolvedWeight).toBe(150000);
+    expect(clan?.members.find((member) => member.playerTag === playerTagC)?.resolvedWeightSource).toBe("member");
+    expect(clan?.members.find((member) => member.playerTag === playerTagD)?.resolvedWeight).toBe(160000);
+    expect(clan?.members.find((member) => member.playerTag === playerTagD)?.resolvedWeightSource).toBe("current");
+    expect(clan?.members.find((member) => member.playerTag === playerTagE)?.resolvedWeight).toBe(170000);
+    expect(clan?.members.find((member) => member.playerTag === playerTagE)?.resolvedWeightSource).toBe("war");
+  });
+
   it("counts DF only when the open deferment is the resolved source and lets PlayerCurrent win when no defer exists", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),

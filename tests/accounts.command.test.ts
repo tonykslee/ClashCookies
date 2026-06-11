@@ -1,6 +1,7 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as PlayerLinkService from "../src/services/PlayerLinkService";
+import * as WeightInputDefermentService from "../src/services/WeightInputDefermentService";
 
 const prismaMock = vi.hoisted(() => ({
   playerCurrent: {
@@ -587,6 +588,22 @@ describe("/accounts command", () => {
   });
 
   it("falls back to PlayerCurrent, external manual weights, and open deferments in order", async () => {
+    const freeClanTag = "#PQLQ0289";
+    vi.spyOn(
+      WeightInputDefermentService,
+      "listOpenDeferredWeightsByClanAndPlayerTags",
+    ).mockResolvedValue(
+      new Map([
+        [
+          freeClanTag,
+          new Map([
+            ["#PYLQ0289", 175000],
+            ["#QGRJ2222", 176000],
+            ["#LQ9P8R2", 177000],
+          ]),
+        ],
+      ]),
+    );
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: "Alpha One", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
       { playerTag: "#QGRJ2222", playerName: "Alpha Two", discordUserId: "111111111111111111", createdAt: new Date("2026-03-01T00:00:00.000Z") },
@@ -598,23 +615,23 @@ describe("/accounts command", () => {
         playerTag: "#PYLQ0289",
         playerName: "Alpha One",
         townHall: 15,
-        currentClanTag: "#FREE0289",
+        currentClanTag: freeClanTag,
         currentClanName: "Free Clan",
-        currentWeight: 155000,
+        currentWeight: null,
       }),
       makePlayerCurrentRow({
         playerTag: "#QGRJ2222",
         playerName: "Alpha Two",
         townHall: 15,
-        currentClanTag: "#FREE0289",
+        currentClanTag: freeClanTag,
         currentClanName: "Free Clan",
-        currentWeight: 156000,
+        currentWeight: null,
       }),
       makePlayerCurrentRow({
         playerTag: "#LQ9P8R2",
         playerName: "Alpha Three",
         townHall: 15,
-        currentClanTag: "#FREE0289",
+        currentClanTag: freeClanTag,
         currentClanName: "Free Clan",
         currentWeight: null,
       }),
@@ -624,7 +641,7 @@ describe("/accounts command", () => {
         townHall: 15,
         currentClanTag: null,
         currentClanName: null,
-        currentWeight: null,
+        currentWeight: 179000,
         lastSource: "accounts-refresh",
       }),
     ]);
@@ -654,19 +671,19 @@ describe("/accounts command", () => {
     ]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([
       {
-        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        scopeKey: "guild:123456789012345678|clan:PQLQ0289",
         playerTag: "#PYLQ0289",
         deferredWeight: 175000,
         createdAt: new Date("2026-04-02T00:00:00.000Z"),
       },
       {
-        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        scopeKey: "guild:123456789012345678|clan:PQLQ0289",
         playerTag: "#QGRJ2222",
         deferredWeight: 176000,
         createdAt: new Date("2026-04-02T00:00:00.000Z"),
       },
       {
-        scopeKey: "guild:123456789012345678|clan:FREE0289",
+        scopeKey: "guild:123456789012345678|clan:PQLQ0289",
         playerTag: "#LQ9P8R2",
         deferredWeight: 177000,
         createdAt: new Date("2026-04-02T00:00:00.000Z"),
@@ -677,12 +694,6 @@ describe("/accounts command", () => {
         deferredWeight: 178000,
         createdAt: new Date("2026-04-03T00:00:00.000Z"),
       },
-      {
-        scopeKey: "guild:123456789012345678",
-        playerTag: "#JQ00020",
-        deferredWeight: 179000,
-        createdAt: new Date("2026-04-02T00:00:00.000Z"),
-      },
     ]);
     const interaction = makeInteraction();
 
@@ -690,13 +701,13 @@ describe("/accounts command", () => {
 
     const description = getEmbedDescription(interaction);
     expect(description).toContain(
-      "TH15 [Alpha One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 155k",
+      "TH15 [Alpha One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 175k",
     );
     expect(description).toContain(
-      "TH15 [Alpha Two](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - 156k",
+      "TH15 [Alpha Two](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - 176k",
     );
     expect(description).toContain(
-      "TH15 [Alpha Three](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) :crown: `#LQ9P8R2` - 167k",
+      "TH15 [Alpha Three](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) :crown: `#LQ9P8R2` - 177k",
     );
     expect(description).toContain(
       "TH15 [Alpha Four](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=JQ00020>) :crown: `#JQ00020` - 179k",
@@ -709,26 +720,6 @@ describe("/accounts command", () => {
         source: true,
         weight: true,
       },
-    });
-    expect(prismaMock.weightInputDeferment.findMany).toHaveBeenCalledWith({
-      where: {
-        guildId: "123456789012345678",
-        playerTag: { in: ["#PYLQ0289", "#QGRJ2222", "#LQ9P8R2", "#JQ00020"] },
-        scopeKey: {
-          in: [
-            "guild:123456789012345678|clan:FREE0289",
-            "guild:123456789012345678",
-          ],
-        },
-        status: "open",
-      },
-      select: {
-        createdAt: true,
-        deferredWeight: true,
-        playerTag: true,
-        scopeKey: true,
-      },
-      orderBy: [{ createdAt: "desc" }],
     });
   });
 
