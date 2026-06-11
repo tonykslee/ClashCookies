@@ -13,6 +13,12 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+function normalizeSqlText(query: any): string {
+  return String(query?.strings?.join(" ") ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 import {
   buildRepWorkReportEmbed,
   parseRepWorkDuration,
@@ -179,6 +185,116 @@ describe("rep work report service", () => {
     expect(String(json.fields[0].value)).toContain("Mails: 4 (avg n/a)");
     expect(String(json.fields[0].value)).toContain("Top cmds: `/fwa base-swap` 12");
     expect(String(json.footer?.text)).toContain("Since 30d");
+  });
+
+  it("uses the first event per sync when averaging prep time", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 2,
+          avgPrepTimeLeftSeconds: 20000,
+        },
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.MAIL_CHECKED,
+          totalCount: 2,
+          avgPrepTimeLeftSeconds: 12000,
+        },
+        {
+          discordUserId: "222222222222222222",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 3,
+          avgPrepTimeLeftSeconds: 15000,
+        },
+        {
+          discordUserId: "222222222222222222",
+          activityType: RepWorkActivityType.MAIL_CHECKED,
+          totalCount: 4,
+          avgPrepTimeLeftSeconds: 10000,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "14d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const byUserId = new Map(report?.users.map((row) => [row.discordUserId, row]));
+    expect(byUserId.get("111111111111111111")).toMatchObject({
+      basesChecked: 2,
+      basesAvgPrepTimeLeftSeconds: 20000,
+      mailsChecked: 2,
+      mailsAvgPrepTimeLeftSeconds: 12000,
+    });
+    expect(byUserId.get("222222222222222222")).toMatchObject({
+      basesChecked: 3,
+      basesAvgPrepTimeLeftSeconds: 15000,
+      mailsChecked: 4,
+      mailsAvgPrepTimeLeftSeconds: 10000,
+    });
+  });
+
+  it("keeps null first-row prep timings as n/a", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 2,
+          avgPrepTimeLeftSeconds: null,
+        },
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.MAIL_CHECKED,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 7200,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    expect(report?.users[0].basesAvgPrepTimeLeftSeconds).toBeNull();
+    expect(report?.users[0].mailsAvgPrepTimeLeftSeconds).toBe(7200);
+
+    const embed = buildRepWorkReportEmbed(report!);
+    const json = embed.toJSON() as any;
+    expect(String(json.fields[0].value)).toContain("Bases: 2 (avg n/a)");
+  });
+
+  it("uses first-row-per-sync SQL for prep timing averages", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 2,
+          avgPrepTimeLeftSeconds: 20000,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const sqlText = normalizeSqlText(prismaMock.$queryRaw.mock.calls[0]?.[0]);
+    expect(sqlText).toContain('ROW_NUMBER() OVER ( PARTITION BY "discordUserId", "activityType", COALESCE("syncMessageId", "sourceMessageId", "id") ORDER BY "eventAt" ASC, "createdAt" ASC, "id" ASC ) AS "rn"');
+    expect(sqlText).toContain('"rn" = 1');
+    expect(sqlText).toContain('AVG("prepTimeLeftSeconds")::double precision AS "avgPrepTimeLeftSeconds"');
   });
 
   it("ignores null prep timing values when averaging", async () => {
