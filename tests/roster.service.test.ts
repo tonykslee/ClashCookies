@@ -748,6 +748,89 @@ describe("RosterService", () => {
     ]);
   });
 
+  it("keeps a manual override eligible when FWA is below minimum weight", async () => {
+    const playerTag = "#PQL0289";
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag, linkedName: "Manual Eligible", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: null,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: 150000,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
+      {
+        playerTag,
+        latestKnownWeight: 145000,
+        lastSyncedAt: new Date("2026-04-22T10:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      { playerTag, trophies: 5200 },
+    ] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag,
+        weight: 160000,
+        measuredAt: new Date("2026-04-22T09:00:00.000Z"),
+      },
+    ] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        [
+          playerTag,
+          makeResolvedPlayerCurrent(playerTag, 15, {
+            currentWeight: 160000,
+            currentWeightMeasuredAt: new Date("2026-04-22T09:00:00.000Z"),
+          }),
+        ],
+      ]),
+    );
+
+    const result = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      discordUserId: "111111111111111111",
+      groupKey: "confirmed",
+    });
+
+    expect(result).toMatchObject({ outcome: "ready" });
+    if (result.outcome !== "ready") return;
+    const accountOptions = getRosterSignupAccountOptions(result.panel);
+    expect(accountOptions.map((option) => [option.value, option.description, option.default] as const)).toEqual([
+      [playerTag, `${playerTag} | available`, false],
+    ]);
+  });
+
   it("applies town hall and minimum weight gates together when both are configured", async () => {
     const playerTag = "#PQL0289";
     playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
