@@ -260,17 +260,55 @@ export class RepWorkReportService {
     let stage = "activity_query";
     try {
       const activityRows = await prisma.$queryRaw<RepWorkActivityAggregateRow[]>(Prisma.sql`
+        WITH "count_rows" AS (
+          SELECT
+            "discordUserId",
+            "activityType",
+            COUNT(*)::int AS "totalCount"
+          FROM "RepWorkActivityEvent"
+          WHERE
+            "guildId" = ${guildId}
+            AND "eventAt" >= ${start}
+            AND "eventAt" < ${end}
+          GROUP BY "discordUserId", "activityType"
+        ),
+        "ranked_first_rows" AS (
+          SELECT
+            "discordUserId",
+            "activityType",
+            "prepTimeLeftSeconds",
+            ROW_NUMBER() OVER (
+              PARTITION BY
+                "discordUserId",
+                "activityType",
+                COALESCE("syncMessageId", "sourceMessageId", "id")
+              ORDER BY "eventAt" ASC, "createdAt" ASC, "id" ASC
+            ) AS "rn"
+          FROM "RepWorkActivityEvent"
+          WHERE
+            "guildId" = ${guildId}
+            AND "eventAt" >= ${start}
+            AND "eventAt" < ${end}
+        ),
+        "first_row_averages" AS (
+          SELECT
+            "discordUserId",
+            "activityType",
+            AVG("prepTimeLeftSeconds")::double precision AS "avgPrepTimeLeftSeconds"
+          FROM "ranked_first_rows"
+          WHERE "rn" = 1
+          GROUP BY "discordUserId", "activityType"
+        )
         SELECT
-          "discordUserId",
-          "activityType",
-          COUNT(*)::int AS "totalCount",
-          AVG("prepTimeLeftSeconds")::double precision AS "avgPrepTimeLeftSeconds"
-        FROM "RepWorkActivityEvent"
-        WHERE
-          "guildId" = ${guildId}
-          AND "eventAt" >= ${start}
-          AND "eventAt" < ${end}
-        GROUP BY "discordUserId", "activityType"
+          c."discordUserId",
+          c."activityType",
+          c."totalCount",
+          a."avgPrepTimeLeftSeconds"
+        FROM "count_rows" c
+        LEFT JOIN "first_row_averages" a
+          ON a."discordUserId" = c."discordUserId"
+          AND a."activityType" = c."activityType"
+        ORDER BY c."discordUserId", c."activityType"
       `);
 
       stage = "sync_claim_query";
