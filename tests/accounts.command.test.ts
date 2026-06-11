@@ -690,13 +690,13 @@ describe("/accounts command", () => {
 
     const description = getEmbedDescription(interaction);
     expect(description).toContain(
-      "TH15 [Alpha One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 155k",
+      "TH15 [Alpha One](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) :crown: `#PYLQ0289` - 175k",
     );
     expect(description).toContain(
-      "TH15 [Alpha Two](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - 156k",
+      "TH15 [Alpha Two](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) :crown: `#QGRJ2222` - 176k",
     );
     expect(description).toContain(
-      "TH15 [Alpha Three](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) :crown: `#LQ9P8R2` - 167k",
+      "TH15 [Alpha Three](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=LQ9P8R2>) :crown: `#LQ9P8R2` - 177k",
     );
     expect(description).toContain(
       "TH15 [Alpha Four](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=JQ00020>) :crown: `#JQ00020` - 179k",

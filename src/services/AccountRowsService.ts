@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
 import { playerCurrentService } from "./PlayerCurrentService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "./WeightInputDefermentService";
 import { normalizeClashTagInput } from "../helper/clashTag";
@@ -286,26 +287,17 @@ export async function buildAccountsRows(input: {
       context.preferredMemberRow?.townHall ??
       context.fwaCatalogRow?.latestTownHall ??
       null;
-    const weight =
-      context.preferredMemberRow?.weight ??
-      context.fwaCatalogRow?.latestKnownWeight ??
-      context.playerCurrentWeight ??
-      context.externalWeight ??
-      deferredWeight ??
-      null;
-    const weightSource =
-      context.preferredMemberRow?.weight !== null && context.preferredMemberRow?.weight !== undefined
-        ? "FwaClanMemberCurrent"
-        : context.fwaCatalogRow?.latestKnownWeight !== null &&
-            context.fwaCatalogRow?.latestKnownWeight !== undefined
-          ? "FwaPlayerCatalog"
-          : context.playerCurrentWeight !== null
-            ? "PlayerCurrent"
-            : context.externalWeight !== null
-              ? "ExternalPlayerWeightCurrent"
-              : deferredWeight !== null
-                ? "WeightInputDeferment"
-                : null;
+    const weight = resolveEffectivePlayerWeight({
+      primaryCandidates: [
+        { source: "FwaClanMemberCurrent", weight: context.preferredMemberRow?.weight },
+        { source: "FwaPlayerCatalog", weight: context.fwaCatalogRow?.latestKnownWeight },
+      ],
+      overrideCandidates: [
+        { source: "ExternalPlayerWeightCurrent", weight: context.externalWeight },
+        { source: "WeightInputDeferment", weight: deferredWeight },
+      ],
+      fallbackCandidates: [{ source: "PlayerCurrent", weight: context.playerCurrentWeight }],
+    });
 
     return {
       tag: context.tag,
@@ -315,8 +307,8 @@ export async function buildAccountsRows(input: {
         context.fallback?.name ??
         context.tag,
       townHall,
-      weight,
-      weightSource,
+      weight: weight.resolvedWeight,
+      weightSource: weight.resolvedWeightSource,
       clanTag: context.clanState === "known" ? context.clanTag : null,
       clanName: context.clanState === "known" ? context.clanName : null,
       clanRole: normalizeClanMemberRole(context.playerCurrent?.role),
