@@ -3,57 +3,66 @@ import { ActivityService } from "../src/services/ActivityService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 import * as trackedClanListService from "../src/services/TrackedClanListService";
 
-const prismaMock = vi.hoisted(() => ({
-  trackedClan: {
+const prismaMock = vi.hoisted(() => {
+  const trackedClan = {
     findMany: vi.fn(),
     findUnique: vi.fn(),
     deleteMany: vi.fn(),
     upsert: vi.fn(),
-  },
-  cwlTrackedClan: {
+  };
+  const trackedClanRep = {
     findMany: vi.fn(),
+    deleteMany: vi.fn(),
     createMany: vi.fn(),
-    findFirst: vi.fn(),
-    deleteMany: vi.fn(),
-    updateMany: vi.fn(),
-  },
-  raidTrackedClan: {
-    findMany: vi.fn(),
-    createMany: vi.fn(),
-    updateMany: vi.fn(),
-    deleteMany: vi.fn(),
-    findFirst: vi.fn(),
-  },
-  cwlPlayerClanSeason: {
-    findMany: vi.fn(),
-    groupBy: vi.fn(),
-    deleteMany: vi.fn(),
-  },
-  roster: {
-    findMany: vi.fn(),
-  },
-  currentWar: {
-    deleteMany: vi.fn(),
-    upsert: vi.fn(),
-  },
-  currentCwlRound: {
-    findMany: vi.fn(),
-  },
-  currentCwlPrepSnapshot: {
-    findMany: vi.fn(),
-  },
-  cwlRoundHistory: {
-    findMany: vi.fn(),
-  },
-  fwaClanMemberCurrent: {
-    groupBy: vi.fn(),
-  },
-  $transaction: vi.fn(async (arg: any) => {
-    if (Array.isArray(arg)) return Promise.all(arg);
-    if (typeof arg === "function") return arg({});
-    return arg;
-  }),
-}));
+  };
+  return {
+    trackedClan,
+    trackedClanRep,
+    cwlTrackedClan: {
+      findMany: vi.fn(),
+      createMany: vi.fn(),
+      findFirst: vi.fn(),
+      deleteMany: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    raidTrackedClan: {
+      findMany: vi.fn(),
+      createMany: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
+      findFirst: vi.fn(),
+    },
+    cwlPlayerClanSeason: {
+      findMany: vi.fn(),
+      groupBy: vi.fn(),
+      deleteMany: vi.fn(),
+    },
+    roster: {
+      findMany: vi.fn(),
+    },
+    currentWar: {
+      deleteMany: vi.fn(),
+      upsert: vi.fn(),
+    },
+    currentCwlRound: {
+      findMany: vi.fn(),
+    },
+    currentCwlPrepSnapshot: {
+      findMany: vi.fn(),
+    },
+    cwlRoundHistory: {
+      findMany: vi.fn(),
+    },
+    fwaClanMemberCurrent: {
+      groupBy: vi.fn(),
+    },
+    $transaction: vi.fn(async (arg: any) => {
+      if (Array.isArray(arg)) return Promise.all(arg);
+      if (typeof arg === "function") return arg({ trackedClan, trackedClanRep });
+      return arg;
+    }),
+  };
+});
 
 const cocQueueMock = vi.hoisted(() => ({
   runWithCoCQueueContext: vi.fn(async (_context: unknown, run: () => Promise<unknown>) => run()),
@@ -182,6 +191,9 @@ describe("/clan command behavior", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.trackedClan.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.trackedClanRep.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
@@ -520,6 +532,10 @@ describe("/clan command behavior", () => {
         updatedAt: new Date("2026-04-01T00:00:00.000Z"),
       },
     ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#2RVGJYLC0" },
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+    ]);
 
     const interaction = createInteraction({
       subcommand: "list",
@@ -535,6 +551,7 @@ describe("/clan command behavior", () => {
     expect(description).toContain("shortName: AC");
     expect(description).toContain("leaderChannel: <#leader-channel-1>");
     expect(description).toContain("leadRole: <@&lead-role-1>");
+    expect(description).toContain("reps: #2RVGJYLC0, #PYLQ0289");
     expect(interaction.editReply.mock.calls[0]?.[0]?.components).toEqual([]);
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
@@ -2129,6 +2146,131 @@ describe("/clan command behavior", () => {
     );
     expect(getReplyContent(interaction)).toContain("leaderChannel: <#leader-channel-1>");
     expect(getReplyContent(interaction)).toContain("leadRole: not set");
+  });
+
+  it("persists rep player tags when /clan configure receives reps", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      clanRoleId: null,
+      leadRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([]);
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP", reps: "[#2RVGJYLC0,#PYLQ0289]" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClanRep.deleteMany).toHaveBeenCalledWith({
+      where: { clanTag: "#2QG2C08UP" },
+    });
+    expect(prismaMock.trackedClanRep.createMany).toHaveBeenCalledWith({
+      data: [
+        { clanTag: "#2QG2C08UP", playerTag: "#2RVGJYLC0" },
+        { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      ],
+    });
+    expect(getReplyContent(interaction)).toContain("reps: #2RVGJYLC0, #PYLQ0289");
+  });
+
+  it("preserves existing rep player tags when /clan configure omits reps", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+    });
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      clanRoleId: null,
+      leadRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#2RVGJYLC0" },
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClanRep.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+    expect(getReplyContent(interaction)).toContain("reps: #2RVGJYLC0, #PYLQ0289");
+  });
+
+  it("clears rep player tags when /clan configure receives reps:[]", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+    });
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      clanRoleId: null,
+      leadRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP", reps: "[]" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClanRep.deleteMany).toHaveBeenCalledWith({
+      where: { clanTag: "#2QG2C08UP" },
+    });
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+    expect(getReplyContent(interaction)).toContain("reps: not set");
+  });
+
+  it("rejects invalid rep tags before changing clan config", async () => {
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP", reps: "BADTAG" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, { getClan: vi.fn() } as any);
+
+    expect(getReplyContent(interaction)).toContain("Invalid rep player tags");
+    expect(prismaMock.trackedClan.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClanRep.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
   });
 
   it("persists leadRoleId when /clan configure receives lead-role", async () => {

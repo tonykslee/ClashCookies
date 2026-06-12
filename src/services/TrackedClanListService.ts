@@ -17,6 +17,7 @@ import {
   refreshCwlTrackedClanMetadataForSeason,
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
+import { listTrackedClanRepTagsForClanTags } from "./TrackedClanRepService";
 
 export type FwaTrackedClanDisplayRow = {
   tag: string;
@@ -29,6 +30,7 @@ export type FwaTrackedClanDisplayRow = {
   leadRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
+  repPlayerTags?: string[];
   createdAt: Date;
 };
 
@@ -627,6 +629,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
       createdAt: true,
     },
   });
+  const repTagsByClan = await listTrackedClanRepTagsForClanTags(rows.map((row) => row.tag));
 
   return rows.map((row) => ({
     tag: normalizeClanTag(row.tag) || row.tag,
@@ -639,6 +642,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     leadRoleId: row.leadRoleId,
     clanBadge: row.clanBadge,
     shortName: row.shortName,
+    repPlayerTags: repTagsByClan.get(normalizeClanTag(row.tag) || row.tag) ?? [],
     createdAt: row.createdAt,
   }));
 }
