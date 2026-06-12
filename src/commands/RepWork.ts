@@ -10,35 +10,11 @@ import {
   parseRepWorkDuration,
   repWorkReportService,
 } from "../services/RepWorkReportService";
+import {
+  resolveRepWorkRenderedClanBadgesByUserId,
+} from "../services/RepWorkBadgeService";
 
 const INVALID_DURATION_MESSAGE = "Use a duration like 7d, 4w, or 2mo.";
-
-function normalizeRepWorkDisplayName(value: string | null | undefined): string | null {
-  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-async function resolveRepWorkDisplayNameByUserId(interaction: ChatInputCommandInteraction, userIds: string[]) {
-  const displayNameByUserId = new Map<string, string>();
-  const guild = interaction.guild;
-  if (!guild) return displayNameByUserId;
-
-  for (const userId of userIds) {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) continue;
-
-    const displayName =
-      normalizeRepWorkDisplayName(member.displayName) ??
-      normalizeRepWorkDisplayName(member.user?.globalName ?? null) ??
-      normalizeRepWorkDisplayName(member.user?.username ?? null);
-
-    if (displayName) {
-      displayNameByUserId.set(userId, displayName);
-    }
-  }
-
-  return displayNameByUserId;
-}
 
 export const RepWork: Command = {
   name: "repwork",
@@ -62,7 +38,7 @@ export const RepWork: Command = {
     },
   ],
   run: async (
-    _client: Client,
+    client: Client,
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
@@ -96,13 +72,13 @@ export const RepWork: Command = {
       return;
     }
 
-    const displayNameByUserId = await resolveRepWorkDisplayNameByUserId(
-      interaction,
-      report.users.map((row) => row.discordUserId),
-    );
+    const renderedBadgesByUserId = await resolveRepWorkRenderedClanBadgesByUserId({
+      client,
+      userIds: report.users.map((row) => row.discordUserId),
+    }).catch(() => new Map<string, string[]>());
 
     await interaction.editReply({
-      embeds: [buildRepWorkReportEmbed(report, { displayNameByUserId })],
+      embeds: [buildRepWorkReportEmbed(report, { renderedBadgesByUserId })],
       allowedMentions: { parse: [] },
     });
   },

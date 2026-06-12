@@ -5,33 +5,29 @@ const reportServiceMock = vi.hoisted(() => ({
   buildReport: vi.fn(),
 }));
 
-vi.mock("../src/services/RepWorkReportService", () => ({
-  repWorkReportService: {
-    buildReport: reportServiceMock.buildReport,
-  },
-  parseRepWorkDuration: vi.fn((input: string) => {
-    const normalized = String(input ?? "").trim().toLowerCase();
-    if (normalized === "7d") return { amount: 7, unit: "d", days: 7, label: "7d" };
-    return null;
-  }),
-  buildRepWorkReportEmbed: vi.fn((report: any, options?: { displayNameByUserId?: Map<string, string> }) => {
-    const userId = String(report?.users?.[0]?.discordUserId ?? "111111111111111111");
-    const fieldName = options?.displayNameByUserId?.get(userId) ?? userId;
-    return {
-      toJSON: () => ({
-        title: "Rep Work Stats",
-        fields: [
-          {
-            name: fieldName,
-            value: "Bases: 1 (avg n/a)\nSyncs: 1 participated | 1 clan claims\nMails: 0 (avg n/a)\nTop cmds: none",
-          },
-        ],
-        footer: { text: "Since 7d | Showing 1 users" },
-        description: "Window: <t:0:f> -> <t:1:f>",
-        report,
-      }),
-    };
-  }),
+const badgeResolverMock = vi.hoisted(() => ({
+  resolveRepWorkRenderedClanBadgesByUserId: vi.fn(),
+}));
+
+vi.mock("../src/services/RepWorkReportService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/RepWorkReportService")>(
+    "../src/services/RepWorkReportService",
+  );
+  return {
+    ...actual,
+    repWorkReportService: {
+      buildReport: reportServiceMock.buildReport,
+    },
+    parseRepWorkDuration: vi.fn((input: string) => {
+      const normalized = String(input ?? "").trim().toLowerCase();
+      if (normalized === "7d") return { amount: 7, unit: "d", days: 7, label: "7d" };
+      return null;
+    }),
+  };
+});
+
+vi.mock("../src/services/RepWorkBadgeService", () => ({
+  resolveRepWorkRenderedClanBadgesByUserId: badgeResolverMock.resolveRepWorkRenderedClanBadgesByUserId,
 }));
 
 import { RepWork } from "../src/commands/RepWork";
@@ -40,6 +36,7 @@ describe("/repwork command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     reportServiceMock.buildReport.mockReset();
+    badgeResolverMock.resolveRepWorkRenderedClanBadgesByUserId.mockReset();
   });
 
   it("registers since and visibility options", () => {
@@ -52,7 +49,7 @@ describe("/repwork command", () => {
     expect(visibility?.required).toBe(false);
   });
 
-  it("renders a report embed for a valid window", async () => {
+  it("renders user mentions in the field value and keeps the field header non-mention text", async () => {
     reportServiceMock.buildReport.mockResolvedValue({
       guildId: "guild-1",
       start: new Date("2026-06-03T12:00:00.000Z"),
@@ -68,31 +65,24 @@ describe("/repwork command", () => {
           basesAvgPrepTimeLeftSeconds: null,
           syncsParticipated: 1,
           clanClaims: 1,
-          mailsChecked: 0,
-          mailsAvgPrepTimeLeftSeconds: null,
+          mailsChecked: 2,
+          mailsCheckedAvgPrepTimeLeftSeconds: 3600,
+          mailsSent: 3,
+          mailsSentAvgPrepTimeLeftSeconds: 1800,
           topCommands: [],
         },
       ],
     });
-
-    const fetchMember = vi.fn().mockResolvedValue({
-      displayName: "Server Display",
-      user: {
-        globalName: "Global Name",
-        username: "username",
-      },
-    });
+    badgeResolverMock.resolveRepWorkRenderedClanBadgesByUserId.mockResolvedValue(
+      new Map([["111111111111111111", ["<:badge:123>"]]]),
+    );
 
     const deferReply = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
     const reply = vi.fn().mockResolvedValue(undefined);
+    const client = { user: { id: "bot-1" } } as any;
     const interaction = {
       guildId: "guild-1",
-      guild: {
-        members: {
-          fetch: fetchMember,
-        },
-      },
       options: {
         getString: vi.fn((name: string) => {
           if (name === "since") return "7d";
@@ -105,32 +95,32 @@ describe("/repwork command", () => {
       reply,
     } as any;
 
-    await RepWork.run({} as any, interaction, {} as any);
+    await RepWork.run(client, interaction, {} as any);
 
-    expect(deferReply).toHaveBeenCalled();
+    expect(deferReply).toHaveBeenCalledTimes(1);
     expect(reportServiceMock.buildReport).toHaveBeenCalledWith({
       guildId: "guild-1",
       since: "7d",
     });
-    expect(fetchMember).toHaveBeenCalledWith("111111111111111111");
+    expect(badgeResolverMock.resolveRepWorkRenderedClanBadgesByUserId).toHaveBeenCalledWith({
+      client,
+      userIds: ["111111111111111111"],
+    });
     expect(editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         embeds: expect.any(Array),
         allowedMentions: { parse: [] },
       }),
     );
+
     const embed = (editReply.mock.calls[0]?.[0]?.embeds?.[0] as any)?.toJSON?.();
-    expect(embed?.fields?.[0]?.name).toBe("Server Display");
-    expect(editReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        embeds: expect.any(Array),
-        allowedMentions: { parse: [] },
-      }),
-    );
+    expect(embed?.fields?.[0]?.name).toBe("\u200b");
+    expect(String(embed?.fields?.[0]?.value)).toContain("**<@111111111111111111>** <:badge:123>");
+    expect(String(embed?.fields?.[0]?.value)).toContain("Mails: Discord 2 (avg 1h left) | In-game 3 (avg 30m left)");
     expect(reply).not.toHaveBeenCalled();
   });
 
-  it("falls back to the raw user id when a guild member cannot be fetched", async () => {
+  it("falls back to the raw user id when the report row is not a Discord snowflake", async () => {
     reportServiceMock.buildReport.mockResolvedValue({
       guildId: "guild-1",
       start: new Date("2026-06-03T12:00:00.000Z"),
@@ -141,27 +131,24 @@ describe("/repwork command", () => {
       limit: 15,
       users: [
         {
-          discordUserId: "111111111111111111",
-          basesChecked: 1,
+          discordUserId: "not-a-snowflake",
+          basesChecked: 0,
           basesAvgPrepTimeLeftSeconds: null,
-          syncsParticipated: 1,
-          clanClaims: 1,
+          syncsParticipated: 0,
+          clanClaims: 0,
           mailsChecked: 0,
-          mailsAvgPrepTimeLeftSeconds: null,
+          mailsCheckedAvgPrepTimeLeftSeconds: null,
+          mailsSent: 0,
+          mailsSentAvgPrepTimeLeftSeconds: null,
           topCommands: [],
         },
       ],
     });
+    badgeResolverMock.resolveRepWorkRenderedClanBadgesByUserId.mockResolvedValue(new Map());
 
-    const fetchMember = vi.fn().mockRejectedValue(new Error("missing member"));
     const editReply = vi.fn().mockResolvedValue(undefined);
     const interaction = {
       guildId: "guild-1",
-      guild: {
-        members: {
-          fetch: fetchMember,
-        },
-      },
       options: {
         getString: vi.fn((name: string) => {
           if (name === "since") return "7d";
@@ -173,11 +160,10 @@ describe("/repwork command", () => {
       reply: vi.fn().mockResolvedValue(undefined),
     } as any;
 
-    await RepWork.run({} as any, interaction, {} as any);
+    await RepWork.run({ user: { id: "bot-1" } } as any, interaction, {} as any);
 
-    expect(fetchMember).toHaveBeenCalledWith("111111111111111111");
     const embed = (editReply.mock.calls[0]?.[0]?.embeds?.[0] as any)?.toJSON?.();
-    expect(embed?.fields?.[0]?.name).toBe("111111111111111111");
+    expect(String(embed?.fields?.[0]?.value)).toContain("**not-a-snowflake**");
   });
 
   it("rejects invalid durations with a clear error", async () => {
@@ -196,7 +182,7 @@ describe("/repwork command", () => {
       editReply: vi.fn(),
     } as any;
 
-    await RepWork.run({} as any, interaction, {} as any);
+    await RepWork.run({ user: { id: "bot-1" } } as any, interaction, {} as any);
 
     expect(reply).toHaveBeenCalledWith(
       expect.objectContaining({

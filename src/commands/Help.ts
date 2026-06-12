@@ -215,9 +215,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   repwork: {
     summary: "Report FWA leader rep-work activity over a recent window.",
     details: [
-      "Use `/repwork since:<duration>` to summarize durable rep-work attribution snapshots plus sync participation and telemetry usage.",
+      "Use `/repwork since:<duration>` to summarize durable rep-work attribution snapshots plus sync participation, Discord mail checklist activity, in-game mail sends, and telemetry usage.",
       "Duration accepts positive integers with `d`, `w`, or `mo` suffixes (for example `7d`, `4w`, or `2mo`), and `mo` is treated as 30 days.",
-      "Bases and mail timing use the prep-time-left value captured when the activity was attributed; averages with no timing data show as `avg n/a`.",
+      "Bases and mail timing use the prep-time-left value captured when the activity was attributed; Discord mails count checklist reactions, in-game mails count successful `/fwa match` mail sends, and averages with no timing data show as `avg n/a`.",
       "Sync stats show both `syncs participated` and `clan claims` from tracked sync reaction claims in the selected window.",
       "Top commands are the three most-used bot commands per user in the same window.",
       "The report is based on persisted data only and omits command-only users who have no rep-work or sync activity in the window.",

@@ -30,7 +30,9 @@ export type RepWorkReportUserRow = {
   syncsParticipated: number;
   clanClaims: number;
   mailsChecked: number;
-  mailsAvgPrepTimeLeftSeconds: number | null;
+  mailsCheckedAvgPrepTimeLeftSeconds: number | null;
+  mailsSent: number;
+  mailsSentAvgPrepTimeLeftSeconds: number | null;
   topCommands: RepWorkReportCommandRow[];
 };
 
@@ -46,7 +48,7 @@ export type RepWorkReport = {
 };
 
 export type RepWorkReportEmbedOptions = {
-  displayNameByUserId?: Map<string, string>;
+  renderedBadgesByUserId?: Map<string, string[]>;
 };
 
 type RepWorkActivityAggregateRow = {
@@ -104,30 +106,23 @@ function formatCommandLabel(commandName: string, subcommand: string): string {
   return `/${normalizedCommand} ${normalizedSubcommand.replaceAll(":", " ")}`;
 }
 
-function normalizeDisplayName(value: string | null | undefined): string | null {
-  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
 function isDiscordSnowflakeId(value: string | null | undefined): boolean {
   return /^\d{17,20}$/.test(String(value ?? "").trim());
 }
 
-function buildRepWorkFieldName(input: {
+function buildRepWorkUserIdentityLine(input: {
   discordUserId: string;
-  displayNameByUserId?: Map<string, string>;
-  duplicateDisplayNames?: Set<string>;
+  renderedBadgesByUserId?: Map<string, string[]>;
 }): string {
-  const displayName = normalizeDisplayName(
-    input.displayNameByUserId?.get(input.discordUserId) ?? null,
-  );
-  if (!displayName) return input.discordUserId;
-  if (!input.duplicateDisplayNames?.has(displayName)) {
-    return displayName;
-  }
-
-  const suffix = input.discordUserId.slice(-4) || input.discordUserId;
-  return `${displayName} (\`${suffix}\`)`;
+  const identity = isDiscordSnowflakeId(input.discordUserId)
+    ? `<@${input.discordUserId}>`
+    : input.discordUserId;
+  const badges = [
+    ...new Set(input.renderedBadgesByUserId?.get(input.discordUserId) ?? []),
+  ].filter((badge) => String(badge ?? "").trim());
+  return badges.length > 0
+    ? `**${identity}** ${badges.join(" ")}`
+    : `**${identity}**`;
 }
 
 function buildWindow(now: Date, durationDays: number): { start: Date; end: Date } {
@@ -149,7 +144,9 @@ function ensureUserRow(
     syncsParticipated: 0,
     clanClaims: 0,
     mailsChecked: 0,
-    mailsAvgPrepTimeLeftSeconds: null,
+    mailsCheckedAvgPrepTimeLeftSeconds: null,
+    mailsSent: 0,
+    mailsSentAvgPrepTimeLeftSeconds: null,
     topCommands: [],
   };
   users.set(discordUserId, row);
@@ -172,9 +169,13 @@ function logBuildFailure(input: {
 function sortReportUsers(rows: RepWorkReportUserRow[]): RepWorkReportUserRow[] {
   return [...rows].sort((a, b) => {
     if (b.basesChecked !== a.basesChecked) return b.basesChecked - a.basesChecked;
-    if (b.mailsChecked !== a.mailsChecked) return b.mailsChecked - a.mailsChecked;
+    const aMailTotal = a.mailsChecked + a.mailsSent;
+    const bMailTotal = b.mailsChecked + b.mailsSent;
+    if (bMailTotal !== aMailTotal) return bMailTotal - aMailTotal;
     if (b.clanClaims !== a.clanClaims) return b.clanClaims - a.clanClaims;
-    if (b.syncsParticipated !== a.syncsParticipated) return b.syncsParticipated - a.syncsParticipated;
+    if (b.syncsParticipated !== a.syncsParticipated) {
+      return b.syncsParticipated - a.syncsParticipated;
+    }
     return a.discordUserId.localeCompare(b.discordUserId);
   });
 }
@@ -245,31 +246,21 @@ export function buildRepWorkReportEmbed(
     return embed;
   }
 
-  const displayNameCounts = new Map<string, number>();
-  for (const row of report.users) {
-    const displayName = normalizeDisplayName(options?.displayNameByUserId?.get(row.discordUserId) ?? null);
-    if (!displayName) continue;
-    displayNameCounts.set(displayName, (displayNameCounts.get(displayName) ?? 0) + 1);
-  }
-  const duplicateDisplayNames = new Set(
-    [...displayNameCounts.entries()].filter(([, count]) => count > 1).map(([name]) => name),
-  );
-
   for (const row of report.users) {
     const topCommands =
       row.topCommands.length > 0
         ? row.topCommands.map((command) => `\`${command.label}\` ${command.totalCount}`).join(", ")
         : "none";
     embed.addFields({
-      name: buildRepWorkFieldName({
-        discordUserId: row.discordUserId,
-        displayNameByUserId: options?.displayNameByUserId,
-        duplicateDisplayNames,
-      }),
+      name: "\u200b",
       value: [
+        buildRepWorkUserIdentityLine({
+          discordUserId: row.discordUserId,
+          renderedBadgesByUserId: options?.renderedBadgesByUserId,
+        }),
         `Bases: ${row.basesChecked} (${formatPrepTimeLeft(row.basesAvgPrepTimeLeftSeconds)})`,
         `Syncs: ${row.syncsParticipated} participated | ${row.clanClaims} clan claims`,
-        `Mails: ${row.mailsChecked} (${formatPrepTimeLeft(row.mailsAvgPrepTimeLeftSeconds)})`,
+        `Mails: Discord ${row.mailsChecked} (${formatPrepTimeLeft(row.mailsCheckedAvgPrepTimeLeftSeconds)}) | In-game ${row.mailsSent} (${formatPrepTimeLeft(row.mailsSentAvgPrepTimeLeftSeconds)})`,
         `Top cmds: ${topCommands}`,
       ].join("\n"),
       inline: false,
@@ -388,7 +379,11 @@ export class RepWorkReportService {
             row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
         } else if (row.activityType === RepWorkActivityType.MAIL_CHECKED) {
           user.mailsChecked += toNumber(row.totalCount);
-          user.mailsAvgPrepTimeLeftSeconds =
+          user.mailsCheckedAvgPrepTimeLeftSeconds =
+            row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
+        } else if (row.activityType === RepWorkActivityType.MAIL_SENT) {
+          user.mailsSent += toNumber(row.totalCount);
+          user.mailsSentAvgPrepTimeLeftSeconds =
             row.avgPrepTimeLeftSeconds === null ? null : toNumber(row.avgPrepTimeLeftSeconds);
         }
       }

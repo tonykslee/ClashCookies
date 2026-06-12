@@ -969,6 +969,7 @@ enum TrackedMessageStatus {
 enum RepWorkActivityType {
   BASES_CHECKED
   MAIL_CHECKED
+  MAIL_SENT
 }
 
 

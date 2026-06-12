@@ -125,4 +125,44 @@ describe("RepWorkActivityService", () => {
       }),
     );
   });
+
+  it("records MAIL_SENT for successful /fwa match mail sends", async () => {
+    await expect(
+      repWorkActivityService.recordMailSent({
+        guildId: "guild-1",
+        discordUserId: "444444444444444444",
+        clanTag: "#RR",
+        sourceMessageId: "mail-message-9",
+        sourceTrackedMessageId: "source-match-message-1",
+        warId: 1002001,
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "opp9",
+        eventAt: new Date("2026-06-13T17:40:00.000Z"),
+        metadata: {
+          sourceVariant: "fwa_match",
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.repWorkActivityEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          activityType: "MAIL_SENT",
+          guildId: "guild-1",
+          discordUserId: "444444444444444444",
+          clanTag: "#RR",
+          syncMessageId: null,
+          sourceMessageId: "mail-message-9",
+          sourceTrackedMessageId: "source-match-message-1",
+          warId: "1002001",
+          warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+          opponentTag: "#OPP9",
+          eventAt: new Date("2026-06-13T17:40:00.000Z"),
+          prepTimeLeftSeconds: 1200,
+          dedupeKey:
+            "rep-work|MAIL_SENT|guild=guild-1|user=444444444444444444|clan=#RR|source:mail-message-9",
+        }),
+      }),
+    );
+  });
 });

@@ -417,6 +417,50 @@ function normalizeDateMs(input: Date | null | undefined): number | null {
   return Number.isFinite(input.getTime()) ? input.getTime() : null;
 }
 
+async function resolveChecklistWarStartTimeFromCurrentWar(input: {
+  guildId: string;
+  clanTag: string;
+  warId?: string | number | null;
+  opponentTag?: string | null;
+}): Promise<Date | null> {
+  const guildId = String(input.guildId ?? "").trim();
+  const clanTag = normalizeChecklistClanTag(String(input.clanTag ?? ""));
+  if (!guildId || !clanTag) return null;
+
+  const currentWar = await prisma.currentWar.findUnique({
+    where: {
+      clanTag_guildId: {
+        guildId,
+        clanTag,
+      },
+    },
+    select: {
+      warId: true,
+      startTime: true,
+      opponentTag: true,
+    },
+  });
+  const startTime = currentWar?.startTime ?? null;
+  if (!(startTime instanceof Date) || !Number.isFinite(startTime.getTime())) {
+    return null;
+  }
+
+  const requestedWarId = normalizeWarIdText(input.warId ?? null);
+  const currentWarId = normalizeWarIdText(currentWar?.warId ?? null);
+  if (requestedWarId && currentWarId && requestedWarId !== currentWarId) {
+    return null;
+  }
+
+  const requestedOpponentTag =
+    normalizeChecklistClanTag(String(input.opponentTag ?? "")) || null;
+  const currentOpponentTag = normalizeChecklistClanTag(String(currentWar?.opponentTag ?? "")) || null;
+  if (requestedOpponentTag && currentOpponentTag && requestedOpponentTag !== currentOpponentTag) {
+    return null;
+  }
+
+  return startTime;
+}
+
 function resolveSyncTrackedMetadataTimeMs(metadata: SyncTimeTrackedMetadata): number | null {
   const syncEpochSeconds = Number(metadata.syncEpochSeconds);
   if (Number.isFinite(syncEpochSeconds) && syncEpochSeconds > 0) {
@@ -2997,7 +3041,7 @@ export class TrackedMessageService {
       const persistBasesCheckedStateForRow = async (
         row: FwaMatchChecklistTrackedRow,
         checked: boolean,
-      ): Promise<void> => {
+      ): Promise<boolean> => {
         const warStartTime = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
         const hasWarIdentity = Boolean(row.warId || row.opponentTag || warStartTime);
         const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
@@ -3011,7 +3055,7 @@ export class TrackedMessageService {
             String(row.matchType ?? "").trim() || null,
           );
           if (issueSummary.hasIssues) {
-            return;
+            return false;
           }
         }
         await this.setFwaMatchChecklistBasesCompletion({
@@ -3027,10 +3071,11 @@ export class TrackedMessageService {
                 opponentTag: row.opponentTag ?? null,
               }
             : {
-                syncReferenceId,
-              }),
+              syncReferenceId,
+            }),
           checked,
         });
+        return true;
       };
       const changedRowTag = change
         ? findChecklistRowTagForReaction(sourceRows, change.reaction)
@@ -3047,7 +3092,46 @@ export class TrackedMessageService {
           const checked =
             reactionChange.kind === "add" ||
             (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
-          await persistBasesCheckedStateForRow(matchedRow, checked);
+          const persisted = await persistBasesCheckedStateForRow(matchedRow, checked);
+          if (
+            persisted &&
+            checked &&
+            reactionChange.kind === "add" &&
+            reactionChange.reactorUserId
+          ) {
+            const warStartTime =
+              matchedRow.warStartTimeIso
+                ? new Date(matchedRow.warStartTimeIso)
+                : await resolveChecklistWarStartTimeFromCurrentWar({
+                    guildId: tracked.guildId,
+                    clanTag: matchedRow.clanTag,
+                    warId: matchedRow.warId ?? null,
+                    opponentTag: matchedRow.opponentTag ?? null,
+                  });
+            await repWorkActivityService.recordBasesChecked({
+              guildId: tracked.guildId,
+              discordUserId: reactionChange.reactorUserId,
+              clanTag: matchedRow.clanTag,
+              syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
+              sourceMessageId: message.id,
+              sourceTrackedMessageId: tracked.id,
+              warId: matchedRow.warId ?? null,
+              warStartTime,
+              opponentTag: matchedRow.opponentTag ?? null,
+              eventAt: new Date(),
+              metadata: {
+                source: "fwa_match_checklist",
+                viewType: "Bases",
+                scopeKey: metadata.scopeKey ?? null,
+                rowContextKey: matchedRow.contextKey ?? null,
+                reactionEmojiId: reactionChange.reaction.emoji.id,
+                reactionEmojiName: reactionChange.reaction.emoji.name,
+                reactionCount: reactionChange.reaction.count ?? null,
+                checklistMessageId: tracked.messageId,
+                checklistReferenceId: tracked.referenceId ?? null,
+              },
+            });
+          }
         }
       } else if (!change) {
         for (const row of sourceRows) {
@@ -3131,7 +3215,15 @@ export class TrackedMessageService {
         `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? "matched_row" : "row_not_found"}`,
       );
       if (matchedRow && reactionChange.kind === "add" && reactionChange.reactorUserId) {
-        const warStartTime = matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null;
+        const warStartTime =
+          matchedRow.warStartTimeIso
+            ? new Date(matchedRow.warStartTimeIso)
+            : await resolveChecklistWarStartTimeFromCurrentWar({
+                guildId: tracked.guildId,
+                clanTag: matchedRow.clanTag,
+                warId: matchedRow.warId ?? null,
+                opponentTag: matchedRow.opponentTag ?? null,
+              });
         await repWorkActivityService.recordMailChecked({
           guildId: tracked.guildId,
           discordUserId: reactionChange.reactorUserId,

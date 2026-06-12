@@ -217,6 +217,15 @@ describe("command coverage", () => {
     expect(normalized).toContain("clan:<tracked clan>");
   });
 
+  it("documents the split repwork mail wording in repwork help detail text", () => {
+    const repworkHelpText = helpEmbedText("repwork");
+    const normalized = repworkHelpText.toLowerCase();
+    expect(repworkHelpText).toContain("Discord mail checklist activity");
+    expect(repworkHelpText).toContain("in-game mail sends");
+    expect(normalized).toContain("discord mails count checklist reactions");
+    expect(normalized).toContain("in-game mails count successful `/fwa match` mail sends");
+  });
+
   it("documents the /clan root in clan help detail text", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");
