@@ -1,12 +1,20 @@
 import { prisma } from "../prisma";
 import { playerCurrentService } from "./PlayerCurrentService";
-import { formatPendingAge } from "./WeightInputDefermentService";
-import { normalizePlayerTag } from "./PlayerLinkService";
+import {
+  formatPendingAge,
+  listOpenDeferredWeightRowsByClanAndPlayerTags,
+} from "./WeightInputDefermentService";
+import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
 
 export const ROSTER_MANAGE_WEIGHT_SOURCE = "ROSTER_MANAGE" as const;
 
-export type RosterWeightSource = "FWA" | "Manual" | "PlayerCurrent" | "Unknown";
+export type RosterWeightSource =
+  | "FWA"
+  | "Manual"
+  | "WeightInputDeferment"
+  | "PlayerCurrent"
+  | "Unknown";
 
 export type ResolvedRosterCurrentWeightRecord = {
   playerTag: string;
@@ -77,6 +85,8 @@ export function formatRosterWeightAge(measuredAt: Date | null | undefined, now: 
 /** Purpose: resolve persisted current weights for roster render and validation consumers. */
 export async function resolveRosterCurrentWeightRecords(input: {
   playerTags: string[];
+  guildId?: string | null;
+  clanTag?: string | null;
 }): Promise<Map<string, ResolvedRosterCurrentWeightRecord>> {
   const normalizedTags = [...new Set((input.playerTags ?? []).map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
   const result = new Map<string, ResolvedRosterCurrentWeightRecord>();
@@ -93,7 +103,9 @@ export async function resolveRosterCurrentWeightRecords(input: {
     return result;
   }
 
-  const [catalogRows, trophiesRows, manualRows, playerCurrentRows] = await Promise.all([
+  const normalizedGuildId = String(input.guildId ?? "").trim();
+  const normalizedClanTag = normalizeClanTag(input.clanTag ?? "") || null;
+  const [catalogRows, trophiesRows, manualRows, playerCurrentRows, deferredRowsByClanAndPlayerTag] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: normalizedTags } },
       select: {
@@ -119,6 +131,17 @@ export async function resolveRosterCurrentWeightRecords(input: {
       },
     }),
     playerCurrentService.listPlayerCurrentByTags(normalizedTags),
+    normalizedGuildId
+      ? listOpenDeferredWeightRowsByClanAndPlayerTags({
+          guildId: normalizedGuildId,
+          clanPlayerTags: [
+            {
+              clanTag: normalizedClanTag,
+              playerTags: normalizedTags,
+            },
+          ],
+        })
+      : Promise.resolve(new Map<string, Map<string, { deferredWeight: number; createdAt: Date }>>()),
   ]);
 
   const latestFwaByTag = new Map<string, { weight: number | null; measuredAt: Date }>();
@@ -160,13 +183,20 @@ export async function resolveRosterCurrentWeightRecords(input: {
     });
   }
 
+  const clanKey = normalizedClanTag ?? "";
+  const deferredRowsByPlayerTag = deferredRowsByClanAndPlayerTag.get(clanKey) ?? new Map();
+
   for (const playerTag of normalizedTags) {
     const fwa = latestFwaByTag.get(playerTag) ?? null;
     const manual = manualByTag.get(playerTag) ?? null;
+    const deferredRow = deferredRowsByPlayerTag.get(playerTag) ?? null;
     const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
     const resolved = resolveEffectivePlayerWeight({
       primaryCandidates: [{ source: "FWA", weight: fwa?.weight ?? null }],
-      overrideCandidates: [{ source: "Manual", weight: manual?.weight ?? null }],
+      overrideCandidates: [
+        { source: "Manual", weight: manual?.weight ?? null },
+        { source: "WeightInputDeferment", weight: deferredRow?.deferredWeight ?? null },
+      ],
       fallbackCandidates: [{ source: "PlayerCurrent", weight: playerCurrent?.weight ?? null }],
     });
     if (resolved.resolvedWeight !== null) {
@@ -179,6 +209,8 @@ export async function resolveRosterCurrentWeightRecords(input: {
             ? fwa?.measuredAt ?? null
             : resolved.resolvedWeightSource === "Manual"
               ? manual?.measuredAt ?? null
+              : resolved.resolvedWeightSource === "WeightInputDeferment"
+                ? deferredRow?.createdAt ?? null
               : resolved.resolvedWeightSource === "PlayerCurrent"
                 ? playerCurrent?.measuredAt ?? null
                 : null,

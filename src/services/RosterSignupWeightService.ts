@@ -21,6 +21,8 @@ function normalizeRosterMinimumWeight(input: number | null | undefined): number 
 export async function loadRosterSignupMinimumWeightLookup(input: {
   playerTags: string[];
   minimumWeight: number | null | undefined;
+  guildId?: string | null;
+  clanTag?: string | null;
 }): Promise<Map<string, RosterSignupWeightGateRecord>> {
   const minimumWeight = normalizeRosterMinimumWeight(input.minimumWeight);
   const normalizedTags = [...new Set((input.playerTags ?? []).map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
@@ -30,6 +32,8 @@ export async function loadRosterSignupMinimumWeightLookup(input: {
 
   const resolvedWeights = await resolveRosterCurrentWeightRecords({
     playerTags: normalizedTags,
+    guildId: input.guildId ?? null,
+    clanTag: input.clanTag ?? null,
   });
   const result = new Map<string, RosterSignupWeightGateRecord>();
   for (const playerTag of normalizedTags) {
