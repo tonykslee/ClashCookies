@@ -47,7 +47,15 @@ export class ActivityService {
       }
     }
 
-    const existingPlayerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(observedTags);
+    let existingPlayerCurrentByTag: Map<string, any> = new Map();
+    try {
+      existingPlayerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(observedTags);
+    } catch (error) {
+      console.warn(
+        `[activity-observe] player_current_preload_failed guild=${inputGuildId} clan=${clan.tag} player_count=${observedTags.length} error=${formatError(error)}`,
+      );
+      existingPlayerCurrentByTag = new Map();
+    }
 
     for (const member of clan.members) {
       const playerTag = String(member?.tag ?? "").trim();
@@ -62,36 +70,30 @@ export class ActivityService {
         continue;
       }
 
-      try {
-        await this.observePlayer({
-          guildId: inputGuildId,
-          tag: player.tag,
-          name: player.name,
-          clanTag: player.clan?.tag ?? clan.tag,
-          clanName: player.clan?.name ?? clan.name ?? null,
-          trophies: player.trophies,
-          donations: player.donations,
-          donationsReceived: player.donationsReceived ?? 0,
-          warStars: player.warStars,
-          builderTrophies: player.builderBaseTrophies ?? 0,
-          capitalGold: player.clanCapitalContributions ?? 0,
-          attackWins: player.attackWins ?? 0,
-          defenseWins: player.defenseWins ?? 0,
-          versusBattleWins: player.versusBattleWins ?? 0,
-          expLevel: player.expLevel ?? 0,
-          achievements: Array.isArray(player.achievements) ? player.achievements : [],
-          troops: Array.isArray(player.troops) ? player.troops : [],
-          heroes: Array.isArray(player.heroes) ? player.heroes : [],
-          spells: Array.isArray(player.spells) ? player.spells : [],
-          pets: Array.isArray(player.pets) ? player.pets : [],
-          heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
-          now,
-        });
-      } catch (error) {
-        console.warn(
-          `[activity-observe] player_activity_upsert_failed guild=${inputGuildId} clan=${clan.tag} player=${playerTag} error=${formatError(error)}`,
-        );
-      }
+      await this.observePlayer({
+        guildId: inputGuildId,
+        tag: player.tag,
+        name: player.name,
+        clanTag: player.clan?.tag ?? clan.tag,
+        clanName: player.clan?.name ?? clan.name ?? null,
+        trophies: player.trophies,
+        donations: player.donations,
+        donationsReceived: player.donationsReceived ?? 0,
+        warStars: player.warStars,
+        builderTrophies: player.builderBaseTrophies ?? 0,
+        capitalGold: player.clanCapitalContributions ?? 0,
+        attackWins: player.attackWins ?? 0,
+        defenseWins: player.defenseWins ?? 0,
+        versusBattleWins: player.versusBattleWins ?? 0,
+        expLevel: player.expLevel ?? 0,
+        achievements: Array.isArray(player.achievements) ? player.achievements : [],
+        troops: Array.isArray(player.troops) ? player.troops : [],
+        heroes: Array.isArray(player.heroes) ? player.heroes : [],
+        spells: Array.isArray(player.spells) ? player.spells : [],
+        pets: Array.isArray(player.pets) ? player.pets : [],
+        heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
+        now,
+      });
 
       try {
         await playerCurrentService.upsertPlayerCurrentFromLivePlayer({

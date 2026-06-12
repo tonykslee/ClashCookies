@@ -233,4 +233,71 @@ describe("ActivityService observeClanDetailed", () => {
     );
     warnSpy.mockRestore();
   });
+
+  it("falls back to an empty PlayerCurrent map when the preload fails", async () => {
+    const getClan = vi.fn().mockResolvedValue({
+      tag: "#CLAN1",
+      name: "Clan One",
+      members: [{ tag: "#AAA111", name: "Alpha" }],
+    });
+    const getPlayerRaw = vi.fn().mockResolvedValue(makeLivePlayer());
+    const cocService = { getClan, getPlayerRaw } as any;
+    const activityService = new ActivityService(cocService);
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockRejectedValue(
+      new Error("player current preload failed"),
+    );
+    const upsertPlayerCurrentSpy = vi
+      .spyOn(playerCurrentService, "upsertPlayerCurrentFromLivePlayer")
+      .mockResolvedValue({
+        ...makeExistingCurrent(),
+        playerName: "Live Alpha",
+        currentClanTag: "#CLAN1",
+        currentClanName: "Clan One",
+        source: "activity_observe",
+        liveRefreshInvoked: true,
+      } as any);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await activityService.observeClanDetailed("guild-1", "#CLAN1");
+
+    expect(getPlayerRaw).toHaveBeenCalledTimes(1);
+    expect(upsertPlayerCurrentSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existing: null,
+        source: "activity_observe",
+      }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[activity-observe] player_current_preload_failed guild=guild-1 clan=#CLAN1 player_count=1",
+      ),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("player current preload failed"));
+    warnSpy.mockRestore();
+  });
+
+  it("lets PlayerActivity failures abort the observe cycle", async () => {
+    const getClan = vi.fn().mockResolvedValue({
+      tag: "#CLAN1",
+      name: "Clan One",
+      members: [{ tag: "#AAA111", name: "Alpha" }],
+    });
+    const getPlayerRaw = vi.fn().mockResolvedValue(makeLivePlayer());
+    const cocService = { getClan, getPlayerRaw } as any;
+    const activityService = new ActivityService(cocService);
+    vi.spyOn(playerCurrentService, "listPlayerCurrentByTags").mockResolvedValue(
+      new Map(),
+    );
+    const upsertPlayerCurrentSpy = vi.spyOn(
+      playerCurrentService,
+      "upsertPlayerCurrentFromLivePlayer",
+    );
+    activitySignalProcessPlayerMock.mockRejectedValueOnce(new Error("activity failed"));
+
+    await expect(
+      activityService.observeClanDetailed("guild-1", "#CLAN1"),
+    ).rejects.toThrow("activity failed");
+    expect(getPlayerRaw).toHaveBeenCalledTimes(1);
+    expect(upsertPlayerCurrentSpy).not.toHaveBeenCalled();
+  });
 });
