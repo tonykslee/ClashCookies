@@ -13,6 +13,7 @@ type RaidRosterPlayerLinkRow = {
 };
 
 type RaidRosterFwaClanMemberCurrentRow = {
+  playerName: string | null;
   townHall: number | null;
   sourceSyncedAt: Date;
 };
@@ -350,6 +351,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       where: { playerTag: { in: rosterTags } },
       select: {
         playerTag: true,
+        playerName: true,
         townHall: true,
         sourceSyncedAt: true,
       },
@@ -395,6 +397,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
   const fwaClanMemberCurrentByTag = new Map<string, RaidRosterFwaClanMemberCurrentRow>();
   for (const row of fwaClanMemberRows as Array<{
     playerTag: string;
+    playerName: string | null;
     townHall: number | null;
     sourceSyncedAt: Date;
   }>) {
@@ -403,6 +406,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
     const existing = fwaClanMemberCurrentByTag.get(playerTag);
     if (!existing || row.sourceSyncedAt > existing.sourceSyncedAt) {
       fwaClanMemberCurrentByTag.set(playerTag, {
+        playerName: normalizeText(row.playerName),
         townHall: normalizePositiveInteger(row.townHall),
         sourceSyncedAt: row.sourceSyncedAt,
       });
@@ -461,6 +465,7 @@ export async function listRaidRosterStatusRowsForGuild(input: {
       normalizeText(playerCurrent?.playerName) ??
       playerLink?.linkedName ??
       activityName ??
+      fwaMemberCurrent?.playerName ??
       fwaPlayerCatalog?.latestName ??
       playerTag;
     const townHall =
