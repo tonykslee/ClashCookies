@@ -3108,7 +3108,7 @@ export class TrackedMessageService {
                     warId: matchedRow.warId ?? null,
                     opponentTag: matchedRow.opponentTag ?? null,
                   });
-            await repWorkActivityService.recordBasesChecked({
+            await repWorkActivityService.recordBasesChecklistChecked({
               guildId: tracked.guildId,
               discordUserId: reactionChange.reactorUserId,
               clanTag: matchedRow.clanTag,

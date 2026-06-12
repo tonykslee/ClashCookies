@@ -2209,8 +2209,8 @@ describe("fwa checklist tracked messages", () => {
         state: "battle",
       },
     ]);
-    const recordBasesChecked = vi
-      .spyOn(repWorkActivityService, "recordBasesChecked")
+    const recordBasesChecklistChecked = vi
+      .spyOn(repWorkActivityService, "recordBasesChecklistChecked")
       .mockResolvedValue(true);
     const setCompletion = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
@@ -2306,8 +2306,8 @@ describe("fwa checklist tracked messages", () => {
         syncMessageId: "sync-message-1",
       }),
     );
-    expect(recordBasesChecked).toHaveBeenCalledTimes(1);
-    expect(recordBasesChecked).toHaveBeenCalledWith(
+    expect(recordBasesChecklistChecked).toHaveBeenCalledTimes(1);
+    expect(recordBasesChecklistChecked).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: "guild-1",
         discordUserId: "111111111111111111",

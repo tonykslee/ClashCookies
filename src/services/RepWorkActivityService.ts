@@ -118,6 +118,10 @@ export class RepWorkActivityService {
     return this.recordActivity(RepWorkActivityType.BASES_CHECKED, "base_swap", params);
   }
 
+  async recordBasesChecklistChecked(params: RepWorkRecordInput): Promise<boolean> {
+    return this.recordActivity(RepWorkActivityType.BASES_CHECKED, "bases_checklist", params);
+  }
+
   async recordMailChecked(params: RepWorkRecordInput): Promise<boolean> {
     return this.recordActivity(RepWorkActivityType.MAIL_CHECKED, "mail_checklist", params);
   }
