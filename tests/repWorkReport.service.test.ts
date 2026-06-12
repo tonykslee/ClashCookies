@@ -176,10 +176,17 @@ describe("rep work report service", () => {
       { label: "/sync time post", totalCount: 6 },
     ]);
 
-    const embed = buildRepWorkReportEmbed(report!);
+    const embed = buildRepWorkReportEmbed(report!, {
+      displayNameByUserId: new Map([
+        ["111111111111111111", "Server Display One"],
+        ["222222222222222222", "Server Display Two"],
+      ]),
+    });
     const json = embed.toJSON() as any;
     expect(json.title).toBe("Rep Work Stats");
     expect(String(json.description)).toContain("Window:");
+    expect(json.fields[0].name).toBe("Server Display One");
+    expect(json.fields[1].name).toBe("Server Display Two");
     expect(String(json.fields[0].value)).toContain("Bases: 2 (avg 6h left)");
     expect(String(json.fields[0].value)).toContain("Syncs: 30 participated | 30 clan claims");
     expect(String(json.fields[0].value)).toContain("Mails: 4 (avg n/a)");
@@ -267,9 +274,45 @@ describe("rep work report service", () => {
     expect(report?.users[0].basesAvgPrepTimeLeftSeconds).toBeNull();
     expect(report?.users[0].mailsAvgPrepTimeLeftSeconds).toBe(7200);
 
-    const embed = buildRepWorkReportEmbed(report!);
+    const embed = buildRepWorkReportEmbed(report!, { displayNameByUserId: new Map() });
     const json = embed.toJSON() as any;
     expect(String(json.fields[0].value)).toContain("Bases: 2 (avg n/a)");
+  });
+
+  it("disambiguates duplicate display names safely", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 6000,
+        },
+        {
+          discordUserId: "222222222222222222",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 7000,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const embed = buildRepWorkReportEmbed(report!, {
+      displayNameByUserId: new Map([
+        ["111111111111111111", "Server Display"],
+        ["222222222222222222", "Server Display"],
+      ]),
+    });
+    const json = embed.toJSON() as any;
+    expect(String(json.fields[0].name)).toBe("Server Display (`1111`)");
+    expect(String(json.fields[1].name)).toBe("Server Display (`2222`)");
   });
 
   it("uses first-row-per-sync SQL for prep timing averages", async () => {
