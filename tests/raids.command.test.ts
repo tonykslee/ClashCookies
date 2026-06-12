@@ -339,6 +339,7 @@ function makeIntelDistrictSeason() {
 
 function makeChatInteraction(options?: {
   clan?: string | null;
+  visibility?: string | null;
   type?: string | null;
   focused?: string;
   group?: string | null;
@@ -348,6 +349,7 @@ function makeChatInteraction(options?: {
   districtArgs?: Record<string, string | null | undefined>;
 }) {
   const clan = options?.clan ?? null;
+  const visibility = options?.visibility ?? null;
   const type = options?.type ?? null;
   const focused = options?.focused ?? "";
   const group = options?.group ?? null;
@@ -371,6 +373,7 @@ function makeChatInteraction(options?: {
       getSubcommandGroup: vi.fn(() => group),
       getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => {
+        if (name === "visibility") return visibility;
         if (name === "type") return type;
         if (name === "clan") return clan;
         if (name === "tag") return tag;
@@ -580,6 +583,84 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("keeps overview controls invoker-only when visibility is private", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        if (tag === "#2QG2C08UP") {
+          return [makeOngoingSeason()];
+        }
+        if (tag === "#2RVGJYLC0") {
+          return [makeActiveSeason()];
+        }
+        return makeEmptySeason();
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    selectInteraction.user.id = "someone-else";
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+
+    expect(selectInteraction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command user can control this raids view.",
+    });
+    expect(selectInteraction.editReply).not.toHaveBeenCalled();
+  });
+
+  it("renders a public overview that any user can keep alive with select refresh and back", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        expect(cocQueueMock.state.active).toBe(true);
+        if (tag === "#2QG2C08UP") {
+          return [makeOngoingSeason()];
+        }
+        if (tag === "#2RVGJYLC0") {
+          return [makeActiveSeason()];
+        }
+        return makeEmptySeason();
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction({ visibility: "public" });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = payload.embeds[0].toJSON().description as string;
+    expect(description).toContain("## Raid Clans");
+
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    selectInteraction.user.id = "user-2";
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+    expect(selectInteraction.deferUpdate).toHaveBeenCalled();
+    expect(selectInteraction.editReply).toHaveBeenCalled();
+    expect(selectInteraction.message.edit).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(30 * 60 * 1000);
+
+    const refreshInteraction = makeButtonInteraction("raids:raids-itx-1:refresh");
+    refreshInteraction.user.id = "user-3";
+    await handleRaidsButtonInteraction(refreshInteraction as any, cocService as any);
+    expect(refreshInteraction.deferUpdate).toHaveBeenCalled();
+    expect(refreshInteraction.editReply).toHaveBeenCalled();
+    expect(refreshInteraction.message.edit).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(35 * 60 * 1000);
+
+    const backInteraction = makeButtonInteraction("raids:raids-itx-1:back");
+    backInteraction.user.id = "user-4";
+    await handleRaidsButtonInteraction(backInteraction as any, cocService as any);
+    expect(backInteraction.deferUpdate).toHaveBeenCalled();
+    expect(backInteraction.editReply).toHaveBeenCalled();
+    expect(backInteraction.message.edit).not.toHaveBeenCalled();
   });
 
   it("adds roster tags from mixed free-form input and reports invalid and duplicate tags", async () => {
