@@ -43,6 +43,7 @@ import {
   listFwaTrackedClansForDisplay,
   loadFwaTrackedClanMinimalListState,
   listCwlTrackedClansForDetailedDisplay,
+  formatCwlLeagueAbbreviation,
   resolveCwlTrackedClanEmojiTokens,
   refreshCwlTrackedClanDetailedDisplayWithQueueContext,
   formatCwlLeagueEmojiResolved,
@@ -155,11 +156,13 @@ function buildCwlTrackedClanMinimalLine(
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
   const leagueEmoji = formatCwlLeagueEmojiResolved(clan.leagueLabel, emojiTokens) ?? "-";
+  const leagueAbbreviation = formatCwlLeagueAbbreviation(clan.leagueLabel);
   const spinEmoji = formatCwlSpinStatusEmojiResolved(clan.spinStatus, emojiTokens);
   const memberCountText = formatTrackedClanMemberCount(clan.currentClanMemberCount);
+  const prefix = `${leagueEmoji} ${leagueAbbreviation}`;
   return clan.name && clanTag
-    ? `${leagueEmoji} ${title} \`${clanTag}\` | ${spinEmoji} | ${memberCountText}`
-    : `${leagueEmoji} ${title} | ${spinEmoji} | ${memberCountText}`;
+    ? `${prefix} | ${title} \`${clanTag}\` | ${spinEmoji} | ${memberCountText}`
+    : `${prefix} | ${title} | ${spinEmoji} | ${memberCountText}`;
 }
 
 function buildCwlTrackedClanListComponents(
