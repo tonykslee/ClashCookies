@@ -2794,6 +2794,180 @@ describe("TodoSnapshotService", () => {
     );
   });
 
+  it("reuses a preloaded current-war snapshot and skips the duplicate live fetch", async () => {
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        attacksPerMember: 2,
+        startTime: "20260325T120000.000Z",
+        endTime: "20260326T120000.000Z",
+        clan: {
+          tag: "#2QVGPQP0U",
+          name: "Clan Two",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Preloaded Alpha",
+              townhallLevel: 15,
+              mapPosition: 1,
+              attacks: [{ order: 1 }],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent",
+          members: [],
+        },
+      }),
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#2QVGPQP0U" },
+      }),
+      getClanWarLeagueGroup: vi.fn(),
+    };
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+        playerName: "Linked Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#2QVGPQP0U" },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          "#2QVGPQP0U",
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: "#2QVGPQP0U",
+              name: "Clan Two",
+              members: [
+                {
+                  tag: "#PYLQ0289",
+                  name: "Preloaded Alpha",
+                  townhallLevel: 15,
+                  mapPosition: 1,
+                  attacks: [{ order: 1 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+    });
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("reuses a preloaded null current-war snapshot and skips the duplicate live fetch", async () => {
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        attacksPerMember: 2,
+        startTime: "20260325T120000.000Z",
+        endTime: "20260326T120000.000Z",
+        clan: {
+          tag: "#2QVGPQP0U",
+          name: "Clan Two",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Preloaded Alpha",
+              townhallLevel: 15,
+              mapPosition: 1,
+              attacks: [{ order: 1 }],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent",
+          members: [],
+        },
+      }),
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#2QVGPQP0U" },
+      }),
+      getClanWarLeagueGroup: vi.fn(),
+    };
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QVGPQP0U",
+        playerName: "Linked Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: "#2QVGPQP0U" },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QVGPQP0U", name: "Clan Two" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      preloadedCurrentWarSnapshotsByClanTag: new Map([["#2QVGPQP0U", null]]),
+    });
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+  });
+
   it("prefers the derived tracked-war roster member row over live current-war fallback data", async () => {
     const cocService = {
       getCurrentWar: vi.fn().mockResolvedValue({

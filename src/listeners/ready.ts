@@ -1153,6 +1153,12 @@ export default (client: Client, cocService: CoCService): void => {
 
     const runWarEventPoll = async (scheduledAtMs: number = Date.now()) => {
       const nextDueAt = new Date(scheduledAtMs + warEventPollMs);
+      const currentWarSnapshotCycleContext = {
+        currentWarSnapshotByClanTag: new Map<
+          string,
+          Awaited<ReturnType<CoCService["getCurrentWar"]>> | null
+        >(),
+      };
       await markPollJobStarted({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
@@ -1184,6 +1190,7 @@ export default (client: Client, cocService: CoCService): void => {
               try {
                 await warEventLogService.poll({
                   sendBattleDaySwapReminders: true,
+                  currentWarSnapshotCycleContext,
                 });
                 await warEventLogService.refreshBattleDayPosts();
                 await refreshAllTrackedWarMailPosts(client);
@@ -1195,6 +1202,8 @@ export default (client: Client, cocService: CoCService): void => {
                   cocService,
                   nowMs: scheduledAtMs,
                   producerPacingMs: warEventPollMs,
+                  preloadedCurrentWarSnapshotsByClanTag:
+                    currentWarSnapshotCycleContext.currentWarSnapshotByClanTag,
                 });
               } catch (err) {
                 if (isCoCQueueSkippedError(err)) {
