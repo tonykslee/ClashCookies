@@ -42,6 +42,12 @@ export type AutoRoleRefreshScope =
   | { kind: "user"; discordUserId: string }
   | { kind: "role"; discordRoleId: string };
 
+export type AutoRoleRefreshTelemetry = {
+  refreshId?: string;
+  refreshStartedAtMs?: number;
+  schedulerSource?: string;
+};
+
 export type AutoRoleRefreshResult = {
   guildId: string;
   scope: AutoRoleRefreshScope;
@@ -217,6 +223,41 @@ function createTrackedClanPlayerCurrent(input: {
     source: "live_refresh",
     liveRefreshInvoked: false,
   };
+}
+
+async function fetchClanWithTelemetry(input: {
+  cocService: CoCService;
+  clanTag: string;
+  guildId?: string;
+  telemetry?: AutoRoleRefreshTelemetry | null;
+  fetchLabel: string;
+}): Promise<any | null> {
+  const clanTag = normalizeClanTag(input.clanTag) ?? String(input.clanTag ?? "").trim();
+  const startedAtMs = Date.now();
+  try {
+    const clan = await input.cocService.getClan(clanTag);
+    if (!clan) {
+      if (input.telemetry?.refreshId) {
+        dozzleLog.info(
+          `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} status=failure duration_ms=${Date.now() - startedAtMs} error=empty_response`,
+        );
+      }
+      return null;
+    }
+    if (input.telemetry?.refreshId) {
+      dozzleLog.info(
+        `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} clan_name=${String(clan.name ?? clanTag).replace(/\s+/g, " ").trim()} member_count=${Array.isArray(clan.members) ? clan.members.length : 0} status=success duration_ms=${Date.now() - startedAtMs}`,
+      );
+    }
+    return clan;
+  } catch (error) {
+    if (input.telemetry?.refreshId) {
+      dozzleLog.info(
+        `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} status=failure duration_ms=${Date.now() - startedAtMs} error=${formatError(error)}`,
+      );
+    }
+    return null;
+  }
 }
 
 function memberHasAnyManagedRole(member: AutoRoleGuildMemberLike, managedRoleIds: Set<string>): boolean {
@@ -597,7 +638,9 @@ type TrackedClanRoleRefreshState = {
 };
 
 async function loadTrackedFwaClanRefreshState(input: {
+  guildId?: string;
   cocService?: CoCService | null;
+  telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<TrackedFwaClanRefreshState> {
   const rows = await prisma.trackedClan.findMany({
     select: {
@@ -628,11 +671,13 @@ async function loadTrackedFwaClanRefreshState(input: {
     const shortName = normalizeText(row.shortName);
     let clan = null;
     if (input.cocService) {
-      try {
-        clan = await input.cocService.getClan(clanTag);
-      } catch {
-        clan = null;
-      }
+      clan = await fetchClanWithTelemetry({
+        cocService: input.cocService,
+        clanTag,
+        guildId: input.guildId,
+        telemetry: input.telemetry,
+        fetchLabel: "tracked_fwa_clan",
+      });
       if (!clan) {
         failedClanTags.add(clanTag);
       }
@@ -717,9 +762,11 @@ async function loadTrackedFwaClanRefreshState(input: {
 }
 
 async function loadTrackedLeadRoleRefreshState(input: {
+  guildId?: string;
   roleId: string;
   membersById: Map<string, AutoRoleGuildMemberLike>;
   cocService?: CoCService | null;
+  telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<TrackedLeadRoleRefreshState | null> {
   const roleId = String(input.roleId ?? "").trim();
   if (!roleId) {
@@ -761,12 +808,13 @@ async function loadTrackedLeadRoleRefreshState(input: {
       }
 
       configuredClanTags.add(clanTag);
-      let clan = null;
-      try {
-        clan = await cocService.getClan(clanTag);
-      } catch {
-        clan = null;
-      }
+      const clan = await fetchClanWithTelemetry({
+        cocService,
+        clanTag,
+        guildId: input.guildId,
+        telemetry: input.telemetry,
+        fetchLabel: "tracked_lead_clan",
+      });
       if (!clan) {
         failedClanTags.add(clanTag);
       }
@@ -900,9 +948,11 @@ async function loadTrackedLeadRoleRefreshState(input: {
 }
 
 async function loadTrackedClanRoleRefreshState(input: {
+  guildId?: string;
   roleId: string;
   guild: Guild;
   cocService?: CoCService | null;
+  telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<TrackedClanRoleRefreshState | null> {
   const roleId = String(input.roleId ?? "").trim();
   if (!roleId) {
@@ -945,12 +995,13 @@ async function loadTrackedClanRoleRefreshState(input: {
       }
 
       configuredClanTags.add(clanTag);
-      let clan = null;
-      try {
-        clan = await cocService.getClan(clanTag);
-      } catch {
-        clan = null;
-      }
+      const clan = await fetchClanWithTelemetry({
+        cocService,
+        clanTag,
+        guildId: input.guildId,
+        telemetry: input.telemetry,
+        fetchLabel: "tracked_role_clan",
+      });
       if (!clan) {
         failedClanTags.add(clanTag);
       }
@@ -1110,6 +1161,8 @@ async function loadTrackedClanRoleRefreshState(input: {
 async function loadTrackedClanMembershipScope(input: {
   season: string;
   cocService?: CoCService | null;
+  guildId?: string;
+  telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<{
   fwaClanTags: Set<string>;
   cwlClanTags: Set<string>;
@@ -1174,7 +1227,13 @@ async function loadTrackedClanMembershipScope(input: {
     const cocService = input.cocService;
     const fetchedClans = await Promise.all(
       missingCwlClanTags.map(async (clanTag) => {
-        const clan = await cocService.getClan(clanTag).catch(() => null);
+        const clan = await fetchClanWithTelemetry({
+          cocService,
+          clanTag,
+          guildId: input.guildId,
+          telemetry: input.telemetry,
+          fetchLabel: "tracked_membership_scope_clan",
+        });
         return { clanTag, clan };
       }),
     );
@@ -1787,6 +1846,7 @@ export class AutoRoleRefreshService {
     guildId: string;
     cocService?: CoCService | null;
     now?: Date;
+    telemetry?: AutoRoleRefreshTelemetry | null;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -1794,6 +1854,7 @@ export class AutoRoleRefreshService {
       scope: { kind: "guild" },
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
+      telemetry: input.telemetry ?? null,
     });
   }
 
@@ -1803,6 +1864,7 @@ export class AutoRoleRefreshService {
     discordUserId: string;
     cocService?: CoCService | null;
     now?: Date;
+    telemetry?: AutoRoleRefreshTelemetry | null;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -1810,6 +1872,7 @@ export class AutoRoleRefreshService {
       scope: { kind: "user", discordUserId: input.discordUserId },
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
+      telemetry: input.telemetry ?? null,
     });
   }
 
@@ -1819,6 +1882,7 @@ export class AutoRoleRefreshService {
     discordRoleId: string;
     cocService?: CoCService | null;
     now?: Date;
+    telemetry?: AutoRoleRefreshTelemetry | null;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -1826,6 +1890,7 @@ export class AutoRoleRefreshService {
       scope: { kind: "role", discordRoleId: input.discordRoleId },
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
+      telemetry: input.telemetry ?? null,
     });
   }
 
@@ -1835,7 +1900,9 @@ export class AutoRoleRefreshService {
     scope: AutoRoleRefreshScope;
     cocService?: CoCService | null;
     now: Date;
+    telemetry?: AutoRoleRefreshTelemetry | null;
   }): Promise<AutoRoleRefreshResult> {
+    const refreshStartedAtMs = input.telemetry?.refreshStartedAtMs ?? Date.now();
     const run = await prisma.autoRoleSyncRun.create({
       data: {
         guildId: input.guildId,
@@ -1882,12 +1949,14 @@ export class AutoRoleRefreshService {
         throw new Error("That Discord role is not managed by autorole.");
       }
 
-      if (input.scope.kind === "role") {
-        const clanRoleState = await loadTrackedClanRoleRefreshState({
-          roleId: input.scope.discordRoleId,
-          guild: input.guild,
-          cocService: input.cocService ?? null,
-        });
+        if (input.scope.kind === "role") {
+          const clanRoleState = await loadTrackedClanRoleRefreshState({
+            guildId: input.guildId,
+            roleId: input.scope.discordRoleId,
+            guild: input.guild,
+            cocService: input.cocService ?? null,
+            telemetry: input.telemetry ?? null,
+          });
         if (clanRoleState) {
           const missingClanTags = collectMissingTrackedClanTags(
             clanRoleState.configuredClanTags,
@@ -1945,11 +2014,13 @@ export class AutoRoleRefreshService {
           `[autorole] event=refresh_member_source guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} member_fetch_mode=full_guild_fetch reason=non_tracked_clan_role`,
         );
         const roleMembersById = await fetchGuildMembersMap(input.guild, input.scope);
-        const leadRoleState = await loadTrackedLeadRoleRefreshState({
-          roleId: input.scope.discordRoleId,
-          membersById: roleMembersById,
-          cocService: input.cocService ?? null,
-        });
+          const leadRoleState = await loadTrackedLeadRoleRefreshState({
+            guildId: input.guildId,
+            roleId: input.scope.discordRoleId,
+            membersById: roleMembersById,
+            cocService: input.cocService ?? null,
+            telemetry: input.telemetry ?? null,
+          });
         if (leadRoleState) {
           const missingClanTags = collectMissingTrackedClanTags(
             leadRoleState.configuredClanTags,
@@ -2009,9 +2080,13 @@ export class AutoRoleRefreshService {
       const trackedMembershipScope = await loadTrackedClanMembershipScope({
         season: cwlSeason,
         cocService: input.cocService ?? null,
+        guildId: input.guildId,
+        telemetry: input.telemetry ?? null,
       });
       const trackedFwaRefresh = await loadTrackedFwaClanRefreshState({
+        guildId: input.guildId,
         cocService: input.cocService ?? null,
+        telemetry: input.telemetry ?? null,
       });
         if (input.cocService) {
           const missingClanTags = collectMissingTrackedClanTags(
@@ -2067,7 +2142,7 @@ export class AutoRoleRefreshService {
           `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_clans=${trackedFwaRefresh.fwaClanTags.size} fwa_member_tags=${trackedFwaRefresh.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} tracked_fwa_fetches=${trackedFwaRefresh.clanFetchCount} player_current_tags=${trackedFwaRefresh.playerCurrentByTag.size}`,
         );
 
-        return runRefreshPass({
+        const result = await runRefreshPass({
           guildId: input.guildId,
           scope: input.scope,
           guild: input.guild,
@@ -2084,6 +2159,12 @@ export class AutoRoleRefreshService {
           trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
           visitorRoleAvailable,
         });
+        if (input.telemetry?.refreshId) {
+          dozzleLog.info(
+            `[autorole] event=autorole_refresh_summary source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId} tracked_clan_count=${trackedFwaRefresh.requestedClanCount} live_clan_fetch_count=${trackedFwaRefresh.clanFetchCount} role_add_count=${result.addedCount} role_remove_count=${result.removedCount} duration_ms=${Date.now() - refreshStartedAtMs}`,
+          );
+        }
+        return result;
       }
 
       const membersById = await fetchGuildMembersMap(input.guild, input.scope);

@@ -216,6 +216,11 @@ describe("AutoRoleSchedulerService", () => {
         guild,
         guildId: guild.id,
         now: new Date("2026-05-18T12:00:00.000Z"),
+        telemetry: expect.objectContaining({
+          refreshId: expect.stringContaining(`autorole_refresh:${guild.id}:`),
+          refreshStartedAtMs: new Date("2026-05-18T12:00:00.000Z").getTime(),
+          schedulerSource: "autorole_scheduler",
+        }),
       }),
     );
     expect(statusServiceMock.markStarted).toHaveBeenCalled();

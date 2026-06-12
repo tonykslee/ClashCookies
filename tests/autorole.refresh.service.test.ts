@@ -45,6 +45,15 @@ const pollingModeMock = vi.hoisted(() => ({
   isMirrorPollingMode: vi.fn(),
 }));
 
+const dozzleLogMock = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -52,6 +61,10 @@ vi.mock("../src/prisma", () => ({
 vi.mock("../src/services/CwlRegistryService", () => cwlRegistryMock);
 
 vi.mock("../src/services/PollingModeService", () => pollingModeMock);
+
+vi.mock("../src/helper/dozzleLogger", () => ({
+  dozzleLog: dozzleLogMock,
+}));
 
 type GuildMemberLike = {
   id: string;
@@ -254,6 +267,7 @@ describe("AutoRoleRefreshService", () => {
     vi.clearAllMocks();
     cwlRegistryMock.resolveCurrentCwlSeasonKey.mockReturnValue("2026-04");
     pollingModeMock.isMirrorPollingMode.mockReturnValue(false);
+    dozzleLogMock.info.mockReset();
     prismaMock.autoRoleSyncRun.create.mockResolvedValue({ id: "run-1" });
     prismaMock.autoRoleSyncRun.update.mockResolvedValue({});
     prismaMock.autoRoleMemberState.upsert.mockResolvedValue({});
@@ -278,6 +292,56 @@ describe("AutoRoleRefreshService", () => {
       }
       return map;
     });
+  });
+
+  it("logs tracked FWA clan fetch telemetry and an autorole refresh summary when telemetry is provided", async () => {
+    const guild = makeGuild(new Map()) as any;
+    guild.id = "111111111111111111";
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYLQ0289",
+        name: "Clan One",
+        shortName: "C1",
+      },
+    ]);
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        name: "Clan One",
+        members: [],
+      }),
+    };
+
+    await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: guild.id,
+      cocService: cocService as any,
+      now: new Date("2026-05-18T12:00:00.000Z"),
+      telemetry: {
+        refreshId: `autorole_refresh:${guild.id}:1747569600000`,
+        refreshStartedAtMs: 1747569600000,
+        schedulerSource: "autorole_scheduler",
+      },
+    });
+
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("[autorole] event=live_clan_fetch"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("autorole_refresh_id=autorole_refresh:111111111111111111:1747569600000"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("fetch_label=tracked_fwa_clan"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("[autorole] event=autorole_refresh_summary"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("tracked_clan_count=1"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("live_clan_fetch_count=1"),
+    );
   });
 
   it("refreshes one user, applies matching roles, and persists the run state", async () => {
