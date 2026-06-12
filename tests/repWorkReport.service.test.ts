@@ -1,4 +1,5 @@
 import { RepWorkActivityType } from "@prisma/client";
+import { RepWorkActivityType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRACKED_MESSAGE_FEATURE_TYPE } from "../src/services/TrackedMessageService";
 
@@ -141,6 +142,12 @@ describe("rep work report service", () => {
           clanTag: `#BBB${clanIndex + 1}`,
         })),
       ).flat(),
+      {
+        userId:
+          "fwa_match_checklist_publication|guild=1324040917602013261|sync=1514480098756263996|feature=FWA_MATCH_CHECKLIST|kind=bases_checklist",
+        trackedMessageId: "sync-999",
+        clanTag: "#ZZZ999",
+      },
     ]);
 
     const report = await repWorkReportService.buildReport({
@@ -175,6 +182,7 @@ describe("rep work report service", () => {
     expect(report?.users[1].topCommands).toEqual([
       { label: "/sync time post", totalCount: 6 },
     ]);
+    expect(report?.totalUsers).toBe(2);
 
     const embed = buildRepWorkReportEmbed(report!, {
       displayNameByUserId: new Map([
@@ -192,6 +200,30 @@ describe("rep work report service", () => {
     expect(String(json.fields[0].value)).toContain("Mails: 4 (avg n/a)");
     expect(String(json.fields[0].value)).toContain("Top cmds: `/fwa base-swap` 12");
     expect(String(json.footer?.text)).toContain("Since 30d");
+  });
+
+  it("ignores synthetic-only sync claims when building report users", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([
+      {
+        userId:
+          "fwa_match_checklist_publication|guild=1324040917602013261|sync=1514480098756263996|feature=FWA_MATCH_CHECKLIST|kind=bases_checklist",
+        trackedMessageId: "sync-999",
+        clanTag: "#ZZZ999",
+      },
+    ]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "30d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    expect(report?.users).toEqual([]);
+    expect(report?.totalUsers).toBe(0);
+    expect(report?.visibleUsers).toBe(0);
   });
 
   it("uses the first event per sync when averaging prep time", async () => {
