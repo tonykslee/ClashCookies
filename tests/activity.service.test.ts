@@ -14,12 +14,25 @@ const recordFetchEventMock = vi.hoisted(() => ({
 
 const activitySignalProcessPlayerMock = vi.hoisted(() => vi.fn());
 
+const dozzleLogMock = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
 vi.mock("../src/helper/fetchTelemetry", () => ({
   recordFetchEvent: recordFetchEventMock.recordFetchEvent,
+}));
+
+vi.mock("../src/helper/dozzleLogger", () => ({
+  dozzleLog: dozzleLogMock,
 }));
 
 vi.mock("../src/services/ActivitySignalService", () => ({
@@ -95,6 +108,7 @@ describe("ActivityService observeClanDetailed", () => {
     prismaMock.playerActivity.upsert.mockResolvedValue({} as never);
     recordFetchEventMock.recordFetchEvent.mockReset();
     activitySignalProcessPlayerMock.mockReset();
+    dozzleLogMock.info.mockReset();
     activitySignalProcessPlayerMock.mockResolvedValue({
       state: { signalTimes: {} },
       lastSeenAtMs: null,
@@ -130,7 +144,10 @@ describe("ActivityService observeClanDetailed", () => {
         liveRefreshInvoked: true,
       } as any);
 
-    const result = await activityService.observeClanDetailed("guild-1", "#CLAN1");
+    const result = await activityService.observeClanDetailed("guild-1", "#CLAN1", {
+      activityObserveCycleId: "activity_observe_cycle:123",
+      scheduledAtMs: 123,
+    });
 
     expect(result).toEqual({
       clanTag: "#CLAN1",
@@ -173,6 +190,15 @@ describe("ActivityService observeClanDetailed", () => {
         incrementBy: 1,
         detail: expect.stringContaining("playerCurrentUpsertSuccessCount=1"),
       }),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("[activity-observe] event=activity_observe_clan_fetch"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("activity_observe_cycle_id=activity_observe_cycle:123"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("clan_tag=#CLAN1"),
     );
   });
 

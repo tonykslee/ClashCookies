@@ -1,5 +1,6 @@
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
+import { dozzleLog } from "../helper/dozzleLogger";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
 import { ActivitySignalService } from "./ActivitySignalService";
@@ -10,6 +11,11 @@ type ObservedPlayerCurrent = {
   playerTag: string;
   clanTag: string | null;
   townHall: number | null;
+};
+
+type ActivityObserveTelemetry = {
+  activityObserveCycleId?: string;
+  scheduledAtMs?: number;
 };
 
 export class ActivityService {
@@ -29,14 +35,34 @@ export class ActivityService {
   /**
    * Observe one clan and return the live roster payload needed by downstream membership-driven features.
    */
-  async observeClanDetailed(inputGuildId: string, inputClanTag: string): Promise<{
+  async observeClanDetailed(
+    inputGuildId: string,
+    inputClanTag: string,
+    telemetry?: ActivityObserveTelemetry | null,
+  ): Promise<{
     clanTag: string;
     clanName: string;
     memberTags: string[];
     members: Array<{ playerTag: string; playerName: string }>;
     observedPlayerCurrent: ObservedPlayerCurrent[];
   }> {
-    const clan = await this.coc.getClan(inputClanTag);
+    const clanFetchStartedAtMs = Date.now();
+    let clan: any;
+    try {
+      clan = await this.coc.getClan(inputClanTag);
+    } catch (error) {
+      if (telemetry) {
+        dozzleLog.info(
+          `[activity-observe] event=activity_observe_clan_fetch source=activity_observe_cycle activity_observe_cycle_id=${telemetry.activityObserveCycleId ?? "unknown"} scheduled_at_ms=${telemetry.scheduledAtMs ?? "unknown"} clan_tag=${normalizeClanTag(inputClanTag) || inputClanTag} status=failure duration_ms=${Date.now() - clanFetchStartedAtMs} error=${formatError(error)}`,
+        );
+      }
+      throw error;
+    }
+    if (telemetry) {
+      dozzleLog.info(
+        `[activity-observe] event=activity_observe_clan_fetch source=activity_observe_cycle activity_observe_cycle_id=${telemetry.activityObserveCycleId ?? "unknown"} scheduled_at_ms=${telemetry.scheduledAtMs ?? "unknown"} clan_tag=${normalizeClanTag(String(clan.tag ?? inputClanTag)) || inputClanTag} clan_name=${String(clan.name ?? inputClanTag).replace(/\s+/g, " ").trim()} member_count=${Array.isArray(clan.members) ? clan.members.length : 0} status=success duration_ms=${Date.now() - clanFetchStartedAtMs}`,
+      );
+    }
     const now = new Date();
     let playerApiCalls = 0;
     let playersMissing = 0;
