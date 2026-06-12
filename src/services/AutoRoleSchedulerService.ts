@@ -306,6 +306,7 @@ export class AutoRoleSchedulerService {
     work: AutoRoleScheduledGuildWork,
     nowMs: number,
   ): Promise<AutoRoleGuildRunOutcome> {
+    const autoroleRefreshId = `autorole_refresh:${work.guildId}:${nowMs}`;
     if (this.inFlightGuildIds.has(work.guildId)) {
       dozzleLog.debug(
         `[autorole-scheduler] guild_run_skipped guild_id=${work.guildId} reason=in_flight interval_minutes=${work.intervalMinutes}`,
@@ -315,7 +316,7 @@ export class AutoRoleSchedulerService {
 
     this.inFlightGuildIds.add(work.guildId);
     dozzleLog.info(
-      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} interval_minutes=${work.intervalMinutes} next_due_at=${new Date(work.nextDueAtMs).toISOString()}`,
+      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} autorole_refresh_id=${autoroleRefreshId} interval_minutes=${work.intervalMinutes} next_due_at=${new Date(work.nextDueAtMs).toISOString()}`,
     );
 
     try {
@@ -333,6 +334,11 @@ export class AutoRoleSchedulerService {
             guildId: work.guildId,
             cocService: this.cocService ?? null,
             now: new Date(nowMs),
+            telemetry: {
+              refreshId: autoroleRefreshId,
+              refreshStartedAtMs: nowMs,
+              schedulerSource: "autorole_scheduler",
+            },
           });
         },
       );

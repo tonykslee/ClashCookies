@@ -23,6 +23,7 @@ export type PlayerCurrentResolutionSource =
   | "fwa_player_catalog"
   | "todo_snapshot"
   | "live_refresh"
+  | "activity_observe"
   | "accounts-refresh"
   | "missing";
 

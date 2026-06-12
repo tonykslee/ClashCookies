@@ -1,7 +1,22 @@
 import { prisma } from "../prisma";
+import { formatError } from "../helper/formatError";
+import { dozzleLog } from "../helper/dozzleLogger";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
 import { ActivitySignalService } from "./ActivitySignalService";
+import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { playerCurrentService } from "./PlayerCurrentService";
+
+type ObservedPlayerCurrent = {
+  playerTag: string;
+  clanTag: string | null;
+  townHall: number | null;
+};
+
+type ActivityObserveTelemetry = {
+  activityObserveCycleId?: string;
+  scheduledAtMs?: number;
+};
 
 export class ActivityService {
   private readonly signalService = new ActivitySignalService();
@@ -20,18 +35,42 @@ export class ActivityService {
   /**
    * Observe one clan and return the live roster payload needed by downstream membership-driven features.
    */
-  async observeClanDetailed(inputGuildId: string, inputClanTag: string): Promise<{
+  async observeClanDetailed(
+    inputGuildId: string,
+    inputClanTag: string,
+    telemetry?: ActivityObserveTelemetry | null,
+  ): Promise<{
     clanTag: string;
     clanName: string;
     memberTags: string[];
     members: Array<{ playerTag: string; playerName: string }>;
+    observedPlayerCurrent: ObservedPlayerCurrent[];
   }> {
-    const clan = await this.coc.getClan(inputClanTag);
+    const clanFetchStartedAtMs = Date.now();
+    let clan: any;
+    try {
+      clan = await this.coc.getClan(inputClanTag);
+    } catch (error) {
+      if (telemetry) {
+        dozzleLog.info(
+          `[activity-observe] event=activity_observe_clan_fetch source=activity_observe_cycle activity_observe_cycle_id=${telemetry.activityObserveCycleId ?? "unknown"} scheduled_at_ms=${telemetry.scheduledAtMs ?? "unknown"} clan_tag=${normalizeClanTag(inputClanTag) || inputClanTag} status=failure duration_ms=${Date.now() - clanFetchStartedAtMs} error=${formatError(error)}`,
+        );
+      }
+      throw error;
+    }
+    if (telemetry) {
+      dozzleLog.info(
+        `[activity-observe] event=activity_observe_clan_fetch source=activity_observe_cycle activity_observe_cycle_id=${telemetry.activityObserveCycleId ?? "unknown"} scheduled_at_ms=${telemetry.scheduledAtMs ?? "unknown"} clan_tag=${normalizeClanTag(String(clan.tag ?? inputClanTag)) || inputClanTag} clan_name=${String(clan.name ?? inputClanTag).replace(/\s+/g, " ").trim()} member_count=${Array.isArray(clan.members) ? clan.members.length : 0} status=success duration_ms=${Date.now() - clanFetchStartedAtMs}`,
+      );
+    }
     const now = new Date();
     let playerApiCalls = 0;
     let playersMissing = 0;
+    let playerCurrentUpsertSuccessCount = 0;
+    let playerCurrentUpsertFailedCount = 0;
     const observedTags: string[] = [];
     const observedMembers: Array<{ playerTag: string; playerName: string }> = [];
+    const observedPlayerCurrent: ObservedPlayerCurrent[] = [];
 
     for (const member of clan.members) {
       if (member?.tag) {
@@ -41,8 +80,26 @@ export class ActivityService {
           playerName: String(member.name ?? member.tag),
         });
       }
+    }
+
+    let existingPlayerCurrentByTag: Map<string, any> = new Map();
+    try {
+      existingPlayerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(observedTags);
+    } catch (error) {
+      console.warn(
+        `[activity-observe] player_current_preload_failed guild=${inputGuildId} clan=${clan.tag} player_count=${observedTags.length} error=${formatError(error)}`,
+      );
+      existingPlayerCurrentByTag = new Map();
+    }
+
+    for (const member of clan.members) {
+      const playerTag = String(member?.tag ?? "").trim();
+      if (!playerTag) {
+        continue;
+      }
+
       playerApiCalls += 1;
-      const player = await this.coc.getPlayerRaw(member.tag, { suppressTelemetry: true });
+      const player = await this.coc.getPlayerRaw(playerTag, { suppressTelemetry: true });
       if (!player) {
         playersMissing += 1;
         continue;
@@ -72,6 +129,35 @@ export class ActivityService {
         heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
         now,
       });
+
+      const observedPlayerTag = normalizePlayerTag(player.tag);
+      const observedClanTag = normalizeClanTag(String(player.clan?.tag ?? "")) || null;
+      const observedTownHall = normalizePositiveInt(
+        player.townHallLevel ?? player.townHall ?? null,
+      );
+      if (observedPlayerTag) {
+        observedPlayerCurrent.push({
+          playerTag: observedPlayerTag,
+          clanTag: observedClanTag,
+          townHall: observedTownHall,
+        });
+      }
+
+      try {
+        await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+          playerTag,
+          livePlayer: player,
+          existing: existingPlayerCurrentByTag.get(playerTag) ?? null,
+          source: "activity_observe",
+          now,
+        });
+        playerCurrentUpsertSuccessCount += 1;
+      } catch (error) {
+        playerCurrentUpsertFailedCount += 1;
+        console.warn(
+          `[activity-observe] player_current_upsert_failed guild=${inputGuildId} clan=${clan.tag} player=${playerTag} error=${formatError(error)}`,
+        );
+      }
     }
 
     if (playerApiCalls > 0) {
@@ -80,7 +166,7 @@ export class ActivityService {
         operation: "getPlayerRaw",
         source: "api",
         incrementBy: playerApiCalls,
-        detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing}`,
+        detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing} playerCurrentUpsertSuccessCount=${playerCurrentUpsertSuccessCount} playerCurrentUpsertFailedCount=${playerCurrentUpsertFailedCount}`,
       });
     }
 
@@ -89,6 +175,7 @@ export class ActivityService {
       clanName: String(clan.name ?? inputClanTag),
       memberTags: observedTags,
       members: observedMembers,
+      observedPlayerCurrent,
     };
   }
 
@@ -208,4 +295,11 @@ export class ActivityService {
       },
     });
   }
+}
+
+function normalizePositiveInt(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
 }

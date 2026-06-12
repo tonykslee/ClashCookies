@@ -336,6 +336,8 @@ vi.mock("../src/helper/formatError", () => ({
 }));
 
 import { botStartupStatusService } from "../src/services/BotStartupStatusService";
+import { cwlStateService } from "../src/services/CwlStateService";
+import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 import ready from "../src/listeners/ready";
 
 describe("ready listener startup", () => {
@@ -453,6 +455,26 @@ describe("ready listener startup", () => {
     );
     expect(fwaBaseSwapDmReminderSchedulerStart).toHaveBeenCalledTimes(1);
     expect(fwaBasesChecklistReminderSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(warEventPollMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sendBattleDaySwapReminders: true,
+        currentWarSnapshotCycleContext: expect.objectContaining({
+          currentWarSnapshotByClanTag: expect.any(Map),
+        }),
+      }),
+    );
+    expect(todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cadence: "tracked",
+        preloadedCurrentWarSnapshotsByClanTag: expect.any(Map),
+      }),
+    );
+    const cwlStateCall = (cwlStateService.refreshTrackedCwlState as any).mock.calls[0]?.[0];
+    const todoSnapshotCall = (
+      todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots as any
+    ).mock.calls[0]?.[0];
+    expect(cwlStateCall?.cwlFetchCycleCache).toBeDefined();
+    expect(cwlStateCall?.cwlFetchCycleCache).toBe(todoSnapshotCall?.cwlFetchCycleCache);
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({

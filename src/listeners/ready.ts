@@ -17,6 +17,7 @@ import { processDueRecruitmentReminders } from "../services/RecruitmentReminderS
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { CwlFetchCycleCache } from "../services/CwlFetchCycleCache";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
@@ -615,8 +616,14 @@ export default (client: Client, cocService: CoCService): void => {
     const warLookupCache: Map<string, Promise<unknown>> = new Map();
     dozzleLog.info(`[polling-mode] mode=${pollingMode}`);
 
-    const observeTrackedClans = async (): Promise<{
+    const observeTrackedClans = async (activityObserveCycleId: string, scheduledAtMs: number): Promise<{
+      trackedClanCount: number;
       observedTags: string[];
+      observedPlayerCurrent: Array<{
+        playerTag: string;
+        clanTag: string | null;
+        townHall: number | null;
+      }>;
       observedFwaClans: Array<{
         clanTag: string;
         clanName: string;
@@ -640,12 +647,18 @@ export default (client: Client, cocService: CoCService): void => {
           "No tracked clans configured. Use /clan configure."
         );
         return {
+          trackedClanCount: 0,
           observedTags: [],
+          observedPlayerCurrent: [],
           observedFwaClans: [],
         };
       }
 
       const observedMemberTags = new Set<string>();
+      const observedPlayerCurrentByTag = new Map<
+        string,
+        { clanTag: string | null; townHall: number | null }
+      >();
       const observedFwaClans: Array<{
         clanTag: string;
         clanName: string;
@@ -656,10 +669,26 @@ export default (client: Client, cocService: CoCService): void => {
         try {
           const observedClan = await activityService.observeClanDetailed(
             guildId,
-            trackedClan.tag
+            trackedClan.tag,
+            {
+              activityObserveCycleId,
+              scheduledAtMs,
+            },
           );
           for (const memberTag of observedClan.memberTags) {
             observedMemberTags.add(memberTag);
+          }
+          for (const entry of observedClan.observedPlayerCurrent ?? []) {
+            const playerTag = String(entry?.playerTag ?? "").trim();
+            if (!playerTag || observedPlayerCurrentByTag.has(playerTag)) {
+              continue;
+            }
+            observedPlayerCurrentByTag.set(playerTag, {
+              clanTag: entry?.clanTag ?? null,
+              townHall: Number.isFinite(Number(entry?.townHall))
+                ? Math.trunc(Number(entry?.townHall))
+                : null,
+            });
           }
           observedFwaClans.push({
             clanTag: observedClan.clanTag,
@@ -675,7 +704,15 @@ export default (client: Client, cocService: CoCService): void => {
       }
 
       return {
+        trackedClanCount: dbTracked.length,
         observedTags: [...observedMemberTags],
+        observedPlayerCurrent: [...observedPlayerCurrentByTag.entries()].map(
+          ([playerTag, value]) => ({
+            playerTag,
+            clanTag: value.clanTag,
+            townHall: value.townHall,
+          }),
+        ),
         observedFwaClans,
       };
     };
@@ -700,6 +737,10 @@ export default (client: Client, cocService: CoCService): void => {
     };
 
     const runObservedCycle = async (scheduledAtMs: number = Date.now()) => {
+      const activityObserveCycleId = `activity_observe_cycle:${scheduledAtMs}`;
+      const observedCycleStartedAtMs = Date.now();
+      let observedClanCount = 0;
+      let liveClanFetchCount = 0;
       await runWithCoCQueueContext(
         {
           priority: "background",
@@ -708,76 +749,84 @@ export default (client: Client, cocService: CoCService): void => {
           nextScheduledAtMs: scheduledAtMs + intervalMs,
         },
         async () => {
-      await pollCycleGuard.run("activity_observe_cycle", async () => {
-        const queueStatus = cocRequestQueueService.getStatus();
-        if (queueStatus.degraded) {
-          console.warn(
-            `[poll-cycle] event=degraded_mode job=activity_observe_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
-          );
-        }
-        await runFetchTelemetryBatch("activity_observe_cycle", async () => {
-          const observed = await observeTrackedClans();
-          try {
-            const backfill = await backfillMissingDiscordUsernamesForClanMembers({
-              memberTagsInOrder: observed.observedTags,
-              resolveDiscordUsername: resolveDiscordUsernameForBackfill,
+          await pollCycleGuard.run("activity_observe_cycle", async () => {
+            const queueStatus = cocRequestQueueService.getStatus();
+            if (queueStatus.degraded) {
+              console.warn(
+                `[poll-cycle] event=degraded_mode job=activity_observe_cycle spacing_ms=${queueStatus.spacingMs} penalty_ms=${queueStatus.penaltyMs} queue_depth=${queueStatus.queueDepth} interactive_depth=${queueStatus.interactiveQueueDepth} background_depth=${queueStatus.backgroundQueueDepth} in_flight=${queueStatus.inFlight}`,
+              );
+            }
+            await runFetchTelemetryBatch("activity_observe_cycle", async () => {
+              const observed = await observeTrackedClans(activityObserveCycleId, scheduledAtMs);
+              observedClanCount = observed.trackedClanCount;
+              liveClanFetchCount = observed.observedFwaClans.length;
+              try {
+                const backfill = await backfillMissingDiscordUsernamesForClanMembers({
+                  memberTagsInOrder: observed.observedTags,
+                  resolveDiscordUsername: resolveDiscordUsernameForBackfill,
+                });
+                if (backfill.candidateLinks > 0) {
+                  console.log(
+                    `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`,
+                  );
+                }
+              } catch (err) {
+                console.error(
+                  `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`,
+                );
+              }
+              try {
+                const todoRefresh = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots(
+                  {
+                    cadence: "observe",
+                    cocService,
+                    nowMs: scheduledAtMs,
+                    producerPacingMs: intervalMs,
+                    observedLivePlayerCurrent: observed.observedPlayerCurrent,
+                  },
+                );
+                if (todoRefresh.selectedPlayerCount > 0) {
+                  console.log(
+                    `[todo-snapshot] event=observe_cycle_refresh activated_users=${todoRefresh.activatedUserCount} selected_players=${todoRefresh.selectedPlayerCount} tracked_players=${todoRefresh.trackedPlayerCount} non_tracked_players=${todoRefresh.nonTrackedPlayerCount} skipped_never_used_users=${todoRefresh.skippedNeverUsedUserCount}`,
+                  );
+                }
+              } catch (err) {
+                console.error(
+                  `[todo-snapshot] event=observe_cycle_refresh_failed error=${formatError(err)}`,
+                );
+              }
+              try {
+                const result = await unlinkedMemberAlertService.reconcileGuildAlerts({
+                  client: client as any,
+                  guildId,
+                  cocService,
+                  observedFwaClans: observed.observedFwaClans,
+                });
+                if (result.unresolvedCount > 0 || result.resolvedCount > 0 || result.alertedCount > 0) {
+                  console.log(
+                    `[unlinked] reconcile_complete guild=${guildId} unresolved=${result.unresolvedCount} alerted=${result.alertedCount} resolved=${result.resolvedCount}`,
+                  );
+                }
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[unlinked] reconcile_skipped guild=${guildId} reason=${err.message}`);
+                  return;
+                }
+                console.error(
+                  `[unlinked] reconcile_failed guild=${guildId} error=${formatError(err)}`,
+                );
+              }
+              try {
+                await markObserveRun();
+              } catch (err) {
+                console.error(`observe run timestamp write failed: ${formatError(err)}`);
+              }
             });
-            if (backfill.candidateLinks > 0) {
-              console.log(
-                `[activity-observe] playerlink_discord_username_backfill candidates=${backfill.candidateLinks} unique_users=${backfill.uniqueUsers} resolved_users=${backfill.resolvedUsers} updated=${backfill.updatedLinks}`
-              );
-            }
-          } catch (err) {
-            console.error(
-              `[activity-observe] playerlink_discord_username_backfill failed: ${formatError(err)}`
-            );
-          }
-          try {
-            const todoRefresh = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots(
-              {
-                cadence: "observe",
-                cocService,
-                nowMs: scheduledAtMs,
-                producerPacingMs: intervalMs,
-              },
-            );
-            if (todoRefresh.selectedPlayerCount > 0) {
-              console.log(
-                `[todo-snapshot] event=observe_cycle_refresh activated_users=${todoRefresh.activatedUserCount} selected_players=${todoRefresh.selectedPlayerCount} tracked_players=${todoRefresh.trackedPlayerCount} non_tracked_players=${todoRefresh.nonTrackedPlayerCount} skipped_never_used_users=${todoRefresh.skippedNeverUsedUserCount}`,
-              );
-            }
-          } catch (err) {
-            console.error(
-              `[todo-snapshot] event=observe_cycle_refresh_failed error=${formatError(err)}`,
-            );
-          }
-          try {
-            const result = await unlinkedMemberAlertService.reconcileGuildAlerts({
-              client: client as any,
-              guildId,
-              cocService,
-              observedFwaClans: observed.observedFwaClans,
-            });
-            if (result.unresolvedCount > 0 || result.resolvedCount > 0 || result.alertedCount > 0) {
-              console.log(
-                `[unlinked] reconcile_complete guild=${guildId} unresolved=${result.unresolvedCount} alerted=${result.alertedCount} resolved=${result.resolvedCount}`
-              );
-            }
-          } catch (err) {
-            if (isCoCQueueSkippedError(err)) {
-              console.warn(`[unlinked] reconcile_skipped guild=${guildId} reason=${err.message}`);
-              return;
-            }
-            console.error(`[unlinked] reconcile_failed guild=${guildId} error=${formatError(err)}`);
-          }
-          try {
-            await markObserveRun();
-          } catch (err) {
-            console.error(`observe run timestamp write failed: ${formatError(err)}`);
-          }
-        });
-      });
+          });
         },
+      );
+      dozzleLog.info(
+        `[activity-observe] event=activity_observe_cycle_summary source=activity_observe_cycle activity_observe_cycle_id=${activityObserveCycleId} scheduled_at_ms=${scheduledAtMs} observed_clan_count=${observedClanCount} live_clan_fetch_count=${liveClanFetchCount} duration_ms=${Date.now() - observedCycleStartedAtMs}`,
       );
     };
 
@@ -1123,6 +1172,13 @@ export default (client: Client, cocService: CoCService): void => {
 
     const runWarEventPoll = async (scheduledAtMs: number = Date.now()) => {
       const nextDueAt = new Date(scheduledAtMs + warEventPollMs);
+      const currentWarSnapshotCycleContext = {
+        currentWarSnapshotByClanTag: new Map<
+          string,
+          Awaited<ReturnType<CoCService["getCurrentWar"]>> | null
+        >(),
+      };
+      const cwlFetchCycleCache = new CwlFetchCycleCache(cocService);
       await markPollJobStarted({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
@@ -1154,17 +1210,22 @@ export default (client: Client, cocService: CoCService): void => {
               try {
                 await warEventLogService.poll({
                   sendBattleDaySwapReminders: true,
+                  currentWarSnapshotCycleContext,
                 });
                 await warEventLogService.refreshBattleDayPosts();
                 await refreshAllTrackedWarMailPosts(client);
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
+                  cwlFetchCycleCache,
                 });
                 await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
                   cadence: "tracked",
                   cocService,
                   nowMs: scheduledAtMs,
                   producerPacingMs: warEventPollMs,
+                  cwlFetchCycleCache,
+                  preloadedCurrentWarSnapshotsByClanTag:
+                    currentWarSnapshotCycleContext.currentWarSnapshotByClanTag,
                 });
               } catch (err) {
                 if (isCoCQueueSkippedError(err)) {
@@ -1174,6 +1235,11 @@ export default (client: Client, cocService: CoCService): void => {
                 }
                 pollError = err;
                 console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+              } finally {
+                const cwlFetchStats = cwlFetchCycleCache.getStats();
+                console.info(
+                  `[cwl-fetch-cycle] event=war_event_poll_cycle group_hit_count=${cwlFetchStats.groupHitCount} group_miss_count=${cwlFetchStats.groupMissCount} war_hit_count=${cwlFetchStats.warHitCount} war_miss_count=${cwlFetchStats.warMissCount} cached_group_count=${cwlFetchStats.cachedGroupCount} cached_war_count=${cwlFetchStats.cachedWarCount}`,
+                );
               }
             });
           });
