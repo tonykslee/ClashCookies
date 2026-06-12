@@ -393,6 +393,28 @@ describe("rep work report service", () => {
     expect(truncateDiscordText("abcdefghijk", 2).length).toBeLessThanOrEqual(2);
   });
 
+  it("renders an empty-state field when no rep-work users are present", () => {
+    const embed = buildRepWorkReportEmbed({
+      guildId: "guild-1",
+      start: new Date("2026-06-03T12:00:00.000Z"),
+      end: new Date("2026-06-10T12:00:00.000Z"),
+      duration: { amount: 7, unit: "d", days: 7, label: "7d" },
+      totalUsers: 0,
+      visibleUsers: 0,
+      limit: 100,
+      users: [],
+    } as any);
+
+    const json = embed.toJSON() as any;
+    expect(json.fields).toHaveLength(1);
+    expect(json.fields[0]).toMatchObject({
+      name: "No activity",
+      value: "No rep-work activity found in this window.",
+      inline: false,
+    });
+    expect(String(json.footer?.text)).toBe("Since 7d | Showing 0 of 0 users");
+  });
+
   it("paginates users without splitting a user across pages", async () => {
     const users = Array.from({ length: 26 }, (_, index) => {
       const suffix = String(index + 1).padStart(3, "0");

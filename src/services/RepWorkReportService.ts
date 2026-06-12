@@ -247,6 +247,11 @@ function buildRepWorkReportPageEmbeds(
       .setTitle("Rep Work Stats")
       .setDescription(baseDescription)
       .setColor(0x57f287)
+      .addFields({
+        name: "No activity",
+        value: "No rep-work activity found in this window.",
+        inline: false,
+      })
       .setFooter({ text: `Since ${report.duration.label} | Showing 0 of 0 users` });
     return [
       {
