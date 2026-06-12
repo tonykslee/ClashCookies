@@ -50,6 +50,17 @@ model TrackedClan {
   fwaPoliceDmEnabled  Boolean   @default(false)
   fwaPoliceLogEnabled Boolean   @default(false)
   createdAt       DateTime  @default(now())
+  repPlayerTags   TrackedClanRep[]
+}
+
+model TrackedClanRep {
+  clanTag   String @db.VarChar(16)
+  playerTag String @db.VarChar(16)
+
+  clan TrackedClan @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
+
+  @@id([clanTag, playerTag])
+  @@index([playerTag])
 }
 
 model RaidTrackedClan {
@@ -958,6 +969,7 @@ enum TrackedMessageStatus {
 enum RepWorkActivityType {
   BASES_CHECKED
   MAIL_CHECKED
+  MAIL_SENT
 }
 
 

@@ -56,6 +56,11 @@ describe("RepWorkActivityService", () => {
         }),
       }),
     );
+    expect(
+      (prismaMock.repWorkActivityEvent.create.mock.calls[0]?.[0] as any)?.data?.metadata,
+    ).toMatchObject({
+      source: "base_swap",
+    });
   });
 
   it("falls back to the source message id when sync identity is missing", async () => {
@@ -124,5 +129,72 @@ describe("RepWorkActivityService", () => {
         }),
       }),
     );
+  });
+
+  it("records MAIL_SENT for successful /fwa match mail sends", async () => {
+    await expect(
+      repWorkActivityService.recordMailSent({
+        guildId: "guild-1",
+        discordUserId: "444444444444444444",
+        clanTag: "#RR",
+        sourceMessageId: "mail-message-9",
+        sourceTrackedMessageId: "source-match-message-1",
+        warId: 1002001,
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "opp9",
+        eventAt: new Date("2026-06-13T17:40:00.000Z"),
+        metadata: {
+          sourceVariant: "fwa_match",
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.repWorkActivityEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          activityType: "MAIL_SENT",
+          guildId: "guild-1",
+          discordUserId: "444444444444444444",
+          clanTag: "#RR",
+          syncMessageId: null,
+          sourceMessageId: "mail-message-9",
+          sourceTrackedMessageId: "source-match-message-1",
+          warId: "1002001",
+          warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+          opponentTag: "#OPP9",
+          eventAt: new Date("2026-06-13T17:40:00.000Z"),
+          prepTimeLeftSeconds: 1200,
+          dedupeKey:
+            "rep-work|MAIL_SENT|guild=guild-1|user=444444444444444444|clan=#RR|source:mail-message-9",
+        }),
+      }),
+    );
+  });
+
+  it("records checklist-attributed BASES_CHECKED events with checklist source metadata", async () => {
+    await expect(
+      repWorkActivityService.recordBasesChecklistChecked({
+        guildId: "guild-1",
+        discordUserId: "111111111111111111",
+        clanTag: "#pypy",
+        syncMessageId: "sync-message-1",
+        sourceMessageId: "bases-message-1",
+        sourceTrackedMessageId: "tracked-1",
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "opp1",
+        eventAt: new Date("2026-06-13T16:30:00.000Z"),
+        metadata: {
+          sourceVariant: "checklist",
+        },
+      }),
+    ).resolves.toBe(true);
+
+    const createCall = prismaMock.repWorkActivityEvent.create.mock.calls[0]?.[0] as any;
+    expect(createCall).toBeTruthy();
+    expect(createCall.data.metadata).toMatchObject({
+      source: "bases_checklist",
+      activityType: "BASES_CHECKED",
+    });
+    expect(String(createCall.data.metadata.source)).not.toContain("base_swap");
   });
 });

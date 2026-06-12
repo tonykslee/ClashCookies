@@ -66,16 +66,20 @@ import { refreshRaidTrackedClanListWithQueueContext } from "./TrackedClan";
 import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
 
 const RAID_DASHBOARD_TIMEOUT_MS = 10 * 60 * 1000;
+const RAID_DASHBOARD_PUBLIC_TIMEOUT_MS = 60 * 60 * 1000;
 const RAID_DASHBOARD_PREFIX = "raids";
+type RaidsDashboardVisibility = "private" | "public";
 
 type RaidsDashboardSession = {
   guildId: string | null;
   userId: string;
+  visibility: RaidsDashboardVisibility;
   sourceMode: RaidDashboardOverviewSourceMode;
   customClanTag: string | null;
   selectedClanTag: string | null;
   rows: RaidDashboardClanRow[];
   refreshing: boolean;
+  timeoutHandle: ReturnType<typeof setTimeout> | null;
 };
 
 type RaidIntelTrackedClanRow = RaidTrackedClanDisplayRow;
@@ -177,11 +181,26 @@ function getSession(sessionId: string): RaidsDashboardSession | null {
   return raidsDashboardSessions.get(sessionId) ?? null;
 }
 
-function createSessionTimer(sessionId: string): void {
+function normalizeRaidsDashboardVisibility(value: string | null | undefined): RaidsDashboardVisibility {
+  return value === "public" ? "public" : "private";
+}
+
+function clearSessionTimer(session: RaidsDashboardSession | null | undefined): void {
+  if (!session?.timeoutHandle) return;
+  clearTimeout(session.timeoutHandle);
+  session.timeoutHandle = null;
+}
+
+function scheduleSessionTimer(sessionId: string, session: RaidsDashboardSession): void {
+  clearSessionTimer(session);
+  const timeoutMs =
+    session.visibility === "public" ? RAID_DASHBOARD_PUBLIC_TIMEOUT_MS : RAID_DASHBOARD_TIMEOUT_MS;
   const timer = setTimeout(() => {
     raidsDashboardSessions.delete(sessionId);
-  }, RAID_DASHBOARD_TIMEOUT_MS);
+    session.timeoutHandle = null;
+  }, timeoutMs);
   (timer as NodeJS.Timeout & { unref?: () => void }).unref?.();
+  session.timeoutHandle = timer;
 }
 
 function createRaidIntelSessionTimer(sessionId: string): void {
@@ -1049,7 +1068,7 @@ export async function handleRaidsSelectMenuInteraction(
     });
     return;
   }
-  if (session.userId !== interaction.user.id) {
+  if (session.visibility !== "public" && session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command user can control this raids view.",
@@ -1086,6 +1105,9 @@ export async function handleRaidsSelectMenuInteraction(
       components: payload.components,
     });
     session.rows = payload.rows;
+    if (session.visibility === "public") {
+      scheduleSessionTimer(parsed.sessionId, session);
+    }
   } catch (err) {
     console.error(`[raids] select interaction failed: ${formatError(err)}`);
     await interaction.followUp({
@@ -1110,7 +1132,7 @@ export async function handleRaidsButtonInteraction(
     });
     return;
   }
-  if (session.userId !== interaction.user.id) {
+  if (session.visibility !== "public" && session.userId !== interaction.user.id) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command user can control this raids view.",
@@ -1166,6 +1188,9 @@ export async function handleRaidsButtonInteraction(
       components: payload.components,
     });
     session.rows = payload.rows;
+    if (session.visibility === "public") {
+      scheduleSessionTimer(parsed.sessionId, session);
+    }
   } catch (err) {
     console.error(`[raids] button interaction failed: ${formatError(err)}`);
     await interaction.followUp({
@@ -1305,7 +1330,6 @@ export const Raids: Command = {
     await interaction.respond(choices);
   },
   run: async (_client: Client, interaction: ChatInputCommandInteraction, cocService: CoCService) => {
-    await interaction.deferReply({ ephemeral: true });
     let subcommandGroup: string | null = null;
     let subcommand: string | null = null;
     try {
@@ -1316,6 +1340,10 @@ export const Raids: Command = {
       subcommand = null;
     }
     if (subcommand === "overview") {
+      const visibility = normalizeRaidsDashboardVisibility(
+        interaction.options.getString("visibility", false),
+      );
+      await interaction.deferReply({ ephemeral: visibility !== "public" });
       const sourceMode = normalizeRaidsOverviewSourceMode(interaction.options.getString("type", false));
       const rawClan = interaction.options.getString("clan", false) ?? "";
       const requestedClan = normalizeRaidTrackedClanTag(rawClan);
@@ -1367,13 +1395,15 @@ export const Raids: Command = {
       raidsDashboardSessions.set(sessionId, {
         guildId: interaction.guildId ?? null,
         userId: interaction.user.id,
+        visibility,
         sourceMode,
         customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
         selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
         rows,
         refreshing: false,
+        timeoutHandle: null,
       });
-      createSessionTimer(sessionId);
+      scheduleSessionTimer(sessionId, raidsDashboardSessions.get(sessionId)!);
 
       const payload = await buildRaidDashboardPayload({
         sessionId,
@@ -1392,6 +1422,8 @@ export const Raids: Command = {
       });
       return;
     }
+
+    await interaction.deferReply({ ephemeral: true });
 
     if (subcommandGroup === "roster" && subcommand === "add") {
       if (!interaction.guildId) {

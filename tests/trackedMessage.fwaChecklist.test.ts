@@ -14,6 +14,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   currentWar: {
+    findUnique: vi.fn(),
     findMany: vi.fn(),
   },
 }));
@@ -174,6 +175,7 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.trackedMessage.create.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue({
       id: "sync-tracked-1",
@@ -1954,6 +1956,11 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(
       makeTrackedChecklistRowWithState(["RR"]),
     );
+    prismaMock.currentWar.findUnique.mockResolvedValueOnce({
+      warId: 1001,
+      startTime: new Date("2026-05-13T18:00:00.000Z"),
+      opponentTag: "#OPP1",
+    } as any);
     const recordMailChecked = vi
       .spyOn(repWorkActivityService, "recordMailChecked")
       .mockResolvedValue(true);
@@ -2016,6 +2023,7 @@ describe("fwa checklist tracked messages", () => {
         guildId: "guild-1",
         discordUserId: "111111111111111111",
         clanTag: "TWC",
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
         sourceMessageId: "checklist-message-1",
         sourceTrackedMessageId: "tracked-1",
       }),
@@ -2201,8 +2209,8 @@ describe("fwa checklist tracked messages", () => {
         state: "battle",
       },
     ]);
-    const recordMailChecked = vi
-      .spyOn(repWorkActivityService, "recordMailChecked")
+    const recordBasesChecklistChecked = vi
+      .spyOn(repWorkActivityService, "recordBasesChecklistChecked")
       .mockResolvedValue(true);
     const setCompletion = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
@@ -2259,6 +2267,7 @@ describe("fwa checklist tracked messages", () => {
         message as any,
         {
           kind: "add",
+          reactorUserId: "111111111111111111",
           reaction: {
             emoji: { id: "111", name: "alpha" },
             count: 2,
@@ -2297,7 +2306,16 @@ describe("fwa checklist tracked messages", () => {
         syncMessageId: "sync-message-1",
       }),
     );
-    expect(recordMailChecked).not.toHaveBeenCalled();
+    expect(recordBasesChecklistChecked).toHaveBeenCalledTimes(1);
+    expect(recordBasesChecklistChecked).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        discordUserId: "111111111111111111",
+        clanTag: "#PYPY",
+        sourceMessageId: "bases-message-1",
+        sourceTrackedMessageId: "tracked-bases-1",
+      }),
+    );
     expect(edit).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining("# Clan Bases Checklist"),

@@ -30,6 +30,7 @@ import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService
 import {
   formatRosterWeightAge,
   resolveRosterCurrentWeightRecords,
+  type ResolvedRosterCurrentWeightRecord,
   type RosterWeightSource,
 } from "./RosterWeightService";
 import { loadCwlRosterSignupConflictLookup } from "./RosterSignupConflictService";
@@ -5085,23 +5086,58 @@ async function renderRosterBoardShortcodes(text: string, client?: Client | null)
   return emojiResolverService.replaceShortcodes(client, text).catch(() => text);
 }
 
+async function resolveRosterSignupViewWeights(
+  signups: RosterSignupViewRecord[],
+): Promise<RosterSignupViewRecord[]> {
+  const playerTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
+  if (playerTags.length <= 0) {
+    return signups;
+  }
+
+  const resolvedWeightRows = await resolveRosterCurrentWeightRecords({
+    playerTags,
+  });
+
+  return signups.map((signup) => {
+    const playerTag = normalizePlayerTag(signup.playerTag);
+    const weightRecord: ResolvedRosterCurrentWeightRecord | null = playerTag
+      ? resolvedWeightRows.get(playerTag) ?? null
+      : null;
+    return {
+      ...signup,
+      weight: weightRecord?.weight ?? null,
+      weightSource: weightRecord?.weightSource ?? "Unknown",
+      weightMeasuredAt: weightRecord?.weightMeasuredAt ?? null,
+    };
+  });
+}
+
 async function buildRosterSignupPayloadFromView(
   view: RosterSignupView,
   options?: RosterSignupPayloadBuildOptions,
 ): Promise<RosterSignupPayload> {
-  const title = normalizeRosterText(view.clanDisplayName ?? null) ?? normalizeClanTag(view.roster.clanTag ?? "") ?? "Roster";
-  const groups = buildRosterGroupsWithSignups(view);
+  const resolvedView =
+    (view as RosterSignupView & { __resolvedRosterSignupWeights?: true }).__resolvedRosterSignupWeights === true
+      ? view
+      : ({
+          ...view,
+          signups: await resolveRosterSignupViewWeights(view.signups),
+        } as RosterSignupView);
+  const title = normalizeRosterText(resolvedView.clanDisplayName ?? null) ?? normalizeClanTag(resolvedView.roster.clanTag ?? "") ?? "Roster";
+  const groups = buildRosterGroupsWithSignups(resolvedView);
   const columns =
-    normalizeRosterDisplayColumns(view.roster.displayColumns) ?? [...ROSTER_DEFAULT_DISPLAY_COLUMNS];
+    normalizeRosterDisplayColumns(resolvedView.roster.displayColumns) ?? [...ROSTER_DEFAULT_DISPLAY_COLUMNS];
   const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups), columns);
-  const rosterLabel = `**${buildClanProfileMarkdownLink(view.roster.title || "Roster Signup", view.roster.clanTag)}** ${
-    view.clanLeagueLabel ?? view.roster.rosterType
+  const rosterLabel = `**${buildClanProfileMarkdownLink(resolvedView.roster.title || "Roster Signup", resolvedView.roster.clanTag)}** ${
+    resolvedView.clanLeagueLabel ?? resolvedView.roster.rosterType
   }`.trim();
-  const maxMembersLabel = view.roster.maxMembers === null || view.roster.maxMembers === undefined ? "-" : String(view.roster.maxMembers);
-  const minTownHallLabel = view.roster.minTownhall === null || view.roster.minTownhall === undefined ? "-" : String(view.roster.minTownhall);
+  const maxMembersLabel =
+    resolvedView.roster.maxMembers === null || resolvedView.roster.maxMembers === undefined ? "-" : String(resolvedView.roster.maxMembers);
+  const minTownHallLabel =
+    resolvedView.roster.minTownhall === null || resolvedView.roster.minTownhall === undefined ? "-" : String(resolvedView.roster.minTownhall);
   const signupRoleLines = buildRosterSignupRoleRequirementLines({
-    requiredSignupRoleId: view.roster.requiredSignupRoleId,
-    noRoleSignupLimit: view.roster.noRoleSignupLimit,
+    requiredSignupRoleId: resolvedView.roster.requiredSignupRoleId,
+    noRoleSignupLimit: resolvedView.roster.noRoleSignupLimit,
   });
   const lines: string[] = [
     rosterLabel,
@@ -5125,14 +5161,14 @@ async function buildRosterSignupPayloadFromView(
   }
   lines.push("");
   const summaryParts = [`Total ${view.totalSignupCount}/${maxMembersLabel}`];
-  if (view.roster.minTownhall !== null && view.roster.minTownhall !== undefined) {
+  if (resolvedView.roster.minTownhall !== null && resolvedView.roster.minTownhall !== undefined) {
     summaryParts.push(`Min. TH ${minTownHallLabel}`);
   }
-  if (view.roster.minimumWeight !== null && view.roster.minimumWeight !== undefined) {
-    summaryParts.push(`Min. Weight: ${formatRosterBoardWeightValue(view.roster.minimumWeight) ?? "-"}`);
+  if (resolvedView.roster.minimumWeight !== null && resolvedView.roster.minimumWeight !== undefined) {
+    summaryParts.push(`Min. Weight: ${formatRosterBoardWeightValue(resolvedView.roster.minimumWeight) ?? "-"}`);
   }
-  if (view.roster.maxTownhall !== null && view.roster.maxTownhall !== undefined) {
-    summaryParts.push(`Max. TH ${String(view.roster.maxTownhall)}`);
+  if (resolvedView.roster.maxTownhall !== null && resolvedView.roster.maxTownhall !== undefined) {
+    summaryParts.push(`Max. TH ${String(resolvedView.roster.maxTownhall)}`);
   }
   lines.push(summaryParts.join(" | "));
 
@@ -5437,7 +5473,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
   }
   const mappedRoster = mapRosterRecord(roster);
 
-  return {
+  const payloadView = {
     roster: mappedRoster,
     clanDisplayName,
     clanLeagueLabel: normalizeRosterText(trackedClan?.leagueLabel ?? null) ?? null,
@@ -5475,7 +5511,9 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
         : null,
     })),
     totalSignupCount: sortedSignups.length,
-  };
+  } as RosterSignupView & { __resolvedRosterSignupWeights?: true };
+  payloadView.__resolvedRosterSignupWeights = true;
+  return payloadView;
 }
 
 async function getRosterGroupByKey(input: {

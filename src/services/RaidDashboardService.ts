@@ -22,6 +22,7 @@ import {
   estimateRaidMedals,
   type RaidMedalEstimate,
 } from "./RaidMedalEstimator";
+import { predictRaidDefenseMedalsFromDefenseLog } from "./RaidDefenseMedalEstimator";
 import {
   getRaidTrackedClanJoinTypeEmoji,
   listRaidTrackedClansForDisplay,
@@ -679,89 +680,6 @@ function getRaidMedalDisplayValues(estimate: RaidMedalEstimate): {
   return { offense, defense, total };
 }
 
-function calculateRaidDefenseDistrictHousingSpace(
-  district: RaidDashboardDistrictRow,
-): number | null {
-  if (district.id === null || district.districtHallLevel === null) {
-    return null;
-  }
-  const base = 25 + 5 * district.districtHallLevel;
-  if (district.id === 70000001) {
-    return 3 * base;
-  }
-  if (district.id === 70000002) {
-    return district.districtHallLevel > 1 ? base : null;
-  }
-  if (district.id === 70000005) {
-    return base;
-  }
-  return null;
-}
-
-function calculateRaidDefenseDistrictWeight(districts: RaidDashboardDistrictRow[]): number | null {
-  const lootedValues = districts
-    .filter((district) => isDistrictFullyDestroyed(district) === true)
-    .map((district) => district.totalLooted)
-    .filter((value): value is number => value !== null);
-  if (lootedValues.length <= 0) {
-    return null;
-  }
-  const lower = Math.max(...lootedValues.map((value) => value - 750));
-  const upper = Math.min(...lootedValues);
-  return Math.floor((lower + upper) / 2);
-}
-
-function predictRaidDefenseMedalsFromDefenseLog(
-  defenseLog: ClanCapitalRaidSeason["defenseLog"],
-): number | null {
-  if (!Array.isArray(defenseLog) || defenseLog.length <= 0) {
-    return null;
-  }
-
-  let maxOpponentTroopsKilled: number | null = null;
-  for (const entry of defenseLog) {
-    if (!entry || typeof entry !== "object") continue;
-    const value = entry as Record<string, unknown>;
-    const districts = Array.isArray(value.districts)
-      ? value.districts
-          .map((district: unknown) => normalizeRaidDistrictRow(district))
-          .filter(
-            (district: RaidDashboardDistrictRow | null): district is RaidDashboardDistrictRow =>
-              district !== null,
-          )
-      : [];
-    if (districts.length <= 0) continue;
-
-    const districtWeight = calculateRaidDefenseDistrictWeight(districts);
-    let troopsKilled = 0;
-    let sawUsableDistrict = false;
-    for (const district of districts) {
-      const attackCount = district.attackCount;
-      const housingSpace = calculateRaidDefenseDistrictHousingSpace(district);
-      if (attackCount === null || housingSpace === null) {
-        continue;
-      }
-      sawUsableDistrict = true;
-      troopsKilled += attackCount * housingSpace;
-      if (
-        districtWeight !== null &&
-        district.totalLooted !== null &&
-        isDistrictFullyDestroyed(district) === true
-      ) {
-        troopsKilled -= Math.floor((district.totalLooted - districtWeight) / 3);
-      }
-    }
-    if (sawUsableDistrict) {
-      maxOpponentTroopsKilled =
-        maxOpponentTroopsKilled === null
-          ? troopsKilled
-          : Math.max(maxOpponentTroopsKilled, troopsKilled);
-    }
-  }
-
-  return maxOpponentTroopsKilled === null ? null : Math.floor(maxOpponentTroopsKilled / 25);
-}
-
 function isRaidSeasonFinalized(season: ClanCapitalRaidSeason | null | undefined): boolean {
   const state = String(season?.state ?? "").trim().toLowerCase();
   return (
@@ -779,7 +697,10 @@ function resolveRaidDashboardDefensiveMedals(
   if (reward !== null && (reward > 0 || isRaidSeasonFinalized(season))) {
     return reward;
   }
-  return predictRaidDefenseMedalsFromDefenseLog(season?.defenseLog);
+  if (!Array.isArray(season?.defenseLog) || season.defenseLog.length <= 0) {
+    return null;
+  }
+  return predictRaidDefenseMedalsFromDefenseLog(season.defenseLog);
 }
 
 function buildRaidDashboardMedalEstimate(input: {

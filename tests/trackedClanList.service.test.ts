@@ -4,6 +4,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  trackedClanRep: {
+    findMany: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     groupBy: vi.fn(),
   },
@@ -15,6 +18,7 @@ vi.mock("../src/prisma", () => ({
 
 import {
   buildFwaTrackedClanMinimalListRender,
+  listFwaTrackedClansForDisplay,
   loadFwaTrackedClanMinimalListState,
 } from "../src/services/TrackedClanListService";
 
@@ -22,6 +26,7 @@ describe("TrackedClanListService FWA minimal helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
   });
 
@@ -56,7 +61,49 @@ describe("TrackedClanListService FWA minimal helpers", () => {
       leadRoleId: "lead-role-1",
     });
     expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.fwaClanMemberCurrent.groupBy).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads rep player tags for detailed FWA rows in bulk", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: null,
+        logChannelId: null,
+        leaderChannelId: null,
+        clanRoleId: null,
+        leadRoleId: null,
+        clanBadge: null,
+        shortName: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#2RVGJYLC0" },
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+    ]);
+
+    const rows = await listFwaTrackedClansForDisplay();
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        tag: "#2QG2C08UP",
+        repPlayerTags: ["#2RVGJYLC0", "#PYLQ0289"],
+      }),
+    ]);
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledWith({
+      where: {
+        clanTag: { in: ["#2QG2C08UP"] },
+      },
+      orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
+      select: {
+        clanTag: true,
+        playerTag: true,
+      },
+    });
   });
 
   it("renders the exact minimal FWA list embed and refresh button", () => {
