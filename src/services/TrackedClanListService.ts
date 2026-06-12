@@ -155,6 +155,36 @@ export function formatCwlLeagueEmoji(label: string | null): string | null {
   return CWL_LEAGUE_EMOJI_BY_LABEL.get(normalized) ?? null;
 }
 
+export function formatCwlLeagueAbbreviation(label: string | null): string {
+  const normalized = normalizeCwlLeagueLabel(label);
+  if (!normalized || normalized === "UNRANKED" || normalized === "UNKNOWN") {
+    return "UNK";
+  }
+
+  const cleaned = normalized.replace(/\bLEAGUE\b/g, "").replace(/\s+/g, " ").trim();
+  const match = cleaned.match(/^(LEGEND|CHAMPION|MASTER|CRYSTAL|GOLD|SILVER|BRONZE)(?:\s+(.+))?$/);
+  if (!match) return "UNK";
+
+  const tier = match[1] ?? "";
+  const suffix = match[2]?.trim() ?? "";
+  if (tier === "LEGEND") return "LEG";
+
+  const ordinal = suffix ? parseRomanNumeral(suffix) : null;
+  if (ordinal === null) return "UNK";
+
+  const prefixByTier = new Map([
+    ["CHAMPION", "CH"],
+    ["MASTER", "M"],
+    ["CRYSTAL", "C"],
+    ["GOLD", "G"],
+    ["SILVER", "S"],
+    ["BRONZE", "B"],
+  ]);
+  const prefix = prefixByTier.get(tier);
+  if (!prefix) return "UNK";
+  return `${prefix}${ordinal}`;
+}
+
 export function formatCwlSpinStatusEmoji(status: CwlTrackedClanSpinStatus): string {
   if (status === "matched") return "⚔️";
   if (status === "searching") return "<a:a_search_2:1511522352356397179>";
