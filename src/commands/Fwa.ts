@@ -8775,6 +8775,25 @@ async function handleFwaMailConfirmAction(
     messageId: sent.id,
     postedAt: new Date(nowMs),
   });
+  await repWorkActivityService.recordMailSent({
+    guildId: payload.guildId,
+    discordUserId: parsed.userId,
+    clanTag: `#${normalizeTag(payload.tag)}`,
+    sourceMessageId: sent.id,
+    sourceTrackedMessageId: payload.sourceMessageId ?? null,
+    warId: renderedWarIdText,
+    warStartTime: renderedWarStartTime,
+    opponentTag: rendered.opponentTag ?? null,
+    eventAt: new Date(nowMs),
+    metadata: {
+      source: "fwa_match_mail_send",
+      mailChannelId: channel.id,
+      mailMessageId: sent.id,
+      sourceMatchPayloadKey: payload.sourceMatchPayloadKey ?? null,
+      sourceMatchMessageId: payload.sourceMessageId ?? null,
+      pingRole: options.pingRole,
+    },
+  });
   await pointsSyncService
     .markConfirmedByClanMail({
       guildId: payload.guildId,

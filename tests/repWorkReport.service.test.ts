@@ -1,5 +1,4 @@
 import { RepWorkActivityType } from "@prisma/client";
-import { RepWorkActivityType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRACKED_MESSAGE_FEATURE_TYPE } from "../src/services/TrackedMessageService";
 
@@ -162,11 +161,13 @@ describe("rep work report service", () => {
       discordUserId: "111111111111111111",
       basesChecked: 2,
       mailsChecked: 4,
+      mailsSent: 0,
       syncsParticipated: 30,
       clanClaims: 30,
     });
     expect(report?.users[0].basesAvgPrepTimeLeftSeconds).toBe(21600);
-    expect(report?.users[0].mailsAvgPrepTimeLeftSeconds).toBeNull();
+    expect(report?.users[0].mailsCheckedAvgPrepTimeLeftSeconds).toBeNull();
+    expect(report?.users[0].mailsSentAvgPrepTimeLeftSeconds).toBeNull();
     expect(report?.users[0].topCommands).toEqual([
       { label: "/fwa base-swap", totalCount: 12 },
       { label: "/sync time post", totalCount: 8 },
@@ -176,6 +177,7 @@ describe("rep work report service", () => {
       discordUserId: "222222222222222222",
       basesChecked: 1,
       mailsChecked: 0,
+      mailsSent: 0,
       syncsParticipated: 6,
       clanClaims: 30,
     });
@@ -185,19 +187,20 @@ describe("rep work report service", () => {
     expect(report?.totalUsers).toBe(2);
 
     const embed = buildRepWorkReportEmbed(report!, {
-      displayNameByUserId: new Map([
-        ["111111111111111111", "Server Display One"],
-        ["222222222222222222", "Server Display Two"],
+      renderedBadgesByUserId: new Map([
+        ["111111111111111111", ["<:badge:123>"]],
+        ["222222222222222222", []],
       ]),
     });
     const json = embed.toJSON() as any;
     expect(json.title).toBe("Rep Work Stats");
     expect(String(json.description)).toContain("Window:");
-    expect(json.fields[0].name).toBe("Server Display One");
-    expect(json.fields[1].name).toBe("Server Display Two");
+    expect(json.fields[0].name).toBe("\u200b");
+    expect(String(json.fields[0].value)).toContain("**<@111111111111111111>** <:badge:123>");
+    expect(String(json.fields[1].value)).toContain("**<@222222222222222222>**");
     expect(String(json.fields[0].value)).toContain("Bases: 2 (avg 6h left)");
     expect(String(json.fields[0].value)).toContain("Syncs: 30 participated | 30 clan claims");
-    expect(String(json.fields[0].value)).toContain("Mails: 4 (avg n/a)");
+    expect(String(json.fields[0].value)).toContain("Mails: Discord 4 (avg n/a) | In-game 0 (avg n/a)");
     expect(String(json.fields[0].value)).toContain("Top cmds: `/fwa base-swap` 12");
     expect(String(json.footer?.text)).toContain("Since 30d");
   });
@@ -242,6 +245,12 @@ describe("rep work report service", () => {
           avgPrepTimeLeftSeconds: 12000,
         },
         {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.MAIL_SENT,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 6000,
+        },
+        {
           discordUserId: "222222222222222222",
           activityType: RepWorkActivityType.BASES_CHECKED,
           totalCount: 3,
@@ -252,6 +261,12 @@ describe("rep work report service", () => {
           activityType: RepWorkActivityType.MAIL_CHECKED,
           totalCount: 4,
           avgPrepTimeLeftSeconds: 10000,
+        },
+        {
+          discordUserId: "222222222222222222",
+          activityType: RepWorkActivityType.MAIL_SENT,
+          totalCount: 2,
+          avgPrepTimeLeftSeconds: 9000,
         },
       ])
       .mockResolvedValueOnce([]);
@@ -268,13 +283,17 @@ describe("rep work report service", () => {
       basesChecked: 2,
       basesAvgPrepTimeLeftSeconds: 20000,
       mailsChecked: 2,
-      mailsAvgPrepTimeLeftSeconds: 12000,
+      mailsCheckedAvgPrepTimeLeftSeconds: 12000,
+      mailsSent: 1,
+      mailsSentAvgPrepTimeLeftSeconds: 6000,
     });
     expect(byUserId.get("222222222222222222")).toMatchObject({
       basesChecked: 3,
       basesAvgPrepTimeLeftSeconds: 15000,
       mailsChecked: 4,
-      mailsAvgPrepTimeLeftSeconds: 10000,
+      mailsCheckedAvgPrepTimeLeftSeconds: 10000,
+      mailsSent: 2,
+      mailsSentAvgPrepTimeLeftSeconds: 9000,
     });
   });
 
@@ -293,6 +312,12 @@ describe("rep work report service", () => {
           totalCount: 1,
           avgPrepTimeLeftSeconds: 7200,
         },
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.MAIL_SENT,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 3600,
+        },
       ])
       .mockResolvedValueOnce([]);
     prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
@@ -304,14 +329,19 @@ describe("rep work report service", () => {
     });
 
     expect(report?.users[0].basesAvgPrepTimeLeftSeconds).toBeNull();
-    expect(report?.users[0].mailsAvgPrepTimeLeftSeconds).toBe(7200);
+    expect(report?.users[0].mailsCheckedAvgPrepTimeLeftSeconds).toBe(7200);
+    expect(report?.users[0].mailsSentAvgPrepTimeLeftSeconds).toBe(3600);
 
-    const embed = buildRepWorkReportEmbed(report!, { displayNameByUserId: new Map() });
+    const embed = buildRepWorkReportEmbed(report!, {
+      renderedBadgesByUserId: new Map([["111111111111111111", ["<:badge:123>", "<:badge:123>"]]]),
+    });
     const json = embed.toJSON() as any;
     expect(String(json.fields[0].value)).toContain("Bases: 2 (avg n/a)");
+    expect(String(json.fields[0].value)).toContain("Mails: Discord 1 (avg 2h left) | In-game 1 (avg 1h left)");
+    expect(String(json.fields[0].value)).toContain("**<@111111111111111111>** <:badge:123>");
   });
 
-  it("disambiguates duplicate display names safely", async () => {
+  it("dedupes rendered badges per user safely", async () => {
     prismaMock.$queryRaw
       .mockResolvedValueOnce([
         {
@@ -337,14 +367,15 @@ describe("rep work report service", () => {
     });
 
     const embed = buildRepWorkReportEmbed(report!, {
-      displayNameByUserId: new Map([
-        ["111111111111111111", "Server Display"],
-        ["222222222222222222", "Server Display"],
+      renderedBadgesByUserId: new Map([
+        ["111111111111111111", ["<:badge:123>", "<:badge:123>"]],
+        ["222222222222222222", ["<:badge:999>"]],
       ]),
     });
     const json = embed.toJSON() as any;
-    expect(String(json.fields[0].name)).toBe("Server Display (`1111`)");
-    expect(String(json.fields[1].name)).toBe("Server Display (`2222`)");
+    expect(String(json.fields[0].value)).toContain("**<@111111111111111111>** <:badge:123>");
+    expect(String(json.fields[0].value)).not.toContain("<:badge:123> <:badge:123>");
+    expect(String(json.fields[1].value)).toContain("**<@222222222222222222>** <:badge:999>");
   });
 
   it("uses first-row-per-sync SQL for prep timing averages", async () => {
@@ -411,7 +442,8 @@ describe("rep work report service", () => {
     });
 
     expect(report?.users[0].basesAvgPrepTimeLeftSeconds).toBeNull();
-    expect(report?.users[0].mailsAvgPrepTimeLeftSeconds).toBe(7200);
+    expect(report?.users[0].mailsCheckedAvgPrepTimeLeftSeconds).toBe(7200);
+    expect(report?.users[0].mailsSentAvgPrepTimeLeftSeconds).toBeNull();
   });
 
   it("omits command-only users from the main report", async () => {
