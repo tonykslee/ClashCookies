@@ -74,6 +74,11 @@ export {
   computeWarPointsDeltaForTest,
 } from "./war-events/core";
 
+type CurrentWarSnapshot = Awaited<ReturnType<CoCService["getCurrentWar"]>>;
+export type CurrentWarSnapshotCycleContext = {
+  currentWarSnapshotByClanTag: Map<string, CurrentWarSnapshot | null>;
+};
+
 const NOTIFY_WAR_REFRESH_PREFIX = "notify-war-refresh";
 const NOTIFY_WAR_ENDED_VIEW_PREFIX = "notify-war-end";
 const NOTIFY_WAR_ENDED_VIEW_EXPIRED = "This war-end view expired.";
@@ -1349,6 +1354,7 @@ export class WarEventLogService {
   /** Purpose: poll. */
   async poll(input?: {
     sendBattleDaySwapReminders?: boolean;
+    currentWarSnapshotCycleContext?: CurrentWarSnapshotCycleContext;
   }): Promise<void> {
     const sendBattleDaySwapReminders =
       input?.sendBattleDaySwapReminders === true;
@@ -1368,6 +1374,7 @@ export class WarEventLogService {
         {
           sendBattleDaySwapReminders,
           maintenanceOverGuildIds,
+          currentWarSnapshotCycleContext: input?.currentWarSnapshotCycleContext ?? null,
         },
       ).catch((err) => {
         console.error(
@@ -2717,13 +2724,30 @@ export class WarEventLogService {
   }
 
   /** Purpose: fetch current war while preserving upstream-failure classification. */
-  private async getCurrentWarSnapshot(clanTag: string): Promise<{
-    war: Awaited<ReturnType<CoCService["getCurrentWar"]>> | null;
+  private async getCurrentWarSnapshot(
+    clanTag: string,
+    currentWarSnapshotCycleContext?: CurrentWarSnapshotCycleContext | null,
+  ): Promise<{
+    war: CurrentWarSnapshot | null;
     observation: CocWarFetchObservation;
     error: unknown | null;
   }> {
+    const normalizedClanTag = normalizeTag(clanTag);
+    const cached = currentWarSnapshotCycleContext?.currentWarSnapshotByClanTag.get(
+      normalizedClanTag,
+    );
+    if (currentWarSnapshotCycleContext?.currentWarSnapshotByClanTag.has(normalizedClanTag)) {
+      return {
+        war: cached ?? null,
+        observation: { kind: "success" },
+        error: null,
+      };
+    }
     try {
-      const war = await this.coc.getCurrentWar(clanTag);
+      const war = await this.coc.getCurrentWar(normalizedClanTag || clanTag);
+      if (currentWarSnapshotCycleContext) {
+        currentWarSnapshotCycleContext.currentWarSnapshotByClanTag.set(normalizedClanTag, war);
+      }
       return { war, observation: { kind: "success" }, error: null };
     } catch (error) {
       return {
@@ -2825,6 +2849,7 @@ export class WarEventLogService {
     options?: {
       sendBattleDaySwapReminders?: boolean;
       maintenanceOverGuildIds?: Set<string>;
+      currentWarSnapshotCycleContext?: CurrentWarSnapshotCycleContext | null;
     },
   ): Promise<boolean> {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
@@ -2874,7 +2899,10 @@ export class WarEventLogService {
     const sub = rows[0] ?? null;
     if (!sub) return false;
 
-    const warSnapshot = await this.getCurrentWarSnapshot(sub.clanTag);
+    const warSnapshot = await this.getCurrentWarSnapshot(
+      sub.clanTag,
+      options?.currentWarSnapshotCycleContext ?? null,
+    );
     const war = warSnapshot.war;
     const outageState = this.recordCocWarObservation(
       sub.clanTag,

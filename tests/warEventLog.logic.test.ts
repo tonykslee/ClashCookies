@@ -2232,6 +2232,53 @@ describe("WarEventLogService notify config ownership", () => {
       },
     });
   });
+
+  it("caches current-war snapshots in the cycle context and reuses successful nulls", async () => {
+    const getCurrentWar = vi.fn().mockResolvedValue({
+      state: "inWar",
+      clan: {
+        tag: "#ABC123",
+        name: "Clan A",
+        members: [],
+      },
+      opponent: {
+        tag: "#OPP",
+        name: "Opponent",
+        members: [],
+      },
+      startTime: "20260311T120000.000Z",
+      endTime: "20260311T140000.000Z",
+    });
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getCurrentWar } as any,
+    );
+    const context = {
+      currentWarSnapshotByClanTag: new Map<string, any>(),
+    };
+
+    const first = await (service as any).getCurrentWarSnapshot("#ABC123", context);
+    const second = await (service as any).getCurrentWarSnapshot("#ABC123", context);
+
+    expect(getCurrentWar).toHaveBeenCalledTimes(1);
+    expect(first.war).toEqual(second.war);
+    expect(first.observation).toEqual({ kind: "success" });
+    expect(second.observation).toEqual({ kind: "success" });
+    expect(context.currentWarSnapshotByClanTag.size).toBe(1);
+    expect(context.currentWarSnapshotByClanTag.get("#ABC123")).toEqual(first.war);
+
+    const nullContext = {
+      currentWarSnapshotByClanTag: new Map<string, any>([["#NULLCLAN", null]]),
+    };
+    const nullSnapshot = await (service as any).getCurrentWarSnapshot(
+      "#NULLCLAN",
+      nullContext,
+    );
+
+    expect(getCurrentWar).toHaveBeenCalledTimes(1);
+    expect(nullSnapshot.war).toBeNull();
+    expect(nullSnapshot.observation).toEqual({ kind: "success" });
+  });
 });
 
 describe("WarEventLogService war-end discrepancy content", () => {
