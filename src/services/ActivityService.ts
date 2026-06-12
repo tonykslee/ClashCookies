@@ -1,7 +1,9 @@
 import { prisma } from "../prisma";
+import { formatError } from "../helper/formatError";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
 import { ActivitySignalService } from "./ActivitySignalService";
+import { playerCurrentService } from "./PlayerCurrentService";
 
 export class ActivityService {
   private readonly signalService = new ActivitySignalService();
@@ -30,6 +32,8 @@ export class ActivityService {
     const now = new Date();
     let playerApiCalls = 0;
     let playersMissing = 0;
+    let playerCurrentUpsertSuccessCount = 0;
+    let playerCurrentUpsertFailedCount = 0;
     const observedTags: string[] = [];
     const observedMembers: Array<{ playerTag: string; playerName: string }> = [];
 
@@ -41,8 +45,26 @@ export class ActivityService {
           playerName: String(member.name ?? member.tag),
         });
       }
+    }
+
+    let existingPlayerCurrentByTag: Map<string, any> = new Map();
+    try {
+      existingPlayerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(observedTags);
+    } catch (error) {
+      console.warn(
+        `[activity-observe] player_current_preload_failed guild=${inputGuildId} clan=${clan.tag} player_count=${observedTags.length} error=${formatError(error)}`,
+      );
+      existingPlayerCurrentByTag = new Map();
+    }
+
+    for (const member of clan.members) {
+      const playerTag = String(member?.tag ?? "").trim();
+      if (!playerTag) {
+        continue;
+      }
+
       playerApiCalls += 1;
-      const player = await this.coc.getPlayerRaw(member.tag, { suppressTelemetry: true });
+      const player = await this.coc.getPlayerRaw(playerTag, { suppressTelemetry: true });
       if (!player) {
         playersMissing += 1;
         continue;
@@ -72,6 +94,22 @@ export class ActivityService {
         heroEquipment: Array.isArray(player.heroEquipment) ? player.heroEquipment : [],
         now,
       });
+
+      try {
+        await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+          playerTag,
+          livePlayer: player,
+          existing: existingPlayerCurrentByTag.get(playerTag) ?? null,
+          source: "activity_observe",
+          now,
+        });
+        playerCurrentUpsertSuccessCount += 1;
+      } catch (error) {
+        playerCurrentUpsertFailedCount += 1;
+        console.warn(
+          `[activity-observe] player_current_upsert_failed guild=${inputGuildId} clan=${clan.tag} player=${playerTag} error=${formatError(error)}`,
+        );
+      }
     }
 
     if (playerApiCalls > 0) {
@@ -80,7 +118,7 @@ export class ActivityService {
         operation: "getPlayerRaw",
         source: "api",
         incrementBy: playerApiCalls,
-        detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing}`,
+        detail: `mode=observeClan clan=${clan.tag} calls=${playerApiCalls} missing=${playersMissing} playerCurrentUpsertSuccessCount=${playerCurrentUpsertSuccessCount} playerCurrentUpsertFailedCount=${playerCurrentUpsertFailedCount}`,
       });
     }
 
