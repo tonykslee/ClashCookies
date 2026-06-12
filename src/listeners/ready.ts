@@ -17,6 +17,7 @@ import { processDueRecruitmentReminders } from "../services/RecruitmentReminderS
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
 import { SettingsService } from "../services/SettingsService";
 import { WarEventLogService } from "../services/WarEventLogService";
+import { CwlFetchCycleCache } from "../services/CwlFetchCycleCache";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
@@ -1159,6 +1160,7 @@ export default (client: Client, cocService: CoCService): void => {
           Awaited<ReturnType<CoCService["getCurrentWar"]>> | null
         >(),
       };
+      const cwlFetchCycleCache = new CwlFetchCycleCache(cocService);
       await markPollJobStarted({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
@@ -1196,12 +1198,14 @@ export default (client: Client, cocService: CoCService): void => {
                 await refreshAllTrackedWarMailPosts(client);
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
+                  cwlFetchCycleCache,
                 });
                 await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
                   cadence: "tracked",
                   cocService,
                   nowMs: scheduledAtMs,
                   producerPacingMs: warEventPollMs,
+                  cwlFetchCycleCache,
                   preloadedCurrentWarSnapshotsByClanTag:
                     currentWarSnapshotCycleContext.currentWarSnapshotByClanTag,
                 });
@@ -1213,6 +1217,11 @@ export default (client: Client, cocService: CoCService): void => {
                 }
                 pollError = err;
                 console.error(`[war-events] poll loop failed: ${formatError(err)}`);
+              } finally {
+                const cwlFetchStats = cwlFetchCycleCache.getStats();
+                console.info(
+                  `[cwl-fetch-cycle] event=war_event_poll_cycle group_hit_count=${cwlFetchStats.groupHitCount} group_miss_count=${cwlFetchStats.groupMissCount} war_hit_count=${cwlFetchStats.warHitCount} war_miss_count=${cwlFetchStats.warMissCount} cached_group_count=${cwlFetchStats.cachedGroupCount} cached_war_count=${cwlFetchStats.cachedWarCount}`,
+                );
               }
             });
           });
