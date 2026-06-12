@@ -980,10 +980,22 @@ describe("/fillers command", () => {
     const allInteraction = makeInteraction({ subcommand: "list" });
     await runFillers(allInteraction);
     const allEmbed = getEmbedJson(getLastEditPayload(allInteraction));
+    const allDescription = String(allEmbed.description);
     expect(String(allEmbed.title)).toBe("Filler Accounts (2)");
-    expect(String(allEmbed.description)).toContain("**<@222222222222222222>**");
-    expect(String(allEmbed.description)).toContain("**<@333333333333333333>**");
-    expect(String(allEmbed.description)).toContain("🧍‍♂️");
+    expect(allDescription).toContain("**[Alpha Clan](");
+    expect(allDescription).toContain("**[Beta Clan](");
+    expect(allDescription).toContain("**<@222222222222222222>**");
+    expect(allDescription).toContain("**<@333333333333333333>**");
+    expect(allDescription).toContain("🧍‍♂️");
+    expect(allDescription.indexOf("**[Alpha Clan](")).toBeLessThan(
+      allDescription.indexOf("**<@222222222222222222>**"),
+    );
+    expect(allDescription.indexOf("**[Beta Clan](")).toBeLessThan(
+      allDescription.indexOf("**<@333333333333333333>**"),
+    );
+    expect(allDescription.indexOf("**[Alpha Clan](")).toBeLessThan(
+      allDescription.indexOf("**[Beta Clan]("),
+    );
 
     const userInteraction = makeInteraction({
       subcommand: "list",
@@ -1012,6 +1024,76 @@ describe("/fillers command", () => {
 
     const allListEmbed = getEmbedJson(getLastEditPayload(allInteraction));
     expect(String(allListEmbed.description)).not.toContain("Clan membership uses saved account data");
+  });
+
+  it("groups the default filler list by clan first, then user, then account", async () => {
+    seedAccount({
+      playerTag: "#P0000",
+      discordUserId: "111111111111111111",
+      playerName: "Alpha One",
+      townHall: 18,
+      clanTag: "#PQL0289",
+      clanName: "Alpha Clan",
+      weight: 9200,
+    });
+    seedAccount({
+      playerTag: "#P0002",
+      discordUserId: "111111111111111111",
+      playerName: "Alpha Two",
+      townHall: 17,
+      clanTag: "#PQL0289",
+      clanName: "Alpha Clan",
+      weight: 9100,
+    });
+    seedAccount({
+      playerTag: "#P0008",
+      discordUserId: "222222222222222222",
+      playerName: "Beta One",
+      townHall: 16,
+      clanTag: "#QGRJ2222",
+      clanName: "Beta Clan",
+      weight: 8400,
+    });
+    const unlinkedTag = makeValidPlayerTag(42);
+    playerCurrentFixtures.set(
+      unlinkedTag,
+      makePlayerCurrentRow({
+        playerTag: unlinkedTag,
+        playerName: "Unlinked Filler",
+        townHall: 15,
+        clanTag: "#QGRJ2222",
+        clanName: "Beta Clan",
+        weight: 7300,
+      }),
+    );
+    fillerState.add("#P0000");
+    fillerState.add("#P0002");
+    fillerState.add("#P0008");
+    fillerState.add(unlinkedTag);
+
+    const interaction = makeInteraction({ subcommand: "list" });
+    await runFillers(interaction);
+    const embed = getEmbedJson(getLastEditPayload(interaction));
+    const description = String(embed.description);
+
+    expect(description).toContain("**[Alpha Clan](");
+    expect(description).toContain("**[Beta Clan](");
+    expect(description).toContain("**<@111111111111111111>**");
+    expect(description).toContain("**<@222222222222222222>**");
+    expect(description).toContain("**Unlinked**");
+    expect(description.indexOf("**[Alpha Clan](")).toBeLessThan(
+      description.indexOf("**<@111111111111111111>**"),
+    );
+    expect(description.indexOf("**[Beta Clan](")).toBeLessThan(
+      description.indexOf("**<@222222222222222222>**"),
+    );
+    expect(description.indexOf("**[Alpha Clan](")).toBeLessThan(
+      description.indexOf("**[Beta Clan]("),
+    );
+    expect(description).toContain("Alpha One");
+    expect(description).toContain("Alpha Two");
+    expect(description).toContain("Beta One");
+    expect(description).toContain("Unlinked Filler");
   });
 
   it("keeps the clan membership note visible across paginated clan lists", async () => {
