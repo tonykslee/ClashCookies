@@ -109,6 +109,10 @@ function normalizeDisplayName(value: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function isDiscordSnowflakeId(value: string | null | undefined): boolean {
+  return /^\d{17,20}$/.test(String(value ?? "").trim());
+}
+
 function buildRepWorkFieldName(input: {
   discordUserId: string;
   displayNameByUserId?: Map<string, string>;
@@ -400,7 +404,14 @@ export class RepWorkReportService {
         const discordUserId = String(row.userId ?? "").trim();
         const trackedMessageId = String(row.trackedMessageId ?? "").trim();
         const clanTag = String(row.clanTag ?? "").trim();
-        if (!discordUserId || !trackedMessageId || !clanTag) continue;
+        if (
+          !discordUserId ||
+          !isDiscordSnowflakeId(discordUserId) ||
+          !trackedMessageId ||
+          !clanTag
+        ) {
+          continue;
+        }
         activityUserIds.add(discordUserId);
         const entry =
           syncParticipationByUser.get(discordUserId) ??
