@@ -21,6 +21,7 @@ function normalizeSqlText(query: any): string {
 
 import {
   buildRepWorkReportEmbed,
+  buildRepWorkReportEmbeds,
   parseRepWorkDuration,
   repWorkReportService,
 } from "../src/services/RepWorkReportService";
@@ -376,6 +377,89 @@ describe("rep work report service", () => {
     expect(String(json.fields[0].value)).toContain("**<@111111111111111111>** <:badge:123>");
     expect(String(json.fields[0].value)).not.toContain("<:badge:123> <:badge:123>");
     expect(String(json.fields[1].value)).toContain("**<@222222222222222222>** <:badge:999>");
+  });
+
+  it("paginates users without splitting a user across pages", async () => {
+    const users = Array.from({ length: 26 }, (_, index) => {
+      const suffix = String(index + 1).padStart(3, "0");
+      return {
+        discordUserId: `111111111111111${suffix}`,
+        activityType: RepWorkActivityType.BASES_CHECKED,
+        totalCount: 1,
+        avgPrepTimeLeftSeconds: 3600,
+      };
+    });
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce(users)
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const embeds = buildRepWorkReportEmbeds(report!, {
+      renderedBadgesByUserId: new Map([
+        ["111111111111111001", ["<:badge:123>"]],
+      ]),
+    });
+
+    expect(embeds).toHaveLength(2);
+
+    const firstPage = embeds[0].toJSON() as any;
+    const secondPage = embeds[1].toJSON() as any;
+    expect(firstPage.fields).toHaveLength(25);
+    expect(secondPage.fields).toHaveLength(1);
+    expect(String(firstPage.fields[0].value)).toContain("**<@111111111111111001>** <:badge:123>");
+    expect(String(firstPage.fields[0].value)).toContain("Bases: 1 (avg 1h left)");
+    expect(String(firstPage.footer?.text)).toBe(
+      "Page 1/2 | Since 7d | Showing users 1-25 of 26",
+    );
+    expect(String(secondPage.fields[0].value)).toContain("**<@111111111111111026>**");
+    expect(String(secondPage.footer?.text)).toBe(
+      "Page 2/2 | Since 7d | Showing users 26-26 of 26",
+    );
+  });
+
+  it("truncates an oversized user field without splitting the user across pages", async () => {
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          discordUserId: "111111111111111111",
+          activityType: RepWorkActivityType.BASES_CHECKED,
+          totalCount: 1,
+          avgPrepTimeLeftSeconds: 3600,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prismaMock.trackedMessageClaim.findMany.mockResolvedValue([]);
+
+    const report = await repWorkReportService.buildReport({
+      guildId: "guild-1",
+      since: "7d",
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    report!.users[0].topCommands = Array.from({ length: 20 }, (_, index) => ({
+      label: `/command-${index + 1}-${"x".repeat(80)}`,
+      totalCount: 1000 - index,
+    }));
+
+    const embed = buildRepWorkReportEmbed(report!, {
+      renderedBadgesByUserId: new Map([["111111111111111111", ["<:badge:123>"]]]),
+    });
+    const json = embed.toJSON() as any;
+    const fieldValue = String(json.fields[0].value);
+
+    expect(json.fields).toHaveLength(1);
+    expect(fieldValue.length).toBeLessThanOrEqual(1024);
+    expect(fieldValue).toContain("**<@111111111111111111>** <:badge:123>");
+    expect(fieldValue).toContain("Bases: 1 (avg 1h left)");
+    expect(fieldValue).toContain("Syncs: 0 participated | 0 clan claims");
+    expect(fieldValue).toContain("Mails: Discord 0 (avg n/a) | In-game 0 (avg n/a)");
+    expect(fieldValue).toContain("Top cmds:");
   });
 
   it("uses first-row-per-sync SQL for prep timing averages", async () => {

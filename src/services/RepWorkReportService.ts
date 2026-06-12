@@ -4,10 +4,14 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { TRACKED_MESSAGE_FEATURE_TYPE } from "./TrackedMessageService";
 
-const DEFAULT_RESULT_LIMIT = 15;
-const MAX_RESULT_LIMIT = 15;
+const DEFAULT_RESULT_LIMIT = 100;
+const MAX_RESULT_LIMIT = 100;
 const MAX_DURATION_DAYS = 18 * 30;
 const MIN_DURATION_DAYS = 1;
+const REPWORK_EMBED_PAGE_CHAR_LIMIT = 5900;
+const REPWORK_EMBED_PAGE_CHAR_RESERVE = 140;
+const REPWORK_EMBED_FIELD_VALUE_LIMIT = 1024;
+const REPWORK_EMBED_MAX_FIELDS_PER_PAGE = 25;
 
 export type RepWorkDurationUnit = "d" | "w" | "mo";
 
@@ -49,6 +53,14 @@ export type RepWorkReport = {
 
 export type RepWorkReportEmbedOptions = {
   renderedBadgesByUserId?: Map<string, string[]>;
+};
+
+export type RepWorkReportEmbedPage = {
+  embed: EmbedBuilder;
+  pageIndex: number;
+  pageCount: number;
+  startUserIndex: number;
+  endUserIndex: number;
 };
 
 type RepWorkActivityAggregateRow = {
@@ -106,6 +118,14 @@ function formatCommandLabel(commandName: string, subcommand: string): string {
   return `/${normalizedCommand} ${normalizedSubcommand.replaceAll(":", " ")}`;
 }
 
+function truncateDiscordText(input: string, maxLength: number): string {
+  const normalized = String(input ?? "");
+  if (maxLength <= 0) return "";
+  if (normalized.length <= maxLength) return normalized;
+  if (maxLength <= 1) return normalized.slice(0, maxLength);
+  return `${normalized.slice(0, maxLength - 1)}...`;
+}
+
 function isDiscordSnowflakeId(value: string | null | undefined): boolean {
   return /^\d{17,20}$/.test(String(value ?? "").trim());
 }
@@ -123,6 +143,186 @@ function buildRepWorkUserIdentityLine(input: {
   return badges.length > 0
     ? `**${identity}** ${badges.join(" ")}`
     : `**${identity}**`;
+}
+
+function formatRenderedBadges(
+  renderedBadges: string[],
+  maxLength: number,
+): string {
+  const badges = [...new Set(renderedBadges.map((badge) => String(badge ?? "").trim()).filter(Boolean))];
+  if (badges.length === 0) return "";
+  let rendered = "";
+  for (const badge of badges) {
+    const next = rendered ? `${rendered} ${badge}` : badge;
+    if (next.length <= maxLength) {
+      rendered = next;
+      continue;
+    }
+    if (rendered.length === 0) {
+      return truncateDiscordText(badge, maxLength);
+    }
+    return truncateDiscordText(`${rendered}...`, maxLength);
+  }
+  return rendered;
+}
+
+function buildRepWorkUserFieldValue(input: {
+  row: RepWorkReportUserRow;
+  renderedBadgesByUserId?: Map<string, string[]>;
+}): string {
+  const row = input.row;
+  const renderedBadges = [
+    ...new Set(input.renderedBadgesByUserId?.get(row.discordUserId) ?? []),
+  ].filter((badge) => String(badge ?? "").trim());
+
+  const identity = isDiscordSnowflakeId(row.discordUserId)
+    ? `<@${row.discordUserId}>`
+    : row.discordUserId;
+  const basesLine = `Bases: ${row.basesChecked} (${formatPrepTimeLeft(row.basesAvgPrepTimeLeftSeconds)})`;
+  const syncsLine = `Syncs: ${row.syncsParticipated} participated | ${row.clanClaims} clan claims`;
+  const mailsLine = `Mails: Discord ${row.mailsChecked} (${formatPrepTimeLeft(row.mailsCheckedAvgPrepTimeLeftSeconds)}) | In-game ${row.mailsSent} (${formatPrepTimeLeft(row.mailsSentAvgPrepTimeLeftSeconds)})`;
+  const topCommandsText =
+    row.topCommands.length > 0
+      ? row.topCommands.map((command) => `\`${command.label}\` ${command.totalCount}`).join(", ")
+      : "none";
+
+  const badgeLengthOptions = [160, 120, 80, 0];
+  for (const badgeLimit of badgeLengthOptions) {
+    const badgeSuffix = formatRenderedBadges(renderedBadges, badgeLimit);
+    const firstLine =
+      badgeSuffix.length > 0 ? `**${identity}** ${badgeSuffix}` : `**${identity}**`;
+    const coreLines = [firstLine, basesLine, syncsLine, mailsLine];
+    const topCmdPrefix = "Top cmds: ";
+    const coreText = coreLines.join("\n");
+    const remainingForTopCmds = Math.max(
+      0,
+      REPWORK_EMBED_FIELD_VALUE_LIMIT - coreText.length - 1 - topCmdPrefix.length,
+    );
+    const truncatedTopCommands = truncateDiscordText(topCommandsText, remainingForTopCmds);
+    const candidate = `${coreText}\n${topCmdPrefix}${truncatedTopCommands}`;
+    if (candidate.length <= REPWORK_EMBED_FIELD_VALUE_LIMIT) {
+      return candidate;
+    }
+    const noTopCmdsCandidate = `${coreText}\nTop cmds: ...`;
+    if (noTopCmdsCandidate.length <= REPWORK_EMBED_FIELD_VALUE_LIMIT) {
+      return noTopCmdsCandidate;
+    }
+  }
+
+  const fallback = [
+    `**${identity}**`,
+    `Bases: ${row.basesChecked} (${formatPrepTimeLeft(row.basesAvgPrepTimeLeftSeconds)})`,
+    `Syncs: ${row.syncsParticipated} participated | ${row.clanClaims} clan claims`,
+    `Mails: Discord ${row.mailsChecked} (${formatPrepTimeLeft(row.mailsCheckedAvgPrepTimeLeftSeconds)}) | In-game ${row.mailsSent} (${formatPrepTimeLeft(row.mailsSentAvgPrepTimeLeftSeconds)})`,
+    `Top cmds: ${truncateDiscordText(topCommandsText, 32)}`,
+  ].join("\n");
+  return truncateDiscordText(fallback, REPWORK_EMBED_FIELD_VALUE_LIMIT);
+}
+
+function buildRepWorkPageFooter(input: {
+  report: RepWorkReport;
+  pageIndex: number;
+  pageCount: number;
+  startUserIndex: number;
+  endUserIndex: number;
+}): string {
+  const pageText = `Page ${input.pageIndex + 1}/${input.pageCount}`;
+  const rangeText = `Showing users ${input.startUserIndex + 1}-${input.endUserIndex + 1} of ${input.report.visibleUsers}`;
+  const totalText =
+    input.report.totalUsers > input.report.visibleUsers
+      ? `Showing top ${input.report.visibleUsers} of ${input.report.totalUsers} users`
+      : null;
+  return totalText
+    ? `${pageText} | Since ${input.report.duration.label} | ${rangeText} | ${totalText}`
+    : `${pageText} | Since ${input.report.duration.label} | ${rangeText}`;
+}
+
+function buildRepWorkReportPageEmbeds(
+  report: RepWorkReport,
+  options?: RepWorkReportEmbedOptions,
+): RepWorkReportEmbedPage[] {
+  const baseDescription = `Window: <t:${Math.trunc(report.start.getTime() / 1000)}:f> -> <t:${Math.trunc(report.end.getTime() / 1000)}:f>`;
+  if (report.users.length === 0) {
+    const embed = new EmbedBuilder()
+      .setTitle("Rep Work Stats")
+      .setDescription(baseDescription)
+      .setColor(0x57f287)
+      .setFooter({ text: `Since ${report.duration.label} | Showing 0 of 0 users` });
+    return [
+      {
+        embed,
+        pageIndex: 0,
+        pageCount: 1,
+        startUserIndex: 0,
+        endUserIndex: 0,
+      },
+    ];
+  }
+
+  const pages: Array<Array<{ name: string; value: string; inline: boolean }>> = [];
+  let currentFields: Array<{ name: string; value: string; inline: boolean }> = [];
+  let currentFieldChars = 0;
+  const pageBaseChars =
+    "Rep Work Stats".length +
+    baseDescription.length +
+    REPWORK_EMBED_PAGE_CHAR_RESERVE;
+
+  for (const row of report.users) {
+    const value = buildRepWorkUserFieldValue({
+      row,
+      renderedBadgesByUserId: options?.renderedBadgesByUserId,
+    });
+    const field = {
+      name: "\u200b",
+      value,
+      inline: false,
+    };
+    const fieldChars = field.name.length + field.value.length;
+    const wouldExceedFieldCount = currentFields.length >= REPWORK_EMBED_MAX_FIELDS_PER_PAGE;
+    const wouldExceedChars =
+      pageBaseChars + currentFieldChars + fieldChars > REPWORK_EMBED_PAGE_CHAR_LIMIT;
+
+    if (currentFields.length > 0 && (wouldExceedFieldCount || wouldExceedChars)) {
+      pages.push(currentFields);
+      currentFields = [];
+      currentFieldChars = 0;
+    }
+
+    currentFields.push(field);
+    currentFieldChars += fieldChars;
+  }
+
+  if (currentFields.length > 0) {
+    pages.push(currentFields);
+  }
+
+  return pages.map((fields, pageIndex) => {
+    const startUserIndex = pages
+      .slice(0, pageIndex)
+      .reduce((sum, pageFields) => sum + pageFields.length, 0);
+    const endUserIndex = startUserIndex + fields.length - 1;
+    const embed = new EmbedBuilder()
+      .setTitle("Rep Work Stats")
+      .setDescription(baseDescription)
+      .setColor(0x57f287)
+      .addFields(fields)
+      .setFooter({
+        text: buildRepWorkPageFooter({
+          report,
+          pageIndex,
+          pageCount: pages.length,
+          startUserIndex,
+          endUserIndex,
+        }),
+      });
+    return {
+      embed,
+      pageIndex,
+      pageCount: pages.length,
+      startUserIndex,
+      endUserIndex,
+    };
+  });
 }
 
 function buildWindow(now: Date, durationDays: number): { start: Date; end: Date } {
@@ -229,50 +429,14 @@ export function buildRepWorkReportEmbed(
   report: RepWorkReport,
   options?: RepWorkReportEmbedOptions,
 ): EmbedBuilder {
-  const embed = new EmbedBuilder()
-    .setTitle("Rep Work Stats")
-    .setDescription(
-      `Window: <t:${Math.trunc(report.start.getTime() / 1000)}:f> -> <t:${Math.trunc(report.end.getTime() / 1000)}:f>`,
-    )
-    .setColor(0x57f287);
+  return buildRepWorkReportPageEmbeds(report, options)[0]?.embed ?? new EmbedBuilder();
+}
 
-  if (report.users.length === 0) {
-    embed.addFields({
-      name: "No activity",
-      value: "No rep-work activity found in this window.",
-      inline: false,
-    });
-    embed.setFooter({ text: `Since ${report.duration.label} | Showing 0 of 0 users` });
-    return embed;
-  }
-
-  for (const row of report.users) {
-    const topCommands =
-      row.topCommands.length > 0
-        ? row.topCommands.map((command) => `\`${command.label}\` ${command.totalCount}`).join(", ")
-        : "none";
-    embed.addFields({
-      name: "\u200b",
-      value: [
-        buildRepWorkUserIdentityLine({
-          discordUserId: row.discordUserId,
-          renderedBadgesByUserId: options?.renderedBadgesByUserId,
-        }),
-        `Bases: ${row.basesChecked} (${formatPrepTimeLeft(row.basesAvgPrepTimeLeftSeconds)})`,
-        `Syncs: ${row.syncsParticipated} participated | ${row.clanClaims} clan claims`,
-        `Mails: Discord ${row.mailsChecked} (${formatPrepTimeLeft(row.mailsCheckedAvgPrepTimeLeftSeconds)}) | In-game ${row.mailsSent} (${formatPrepTimeLeft(row.mailsSentAvgPrepTimeLeftSeconds)})`,
-        `Top cmds: ${topCommands}`,
-      ].join("\n"),
-      inline: false,
-    });
-  }
-
-  const footer =
-    report.totalUsers > report.visibleUsers
-      ? `Since ${report.duration.label} | Showing top ${report.visibleUsers} of ${report.totalUsers} users`
-      : `Since ${report.duration.label} | Showing ${report.visibleUsers} users`;
-  embed.setFooter({ text: footer });
-  return embed;
+export function buildRepWorkReportEmbeds(
+  report: RepWorkReport,
+  options?: RepWorkReportEmbedOptions,
+): EmbedBuilder[] {
+  return buildRepWorkReportPageEmbeds(report, options).map((page) => page.embed);
 }
 
 export class RepWorkReportService {
