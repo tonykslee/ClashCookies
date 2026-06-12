@@ -15,9 +15,24 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const defermentServiceMock = vi.hoisted(() => ({
+  listOpenDeferredWeightRowsByClanAndPlayerTags: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
+
+vi.mock("../src/services/WeightInputDefermentService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/WeightInputDefermentService")>(
+    "../src/services/WeightInputDefermentService",
+  );
+  return {
+    ...actual,
+    listOpenDeferredWeightRowsByClanAndPlayerTags:
+      defermentServiceMock.listOpenDeferredWeightRowsByClanAndPlayerTags,
+  };
+});
 
 import {
   Roster,
@@ -257,9 +272,13 @@ function getEditedButtonPayload(interaction: any): any[] {
   return Array.isArray(payload?.components) ? payload.components : [];
 }
 
-function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
+function makeRosterRefreshPayload(refreshDisabled: boolean, title: string, description?: string) {
+  const embed = new EmbedBuilder().setTitle(title);
+  if (description) {
+    embed.setDescription(description);
+  }
   return {
-    embed: new EmbedBuilder().setTitle(title),
+    embed,
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -353,6 +372,7 @@ describe("/roster command", () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     prismaMock.cwlTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    defermentServiceMock.listOpenDeferredWeightRowsByClanAndPlayerTags.mockResolvedValue(new Map());
     vi.spyOn(rosterService, "createRoster");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
     vi.spyOn(rosterService, "refreshRosterSignupPayload");
@@ -4061,10 +4081,14 @@ describe("/roster command", () => {
 
   it("refreshes the posted roster from the service-owned current-clan refresh path", async () => {
     (rosterService.buildRosterSignupPayload as any).mockResolvedValueOnce(
-      makeRosterRefreshPayload(true, "CWL Alpha Signup (Loading)"),
+      makeRosterRefreshPayload(true, "CWL Alpha Signup (Loading)", "Loading roster weights..."),
     );
     (rosterService.refreshRosterSignupPayload as any).mockResolvedValueOnce(
-      makeRosterRefreshPayload(false, "CWL Alpha Signup (Refreshed)"),
+      makeRosterRefreshPayload(
+        false,
+        "CWL Alpha Signup (Refreshed)",
+        "Jess | 178000 WeightInputDeferment | refreshed roster weights.",
+      ),
     );
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const update = vi.fn().mockResolvedValue(undefined);
@@ -4121,6 +4145,8 @@ describe("/roster command", () => {
         components: [expect.any(ActionRowBuilder)],
       }),
     );
+    expect(String(finalPayload.embeds[0]?.toJSON?.().description ?? "")).toContain("178000");
+    expect(String(finalPayload.embeds[0]?.toJSON?.().description ?? "")).toContain("WeightInputDeferment");
     expect(finalPayload.components[0]?.toJSON?.().components?.[0]?.disabled).toBe(false);
     expect(update).not.toHaveBeenCalled();
   });

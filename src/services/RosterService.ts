@@ -4101,6 +4101,8 @@ async function loadRosterSelectionOptions(input: {
         ? await loadRosterSignupMinimumWeightLookup({
             playerTags: selectionAccounts.map((account) => account.playerTag),
             minimumWeight,
+            guildId: roster.guildId,
+            clanTag: roster.clanTag,
           })
         : new Map<string, RosterSignupWeightGateRecord>();
     const emptyStateMessage =
@@ -5400,6 +5402,8 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
     loadRosterSignupNameSourceMaps(signupTags),
     resolveRosterCurrentWeightRecords({
       playerTags: signupTags,
+      guildId: roster.guildId,
+      clanTag: roster.clanTag,
     }),
     roster.clanTag
       ? todoSnapshotService.listSnapshotsByClanTag({
@@ -9725,6 +9729,8 @@ export class RosterService {
         const weightLookup = await loadRosterSignupMinimumWeightLookup({
           playerTags: createdCandidates,
           minimumWeight,
+          guildId: roster.guildId,
+          clanTag: roster.clanTag,
         });
         for (const tag of createdCandidates) {
           const weightRecord = weightLookup.get(tag) ?? null;
