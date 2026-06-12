@@ -129,6 +129,87 @@ describe("RosterExportService", () => {
     ]);
   });
 
+  it("exports deferment-winning roster weights and preserves the source label", () => {
+    const rows = buildRosterExportRows({
+      roster: {
+        id: "roster-1",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        startsAt: new Date("2026-04-20T00:00:00.000Z"),
+        endsAt: null,
+        timezone: "America/Los_Angeles",
+        displayTimezone: "America/Los_Angeles",
+        maxMembers: null,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      } as any,
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PL22CGC0",
+          playerName: "Jess",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          townHall: 18,
+          trophies: 7000,
+          weight: 178000,
+          weightSource: "WeightInputDeferment",
+          weightMeasuredAt: new Date("2026-04-10T12:00:00.000Z"),
+          discordDisplayName: "Jess Display",
+          discordUsername: "jess-user",
+          clanTag: "#2QG2C08UP",
+          clanName: "Cyklons",
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any,
+      totalSignupCount: 1,
+    } as any);
+
+    expect(rows[1]).toEqual([
+      "Jess",
+      "#PL22CGC0",
+      "Yes",
+      "Cyklons",
+      "#2QG2C08UP",
+      "jess-user",
+      "Confirmed",
+      "178000",
+      "WeightInputDeferment",
+    ]);
+  });
+
   it("creates a public Google Sheet using the persisted roster view rows", async () => {
     vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
       roster: {

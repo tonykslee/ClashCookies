@@ -52,6 +52,7 @@ import {
   getDueDefermentStagesForTest,
   getDeferRoutingConfig,
   listOpenWeightInputDeferments,
+  listOpenDeferredWeightRowsByClanAndPlayerTags,
   normalizePlayerTag,
   parseDeferWeightInput,
   processWeightInputDefermentStages,
@@ -273,6 +274,72 @@ describe("WeightInputDefermentService list filtering", () => {
     expect(result.rows.map((row) => row.playerTag)).toEqual(["#PYLQ0289", "#QGRJ2222"]);
     expect(result.rows[0].scopeKey).toBe(buildDeferScopeKey("guild-1", "#AAA111"));
     expect(result.rows[1].scopeKey).toBe(buildDeferScopeKey("guild-1", null));
+  });
+
+  it("prefers matching clan-scoped deferments over guild-scoped rows and ignores unrelated scopes", async () => {
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        id: "row-guild",
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: buildDeferScopeKey("guild-1", null),
+        playerTag: "#PQL0289",
+        deferredWeight: 145000,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-clan",
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#PQL0289",
+        deferredWeight: 178000,
+        createdAt: new Date("2026-04-02T00:00:00.000Z"),
+        status: "open",
+      },
+      {
+        id: "row-unrelated",
+        guildId: "guild-1",
+        clanTag: "#BBB222",
+        scopeKey: buildDeferScopeKey("guild-1", "#BBB222"),
+        playerTag: "#QGRJ2222",
+        deferredWeight: 155000,
+        createdAt: new Date("2026-04-03T00:00:00.000Z"),
+        status: "open",
+      },
+    ]);
+
+    const result = await listOpenDeferredWeightRowsByClanAndPlayerTags({
+      guildId: "guild-1",
+      clanPlayerTags: [
+        {
+          clanTag: "#AAA111",
+          playerTags: ["#PQL0289", "#QGRJ2222"],
+        },
+      ],
+    });
+
+    expect(result.get("#AAA111")?.get("#PQL0289")).toEqual({
+      deferredWeight: 178000,
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    expect(result.get("#AAA111")?.get("#QGRJ2222")).toBeUndefined();
+  });
+
+  it("returns no deferment rows when the guild scope is missing", async () => {
+    const result = await listOpenDeferredWeightRowsByClanAndPlayerTags({
+      guildId: null,
+      clanPlayerTags: [
+        {
+          clanTag: "#AAA111",
+          playerTags: ["#PQL0289"],
+        },
+      ],
+    });
+
+    expect(result.size).toBe(0);
+    expect(prismaMock.weightInputDeferment.findMany).not.toHaveBeenCalled();
   });
 });
 

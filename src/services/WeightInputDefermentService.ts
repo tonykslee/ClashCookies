@@ -73,6 +73,11 @@ export type OpenWeightInputDefermentRow = {
   status: string;
 };
 
+export type OpenWeightInputDefermentMatchRow = {
+  deferredWeight: number;
+  createdAt: Date;
+};
+
 export type OpenWeightInputDefermentListResult = {
   scope: DefermentScopeContext;
   rows: OpenWeightInputDefermentRow[];
@@ -815,16 +820,16 @@ export async function clearDeferRoutingChannelOverride(
   await settingsService.delete(deferRoutingChannelKey(guildId));
 }
 
-/** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
-export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
+/** Purpose: resolve open deferred weight rows for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
+export async function listOpenDeferredWeightRowsByClanAndPlayerTags(input: {
   guildId: string | null | undefined;
   clanPlayerTags: Array<{
     clanTag: string | null;
     playerTags: string[];
   }>;
-}): Promise<Map<string, Map<string, number>>> {
+}): Promise<Map<string, Map<string, OpenWeightInputDefermentMatchRow>>> {
   const guildId = String(input.guildId ?? "").trim();
-  if (!guildId) return new Map<string, Map<string, number>>();
+  if (!guildId) return new Map<string, Map<string, OpenWeightInputDefermentMatchRow>>();
 
   const requested = input.clanPlayerTags
     .map((entry) => {
@@ -843,7 +848,7 @@ export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
     })
     .filter((entry) => entry.playerTags.length > 0);
 
-  if (requested.length === 0) return new Map<string, Map<string, number>>();
+  if (requested.length === 0) return new Map<string, Map<string, OpenWeightInputDefermentMatchRow>>();
 
   const guildScopeKey = buildDeferScopeKey(guildId, null);
   const allPlayerTags = [
@@ -883,21 +888,22 @@ export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
     rowsByPlayerTag.set(playerTag, existing);
   }
 
-  const result = new Map<string, Map<string, number>>();
+  const result = new Map<string, Map<string, OpenWeightInputDefermentMatchRow>>();
   for (const entry of requested) {
     const clanTagKey = entry.clanTag ?? "";
     const clanScopeKey = buildDeferScopeKey(guildId, entry.clanTag);
-    const deferredByPlayerTag = new Map<string, number>();
+    const deferredByPlayerTag = new Map<string, OpenWeightInputDefermentMatchRow>();
 
     for (const playerTag of entry.playerTags) {
       const candidates = rowsByPlayerTag.get(playerTag) ?? [];
-      let best:
-        | {
-            deferredWeight: number;
-            scopePriority: number;
-            createdAtMs: number;
-          }
-        | null = null;
+        let best:
+          | {
+              deferredWeight: number;
+              createdAt: Date;
+              scopePriority: number;
+              createdAtMs: number;
+            }
+          | null = null;
 
       for (const row of candidates) {
         if (row.scopeKey !== clanScopeKey && row.scopeKey !== guildScopeKey) {
@@ -919,18 +925,41 @@ export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
           (scopePriority === best.scopePriority &&
             createdAtMs > best.createdAtMs)
         ) {
-          best = { deferredWeight, scopePriority, createdAtMs };
+          best = { deferredWeight, createdAt: row.createdAt, scopePriority, createdAtMs };
         }
       }
 
       if (best) {
-        deferredByPlayerTag.set(playerTag, best.deferredWeight);
+        deferredByPlayerTag.set(playerTag, {
+          deferredWeight: best.deferredWeight,
+          createdAt: best.createdAt,
+        });
       }
     }
 
     result.set(clanTagKey, deferredByPlayerTag);
   }
 
+  return result;
+}
+
+/** Purpose: resolve open deferred weights for many clan/player sets in one bulk query with the same clan-over-guild precedence rules. */
+export async function listOpenDeferredWeightsByClanAndPlayerTags(input: {
+  guildId: string | null | undefined;
+  clanPlayerTags: Array<{
+    clanTag: string | null;
+    playerTags: string[];
+  }>;
+}): Promise<Map<string, Map<string, number>>> {
+  const rowsByClanAndPlayerTag = await listOpenDeferredWeightRowsByClanAndPlayerTags(input);
+  const result = new Map<string, Map<string, number>>();
+  for (const [clanTagKey, rowsByPlayerTag] of rowsByClanAndPlayerTag) {
+    const weightsByPlayerTag = new Map<string, number>();
+    for (const [playerTag, row] of rowsByPlayerTag) {
+      weightsByPlayerTag.set(playerTag, row.deferredWeight);
+    }
+    result.set(clanTagKey, weightsByPlayerTag);
+  }
   return result;
 }
 
