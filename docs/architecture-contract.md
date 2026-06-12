@@ -110,6 +110,7 @@ Each domain concept must have exactly one authoritative owner.
 | Concept | Owner |
 | --- | --- |
 | Tracked FWA clans | TrackedClan |
+| Tracked FWA clan rep accounts | TrackedClanRep |
 | Seasonal CWL tracked clans | CwlTrackedClan |
 | Live battle-day CWL round identity and timing | CurrentCwlRound |
 | Live battle-day CWL round member summaries | CwlRoundMemberCurrent |

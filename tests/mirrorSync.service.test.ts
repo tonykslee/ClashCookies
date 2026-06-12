@@ -16,6 +16,7 @@ type ColumnRow = {
 function makeDefaultTableStore(): MirrorTableDataStore {
   return {
     TrackedClan: [{ id: 1, tag: "#AAA111", createdAt: new Date("2026-04-01T00:00:00.000Z") }],
+    TrackedClanRep: [{ clanTag: "#AAA111", playerTag: "#P1" }],
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
   CurrentCwlRound: [],
@@ -97,6 +98,9 @@ function buildSourceClient(
     trackedClan: {
       findMany: vi.fn(async () => cloneRows(store.TrackedClan)),
     },
+    trackedClanRep: {
+      findMany: vi.fn(async () => cloneRows(store.TrackedClanRep)),
+    },
     currentWar: {
       findMany: vi.fn(async () => cloneRows(store.CurrentWar)),
     },
@@ -171,6 +175,7 @@ function buildTargetClient(
 
   const tx = {
     trackedClan: { deleteMany: deleteMany("TrackedClan"), createMany: createMany("TrackedClan") },
+    trackedClanRep: { deleteMany: deleteMany("TrackedClanRep"), createMany: createMany("TrackedClanRep") },
     currentWar: { deleteMany: deleteMany("CurrentWar"), createMany: createMany("CurrentWar") },
     warAttacks: { deleteMany: deleteMany("WarAttacks"), createMany: createMany("WarAttacks") },
     currentCwlRound: {
@@ -267,6 +272,7 @@ describe("MirrorSyncService", () => {
     expect(result.trigger).toBe("manual");
     expect(result.tableSummaries).toHaveLength(MIRRORED_RUNTIME_TABLES.length);
     expect(targetStore.TrackedClan).toEqual(sourceStore.TrackedClan);
+    expect(targetStore.TrackedClanRep).toEqual(sourceStore.TrackedClanRep);
     expect(targetStore.CurrentWar).toEqual(sourceStore.CurrentWar);
     expect(targetStore.WarAttacks).toEqual(sourceStore.WarAttacks);
     expect(targetStore.CurrentCwlRound).toEqual(sourceStore.CurrentCwlRound);

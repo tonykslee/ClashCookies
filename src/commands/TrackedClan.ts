@@ -51,6 +51,11 @@ import {
   type CwlTrackedClanEmojiTokens,
   type CwlTrackedClanDetailedDisplayRow,
 } from "../services/TrackedClanListService";
+import {
+  listTrackedClanRepTagsForClanTags,
+  parseTrackedClanRepTagsInput,
+  replaceTrackedClanRepsForClan,
+} from "../services/TrackedClanRepService";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
@@ -97,6 +102,7 @@ function buildTrackedClanBlock(clan: {
   leadRoleId: string | null;
   clanBadge: string | null;
   shortName: string | null;
+  repPlayerTags?: string[];
 }): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
@@ -108,6 +114,8 @@ function buildTrackedClanBlock(clan: {
   const leadRole = clan.leadRoleId ? `<@&${clan.leadRoleId}>` : "not set";
   const clanBadge = clan.clanBadge ?? "not set";
   const shortName = clan.shortName ?? "not set";
+  const repPlayerTags = clan.repPlayerTags ?? [];
+  const reps = repPlayerTags.length > 0 ? repPlayerTags.join(", ") : "not set";
   return [
     label,
     `shortName: ${shortName}`,
@@ -118,6 +126,7 @@ function buildTrackedClanBlock(clan: {
     `clanRole: ${clanRole}`,
     `leadRole: ${leadRole}`,
     `clanBadge: ${clanBadge}`,
+    `reps: ${reps}`,
   ].join("\n");
 }
 
@@ -575,6 +584,13 @@ export const TrackedClan: Command = {
         {
           name: "short-name",
           description: "Short name/abbreviation for this tracked clan",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "reps",
+          description:
+            "Rep player tags for this tracked FWA clan (array, comma, or space separated; use reps:[] to clear)",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -1755,8 +1771,10 @@ export const TrackedClan: Command = {
         const leadRole = interaction.options.getRole("lead-role", false);
         const clanBadgeInput = interaction.options.getString("clan-badge", false);
         const shortNameInput = interaction.options.getString("short-name", false);
+        const repsInput = interaction.options.getString("reps", false);
         let clanBadge: string | null = null;
         const shortName = shortNameInput ? normalizeClanShortNameInput(shortNameInput) : null;
+        const parsedReps = repsInput === null ? null : parseTrackedClanRepTagsInput(repsInput);
         if (mailChannel && (!("isTextBased" in mailChannel) || !(mailChannel as any).isTextBased())) {
           await safeReply(interaction, {
             ephemeral: true,
@@ -1792,6 +1810,13 @@ export const TrackedClan: Command = {
           });
           return;
         }
+        if (parsedReps && parsedReps.invalidTags.length > 0) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `Invalid rep player tags: ${formatTagListForSummary(parsedReps.invalidTags)}.`,
+          });
+          return;
+        }
         if (clanBadgeInput) {
           try {
             clanBadge = await normalizeClanBadgeInput(interaction, clanBadgeInput);
@@ -1813,34 +1838,45 @@ export const TrackedClan: Command = {
         const existing = await prisma.trackedClan.findUnique({
           where: { tag },
         });
+        const createLoseStyle = loseStyle ?? "TRIPLE_TOP_30";
         const clan = await cocService.getClan(tag);
         const activityService = new ActivityService(cocService);
-        const createLoseStyle = loseStyle ?? "TRIPLE_TOP_30";
-        const saved = await prisma.trackedClan.upsert({
-          where: { tag },
-          create: {
-            tag,
-            name: clan.name ?? null,
-            loseStyle: createLoseStyle,
-            mailChannelId: mailChannel?.id ?? null,
-            logChannelId: logChannel?.id ?? null,
-            leaderChannelId: leaderChannel?.id ?? null,
-            clanRoleId: clanRole?.id ?? null,
-            leadRoleId: leadRole?.id ?? null,
-            clanBadge,
-            shortName,
-          },
-          update: {
-            name: clan.name ?? null,
-            ...(loseStyle ? { loseStyle } : {}),
-            ...(mailChannel ? { mailChannelId: mailChannel.id } : {}),
-            ...(logChannel ? { logChannelId: logChannel.id } : {}),
-            ...(leaderChannel ? { leaderChannelId: leaderChannel.id } : {}),
-            ...(clanRole ? { clanRoleId: clanRole.id } : {}),
-            ...(leadRole ? { leadRoleId: leadRole.id } : {}),
-            ...(clanBadge ? { clanBadge } : {}),
-            ...(shortName ? { shortName } : {}),
-          },
+        const saved = await prisma.$transaction(async (tx) => {
+          const row = await tx.trackedClan.upsert({
+            where: { tag },
+            create: {
+              tag,
+              name: clan.name ?? null,
+              loseStyle: createLoseStyle,
+              mailChannelId: mailChannel?.id ?? null,
+              logChannelId: logChannel?.id ?? null,
+              leaderChannelId: leaderChannel?.id ?? null,
+              clanRoleId: clanRole?.id ?? null,
+              leadRoleId: leadRole?.id ?? null,
+              clanBadge,
+              shortName,
+            },
+            update: {
+              name: clan.name ?? null,
+              ...(loseStyle ? { loseStyle } : {}),
+              ...(mailChannel ? { mailChannelId: mailChannel.id } : {}),
+              ...(logChannel ? { logChannelId: logChannel.id } : {}),
+              ...(leaderChannel ? { leaderChannelId: leaderChannel.id } : {}),
+              ...(clanRole ? { clanRoleId: clanRole.id } : {}),
+              ...(leadRole ? { leadRoleId: leadRole.id } : {}),
+              ...(clanBadge ? { clanBadge } : {}),
+              ...(shortName ? { shortName } : {}),
+            },
+          });
+
+          if (repsInput !== null) {
+            await replaceTrackedClanRepsForClan(tx as any, {
+              clanTag: tag,
+              playerTags: parsedReps?.validTags ?? [],
+            });
+          }
+
+          return row;
         });
 
         if (!existing && interaction.guildId) {
@@ -1939,6 +1975,10 @@ export const TrackedClan: Command = {
           });
         }
 
+        const repPlayerTags =
+          repsInput === null
+            ? (await listTrackedClanRepTagsForClanTags([tag])).get(tag) ?? []
+            : parsedReps?.validTags ?? [];
         const summary = [
           `lose-style: ${saved.loseStyle}`,
           `mailChannel: ${saved.mailChannelId ? `<#${saved.mailChannelId}>` : "not set"}`,
@@ -1947,7 +1987,11 @@ export const TrackedClan: Command = {
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
           `leadRole: ${saved.leadRoleId ? `<@&${saved.leadRoleId}>` : "not set"}`,
           `clanBadge: ${saved.clanBadge ?? "not set"}`,
+          `reps: ${repPlayerTags.length > 0 ? repPlayerTags.join(", ") : "not set"}`,
           `shortName: ${saved.shortName ?? "not set"}`,
+          ...(repsInput !== null && parsedReps?.duplicateTagsInRequest.length
+            ? [`reps duplicates ignored: ${parsedReps.duplicateTagsInRequest.join(", ")}`]
+            : []),
         ].join(" | ");
 
         await safeReply(interaction, {
