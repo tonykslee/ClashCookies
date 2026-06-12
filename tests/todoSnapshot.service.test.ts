@@ -979,6 +979,90 @@ describe("TodoSnapshotService", () => {
     expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(2);
   });
 
+  it("reuses observed live player current state and skips duplicate live fetches", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockImplementation(async (tag: string) => ({
+        tag,
+        clan: { tag: tag === "#QGRJ2222" ? "#MISS" : "#HIT" },
+        townHallLevel: tag === "#QGRJ2222" ? 14 : 16,
+      })),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService: cocService as any,
+      observedLivePlayerCurrent: [
+        {
+          playerTag: "#PYLQ0289",
+          clanTag: "#HIT",
+          townHall: 16,
+        },
+      ],
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(1);
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#QGRJ2222", {
+      suppressTelemetry: true,
+    });
+  });
+
+  it("preserves existing live fetch behavior when no observed map is provided", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockImplementation(async (tag: string) => ({
+        tag,
+        clan: { tag: "#MISS" },
+        townHallLevel: 14,
+      })),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(cocService.getPlayerRaw).toHaveBeenCalledTimes(2);
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289", {
+      suppressTelemetry: true,
+    });
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#QGRJ2222", {
+      suppressTelemetry: true,
+    });
+  });
+
   it("excludes users who have never used /todo from background todo refreshes", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
