@@ -45,6 +45,10 @@ export type RepWorkReport = {
   users: RepWorkReportUserRow[];
 };
 
+export type RepWorkReportEmbedOptions = {
+  displayNameByUserId?: Map<string, string>;
+};
+
 type RepWorkActivityAggregateRow = {
   discordUserId: string;
   activityType: RepWorkActivityType;
@@ -98,6 +102,28 @@ function formatCommandLabel(commandName: string, subcommand: string): string {
   const normalizedSubcommand = String(subcommand ?? "").trim();
   if (!normalizedSubcommand) return `/${normalizedCommand}`;
   return `/${normalizedCommand} ${normalizedSubcommand.replaceAll(":", " ")}`;
+}
+
+function normalizeDisplayName(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildRepWorkFieldName(input: {
+  discordUserId: string;
+  displayNameByUserId?: Map<string, string>;
+  duplicateDisplayNames?: Set<string>;
+}): string {
+  const displayName = normalizeDisplayName(
+    input.displayNameByUserId?.get(input.discordUserId) ?? null,
+  );
+  if (!displayName) return input.discordUserId;
+  if (!input.duplicateDisplayNames?.has(displayName)) {
+    return displayName;
+  }
+
+  const suffix = input.discordUserId.slice(-4) || input.discordUserId;
+  return `${displayName} (\`${suffix}\`)`;
 }
 
 function buildWindow(now: Date, durationDays: number): { start: Date; end: Date } {
@@ -194,7 +220,10 @@ export function parseRepWorkDuration(input: string | null | undefined): ParsedRe
   };
 }
 
-export function buildRepWorkReportEmbed(report: RepWorkReport): EmbedBuilder {
+export function buildRepWorkReportEmbed(
+  report: RepWorkReport,
+  options?: RepWorkReportEmbedOptions,
+): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle("Rep Work Stats")
     .setDescription(
@@ -212,13 +241,27 @@ export function buildRepWorkReportEmbed(report: RepWorkReport): EmbedBuilder {
     return embed;
   }
 
+  const displayNameCounts = new Map<string, number>();
+  for (const row of report.users) {
+    const displayName = normalizeDisplayName(options?.displayNameByUserId?.get(row.discordUserId) ?? null);
+    if (!displayName) continue;
+    displayNameCounts.set(displayName, (displayNameCounts.get(displayName) ?? 0) + 1);
+  }
+  const duplicateDisplayNames = new Set(
+    [...displayNameCounts.entries()].filter(([, count]) => count > 1).map(([name]) => name),
+  );
+
   for (const row of report.users) {
     const topCommands =
       row.topCommands.length > 0
         ? row.topCommands.map((command) => `\`${command.label}\` ${command.totalCount}`).join(", ")
         : "none";
     embed.addFields({
-      name: `<@${row.discordUserId}>`,
+      name: buildRepWorkFieldName({
+        discordUserId: row.discordUserId,
+        displayNameByUserId: options?.displayNameByUserId,
+        duplicateDisplayNames,
+      }),
       value: [
         `Bases: ${row.basesChecked} (${formatPrepTimeLeft(row.basesAvgPrepTimeLeftSeconds)})`,
         `Syncs: ${row.syncsParticipated} participated | ${row.clanClaims} clan claims`,
