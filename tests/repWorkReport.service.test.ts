@@ -24,6 +24,7 @@ import {
   buildRepWorkReportEmbeds,
   parseRepWorkDuration,
   repWorkReportService,
+  truncateDiscordText,
 } from "../src/services/RepWorkReportService";
 
 describe("rep work report service", () => {
@@ -377,6 +378,19 @@ describe("rep work report service", () => {
     expect(String(json.fields[0].value)).toContain("**<@111111111111111111>** <:badge:123>");
     expect(String(json.fields[0].value)).not.toContain("<:badge:123> <:badge:123>");
     expect(String(json.fields[1].value)).toContain("**<@222222222222222222>** <:badge:999>");
+  });
+
+  it("keeps truncateDiscordText within the requested maximum length", () => {
+    expect(truncateDiscordText("abcdef", 0)).toBe("");
+    expect(truncateDiscordText("abcdef", 1)).toBe("a");
+    expect(truncateDiscordText("abcdef", 2)).toBe("ab");
+    expect(truncateDiscordText("abcdef", 3)).toBe("...");
+    expect(truncateDiscordText("abcdef", 4)).toBe("a...");
+    expect(truncateDiscordText("abcdef", 5)).toBe("ab...");
+    expect(truncateDiscordText("abcdef", 6)).toBe("abcdef");
+    expect(truncateDiscordText("abcdef", 7)).toBe("abcdef");
+    expect(truncateDiscordText("abcdefghijk", 5).length).toBeLessThanOrEqual(5);
+    expect(truncateDiscordText("abcdefghijk", 2).length).toBeLessThanOrEqual(2);
   });
 
   it("paginates users without splitting a user across pages", async () => {

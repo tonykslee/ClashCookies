@@ -118,12 +118,12 @@ function formatCommandLabel(commandName: string, subcommand: string): string {
   return `/${normalizedCommand} ${normalizedSubcommand.replaceAll(":", " ")}`;
 }
 
-function truncateDiscordText(input: string, maxLength: number): string {
+export function truncateDiscordText(input: string, maxLength: number): string {
   const normalized = String(input ?? "");
   if (maxLength <= 0) return "";
   if (normalized.length <= maxLength) return normalized;
-  if (maxLength <= 1) return normalized.slice(0, maxLength);
-  return `${normalized.slice(0, maxLength - 1)}...`;
+  if (maxLength < 3) return normalized.slice(0, maxLength);
+  return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
 function isDiscordSnowflakeId(value: string | null | undefined): boolean {
