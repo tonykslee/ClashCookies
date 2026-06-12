@@ -552,7 +552,7 @@ function buildLinesForUserSections(
   return lines;
 }
 
-function buildLinesForClanScopedView(
+function buildLinesForUserSectionsWithinClan(
   rows: FillerAccountViewRow[],
   townHallEmojiByLevel: Map<number, string>,
 ): string[] {
@@ -586,6 +586,29 @@ function buildLinesForClanScopedView(
     })) {
       lines.push(renderFillerRow(row, townHallEmojiByLevel));
     }
+    lines.push("");
+  }
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function buildLinesForClanScopedView(
+  rows: FillerAccountViewRow[],
+  townHallEmojiByLevel: Map<number, string>,
+): string[] {
+  return buildLinesForUserSectionsWithinClan(rows, townHallEmojiByLevel);
+}
+
+function buildLinesForAllClanSections(
+  rows: FillerAccountViewRow[],
+  townHallEmojiByLevel: Map<number, string>,
+): string[] {
+  const lines: string[] = [];
+  for (const group of groupRowsByClan(rows)) {
+    lines.push(buildClanHeadingMarkdown(group));
+    lines.push(...buildLinesForUserSectionsWithinClan(group.entries, townHallEmojiByLevel));
     lines.push("");
   }
   if (lines.at(-1) === "") {
@@ -917,9 +940,11 @@ async function renderListReply(input: {
 }): Promise<void> {
   const townHallEmojiByLevel = await resolveTownHallEmojiMap(input.interaction.client);
   const pages = paginateDescriptionLines(
-    input.scope === "clan"
-      ? buildLinesForClanScopedView(input.rows, townHallEmojiByLevel)
-      : buildLinesForUserSections(input.rows, townHallEmojiByLevel),
+    input.scope === "all"
+      ? buildLinesForAllClanSections(input.rows, townHallEmojiByLevel)
+      : input.scope === "clan"
+        ? buildLinesForClanScopedView(input.rows, townHallEmojiByLevel)
+        : buildLinesForUserSections(input.rows, townHallEmojiByLevel),
   );
   const totalPages = pages.length;
   let page = 0;
