@@ -226,6 +226,8 @@ describe("command coverage", () => {
     expect(clanHelpText.toLowerCase()).toContain("default `minimal`");
     expect(clanHelpText.toLowerCase()).toContain("if `type` is omitted, `display` is ignored");
     expect(clanHelpText).toContain("member-count `Refresh` button");
+    expect(clanHelpText).toContain("short league abbreviation");
+    expect(clanHelpText).toContain("keep `UNK` for unranked/unknown");
     expect(clanHelpText).toContain("Detailed CWL rows sort by CWL league descending, then active roster title ascending.");
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });

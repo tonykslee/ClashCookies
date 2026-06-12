@@ -638,13 +638,13 @@ describe("/clan command behavior", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(description).toContain("**CWL**");
     expect(description).toContain(
-      "<:CWL_Champion_1:1511515166313939116> [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | ⚔️ | 49 👥",
+      "<:CWL_Champion_1:1511515166313939116> CH1 | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | ⚔️ | 49 👥",
     );
     expect(description).toContain(
-      "<:CWL_Master_1:1511515179236593674> [CWL Charlie](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=G2R9RQLJQ>) `#G2R9RQLJQ` | ⚔️ | 51 👥",
+      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Charlie](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=G2R9RQLJQ>) `#G2R9RQLJQ` | ⚔️ | 51 👥",
     );
     expect(description).toContain(
-      "<:CWL_Master_1:1511515179236593674> [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
+      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
     );
     expect(description.indexOf("CWL Alpha")).toBeLessThan(description.indexOf("CWL Charlie"));
     expect(description.indexOf("CWL Charlie")).toBeLessThan(description.indexOf("CWL Beta"));
@@ -655,6 +655,38 @@ describe("/clan command behavior", () => {
     );
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("renders CWL minimal rows with a safe abbreviation fallback for unknown leagues", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: null,
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValue([
+      { cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 37 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 12 } },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain(
+      "- UNK | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` |",
+    );
+    expect(description).toContain("| 12 👥");
+    expect(description).not.toContain("leadRole:");
   });
 
   it("renders detailed CWL rows with league labels, spin status, counts, roster links, and sorted order", async () => {

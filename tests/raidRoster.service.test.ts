@@ -447,13 +447,14 @@ describe("RaidRosterService", () => {
     expect(buildRaidRosterStatusLine(rows[0]!)).not.toContain("avg");
   });
 
-  it("falls back to FwaClanMemberCurrent townHall when snapshot and current data are missing", async () => {
+  it("falls back to FwaClanMemberCurrent townHall and playerName when snapshot and current data are missing", async () => {
     prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
       { playerTag: "#2QG2C08UJ" },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
       {
         playerTag: "#2QG2C08UJ",
+        playerName: "FWA Juliet",
         townHall: 16,
         sourceSyncedAt: new Date("2026-05-30T00:00:00.000Z"),
       },
@@ -464,14 +465,23 @@ describe("RaidRosterService", () => {
     expect(rows[0]).toMatchObject({
       playerTag: "#2QG2C08UJ",
       townHall: 16,
-      playerName: "#2QG2C08UJ",
+      playerName: "FWA Juliet",
     });
     expect(buildRaidRosterStatusLine(rows[0]!, new Map([[16, "TH16"]]))).toContain("TH16");
+    expect(buildRaidRosterStatusLine(rows[0]!)).toContain("FWA Juliet");
   });
 
   it("falls back to FwaPlayerCatalog townHall and latestName when newer sources are missing", async () => {
     prismaMock.raidRosterMember.findMany.mockResolvedValueOnce([
       { playerTag: "#2QG2C08UY" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#2QG2C08UY",
+        playerName: null,
+        townHall: null,
+        sourceSyncedAt: new Date("2026-05-30T00:00:00.000Z"),
+      },
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([
       {
