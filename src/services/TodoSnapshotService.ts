@@ -81,6 +81,20 @@ type TodoActivatedRefreshStats = {
   nonTrackedPlayerCount: number;
 };
 
+type ObservedLivePlayerCurrent = {
+  playerTag: string;
+  clanTag: string | null;
+  townHall: number | null;
+};
+
+type ObservedLivePlayerCurrentByTag = Map<
+  string,
+  {
+    clanTag: string;
+    townHall: number | null;
+  }
+>;
+
 type TodoWindow = {
   active: boolean;
   startMs: number;
@@ -298,12 +312,14 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     producerPacingMs?: number | null;
+    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
   }): Promise<TodoSnapshotRefreshResult> {
     return this.refreshActivatedTodoLinkedPlayerSnapshots({
       cadence: "tracked",
       cocService: input.cocService,
       nowMs: input.nowMs,
       producerPacingMs: input.producerPacingMs,
+      observedLivePlayerCurrent: input.observedLivePlayerCurrent,
     });
   }
 
@@ -313,6 +329,7 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     producerPacingMs?: number | null;
+    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
   }): Promise<TodoSnapshotRefreshResult & TodoActivatedRefreshStats> {
     const nowMs = input.nowMs;
     const allLinkedUserRows = await prisma.playerLink.findMany({
@@ -517,6 +534,9 @@ export class TodoSnapshotService {
       input.cadence === "tracked"
         ? "war_event_poll_cycle"
         : "activity_observe_cycle";
+    const observedLivePlayerCurrentByTag = buildObservedLivePlayerCurrentByTag(
+      input.observedLivePlayerCurrent ?? [],
+    );
     const result =
       selectedPlayerTags.length > 0
         ? await this.refreshSnapshotsForPlayerTagsInternal({
@@ -524,6 +544,7 @@ export class TodoSnapshotService {
             cocService: input.cocService,
             nowMs: input.nowMs,
             includeNonTrackedCwlRefresh: input.cadence === "observe",
+            observedLivePlayerCurrentByTag,
             producer: {
               source: producerSource,
               pacingMs:
@@ -568,6 +589,7 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
+    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
     if (normalizedTags.length <= 0) {
@@ -586,6 +608,9 @@ export class TodoSnapshotService {
     const task = this.refreshSnapshotsForPlayerTagsInternal({
       ...input,
       playerTags: normalizedTags,
+      observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
+        input.observedLivePlayerCurrent ?? [],
+      ),
     }).finally(() => {
       this.refreshByBatchKey.delete(batchKey);
     });
@@ -599,6 +624,7 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     producerPacingMs?: number | null;
+    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
   }): Promise<TodoSnapshotRefreshResult> {
     const links = await prisma.playerLink.findMany({
       where: { discordUserId: { not: null } },
@@ -615,6 +641,9 @@ export class TodoSnapshotService {
       playerTags,
       cocService: input.cocService,
       nowMs: input.nowMs,
+      observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
+        input.observedLivePlayerCurrent ?? [],
+      ),
       producer: {
         source: "war_event_poll_cycle",
         pacingMs:
@@ -633,6 +662,7 @@ export class TodoSnapshotService {
     cocService?: CoCService;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
+    observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag;
     producer?: WarEventLinkedPlayerRefreshProducer | null;
   }): Promise<TodoSnapshotRefreshResult> {
     const normalizedTags = normalizePlayerTags(input.playerTags);
@@ -651,6 +681,7 @@ export class TodoSnapshotService {
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
+      observedLivePlayerCurrentByTag: input.observedLivePlayerCurrentByTag ?? new Map(),
       producer: input.producer ?? null,
     });
 
@@ -2284,13 +2315,15 @@ function scoreLiveCwlRoundState(state: string): number {
 async function loadLiveClanTagsByPlayerTag(input: {
   cocService?: CoCService;
   playerTags: string[];
+  observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag;
   producer?: WarEventLinkedPlayerRefreshProducer | null;
 }): Promise<Map<string, { clanTag: string; townHall: number | null }>> {
   if (!input.cocService || typeof input.cocService.getPlayerRaw !== "function") {
-    return new Map();
+    return buildObservedLivePlayerCurrentMap(input.playerTags, input.observedLivePlayerCurrentByTag);
   }
 
   const normalizedTags = normalizePlayerTags(input.playerTags);
+  const observedLivePlayerCurrentByTag = input.observedLivePlayerCurrentByTag ?? new Map();
   const plan = resolveWarEventLinkedPlayerRefreshPlanForTest({
     candidateCount: input.playerTags.length,
     dedupedCount: normalizedTags.length,
@@ -2304,13 +2337,25 @@ async function loadLiveClanTagsByPlayerTag(input: {
   }
 
   const entries: Array<readonly [string, { clanTag: string; townHall: number | null }]> = [];
+  const observedHitTags = new Set<string>();
   let enqueuedCount = 0;
   let deferredCount = 0;
-  for (let chunkIndex = 0; chunkIndex < chunkedTags.length; chunkIndex += 1) {
+  for (const playerTag of normalizedTags) {
+    const observed = observedLivePlayerCurrentByTag.get(playerTag);
+    if (!observed) continue;
+    observedHitTags.add(playerTag);
+    entries.push([playerTag, { clanTag: observed.clanTag, townHall: observed.townHall }]);
+  }
+
+  const fetchTags = chunkedTags
+    .map((chunk) => chunk.filter((playerTag) => !observedLivePlayerCurrentByTag.has(playerTag)))
+    .filter((chunk) => chunk.length > 0);
+
+  for (let chunkIndex = 0; chunkIndex < fetchTags.length; chunkIndex += 1) {
     if (input.producer) {
       const queueStatus = cocRequestQueueService.getStatus();
       if (queueStatus.backgroundQueueDepth >= input.producer.backlogThreshold) {
-        deferredCount = chunkedTags
+        deferredCount = fetchTags
           .slice(chunkIndex)
           .reduce((sum, chunk) => sum + chunk.length, 0);
         console.warn(
@@ -2320,36 +2365,36 @@ async function loadLiveClanTagsByPlayerTag(input: {
       }
       if (chunkIndex > 0 && plan.chunkDelayMs > 0) {
         console.info(
-          `[todo-snapshot] event=war_event_player_refresh_stagger source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} delay_ms=${plan.chunkDelayMs}`,
+          `[todo-snapshot] event=war_event_player_refresh_stagger source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${fetchTags.length} delay_ms=${plan.chunkDelayMs}`,
         );
         await sleepMs(plan.chunkDelayMs);
       }
     }
 
-    const chunk = chunkedTags[chunkIndex];
+    const chunk = fetchTags[chunkIndex];
     if (input.producer) {
       const queueStatus = cocRequestQueueService.getStatus();
       console.info(
-        `[todo-snapshot] event=war_event_player_refresh_chunk source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${chunkedTags.length} chunk_size=${chunk.length} background_depth=${queueStatus.backgroundQueueDepth}`,
+        `[todo-snapshot] event=war_event_player_refresh_chunk source=${input.producer.source} chunk_index=${chunkIndex + 1} chunk_count=${fetchTags.length} chunk_size=${chunk.length} background_depth=${queueStatus.backgroundQueueDepth}`,
       );
     }
-      const chunkEntries = await Promise.all(
-        chunk.map(async (playerTag) => {
-          const player = await input.cocService!
-            .getPlayerRaw(playerTag, { suppressTelemetry: true })
-            .catch(() => null);
-          const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
-          const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
-          return [playerTag, { clanTag, townHall }] as const;
-        }),
-      );
+    const chunkEntries = await Promise.all(
+      chunk.map(async (playerTag) => {
+        const player = await input.cocService!
+          .getPlayerRaw(playerTag, { suppressTelemetry: true })
+          .catch(() => null);
+        const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+        const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
+        return [playerTag, { clanTag, townHall }] as const;
+      }),
+    );
     entries.push(...chunkEntries);
     enqueuedCount += chunk.length;
   }
 
   if (input.producer) {
     console.info(
-      `[todo-snapshot] event=war_event_player_refresh_complete source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} enqueued_count=${enqueuedCount} deferred_count=${deferredCount}`,
+      `[todo-snapshot] event=war_event_player_refresh_complete source=${input.producer.source} candidate_count=${plan.candidateCount} deduped_count=${plan.dedupedCount} observed_live_player_hit_count=${observedHitTags.size} live_player_fetch_miss_count=${fetchTags.reduce((sum, chunk) => sum + chunk.length, 0)} fetched_count=${enqueuedCount} deferred_count=${deferredCount}`,
     );
   }
 
@@ -2358,6 +2403,42 @@ async function loadLiveClanTagsByPlayerTag(input: {
       Boolean(entry[0]),
     ),
   );
+}
+
+function buildObservedLivePlayerCurrentMap(
+  playerTags: string[],
+  observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag,
+): Map<string, { clanTag: string; townHall: number | null }> {
+  const normalizedTags = normalizePlayerTags(playerTags);
+  const map = new Map<string, { clanTag: string; townHall: number | null }>();
+  if (!observedLivePlayerCurrentByTag || observedLivePlayerCurrentByTag.size <= 0) {
+    return map;
+  }
+
+  for (const playerTag of normalizedTags) {
+    const observed = observedLivePlayerCurrentByTag.get(playerTag);
+    if (!observed) continue;
+    map.set(playerTag, {
+      clanTag: observed.clanTag,
+      townHall: observed.townHall,
+    });
+  }
+  return map;
+}
+
+function buildObservedLivePlayerCurrentByTag(
+  observedRows: ObservedLivePlayerCurrent[],
+): ObservedLivePlayerCurrentByTag {
+  const map: ObservedLivePlayerCurrentByTag = new Map();
+  for (const row of observedRows) {
+    const playerTag = normalizePlayerTag(String(row?.playerTag ?? ""));
+    if (!playerTag || map.has(playerTag)) continue;
+    map.set(playerTag, {
+      clanTag: normalizeClanTag(String(row?.clanTag ?? "")) || "",
+      townHall: normalizeRosterInt(row?.townHall ?? null),
+    });
+  }
+  return map;
 }
 
 /** Purpose: fetch active raid-season member attacks once per clan and fan out by player tag. */

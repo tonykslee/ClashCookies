@@ -3,7 +3,14 @@ import { formatError } from "../helper/formatError";
 import { recordFetchEvent } from "../helper/fetchTelemetry";
 import { CoCService } from "./CoCService";
 import { ActivitySignalService } from "./ActivitySignalService";
+import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { playerCurrentService } from "./PlayerCurrentService";
+
+type ObservedPlayerCurrent = {
+  playerTag: string;
+  clanTag: string | null;
+  townHall: number | null;
+};
 
 export class ActivityService {
   private readonly signalService = new ActivitySignalService();
@@ -27,6 +34,7 @@ export class ActivityService {
     clanName: string;
     memberTags: string[];
     members: Array<{ playerTag: string; playerName: string }>;
+    observedPlayerCurrent: ObservedPlayerCurrent[];
   }> {
     const clan = await this.coc.getClan(inputClanTag);
     const now = new Date();
@@ -36,6 +44,7 @@ export class ActivityService {
     let playerCurrentUpsertFailedCount = 0;
     const observedTags: string[] = [];
     const observedMembers: Array<{ playerTag: string; playerName: string }> = [];
+    const observedPlayerCurrent: ObservedPlayerCurrent[] = [];
 
     for (const member of clan.members) {
       if (member?.tag) {
@@ -95,6 +104,19 @@ export class ActivityService {
         now,
       });
 
+      const observedPlayerTag = normalizePlayerTag(player.tag);
+      const observedClanTag = normalizeClanTag(String(player.clan?.tag ?? "")) || null;
+      const observedTownHall = normalizePositiveInt(
+        player.townHallLevel ?? player.townHall ?? null,
+      );
+      if (observedPlayerTag) {
+        observedPlayerCurrent.push({
+          playerTag: observedPlayerTag,
+          clanTag: observedClanTag,
+          townHall: observedTownHall,
+        });
+      }
+
       try {
         await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
           playerTag,
@@ -127,6 +149,7 @@ export class ActivityService {
       clanName: String(clan.name ?? inputClanTag),
       memberTags: observedTags,
       members: observedMembers,
+      observedPlayerCurrent,
     };
   }
 
@@ -246,4 +269,11 @@ export class ActivityService {
       },
     });
   }
+}
+
+function normalizePositiveInt(input: unknown): number | null {
+  const value = Number(input);
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : null;
 }

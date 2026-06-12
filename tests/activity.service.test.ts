@@ -48,6 +48,7 @@ function makeLivePlayer(overrides: Record<string, unknown> = {}) {
     defenseWins: 8,
     versusBattleWins: 3,
     expLevel: 200,
+    townHallLevel: 16,
     achievements: [],
     troops: [],
     heroes: [],
@@ -104,21 +105,26 @@ describe("ActivityService observeClanDetailed", () => {
     const getClan = vi.fn().mockResolvedValue({
       tag: "#CLAN1",
       name: "Clan One",
-      members: [{ tag: "#AAA111", name: "Alpha" }],
+      members: [{ tag: "#PYLQ0289", name: "Alpha" }],
     });
-    const getPlayerRaw = vi.fn().mockResolvedValue(makeLivePlayer());
+    const getPlayerRaw = vi.fn().mockResolvedValue(
+      makeLivePlayer({
+        tag: "#PYLQ0289",
+        clan: { tag: "#QGRJ2222", name: "Clan One" },
+      }),
+    );
     const cocService = { getClan, getPlayerRaw } as any;
     const activityService = new ActivityService(cocService);
 
     const listPlayerCurrentByTagsSpy = vi
       .spyOn(playerCurrentService, "listPlayerCurrentByTags")
-      .mockResolvedValue(new Map([["#AAA111", makeExistingCurrent()]]));
+      .mockResolvedValue(new Map([["#PYLQ0289", makeExistingCurrent({ playerTag: "#PYLQ0289" })]]));
     const upsertPlayerCurrentSpy = vi
       .spyOn(playerCurrentService, "upsertPlayerCurrentFromLivePlayer")
       .mockResolvedValue({
-        ...makeExistingCurrent(),
+        ...makeExistingCurrent({ playerTag: "#PYLQ0289" }),
         playerName: "Live Alpha",
-        currentClanTag: "#CLAN1",
+        currentClanTag: "#QGRJ2222",
         currentClanName: "Clan One",
         source: "activity_observe",
         liveRefreshInvoked: true,
@@ -129,19 +135,26 @@ describe("ActivityService observeClanDetailed", () => {
     expect(result).toEqual({
       clanTag: "#CLAN1",
       clanName: "Clan One",
-      memberTags: ["#AAA111"],
-      members: [{ playerTag: "#AAA111", playerName: "Alpha" }],
+      memberTags: ["#PYLQ0289"],
+      members: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+      observedPlayerCurrent: [
+        {
+          playerTag: "#PYLQ0289",
+          clanTag: "#QGRJ2222",
+          townHall: 16,
+        },
+      ],
     });
     expect(getClan).toHaveBeenCalledTimes(1);
     expect(getPlayerRaw).toHaveBeenCalledTimes(1);
-    expect(getPlayerRaw).toHaveBeenCalledWith("#AAA111", { suppressTelemetry: true });
-    expect(listPlayerCurrentByTagsSpy).toHaveBeenCalledWith(["#AAA111"]);
+    expect(getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289", { suppressTelemetry: true });
+    expect(listPlayerCurrentByTagsSpy).toHaveBeenCalledWith(["#PYLQ0289"]);
     expect(upsertPlayerCurrentSpy).toHaveBeenCalledTimes(1);
     expect(upsertPlayerCurrentSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        playerTag: "#AAA111",
+        playerTag: "#PYLQ0289",
         livePlayer: expect.objectContaining({
-          tag: "#AAA111",
+          tag: "#PYLQ0289",
           name: "Live Alpha",
         }),
         existing: expect.objectContaining({

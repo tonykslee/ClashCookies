@@ -617,6 +617,11 @@ export default (client: Client, cocService: CoCService): void => {
 
     const observeTrackedClans = async (): Promise<{
       observedTags: string[];
+      observedPlayerCurrent: Array<{
+        playerTag: string;
+        clanTag: string | null;
+        townHall: number | null;
+      }>;
       observedFwaClans: Array<{
         clanTag: string;
         clanName: string;
@@ -641,11 +646,16 @@ export default (client: Client, cocService: CoCService): void => {
         );
         return {
           observedTags: [],
+          observedPlayerCurrent: [],
           observedFwaClans: [],
         };
       }
 
       const observedMemberTags = new Set<string>();
+      const observedPlayerCurrentByTag = new Map<
+        string,
+        { clanTag: string | null; townHall: number | null }
+      >();
       const observedFwaClans: Array<{
         clanTag: string;
         clanName: string;
@@ -660,6 +670,18 @@ export default (client: Client, cocService: CoCService): void => {
           );
           for (const memberTag of observedClan.memberTags) {
             observedMemberTags.add(memberTag);
+          }
+          for (const entry of observedClan.observedPlayerCurrent ?? []) {
+            const playerTag = String(entry?.playerTag ?? "").trim();
+            if (!playerTag || observedPlayerCurrentByTag.has(playerTag)) {
+              continue;
+            }
+            observedPlayerCurrentByTag.set(playerTag, {
+              clanTag: entry?.clanTag ?? null,
+              townHall: Number.isFinite(Number(entry?.townHall))
+                ? Math.trunc(Number(entry?.townHall))
+                : null,
+            });
           }
           observedFwaClans.push({
             clanTag: observedClan.clanTag,
@@ -676,6 +698,13 @@ export default (client: Client, cocService: CoCService): void => {
 
       return {
         observedTags: [...observedMemberTags],
+        observedPlayerCurrent: [...observedPlayerCurrentByTag.entries()].map(
+          ([playerTag, value]) => ({
+            playerTag,
+            clanTag: value.clanTag,
+            townHall: value.townHall,
+          }),
+        ),
         observedFwaClans,
       };
     };
@@ -739,6 +768,7 @@ export default (client: Client, cocService: CoCService): void => {
                 cocService,
                 nowMs: scheduledAtMs,
                 producerPacingMs: intervalMs,
+                observedLivePlayerCurrent: observed.observedPlayerCurrent,
               },
             );
             if (todoRefresh.selectedPlayerCount > 0) {
