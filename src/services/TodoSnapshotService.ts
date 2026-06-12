@@ -7,6 +7,7 @@ import {
 } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
+import type { CwlLeagueFetchSource } from "./CwlFetchCycleCache";
 import { cocRequestQueueService } from "./CoCRequestQueueService";
 import { cwlStateService } from "./CwlStateService";
 import {
@@ -312,6 +313,7 @@ export class TodoSnapshotService {
   /** Purpose: refresh all linked-player snapshots from existing tracked state in one bounded pass. */
   async refreshAllLinkedPlayerSnapshots(input: {
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     producerPacingMs?: number | null;
     observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
@@ -320,6 +322,7 @@ export class TodoSnapshotService {
     return this.refreshActivatedTodoLinkedPlayerSnapshots({
       cadence: "tracked",
       cocService: input.cocService,
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       nowMs: input.nowMs,
       producerPacingMs: input.producerPacingMs,
       observedLivePlayerCurrent: input.observedLivePlayerCurrent,
@@ -331,6 +334,7 @@ export class TodoSnapshotService {
   async refreshActivatedTodoLinkedPlayerSnapshots(input: {
     cadence: TodoRefreshCadence;
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     producerPacingMs?: number | null;
     observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
@@ -547,6 +551,7 @@ export class TodoSnapshotService {
         ? await this.refreshSnapshotsForPlayerTagsInternal({
             playerTags: selectedPlayerTags,
             cocService: input.cocService,
+            cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
             nowMs: input.nowMs,
             includeNonTrackedCwlRefresh: input.cadence === "observe",
             observedLivePlayerCurrentByTag,
@@ -594,6 +599,7 @@ export class TodoSnapshotService {
   async refreshSnapshotsForPlayerTags(input: {
     playerTags: string[];
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
     observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
@@ -619,6 +625,7 @@ export class TodoSnapshotService {
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
       ),
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       preloadedCurrentWarSnapshotsByClanTag:
         input.preloadedCurrentWarSnapshotsByClanTag ?? null,
     }).finally(() => {
@@ -632,6 +639,7 @@ export class TodoSnapshotService {
   /** Purpose: execute one full linked-player refresh by resolving all linked tags first. */
   private async refreshAllLinkedPlayerSnapshotsInternal(input: {
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     producerPacingMs?: number | null;
     observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
@@ -651,6 +659,7 @@ export class TodoSnapshotService {
     return this.refreshSnapshotsForPlayerTagsInternal({
       playerTags,
       cocService: input.cocService,
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       nowMs: input.nowMs,
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
@@ -673,6 +682,7 @@ export class TodoSnapshotService {
   private async refreshSnapshotsForPlayerTagsInternal(input: {
     playerTags: string[];
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
     observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag;
@@ -798,6 +808,7 @@ export class TodoSnapshotService {
       try {
         await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
           cocService: input.cocService,
+          cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
           playerTags: normalizedTags,
           season: currentCwlSeason,
           candidateClanTags: [
@@ -1111,6 +1122,7 @@ export class TodoSnapshotService {
     const liveNonTrackedCwlContextByClanTag = input.includeNonTrackedCwlRefresh
       ? await loadLiveNonTrackedCwlContextsByClanTag({
           cocService: input.cocService,
+          cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
           clanTags: [
             ...new Set(
               [
@@ -1986,16 +1998,19 @@ export function buildActiveCwlClanByPlayerTag(input: {
 
 /** Purpose: load one active CWL war per clan tag with grouped war-tag reuse to avoid duplicate fetches. */
 export async function loadActiveCwlWarsByClan(
-  cocService: CoCService,
+  cocService: CoCService | undefined,
   clanTags: string[],
+  cwlFetchCycleCache?: CwlLeagueFetchSource | null,
 ): Promise<Map<string, ClanWar | null>> {
-  if (clanTags.length <= 0) return new Map();
+  const cwlFetchSource = cwlFetchCycleCache ?? cocService ?? null;
+  if (!cwlFetchSource || clanTags.length <= 0) return new Map();
 
   const cwlWarByWarTag = new Map<string, ClanWar | null>();
   const entries = await Promise.all(
     clanTags.map(async (clanTag) => {
       const war = await resolveActiveCwlWarForClan({
         cocService,
+        cwlFetchCycleCache: cwlFetchCycleCache ?? null,
         clanTag,
         cwlWarByWarTag,
       });
@@ -2007,11 +2022,14 @@ export async function loadActiveCwlWarsByClan(
 
 /** Purpose: resolve one clan's active CWL war by traversing rounds newest-first with shared war-tag cache. */
 async function resolveActiveCwlWarForClan(input: {
-  cocService: CoCService;
+  cocService?: CoCService;
+  cwlFetchCycleCache?: CwlLeagueFetchSource | null;
   clanTag: string;
   cwlWarByWarTag: Map<string, ClanWar | null>;
 }): Promise<ClanWar | null> {
-  const group = await input.cocService
+  const cwlFetchSource = input.cwlFetchCycleCache ?? input.cocService ?? null;
+  if (!cwlFetchSource) return null;
+  const group = await cwlFetchSource
     .getClanWarLeagueGroup(input.clanTag)
     .catch(() => null);
   if (!group || !isWarStateActive(group.state)) {
@@ -2034,7 +2052,7 @@ async function resolveActiveCwlWarForClan(input: {
         if (input.cwlWarByWarTag.has(warTag)) {
           return input.cwlWarByWarTag.get(warTag) ?? null;
         }
-        const war = await input.cocService
+        const war = await cwlFetchSource
           .getClanWarLeagueWar(warTag)
           .catch(() => null);
         input.cwlWarByWarTag.set(warTag, war);
@@ -2188,16 +2206,18 @@ function resolveLiveCurrentWarSide(
 /** Purpose: load one deduped live CWL context per non-tracked clan for targeted manual snapshot refreshes. */
 async function loadLiveNonTrackedCwlContextsByClanTag(input: {
   cocService?: CoCService;
+  cwlFetchCycleCache?: CwlLeagueFetchSource | null;
   clanTags: string[];
 }): Promise<Map<string, LiveCwlClanContext>> {
-  if (!input.cocService || input.clanTags.length <= 0) {
+  const cwlFetchSource = input.cwlFetchCycleCache ?? input.cocService ?? null;
+  if (!cwlFetchSource || input.clanTags.length <= 0) {
     return new Map();
   }
 
   const contexts = await Promise.all(
     [...new Set(input.clanTags)].map(async (clanTag) => {
       const normalizedClanTag = normalizeClanTag(clanTag);
-      const group = await input.cocService!
+      const group = await cwlFetchSource
         .getClanWarLeagueGroup(clanTag)
         .catch(() => null);
       if (!group) {
@@ -2224,7 +2244,7 @@ async function loadLiveNonTrackedCwlContextsByClanTag(input: {
         if (warTags.length <= 0) continue;
 
         for (const warTag of warTags) {
-          const war = await input.cocService!
+          const war = await cwlFetchSource
             .getClanWarLeagueWar(warTag)
             .catch(() => null);
           if (!war) continue;

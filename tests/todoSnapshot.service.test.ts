@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CwlFetchCycleCache } from "../src/services/CwlFetchCycleCache";
 
 let cwlSeasonMappingRows: Array<{ playerTag: string; cwlClanTag: string }> = [];
 
@@ -552,6 +553,79 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
+  });
+
+  it("reuses one CWL cache instance across seasonal mapping and live non-tracked CWL refreshes in the same cycle", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#2CJYQ0U82", name: "Infinity Meow" },
+        townHallLevel: 16,
+      }),
+      getClanWarLeagueGroup: vi.fn().mockImplementation(async (clanTag: string) => {
+        if (clanTag !== "#2CJYQ0U82") {
+          return null;
+        }
+        return {
+          season: "2026-04",
+          state: "preparation",
+          clans: [{ tag: "#2CJYQ0U82", name: "Infinity Meow" }],
+          rounds: [{ warTags: ["#WAR1"] }],
+        };
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "preparation",
+        attacksPerMember: 1,
+        startTime: "20260403T120000.000Z",
+        endTime: "20260404T120000.000Z",
+        clan: {
+          tag: "#2CJYQ0U82",
+          name: "Infinity Meow",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Alpha",
+              townhallLevel: 16,
+              attacks: [],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent One",
+          members: [],
+        },
+      }),
+    };
+    const cwlFetchCycleCache = new CwlFetchCycleCache(cocService as any);
+
+    const result = await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      cwlFetchCycleCache,
+      includeNonTrackedCwlRefresh: true,
+      nowMs: Date.UTC(2026, 3, 8, 17, 0, 0, 0),
+    });
+
+    expect(result.playerCount).toBe(1);
+    expect(cocService.getPlayerRaw).toHaveBeenCalledWith("#PYLQ0289", expect.any(Object));
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#2CJYQ0U82");
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith("#WAR1");
+    expect(cwlFetchCycleCache.getStats()).toMatchObject({
+      groupMissCount: 1,
+      groupHitCount: 1,
+      warMissCount: 1,
+      warHitCount: 1,
+      cachedGroupCount: 1,
+      cachedWarCount: 1,
+    });
   });
 
   it("prefers the live clan over a pinned war clan when explicit non-tracked CWL refresh is enabled", async () => {

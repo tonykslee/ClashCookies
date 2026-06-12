@@ -336,6 +336,7 @@ vi.mock("../src/helper/formatError", () => ({
 }));
 
 import { botStartupStatusService } from "../src/services/BotStartupStatusService";
+import { cwlStateService } from "../src/services/CwlStateService";
 import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 import ready from "../src/listeners/ready";
 
@@ -468,6 +469,12 @@ describe("ready listener startup", () => {
         preloadedCurrentWarSnapshotsByClanTag: expect.any(Map),
       }),
     );
+    const cwlStateCall = (cwlStateService.refreshTrackedCwlState as any).mock.calls[0]?.[0];
+    const todoSnapshotCall = (
+      todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots as any
+    ).mock.calls[0]?.[0];
+    expect(cwlStateCall?.cwlFetchCycleCache).toBeDefined();
+    expect(cwlStateCall?.cwlFetchCycleCache).toBe(todoSnapshotCall?.cwlFetchCycleCache);
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({

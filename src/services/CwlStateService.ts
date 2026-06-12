@@ -8,6 +8,7 @@ import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
+import type { CwlLeagueFetchSource } from "./CwlFetchCycleCache";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import {
   normalizeClanTag,
@@ -783,7 +784,7 @@ function buildObservedSeasonRoster(input: {
 }
 
 async function loadObservedTrackedClanState(input: {
-  cocService: CoCService;
+  cwlFetchSource: CwlLeagueFetchSource;
   trackedClanTag: string;
   defaultSeason: string;
   warByWarTag: Map<string, ClanWar | null>;
@@ -791,7 +792,7 @@ async function loadObservedTrackedClanState(input: {
   const sourceUpdatedAt = new Date();
   let group: ClanWarLeagueGroup | null = null;
   try {
-    group = await input.cocService.getClanWarLeagueGroup(input.trackedClanTag);
+    group = await input.cwlFetchSource.getClanWarLeagueGroup(input.trackedClanTag);
   } catch (err) {
     console.error(
       `[cwl-state] tracked_clan=${input.trackedClanTag} stage=league_group_fetch_failed error=${formatError(err)}`,
@@ -826,7 +827,7 @@ async function loadObservedTrackedClanState(input: {
     for (const warTag of warTags) {
       let war = input.warByWarTag.get(warTag) ?? null;
       if (war === undefined || !input.warByWarTag.has(warTag)) {
-        war = await input.cocService.getClanWarLeagueWar(warTag).catch(() => null);
+        war = await input.cwlFetchSource.getClanWarLeagueWar(warTag).catch(() => null);
         input.warByWarTag.set(warTag, war);
       }
       const observedRound = buildObservedRound({
@@ -891,6 +892,7 @@ export class CwlStateService {
   /** Purpose: refresh persisted seasonal CWL clan mappings for bounded player tags. */
   async refreshSeasonalCwlClanMappingsForPlayerTags(input: {
     cocService?: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     playerTags: string[];
     season?: string;
     candidateClanTags?: string[];
@@ -1053,16 +1055,16 @@ export class CwlStateService {
     const remainingPlayerTags = normalizedTags.filter(
       (playerTag) => !mappingByPlayerTag.has(playerTag) && !evidenceByPlayerTag.has(playerTag),
     );
+    const cwlFetchSource = input.cwlFetchCycleCache ?? input.cocService ?? null;
     const liveDiscoveryRan = Boolean(
-      input.cocService && candidateClanTags.length > 0 && remainingPlayerTags.length > 0,
+      cwlFetchSource && candidateClanTags.length > 0 && remainingPlayerTags.length > 0,
     );
-    const cocService = input.cocService ?? null;
-    if (liveDiscoveryRan && cocService) {
+    if (liveDiscoveryRan && cwlFetchSource) {
       const targetPlayerTagSet = new Set(remainingPlayerTags);
       for (const clanTag of candidateClanTags) {
         let group: ClanWarLeagueGroup | null = null;
         try {
-          group = await cocService.getClanWarLeagueGroup(clanTag);
+          group = await cwlFetchSource.getClanWarLeagueGroup(clanTag);
         } catch (error) {
           console.warn(
             `[cwl-mapping] season=${season} clan_tag=${clanTag} stage=group_fetch_failed error=${formatError(error)}`,
@@ -1082,7 +1084,7 @@ export class CwlStateService {
           if (warTags.length <= 0) continue;
 
           for (const warTag of warTags) {
-            const war = await cocService.getClanWarLeagueWar(warTag).catch(() => null);
+            const war = await cwlFetchSource.getClanWarLeagueWar(warTag).catch(() => null);
             if (!war) continue;
             const side = resolveLiveCwlSide(clanTag, war);
             if (!side) continue;
@@ -1197,6 +1199,7 @@ export class CwlStateService {
   /** Purpose: refresh tracked CWL state only for clans associated with one linked player set. */
   async refreshTrackedCwlStateForPlayerTags(input: {
     cocService: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     playerTags: string[];
     season?: string;
     nowMs?: number;
@@ -1232,6 +1235,7 @@ export class CwlStateService {
 
     return this.refreshTrackedCwlStateForClanTags({
       cocService: input.cocService,
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       season,
       trackedClanTags: candidateClanTags,
     });
@@ -1239,6 +1243,7 @@ export class CwlStateService {
 
   async refreshTrackedCwlState(input: {
     cocService: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     season?: string;
     nowMs?: number;
   }): Promise<RefreshTrackedCwlStateResult> {
@@ -1255,6 +1260,7 @@ export class CwlStateService {
     ];
     return this.refreshTrackedCwlStateForClanTags({
       cocService: input.cocService,
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       season,
       trackedClanTags,
     });
@@ -1263,6 +1269,7 @@ export class CwlStateService {
   /** Purpose: refresh tracked CWL state for one clan only. */
   async refreshTrackedCwlStateForClan(input: {
     cocService: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     clanTag: string;
     season?: string;
     nowMs?: number;
@@ -1283,6 +1290,7 @@ export class CwlStateService {
 
     return this.refreshTrackedCwlStateForClanTags({
       cocService: input.cocService,
+      cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       season,
       trackedClanTags: [clanTag],
     });
@@ -1291,6 +1299,7 @@ export class CwlStateService {
   /** Purpose: refresh tracked CWL state for one bounded clan-tag set. */
   private async refreshTrackedCwlStateForClanTags(input: {
     cocService: CoCService;
+    cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     season: string;
     trackedClanTags: string[];
   }): Promise<RefreshTrackedCwlStateResult> {
@@ -1311,12 +1320,13 @@ export class CwlStateService {
       };
     }
 
+    const cwlFetchSource = input.cwlFetchCycleCache ?? input.cocService;
     const warByWarTag = new Map<string, ClanWar | null>();
     const observedStates: ObservedTrackedClanState[] = [];
     for (const trackedClanTag of trackedClanTags) {
       observedStates.push(
         await loadObservedTrackedClanState({
-          cocService: input.cocService,
+          cwlFetchSource,
           trackedClanTag,
           defaultSeason: input.season,
           warByWarTag,
