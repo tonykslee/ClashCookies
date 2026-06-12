@@ -114,18 +114,18 @@ export type LinkListDescriptionRenderResult = {
   trimmed: boolean;
 };
 
-function sanitizeTableText(input: string): string {
+export function sanitizeTableText(input: string): string {
   return String(input ?? "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function sanitizeInlineCodeCell(input: string): string {
+export function sanitizeInlineCodeCell(input: string): string {
   const normalized = sanitizeTableText(input);
   return normalized.replace(/`/g, "\u02BC").replace(/\u200B/g, "").trim();
 }
 
-function truncateWithEllipsis(input: string, maxLength: number): string {
+export function truncateWithEllipsis(input: string, maxLength: number): string {
   const normalized = sanitizeTableText(input);
   if (normalized.length <= maxLength) return normalized;
   if (maxLength <= 3) return normalized.slice(0, maxLength);

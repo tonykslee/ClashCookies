@@ -55,6 +55,8 @@ import {
 import {
   buildLinkListDescriptionLines,
   buildLinkListOrderedColumnsFromSelection,
+  buildDescriptionEmbeds,
+  buildTitleWithBadge,
   encodeLinkListColumns,
   formatCompactWeightK,
   formatInactivityMetricLabel,
@@ -64,14 +66,26 @@ import {
   getLinkListColumnLabel,
   getLinkListDefaultColumnsForSortMode,
   getLinkListSelectableColumns,
+  getLinkListSortModeLabel,
+  getNextLinkListSortMode,
   isLinkListDefaultColumnsForSortMode,
   normalizeLinkListColumns,
+  normalizeLinkListSortMode,
   parseLinkListColumnsField,
   resolveLinkListStatusIcons,
   resolveLinkListTownHall,
+  sanitizeInlineCodeCell,
+  sanitizeTableText,
   sortLinkListRows,
+  truncateWithEllipsis,
+  LINK_LIST_DEFAULT_SORT_MODE,
+  MAX_IDENTITY_CHARS,
+  MAX_LINK_LIST_DISPLAY_NAME_CHARS,
+  MAX_PLAYER_NAME_CHARS,
+  WEIGHT_PLACEHOLDER,
   type LinkListColumnId,
   type LinkListRowViewModel,
+  type LinkListSortMode,
 } from "./link/LinkListRender";
 
 type LinkListResolvedMemberRow = {
@@ -117,30 +131,12 @@ const LINK_LIST_EMBED_DESCRIPTION_SAFE_LIMIT = 1500;
 const LINK_LIST_TRIM_SUFFIX_TEMPLATE =
   "...and {hiddenRows} more rows hidden. Use another sort/filter or Refresh Data.";
 const LINK_LIST_EMBED_COLOR = 0x5865f2;
+const LINK_LIST_INACTIVITY_WARS_WINDOW = 3;
 const LINK_EMBED_POST_COLOR = 0x5865f2;
 const EMBED_TITLE_LIMIT = 256;
 const LINK_EMBED_SETUP_MODAL_TITLE = "Link Account Embed";
 const LINK_EMBED_TAG_MODAL_TITLE = "Link Account";
 const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
-
-const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
-const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
-const MAX_IDENTITY_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
-const LINK_LIST_LINKED_STATUS_EMOJI = "\u2705";
-const LINK_LIST_UNLINKED_STATUS_EMOJI = "\u274C";
-const WEIGHT_PLACEHOLDER = "\u2014";
-const LINK_LIST_SORT_MODE_CYCLE = [
-  "discord",
-  "weight",
-  "player-tags",
-  "player",
-  "clan-rank",
-  "inactivity",
-] as const;
-const LINK_LIST_INACTIVITY_WARS_WINDOW = 3;
-
-type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
-const LINK_LIST_DEFAULT_SORT_MODE: LinkListSortMode = "discord";
 
 type LinkListCurrentMemberRow = {
   playerTag: string;
@@ -195,57 +191,18 @@ type LinkListInteraction =
   | StringSelectMenuInteraction
   | ButtonInteraction;
 
-function sanitizeTableText(input: string): string {
-  return String(input ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeUrlInput(input: string): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
-function sanitizeInlineCodeCell(input: string): string {
-  const normalized = sanitizeTableText(input);
-  return normalized.replace(/`/g, "ʼ").replace(/\u200B/g, "").trim();
-}
-
-function truncateWithEllipsis(input: string, maxLength: number): string {
-  const normalized = sanitizeTableText(input);
-  if (normalized.length <= maxLength) return normalized;
-  if (maxLength <= 3) return normalized.slice(0, maxLength);
-  return `${normalized.slice(0, maxLength - 3)}...`;
-}
-
-function normalizeLinkListSortMode(
-  input: string | null | undefined,
-): LinkListSortMode {
-  const value = String(input ?? "").trim().toLowerCase();
-  if (
-    value === "discord" ||
-    value === "weight" ||
-    value === "player-tags" ||
-    value === "player" ||
-    value === "clan-rank" ||
-    value === "inactivity"
-  ) {
-    return value;
+function isValidHttpUrl(input: string): boolean {
+  try {
+    const parsed = new URL(input);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
   }
-  return LINK_LIST_DEFAULT_SORT_MODE;
-}
-
-function getLinkListSortModeLabel(mode: LinkListSortMode): string {
-  if (mode === "weight") return "Weight Desc";
-  if (mode === "player-tags") return "Player Tags";
-  if (mode === "player") return "Player Name";
-  if (mode === "clan-rank") return "Clan Role";
-  if (mode === "inactivity") return "Inactivity";
-  return "Discord Name";
-}
-
-function getNextLinkListSortMode(mode: LinkListSortMode): LinkListSortMode {
-  const currentIndex = LINK_LIST_SORT_MODE_CYCLE.indexOf(mode);
-  const nextIndex =
-    currentIndex >= 0
-      ? (currentIndex + 1) % LINK_LIST_SORT_MODE_CYCLE.length
-      : 0;
-  return LINK_LIST_SORT_MODE_CYCLE[nextIndex];
 }
 
 type LinkCreateTagInput = {
@@ -329,33 +286,6 @@ function buildPlayerLinkStatusLines(link: PlayerLinkWithTrust): string[] {
   return lines;
 }
 
-function normalizeUrlInput(input: string): string | null {
-  const trimmed = String(input ?? "").trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function isValidHttpUrl(input: string): boolean {
-  try {
-    const parsed = new URL(input);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function buildTitleWithBadge(input: {
-  clanName: string;
-  clanTag: string;
-  badge: string | null;
-}): string {
-  const pieces = [
-    input.badge?.trim() ?? "",
-    input.clanName.trim(),
-    input.clanTag.trim(),
-  ].filter((piece) => piece.length > 0);
-  return pieces.join(" ");
-}
-
 function tryParseFiniteNumber(input: unknown): number | null {
   if (typeof input === "number" && Number.isFinite(input)) return input;
   if (typeof input === "string" && input.trim().length > 0) {
@@ -422,208 +352,6 @@ function selectTrackedClanMenuOptions(
     .filter((row) => row.tag !== currentClanTag)
     .slice(0, 24);
   return [current, ...remainder];
-}
-
-type DescriptionChunk = {
-  text: string;
-  lineCount: number;
-  rowCount: number;
-  lines: string[];
-};
-
-function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(
-    String(line ?? "").trim(),
-  );
-}
-
-function chunkDescriptionLines(
-  lines: string[],
-  safeLimit = EMBED_DESCRIPTION_LIMIT,
-): DescriptionChunk[] {
-  const chunks: DescriptionChunk[] = [];
-  let currentLines: string[] = [];
-  let currentCount = 0;
-  let currentRowCount = 0;
-  const effectiveLimit = Math.max(1, Math.min(safeLimit, EMBED_DESCRIPTION_LIMIT));
-
-  for (const rawLine of lines) {
-    const line =
-      rawLine.length <= EMBED_DESCRIPTION_LIMIT
-        ? rawLine
-        : `${rawLine.slice(0, EMBED_DESCRIPTION_LIMIT - 12)}...truncated`;
-    const candidate = currentLines.length > 0 ? [...currentLines, line].join("\n") : line;
-
-    if (candidate.length <= effectiveLimit) {
-      currentLines.push(line);
-      currentCount += 1;
-      if (isLinkListRowLine(line)) currentRowCount += 1;
-      continue;
-    }
-
-    if (currentLines.length > 0) {
-      chunks.push({
-        text: currentLines.join("\n"),
-        lineCount: currentCount,
-        rowCount: currentRowCount,
-        lines: [...currentLines],
-      });
-    }
-    currentLines = [line];
-    currentCount = 1;
-    currentRowCount = isLinkListRowLine(line) ? 1 : 0;
-  }
-
-  if (currentLines.length > 0) {
-    chunks.push({
-      text: currentLines.join("\n"),
-      lineCount: currentCount,
-      rowCount: currentRowCount,
-      lines: [...currentLines],
-    });
-  }
-
-  return chunks;
-}
-
-type LinkListDescriptionRenderResult = {
-  embeds: EmbedBuilder[];
-  renderedRows: number;
-  hiddenRows: number;
-  embedCount: number;
-  totalDescriptionChars: number;
-  trimmed: boolean;
-};
-
-function trimLinkListDescriptionChunks(chunks: DescriptionChunk[]): {
-  chunks: DescriptionChunk[];
-  hiddenRows: number;
-  trimmed: boolean;
-} {
-  const kept = chunks.slice(0, LINK_LIST_MAX_EMBEDS).map((chunk) => ({
-    ...chunk,
-    lines: [...chunk.lines],
-  }));
-  let hiddenRows = chunks.slice(LINK_LIST_MAX_EMBEDS).reduce((sum, chunk) => sum + chunk.rowCount, 0);
-  let trimmed = chunks.length > LINK_LIST_MAX_EMBEDS;
-
-  const suffixText = (count: number) =>
-    LINK_LIST_TRIM_SUFFIX_TEMPLATE.replace("{hiddenRows}", String(count));
-
-  const totalChars = (value: DescriptionChunk[]): number =>
-    value.reduce((sum, chunk) => sum + chunk.text.length, 0);
-
-  const rebuildChunk = (chunk: DescriptionChunk): void => {
-    chunk.text = chunk.lines.join("\n");
-    chunk.lineCount = chunk.lines.length;
-    chunk.rowCount = chunk.lines.filter((line) => isLinkListRowLine(line)).length;
-  };
-
-  const dropLastLine = (): boolean => {
-    for (let index = kept.length - 1; index >= 0; index -= 1) {
-      const chunk = kept[index];
-      if (chunk.lines.length === 0) continue;
-      const removed = chunk.lines.pop();
-      if (removed && isLinkListRowLine(removed)) {
-        hiddenRows += 1;
-      }
-      rebuildChunk(chunk);
-      while (kept.length > 0 && kept[kept.length - 1].lines.length === 0) {
-        kept.pop();
-      }
-      return true;
-    }
-    return false;
-  };
-
-  while (kept.length > 0) {
-    const suffix = hiddenRows > 0 ? suffixText(hiddenRows) : "";
-    const nextTotal = totalChars(kept) + suffix.length;
-    const last = kept[kept.length - 1];
-    const nextLastLength = last.text.length + suffix.length + (last.text.length > 0 ? 1 : 0);
-    if (
-      nextTotal <= LINK_LIST_MAX_TOTAL_DESCRIPTION_CHARS &&
-      nextLastLength <= EMBED_DESCRIPTION_LIMIT
-    ) {
-      break;
-    }
-    if (!dropLastLine()) break;
-    trimmed = true;
-  }
-
-  if (hiddenRows > 0 && kept.length > 0) {
-    const suffix = suffixText(hiddenRows);
-    const last = kept[kept.length - 1];
-    last.text = last.text.length > 0 ? `${last.text}\n${suffix}` : suffix;
-    last.lineCount = last.lines.length + 1;
-  }
-
-  return { chunks: kept, hiddenRows, trimmed };
-}
-
-function buildDescriptionEmbeds(
-  title: string,
-  lines: string[],
-  sortMode: LinkListSortMode,
-): LinkListDescriptionRenderResult {
-  const sortLabel = getLinkListSortModeLabel(sortMode);
-  const chunks = chunkDescriptionLines(lines, LINK_LIST_EMBED_DESCRIPTION_SAFE_LIMIT);
-  if (chunks.length === 0) {
-    const embeds = [
-      new EmbedBuilder()
-        .setColor(LINK_LIST_EMBED_COLOR)
-        .setTitle(title)
-        .setFooter({ text: `Sort: ${sortLabel}` })
-        .setDescription("empty_list: no rows to render."),
-    ];
-    return {
-      embeds,
-      renderedRows: 0,
-      hiddenRows: 0,
-      embedCount: embeds.length,
-      totalDescriptionChars: embeds[0]?.data?.description?.length ?? 0,
-      trimmed: false,
-    };
-  }
-
-  const totalRows = lines.filter((line) => isLinkListRowLine(line)).length;
-  const trimmedChunks = trimLinkListDescriptionChunks(chunks);
-  const embeds = trimmedChunks.chunks.map((chunk, index) => {
-    const embed = new EmbedBuilder().setColor(LINK_LIST_EMBED_COLOR).setDescription(chunk.text);
-    if (index === 0) {
-      embed.setTitle(title);
-    }
-    if (index === trimmedChunks.chunks.length - 1) {
-      embed.setFooter({ text: `Sort: ${sortLabel}` });
-    }
-    return embed;
-  });
-
-  if (embeds.length === 0) {
-    const suffix = LINK_LIST_TRIM_SUFFIX_TEMPLATE.replace(
-      "{hiddenRows}",
-      String(trimmedChunks.hiddenRows),
-    );
-    embeds.push(
-      new EmbedBuilder()
-        .setColor(LINK_LIST_EMBED_COLOR)
-        .setTitle(title)
-        .setFooter({ text: `Sort: ${sortLabel}` })
-        .setDescription(suffix),
-    );
-  }
-
-  return {
-    embeds,
-    renderedRows: Math.max(0, totalRows - trimmedChunks.hiddenRows),
-    hiddenRows: trimmedChunks.hiddenRows,
-    embedCount: embeds.length,
-    totalDescriptionChars: embeds.reduce(
-      (sum, embed) => sum + String(embed.data?.description ?? "").length,
-      0,
-    ),
-    trimmed: trimmedChunks.trimmed,
-  };
 }
 
 async function getTrackedClansForGuild(
@@ -2666,8 +2394,6 @@ export const Link: Command = {
     await interaction.respond(choices);
   },
 };
-
-
 
 
 
