@@ -9,12 +9,28 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
   trackedClan: {
     findMany: vi.fn(),
   },
   fwaClanMemberCurrent: {
-    groupBy: vi.fn(),
+    findMany: vi.fn(),
+  },
+  heatMapRef: {
+    findMany: vi.fn(),
+  },
+  fwaPlayerCatalog: {
+    findMany: vi.fn(),
+  },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
+  weightInputDeferment: {
+    findMany: vi.fn(),
+  },
+  fwaTrackedClanWarRosterMemberCurrent: {
+    findMany: vi.fn(),
   },
 }));
 
@@ -24,9 +40,11 @@ vi.mock("../src/prisma", () => ({
 
 import {
   buildSyncTimeFwaClanListMessagePayload,
+  buildSyncReadinessMessagePayload,
   handleSyncTimeFwaClanListRefreshButton,
   SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
 } from "../src/services/SyncTimeFwaClanListViewService";
+import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 
 function makeBaseMetadata() {
   return {
@@ -65,36 +83,58 @@ function makeButtonInteraction(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+function mockReadinessState(rows?: Array<Record<string, unknown>>) {
+  prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+    {
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      shortName: "AC",
+    },
+  ]);
+  prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce(
+    rows ?? [
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Player One",
+        townHall: 16,
+        weight: 150000,
+        sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
+      },
+    ],
+  );
+  prismaMock.heatMapRef.findMany.mockResolvedValueOnce([]);
+  prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+  prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
+  prismaMock.weightInputDeferment.findMany.mockResolvedValueOnce([]);
+  prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValueOnce([]);
+}
+
 describe("SyncTimeFwaClanListViewService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findUnique.mockReset();
     prismaMock.trackedMessage.update.mockReset();
+    prismaMock.trackedMessage.updateMany.mockReset();
+    prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.trackedClan.findMany.mockReset();
-    prismaMock.fwaClanMemberCurrent.groupBy.mockReset();
+    prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
-    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
   });
 
-  it("builds the sync-time payload with the FWA minimal clan list embed and refresh button", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
-      {
-        tag: "#2QG2C08UP",
-        name: "Alpha Clan",
-        loseStyle: "TRADITIONAL",
-        mailChannelId: null,
-        logChannelId: null,
-        leaderChannelId: "leader-channel-1",
-        clanRoleId: null,
-        leadRoleId: "lead-role-1",
-        clanBadge: null,
-        shortName: "AC",
-        createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      },
-    ]);
-    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
-      { clanTag: "#2QG2C08UP", _count: { clanTag: 49 } },
-    ]);
+  it("builds the sync-time payload with the shared FWA readiness embed and refresh button", async () => {
+    mockReadinessState();
 
     const payload = await buildSyncTimeFwaClanListMessagePayload({
       guildId: "guild-1",
@@ -104,23 +144,39 @@ describe("SyncTimeFwaClanListViewService", () => {
 
     expect(payload.content).toContain("# Sync time :gem:");
     expect(payload.embeds).toHaveLength(1);
-    expect(payload.embeds[0].toJSON().title).toBe("Tracked Clans (FWA) (1)");
+    expect(payload.embeds[0].toJSON().title).toBe("FWA Readiness (1)");
     expect(payload.components).toHaveLength(1);
     expect(payload.components[0].toJSON().components[0].custom_id).toBe(
       SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
     );
     expect(payload.metadata).toMatchObject({
       fwaClanListEnabled: true,
-      fwaClanListRefreshExpiresAtIso: "2026-06-11T12:00:00.000Z",
+      fwaClanListRefreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
       fwaClanListLastRefreshedAtIso: "2026-06-10T12:00:00.000Z",
     });
   });
 
   it("refreshes the same sync-time message after reloading clan list state", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-06-10T12:30:00.000Z"));
+    vi.setSystemTime(new Date("2026-06-10T11:30:00.000Z"));
     try {
       const fetchSpy = vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims");
+      const syncAllSpy = vi
+        .spyOn(FwaClanMembersSyncService.prototype, "syncAllTrackedClans")
+        .mockResolvedValue({
+          clanCount: 1,
+          rowCount: 1,
+          changedRowCount: 1,
+          failedClans: [],
+        });
+      const refreshCurrentSpy = vi
+        .spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags")
+        .mockResolvedValue({
+          clanCount: 1,
+          rowCount: 1,
+          changedRowCount: 1,
+          failedClans: [],
+        });
       prismaMock.trackedMessage.findUnique.mockResolvedValueOnce({
         id: "tracked-1",
         guildId: "guild-1",
@@ -135,40 +191,27 @@ describe("SyncTimeFwaClanListViewService", () => {
         metadata: {
           ...makeBaseMetadata(),
           fwaClanListEnabled: true,
-          fwaClanListRefreshExpiresAtIso: "2026-06-11T12:00:00.000Z",
+          fwaClanListRefreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
           fwaClanListLastRefreshedAtIso: "2026-06-10T12:00:00.000Z",
         },
         claims: [],
       });
-      prismaMock.trackedClan.findMany.mockResolvedValueOnce([
-        {
-          tag: "#2QG2C08UP",
-          name: "Alpha Clan",
-          loseStyle: "TRADITIONAL",
-          mailChannelId: null,
-          logChannelId: null,
-          leaderChannelId: "leader-channel-1",
-          clanRoleId: null,
-          leadRoleId: "lead-role-1",
-          clanBadge: null,
-          shortName: "AC",
-          createdAt: new Date("2026-04-01T00:00:00.000Z"),
-        },
-      ]);
-      prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValueOnce([
-        { clanTag: "#2QG2C08UP", _count: { clanTag: 50 } },
-      ]);
+      mockReadinessState();
+      mockReadinessState();
 
       const interaction = makeButtonInteraction();
 
       await handleSyncTimeFwaClanListRefreshButton(interaction as any);
 
+      expect(syncAllSpy).toHaveBeenCalledWith({ force: true });
+      expect(refreshCurrentSpy).toHaveBeenCalledWith(["#2QG2C08UP"]);
       expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
       expect(fetchSpy).toHaveBeenCalledWith("sync-message-1");
-      expect(interaction.message.edit).toHaveBeenCalledTimes(1);
-      const payload = interaction.message.edit.mock.calls[0]?.[0] as any;
+      expect(interaction.message.edit).toHaveBeenCalledTimes(2);
+      const payload = interaction.message.edit.mock.calls[1]?.[0] as any;
       expect(payload.content).toContain("# Sync time :gem:");
-      expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("50");
+      expect(payload.embeds[0].toJSON().title).toBe("FWA Readiness (1)");
+      expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("FWA Readiness");
       expect(payload.components[0].toJSON().components[0].custom_id).toBe(
         SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
       );
@@ -180,19 +223,21 @@ describe("SyncTimeFwaClanListViewService", () => {
         syncEpochSeconds: 1749556800,
         roleId: "123456789012345678",
         fwaClanListEnabled: true,
-        fwaClanListRefreshExpiresAtIso: "2026-06-11T12:00:00.000Z",
+        fwaClanListRefreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
         fwaClanListLastRefreshedAtIso: expect.any(String),
       });
       expect(Array.isArray(updateArg.data.metadata.clans)).toBe(true);
       expect(updateArg.data.metadata.clans).toHaveLength(1);
       expect(interaction.reply).not.toHaveBeenCalled();
       expect(interaction.followUp).not.toHaveBeenCalled();
+      syncAllSpy.mockRestore();
+      refreshCurrentSpy.mockRestore();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("rejects refreshes after the 24 hour window expires", async () => {
+  it("rejects refreshes at or after the sync time", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce({
       id: "tracked-1",
       guildId: "guild-1",
@@ -226,5 +271,33 @@ describe("SyncTimeFwaClanListViewService", () => {
     expect(interaction.deferUpdate).not.toHaveBeenCalled();
     expect(interaction.message.edit).not.toHaveBeenCalled();
     expect(prismaMock.trackedMessage.update).not.toHaveBeenCalled();
+  });
+
+  it("renders identical readiness rows for sync-time and standalone readiness posts with the same source data", async () => {
+    mockReadinessState();
+
+    const syncTimePayload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: makeBaseMetadata(),
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    mockReadinessState();
+
+    const readinessPayload = await buildSyncReadinessMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+      },
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    expect(syncTimePayload.embeds[0].toJSON().description).toBe(
+      readinessPayload.embeds[0].toJSON().description,
+    );
+    expect(syncTimePayload.embeds[0].toJSON().title).toBe(
+      readinessPayload.embeds[0].toJSON().title,
+    );
   });
 });

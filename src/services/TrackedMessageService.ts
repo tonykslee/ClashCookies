@@ -89,8 +89,21 @@ export type SyncTimeTrackedMetadata = {
   reminderSentAt?: string | null;
   statusPostedAt?: string | null;
   fwaClanListEnabled?: boolean;
+  fwaReadinessEnabled?: boolean;
   fwaClanListRefreshExpiresAtIso?: string | null;
   fwaClanListLastRefreshedAtIso?: string | null;
+  fwaClanListLastSuccessfulRefreshAtIso?: string | null;
+  fwaClanListRefreshInProgressAtIso?: string | null;
+  fwaClanListRefreshInProgressByUserId?: string | null;
+};
+
+export type SyncReadinessTrackedMetadata = {
+  readinessEnabled: true;
+  createdAtIso: string;
+  lastRefreshedAtIso?: string | null;
+  lastSuccessfulRefreshAtIso?: string | null;
+  refreshInProgressAtIso?: string | null;
+  refreshInProgressByUserId?: string | null;
 };
 
 export type FwaMatchChecklistTrackedRow = {
@@ -947,6 +960,7 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
   const reminderSentAt = typeof value.reminderSentAt === "string" ? value.reminderSentAt : null;
   const statusPostedAt = typeof value.statusPostedAt === "string" ? value.statusPostedAt : null;
   const fwaClanListEnabled = value.fwaClanListEnabled === true;
+  const fwaReadinessEnabled = value.fwaReadinessEnabled === true;
   const fwaClanListRefreshExpiresAtIso =
     typeof value.fwaClanListRefreshExpiresAtIso === "string"
       ? value.fwaClanListRefreshExpiresAtIso
@@ -954,6 +968,18 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
   const fwaClanListLastRefreshedAtIso =
     typeof value.fwaClanListLastRefreshedAtIso === "string"
       ? value.fwaClanListLastRefreshedAtIso
+      : null;
+  const fwaClanListLastSuccessfulRefreshAtIso =
+    typeof value.fwaClanListLastSuccessfulRefreshAtIso === "string"
+      ? value.fwaClanListLastSuccessfulRefreshAtIso
+      : null;
+  const fwaClanListRefreshInProgressAtIso =
+    typeof value.fwaClanListRefreshInProgressAtIso === "string"
+      ? value.fwaClanListRefreshInProgressAtIso
+      : null;
+  const fwaClanListRefreshInProgressByUserId =
+    typeof value.fwaClanListRefreshInProgressByUserId === "string"
+      ? value.fwaClanListRefreshInProgressByUserId
       : null;
   return {
     syncTimeIso,
@@ -963,8 +989,18 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     ...(reminderSentAt ? { reminderSentAt } : {}),
     ...(statusPostedAt ? { statusPostedAt } : {}),
     ...(fwaClanListEnabled ? { fwaClanListEnabled } : {}),
+    ...(fwaReadinessEnabled ? { fwaReadinessEnabled } : {}),
     ...(fwaClanListRefreshExpiresAtIso ? { fwaClanListRefreshExpiresAtIso } : {}),
     ...(fwaClanListLastRefreshedAtIso ? { fwaClanListLastRefreshedAtIso } : {}),
+    ...(fwaClanListLastSuccessfulRefreshAtIso
+      ? { fwaClanListLastSuccessfulRefreshAtIso }
+      : {}),
+    ...(fwaClanListRefreshInProgressAtIso
+      ? { fwaClanListRefreshInProgressAtIso }
+      : {}),
+    ...(fwaClanListRefreshInProgressByUserId
+      ? { fwaClanListRefreshInProgressByUserId }
+      : {}),
   };
 }
 
@@ -1732,6 +1768,39 @@ export class TrackedMessageService {
         referenceId: params.referenceId ?? null,
         remindAt: params.remindAt ?? null,
         expiresAt: params.expiresAt,
+        metadata: params.metadata as any,
+      },
+    });
+  }
+
+  async createSyncReadinessTrackedMessage(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    referenceId?: string | null;
+    metadata: SyncReadinessTrackedMetadata;
+  }): Promise<void> {
+    await prisma.trackedMessage.upsert({
+      where: { messageId: params.messageId },
+      update: {
+        guildId: params.guildId,
+        channelId: params.channelId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+        status: TRACKED_MESSAGE_STATUS.COMPLETED,
+        referenceId: params.referenceId ?? params.messageId,
+        remindAt: null,
+        expiresAt: null,
+        metadata: params.metadata as any,
+      },
+      create: {
+        guildId: params.guildId,
+        channelId: params.channelId,
+        messageId: params.messageId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+        status: TRACKED_MESSAGE_STATUS.COMPLETED,
+        referenceId: params.referenceId ?? params.messageId,
+        remindAt: null,
+        expiresAt: null,
         metadata: params.metadata as any,
       },
     });

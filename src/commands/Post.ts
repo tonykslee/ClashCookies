@@ -31,12 +31,16 @@ import {
 import { SettingsService } from "../services/SettingsService";
 import {
   buildSyncTimeFwaClanListMessagePayload,
+  buildSyncReadinessMessagePayload,
+  buildSyncReadinessMessageContent,
   buildSyncTimeMessageContent,
+  refreshTrackedClanReadinessState,
 } from "../services/SyncTimeFwaClanListViewService";
 import {
   buildSyncSpinStatusEmbed,
   parseSyncTimeMetadata,
   trackedMessageService,
+  type SyncReadinessTrackedMetadata,
   type SyncTimeTrackedMetadata,
 } from "../services/TrackedMessageService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
@@ -381,6 +385,72 @@ async function handleSyncSpinStatusSubcommand(
   });
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+function buildStandaloneReadinessTrackedMetadata(now: Date): SyncReadinessTrackedMetadata {
+  return {
+    readinessEnabled: true,
+    createdAtIso: now.toISOString(),
+  };
+}
+
+async function handleSyncReadinessSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  const shouldRefresh = interaction.options.getBoolean("refresh", false) ?? false;
+
+  await interaction.deferReply({ ephemeral: !isPublic });
+
+  const now = new Date();
+  if (shouldRefresh && interaction.guildId) {
+    try {
+      await refreshTrackedClanReadinessState({
+        guildId: interaction.guildId,
+      });
+    } catch (err) {
+      console.error(
+        `[sync-readiness] refresh_failed guild_id=${interaction.guildId} error=${formatError(err)}`,
+      );
+    }
+  }
+
+  const baseMetadata = buildStandaloneReadinessTrackedMetadata(now);
+  let payload: Awaited<ReturnType<typeof buildSyncReadinessMessagePayload>>;
+  try {
+    payload = await buildSyncReadinessMessagePayload({
+      guildId: interaction.guildId,
+      baseMetadata,
+      now,
+    });
+  } catch (err) {
+    console.error(
+      `[sync-readiness] render_failed guild_id=${interaction.guildId} error=${formatError(err)}`,
+    );
+    payload = {
+      content: buildSyncReadinessMessageContent(),
+      embeds: [],
+      components: [],
+      metadata: baseMetadata,
+      trackedClanCount: 0,
+    };
+  }
+
+  await interaction.editReply({
+    content: payload.content,
+    embeds: payload.embeds,
+    components: payload.components,
+  });
+
+  const message = await interaction.fetchReply();
+  await trackedMessageService.createSyncReadinessTrackedMessage({
+    guildId: interaction.guildId!,
+    channelId: message.channelId,
+    messageId: message.id,
+    referenceId: message.id,
+    metadata: payload.metadata as SyncReadinessTrackedMetadata,
+  });
 }
 
 async function handleSyncClaimStatusSubcommand(
@@ -1056,12 +1126,12 @@ export async function handlePostModalSubmit(
       trackedClanCount: 0,
     };
   }
+  const syncTimeMetadata = syncTimePayload.metadata as SyncTimeTrackedMetadata;
   const {
-    metadata: syncTimeMetadata,
-    trackedClanCount,
+    trackedClanCount: _trackedClanCount,
     ...syncTimeMessagePayload
   } = syncTimePayload;
-  void trackedClanCount;
+  void _trackedClanCount;
 
   const postedMessage = await channel
     .send({
@@ -1184,6 +1254,29 @@ export const Post: Command = {
   description: "Sync posting and status commands",
   options: [
     {
+      name: "readiness",
+      description: "Post the FWA readiness dashboard",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "refresh",
+          description: "Force-refresh tracked clan ACTUAL member data before posting",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
+          name: "visibility",
+          description: "Choose whether the readiness post is private or public",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+      ],
+    },
+    {
       name: "time",
       description: "Sync time related commands",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -1268,6 +1361,11 @@ export const Post: Command = {
 
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
+    if (!subcommandGroup && subcommand === "readiness") {
+      await handleSyncReadinessSubcommand(interaction);
+      return;
+    }
+
     if (!subcommandGroup) {
       await safeReply(interaction, {
         ephemeral: true,
