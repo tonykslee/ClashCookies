@@ -95,6 +95,7 @@ export type SyncTimeTrackedMetadata = {
   fwaClanListLastSuccessfulRefreshAtIso?: string | null;
   fwaClanListRefreshInProgressAtIso?: string | null;
   fwaClanListRefreshInProgressByUserId?: string | null;
+  fwaClanListRefreshLockToken?: string | null;
 };
 
 export type SyncReadinessTrackedMetadata = {
@@ -104,6 +105,7 @@ export type SyncReadinessTrackedMetadata = {
   lastSuccessfulRefreshAtIso?: string | null;
   refreshInProgressAtIso?: string | null;
   refreshInProgressByUserId?: string | null;
+  refreshLockToken?: string | null;
 };
 
 export type FwaMatchChecklistTrackedRow = {
@@ -981,6 +983,10 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     typeof value.fwaClanListRefreshInProgressByUserId === "string"
       ? value.fwaClanListRefreshInProgressByUserId
       : null;
+  const fwaClanListRefreshLockToken =
+    typeof value.fwaClanListRefreshLockToken === "string"
+      ? value.fwaClanListRefreshLockToken
+      : null;
   return {
     syncTimeIso,
     syncEpochSeconds: Math.trunc(syncEpochSeconds),
@@ -1001,6 +1007,7 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
     ...(fwaClanListRefreshInProgressByUserId
       ? { fwaClanListRefreshInProgressByUserId }
       : {}),
+    ...(fwaClanListRefreshLockToken ? { fwaClanListRefreshLockToken } : {}),
   };
 }
 
@@ -1803,6 +1810,66 @@ export class TrackedMessageService {
         expiresAt: null,
         metadata: params.metadata as any,
       },
+    });
+  }
+
+  async replacePriorSyncReadinessTrackedMessagesForGuildAndCreate(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    referenceId?: string | null;
+    metadata: SyncReadinessTrackedMetadata;
+  }): Promise<number> {
+    return prisma.$transaction(async (tx) => {
+      const rows = await tx.trackedMessage.findMany({
+        where: {
+          guildId: String(params.guildId ?? "").trim(),
+          messageId: { not: String(params.messageId ?? "").trim() },
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+          status: { in: [TRACKED_MESSAGE_STATUS.ACTIVE, TRACKED_MESSAGE_STATUS.COMPLETED] },
+        },
+        orderBy: [{ createdAt: "asc" }],
+      });
+
+      let replacedCount = 0;
+      for (const row of rows) {
+        const metadata = row.metadata as Record<string, unknown> | null;
+        if (!metadata || metadata.readinessEnabled !== true || typeof metadata.createdAtIso !== "string") {
+          continue;
+        }
+        await tx.trackedMessage.update({
+          where: { messageId: row.messageId },
+          data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+        });
+        replacedCount += 1;
+      }
+
+      await tx.trackedMessage.upsert({
+        where: { messageId: params.messageId },
+        update: {
+          guildId: params.guildId,
+          channelId: params.channelId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+          status: TRACKED_MESSAGE_STATUS.COMPLETED,
+          referenceId: params.referenceId ?? params.messageId,
+          remindAt: null,
+          expiresAt: null,
+          metadata: params.metadata as any,
+        },
+        create: {
+          guildId: params.guildId,
+          channelId: params.channelId,
+          messageId: params.messageId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+          status: TRACKED_MESSAGE_STATUS.COMPLETED,
+          referenceId: params.referenceId ?? params.messageId,
+          remindAt: null,
+          expiresAt: null,
+          metadata: params.metadata as any,
+        },
+      });
+
+      return replacedCount;
     });
   }
 

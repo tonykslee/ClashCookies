@@ -5,6 +5,7 @@ import {
   ButtonStyle,
   EmbedBuilder,
 } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { formatError } from "../helper/formatError";
 import {
@@ -184,6 +185,7 @@ function buildSyncTimeTrackedMetadata(input: {
   successfulRefreshAt?: Date | null;
   inProgressAt?: Date | null;
   inProgressByUserId?: string | null;
+  lockToken?: string | null;
 }): SyncTimeTrackedMetadata {
   return {
     ...input.baseMetadata,
@@ -201,6 +203,7 @@ function buildSyncTimeTrackedMetadata(input: {
           fwaClanListRefreshInProgressByUserId: input.inProgressByUserId ?? null,
         }
       : {}),
+    ...(input.lockToken ? { fwaClanListRefreshLockToken: input.lockToken } : {}),
   };
 }
 
@@ -211,11 +214,13 @@ function stripRefreshLockMetadata<T extends SyncTimeTrackedMetadata | SyncReadin
     const next = { ...metadata } as SyncTimeTrackedMetadata;
     delete next.fwaClanListRefreshInProgressAtIso;
     delete next.fwaClanListRefreshInProgressByUserId;
+    delete next.fwaClanListRefreshLockToken;
     return next as T;
   }
   const next = { ...metadata } as SyncReadinessTrackedMetadata;
   delete next.refreshInProgressAtIso;
   delete next.refreshInProgressByUserId;
+  delete next.refreshLockToken;
   return next as T;
 }
 
@@ -225,6 +230,7 @@ function buildStandaloneReadinessMetadata(input: {
   successfulRefreshAt?: Date | null;
   inProgressAt?: Date | null;
   inProgressByUserId?: string | null;
+  lockToken?: string | null;
 }): SyncReadinessTrackedMetadata {
   return {
     ...input.baseMetadata,
@@ -241,6 +247,7 @@ function buildStandaloneReadinessMetadata(input: {
           refreshInProgressByUserId: input.inProgressByUserId ?? null,
         }
       : {}),
+    ...(input.lockToken ? { refreshLockToken: input.lockToken } : {}),
   };
 }
 
@@ -293,6 +300,8 @@ function parseStandaloneReadinessMetadata(
       typeof data.refreshInProgressByUserId === "string"
         ? data.refreshInProgressByUserId
         : null,
+    refreshLockToken:
+      typeof data.refreshLockToken === "string" ? data.refreshLockToken : null,
   };
 }
 
@@ -388,7 +397,8 @@ export async function tryClaimRefreshLock(input: {
   now: Date;
   userId: string;
   metadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata;
-}): Promise<boolean> {
+}): Promise<{ claimed: boolean; lockToken: string }> {
+  const lockToken = randomUUID();
   const inProgressAtIso =
     "syncTimeIso" in input.metadata
       ? input.metadata.fwaClanListRefreshInProgressAtIso
@@ -399,7 +409,7 @@ export async function tryClaimRefreshLock(input: {
       inProgressAt &&
       input.now.getTime() - inProgressAt.getTime() < SYNC_READINESS_REFRESH_LOCK_STALE_MS
     ) {
-      return false;
+      return { claimed: false, lockToken };
     }
   }
   const result = await prisma.trackedMessage.updateMany({
@@ -415,16 +425,18 @@ export async function tryClaimRefreshLock(input: {
               now: input.now,
               inProgressAt: input.now,
               inProgressByUserId: input.userId,
+              lockToken,
             }) as any)
           : (buildStandaloneReadinessMetadata({
               baseMetadata: input.metadata as SyncReadinessTrackedMetadata,
               now: input.now,
               inProgressAt: input.now,
               inProgressByUserId: input.userId,
+              lockToken,
             }) as any),
     },
   });
-  return result.count === 1;
+  return { claimed: result.count === 1, lockToken };
 }
 
 function buildRefreshRejectedReply(reason: string): string {
@@ -451,16 +463,24 @@ async function finishRefreshEdit(input: {
   });
 }
 
-async function updateTrackedMessageMetadata(input: {
+export async function updateTrackedMessageMetadataIfLockMatches(input: {
   trackedMessageId: string;
+  lockToken: string;
   metadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata;
-}): Promise<void> {
-  await prisma.trackedMessage.update({
-    where: { messageId: input.trackedMessageId },
+}): Promise<number> {
+  const result = await prisma.trackedMessage.updateMany({
+    where: {
+      messageId: input.trackedMessageId,
+      metadata:
+        "syncTimeIso" in input.metadata
+          ? ({ path: ["fwaClanListRefreshLockToken"], equals: input.lockToken } as any)
+          : ({ path: ["refreshLockToken"], equals: input.lockToken } as any),
+    },
     data: {
       metadata: input.metadata as any,
     },
   });
+  return result.count;
 }
 
 export function buildSyncTimeMessageContent(epochSeconds: number, roleId: string): string {
@@ -595,14 +615,14 @@ export async function handleSyncReadinessRefreshButton(
       return;
     }
 
-    const claimed = await tryClaimRefreshLock({
+    const claim = await tryClaimRefreshLock({
       trackedMessageId: tracked.messageId,
       updatedAt: tracked.updatedAt,
       now,
       userId: interaction.user.id,
       metadata,
     });
-    if (!claimed) {
+    if (!claim.claimed) {
       const current = await trackedMessageService.fetchSyncTrackedMessageWithClaims(
         interaction.message.id,
       );
@@ -637,6 +657,7 @@ export async function handleSyncReadinessRefreshButton(
     }
 
     const startedAt = now;
+    const lockToken = claim.lockToken;
     let releaseMetadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata | null =
       stripRefreshLockMetadata(metadata as SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata);
     try {
@@ -687,20 +708,21 @@ export async function handleSyncReadinessRefreshButton(
         payload,
       });
 
+      const completedAt = new Date();
       releaseMetadata = isSyncTime
         ? buildSyncTimeTrackedMetadata({
             baseMetadata: stripRefreshLockMetadata(metadata as SyncTimeTrackedMetadata),
-            now,
-            successfulRefreshAt: now,
+            now: completedAt,
+            successfulRefreshAt: completedAt,
           })
         : buildStandaloneReadinessMetadata({
             baseMetadata: stripRefreshLockMetadata(metadata as SyncReadinessTrackedMetadata),
-            now,
-            successfulRefreshAt: now,
+            now: completedAt,
+            successfulRefreshAt: completedAt,
           });
 
       console.info(
-        `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} duration_ms=${Date.now() - startedAt.getTime()} tracked_clan_count=${payload.trackedClanCount} failed_clan_count=${failedClanCount}`,
+        `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} duration_ms=${completedAt.getTime() - startedAt.getTime()} tracked_clan_count=${payload.trackedClanCount} failed_clan_count=${failedClanCount}`,
       );
     } catch (err) {
       console.error(
@@ -735,12 +757,18 @@ export async function handleSyncReadinessRefreshButton(
         });
       }
     } finally {
-      if (releaseMetadata) {
+      if (releaseMetadata && lockToken) {
         try {
-          await updateTrackedMessageMetadata({
+          const releasedRows = await updateTrackedMessageMetadataIfLockMatches({
             trackedMessageId: tracked.messageId,
+            lockToken,
             metadata: releaseMetadata,
           });
+          if (releasedRows === 0) {
+            console.info(
+              `[sync-time-fwa-list] refresh_released_stale guild_id=${interaction.guildId} message_id=${tracked.messageId}`,
+            );
+          }
         } catch (err) {
           console.error(
             `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${tracked.messageId} release_error=${formatError(err)}`,

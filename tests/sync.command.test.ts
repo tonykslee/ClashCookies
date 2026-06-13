@@ -539,10 +539,9 @@ describe("/sync readiness direct post", () => {
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
-    vi.spyOn(trackedMessageService, "createSyncReadinessTrackedMessage").mockResolvedValue(undefined);
     vi.spyOn(
       trackedMessageService,
-      "replacePriorSyncReadinessTrackedMessagesForGuild",
+      "replacePriorSyncReadinessTrackedMessagesForGuildAndCreate",
     ).mockResolvedValue(0);
     vi.spyOn(syncTimeFwaClanListViewService, "refreshTrackedClanReadinessState").mockResolvedValue({
       trackedClanCount: 0,
@@ -568,8 +567,9 @@ describe("/sync readiness direct post", () => {
     expect(String(payload.content ?? "")).toBe("# FWA readiness");
     expect(payload.embeds).toHaveLength(1);
     expect(payload.components).toHaveLength(0);
-    expect(trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuild).not.toHaveBeenCalled();
-    expect(trackedMessageService.createSyncReadinessTrackedMessage).not.toHaveBeenCalled();
+    expect(
+      trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate,
+    ).not.toHaveBeenCalled();
   });
 
   it("posts a public readiness dashboard with a public response", async () => {
@@ -587,8 +587,9 @@ describe("/sync readiness direct post", () => {
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.components).toHaveLength(1);
-    expect(trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuild).toHaveBeenCalledTimes(1);
-    expect(trackedMessageService.createSyncReadinessTrackedMessage).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("forces a readiness refresh before rendering when refresh:true is supplied", async () => {
@@ -628,8 +629,9 @@ describe("/sync readiness direct post", () => {
     expect(String(interaction.editReply.mock.calls[0]?.[0] ?? "")).toContain(
       "Failed to refresh the readiness dashboard",
     );
-    expect(trackedMessageService.createSyncReadinessTrackedMessage).not.toHaveBeenCalled();
-    expect(trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuild).not.toHaveBeenCalled();
+    expect(
+      trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate,
+    ).not.toHaveBeenCalled();
   });
 
   it("shows a concise warning when a forced readiness refresh has partial clan failures", async () => {
@@ -650,7 +652,9 @@ describe("/sync readiness direct post", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(String(payload.content ?? "")).toContain("⚠️ Refresh completed with 2 clan refresh failures.");
-    expect(trackedMessageService.createSyncReadinessTrackedMessage).not.toHaveBeenCalled();
+    expect(
+      trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate,
+    ).not.toHaveBeenCalled();
   });
 });
 

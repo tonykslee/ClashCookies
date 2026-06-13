@@ -43,6 +43,7 @@ import {
   buildSyncReadinessMessagePayload,
   handleSyncTimeFwaClanListRefreshButton,
   SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
+  updateTrackedMessageMetadataIfLockMatches,
   tryClaimRefreshLock,
 } from "../src/services/SyncTimeFwaClanListViewService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
@@ -217,7 +218,7 @@ describe("SyncTimeFwaClanListViewService", () => {
         userId: "user-1",
         metadata: metadata as any,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toMatchObject({ claimed: true, lockToken: expect.any(String) });
     await expect(
       tryClaimRefreshLock({
         trackedMessageId: "sync-message-1",
@@ -226,7 +227,7 @@ describe("SyncTimeFwaClanListViewService", () => {
         userId: "user-2",
         metadata: metadata as any,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ claimed: false, lockToken: expect.any(String) });
     expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(2);
   });
 
@@ -246,7 +247,7 @@ describe("SyncTimeFwaClanListViewService", () => {
         userId: "user-2",
         metadata: metadata as any,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ claimed: false, lockToken: expect.any(String) });
     expect(prismaMock.trackedMessage.updateMany).not.toHaveBeenCalled();
   });
 
@@ -267,8 +268,63 @@ describe("SyncTimeFwaClanListViewService", () => {
         userId: "user-2",
         metadata: metadata as any,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toMatchObject({ claimed: true, lockToken: expect.any(String) });
     expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents a stale worker from clearing a newer worker's refresh metadata", async () => {
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 0 });
+    const baseMetadata = {
+      readinessEnabled: true,
+      createdAtIso: "2026-06-10T12:00:00.000Z",
+      lastRefreshedAtIso: "2026-06-10T12:00:00.000Z",
+      lastSuccessfulRefreshAtIso: "2026-06-10T12:00:00.000Z",
+    };
+    const staleMetadata = {
+      ...baseMetadata,
+      refreshInProgressAtIso: "2026-06-10T11:54:30.000Z",
+      refreshInProgressByUserId: "worker-a",
+    };
+    const claimA = await tryClaimRefreshLock({
+      trackedMessageId: "sync-message-1",
+      updatedAt: new Date("2026-06-10T12:00:00.000Z"),
+      now: new Date("2026-06-10T12:01:00.000Z"),
+      userId: "worker-a",
+      metadata: baseMetadata as any,
+    });
+    const claimB = await tryClaimRefreshLock({
+      trackedMessageId: "sync-message-1",
+      updatedAt: new Date("2026-06-10T12:00:00.000Z"),
+      now: new Date("2026-06-10T12:06:02.000Z"),
+      userId: "worker-b",
+      metadata: staleMetadata as any,
+    });
+    expect(claimA.claimed).toBe(true);
+    expect(claimB.claimed).toBe(true);
+    expect(claimA.lockToken).not.toBe(claimB.lockToken);
+
+    const releaseRows = await updateTrackedMessageMetadataIfLockMatches({
+      trackedMessageId: "sync-message-1",
+      lockToken: claimA.lockToken,
+      metadata: {
+        ...baseMetadata,
+        lastRefreshedAtIso: "2026-06-10T12:06:10.000Z",
+        lastSuccessfulRefreshAtIso: "2026-06-10T12:06:10.000Z",
+      } as any,
+    });
+
+    expect(releaseRows).toBe(0);
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(3);
+    const releaseCall = prismaMock.trackedMessage.updateMany.mock.calls[2]?.[0] as any;
+    expect(releaseCall.where).toMatchObject({
+      messageId: "sync-message-1",
+      metadata: {
+        path: ["refreshLockToken"],
+        equals: claimA.lockToken,
+      },
+    });
   });
 
   it("refreshes the same sync-time message after reloading clan list state", async () => {
@@ -297,6 +353,7 @@ describe("SyncTimeFwaClanListViewService", () => {
         guildId: "guild-1",
         channelId: "channel-1",
         messageId: "sync-message-1",
+        updatedAt: new Date("2026-06-10T12:00:00.000Z"),
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
         referenceId: null,
@@ -315,6 +372,12 @@ describe("SyncTimeFwaClanListViewService", () => {
       mockReadinessState();
 
       const interaction = makeButtonInteraction();
+      interaction.message.edit
+        .mockImplementationOnce(async () => undefined)
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date("2026-06-10T11:30:05.000Z"));
+          return undefined;
+        });
 
       await handleSyncTimeFwaClanListRefreshButton(interaction as any);
 
@@ -334,19 +397,42 @@ describe("SyncTimeFwaClanListViewService", () => {
         SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
       );
       expect(payload.components[0].toJSON().components[0].label).toBe("Refresh");
-      expect(prismaMock.trackedMessage.update).toHaveBeenCalledTimes(1);
-      const updateArg = prismaMock.trackedMessage.update.mock.calls[0]?.[0] as any;
-      expect(updateArg.where).toEqual({ messageId: "sync-message-1" });
-      expect(updateArg.data.metadata).toMatchObject({
+      expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(2);
+      const claimArg = prismaMock.trackedMessage.updateMany.mock.calls[0]?.[0] as any;
+      expect(claimArg.where).toEqual({
+        messageId: "sync-message-1",
+        updatedAt: new Date("2026-06-10T12:00:00.000Z"),
+      });
+      expect(claimArg.data.metadata).toMatchObject({
         syncTimeIso: "2026-06-10T12:00:00.000Z",
         syncEpochSeconds: 1749556800,
         roleId: "123456789012345678",
         fwaClanListEnabled: true,
         fwaClanListRefreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
-        fwaClanListLastRefreshedAtIso: expect.any(String),
+        fwaClanListLastRefreshedAtIso: "2026-06-10T11:30:00.000Z",
+        fwaClanListRefreshLockToken: expect.any(String),
+        fwaClanListRefreshInProgressAtIso: "2026-06-10T11:30:00.000Z",
+        fwaClanListRefreshInProgressByUserId: "user-1",
       });
-      expect(Array.isArray(updateArg.data.metadata.clans)).toBe(true);
-      expect(updateArg.data.metadata.clans).toHaveLength(1);
+      const releaseArg = prismaMock.trackedMessage.updateMany.mock.calls[1]?.[0] as any;
+      expect(releaseArg.where).toMatchObject({
+        messageId: "sync-message-1",
+        metadata: {
+          path: ["fwaClanListRefreshLockToken"],
+          equals: claimArg.data.metadata.fwaClanListRefreshLockToken,
+        },
+      });
+      expect(releaseArg.data.metadata).toMatchObject({
+        syncTimeIso: "2026-06-10T12:00:00.000Z",
+        syncEpochSeconds: 1749556800,
+        roleId: "123456789012345678",
+        fwaClanListEnabled: true,
+        fwaClanListRefreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
+        fwaClanListLastRefreshedAtIso: "2026-06-10T11:30:05.000Z",
+        fwaClanListLastSuccessfulRefreshAtIso: "2026-06-10T11:30:05.000Z",
+      });
+      expect(Array.isArray(claimArg.data.metadata.clans)).toBe(true);
+      expect(claimArg.data.metadata.clans).toHaveLength(1);
       expect(interaction.reply).not.toHaveBeenCalled();
       expect(interaction.followUp).not.toHaveBeenCalled();
       syncAllSpy.mockRestore();

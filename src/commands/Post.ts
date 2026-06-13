@@ -475,11 +475,7 @@ async function handleSyncReadinessSubcommand(
 
   if (isPublic) {
     const message = await interaction.fetchReply();
-    await trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuild({
-      guildId: interaction.guildId!,
-      currentMessageId: message.id,
-    });
-    await trackedMessageService.createSyncReadinessTrackedMessage({
+    await trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate({
       guildId: interaction.guildId!,
       channelId: message.channelId,
       messageId: message.id,
