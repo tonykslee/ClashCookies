@@ -113,6 +113,8 @@ function buildSnapshotRow(
     warPosition: null,
     warSourceUpdatedAt: null,
     clanMembershipObservedAt: null,
+    raidClanTag: null,
+    raidClanName: null,
     cwlClanTag: null,
     cwlClanName: null,
     warActive: false,
@@ -1313,6 +1315,115 @@ describe("TodoSnapshotService", () => {
     const liveUpdate = getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289");
     expect(liveUpdate.clanTag).toBeNull();
     expect(liveUpdate.clanName).toBeNull();
+  });
+
+  it("keeps an active WAR snapshot in tracked cadence when the current membership moved to an untracked clan", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#2QG2C08UP",
+        clanName: "Moved Clan",
+        warActive: true,
+        warClanTag: "#PQL0289",
+        warClanName: "Tracked Clan",
+        warPosition: 8,
+        warPhase: "battle day",
+        warSourceUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Tracked Clan" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#2QG2C08UP", name: "Moved Clan" },
+        townHallLevel: 15,
+      }),
+      getClanCapitalRaidSeasons: vi.fn().mockResolvedValue([
+        {
+          startTime: "20260325T070000.000Z",
+          endTime: "20260328T070000.000Z",
+          members: [],
+        },
+      ]),
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        attacksPerMember: 2,
+        startTime: "20260325T120000.000Z",
+        endTime: "20260326T120000.000Z",
+        clan: {
+          tag: "#PQL0289",
+          name: "Tracked Clan",
+          members: [
+            {
+              tag: "#PYLQ0289",
+              name: "Alpha",
+              townhallLevel: 15,
+              mapPosition: 8,
+              attacks: [{ order: 1 }],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent",
+          members: [],
+        },
+      }),
+    };
+
+    const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+      cadence: "tracked",
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(result.trackedPlayerCount).toBe(1);
+    expect(result.nonTrackedPlayerCount).toBe(0);
+    expect(cocService.getCurrentWar).toHaveBeenCalledWith("#PQL0289");
+    const warUpdate = getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289");
+    expect(warUpdate.clanTag).toBe("#2QG2C08UP");
+    expect(warUpdate.clanName).toBe("Moved Clan");
+    expect(warUpdate.warClanTag).toBe("#PQL0289");
+    expect(warUpdate.warClanName).toBe("Tracked Clan");
+    expect(warUpdate.warActive).toBe(true);
+    expect(warUpdate.warPosition).toBe(8);
   });
 
   it("preserves existing live fetch behavior when no observed map is provided", async () => {
@@ -2542,7 +2653,9 @@ describe("TodoSnapshotService", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
-    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Clan One" },
+    ]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
@@ -2571,6 +2684,8 @@ describe("TodoSnapshotService", () => {
         update: expect.objectContaining({
           raidActive: true,
           raidAttacksUsed: 3,
+          raidClanTag: "#PQL0289",
+          raidClanName: "Clan One",
         }),
       }),
     );
@@ -2590,10 +2705,86 @@ describe("TodoSnapshotService", () => {
         update: expect.objectContaining({
           raidActive: false,
           raidAttacksUsed: 0,
+          raidClanTag: null,
+          raidClanName: null,
         }),
       }),
     );
     expect(cocService.getClanCapitalRaidSeasons).not.toHaveBeenCalled();
+  });
+
+  it("preserves the raid clan context from fallback raid-season membership when current membership moved elsewhere", async () => {
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#2QG2C08UP",
+        clanName: "Moved Clan",
+        raidActive: false,
+        raidAttacksUsed: 0,
+        raidClanTag: null,
+        raidClanName: null,
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        playerName: "Alpha",
+        sourceSyncedAt: new Date("2026-03-27T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([
+      { clanTag: "#PQL0289", name: "Clan A" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#2QG2C08UP", name: "Moved Clan" },
+        townHallLevel: 15,
+      }),
+      getClanCapitalRaidSeasons: vi.fn().mockImplementation(async (clanTag: string) => {
+        if (clanTag === "#PQL0289") {
+          return [
+            {
+              startTime: "20260327T070000.000Z",
+              endTime: "20260330T070000.000Z",
+              members: [{ tag: "#PYLQ0289", attacks: 5 }],
+            },
+          ];
+        }
+        return [
+          {
+            startTime: "20260327T070000.000Z",
+            endTime: "20260330T070000.000Z",
+            members: [],
+          },
+        ];
+      }),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 29, 12, 0, 0, 0),
+    });
+
+    const raidUpdate = getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289");
+    expect(raidUpdate.clanTag).toBe("#2QG2C08UP");
+    expect(raidUpdate.clanName).toBe("Moved Clan");
+    expect(raidUpdate.raidActive).toBe(true);
+    expect(raidUpdate.raidClanTag).toBe("#PQL0289");
+    expect(raidUpdate.raidClanName).toBe("Clan A");
+    expect(raidUpdate.raidAttacksUsed).toBe(5);
   });
 
   it("preserves the active war clan context when a linked account moves clans", async () => {

@@ -44,6 +44,8 @@ function snapshotRow(input: {
   playerTag: string;
   clanTag?: string | null;
   clanName?: string | null;
+  warClanTag?: string | null;
+  warClanName?: string | null;
   cwlClanTag?: string | null;
   cwlClanName?: string | null;
   warActive?: boolean;
@@ -58,6 +60,8 @@ function snapshotRow(input: {
   raidAttacksUsed?: number;
   raidAttacksMax?: number;
   raidEndsAt?: Date | null;
+  raidClanTag?: string | null;
+  raidClanName?: string | null;
   gamesActive?: boolean;
   gamesPoints?: number | null;
   gamesTarget?: number | null;
@@ -69,6 +73,8 @@ function snapshotRow(input: {
     playerName: `Player ${input.playerTag}`,
     clanTag: input.clanTag ?? "#PYLQ0289",
     clanName: input.clanName ?? "Clan A",
+    warClanTag: input.warClanTag ?? null,
+    warClanName: input.warClanName ?? null,
     cwlClanTag: input.cwlClanTag ?? "#QGRJ2222",
     cwlClanName: input.cwlClanName ?? "CWL Clan",
     warActive: input.warActive ?? false,
@@ -85,6 +91,8 @@ function snapshotRow(input: {
     raidAttacksUsed: input.raidAttacksUsed ?? 0,
     raidAttacksMax: input.raidAttacksMax ?? 6,
     raidEndsAt: input.raidEndsAt ?? null,
+    raidClanTag: input.raidClanTag ?? null,
+    raidClanName: input.raidClanName ?? null,
     gamesActive: input.gamesActive ?? false,
     gamesPoints: input.gamesPoints ?? 1000,
     gamesTarget: input.gamesTarget ?? 4000,
@@ -168,8 +176,10 @@ describe("UserActivityReminderSchedulerService", () => {
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       snapshotRow({
         playerTag: "#P1111111",
-        clanTag: "#PYLQ0289",
-        clanName: "War Clan",
+        clanTag: "#2QG2C08UP",
+        clanName: "Current Clan",
+        warClanTag: "#PYLQ0289",
+        warClanName: "War Clan",
         warActive: true,
         warEndsAt: new Date(nowMs + 30 * 60 * 1000),
       }),
@@ -182,8 +192,10 @@ describe("UserActivityReminderSchedulerService", () => {
       }),
       snapshotRow({
         playerTag: "#P3333333",
-        clanTag: "#2QG2C08UP",
-        clanName: "Raid Clan",
+        clanTag: "#OTHER0001",
+        clanName: "Current Clan",
+        raidClanTag: "#2QG2C08UP",
+        raidClanName: "Raid Clan",
         raidActive: true,
         raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
       }),
@@ -239,6 +251,11 @@ describe("UserActivityReminderSchedulerService", () => {
         "GAMES:#P2YLC8R0:cycle-2026-03",
       ]),
     );
+    expect(
+      dispatch.dispatchReminder.mock.calls.find(
+        (call: any[]) => call[1].reminderType === UserActivityReminderType.RAIDS,
+      )?.[1],
+    ).toEqual(expect.objectContaining({ clanName: "Raid Clan" }));
     expect(prismaMock.userActivityReminderDelivery.update).toHaveBeenCalledWith({
       where: { id: "delivery-1" },
       data: {
@@ -278,14 +295,20 @@ describe("UserActivityReminderSchedulerService", () => {
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       snapshotRow({
         playerTag: "#P1111111",
-        clanTag: "#PYLQ0289",
-        clanName: "War Clan",
+        clanTag: "#2QG2C08UP",
+        clanName: "Current Clan",
+        warClanTag: "#PYLQ0289",
+        warClanName: "War Clan",
         warActive: true,
         warEndsAt: prepStart,
       }),
     ]);
     const dispatch = {
-      dispatchReminder: vi.fn(),
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-1",
+        deliverySurface: "DM:123",
+      }),
     };
 
     const counts = await runUserActivityReminderSchedulerCycle({
@@ -334,8 +357,10 @@ describe("UserActivityReminderSchedulerService", () => {
     todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
       snapshotRow({
         playerTag: "#P1111111",
-        clanTag: "#PYLQ0289",
-        clanName: "War Clan",
+        clanTag: "#2QG2C08UP",
+        clanName: "Current Clan",
+        warClanTag: "#PYLQ0289",
+        warClanName: "War Clan",
         warActive: true,
         warEndsAt: warEnd,
       }),
@@ -367,8 +392,79 @@ describe("UserActivityReminderSchedulerService", () => {
       {},
       expect.objectContaining({
         reminderType: UserActivityReminderType.WAR,
+        clanName: "War Clan",
         eventEndsAt: warEnd,
         eventInstanceKey: "WAR:#PYLQ0289:war-id:992",
+      }),
+    );
+  });
+
+  it("falls back to the legacy current clan when warClanTag is missing on an active WAR snapshot", async () => {
+    const nowMs = Date.parse("2026-03-28T11:30:00.000Z");
+    const warEnd = new Date("2026-03-28T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war-legacy",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#P1111111",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        warId: 993,
+        startTime: new Date("2026-03-27T12:00:00.000Z"),
+        endTime: warEnd,
+        state: "inWar",
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P1111111",
+        clanTag: "#PYLQ0289",
+        clanName: "Legacy Clan",
+        warClanTag: null,
+        warClanName: null,
+        warActive: true,
+        warEndsAt: warEnd,
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-legacy-war" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-legacy-war",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.WAR,
+        clanName: "Legacy Clan",
+        eventEndsAt: warEnd,
+        eventInstanceKey: "WAR:#PYLQ0289:war-id:993",
       }),
     );
   });

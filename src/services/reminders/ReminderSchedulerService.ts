@@ -53,6 +53,8 @@ type ReminderContextBundle = {
 type TimedTargetContextRow = {
   clanTag: string | null;
   clanName: string | null;
+  raidClanTag: string | null;
+  raidClanName: string | null;
   cwlClanTag: string | null;
   cwlClanName: string | null;
   raidActive: boolean;
@@ -1209,6 +1211,8 @@ async function resolveReminderContextBundle(input: {
       select: {
         clanTag: true,
         clanName: true,
+        raidClanTag: true,
+        raidClanName: true,
         cwlClanTag: true,
         cwlClanName: true,
         raidActive: true,
@@ -1504,6 +1508,25 @@ function ingestTimedTargetContexts(input: {
       clanTag: fwaClanTag,
       clanType: ReminderTargetClanType.FWA,
       clanName: fwaClanName,
+    });
+  }
+
+  const persistedRaidClanTag = normalizeClanTag(input.row.raidClanTag ?? "");
+  const raidClanTag = persistedRaidClanTag || (input.row.raidActive ? fwaClanTag : "");
+  const raidClanName =
+    sanitizeDisplayText(input.row.raidClanName) ??
+    (persistedRaidClanTag
+      ? input.clanNameByTag.get(raidClanTag) ?? null
+      : raidClanTag
+        ? fwaClanName
+        : null) ??
+    null;
+  if (raidClanTag) {
+    input.clanNameByTag.set(raidClanTag, input.clanNameByTag.get(raidClanTag) ?? raidClanName);
+    upsert({
+      clanTag: raidClanTag,
+      clanType: ReminderTargetClanType.FWA,
+      clanName: raidClanName,
     });
   }
 

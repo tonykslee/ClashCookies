@@ -626,6 +626,10 @@ export async function buildTodoPagesForUser(input: {
         ? normalizeClanTag(snapshotWarClanTag ?? "") ||
           normalizeClanTag(snapshot?.clanTag ?? "")
         : normalizeClanTag(snapshotWarClanTag ?? "")) || null;
+    const resolvedRaidClanTag =
+      normalizeClanTag(snapshot?.raidClanTag ?? "") ||
+      (snapshot?.raidActive ? normalizeClanTag(snapshot?.clanTag ?? "") : "") ||
+      null;
     const warTrackedClanActive = Boolean(
       resolvedWarClanTag && activeTrackedCurrentWarByClanTag.has(resolvedWarClanTag),
     );
@@ -633,8 +637,8 @@ export async function buildTodoPagesForUser(input: {
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
-    const currentTrackedClanActive = Boolean(
-      resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
+    const currentTrackedWarClanActive = Boolean(
+      resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
     );
     const inValidatedWarMemberSet = Boolean(warTrackedClanActive && trackedWarMember);
     const resolvedWarPosition = snapshot?.warActive
@@ -690,9 +694,9 @@ export async function buildTodoPagesForUser(input: {
         ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
     const raidClanTracked = Boolean(
-      resolvedClanTag &&
-        (trackedClanTagSet.has(resolvedClanTag) ||
-          raidTrackedClanTagSet.has(resolvedClanTag)),
+      resolvedRaidClanTag &&
+        (trackedClanTagSet.has(resolvedRaidClanTag) ||
+          raidTrackedClanTagSet.has(resolvedRaidClanTag)),
     );
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
@@ -711,12 +715,19 @@ export async function buildTodoPagesForUser(input: {
               .filter((value): value is number => Number.isFinite(value)),
           )
         : null,
-      currentTrackedClanActive &&
+      currentTrackedWarClanActive &&
       currentMembershipFresh &&
       Boolean(snapshot) &&
       !snapshot?.warActive &&
       !inValidatedWarMemberSet
         ? toTimestampMs(snapshotClanMembershipObservedAt)
+        : null,
+      currentTrackedWarClanActive &&
+      currentMembershipFresh &&
+      Boolean(snapshot) &&
+      !snapshot?.warActive &&
+      !inValidatedWarMemberSet
+        ? currentWarIdentityByClanTag.get(resolvedClanTag ?? "")?.updatedAt.getTime() ?? null
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const cwlFreshnessCandidates = [
@@ -764,9 +775,13 @@ export async function buildTodoPagesForUser(input: {
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
-      raidClanTracked,
+      raidClanTracked: Boolean(
+        resolvedRaidClanTag &&
+          (trackedClanTagSet.has(resolvedRaidClanTag) ||
+            raidTrackedClanTagSet.has(resolvedRaidClanTag)),
+      ),
       inValidatedWarMemberSet,
-      activeTrackedWarClan: currentTrackedClanActive,
+      activeTrackedWarClan: currentTrackedWarClanActive,
       warTrackedClanActive,
       snapshot,
       missingSnapshot,

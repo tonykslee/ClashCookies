@@ -59,6 +59,8 @@ function setTodoSnapshotRows(input: {
   timedRows?: Array<{
     clanTag: string | null;
     clanName: string | null;
+    raidClanTag?: string | null;
+    raidClanName?: string | null;
     cwlClanTag: string | null;
     cwlClanName: string | null;
     raidActive: boolean;
@@ -184,8 +186,10 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     setTodoSnapshotRows({
       timedRows: [
         {
-          clanTag: "#QGRJ2222",
-          clanName: "Raid Clan 1",
+          clanTag: "#OTHER0001",
+          clanName: "Current Clan",
+          raidClanTag: "#QGRJ2222",
+          raidClanName: "Raid Clan 1",
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
@@ -197,6 +201,8 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
         {
           clanTag: "#2QG2C08UP",
           clanName: "Raid Clan 2",
+          raidClanTag: null,
+          raidClanName: null,
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: false,
@@ -250,8 +256,14 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(3);
-    expect(dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload.clanTag).sort()).toEqual(
-      ["#P2YLC8R0", "#PYLQ0289", "#QGRJ2222"],
+    const payloads = dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload);
+    expect(payloads.map((payload: any) => payload.clanTag).sort()).toEqual([
+      "#P2YLC8R0",
+      "#PYLQ0289",
+      "#QGRJ2222",
+    ]);
+    expect(payloads.find((payload: any) => payload.clanTag === "#QGRJ2222")).toEqual(
+      expect.objectContaining({ clanName: "Raid Clan 1" }),
     );
   });
 
@@ -825,6 +837,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
 
 describe("ReminderSchedulerService startup logging", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 

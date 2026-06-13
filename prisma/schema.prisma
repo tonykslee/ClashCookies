@@ -336,6 +336,8 @@ model TodoPlayerSnapshot {
   warPosition     Int?
   warSourceUpdatedAt DateTime?
   clanMembershipObservedAt DateTime?
+  raidClanTag     String?
+  raidClanName    String?
   cwlClanTag      String?
   cwlClanName     String?
   warActive       Boolean  @default(false)

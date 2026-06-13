@@ -221,7 +221,11 @@ export async function runUserActivityReminderSchedulerCycle(input: {
 
   const warClanTags = [...new Set(
     snapshots
-      .map((row) => normalizeClanTag(row.clanTag ?? ""))
+      .map((row) =>
+        normalizeClanTag(row.warClanTag ?? "") ||
+        (row.warActive ? normalizeClanTag(row.clanTag ?? "") : "") ||
+        "",
+      )
       .filter(Boolean),
   )];
   const currentWarRows =
@@ -405,7 +409,10 @@ function resolveReminderEventContext(input: {
   nowMs: number;
 }): ResolvedReminderEventContext | null {
   if (input.ruleType === UserActivityReminderType.WAR) {
-    const clanTag = normalizeClanTag(input.snapshot.clanTag ?? "");
+    const clanTag =
+      normalizeClanTag(input.snapshot.warClanTag ?? "") ||
+      (input.snapshot.warActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
+      "";
     if (!clanTag) return null;
     const war = input.currentWarByClanTag.get(clanTag) ?? null;
     const eventEndsAt = war?.endTime ?? input.snapshot.warEndsAt ?? null;
@@ -414,12 +421,16 @@ function resolveReminderEventContext(input: {
     const eventInstanceKey = war
       ? buildWarEventInstanceKey(clanTag, war)
       : `WAR:${clanTag}:${eventEndsAt.getTime()}`;
+    const clanName =
+      sanitizeDisplayText(input.snapshot.warClanName) ||
+      (input.snapshot.warActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+      null;
     return {
       eventInstanceKey,
       eventEndsAt,
       playerTag: input.snapshot.playerTag,
       playerName: sanitizeDisplayText(input.snapshot.playerName),
-      clanName: sanitizeDisplayText(input.snapshot.clanName),
+      clanName,
     };
   }
 
@@ -441,13 +452,19 @@ function resolveReminderEventContext(input: {
     if (!input.snapshot.raidActive || !input.snapshot.raidEndsAt) return null;
     if (input.snapshot.raidEndsAt.getTime() <= input.nowMs) return null;
     const clanTag =
-      normalizeClanTag(input.snapshot.clanTag ?? "") || input.snapshot.playerTag;
+      normalizeClanTag(input.snapshot.raidClanTag ?? "") ||
+      (input.snapshot.raidActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
+      input.snapshot.playerTag;
+    const clanName =
+      sanitizeDisplayText(input.snapshot.raidClanName) ||
+      (input.snapshot.raidActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+      null;
     return {
       eventInstanceKey: `RAIDS:${clanTag}:${input.snapshot.raidEndsAt.getTime()}`,
       eventEndsAt: input.snapshot.raidEndsAt,
       playerTag: input.snapshot.playerTag,
       playerName: sanitizeDisplayText(input.snapshot.playerName),
-      clanName: sanitizeDisplayText(input.snapshot.clanName),
+      clanName,
     };
   }
 
