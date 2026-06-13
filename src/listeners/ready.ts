@@ -56,6 +56,12 @@ import {
   FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
   FwaMatchChecklistAutoPostSchedulerService,
 } from "../services/fwa/matchChecklistAutoPostSchedulerService";
+import {
+  DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
+  SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
+  SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY,
+  ScheduledSyncPostSchedulerService,
+} from "../services/ScheduledSyncPostSchedulerService";
 import { todoSnapshotService } from "../services/TodoSnapshotService";
 import { cwlStateService } from "../services/CwlStateService";
 import { ReminderSchedulerService } from "../services/reminders/ReminderSchedulerService";
@@ -101,6 +107,7 @@ const BOT_POLL_STATUS_JOB_KEYS = {
   fwaBaseSwapDmReminderScheduler: "fwa_base_swap_dm_reminder_scheduler",
   fwaBasesChecklistReminderScheduler: "fwa_bases_checklist_reminder_scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
+  scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY,
   mirrorSyncCycle: "mirror_sync_cycle",
   userActivityReminderScheduler: "user_activity_reminder_scheduler",
 } as const;
@@ -115,6 +122,7 @@ const BOT_POLL_STATUS_DISPLAY_NAMES = {
   fwaBaseSwapDmReminderScheduler: "FWA base-swap DM reminder scheduler",
   fwaBasesChecklistReminderScheduler: "FWA bases checklist reminder scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME,
+  scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
   mirrorSyncCycle: "Mirror sync",
   userActivityReminderScheduler: "User activity reminder scheduler",
 } as const;
@@ -887,6 +895,56 @@ export default (client: Client, cocService: CoCService): void => {
       );
     }
 
+    if (activePollingEnabled) {
+      startupPhase = "scheduled_sync_post_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode });
+      const scheduledSyncPostScheduler = new ScheduledSyncPostSchedulerService(client);
+      await markPollJobStarted({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.scheduledSyncPostScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.scheduledSyncPostScheduler,
+        intervalMs: DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
+        nextDueAt: new Date(Date.now() + DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS),
+        metadata: { started: true },
+      });
+      const startResult = scheduledSyncPostScheduler.start();
+      if (startResult.started) {
+        await markPollJobSucceeded({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.scheduledSyncPostScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.scheduledSyncPostScheduler,
+          intervalMs: DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS),
+          metadata: { started: true },
+        });
+        console.log("Scheduled sync post scheduler loop initialized.");
+      } else {
+        await markPollJobSkipped({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.scheduledSyncPostScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.scheduledSyncPostScheduler,
+          intervalMs: DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS),
+          metadata: {
+            started: false,
+            reason: startResult.reason,
+          },
+        });
+        dozzleLog.info(
+          `[polling-mode] event=poller_skipped job=scheduled_sync_post_scheduler mode=${startResult.reason}`,
+        );
+      }
+    } else {
+      startupPhase = "scheduled_sync_post_scheduler";
+      await markStartupPhase(startupPhase, { pollingMode, skipped: true });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.scheduledSyncPostScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.scheduledSyncPostScheduler,
+        intervalMs: null,
+        metadata: { reason: "mirror" },
+      });
+      dozzleLog.info(
+        "[polling-mode] event=poller_skipped job=scheduled_sync_post_scheduler mode=mirror",
+      );
+    }
+
     const runRecruitmentReminders = async () => {
       const now = new Date();
       await markPollJobStarted({
@@ -1507,6 +1565,12 @@ export default (client: Client, cocService: CoCService): void => {
         intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
         metadata: { reason: "mirror" },
       });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.scheduledSyncPostScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.scheduledSyncPostScheduler,
+        intervalMs: DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
+        metadata: { reason: "mirror" },
+      });
       console.log(
         "[polling-mode] event=poller_skipped job=war_event_poll_cycle mode=mirror",
       );
@@ -1518,6 +1582,9 @@ export default (client: Client, cocService: CoCService): void => {
       );
       console.log(
         "[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=mirror",
+      );
+      console.log(
+        "[polling-mode] event=poller_skipped job=scheduled_sync_post_scheduler mode=mirror",
       );
     }
 
