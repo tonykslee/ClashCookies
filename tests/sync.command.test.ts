@@ -1,10 +1,11 @@
 import { ApplicationCommandOptionType, ChannelType } from "discord.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { SettingsService } from "../src/services/SettingsService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 import * as syncTimeFwaClanListViewService from "../src/services/SyncTimeFwaClanListViewService";
 import { SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID } from "../src/services/SyncTimeFwaClanListViewService";
+import { scheduledSyncPostService } from "../src/services/ScheduledSyncPostService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -160,6 +161,8 @@ function makeRunInteraction(input: {
 function makeSubmitInteraction(input: {
   timezone: string;
   role: string;
+  date?: string;
+  time?: string;
   currentChannel?: ReturnType<typeof makeSendableChannel>;
   destinationChannel?: ReturnType<typeof makeSendableChannel> | null;
 }) {
@@ -203,8 +206,8 @@ function makeSubmitInteraction(input: {
     channel: currentChannel,
     fields: {
       getTextInputValue: vi.fn((name: string) => {
-        if (name === "date") return "2026-04-08";
-        if (name === "time") return "20:30";
+        if (name === "date") return input.date ?? "2026-06-15";
+        if (name === "time") return input.time ?? "20:30";
         if (name === "timezone") return input.timezone;
         if (name === "role") return input.role;
         return "";
@@ -215,6 +218,10 @@ function makeSubmitInteraction(input: {
     reply: vi.fn().mockResolvedValue(undefined),
   };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function makeStatusMember(input: {
   admin?: boolean;
@@ -676,9 +683,33 @@ describe("/sync time post modal submit", () => {
     vi.spyOn(CommandPermissionService.prototype, "getFwaLeaderRoleId").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
     vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
-    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockResolvedValue(undefined);
     vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
+    vi.spyOn(scheduledSyncPostService, "scheduleSyncTimePost").mockResolvedValue({
+      schedule: {
+        id: "scheduled-sync-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime: new Date("2026-06-16T01:30:00.000Z"),
+        publishAt: new Date("2026-06-15T23:30:00.000Z"),
+        timezone: "America/Chicago",
+        status: "PENDING",
+        claimToken: null,
+        claimedAt: null,
+        publishedMessageId: null,
+        publishedAt: null,
+        attemptCount: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+      action: "created",
+    } as any);
   });
 
   it("uses the submitted modal timezone even when the slash arg had a different seed", async () => {
@@ -693,21 +724,20 @@ describe("/sync time post modal submit", () => {
       "user_timezone:user-1",
       "America/Chicago",
     );
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-1",
-        metadata: expect.objectContaining({
-          syncEpochSeconds: expect.any(Number),
-        }),
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        timezone: "America/Chicago",
+        publishAt: new Date("2026-06-15T23:30:00.000Z"),
       }),
     );
-    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
-    expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("America/Chicago"),
-    );
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("scheduled"));
   });
 
-  it("posts to the typed sync bot-log destination channel when configured", async () => {
+  it("schedules to the typed sync bot-log destination channel when configured", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
       if (key === "bot_logs_channel:guild-1:sync") return "222222222222222222";
       if (key.startsWith("active_sync_post:")) return null;
@@ -728,103 +758,15 @@ describe("/sync time post modal submit", () => {
     await handlePostModalSubmit(interaction as any);
 
     expect(interaction.channel.send).not.toHaveBeenCalled();
-    expect(destinationChannel.send).toHaveBeenCalledTimes(1);
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+    expect(destinationChannel.send).not.toHaveBeenCalled();
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "222222222222222222",
       }),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("Posted in <#222222222222222222>."),
+      expect.stringContaining("Will publish in <#222222222222222222>."),
     );
-  });
-
-  it("attaches the shared FWA readiness embed and refresh button to the sync-time post", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue([
-      {
-        tag: "#2QG2C08UP",
-        name: "Alpha Clan",
-        shortName: "AC",
-      },
-    ]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([
-      {
-        clanTag: "#2QG2C08UP",
-        playerTag: "#PYLQ0289",
-        playerName: "Player One",
-        townHall: 16,
-        weight: 150000,
-        sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
-      },
-    ]);
-    prismaMock.heatMapRef.findMany.mockResolvedValueOnce([]);
-    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
-    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
-    prismaMock.weightInputDeferment.findMany.mockResolvedValueOnce([]);
-    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValueOnce([]);
-
-    const interaction = makeSubmitInteraction({
-      timezone: "America/Chicago",
-      role: "<@&123456789012345678>",
-    });
-
-    await handlePostModalSubmit(interaction as any);
-
-    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
-    const payload = interaction.channel.send.mock.calls[0]?.[0] as any;
-    expect(String(payload.content ?? "")).toContain("# Sync time :gem:");
-    expect(payload.embeds).toHaveLength(1);
-    expect(payload.embeds[0].toJSON().title).toBe("FWA Readiness (1)");
-    expect(payload.components).toHaveLength(1);
-    expect(payload.components[0].toJSON().components[0].custom_id).toBe(
-      SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
-    );
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          fwaClanListEnabled: true,
-          fwaClanListRefreshExpiresAtIso: expect.any(String),
-          fwaClanListLastRefreshedAtIso: expect.any(String),
-        }),
-      }),
-    );
-  });
-
-  it("posts the sync-time message normally if the clan-list render fails", async () => {
-    const renderSpy = vi
-      .spyOn(syncTimeFwaClanListViewService, "buildSyncTimeFwaClanListMessagePayload")
-      .mockRejectedValueOnce(new Error("render blew up"));
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const interaction = makeSubmitInteraction({
-      timezone: "America/Chicago",
-      role: "<@&123456789012345678>",
-    });
-
-    await handlePostModalSubmit(interaction as any);
-
-    expect(renderSpy).toHaveBeenCalledTimes(1);
-    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
-    const payload = interaction.channel.send.mock.calls[0]?.[0] as any;
-    expect(String(payload.content ?? "")).toContain("# Sync time :gem:");
-    expect(payload.embeds ?? []).toHaveLength(0);
-    expect(payload.components ?? []).toHaveLength(0);
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          syncTimeIso: expect.any(String),
-          syncEpochSeconds: expect.any(Number),
-          roleId: "123456789012345678",
-          clans: expect.any(Array),
-        }),
-      }),
-    );
-    const metadata = (trackedMessageService.createSyncTimeTrackedMessage as any).mock.calls[0]?.[0]
-      ?.metadata;
-    expect(metadata.fwaClanListEnabled).toBeUndefined();
-    expect(consoleErrorSpy.mock.calls.flat().join(" ")).toContain("[sync-time-fwa-list] render_failed");
-    renderSpy.mockRestore();
-    consoleErrorSpy.mockRestore();
   });
 
   it("falls back to the legacy saved destination channel when typed sync is not configured", async () => {
@@ -849,8 +791,8 @@ describe("/sync time post modal submit", () => {
     await handlePostModalSubmit(interaction as any);
 
     expect(interaction.channel.send).not.toHaveBeenCalled();
-    expect(destinationChannel.send).toHaveBeenCalledTimes(1);
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+    expect(destinationChannel.send).not.toHaveBeenCalled();
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-2",
       }),
@@ -881,14 +823,33 @@ describe("/sync time post modal submit", () => {
     await handlePostModalSubmit(interaction as any);
 
     expect(deleteSpy).toHaveBeenCalledWith("bot_logs_channel:guild-1:sync");
-    expect(interaction.channel.send).toHaveBeenCalledTimes(1);
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledWith(
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-1",
       }),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Configured sync bot-log channel <#222222222222222222> is unavailable"),
+    );
+  });
+
+  it("rejects scheduling when the sync time is too close", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T19:00:00.000Z"));
+
+    const interaction = makeSubmitInteraction({
+      timezone: "UTC",
+      date: "2026-06-12",
+      time: "20:30",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(scheduledSyncPostService.scheduleSyncTimePost).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("more than 2 hours in the future"),
     );
   });
 
