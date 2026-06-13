@@ -234,6 +234,7 @@ export async function runUserActivityReminderSchedulerCycle(input: {
           where: { clanTag: { in: warClanTags } },
           select: {
             clanTag: true,
+            clanName: true,
             warId: true,
             startTime: true,
             endTime: true,
@@ -400,6 +401,7 @@ function resolveReminderEventContext(input: {
   currentWarByClanTag: Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -409,8 +411,9 @@ function resolveReminderEventContext(input: {
   nowMs: number;
 }): ResolvedReminderEventContext | null {
   if (input.ruleType === UserActivityReminderType.WAR) {
+    const warClanTag = normalizeClanTag(input.snapshot.warClanTag ?? "");
     const clanTag =
-      normalizeClanTag(input.snapshot.warClanTag ?? "") ||
+      warClanTag ||
       (input.snapshot.warActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
       "";
     if (!clanTag) return null;
@@ -421,10 +424,12 @@ function resolveReminderEventContext(input: {
     const eventInstanceKey = war
       ? buildWarEventInstanceKey(clanTag, war)
       : `WAR:${clanTag}:${eventEndsAt.getTime()}`;
-    const clanName =
-      sanitizeDisplayText(input.snapshot.warClanName) ||
-      (input.snapshot.warActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
-      null;
+    const clanName = warClanTag
+      ? sanitizeDisplayText(war?.clanName) ||
+        sanitizeDisplayText(input.snapshot.warClanName) ||
+        null
+      : (input.snapshot.warActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+        null;
     return {
       eventInstanceKey,
       eventEndsAt,
@@ -451,14 +456,15 @@ function resolveReminderEventContext(input: {
   if (input.ruleType === UserActivityReminderType.RAIDS) {
     if (!input.snapshot.raidActive || !input.snapshot.raidEndsAt) return null;
     if (input.snapshot.raidEndsAt.getTime() <= input.nowMs) return null;
+    const raidClanTag = normalizeClanTag(input.snapshot.raidClanTag ?? "");
     const clanTag =
-      normalizeClanTag(input.snapshot.raidClanTag ?? "") ||
+      raidClanTag ||
       (input.snapshot.raidActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
       input.snapshot.playerTag;
-    const clanName =
-      sanitizeDisplayText(input.snapshot.raidClanName) ||
-      (input.snapshot.raidActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
-      null;
+    const clanName = raidClanTag
+      ? sanitizeDisplayText(input.snapshot.raidClanName) || null
+      : (input.snapshot.raidActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+        null;
     return {
       eventInstanceKey: `RAIDS:${clanTag}:${input.snapshot.raidEndsAt.getTime()}`,
       eventEndsAt: input.snapshot.raidEndsAt,
@@ -490,6 +496,7 @@ function resolveReminderEventContext(input: {
 function pickLatestCurrentWarByClanTag(
   rows: Array<{
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -499,6 +506,7 @@ function pickLatestCurrentWarByClanTag(
 ): Map<
   string,
   {
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -508,6 +516,7 @@ function pickLatestCurrentWarByClanTag(
   const latest = new Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -521,6 +530,7 @@ function pickLatestCurrentWarByClanTag(
     const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
+        clanName: sanitizeDisplayText(row.clanName) || null,
         warId: toFiniteIntOrNull(row.warId),
         startTime: row.startTime ?? null,
         endTime: row.endTime ?? null,
@@ -532,6 +542,7 @@ function pickLatestCurrentWarByClanTag(
   const finalized = new Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -540,6 +551,7 @@ function pickLatestCurrentWarByClanTag(
   >();
   for (const [clanTag, value] of latest.entries()) {
     finalized.set(clanTag, {
+      clanName: value.clanName,
       warId: value.warId,
       startTime: value.startTime,
       endTime: value.endTime,

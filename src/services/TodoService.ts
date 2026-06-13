@@ -251,13 +251,13 @@ export async function buildTodoPagesForUser(input: {
     clanTags.length > 0
       ? prisma.trackedClan.findMany({
           where: { tag: { in: clanTags } },
-          select: { tag: true, clanBadge: true },
+          select: { tag: true, clanBadge: true, name: true },
         })
       : Promise.resolve([]),
     clanTags.length > 0
       ? prisma.raidTrackedClan.findMany({
           where: { clanTag: { in: clanTags } },
-          select: { clanTag: true },
+          select: { clanTag: true, name: true },
         })
       : Promise.resolve([]),
     clanTags.length > 0
@@ -265,6 +265,7 @@ export async function buildTodoPagesForUser(input: {
           where: { clanTag: { in: clanTags } },
           select: {
             clanTag: true,
+            clanName: true,
             warId: true,
             startTime: true,
             matchType: true,
@@ -527,11 +528,23 @@ export async function buildTodoPagesForUser(input: {
       .filter(Boolean),
   );
   const clanBadgeByTag = new Map<string, string>();
+  const trackedClanNameByTag = new Map<string, string | null>();
   for (const row of trackedClanRows as Array<{ tag: string; clanBadge: string | null }>) {
     const clanTag = normalizeClanTag(row.tag);
     const clanBadge = sanitizeStatusText(row.clanBadge);
     if (!clanTag || !clanBadge) continue;
     clanBadgeByTag.set(clanTag, clanBadge);
+  }
+  for (const row of trackedClanRows as Array<{ tag: string; name: string | null }>) {
+    const clanTag = normalizeClanTag(row.tag);
+    if (!clanTag) continue;
+    trackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
+  }
+  const raidTrackedClanNameByTag = new Map<string, string | null>();
+  for (const row of raidTrackedClanRows as Array<{ clanTag: string; name: string | null }>) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    raidTrackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
   }
   const warMatchContextByClanTag =
     pickLatestCurrentWarMatchContextByClanTag(currentWarRows);
@@ -626,6 +639,7 @@ export async function buildTodoPagesForUser(input: {
         ? normalizeClanTag(snapshotWarClanTag ?? "") ||
           normalizeClanTag(snapshot?.clanTag ?? "")
         : normalizeClanTag(snapshotWarClanTag ?? "")) || null;
+    const resolvedWarClanTagKey = resolvedWarClanTag ?? "";
     const resolvedRaidClanTag =
       normalizeClanTag(snapshot?.raidClanTag ?? "") ||
       (snapshot?.raidActive ? normalizeClanTag(snapshot?.clanTag ?? "") : "") ||
@@ -756,7 +770,16 @@ export async function buildTodoPagesForUser(input: {
       clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
       warClanTag: resolvedWarClanTag,
-      warClanName: snapshotWarClanName || (resolvedWarClanTag ? snapshot?.clanName ?? null : null) || null,
+      warClanName:
+        (snapshotWarClanTag
+          ? currentWarIdentityByClanTag.get(resolvedWarClanTagKey)?.clanName ??
+            trackedClanNameByTag.get(resolvedWarClanTagKey) ??
+            raidTrackedClanNameByTag.get(resolvedWarClanTagKey) ??
+            snapshotWarClanName ??
+            null
+          : snapshotWarClanName ||
+            (resolvedWarClanTag ? snapshot?.clanName ?? null : null) ||
+            null),
       cwlClanTag: resolvedCwlClanTag,
       cwlClanName: snapshot?.cwlClanName ?? null,
       cwlPlannedSubInAt,
@@ -1237,7 +1260,12 @@ function buildEventGroups(
     const phaseEndsAt =
       mode === "war" ? row.snapshot.warEndsAt : row.snapshot.cwlEndsAt;
     const groupedClanTag = mode === "war" ? row.warClanTag ?? row.clanTag : row.cwlClanTag;
-    const groupedClanName = mode === "war" ? row.warClanName ?? row.clanName : row.cwlClanName;
+    const groupedClanName =
+      mode === "war"
+        ? row.warClanTag
+          ? row.warClanName ?? null
+          : row.clanName
+        : row.cwlClanName;
     const key = [
       groupedClanTag ?? "",
       groupedClanName ?? "",
@@ -1757,6 +1785,7 @@ function pickLatestCurrentWarMatchContextByClanTag(
 function pickLatestCurrentWarIdentityByClanTag(
   rows: Array<{
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     state: string | null;
@@ -1766,6 +1795,7 @@ function pickLatestCurrentWarIdentityByClanTag(
   string,
   {
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     state: string | null;
@@ -1776,6 +1806,7 @@ function pickLatestCurrentWarIdentityByClanTag(
     string,
     {
       clanTag: string;
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       state: string | null;
@@ -1789,6 +1820,7 @@ function pickLatestCurrentWarIdentityByClanTag(
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         clanTag,
+        clanName: sanitizeStatusText(row.clanName) || null,
         warId: toFiniteIntOrNull(row.warId),
         startTime: row.startTime ?? null,
         state: row.state ?? null,

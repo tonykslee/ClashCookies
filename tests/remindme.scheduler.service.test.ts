@@ -469,6 +469,77 @@ describe("UserActivityReminderSchedulerService", () => {
     );
   });
 
+  it("uses the observed WAR clan name instead of the current membership clan when warClanTag is explicit", async () => {
+    const nowMs = Date.parse("2026-03-28T11:30:00.000Z");
+    const warEnd = new Date("2026-03-28T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-war-observed",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.WAR,
+        playerTag: "#P1111111",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "War Clan",
+        warId: 994,
+        startTime: new Date("2026-03-27T12:00:00.000Z"),
+        endTime: warEnd,
+        state: "inWar",
+        updatedAt: new Date(nowMs),
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P1111111",
+        clanTag: "#2QG2C08UP",
+        clanName: "Current Clan",
+        warClanTag: "#PYLQ0289",
+        warClanName: null,
+        warActive: true,
+        warEndsAt: warEnd,
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-war-observed" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-war-observed",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.WAR,
+        clanName: "War Clan",
+        eventEndsAt: warEnd,
+        eventInstanceKey: "WAR:#PYLQ0289:war-id:994",
+      }),
+    );
+  });
+
   it("falls back to snapshot warEndsAt when CurrentWar is unavailable", async () => {
     const nowMs = Date.parse("2026-03-28T11:30:00.000Z");
     const snapshotWarEndsAt = new Date("2026-03-28T12:00:00.000Z");
@@ -523,6 +594,64 @@ describe("UserActivityReminderSchedulerService", () => {
         reminderType: UserActivityReminderType.WAR,
         eventEndsAt: snapshotWarEndsAt,
         eventInstanceKey: `WAR:#PYLQ0289:${snapshotWarEndsAt.getTime()}`,
+      }),
+    );
+  });
+
+  it("does not fall back to the current clan name for explicit RAID clan tags when the RAID name is unavailable", async () => {
+    const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-raids-explicit",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.RAIDS,
+        playerTag: "#P3333333",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P3333333",
+        clanTag: "#QGRJ2222",
+        clanName: "Current Clan",
+        raidActive: true,
+        raidEndsAt: new Date(nowMs + 30 * 60 * 1000),
+        raidClanTag: "#PQL0289",
+        raidClanName: null,
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-raids-explicit" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-explicit",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.RAIDS,
+        clanName: null,
+        eventInstanceKey: `RAIDS:#PQL0289:${new Date(nowMs + 30 * 60 * 1000).getTime()}`,
       }),
     );
   });
