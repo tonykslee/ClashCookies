@@ -26,6 +26,14 @@ export const COMPO_ACTUAL_STATE_VIEW_LABELS: Record<
   best: "Best Fit",
 };
 
+export const COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD = 10;
+
+export function isCompoActualStateProjectionComplete(input: {
+  unresolvedWeightCount: number;
+}): boolean {
+  return input.unresolvedWeightCount === 0;
+}
+
 export type CompoActualStateBaseMetrics = {
   resolvedTotalWeight: number;
   unresolvedWeightCount: number;
@@ -201,6 +209,18 @@ export function calculateCompoDeviationScore(input: {
     const delta = deltaByBucket[bucket];
     return sum + Math.abs(delta ?? 0) * DEVIATION_SCORE_WEIGHTS[bucket];
   }, 0);
+}
+
+/** Purpose: classify ACTUAL compo deviation scores using the shared readiness threshold. */
+export function isCompoActualStateDeviationHealthy(
+  deviationScore: number | null | undefined,
+): boolean {
+  return (
+    deviationScore !== null &&
+    deviationScore !== undefined &&
+    Number.isFinite(deviationScore) &&
+    deviationScore <= COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD
+  );
 }
 
 function getRepresentativeWeight(

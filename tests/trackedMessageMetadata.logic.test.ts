@@ -1,8 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  $transaction: vi.fn(),
   trackedMessage: {
     findMany: vi.fn(),
+    update: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -17,12 +20,24 @@ import {
   parseFwaBaseSwapMetadata,
   parseFwaMatchChecklistMetadata,
   parseSyncTimeMetadata,
+  trackedMessageService,
 } from "../src/services/TrackedMessageService";
 
 describe("tracked message metadata parsing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
+    prismaMock.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        trackedMessage: {
+          findMany: prismaMock.trackedMessage.findMany,
+          update: prismaMock.trackedMessage.update,
+          upsert: prismaMock.trackedMessage.upsert,
+        },
+      }),
+    );
   });
 
   it("parses fwa base-swap metadata and normalizes optional fields", () => {
@@ -374,5 +389,58 @@ describe("tracked message metadata parsing", () => {
         clans: [{ clanTag: "", clanName: "Clan", emojiInline: "" }],
       })
     ).toBeNull();
+  });
+});
+
+describe("sync readiness tracked message writes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        messageId: "old-1",
+        metadata: {
+          readinessEnabled: true,
+          createdAtIso: "2026-06-10T10:00:00.000Z",
+        },
+      },
+    ]);
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
+    prismaMock.$transaction.mockImplementation(async (callback: any) =>
+      callback({
+        trackedMessage: {
+          findMany: prismaMock.trackedMessage.findMany,
+          update: prismaMock.trackedMessage.update,
+          upsert: prismaMock.trackedMessage.upsert,
+        },
+      }),
+    );
+  });
+
+  it("replaces prior readiness posts and creates the active post in one transaction", async () => {
+    const replacedCount = await trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "current-1",
+      referenceId: "current-1",
+      metadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+        lastRefreshedAtIso: "2026-06-10T12:00:00.000Z",
+      },
+    });
+
+    expect(replacedCount).toBe(1);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert.mock.calls[0]?.[0]).toMatchObject({
+      where: { messageId: "current-1" },
+      create: {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "current-1",
+      },
+    });
   });
 });

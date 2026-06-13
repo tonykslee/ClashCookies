@@ -250,6 +250,15 @@ describe("command coverage", () => {
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 
+  it("documents the /sync readiness dashboard in sync help detail text", () => {
+    const syncHelpText = helpEmbedText("sync");
+    const normalized = syncHelpText.toLowerCase();
+    expect(syncHelpText).toContain("/sync readiness");
+    expect(normalized).toContain("refresh:true|false");
+    expect(normalized).toContain("visibility:private|public");
+    expect(normalized).toContain("shared refresh button");
+  });
+
   it("documents clan-lead routing in unlinked help detail text", () => {
     const unlinkedHelpText = helpEmbedText("unlinked");
     expect(unlinkedHelpText).toContain("clan-lead channel");
