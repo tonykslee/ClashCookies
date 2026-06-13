@@ -41,11 +41,15 @@ type TodoRenderRow = {
   townHall: number | null;
   clanTag: string | null;
   clanName: string | null;
+  warClanTag: string | null;
+  warClanName: string | null;
   raidClanTracked: boolean;
   cwlClanTag: string | null;
   cwlClanName: string | null;
   cwlPlannedSubInAt: Date | null;
   warPosition: number | null;
+  warSourceUpdatedAt: Date | null;
+  clanMembershipObservedAt: Date | null;
   warAttackDetails: Array<{
     defenderPosition: number | null;
     stars: number | null;
@@ -54,6 +58,7 @@ type TodoRenderRow = {
   warMatchIndicator: string;
   inValidatedWarMemberSet: boolean;
   activeTrackedWarClan: boolean;
+  warTrackedClanActive: boolean;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -590,22 +595,44 @@ export async function buildTodoPagesForUser(input: {
     const snapshot = snapshotByTag.get(normalizedTag) ?? null;
     const missingSnapshot = snapshot === null;
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
+    const snapshotWarClanTag = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warClanTag?: string | null }).warClanTag ?? null
+      : null;
+    const snapshotWarClanName = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warClanName?: string | null }).warClanName ?? null
+      : null;
+    const snapshotWarPosition = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warPosition?: number | null }).warPosition ?? null
+      : null;
+    const snapshotWarSourceUpdatedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { warSourceUpdatedAt?: Date | null })
+          .warSourceUpdatedAt ?? null)
+      : null;
+    const snapshotClanMembershipObservedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { clanMembershipObservedAt?: Date | null })
+          .clanMembershipObservedAt ?? null)
+      : null;
     const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
     const resolvedCwlClanTag = normalizeClanTag(snapshot?.cwlClanTag ?? "") || null;
-    const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${normalizedTag}` : "";
+    const resolvedWarClanTag =
+      (snapshot?.warActive
+        ? normalizeClanTag(snapshotWarClanTag ?? "") ||
+          normalizeClanTag(snapshot?.clanTag ?? "")
+        : normalizeClanTag(snapshotWarClanTag ?? "")) || null;
+    const warMemberKey = resolvedWarClanTag ? `${resolvedWarClanTag}:${normalizedTag}` : "";
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
-    const trackedClanActive = Boolean(
+    const currentTrackedClanActive = Boolean(
       resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
     );
-    const activeTrackedWarClan = Boolean(
-      resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
+    const warTrackedClanActive = Boolean(
+      resolvedWarClanTag && activeTrackedCurrentWarByClanTag.has(resolvedWarClanTag),
     );
-    const resolvedWarPosition = trackedClanActive
-      ? toFiniteIntOrNull(trackedWarMember?.position)
+    const resolvedWarPosition = warTrackedClanActive
+      ? toFiniteIntOrNull(snapshotWarPosition ?? trackedWarMember?.position)
       : null;
-    const resolvedWarAttackDetails = trackedClanActive
+    const resolvedWarAttackDetails = warTrackedClanActive
       ? (trackedWarMember?.attackDetails ?? [])
       : [];
     const resolvedTownHall = (() => {
@@ -649,8 +676,10 @@ export async function buildTodoPagesForUser(input: {
       activePlan: activeCwlPlan,
       playerTag: normalizedTag,
     });
-    const matchContext = resolvedClanTag
-      ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
+    const matchContext = resolvedWarClanTag
+      ? warMatchContextByClanTag.get(resolvedWarClanTag) ?? null
+      : resolvedClanTag
+        ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
     const raidClanTracked = Boolean(
       resolvedClanTag &&
@@ -663,13 +692,19 @@ export async function buildTodoPagesForUser(input: {
       linkedName: link.linkedName,
     });
     const warFreshnessCandidates = [
-      resolvedClanTag ? currentWarIdentityByClanTag.get(resolvedClanTag)?.updatedAt.getTime() ?? null : null,
+      resolvedWarClanTag
+        ? currentWarIdentityByClanTag.get(resolvedWarClanTag)?.updatedAt.getTime() ?? null
+        : null,
+      toTimestampMs(snapshotWarSourceUpdatedAt),
       trackedWarMember?.attackDetails
         ? Math.min(
             ...trackedWarMember.attackDetails
               .map((detail) => detail.seenAtMs)
               .filter((value): value is number => Number.isFinite(value)),
           )
+        : null,
+      !warTrackedClanActive && currentTrackedClanActive
+        ? toTimestampMs(snapshotClanMembershipObservedAt) ?? snapshot?.lastUpdatedAt?.getTime() ?? snapshot?.updatedAt?.getTime() ?? null
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const cwlFreshnessCandidates = [
@@ -697,16 +732,29 @@ export async function buildTodoPagesForUser(input: {
       townHall: resolvedTownHall,
       clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
+      warClanTag: resolvedWarClanTag,
+      warClanName: snapshotWarClanName || (resolvedWarClanTag ? snapshot?.clanName ?? null : null) || null,
       cwlClanTag: resolvedCwlClanTag,
       cwlClanName: snapshot?.cwlClanName ?? null,
       cwlPlannedSubInAt,
       warPosition: resolvedWarPosition,
+      warSourceUpdatedAt:
+        snapshotWarSourceUpdatedAt ??
+        (resolvedWarClanTag
+          ? currentWarIdentityByClanTag.get(resolvedWarClanTag)?.updatedAt ?? null
+          : null),
+      clanMembershipObservedAt:
+        snapshotClanMembershipObservedAt ??
+        snapshot?.lastUpdatedAt ??
+        snapshot?.updatedAt ??
+        null,
       warAttackDetails: resolvedWarAttackDetails,
-      warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
+      warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
       raidClanTracked,
-      inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
-      activeTrackedWarClan,
+      inValidatedWarMemberSet: Boolean(warTrackedClanActive && trackedWarMember),
+      activeTrackedWarClan: currentTrackedClanActive,
+      warTrackedClanActive,
       snapshot,
       missingSnapshot,
       staleSnapshot,
@@ -747,15 +795,28 @@ export async function buildTodoPagesForUser(input: {
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet,
   ).length;
+  const suppressedNonLineupCount = renderRows.filter(
+    (row) =>
+      row.warTrackedClanActive &&
+      Boolean(row.snapshot) &&
+      !row.snapshot?.warActive &&
+      !row.activeTrackedWarClan,
+  ).length;
   const activeTrackedWarClanCount = new Set(
     renderRows
       .filter((row) => row.activeTrackedWarClan)
       .map((row) => normalizeClanTag(row.clanTag ?? "")),
   ).size;
+  const missingWarPositionCount = renderRows.filter(
+    (row) => row.snapshot?.warActive && row.warTrackedClanActive && row.warPosition === null,
+  ).length;
+  const legacyWarFieldUsageCount = renderRows.filter(
+    (row) => row.snapshot?.warActive && !row.snapshot?.warClanTag,
+  ).length;
   const missingSnapshotCount = renderRows.filter((row) => row.missingSnapshot).length;
   const staleSnapshotCount = renderRows.filter((row) => row.staleSnapshot).length;
   console.info(
-    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
+    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} suppressed_non_lineup_count=${suppressedNonLineupCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_war_position_count=${missingWarPositionCount} legacy_war_field_usage_count=${legacyWarFieldUsageCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
   );
   const cwlView = buildCwlPageDescription(renderRows, linkedTags.length, cwlFreshnessAtMs);
   const pages = {
@@ -779,6 +840,11 @@ export async function buildTodoPagesForUser(input: {
     pages,
   });
   return pages;
+}
+
+/** Purpose: safely convert nullable Dates into freshness timestamps. */
+function toTimestampMs(input: Date | null | undefined): number | null {
+  return input instanceof Date ? input.getTime() : null;
 }
 
 /** Purpose: build one compact, user-scoped render cache key tied to linked tags + snapshot version. */
@@ -1139,8 +1205,8 @@ function buildEventGroups(
         : sanitizeStatusText(row.snapshot.cwlPhase) || "active phase";
     const phaseEndsAt =
       mode === "war" ? row.snapshot.warEndsAt : row.snapshot.cwlEndsAt;
-    const groupedClanTag = mode === "war" ? row.clanTag : row.cwlClanTag;
-    const groupedClanName = mode === "war" ? row.clanName : row.cwlClanName;
+    const groupedClanTag = mode === "war" ? row.warClanTag ?? row.clanTag : row.cwlClanTag;
+    const groupedClanName = mode === "war" ? row.warClanName ?? row.clanName : row.cwlClanName;
     const key = [
       groupedClanTag ?? "",
       groupedClanName ?? "",

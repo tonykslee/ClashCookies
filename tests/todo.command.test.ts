@@ -12,6 +12,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaPlayerCatalog: {
     findMany: vi.fn(),
   },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -154,6 +157,8 @@ function makeSnapshotRow(input: {
   playerName: string;
   clanTag?: string | null;
   clanName?: string | null;
+  warClanTag?: string | null;
+  warClanName?: string | null;
   cwlClanTag?: string | null;
   cwlClanName?: string | null;
   warActive?: boolean;
@@ -161,6 +166,9 @@ function makeSnapshotRow(input: {
   warAttacksMax?: number;
   warPhase?: string | null;
   warEndsAt?: Date | null;
+  warPosition?: number | null;
+  warSourceUpdatedAt?: Date | null;
+  clanMembershipObservedAt?: Date | null;
   cwlActive?: boolean;
   cwlAttacksUsed?: number;
   cwlAttacksMax?: number;
@@ -188,6 +196,16 @@ function makeSnapshotRow(input: {
     playerName: input.playerName,
     clanTag: input.clanTag ?? "#PQL0289",
     clanName: input.clanName ?? "Clan One",
+    warClanTag: hasOwn("warClanTag")
+      ? input.warClanTag ?? null
+      : input.warActive ?? true
+        ? input.clanTag ?? "#PQL0289"
+        : null,
+    warClanName: hasOwn("warClanName")
+      ? input.warClanName ?? null
+      : input.warActive ?? true
+        ? input.clanName ?? "Clan One"
+        : null,
     cwlClanTag: hasOwn("cwlClanTag")
       ? input.cwlClanTag ?? null
       : input.clanTag ?? "#PQL0289",
@@ -199,6 +217,13 @@ function makeSnapshotRow(input: {
     warAttacksMax: input.warAttacksMax ?? 2,
     warPhase: input.warPhase ?? "battle day",
     warEndsAt: input.warEndsAt ?? new Date("2026-03-31T12:00:00.000Z"),
+    warPosition: hasOwn("warPosition") ? input.warPosition ?? null : null,
+    warSourceUpdatedAt: hasOwn("warSourceUpdatedAt")
+      ? input.warSourceUpdatedAt ?? null
+      : null,
+    clanMembershipObservedAt: hasOwn("clanMembershipObservedAt")
+      ? input.clanMembershipObservedAt ?? null
+      : null,
     cwlActive: input.cwlActive ?? true,
     cwlAttacksUsed: input.cwlAttacksUsed ?? 0,
     cwlAttacksMax: input.cwlAttacksMax ?? 1,
@@ -336,6 +361,7 @@ describe("/todo command", () => {
     prismaMock.cwlRotationPlanDay.findMany = vi.fn(async () => []);
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.$transaction.mockClear();
 
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -1809,20 +1835,25 @@ describe("/todo command", () => {
       makeSnapshotRow({
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
-        clanTag: "#PQL0289",
-        clanName: "Clan One",
+        clanTag: "#PQL0289J",
+        clanName: "New Clan",
         warActive: true,
         warAttacksUsed: 0,
+        warClanTag: "#PQL0289",
+        warClanName: "Clan One",
+        warPosition: 8,
         warPhase: "battle day",
         warEndsAt: new Date("2026-03-31T12:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
         playerName: "Bravo",
-        clanTag: "#PQL0289",
-        clanName: "Clan One",
+        clanTag: "#PQL0289J",
+        clanName: "New Clan",
         warActive: false,
         warAttacksUsed: 0,
+        warClanTag: null,
+        warClanName: null,
         warPhase: null,
       }),
     ]);
@@ -1844,23 +1875,29 @@ describe("/todo command", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
-        clanTag: "#NEWCLAN",
+        clanTag: "#PQL0289J",
         townHall: 15,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
-        clanTag: "#NEWCLAN",
+        clanTag: "#PQL0289J",
         townHall: 14,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
     ]);
+    const cocService = makeCocServiceSpy();
+    cocService.getPlayerRaw = vi.fn().mockImplementation(async (playerTag: string) => ({
+      tag: playerTag,
+      clan: { tag: "#PQL0289J", name: "New Clan" },
+      townHallLevel: playerTag === "#PYLQ0289" ? 15 : 14,
+    }));
 
     const interaction = makeTodoInteraction({ type: "WAR" });
-    await Todo.run({} as any, interaction as any, makeCocServiceSpy() as any);
+    await Todo.run({} as any, interaction as any, cocService as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("#8 Alpha - `0 / 2`");
+    expect(description).toContain("Alpha - `0 / 2`");
     expect(description).not.toContain("No war active");
     expect(description).not.toContain("Bravo");
   });
@@ -1895,13 +1932,13 @@ describe("/todo command", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
-        clanTag: "#NEWCLAN",
+        clanTag: "#PQL0289J",
         townHall: 15,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
       {
         playerTag: "#QGRJ2222",
-        clanTag: "#NEWCLAN",
+        clanTag: "#PQL0289J",
         townHall: 14,
         sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
@@ -2112,10 +2149,12 @@ describe("/todo command", () => {
       makeSnapshotRow({
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
-        clanTag: "#PQL0289",
-        clanName: "Clan One",
+        clanTag: "#PQL0289J",
+        clanName: "New Clan",
         warActive: false,
         warAttacksUsed: 0,
+        warClanTag: null,
+        warClanName: null,
         warPhase: "battle day",
       }),
     ]);
@@ -3362,6 +3401,7 @@ describe("/todo pagination buttons", () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
 
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -3739,6 +3779,7 @@ describe("/todo refresh button", () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
 
     prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
       const userId = String(args?.where?.discordUserId ?? "");
@@ -4026,7 +4067,11 @@ describe("/todo refresh button", () => {
     });
 
     const cocService = makeCocServiceSpy();
-    cocService.getPlayerRaw = vi.fn().mockResolvedValue(null);
+    cocService.getPlayerRaw = vi.fn().mockImplementation(async (playerTag: string) => ({
+      tag: playerTag,
+      clan: { tag: "#2QVGPQP0U", name: "Clan Two" },
+      townHallLevel: playerTag === "#PYLQ0289" ? 16 : 15,
+    }));
     cocService.getCurrentWar = vi.fn().mockResolvedValue(liveWar);
     cocService.getClanWarLeagueGroup = vi.fn().mockResolvedValue(null);
     cocService.getClanWarLeagueWar = vi.fn().mockResolvedValue(null);

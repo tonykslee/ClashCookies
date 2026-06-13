@@ -331,6 +331,11 @@ model TodoPlayerSnapshot {
   townHall        Int?
   clanTag         String?
   clanName        String?
+  warClanTag      String?
+  warClanName     String?
+  warPosition     Int?
+  warSourceUpdatedAt DateTime?
+  clanMembershipObservedAt DateTime?
   cwlClanTag      String?
   cwlClanName     String?
   warActive       Boolean  @default(false)
