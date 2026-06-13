@@ -626,6 +626,9 @@ export async function buildTodoPagesForUser(input: {
         ? normalizeClanTag(snapshotWarClanTag ?? "") ||
           normalizeClanTag(snapshot?.clanTag ?? "")
         : normalizeClanTag(snapshotWarClanTag ?? "")) || null;
+    const warTrackedClanActive = Boolean(
+      resolvedWarClanTag && activeTrackedCurrentWarByClanTag.has(resolvedWarClanTag),
+    );
     const warMemberKey = resolvedWarClanTag ? `${resolvedWarClanTag}:${normalizedTag}` : "";
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
@@ -633,9 +636,7 @@ export async function buildTodoPagesForUser(input: {
     const currentTrackedClanActive = Boolean(
       resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
     );
-    const warTrackedClanActive = Boolean(
-      resolvedWarClanTag && activeTrackedCurrentWarByClanTag.has(resolvedWarClanTag),
-    );
+    const inValidatedWarMemberSet = Boolean(warTrackedClanActive && trackedWarMember);
     const resolvedWarPosition = warTrackedClanActive
       ? toFiniteIntOrNull(snapshotWarPosition ?? trackedWarMember?.position)
       : null;
@@ -710,7 +711,11 @@ export async function buildTodoPagesForUser(input: {
               .filter((value): value is number => Number.isFinite(value)),
           )
         : null,
-      currentMembershipFresh
+      currentTrackedClanActive &&
+      currentMembershipFresh &&
+      Boolean(snapshot) &&
+      !snapshot?.warActive &&
+      !inValidatedWarMemberSet
         ? toTimestampMs(snapshotClanMembershipObservedAt)
         : null,
     ].filter((value): value is number => Number.isFinite(value));
@@ -760,7 +765,7 @@ export async function buildTodoPagesForUser(input: {
       warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
       raidClanTracked,
-      inValidatedWarMemberSet: Boolean(warTrackedClanActive && trackedWarMember),
+      inValidatedWarMemberSet,
       activeTrackedWarClan: currentTrackedClanActive,
       warTrackedClanActive,
       snapshot,
@@ -806,7 +811,7 @@ export async function buildTodoPagesForUser(input: {
   ).length;
   const suppressedNonLineupStaleMembershipCount = renderRows.filter(
     (row) =>
-      row.warTrackedClanActive &&
+      row.activeTrackedWarClan &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet &&

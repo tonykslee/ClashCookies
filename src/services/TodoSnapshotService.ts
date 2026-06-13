@@ -92,6 +92,7 @@ type TodoActivatedRefreshStats = {
 type ObservedLivePlayerCurrent = {
   playerTag: string;
   clanTag: string | null;
+  clanName?: string | null;
   townHall: number | null;
 };
 
@@ -99,6 +100,7 @@ type ObservedLivePlayerCurrentByTag = Map<
   string,
   {
     clanTag: string;
+    clanName?: string | null;
     townHall: number | null;
   }
 >;
@@ -120,6 +122,7 @@ type TodoCurrentMembershipContext = {
 
 type LiveClanTagEntry = {
   clanTag: string;
+  clanName: string | null;
   townHall: number | null;
   source: "observed_live" | "fetched_live";
 };
@@ -1115,10 +1118,19 @@ export class TodoSnapshotService {
         continue;
       }
       const currentMembershipClanTag = currentMembershipByPlayerTag.get(playerTag)?.clanTag ?? null;
-      const existingWarClanTag = normalizeClanTag(existingByTag.get(playerTag)?.warClanTag ?? "");
+      const existingSnapshot = existingByTag.get(playerTag) ?? null;
+      const legacyWarHintClanTag =
+        normalizeClanTag(existingSnapshot?.warClanTag ?? "") ||
+        (existingSnapshot?.warActive
+          ? normalizeClanTag(existingSnapshot?.clanTag ?? "")
+          : null);
       const candidateClanTags = [
-        currentMembershipClanTag,
-        existingWarClanTag || null,
+        trackedClanTagSet.has(normalizeClanTag(currentMembershipClanTag ?? ""))
+          ? currentMembershipClanTag
+          : null,
+        legacyWarHintClanTag && trackedClanTagSet.has(legacyWarHintClanTag)
+          ? legacyWarHintClanTag
+          : null,
       ]
         .map((clanTag) => normalizeClanTag(clanTag ?? ""))
         .filter((clanTag): clanTag is string => Boolean(clanTag));
@@ -1287,7 +1299,6 @@ export class TodoSnapshotService {
           source: "none",
         } satisfies TodoCurrentMembershipContext);
       const currentMembershipClanTag = membershipContext.clanTag;
-      const currentMembershipFresh = membershipContext.fresh;
       const activeRosterClanTag = activeTrackedWarClanTagByPlayerTag.get(playerTag) ?? null;
       const activeRosterWarKey = activeRosterClanTag ? `${activeRosterClanTag}:${playerTag}` : "";
       const activeRosterRow = activeRosterWarKey
@@ -1458,7 +1469,10 @@ export class TodoSnapshotService {
         : currentWar
           ? resolveCurrentWarPhaseEnd(currentWar)
           : null;
-      const warActive = warStateActive && warMember !== null;
+      const warActive =
+        warStateActive &&
+        warMember !== null &&
+        Boolean(warClanTag && trackedClanTagSet.has(warClanTag));
       const warPhase = warActive
         ? normalizeWarPhaseLabel(warState)
         : null;
@@ -2554,7 +2568,12 @@ async function loadLiveClanTagsByPlayerTag(input: {
     observedHitTags.add(playerTag);
     entries.push([
       playerTag,
-      { clanTag: observed.clanTag, townHall: observed.townHall, source: "observed_live" },
+      {
+        clanTag: observed.clanTag,
+        clanName: observed.clanName ?? null,
+        townHall: observed.townHall,
+        source: "observed_live",
+      },
     ]);
   }
 
@@ -2598,8 +2617,9 @@ async function loadLiveClanTagsByPlayerTag(input: {
           return null;
         }
         const clanTag = normalizeClanTag(String(player?.clan?.tag ?? ""));
+        const clanName = sanitizeDisplayText(String(player?.clan?.name ?? "")) || null;
         const townHall = normalizeRosterInt(player?.townHallLevel ?? player?.townHall ?? null);
-        return [playerTag, { clanTag, townHall, source: "fetched_live" }] as const;
+        return [playerTag, { clanTag, clanName, townHall, source: "fetched_live" }] as const;
       }),
     );
     for (const entry of chunkEntries) {
@@ -2634,6 +2654,7 @@ function buildObservedLivePlayerCurrentMap(
     if (!observed) continue;
     map.set(playerTag, {
       clanTag: observed.clanTag,
+      clanName: observed.clanName ?? null,
       townHall: observed.townHall,
       source: "observed_live",
     });
@@ -2733,7 +2754,8 @@ function resolveTodoCurrentMembershipContext(input: {
     }
     return {
       clanTag: observedLiveClanTag,
-      clanName: null,
+      clanName:
+        sanitizeDisplayText(input.liveClanTagEntry.clanName ?? "") || null,
       observedAt: input.now,
       fresh: true,
       source: input.liveClanTagEntry.source,
