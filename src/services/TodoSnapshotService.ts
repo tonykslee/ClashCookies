@@ -55,6 +55,7 @@ const TODO_SNAPSHOT_SELECT = {
   raidAttacksUsed: true,
   raidAttacksMax: true,
   raidEndsAt: true,
+  raidSourceUpdatedAt: true,
   gamesActive: true,
   gamesPoints: true,
   gamesTarget: true,
@@ -205,6 +206,7 @@ type TodoRaidSnapshotState = {
   raidAttacksUsed: number;
   raidAttacksMax: number;
   raidEndsAt: Date | null;
+  raidSourceUpdatedAt: Date | null;
 };
 
 type ClanMemberCurrentRow = {
@@ -1387,6 +1389,11 @@ export class TodoSnapshotService {
         raidAttacksUsed: clampInt(existing?.raidAttacksUsed ?? 0, 0, 6),
         raidAttacksMax: clampInt(existing?.raidAttacksMax ?? 6, 0, 6) || 6,
         raidEndsAt: existing?.raidEndsAt ?? null,
+        raidSourceUpdatedAt:
+          existing?.raidSourceUpdatedAt ??
+          existing?.lastUpdatedAt ??
+          existing?.updatedAt ??
+          now,
       };
       const clearedRaidData: TodoRaidSnapshotState = {
         raidActive: false,
@@ -1395,15 +1402,9 @@ export class TodoSnapshotService {
         raidAttacksUsed: 0,
         raidAttacksMax: 6,
         raidEndsAt: null,
+        raidSourceUpdatedAt: now,
       };
       let raidSnapshotData: TodoRaidSnapshotState = clearedRaidData;
-      const hasPreservableRaidState = Boolean(existing?.raidActive);
-      const raidSnapshotLastUpdatedAt =
-        raidWindow.active &&
-        (raidContext.status === "unavailable" || raidContext.status === "failed") &&
-        hasPreservableRaidState
-          ? existing?.lastUpdatedAt ?? existing?.updatedAt ?? now
-          : now;
       if (raidWindow.active) {
         if (raidContext.status === "observed") {
           raidObservedCount += 1;
@@ -1415,6 +1416,7 @@ export class TodoSnapshotService {
               raidAttacksUsed: clampInt(raidContext.attacksUsed, 0, 6),
               raidAttacksMax: 6,
               raidEndsAt: new Date(raidWindow.endMs),
+              raidSourceUpdatedAt: now,
             };
           } else {
             raidSnapshotData = clearedRaidData;
@@ -1689,6 +1691,7 @@ export class TodoSnapshotService {
         raidAttacksUsed: raidSnapshotData.raidAttacksUsed,
         raidAttacksMax: raidSnapshotData.raidAttacksMax,
         raidEndsAt: raidSnapshotData.raidEndsAt,
+        raidSourceUpdatedAt: raidSnapshotData.raidSourceUpdatedAt,
         gamesActive: gamesWindow.active,
         gamesPoints: derivedGames.points,
         gamesTarget: derivedGames.target,
@@ -1696,7 +1699,7 @@ export class TodoSnapshotService {
         gamesSeasonBaseline: derivedGames.seasonBaseline,
         gamesCycleKey: derivedGames.cycleKey,
         gamesEndsAt: new Date(gamesWindow.endMs),
-        lastUpdatedAt: raidSnapshotLastUpdatedAt,
+        lastUpdatedAt: now,
       };
       if (data.raidActive) {
         raidActiveTrueCount += 1;

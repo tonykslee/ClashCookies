@@ -131,6 +131,7 @@ function buildSnapshotRow(
     raidAttacksUsed: 0,
     raidAttacksMax: 6,
     raidEndsAt: null,
+    raidSourceUpdatedAt: null,
     gamesActive: false,
     gamesPoints: null,
     gamesTarget: null,
@@ -2689,6 +2690,8 @@ describe("TodoSnapshotService", () => {
           raidAttacksUsed: 3,
           raidClanTag: "#PQL0289",
           raidClanName: "Clan One",
+          raidSourceUpdatedAt: new Date("2026-03-29T12:00:00.000Z"),
+          lastUpdatedAt: new Date("2026-03-29T12:00:00.000Z"),
         }),
       }),
     );
@@ -2730,6 +2733,7 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        raidSourceUpdatedAt: null,
         lastUpdatedAt: preservedLastUpdatedAt,
         updatedAt: preservedUpdatedAt,
       }),
@@ -2747,7 +2751,8 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
-      lastUpdatedAt: preservedLastUpdatedAt,
+      raidSourceUpdatedAt: preservedLastUpdatedAt,
+      lastUpdatedAt: new Date("2026-03-29T12:00:00.000Z"),
     });
   });
 
@@ -2755,6 +2760,7 @@ describe("TodoSnapshotService", () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
     const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
     const preservedUpdatedAt = new Date("2026-03-25T09:15:00.000Z");
+    const preservedRaidSourceUpdatedAt = new Date("2026-03-23T09:15:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2764,6 +2770,7 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        raidSourceUpdatedAt: preservedRaidSourceUpdatedAt,
         lastUpdatedAt: preservedLastUpdatedAt,
         updatedAt: preservedUpdatedAt,
       }),
@@ -2790,7 +2797,8 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
-      lastUpdatedAt: preservedLastUpdatedAt,
+      raidSourceUpdatedAt: preservedRaidSourceUpdatedAt,
+      lastUpdatedAt: new Date("2026-03-29T12:00:00.000Z"),
     });
   });
 
@@ -2837,6 +2845,7 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 0,
       raidAttacksMax: 6,
       raidEndsAt: null,
+      raidSourceUpdatedAt: refreshedAt,
       lastUpdatedAt: refreshedAt,
     });
   });
@@ -2844,6 +2853,7 @@ describe("TodoSnapshotService", () => {
   it("preserves active raid progress during unrelated snapshot refresh without raid source access", async () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
     const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
+    const preservedRaidSourceUpdatedAt = new Date("2026-03-23T09:15:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2853,6 +2863,7 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        raidSourceUpdatedAt: preservedRaidSourceUpdatedAt,
         lastUpdatedAt: preservedLastUpdatedAt,
         updatedAt: new Date("2026-03-25T09:15:00.000Z"),
       }),
@@ -2880,7 +2891,8 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
-      lastUpdatedAt: preservedLastUpdatedAt,
+      raidSourceUpdatedAt: preservedRaidSourceUpdatedAt,
+      lastUpdatedAt: new Date("2026-03-29T12:00:00.000Z"),
     });
   });
 
@@ -2894,6 +2906,7 @@ describe("TodoSnapshotService", () => {
         raidClanTag: null,
         raidClanName: null,
         raidEndsAt: null,
+        raidSourceUpdatedAt: null,
         lastUpdatedAt: new Date("2026-03-24T09:15:00.000Z"),
         updatedAt: new Date("2026-03-25T09:15:00.000Z"),
       }),
@@ -2925,6 +2938,7 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 6,
       raidAttacksMax: 6,
       raidEndsAt: new Date("2026-03-30T07:00:00.000Z"),
+      raidSourceUpdatedAt: refreshedAt,
       lastUpdatedAt: refreshedAt,
     });
   });

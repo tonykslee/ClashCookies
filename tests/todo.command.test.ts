@@ -183,6 +183,7 @@ function makeSnapshotRow(input: {
   raidAttacksUsed?: number;
   raidAttacksMax?: number;
   raidEndsAt?: Date | null;
+  raidSourceUpdatedAt?: Date | null;
   gamesActive?: boolean;
   gamesPoints?: number | null;
   gamesTarget?: number | null;
@@ -250,6 +251,9 @@ function makeSnapshotRow(input: {
     raidAttacksUsed: input.raidAttacksUsed ?? 0,
     raidAttacksMax: input.raidAttacksMax ?? 6,
     raidEndsAt: input.raidEndsAt ?? new Date("2026-03-29T07:00:00.000Z"),
+    raidSourceUpdatedAt: hasOwn("raidSourceUpdatedAt")
+      ? input.raidSourceUpdatedAt ?? null
+      : null,
     gamesActive: input.gamesActive ?? true,
     gamesPoints: input.gamesPoints === undefined ? 1200 : input.gamesPoints,
     gamesTarget: input.gamesTarget === undefined ? 4000 : input.gamesTarget,
@@ -4242,7 +4246,62 @@ describe("/todo pagination buttons", () => {
     );
   });
 
-  it("keeps RAID freshness tied to preserved lastUpdatedAt even when updatedAt is newer", async () => {
+  it("keeps RAID freshness tied to preserved raidSourceUpdatedAt even when global timestamps are newer", async () => {
+    const discordUserId = "111111111111111111";
+    const preservedRaidSourceUpdatedAt = new Date("2026-03-25T19:00:00.000Z");
+    const newerLastUpdatedAt = new Date("2026-03-25T20:00:00.000Z");
+    const newerUpdatedAt = new Date("2026-03-25T21:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", discordUserId },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { lastUpdatedAt: newerLastUpdatedAt, updatedAt: newerUpdatedAt },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warAttacksUsed: 1,
+        warAttacksMax: 2,
+        warPhase: "battle day",
+        warEndsAt: new Date("2026-03-31T12:00:00.000Z"),
+        warPosition: 8,
+        warSourceUpdatedAt: newerUpdatedAt,
+        raidActive: true,
+        raidClanTag: "#PQL0289",
+        raidClanName: "Clan One",
+        raidAttacksUsed: 3,
+        raidAttacksMax: 6,
+        raidSourceUpdatedAt: preservedRaidSourceUpdatedAt,
+        lastUpdatedAt: newerLastUpdatedAt,
+        updatedAt: newerUpdatedAt,
+      }),
+    ]);
+
+    const pages = await buildTodoPagesForUser({
+      discordUserId,
+      nowMs: new Date("2026-03-26T00:00:00.000Z").getTime(),
+    });
+
+    expect(pages.pages.RAIDS).toContain(
+      `:hourglass: last updated <t:${Math.floor(preservedRaidSourceUpdatedAt.getTime() / 1000)}:R>`,
+    );
+    expect(pages.pages.RAIDS).not.toContain(
+      `:hourglass: last updated <t:${Math.floor(newerLastUpdatedAt.getTime() / 1000)}:R>`,
+    );
+    expect(pages.pages.WAR).toContain(
+      `:hourglass: war data updated <t:${Math.floor(newerUpdatedAt.getTime() / 1000)}:R>`,
+    );
+    expect(pages.pages.WAR).not.toContain(
+      `:hourglass: war data updated <t:${Math.floor(preservedRaidSourceUpdatedAt.getTime() / 1000)}:R>`,
+    );
+  });
+
+  it("falls back to preserved lastUpdatedAt when raidSourceUpdatedAt is missing", async () => {
     const discordUserId = "111111111111111111";
     const preservedLastUpdatedAt = new Date("2026-03-25T19:00:00.000Z");
     const newerUpdatedAt = new Date("2026-03-25T21:00:00.000Z");
@@ -4251,7 +4310,7 @@ describe("/todo pagination buttons", () => {
     ]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
       _count: { _all: 1 },
-      _max: { updatedAt: newerUpdatedAt },
+      _max: { lastUpdatedAt: newerUpdatedAt, updatedAt: newerUpdatedAt },
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       makeSnapshotRow({
@@ -4264,6 +4323,7 @@ describe("/todo pagination buttons", () => {
         raidClanName: "Clan One",
         raidAttacksUsed: 3,
         raidAttacksMax: 6,
+        raidSourceUpdatedAt: null,
         lastUpdatedAt: preservedLastUpdatedAt,
         updatedAt: newerUpdatedAt,
       }),

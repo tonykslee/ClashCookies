@@ -623,6 +623,10 @@ export async function buildTodoPagesForUser(input: {
       ? ((snapshot as TodoSnapshotRecord & { warSourceUpdatedAt?: Date | null })
           .warSourceUpdatedAt ?? null)
       : null;
+    const snapshotRaidSourceUpdatedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { raidSourceUpdatedAt?: Date | null })
+          .raidSourceUpdatedAt ?? null)
+      : null;
     const snapshotClanMembershipObservedAt: Date | null = snapshot
       ? ((snapshot as TodoSnapshotRecord & { clanMembershipObservedAt?: Date | null })
           .clanMembershipObservedAt ?? null)
@@ -707,11 +711,6 @@ export async function buildTodoPagesForUser(input: {
       : resolvedClanTag
         ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
-    const raidClanTracked = Boolean(
-      resolvedRaidClanTag &&
-        (trackedClanTagSet.has(resolvedRaidClanTag) ||
-          raidTrackedClanTagSet.has(resolvedRaidClanTag)),
-    );
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
       snapshotPlayerName: snapshot?.playerName,
@@ -756,6 +755,7 @@ export async function buildTodoPagesForUser(input: {
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const raidFreshnessCandidates = [
+      snapshotRaidSourceUpdatedAt?.getTime() ?? null,
       snapshot?.lastUpdatedAt?.getTime() ?? null,
       snapshot?.updatedAt?.getTime() ?? null,
     ].filter((value): value is number => Number.isFinite(value));

@@ -354,6 +354,7 @@ model TodoPlayerSnapshot {
   raidAttacksUsed Int      @default(0)
   raidAttacksMax  Int      @default(6)
   raidEndsAt      DateTime?
+  raidSourceUpdatedAt DateTime?
   gamesActive     Boolean  @default(false)
   gamesPoints     Int?
   gamesTarget     Int?
