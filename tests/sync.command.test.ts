@@ -737,6 +737,89 @@ describe("/sync time post modal submit", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("scheduled"));
   });
 
+  it("reports reactivated schedules when a terminal same-sync row is revived", async () => {
+    vi.mocked(scheduledSyncPostService.scheduleSyncTimePost).mockResolvedValueOnce({
+      schedule: {
+        id: "scheduled-sync-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime: new Date("2026-06-16T01:30:00.000Z"),
+        publishAt: new Date("2026-06-15T23:30:00.000Z"),
+        timezone: "America/Chicago",
+        status: "PENDING",
+        claimToken: null,
+        claimedAt: null,
+        publishedMessageId: null,
+        publishedAt: null,
+        attemptCount: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+      action: "reactivated",
+    } as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Reactivated the existing terminal schedule for that sync time."),
+    );
+  });
+
+  it("reports already published schedules without claiming a new schedule", async () => {
+    vi.mocked(scheduledSyncPostService.scheduleSyncTimePost).mockResolvedValueOnce({
+      schedule: {
+        id: "scheduled-sync-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime: new Date("2026-06-16T01:30:00.000Z"),
+        publishAt: new Date("2026-06-15T23:30:00.000Z"),
+        timezone: "America/Chicago",
+        status: "PUBLISHED",
+        claimToken: null,
+        claimedAt: null,
+        publishedMessageId: "message-1",
+        publishedAt: new Date("2026-06-15T23:05:00.000Z"),
+        attemptCount: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+      action: "already_published",
+    } as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("A sync time post for <t:"),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("is already published"),
+    );
+  });
+
   it("schedules to the typed sync bot-log destination channel when configured", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockImplementation(async (key: string) => {
       if (key === "bot_logs_channel:guild-1:sync") return "222222222222222222";

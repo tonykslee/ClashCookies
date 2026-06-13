@@ -945,6 +945,18 @@ export async function handlePostModalSubmit(
     return;
   }
 
+  if (result.action === "already_published") {
+    const existingLink = result.schedule.publishedMessageId
+      ? `https://discord.com/channels/${guild.id}/${result.schedule.channelId}/${result.schedule.publishedMessageId}`
+      : null;
+    await interaction.editReply(
+      existingLink
+        ? `A sync time post for <t:${epochSeconds}:F> is already published: ${existingLink}`
+        : `A sync time post for <t:${epochSeconds}:F> is already published.`,
+    );
+    return;
+  }
+
   const notices: string[] = [];
   if (!mentionWillNotify) {
     notices.push(
@@ -955,9 +967,11 @@ export async function handlePostModalSubmit(
     notices.push(configuredChannelFallbackNotice);
   }
   if (result.action === "replaced") {
-    notices.push("Replaced older pending sync schedules for this guild.");
+    notices.push("Replaced older pending/claimed sync schedules for this guild.");
   } else if (result.action === "reused") {
     notices.push("Reused the existing schedule for that sync time.");
+  } else if (result.action === "reactivated") {
+    notices.push("Reactivated the existing terminal schedule for that sync time.");
   }
 
   const noticeBlock =

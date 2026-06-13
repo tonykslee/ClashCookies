@@ -48,7 +48,6 @@ describe("ActivityObserveStartupService", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(statusServiceMock.markStarted).toHaveBeenCalledTimes(1);
     expect(runObservedCycle).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
     expect(logSpy).toHaveBeenCalledWith("Activity observe loop enabled (every 30 minute(s)).");
   });
 

@@ -3,6 +3,10 @@ import { findSyncBadgeEmojiForClan, getSyncBadgeEmojis } from "../helper/syncBad
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
+import type {
+  ScheduledSyncPostClaimOwnershipResult,
+  ScheduledSyncPostRow,
+} from "./ScheduledSyncPostService";
 import {
   buildSyncTimeMessageContent,
   buildSyncTimeFwaClanListMessagePayload,
@@ -290,6 +294,10 @@ export class SyncTimePostPublisherService {
     clientUserId?: string | null;
     now?: Date;
     scheduleService: {
+      verifyClaimOwnership: (input: {
+        scheduleId: string;
+        claimToken: string;
+      }) => Promise<ScheduledSyncPostClaimOwnershipResult>;
       markPublishedMessageId: (input: {
         scheduleId: string;
         claimToken: string;
@@ -311,6 +319,28 @@ export class SyncTimePostPublisherService {
     if (!guild || !channel) {
       throwPublishError("Missing guild or channel for scheduled sync publication.", "missing_target", false);
     }
+
+    async function ensureClaimOwnership(stage: "pre_send" | "pre_finalize"): Promise<ScheduledSyncPostRow> {
+      const ownership = await input.scheduleService.verifyClaimOwnership({
+        scheduleId: input.schedule.id,
+        claimToken: input.claimToken,
+      });
+      if (ownership.owned && ownership.schedule) {
+        return ownership.schedule;
+      }
+
+      const code = ownership.reason === "claim_lost" ? "claim_lost" : "schedule_replaced";
+      console.warn(
+        `[sync-time-publish] ${code} guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} stage=${stage} claim_token=${input.claimToken} status=${ownership.schedule?.status ?? "missing"} message_id=${ownership.schedule?.publishedMessageId ?? "null"}`,
+      );
+      throwPublishError(
+        `Scheduled sync claim no longer valid (${code}) at ${stage}.`,
+        code,
+        false,
+      );
+    }
+
+    let claimedSchedule = await ensureClaimOwnership("pre_send");
 
     const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
     if (!me) {
@@ -340,9 +370,9 @@ export class SyncTimePostPublisherService {
       throwPublishError("No badge emoji configuration found for this bot ID.", "missing_badges", false);
     }
 
-    const syncEpochSeconds = Math.floor(input.schedule.syncTime.getTime() / 1000);
+    const syncEpochSeconds = Math.floor(claimedSchedule.syncTime.getTime() / 1000);
     const baseMetadata: SyncTimeTrackedMetadata = {
-      syncTimeIso: input.schedule.syncTime.toISOString(),
+      syncTimeIso: claimedSchedule.syncTime.toISOString(),
       syncEpochSeconds,
       roleId: role.id,
       clans: badges.map((badge) => ({
@@ -359,13 +389,13 @@ export class SyncTimePostPublisherService {
     let usedFallbackRender = false;
     try {
       payload = await buildSyncTimeFwaClanListMessagePayload({
-        guildId: input.schedule.guildId,
+        guildId: claimedSchedule.guildId,
         baseMetadata,
         now,
       });
     } catch (err) {
       console.error(
-        `[sync-time-fwa-list] render_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} error=${formatError(err)}`,
+        `[sync-time-fwa-list] render_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} error=${formatError(err)}`,
       );
       usedFallbackRender = true;
       payload = {
@@ -377,8 +407,8 @@ export class SyncTimePostPublisherService {
       };
     }
 
-    const message = input.schedule.publishedMessageId
-      ? await channel.messages.fetch(input.schedule.publishedMessageId).catch(() => null)
+    const message = claimedSchedule.publishedMessageId
+      ? await channel.messages.fetch(claimedSchedule.publishedMessageId).catch(() => null)
       : await channel.send({
           content: payload.content,
           embeds: payload.embeds,
@@ -386,7 +416,7 @@ export class SyncTimePostPublisherService {
           allowedMentions,
         }).catch(async (err) => {
           console.error(
-            `[sync-time-publish] send_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} channel_id=${channel.id} role_id=${role.id} error=${formatError(err)}`,
+            `[sync-time-publish] send_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} channel_id=${channel.id} role_id=${role.id} error=${formatError(err)}`,
           );
           throw err;
         });
@@ -395,7 +425,10 @@ export class SyncTimePostPublisherService {
       throwPublishError("Published sync message could not be resolved.", "missing_message", true);
     }
 
-    if (!input.schedule.publishedMessageId) {
+    claimedSchedule = await ensureClaimOwnership("pre_finalize");
+    const sentNewMessage = !claimedSchedule.publishedMessageId;
+
+    if (!claimedSchedule.publishedMessageId) {
       const marked = await input.scheduleService.markPublishedMessageId({
         scheduleId: input.schedule.id,
         claimToken: input.claimToken,
@@ -432,7 +465,7 @@ export class SyncTimePostPublisherService {
         await message.react(badge.reactionIdentifier);
       } catch (err) {
         console.error(
-          `[sync-time-publish] react_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} emoji=${badge.reactionIdentifier} error=${formatError(err)}`,
+          `[sync-time-publish] react_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} emoji=${badge.reactionIdentifier} error=${formatError(err)}`,
         );
       }
     }
@@ -440,7 +473,7 @@ export class SyncTimePostPublisherService {
       await message.react(SYNC_UNAVAILABLE_EMOJI);
     } catch (err) {
       console.error(
-        `[sync-time-publish] react_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} emoji=${SYNC_UNAVAILABLE_EMOJI} error=${formatError(err)}`,
+        `[sync-time-publish] react_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} emoji=${SYNC_UNAVAILABLE_EMOJI} error=${formatError(err)}`,
       );
     }
 
@@ -471,7 +504,7 @@ export class SyncTimePostPublisherService {
       }
     } catch (err) {
       console.error(
-        `[sync-time-publish] pin_cleanup_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} error=${formatError(err)}`,
+        `[sync-time-publish] pin_cleanup_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} error=${formatError(err)}`,
       );
     }
 
@@ -479,7 +512,7 @@ export class SyncTimePostPublisherService {
       await message.pin();
     } catch (err) {
       console.error(
-        `[sync-time-publish] pin_failed guild_id=${input.schedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} error=${formatError(err)}`,
+        `[sync-time-publish] pin_failed guild_id=${claimedSchedule.guildId} schedule_id=${input.schedule.id} message_id=${message.id} error=${formatError(err)}`,
       );
     }
 
@@ -500,7 +533,7 @@ export class SyncTimePostPublisherService {
       messageId: message.id,
       channelId: message.channelId,
       trackedClanCount: payload.trackedClanCount,
-      sentNewMessage: !input.schedule.publishedMessageId,
+      sentNewMessage,
       usedFallbackRender,
     };
   }

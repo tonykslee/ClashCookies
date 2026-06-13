@@ -90,6 +90,22 @@ describe("SyncTimePostPublisherService", () => {
       },
       claimToken: "claim-token-1",
       scheduleService: {
+        verifyClaimOwnership: vi.fn().mockResolvedValue({
+          owned: true,
+          reason: "owned",
+          schedule: {
+            ...{
+              id: "schedule-1",
+              channelId: "channel-1",
+              guildId: "guild-1",
+              roleId: "role-1",
+              syncTime: new Date("2026-06-16T01:30:00.000Z"),
+              publishAt: new Date("2026-06-15T23:30:00.000Z"),
+              publishedMessageId: null,
+              claimToken: "claim-token-1",
+            },
+          },
+        }),
         markPublishedMessageId,
         markPublished,
       },
@@ -178,6 +194,22 @@ describe("SyncTimePostPublisherService", () => {
       },
       claimToken: "claim-token-1",
       scheduleService: {
+        verifyClaimOwnership: vi.fn().mockResolvedValue({
+          owned: true,
+          reason: "owned",
+          schedule: {
+            ...{
+              id: "schedule-1",
+              channelId: "channel-1",
+              guildId: "guild-1",
+              roleId: "role-1",
+              syncTime: new Date("2026-06-16T01:30:00.000Z"),
+              publishAt: new Date("2026-06-15T23:30:00.000Z"),
+              publishedMessageId: "message-1",
+              claimToken: "claim-token-1",
+            },
+          },
+        }),
         markPublishedMessageId,
         markPublished,
       },
@@ -192,5 +224,76 @@ describe("SyncTimePostPublisherService", () => {
     expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledTimes(1);
     expect(result.sentNewMessage).toBe(false);
     expect(result.messageId).toBe("message-1");
+  });
+
+  it("does not send when claim ownership is lost before publish", async () => {
+    const channel = {
+      id: "channel-1",
+      isTextBased: () => true,
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+      messages: {
+        fetch: vi.fn(),
+        fetchPinned: vi.fn().mockResolvedValue(new Map()),
+      },
+      send: vi.fn(),
+    };
+    const verifyClaimOwnership = vi.fn().mockResolvedValue({
+      owned: false,
+      reason: "schedule_replaced",
+      schedule: {
+        id: "schedule-1",
+        channelId: "channel-1",
+        guildId: "guild-1",
+        roleId: "role-1",
+        syncTime: new Date("2026-06-16T01:30:00.000Z"),
+        publishAt: new Date("2026-06-15T23:30:00.000Z"),
+        publishedMessageId: null,
+        claimToken: "claim-token-1",
+        status: "REPLACED",
+      },
+    });
+    const markPublishedMessageId = vi.fn().mockResolvedValue({});
+    const markPublished = vi.fn().mockResolvedValue({});
+
+    await expect(
+      syncTimePostPublisherService.publishScheduledSyncTimePost({
+        guild: {
+          id: "guild-1",
+          client: { user: { id: "bot-1" } },
+          members: { me: { id: "bot-1" } },
+        } as any,
+        channel: channel as any,
+        role: { id: "role-1", name: "War", mentionable: true },
+        schedule: {
+          id: "schedule-1",
+          channelId: "channel-1",
+          guildId: "guild-1",
+          roleId: "role-1",
+          syncTime: new Date("2026-06-16T01:30:00.000Z"),
+          publishAt: new Date("2026-06-15T23:30:00.000Z"),
+          publishedMessageId: null,
+          claimToken: "claim-token-1",
+        },
+        claimToken: "claim-token-1",
+        scheduleService: {
+          verifyClaimOwnership,
+          markPublishedMessageId,
+          markPublished,
+        },
+        now: new Date("2026-06-15T23:00:00.000Z"),
+        settings: new SettingsService(),
+        clientUserId: "bot-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "schedule_replaced",
+      retryable: false,
+    });
+
+    expect(channel.send).not.toHaveBeenCalled();
+    expect(markPublishedMessageId).not.toHaveBeenCalled();
+    expect(markPublished).not.toHaveBeenCalled();
+    expect(verifyClaimOwnership).toHaveBeenCalled();
   });
 });
