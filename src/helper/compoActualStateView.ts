@@ -28,6 +28,12 @@ export const COMPO_ACTUAL_STATE_VIEW_LABELS: Record<
 
 export const COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD = 10;
 
+export function isCompoActualStateProjectionComplete(input: {
+  unresolvedWeightCount: number;
+}): boolean {
+  return input.unresolvedWeightCount === 0;
+}
+
 export type CompoActualStateBaseMetrics = {
   resolvedTotalWeight: number;
   unresolvedWeightCount: number;

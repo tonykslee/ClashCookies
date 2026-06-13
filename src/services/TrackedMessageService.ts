@@ -1806,6 +1806,35 @@ export class TrackedMessageService {
     });
   }
 
+  async replacePriorSyncReadinessTrackedMessagesForGuild(params: {
+    guildId: string;
+    currentMessageId: string;
+  }): Promise<number> {
+    const rows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId: String(params.guildId ?? "").trim(),
+        messageId: { not: String(params.currentMessageId ?? "").trim() },
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+        status: { in: [TRACKED_MESSAGE_STATUS.ACTIVE, TRACKED_MESSAGE_STATUS.COMPLETED] },
+      },
+      orderBy: [{ createdAt: "asc" }],
+    });
+
+    let replacedCount = 0;
+    for (const row of rows) {
+      const metadata = row.metadata as Record<string, unknown> | null;
+      if (!metadata || metadata.readinessEnabled !== true || typeof metadata.createdAtIso !== "string") {
+        continue;
+      }
+      await prisma.trackedMessage.update({
+        where: { messageId: row.messageId },
+        data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+      });
+      replacedCount += 1;
+    }
+    return replacedCount;
+  }
+
   async createFwaMatchChecklistTrackedMessage(params: {
     guildId: string;
     channelId: string;

@@ -404,16 +404,33 @@ async function handleSyncReadinessSubcommand(
   await interaction.deferReply({ ephemeral: !isPublic });
 
   const now = new Date();
+  let refreshSummary:
+    | Awaited<ReturnType<typeof refreshTrackedClanReadinessState>>
+    | null = null;
   if (shouldRefresh && interaction.guildId) {
     try {
-      await refreshTrackedClanReadinessState({
+      refreshSummary = await refreshTrackedClanReadinessState({
         guildId: interaction.guildId,
       });
     } catch (err) {
       console.error(
         `[sync-readiness] refresh_failed guild_id=${interaction.guildId} error=${formatError(err)}`,
       );
+      await interaction.editReply(
+        "Failed to refresh the readiness dashboard. Try again after the clan refresh completes.",
+        );
+      return;
     }
+  }
+
+  if (
+    refreshSummary &&
+    (refreshSummary.syncAllFailedClanTags.length > 0 ||
+      refreshSummary.currentMemberFailedClanTags.length > 0)
+  ) {
+    console.info(
+      `[sync-readiness] refresh_partial_upstream guild_id=${interaction.guildId ?? "unknown"} tracked_clan_count=${refreshSummary.trackedClanCount} sync_failed_clan_count=${refreshSummary.syncAllFailedClanTags.length} member_failed_clan_count=${refreshSummary.currentMemberFailedClanTags.length}`,
+    );
   }
 
   const baseMetadata = buildStandaloneReadinessTrackedMetadata(now);
@@ -423,6 +440,7 @@ async function handleSyncReadinessSubcommand(
       guildId: interaction.guildId,
       baseMetadata,
       now,
+      includeRefreshButton: isPublic,
     });
   } catch (err) {
     console.error(
@@ -437,20 +455,38 @@ async function handleSyncReadinessSubcommand(
     };
   }
 
+  const failedClanCount =
+    (refreshSummary?.syncAllFailedClanTags.length ?? 0) +
+    (refreshSummary?.currentMemberFailedClanTags.length ?? 0);
+  if (failedClanCount > 0) {
+    payload = {
+      ...payload,
+      content: `${payload.content}\n\n⚠️ Refresh completed with ${failedClanCount} clan refresh failure${
+        failedClanCount === 1 ? "" : "s"
+      }.`,
+    };
+  }
+
   await interaction.editReply({
     content: payload.content,
     embeds: payload.embeds,
     components: payload.components,
   });
 
-  const message = await interaction.fetchReply();
-  await trackedMessageService.createSyncReadinessTrackedMessage({
-    guildId: interaction.guildId!,
-    channelId: message.channelId,
-    messageId: message.id,
-    referenceId: message.id,
-    metadata: payload.metadata as SyncReadinessTrackedMetadata,
-  });
+  if (isPublic) {
+    const message = await interaction.fetchReply();
+    await trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuild({
+      guildId: interaction.guildId!,
+      currentMessageId: message.id,
+    });
+    await trackedMessageService.createSyncReadinessTrackedMessage({
+      guildId: interaction.guildId!,
+      channelId: message.channelId,
+      messageId: message.id,
+      referenceId: message.id,
+      metadata: payload.metadata as SyncReadinessTrackedMetadata,
+    });
+  }
 }
 
 async function handleSyncClaimStatusSubcommand(

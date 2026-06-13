@@ -9,6 +9,7 @@ import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { formatError } from "../helper/formatError";
 import {
   isCompoActualStateDeviationHealthy,
+  isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
 } from "../helper/compoActualStateView";
 import { prisma } from "../prisma";
@@ -33,6 +34,7 @@ const SYNC_READINESS_REFRESH_BUTTON_PREFIX = "sync-time:fwa-clan-list";
 export const SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID =
   `${SYNC_READINESS_REFRESH_BUTTON_PREFIX}:refresh`;
 const SYNC_READINESS_REFRESH_COOLDOWN_MS = 60 * 1000;
+const SYNC_READINESS_REFRESH_LOCK_STALE_MS = 5 * 60 * 1000;
 
 export type SyncReadinessMode = "sync_time" | "standalone";
 
@@ -113,16 +115,21 @@ function buildReadinessLabel(clan: Pick<CompoActualStateClanContext, "shortName"
 }
 
 function buildRefreshRow(input: {
-  refreshing: boolean;
-  disabled: boolean;
+  state: "default" | "refreshing" | "closed";
 }): ActionRowBuilder<ButtonBuilder> {
+  const label =
+    input.state === "refreshing"
+      ? "Refreshing..."
+      : input.state === "closed"
+        ? "Refresh closed"
+        : "Refresh";
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID)
       .setEmoji("🔄")
-      .setLabel(input.refreshing ? "Refreshing..." : "Refresh")
+      .setLabel(label)
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(input.refreshing || input.disabled),
+      .setDisabled(input.state !== "default"),
   );
 }
 
@@ -135,6 +142,7 @@ function buildReadinessRow(clan: CompoActualStateClanContext, heatMapRefs: reado
   const deviationScore = projection.deviationScore ?? null;
   const healthy =
     clan.base.memberCount === 50 &&
+    isCompoActualStateProjectionComplete(projection) &&
     isCompoActualStateDeviationHealthy(deviationScore);
   const indicator = healthy ? "✅" : "⚠️";
   const label = buildReadinessLabel(clan);
@@ -147,17 +155,15 @@ function buildReadinessRow(clan: CompoActualStateClanContext, heatMapRefs: reado
 function buildReadinessDescription(context: CompoActualStateContext): string {
   if (context.clans.length === 0) {
     return [
-      "**FWA Readiness**",
       "No tracked clans are configured for DB-backed ACTUAL readiness.",
     ].join("\n");
   }
 
   return [
-    "**FWA Readiness**",
     ...context.clans.map((clan) => buildReadinessRow(clan, context.heatMapRefs)),
     "",
     "✅ = 50/50 and within the shared healthy deviation threshold.",
-    "⚠️ = under/over 50, unhealthy deviation, or unavailable data.",
+    "⚠️ = under/over 50, incomplete data, unhealthy deviation, or unavailable data.",
   ].join("\n");
 }
 
@@ -196,6 +202,21 @@ function buildSyncTimeTrackedMetadata(input: {
         }
       : {}),
   };
+}
+
+function stripRefreshLockMetadata<T extends SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata>(
+  metadata: T,
+): T {
+  if ("syncTimeIso" in metadata) {
+    const next = { ...metadata } as SyncTimeTrackedMetadata;
+    delete next.fwaClanListRefreshInProgressAtIso;
+    delete next.fwaClanListRefreshInProgressByUserId;
+    return next as T;
+  }
+  const next = { ...metadata } as SyncReadinessTrackedMetadata;
+  delete next.refreshInProgressAtIso;
+  delete next.refreshInProgressByUserId;
+  return next as T;
 }
 
 function buildStandaloneReadinessMetadata(input: {
@@ -289,6 +310,9 @@ export async function refreshTrackedClanReadinessState(input: {
   }
 
   const clanMembersSync = new FwaClanMembersSyncService();
+  // FWAStats sync refreshes the persisted member weights/catalog used by ACTUAL projection.
+  // Live CoC member refresh refreshes the canonical current-member rows and town hall data.
+  // Both feeds are required for the readiness dashboard, so we keep both passes here.
   const syncAll = await clanMembersSync.syncAllTrackedClans({ force: true });
   const currentMembers = await clanMembersSync.refreshCurrentClanMembersForClanTags(
     trackedClanTags,
@@ -306,6 +330,7 @@ async function renderReadinessPayload(input: {
   mode: SyncReadinessMode;
   now?: Date;
   baseMetadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata;
+  includeRefreshButton?: boolean;
 }): Promise<SyncReadinessMessagePayload> {
   const now = input.now ?? new Date();
   const context = await loadCompoActualStateContext(input.guildId ?? null);
@@ -327,33 +352,56 @@ async function renderReadinessPayload(input: {
           )
         : buildSyncReadinessContent(),
     embeds: [embed],
-    components: [buildRefreshRow({
-      refreshing: false,
-      disabled:
-        input.mode === "sync_time" &&
-        isReadinessRefreshWindowExpired(input.baseMetadata as SyncTimeTrackedMetadata, now),
-    })],
+    components:
+      input.includeRefreshButton === false
+        ? []
+        : [
+            buildRefreshRow({
+              state:
+                input.mode === "sync_time" &&
+                isReadinessRefreshWindowExpired(input.baseMetadata as SyncTimeTrackedMetadata, now)
+                  ? "closed"
+                  : "default",
+            }),
+          ],
     metadata:
       input.mode === "sync_time"
         ? buildSyncTimeTrackedMetadata({
-            baseMetadata: input.baseMetadata as SyncTimeTrackedMetadata,
+            baseMetadata: stripRefreshLockMetadata(
+              input.baseMetadata as SyncTimeTrackedMetadata,
+            ),
             now,
           })
         : buildStandaloneReadinessMetadata({
-            baseMetadata: input.baseMetadata as SyncReadinessTrackedMetadata,
+            baseMetadata: stripRefreshLockMetadata(
+              input.baseMetadata as SyncReadinessTrackedMetadata,
+            ),
             now,
           }),
     trackedClanCount,
   };
 }
 
-async function tryClaimRefreshLock(input: {
+export async function tryClaimRefreshLock(input: {
   trackedMessageId: string;
   updatedAt: Date;
   now: Date;
   userId: string;
   metadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata;
 }): Promise<boolean> {
+  const inProgressAtIso =
+    "syncTimeIso" in input.metadata
+      ? input.metadata.fwaClanListRefreshInProgressAtIso
+      : input.metadata.refreshInProgressAtIso;
+  if (inProgressAtIso) {
+    const inProgressAt = parseOptionalIsoDate(inProgressAtIso);
+    if (
+      inProgressAt &&
+      input.now.getTime() - inProgressAt.getTime() < SYNC_READINESS_REFRESH_LOCK_STALE_MS
+    ) {
+      return false;
+    }
+  }
   const result = await prisma.trackedMessage.updateMany({
     where: {
       messageId: input.trackedMessageId,
@@ -423,12 +471,14 @@ export async function buildSyncTimeFwaClanListMessagePayload(input: {
   baseMetadata: SyncTimeTrackedMetadata;
   guildId?: string | null;
   now?: Date;
+  includeRefreshButton?: boolean;
 }): Promise<SyncReadinessMessagePayload> {
   return renderReadinessPayload({
     guildId: input.guildId ?? null,
     mode: "sync_time",
     now: input.now,
     baseMetadata: input.baseMetadata,
+    includeRefreshButton: input.includeRefreshButton,
   });
 }
 
@@ -436,12 +486,14 @@ export async function buildSyncReadinessMessagePayload(input: {
   baseMetadata: SyncReadinessTrackedMetadata;
   guildId?: string | null;
   now?: Date;
+  includeRefreshButton?: boolean;
 }): Promise<SyncReadinessMessagePayload> {
   return renderReadinessPayload({
     guildId: input.guildId ?? null,
     mode: "standalone",
     now: input.now,
     baseMetadata: input.baseMetadata,
+    includeRefreshButton: input.includeRefreshButton,
   });
 }
 
@@ -513,6 +565,15 @@ export async function handleSyncReadinessRefreshButton(
       console.info(
         `[sync-time-fwa-list] refresh_expired guild_id=${interaction.guildId} message_id=${interaction.message.id} expires_at=${(metadata as SyncTimeTrackedMetadata).fwaClanListRefreshExpiresAtIso ?? "missing"} now=${now.toISOString()}`,
       );
+      try {
+        await interaction.message.edit({
+          components: [buildRefreshRow({ state: "closed" })],
+        });
+      } catch (err) {
+        console.error(
+          `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${interaction.message.id} restore_error=${formatError(err)}`,
+        );
+      }
       await interaction.reply({
         ephemeral: true,
         content: "The FWA clan-list refresh window has expired.",
@@ -576,13 +637,15 @@ export async function handleSyncReadinessRefreshButton(
     }
 
     const startedAt = now;
+    let releaseMetadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata | null =
+      stripRefreshLockMetadata(metadata as SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata);
     try {
       console.info(
         `[sync-time-fwa-list] refresh_started guild_id=${interaction.guildId} message_id=${interaction.message.id} mode=${isSyncTime ? "sync_time" : "standalone"} user_id=${interaction.user.id}`,
       );
       await interaction.deferUpdate();
       await interaction.message.edit({
-        components: [buildRefreshRow({ refreshing: true, disabled: true })],
+        components: [buildRefreshRow({ state: "refreshing" })],
       });
 
       const summary = await refreshTrackedClanReadinessState({
@@ -597,7 +660,7 @@ export async function handleSyncReadinessRefreshButton(
         );
       }
 
-      const payload = isSyncTime
+      let payload = isSyncTime
         ? await buildSyncTimeFwaClanListMessagePayload({
             baseMetadata: metadata as SyncTimeTrackedMetadata,
             guildId: tracked.guildId,
@@ -608,63 +671,52 @@ export async function handleSyncReadinessRefreshButton(
             guildId: tracked.guildId,
             now,
           });
+      const failedClanCount =
+        summary.syncAllFailedClanTags.length + summary.currentMemberFailedClanTags.length;
+      if (failedClanCount > 0) {
+        payload = {
+          ...payload,
+          content: `${payload.content}\n\n⚠️ Refresh completed with ${failedClanCount} clan refresh failure${
+            failedClanCount === 1 ? "" : "s"
+          }.`,
+        };
+      }
 
       await finishRefreshEdit({
         message: interaction.message,
         payload,
       });
 
-      await updateTrackedMessageMetadata({
-        trackedMessageId: tracked.messageId,
-        metadata:
-          isSyncTime
-            ? buildSyncTimeTrackedMetadata({
-                baseMetadata: metadata as SyncTimeTrackedMetadata,
-                now,
-                successfulRefreshAt: now,
-              })
-            : buildStandaloneReadinessMetadata({
-                baseMetadata: metadata as SyncReadinessTrackedMetadata,
-                now,
-                successfulRefreshAt: now,
-              }),
-      });
+      releaseMetadata = isSyncTime
+        ? buildSyncTimeTrackedMetadata({
+            baseMetadata: stripRefreshLockMetadata(metadata as SyncTimeTrackedMetadata),
+            now,
+            successfulRefreshAt: now,
+          })
+        : buildStandaloneReadinessMetadata({
+            baseMetadata: stripRefreshLockMetadata(metadata as SyncReadinessTrackedMetadata),
+            now,
+            successfulRefreshAt: now,
+          });
 
       console.info(
-        `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} duration_ms=${Date.now() - startedAt.getTime()} tracked_clan_count=${payload.trackedClanCount} failed_clan_count=${summary.syncAllFailedClanTags.length + summary.currentMemberFailedClanTags.length}`,
+        `[sync-time-fwa-list] refresh_success guild_id=${interaction.guildId} message_id=${tracked.messageId} duration_ms=${Date.now() - startedAt.getTime()} tracked_clan_count=${payload.trackedClanCount} failed_clan_count=${failedClanCount}`,
       );
     } catch (err) {
       console.error(
         `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${tracked.messageId} error=${formatError(err)}`,
       );
       try {
-        const payload = isSyncTime
-          ? await buildSyncTimeFwaClanListMessagePayload({
-              baseMetadata: metadata as SyncTimeTrackedMetadata,
-              guildId: tracked.guildId,
-              now,
-            })
-          : await buildSyncReadinessMessagePayload({
-              baseMetadata: metadata as SyncReadinessTrackedMetadata,
-              guildId: tracked.guildId,
-              now,
-            });
-        await finishRefreshEdit({
-          message: interaction.message,
-          payload,
-        });
-        await updateTrackedMessageMetadata({
-          trackedMessageId: tracked.messageId,
-          metadata:
-            isSyncTime
-              ? buildSyncTimeTrackedMetadata({
-                  baseMetadata: metadata as SyncTimeTrackedMetadata,
-                  now,
-                })
-              : buildStandaloneReadinessMetadata({
-                  baseMetadata: metadata as SyncReadinessTrackedMetadata,
-                  now,
-                }),
+        await interaction.message.edit({
+          components: [
+            buildRefreshRow({
+              state:
+                isSyncTime &&
+                isReadinessRefreshWindowExpired(metadata as SyncTimeTrackedMetadata, now)
+                  ? "closed"
+                  : "default",
+            }),
+          ],
         });
       } catch (restoreErr) {
         console.error(
@@ -681,6 +733,19 @@ export async function handleSyncReadinessRefreshButton(
           ephemeral: true,
           content: "Failed to refresh the readiness dashboard.",
         });
+      }
+    } finally {
+      if (releaseMetadata) {
+        try {
+          await updateTrackedMessageMetadata({
+            trackedMessageId: tracked.messageId,
+            metadata: releaseMetadata,
+          });
+        } catch (err) {
+          console.error(
+            `[sync-time-fwa-list] refresh_failed guild_id=${interaction.guildId} message_id=${tracked.messageId} release_error=${formatError(err)}`,
+          );
+        }
       }
     }
   } catch (err) {
