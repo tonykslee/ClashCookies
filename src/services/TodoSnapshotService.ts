@@ -839,13 +839,7 @@ export class TodoSnapshotService {
       });
       currentMembershipByPlayerTag.set(playerTag, resolvedMembership);
       const cwlDiscoveryClanTag = normalizeClanTag(
-        resolvedMembership.clanTag ??
-          livePlayer?.clanTag ??
-          observedLivePlayer?.clanTag ??
-          playerCurrent?.currentClanTag ??
-          fromMember?.clanTag ??
-          fromExisting?.clanTag ??
-          "",
+        resolvedMembership.clanTag ?? livePlayer?.clanTag ?? observedLivePlayer?.clanTag ?? "",
       ) || null;
       cwlDiscoveryClanTagByPlayerTag.set(playerTag, cwlDiscoveryClanTag);
     }
@@ -1115,24 +1109,16 @@ export class TodoSnapshotService {
     const liveCurrentWarCandidateClanTagsByPlayerTag = new Map<string, string[]>();
     const liveCurrentWarFallbackCandidateTagsByClanTag = new Map<string, Set<string>>();
     const liveCurrentWarCandidateClanTags = new Set<string>();
-    const rawWarMemberPlayerTagSet = new Set(
-      [...fwaWarMemberFallbackByClanAndPlayer.values()]
-        .map((row) => normalizePlayerTag(row.playerTag))
-        .filter(Boolean),
-    );
     for (const playerTag of normalizedTags) {
       const activeTrackedClanTag = activeTrackedWarClanTagByPlayerTag.get(playerTag) ?? null;
-      if (activeTrackedClanTag) {
-        continue;
-      }
-      if (rawWarMemberPlayerTagSet.has(playerTag)) {
+      if (activeTrackedClanTag || allowedFwaWarMemberFallbackByPlayerTag.has(playerTag)) {
         continue;
       }
       const currentMembershipClanTag = currentMembershipByPlayerTag.get(playerTag)?.clanTag ?? null;
+      const existingWarClanTag = normalizeClanTag(existingByTag.get(playerTag)?.warClanTag ?? "");
       const candidateClanTags = [
-        trackedClanTagSet.has(normalizeClanTag(currentMembershipClanTag ?? ""))
-          ? currentMembershipClanTag
-          : null,
+        currentMembershipClanTag,
+        existingWarClanTag || null,
       ]
         .map((clanTag) => normalizeClanTag(clanTag ?? ""))
         .filter((clanTag): clanTag is string => Boolean(clanTag));
@@ -1312,11 +1298,16 @@ export class TodoSnapshotService {
       const allowedFallbackWarMember =
         allowedFwaWarMemberFallbackByPlayerTag.get(playerTag) ?? null;
       const resolvedClanTag = currentMembershipClanTag;
+      const existingClanTag = normalizeClanTag(existing?.clanTag ?? "");
+      const existingClanName =
+        resolvedClanTag && existingClanTag === resolvedClanTag
+          ? sanitizeDisplayText(existing?.clanName ?? "") || null
+          : null;
       const resolvedClanName =
         (resolvedClanTag ? membershipContext.clanName : null) ||
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
         (resolvedClanTag ? raidTrackedClanNameByTag.get(resolvedClanTag) : null) ||
-        sanitizeDisplayText(existing?.clanName ?? "") ||
+        existingClanName ||
         null;
       const candidateLiveCurrentWarClanTags =
         liveCurrentWarCandidateClanTagsByPlayerTag.get(playerTag) ?? [];
@@ -1462,16 +1453,11 @@ export class TodoSnapshotService {
         fallbackWarMemberUsedClanTags.add(allowedFallbackWarMemberForWarClan.clanTag);
         fallbackWarMemberUsedPlayerTags.add(playerTag);
       }
-      const warStateSourceEndsAt =
-        trackedWarMember && currentWar
-          ? currentWar.updatedAt
-          : allowedFallbackWarMemberForWarClan
-            ? allowedFallbackWarMemberForWarClan.sourceSyncedAt
-            : liveCurrentWarFallbackContext
-              ? liveCurrentWarFallbackContext.phaseEndsAt ?? null
-              : currentWar
-                ? resolveCurrentWarPhaseEnd(currentWar)
-                : null;
+      const warStateSourceEndsAt = liveCurrentWarFallbackContext
+        ? liveCurrentWarFallbackContext.phaseEndsAt ?? null
+        : currentWar
+          ? resolveCurrentWarPhaseEnd(currentWar)
+          : null;
       const warActive = warStateActive && warMember !== null;
       const warPhase = warActive
         ? normalizeWarPhaseLabel(warState)
@@ -2247,6 +2233,7 @@ async function loadLiveCurrentWarFallbackContextsByClanTag(input: {
     input.preloadedCurrentWarSnapshotsByClanTag ?? new Map();
   const startedAtMs = Date.now();
   const buildContext = (clanTag: string, war: CurrentWarSnapshot | null): LiveCurrentWarFallbackContext | null => {
+    const observedAt = new Date();
     if (!war || !isTodoWarStateActive(war.state)) {
       return null;
     }
@@ -2291,7 +2278,7 @@ async function loadLiveCurrentWarFallbackContextsByClanTag(input: {
       clanName: side.clanName || null,
       currentWarState,
       phaseEndsAt,
-      sourceUpdatedAt: phaseEndsAt,
+      sourceUpdatedAt: observedAt,
       membersByPlayerTag,
     };
   };
@@ -2730,8 +2717,7 @@ function resolveTodoCurrentMembershipContext(input: {
   existingSnapshot: {
     clanTag: string | null;
     clanName: string | null;
-    updatedAt: Date;
-    lastUpdatedAt?: Date | null;
+    clanMembershipObservedAt: Date | null;
   } | null;
 }): TodoCurrentMembershipContext {
   const observedLiveClanTag = normalizeClanTag(input.liveClanTagEntry?.clanTag ?? "");
@@ -2763,47 +2749,33 @@ function resolveTodoCurrentMembershipContext(input: {
       TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS,
     );
   if (input.playerCurrent) {
-    if (!playerCurrentClanTag) {
-      if (playerCurrentFresh) {
-        return {
-          clanTag: null,
-          clanName: null,
-          observedAt: input.playerCurrent.lastFetchedAt ?? input.playerCurrent.updatedAt ?? input.now,
-          fresh: true,
-          source: "no_clan",
-        };
-      }
+    if (playerCurrentFresh) {
       return {
-        clanTag: null,
-        clanName: null,
-        observedAt: input.playerCurrent.lastFetchedAt ?? input.playerCurrent.updatedAt ?? null,
-        fresh: false,
-        source: "none",
+        clanTag: playerCurrentClanTag || null,
+        clanName: playerCurrentClanTag
+          ? sanitizeDisplayText(input.playerCurrent.currentClanName ?? "") || null
+          : null,
+        observedAt: input.playerCurrent.lastFetchedAt ?? input.playerCurrent.updatedAt ?? input.now,
+        fresh: true,
+        source: playerCurrentClanTag ? "player_current" : "no_clan",
       };
     }
-    return {
-      clanTag: playerCurrentClanTag,
-      clanName: sanitizeDisplayText(input.playerCurrent.currentClanName ?? "") || null,
-      observedAt: input.playerCurrent.lastFetchedAt ?? input.playerCurrent.updatedAt ?? input.now,
-      fresh: playerCurrentFresh,
-      source: "player_current",
-    };
   }
 
   const latestClanMemberClanTag = normalizeClanTag(input.latestClanMember?.clanTag ?? "");
-  if (latestClanMemberClanTag) {
-    const latestClanMemberFresh =
-      input.latestClanMember !== null &&
-      !isPlayerCurrentStaleForSignup(
-        { lastFetchedAt: input.latestClanMember.sourceSyncedAt },
-        input.now,
-        TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS,
-      );
+  const latestClanMemberFresh =
+    input.latestClanMember !== null &&
+    !isPlayerCurrentStaleForSignup(
+      { lastFetchedAt: input.latestClanMember.sourceSyncedAt },
+      input.now,
+      TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS,
+    );
+  if (latestClanMemberClanTag && latestClanMemberFresh) {
     return {
       clanTag: latestClanMemberClanTag,
       clanName: null,
       observedAt: input.latestClanMember?.sourceSyncedAt ?? input.now,
-      fresh: latestClanMemberFresh,
+      fresh: true,
       source: "fwa_member",
     };
   }
@@ -2813,8 +2785,7 @@ function resolveTodoCurrentMembershipContext(input: {
     return {
       clanTag: existingClanTag,
       clanName: sanitizeDisplayText(input.existingSnapshot?.clanName ?? "") || null,
-      observedAt:
-        input.existingSnapshot?.lastUpdatedAt ?? input.existingSnapshot?.updatedAt ?? input.now,
+      observedAt: input.existingSnapshot?.clanMembershipObservedAt ?? null,
       fresh: false,
       source: "existing",
     };

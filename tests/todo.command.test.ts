@@ -1900,7 +1900,7 @@ describe("/todo command", () => {
     await Todo.run({} as any, interaction as any, cocService as any);
 
     const description = getReplyDescription(interaction);
-    expect(description).toContain("Alpha - `0 / 2`");
+    expect(description).toContain("#8 Alpha - `0 / 2`");
     expect(description).not.toContain("No war active");
     expect(description).not.toContain("Bravo");
   });
