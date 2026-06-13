@@ -435,6 +435,8 @@ export class TodoSnapshotService {
           select: {
             playerTag: true,
             clanTag: true,
+            raidActive: true,
+            raidClanTag: true,
             warActive: true,
             warClanTag: true,
             cwlClanTag: true,
@@ -449,6 +451,16 @@ export class TodoSnapshotService {
     );
     const snapshotByPlayerTag = new Map(
       snapshotRows.map((row) => [normalizePlayerTag(row.playerTag), row] as const),
+    );
+    const snapshotRaidClanTagByPlayerTag = new Map(
+      snapshotRows.map((row) => [
+        normalizePlayerTag(row.playerTag),
+        row.raidActive
+          ? normalizeClanTag(row.raidClanTag ?? "") ||
+            normalizeClanTag(row.clanTag ?? "") ||
+            null
+          : null,
+      ] as const),
     );
     const snapshotCwlClanTagByPlayerTag = new Map(
       snapshotRows.map((row) => [
@@ -558,6 +570,7 @@ export class TodoSnapshotService {
     const nonTrackedPlayerTags: string[] = [];
     const snapshotTrackedPlayerTagSet = new Set<string>();
     const snapshotWarContextPlayerTagSet = new Set<string>();
+    const snapshotRaidContextPlayerTagSet = new Set<string>();
     const memberTrackedPlayerTagSet = new Set<string>();
     const warMemberTrackedPlayerTagSet = new Set<string>();
     const rosterTrackedPlayerTagSet = new Set<string>();
@@ -569,7 +582,8 @@ export class TodoSnapshotService {
           ? normalizeClanTag(snapshotRow.warClanTag ?? "") ||
             normalizeClanTag(snapshotRow.clanTag ?? "") ||
             null
-          : null;
+        : null;
+      const snapshotRaidClanTag = snapshotRaidClanTagByPlayerTag.get(playerTag) ?? null;
       const snapshotCwlClanTag = snapshotCwlClanTagByPlayerTag.get(playerTag) ?? null;
       const memberClanTag = clanMemberClanTagByPlayerTag.get(playerTag) ?? null;
       const warMemberClanTag = warMemberClanTagByPlayerTag.get(playerTag) ?? null;
@@ -577,6 +591,11 @@ export class TodoSnapshotService {
 
       if (snapshotWarClanTag && trackedClanTagSet.has(snapshotWarClanTag)) {
         snapshotWarContextPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
+      if (snapshotRaidClanTag && trackedRaidClanTagSet.has(snapshotRaidClanTag)) {
+        snapshotRaidContextPlayerTagSet.add(playerTag);
         trackedPlayerTags.push(playerTag);
         continue;
       }
@@ -656,7 +675,7 @@ export class TodoSnapshotService {
       totalLinkedUserIds.length - activatedUserCount,
     );
     console.info(
-      `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} cwl_season=${currentCwlSeason} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} snapshot_war_context_count=${snapshotWarContextPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
+      `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} cwl_season=${currentCwlSeason} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} snapshot_war_context_count=${snapshotWarContextPlayerTagSet.size} snapshot_raid_context_count=${snapshotRaidContextPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
     );
     console.info(
       `[todo-snapshot] event=todo_refresh_population cadence=${input.cadence} activated_user_count=${activatedUserCount} total_linked_user_count=${totalLinkedUserIds.length} skipped_never_used_user_count=${skippedNeverUsedUserCount} selected_player_count=${selectedPlayerCount} tracked_player_count=${trackedPlayerCount} non_tracked_player_count=${nonTrackedPlayerCount}`,
