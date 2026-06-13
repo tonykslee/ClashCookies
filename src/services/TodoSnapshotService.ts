@@ -656,7 +656,6 @@ export class TodoSnapshotService {
     const task = this.refreshSnapshotsForPlayerTagsInternal({
       ...input,
       playerTags: normalizedTags,
-      observedLivePlayerCurrent: input.observedLivePlayerCurrent ?? [],
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
       ),
@@ -696,7 +695,6 @@ export class TodoSnapshotService {
       cocService: input.cocService,
       cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       nowMs: input.nowMs,
-      observedLivePlayerCurrent: input.observedLivePlayerCurrent ?? [],
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
       ),
@@ -721,7 +719,6 @@ export class TodoSnapshotService {
     cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
-    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
     observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag;
     preloadedCurrentWarSnapshotsByClanTag?: Map<string, CurrentWarSnapshot | null> | null;
     producer?: WarEventLinkedPlayerRefreshProducer | null;
@@ -739,9 +736,7 @@ export class TodoSnapshotService {
     const gamesWindow = resolveClanGamesWindow(nowMs);
     const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
     const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
-    const observedLivePlayerCurrentByTag = buildObservedLivePlayerCurrentByTag(
-      input.observedLivePlayerCurrent ?? [],
-    );
+    const observedLivePlayerCurrentByTag = input.observedLivePlayerCurrentByTag ?? new Map();
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
@@ -835,10 +830,6 @@ export class TodoSnapshotService {
       const existing = existingByTag.get(playerTag) ?? null;
       const livePlayer = liveClanTagByPlayerTag.get(playerTag) ?? null;
       const observedLivePlayer = observedLivePlayerCurrentByTag.get(playerTag) ?? null;
-      const observedLivePlayerFromInput =
-        input.observedLivePlayerCurrent?.find(
-          (row) => normalizePlayerTag(String(row?.playerTag ?? "")) === playerTag,
-        ) ?? null;
       const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
       const fromMember = latestClanMemberByTag.get(playerTag) ?? null;
       const fromExisting = existingByTag.get(playerTag) ?? null;
@@ -1319,10 +1310,6 @@ export class TodoSnapshotService {
       const allowedFallbackWarMember =
         allowedFwaWarMemberFallbackByPlayerTag.get(playerTag) ?? null;
       const observedLivePlayer = input.observedLivePlayerCurrentByTag?.get(playerTag) ?? null;
-      const observedLivePlayerFromInput =
-        input.observedLivePlayerCurrent?.find(
-          (row) => normalizePlayerTag(String(row?.playerTag ?? "")) === playerTag,
-        ) ?? null;
       const resolvedClanTag = currentMembershipClanTag;
       const existingClanTag = normalizeClanTag(existing?.clanTag ?? "");
       const existingClanName =
@@ -1332,9 +1319,6 @@ export class TodoSnapshotService {
       const resolvedClanName =
         (resolvedClanTag ? membershipContext.clanName : null) ||
         (resolvedClanTag ? sanitizeDisplayText(observedLivePlayer?.clanName ?? "") || null : null) ||
-        (resolvedClanTag
-          ? sanitizeDisplayText(observedLivePlayerFromInput?.clanName ?? "") || null
-          : null) ||
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
         (resolvedClanTag ? raidTrackedClanNameByTag.get(resolvedClanTag) : null) ||
         existingClanName ||
@@ -2850,6 +2834,7 @@ function buildObservedLivePlayerCurrentByTag(
     if (!playerTag || map.has(playerTag)) continue;
     map.set(playerTag, {
       clanTag: normalizeClanTag(String(row?.clanTag ?? "")) || "",
+      clanName: sanitizeDisplayText(String(row?.clanName ?? "")) || null,
       townHall: normalizeRosterInt(row?.townHall ?? null),
     });
   }
