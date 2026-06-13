@@ -2710,6 +2710,7 @@ describe("TodoSnapshotService", () => {
           raidAttacksUsed: 0,
           raidClanTag: null,
           raidClanName: null,
+          lastUpdatedAt: new Date("2026-04-02T12:00:00.000Z"),
         }),
       }),
     );
@@ -2718,6 +2719,8 @@ describe("TodoSnapshotService", () => {
 
   it("preserves every raid field when the raid source is unavailable", async () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
+    const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
+    const preservedUpdatedAt = new Date("2026-03-25T09:15:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2727,6 +2730,8 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        lastUpdatedAt: preservedLastUpdatedAt,
+        updatedAt: preservedUpdatedAt,
       }),
     ]);
 
@@ -2742,11 +2747,14 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
+      lastUpdatedAt: preservedLastUpdatedAt,
     });
   });
 
   it("preserves every raid field when raid clan fetch fails", async () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
+    const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
+    const preservedUpdatedAt = new Date("2026-03-25T09:15:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2756,6 +2764,8 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        lastUpdatedAt: preservedLastUpdatedAt,
+        updatedAt: preservedUpdatedAt,
       }),
     ]);
     const cocService = {
@@ -2780,10 +2790,12 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
+      lastUpdatedAt: preservedLastUpdatedAt,
     });
   });
 
   it("clears raid fields when authoritative observation finds no applicable raid context", async () => {
+    const refreshedAt = new Date("2026-03-29T12:00:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2793,6 +2805,8 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 5,
         raidAttacksMax: 6,
         raidEndsAt: new Date("2026-03-30T07:00:00.000Z"),
+        lastUpdatedAt: new Date("2026-03-24T09:15:00.000Z"),
+        updatedAt: new Date("2026-03-25T09:15:00.000Z"),
       }),
     ]);
     const cocService = {
@@ -2823,11 +2837,13 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 0,
       raidAttacksMax: 6,
       raidEndsAt: null,
+      lastUpdatedAt: refreshedAt,
     });
   });
 
   it("preserves active raid progress during unrelated snapshot refresh without raid source access", async () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
+    const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2837,6 +2853,8 @@ describe("TodoSnapshotService", () => {
         raidAttacksUsed: 4,
         raidAttacksMax: 6,
         raidEndsAt,
+        lastUpdatedAt: preservedLastUpdatedAt,
+        updatedAt: new Date("2026-03-25T09:15:00.000Z"),
       }),
     ]);
 
@@ -2862,10 +2880,12 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 4,
       raidAttacksMax: 6,
       raidEndsAt,
+      lastUpdatedAt: preservedLastUpdatedAt,
     });
   });
 
   it("writes raid context and attack count from a successful raid observation", async () => {
+    const refreshedAt = new Date("2026-03-29T12:00:00.000Z");
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
         playerTag: "#PYLQ0289",
@@ -2874,6 +2894,8 @@ describe("TodoSnapshotService", () => {
         raidClanTag: null,
         raidClanName: null,
         raidEndsAt: null,
+        lastUpdatedAt: new Date("2026-03-24T09:15:00.000Z"),
+        updatedAt: new Date("2026-03-25T09:15:00.000Z"),
       }),
     ]);
     const cocService = {
@@ -2903,6 +2925,7 @@ describe("TodoSnapshotService", () => {
       raidAttacksUsed: 6,
       raidAttacksMax: 6,
       raidEndsAt: new Date("2026-03-30T07:00:00.000Z"),
+      lastUpdatedAt: refreshedAt,
     });
   });
 

@@ -4242,6 +4242,46 @@ describe("/todo pagination buttons", () => {
     );
   });
 
+  it("keeps RAID freshness tied to preserved lastUpdatedAt even when updatedAt is newer", async () => {
+    const discordUserId = "111111111111111111";
+    const preservedLastUpdatedAt = new Date("2026-03-25T19:00:00.000Z");
+    const newerUpdatedAt = new Date("2026-03-25T21:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", discordUserId },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: newerUpdatedAt },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        raidActive: true,
+        raidClanTag: "#PQL0289",
+        raidClanName: "Clan One",
+        raidAttacksUsed: 3,
+        raidAttacksMax: 6,
+        lastUpdatedAt: preservedLastUpdatedAt,
+        updatedAt: newerUpdatedAt,
+      }),
+    ]);
+
+    const pages = await buildTodoPagesForUser({
+      discordUserId,
+      nowMs: new Date("2026-03-26T00:00:00.000Z").getTime(),
+    });
+
+    expect(pages.pages.RAIDS).toContain(
+      `:hourglass: last updated <t:${Math.floor(preservedLastUpdatedAt.getTime() / 1000)}:R>`,
+    );
+    expect(pages.pages.RAIDS).not.toContain(
+      `:hourglass: last updated <t:${Math.floor(newerUpdatedAt.getTime() / 1000)}:R>`,
+    );
+  });
+
   it("rejects button interactions from non-requesting users", async () => {
     const interaction = makeTodoButtonInteraction({
       customId: buildTodoPageButtonCustomId("111111111111111111", "WAR"),
@@ -4445,7 +4485,7 @@ describe("/todo refresh button", () => {
         learnedClanCount: 0,
         failedClanCount: 0,
       });
-    const refreshedAt = new Date("2026-03-26T01:00:00.000Z");
+    const _refreshedAt = new Date("2026-03-26T01:00:00.000Z");
     let snapshotRows = [
       makeSnapshotRow({
         playerTag: "#PYLQ0289",

@@ -1397,6 +1397,13 @@ export class TodoSnapshotService {
         raidEndsAt: null,
       };
       let raidSnapshotData: TodoRaidSnapshotState = clearedRaidData;
+      const hasPreservableRaidState = Boolean(existing?.raidActive);
+      const raidSnapshotLastUpdatedAt =
+        raidWindow.active &&
+        (raidContext.status === "unavailable" || raidContext.status === "failed") &&
+        hasPreservableRaidState
+          ? existing?.lastUpdatedAt ?? existing?.updatedAt ?? now
+          : now;
       if (raidWindow.active) {
         if (raidContext.status === "observed") {
           raidObservedCount += 1;
@@ -1689,7 +1696,7 @@ export class TodoSnapshotService {
         gamesSeasonBaseline: derivedGames.seasonBaseline,
         gamesCycleKey: derivedGames.cycleKey,
         gamesEndsAt: new Date(gamesWindow.endMs),
-        lastUpdatedAt: now,
+        lastUpdatedAt: raidSnapshotLastUpdatedAt,
       };
       if (data.raidActive) {
         raidActiveTrueCount += 1;
