@@ -656,6 +656,7 @@ export class TodoSnapshotService {
     const task = this.refreshSnapshotsForPlayerTagsInternal({
       ...input,
       playerTags: normalizedTags,
+      observedLivePlayerCurrent: input.observedLivePlayerCurrent ?? [],
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
       ),
@@ -695,6 +696,7 @@ export class TodoSnapshotService {
       cocService: input.cocService,
       cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
       nowMs: input.nowMs,
+      observedLivePlayerCurrent: input.observedLivePlayerCurrent ?? [],
       observedLivePlayerCurrentByTag: buildObservedLivePlayerCurrentByTag(
         input.observedLivePlayerCurrent ?? [],
       ),
@@ -719,6 +721,7 @@ export class TodoSnapshotService {
     cwlFetchCycleCache?: CwlLeagueFetchSource | null;
     nowMs?: number;
     includeNonTrackedCwlRefresh?: boolean;
+    observedLivePlayerCurrent?: ObservedLivePlayerCurrent[];
     observedLivePlayerCurrentByTag?: ObservedLivePlayerCurrentByTag;
     preloadedCurrentWarSnapshotsByClanTag?: Map<string, CurrentWarSnapshot | null> | null;
     producer?: WarEventLinkedPlayerRefreshProducer | null;
@@ -736,10 +739,13 @@ export class TodoSnapshotService {
     const gamesWindow = resolveClanGamesWindow(nowMs);
     const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
     const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
+    const observedLivePlayerCurrentByTag = buildObservedLivePlayerCurrentByTag(
+      input.observedLivePlayerCurrent ?? [],
+    );
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
-      observedLivePlayerCurrentByTag: input.observedLivePlayerCurrentByTag ?? new Map(),
+      observedLivePlayerCurrentByTag,
       producer: input.producer ?? null,
     });
 
@@ -828,7 +834,11 @@ export class TodoSnapshotService {
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag) ?? null;
       const livePlayer = liveClanTagByPlayerTag.get(playerTag) ?? null;
-      const observedLivePlayer = input.observedLivePlayerCurrentByTag?.get(playerTag) ?? null;
+      const observedLivePlayer = observedLivePlayerCurrentByTag.get(playerTag) ?? null;
+      const observedLivePlayerFromInput =
+        input.observedLivePlayerCurrent?.find(
+          (row) => normalizePlayerTag(String(row?.playerTag ?? "")) === playerTag,
+        ) ?? null;
       const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
       const fromMember = latestClanMemberByTag.get(playerTag) ?? null;
       const fromExisting = existingByTag.get(playerTag) ?? null;
@@ -1308,6 +1318,11 @@ export class TodoSnapshotService {
         : null;
       const allowedFallbackWarMember =
         allowedFwaWarMemberFallbackByPlayerTag.get(playerTag) ?? null;
+      const observedLivePlayer = input.observedLivePlayerCurrentByTag?.get(playerTag) ?? null;
+      const observedLivePlayerFromInput =
+        input.observedLivePlayerCurrent?.find(
+          (row) => normalizePlayerTag(String(row?.playerTag ?? "")) === playerTag,
+        ) ?? null;
       const resolvedClanTag = currentMembershipClanTag;
       const existingClanTag = normalizeClanTag(existing?.clanTag ?? "");
       const existingClanName =
@@ -1316,6 +1331,10 @@ export class TodoSnapshotService {
           : null;
       const resolvedClanName =
         (resolvedClanTag ? membershipContext.clanName : null) ||
+        (resolvedClanTag ? sanitizeDisplayText(observedLivePlayer?.clanName ?? "") || null : null) ||
+        (resolvedClanTag
+          ? sanitizeDisplayText(observedLivePlayerFromInput?.clanName ?? "") || null
+          : null) ||
         (resolvedClanTag ? trackedClanNameByTag.get(resolvedClanTag) : null) ||
         (resolvedClanTag ? raidTrackedClanNameByTag.get(resolvedClanTag) : null) ||
         existingClanName ||
@@ -2570,7 +2589,7 @@ async function loadLiveClanTagsByPlayerTag(input: {
       playerTag,
       {
         clanTag: observed.clanTag,
-        clanName: observed.clanName ?? null,
+        clanName: sanitizeDisplayText(observed.clanName ?? "") || null,
         townHall: observed.townHall,
         source: "observed_live",
       },
@@ -2654,7 +2673,7 @@ function buildObservedLivePlayerCurrentMap(
     if (!observed) continue;
     map.set(playerTag, {
       clanTag: observed.clanTag,
-      clanName: observed.clanName ?? null,
+      clanName: sanitizeDisplayText(observed.clanName ?? "") || null,
       townHall: observed.townHall,
       source: "observed_live",
     });

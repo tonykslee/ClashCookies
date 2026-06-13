@@ -637,8 +637,8 @@ export async function buildTodoPagesForUser(input: {
       resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
     );
     const inValidatedWarMemberSet = Boolean(warTrackedClanActive && trackedWarMember);
-    const resolvedWarPosition = warTrackedClanActive
-      ? toFiniteIntOrNull(snapshotWarPosition ?? trackedWarMember?.position)
+    const resolvedWarPosition = snapshot?.warActive
+      ? toFiniteIntOrNull(trackedWarMember?.position ?? snapshotWarPosition)
       : null;
     const resolvedWarAttackDetails = warTrackedClanActive
       ? (trackedWarMember?.attackDetails ?? [])
@@ -823,7 +823,7 @@ export async function buildTodoPagesForUser(input: {
       .map((row) => normalizeClanTag(row.clanTag ?? "")),
   ).size;
   const missingWarPositionCount = renderRows.filter(
-    (row) => row.snapshot?.warActive && row.warTrackedClanActive && row.warPosition === null,
+    (row) => row.snapshot?.warActive && row.warPosition === null,
   ).length;
   const legacyWarFieldUsageCount = renderRows.filter(
     (row) => row.snapshot?.warActive && !row.snapshot?.warClanTag,
