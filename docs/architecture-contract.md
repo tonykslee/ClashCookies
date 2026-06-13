@@ -101,7 +101,7 @@ Staging runtime mirrors
 
 Commands:
 
-Read from CurrentWar + ClanPointsSync + TodoPlayerSnapshot + feed-backed tables + other persisted owners
+Read from CurrentWar + ClanPointsSync + TodoPlayerSnapshot + feed-backed tables + other persisted owners. `TodoPlayerSnapshot` keeps current membership separate from WAR lineup identity so stale WAR context can be cleared independently.
 
 ## 0) State ownership map (single source of truth)
 
@@ -186,6 +186,7 @@ Rules:
 ## 6) Snapshot and reminder ownership
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
+- `TodoPlayerSnapshot.clanTag`/`clanName` own the current membership view, while `warClanTag`/`warClanName`/`warPosition` own the WAR lineup view; the two are intentionally decoupled so obsolete WAR context can be cleared independently.
 - `TodoUserUsage` is the lightweight per-user activation owner for `/todo` background refresh eligibility.
 - `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth.
 - `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot when the next day is simultaneously in preparation.

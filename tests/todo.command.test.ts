@@ -1147,6 +1147,7 @@ describe("/todo command", () => {
         warAttacksUsed: 0,
         warAttacksMax: 2,
         warPhase: "battle day",
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#CUV9082",
@@ -1250,6 +1251,7 @@ describe("/todo command", () => {
         warActive: false,
         warAttacksUsed: 0,
         warPhase: null,
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#QGRJ2222",
@@ -1259,6 +1261,7 @@ describe("/todo command", () => {
         warActive: false,
         warAttacksUsed: 0,
         warPhase: null,
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
       }),
       makeSnapshotRow({
         playerTag: "#CUV9082",

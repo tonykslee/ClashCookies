@@ -50,6 +50,7 @@ type TodoRenderRow = {
   warPosition: number | null;
   warSourceUpdatedAt: Date | null;
   clanMembershipObservedAt: Date | null;
+  currentMembershipFresh: boolean;
   warAttackDetails: Array<{
     defenderPosition: number | null;
     stars: number | null;
@@ -125,6 +126,7 @@ const TODO_STALE_ACTIVE_CWL_MS = 5 * 60 * 1000;
 const TODO_STALE_ACTIVE_RAID_MS = 15 * 60 * 1000;
 const TODO_STALE_ACTIVE_GAMES_MS = 30 * 60 * 1000;
 const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
+const TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS = 60 * 60 * 1000;
 const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
@@ -612,6 +614,11 @@ export async function buildTodoPagesForUser(input: {
       ? ((snapshot as TodoSnapshotRecord & { clanMembershipObservedAt?: Date | null })
           .clanMembershipObservedAt ?? null)
       : null;
+    const snapshotClanMembershipObservedAtMs = toTimestampMs(snapshotClanMembershipObservedAt);
+    const currentMembershipFresh = Boolean(
+      snapshotClanMembershipObservedAtMs !== null &&
+        nowMs - snapshotClanMembershipObservedAtMs < TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS,
+    );
     const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
     const resolvedCwlClanTag = normalizeClanTag(snapshot?.cwlClanTag ?? "") || null;
     const resolvedWarClanTag =
@@ -703,8 +710,8 @@ export async function buildTodoPagesForUser(input: {
               .filter((value): value is number => Number.isFinite(value)),
           )
         : null,
-      !warTrackedClanActive && currentTrackedClanActive
-        ? toTimestampMs(snapshotClanMembershipObservedAt) ?? snapshot?.lastUpdatedAt?.getTime() ?? snapshot?.updatedAt?.getTime() ?? null
+      currentMembershipFresh
+        ? toTimestampMs(snapshotClanMembershipObservedAt)
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const cwlFreshnessCandidates = [
@@ -748,6 +755,7 @@ export async function buildTodoPagesForUser(input: {
         snapshot?.lastUpdatedAt ??
         snapshot?.updatedAt ??
         null,
+      currentMembershipFresh,
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
@@ -791,16 +799,18 @@ export async function buildTodoPagesForUser(input: {
   const nonLineupCount = renderRows.filter(
     (row) =>
       row.activeTrackedWarClan &&
+      row.currentMembershipFresh &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet,
   ).length;
-  const suppressedNonLineupCount = renderRows.filter(
+  const suppressedNonLineupStaleMembershipCount = renderRows.filter(
     (row) =>
       row.warTrackedClanActive &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
-      !row.activeTrackedWarClan,
+      !row.inValidatedWarMemberSet &&
+      !row.currentMembershipFresh,
   ).length;
   const activeTrackedWarClanCount = new Set(
     renderRows
@@ -816,7 +826,7 @@ export async function buildTodoPagesForUser(input: {
   const missingSnapshotCount = renderRows.filter((row) => row.missingSnapshot).length;
   const staleSnapshotCount = renderRows.filter((row) => row.staleSnapshot).length;
   console.info(
-    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} suppressed_non_lineup_count=${suppressedNonLineupCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_war_position_count=${missingWarPositionCount} legacy_war_field_usage_count=${legacyWarFieldUsageCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
+    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} suppressed_non_lineup_stale_membership_count=${suppressedNonLineupStaleMembershipCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_war_position_count=${missingWarPositionCount} legacy_war_field_usage_count=${legacyWarFieldUsageCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
   );
   const cwlView = buildCwlPageDescription(renderRows, linkedTags.length, cwlFreshnessAtMs);
   const pages = {
@@ -897,6 +907,7 @@ function buildWarPageDescription(
   const nonLineupRows = rows.filter(
     (row) =>
       row.activeTrackedWarClan &&
+      row.currentMembershipFresh &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet,
