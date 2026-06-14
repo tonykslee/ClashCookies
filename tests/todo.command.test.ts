@@ -4303,14 +4303,14 @@ describe("/todo pagination buttons", () => {
 
   it("falls back to preserved lastUpdatedAt when raidSourceUpdatedAt is missing", async () => {
     const discordUserId = "111111111111111111";
-    const preservedLastUpdatedAt = new Date("2026-03-25T19:00:00.000Z");
-    const newerUpdatedAt = new Date("2026-03-25T21:00:00.000Z");
+    const preservedLastUpdatedAt = new Date("2026-03-25T21:00:00.000Z");
+    const olderUpdatedAt = new Date("2026-03-25T19:00:00.000Z");
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", discordUserId },
     ]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
       _count: { _all: 1 },
-      _max: { lastUpdatedAt: newerUpdatedAt, updatedAt: newerUpdatedAt },
+      _max: { lastUpdatedAt: preservedLastUpdatedAt, updatedAt: olderUpdatedAt },
     });
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       makeSnapshotRow({
@@ -4325,7 +4325,7 @@ describe("/todo pagination buttons", () => {
         raidAttacksMax: 6,
         raidSourceUpdatedAt: null,
         lastUpdatedAt: preservedLastUpdatedAt,
-        updatedAt: newerUpdatedAt,
+        updatedAt: olderUpdatedAt,
       }),
     ]);
 
@@ -4338,7 +4338,7 @@ describe("/todo pagination buttons", () => {
       `:hourglass: last updated <t:${Math.floor(preservedLastUpdatedAt.getTime() / 1000)}:R>`,
     );
     expect(pages.pages.RAIDS).not.toContain(
-      `:hourglass: last updated <t:${Math.floor(newerUpdatedAt.getTime() / 1000)}:R>`,
+      `:hourglass: last updated <t:${Math.floor(olderUpdatedAt.getTime() / 1000)}:R>`,
     );
   });
 

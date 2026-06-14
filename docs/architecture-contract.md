@@ -130,7 +130,7 @@ Each domain concept must have exactly one authoritative owner.
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Notify overrides | ClanNotifyConfig |
-| Todo render snapshots | TodoPlayerSnapshot |
+| Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render state) |
 | Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
@@ -186,7 +186,8 @@ Rules:
 ## 6) Snapshot and reminder ownership
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
-- `TodoPlayerSnapshot.clanTag`/`clanName` own the current membership view, while `warClanTag`/`warClanName`/`warPosition` own the WAR lineup view; the two are intentionally decoupled so obsolete WAR context can be cleared independently.
+- `TodoPlayerSnapshot.clanTag`/`clanName` own the current membership view, `warClanTag`/`warClanName`/`warPosition` own the WAR lineup view, `raidClanTag`/`raidClanName`/`raidSourceUpdatedAt` own the active RAID-weekend view, and `cwlClanTag`/`cwlClanName` own the seasonal CWL view; those event-owned views are intentionally decoupled so obsolete context can be cleared independently of current membership.
+- `TodoPlayerSnapshot.gamesActive`/`gamesCycleKey`/stored Clan Games totals own the Clan Games lifecycle view.
 - `TodoUserUsage` is the lightweight per-user activation owner for `/todo` background refresh eligibility.
 - `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth.
 - `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot when the next day is simultaneously in preparation.

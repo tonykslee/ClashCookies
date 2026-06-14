@@ -754,11 +754,11 @@ export async function buildTodoPagesForUser(input: {
         ? currentCwlMemberByClanAndPlayerTag.get(`${resolvedCwlClanTag}:${normalizedTag}`)?.updatedAt?.getTime() ?? null
         : null,
     ].filter((value): value is number => Number.isFinite(value));
-    const raidFreshnessCandidates = [
+    const raidFreshnessAtMs = resolveFirstTimestampMs([
       snapshotRaidSourceUpdatedAt?.getTime() ?? null,
       snapshot?.lastUpdatedAt?.getTime() ?? null,
       snapshot?.updatedAt?.getTime() ?? null,
-    ].filter((value): value is number => Number.isFinite(value));
+    ]);
     const gamesFreshnessCandidates = [
       playerSignalStateFreshnessByTag.get(normalizedTag) ?? null,
     ].filter((value): value is number => Number.isFinite(value));
@@ -812,7 +812,7 @@ export async function buildTodoPagesForUser(input: {
       displayedFreshnessAtMsByType: {
         WAR: resolveMinimumTimestampMs(warFreshnessCandidates),
         CWL: resolveMinimumTimestampMs(cwlFreshnessCandidates),
-        RAIDS: resolveMinimumTimestampMs(raidFreshnessCandidates),
+        RAIDS: raidFreshnessAtMs,
         GAMES: resolveMinimumTimestampMs(gamesFreshnessCandidates),
       },
     } satisfies TodoRenderRow;
@@ -2111,6 +2111,14 @@ function resolveMinimumTimestampMs(values: Array<number | null | undefined>): nu
   const candidates = values.filter((value): value is number => Number.isFinite(value));
   if (candidates.length <= 0) return null;
   return candidates.reduce((min, value) => (value < min ? value : min), candidates[0]);
+}
+
+/** Purpose: choose the first usable timestamp from one prioritized candidate list. */
+function resolveFirstTimestampMs(values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 /** Purpose: keep status labels compact and deterministic for embed row rendering. */

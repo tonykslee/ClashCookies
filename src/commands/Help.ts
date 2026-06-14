@@ -571,7 +571,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Use the refresh button to trigger a targeted snapshot rebuild for the displayed todo user and update the same message in place.",
       "WAR/CWL pages group players by shared active event context and include section headers with phase timing.",
       "WAR section headers include tracked clan badge + match-state indicator, and WAR rows show lineup position with compact used-attack detail.",
-      "RAIDS page uses one shared top timer line and then lists per-player progress rows.",
+      "RAIDS page uses one shared top timer line and then lists per-player progress rows, with freshness shown from the persisted RAID source timestamp when available and snapshot timestamps only as legacy fallback.",
       "GAMES page points come from stored activity-signal totals, with cycle baseline/total observability persisted on TodoPlayerSnapshot for DB-first reads.",
       "GAMES has three snapshot-backed views: active earning (time remaining), reward collection through the full in-game claim window (latest final points + reward time remaining), and post-reward off-cycle lifetime totals.",
       "GAMES rows use progress indicators: `🟡` (>0), `✅` (>=4000), and `🏆` (>=10000).",
