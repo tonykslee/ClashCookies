@@ -220,6 +220,68 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     );
   });
 
+  it("skips sending when the recheck sees a completed current-scope base-swap for the same sync identity", async () => {
+    plannerMocks.findPending.mockResolvedValue([
+      makeCandidate({
+        syncMessageId: "sync-message-3",
+        syncIdentitySource: "expired_sync_post_fallback",
+      }),
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce({
+      id: "base-swap-3",
+      guildId: "guild-1",
+      channelId: "base-swap-channel-3",
+      messageId: "base-swap-message-3",
+      referenceId: "sync-message-3",
+      clanTag: "#ABC",
+      createdAt: new Date("2026-05-26T12:15:00.000Z"),
+      expiresAt: new Date("2026-05-27T12:15:00.000Z"),
+      status: "COMPLETED",
+      metadata: {
+        clanName: "Alpha Clan",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-26T12:15:00.000Z",
+        syncMessageId: "sync-message-3",
+        swapReminder: false,
+        entries: [
+          {
+            position: 1,
+            playerTag: "#AAA",
+            playerName: "Player One",
+            discordUserId: "111",
+            townhallLevel: 15,
+            section: "war_bases",
+            acknowledged: true,
+          },
+        ],
+      },
+    } as any);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(trackedMessageService.resolveLatestActiveSyncPost).not.toHaveBeenCalled();
+    expect(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#ABC",
+      syncMessageId: "sync-message-3",
+    });
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=base_swap_completed"),
+    );
+  });
+
   it("counts a deduped marker and skips sending", async () => {
     plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
     vi.mocked(trackedMessageService.claimFwaBasesChecklistReminderMarker).mockResolvedValueOnce(false as any);

@@ -1155,6 +1155,62 @@ describe("fwa checklist tracked messages", () => {
     });
   });
 
+  it("resolves completed current-sync base-swap rows using explicit sync metadata", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "swap-completed-1",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "swap-message-completed-1",
+        referenceId: "fwa-base-swap:split-1",
+        clanTag: "#PYPY",
+        createdAt: new Date("2026-05-13T17:10:00.000Z"),
+        expiresAt: new Date("2026-05-13T19:10:00.000Z"),
+        status: TRACKED_MESSAGE_STATUS.COMPLETED,
+        metadata: {
+          clanKind: "FWA",
+          clanName: "Alpha",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-05-13T17:10:00.000Z",
+          syncMessageId: "sync-message-1",
+          clanRoleId: null,
+          swapReminder: false,
+          renderVariant: "single",
+          phaseTimingLine: null,
+          alertEmoji: null,
+          fwaAlertEmoji: null,
+          layoutBulletEmoji: null,
+          entries: [
+            {
+              position: 12,
+              playerTag: "#P1",
+              playerName: "PlayerOne",
+              discordUserId: "discord-1",
+              townhallLevel: 15,
+              section: "base_errors",
+              acknowledged: true,
+            },
+          ],
+          layoutLinks: [],
+        },
+      } as any,
+    ]);
+
+    const found = await trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      syncMessageId: "sync-message-1",
+    });
+
+    expect(found).toMatchObject({
+      messageId: "swap-message-completed-1",
+      status: TRACKED_MESSAGE_STATUS.COMPLETED,
+      metadata: expect.objectContaining({
+        syncMessageId: "sync-message-1",
+      }),
+    });
+  });
+
   it("does not fall back to an unscoped active base-swap row when a sync identity is supplied", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {

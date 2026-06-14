@@ -8,6 +8,7 @@ import {
   buildFwaMatchChecklistScopeKey,
   findLatestFwaMatchChecklistCheckedClanTags,
   buildFwaBaseSwapIssueSummary,
+  TRACKED_MESSAGE_STATUS,
   type FwaMatchChecklistTrackedRow,
   trackedMessageService,
   buildFwaMatchCompactCopyLine,
@@ -423,7 +424,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         currentSyncIdentitySource = rowSyncIdentitySource;
       }
     }
-    const activeBaseSwap = rowSyncIdentity
+    const currentBaseSwap = rowSyncIdentity
       ? await trackedMessageService
           .findLatestActiveFwaBaseSwapTrackedMessageForClan({
             guildId: params.guildId,
@@ -432,9 +433,9 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           })
           .catch(() => null)
       : null;
-    const issueSummary = activeBaseSwap
+    const issueSummary = currentBaseSwap
       ? buildFwaBaseSwapIssueSummary(
-          activeBaseSwap.metadata,
+          currentBaseSwap.metadata,
           String(activeCurrentWar?.matchType ?? activeCurrentWar?.inferredMatchType ?? "").trim() || null,
         )
       : {
@@ -455,25 +456,32 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       sanitizeClanName(clan.name) ??
       `#${clanTag}`;
     const clanBadge = parseTrackedClanBadge(clan.clanBadge);
-    const issueLink = activeBaseSwap
+    const issueLink = currentBaseSwap
       ? buildDiscordMessageLink({
-          guildId: activeBaseSwap.guildId,
-          channelId: activeBaseSwap.channelId,
-          messageId: activeBaseSwap.messageId,
+          guildId: currentBaseSwap.guildId,
+          channelId: currentBaseSwap.channelId,
+          messageId: currentBaseSwap.messageId,
         })
       : null;
-    const activeBaseSwapSyncIdentity = normalizeTrackedMessageId(
-      activeBaseSwap?.metadata.syncMessageId ?? null,
+    const currentBaseSwapSyncIdentity = normalizeTrackedMessageId(
+      currentBaseSwap?.metadata.syncMessageId ?? null,
     );
-    const baseSwapSource = activeBaseSwap
-      ? activeBaseSwapSyncIdentity === rowSyncIdentity
-        ? "matched_sync"
-        : "matched_unscoped"
+    const currentBaseSwapStatus = currentBaseSwap?.status ?? null;
+    const currentBaseSwapCompleted =
+      Boolean(currentBaseSwap) &&
+      currentBaseSwapStatus === TRACKED_MESSAGE_STATUS.COMPLETED &&
+      !issueSummary.hasIssues;
+    const baseSwapSource = currentBaseSwap
+      ? currentBaseSwapCompleted
+        ? "base_swap_completed"
+        : issueSummary.hasIssues
+          ? "base_swap_active_issues"
+          : "base_swap_active_resolved"
       : rowSyncIdentity
         ? "no_match"
         : "no_sync";
     const exactCompletion =
-      issueSummary.hasIssues || !rowSyncIdentity
+      currentBaseSwapCompleted || issueSummary.hasIssues || !rowSyncIdentity
         ? null
         : await trackedMessageService
             .findLatestFwaMatchChecklistBasesCompletionForClan({
@@ -486,7 +494,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
             })
             .catch(() => null);
     const fallbackCompletion =
-      exactCompletion || issueSummary.hasIssues || !rowSyncIdentity
+      currentBaseSwapCompleted || exactCompletion || issueSummary.hasIssues || !rowSyncIdentity
         ? null
         : await trackedMessageService
             .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
@@ -498,11 +506,13 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
               syncMessageId: rowSyncIdentity,
             })
             .catch(() => null);
-    const allGoodCompletion = exactCompletion ?? fallbackCompletion;
+    const allGoodCompletion = currentBaseSwapCompleted ? currentBaseSwap : exactCompletion ?? fallbackCompletion;
     const completionSource = exactCompletion
       ? "exact"
       : fallbackCompletion
         ? "sync_fallback"
+        : currentBaseSwapCompleted
+          ? "base_swap_completed"
         : "none";
     const visibleReaction = issueSummary.hasIssues || Boolean(allGoodCompletion);
     const statusText = issueSummary.hasIssues
@@ -511,7 +521,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? "\u2705 Bases checked and all good"
         : "\u274c Bases not checked";
     console.debug(
-      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwap=${baseSwapSource} completion=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
+      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwapReason=${baseSwapSource} baseSwapSyncMessageId=${currentBaseSwapSyncIdentity ?? "missing"} completionReason=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
     );
     rows.push({
       clanTag,
