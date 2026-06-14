@@ -149,6 +149,7 @@ export type FwaBaseSwapTrackedMessageSnapshot = {
   clanTag: string | null;
   createdAt: Date;
   expiresAt: Date | null;
+  status: (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS];
   metadata: FwaBaseSwapTrackedMetadata;
 };
 
@@ -1368,6 +1369,7 @@ export class TrackedMessageService {
     });
   }
 
+  /** Purpose: resolve the latest current-scoped FWA base-swap tracked message for a clan. */
   async findLatestActiveFwaBaseSwapTrackedMessageForClan(params: {
     guildId: string;
     clanTag: string;
@@ -1383,7 +1385,7 @@ export class TrackedMessageService {
       where: {
         guildId,
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
-        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        status: { in: [TRACKED_MESSAGE_STATUS.ACTIVE, TRACKED_MESSAGE_STATUS.COMPLETED] },
         expiresAt: { gt: now },
         OR: [
           { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
@@ -1411,6 +1413,7 @@ export class TrackedMessageService {
         clanTag: true,
         createdAt: true,
         expiresAt: true,
+        status: true,
         metadata: true,
       },
     });
@@ -1429,6 +1432,7 @@ export class TrackedMessageService {
         clanTag: row.clanTag ?? null,
         createdAt: row.createdAt,
         expiresAt: row.expiresAt ?? null,
+        status: row.status as (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS],
         metadata,
       };
       if (syncIdentity) {
@@ -1446,7 +1450,7 @@ export class TrackedMessageService {
         }
         continue;
       }
-      if (!rowSyncIdentity) {
+      if (!rowSyncIdentity && row.status === TRACKED_MESSAGE_STATUS.ACTIVE) {
         console.debug(
           `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} selection=matched_unscoped messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
         );

@@ -5,7 +5,7 @@ import {
   isMirrorPollingMode,
   resolveRuntimeEnvironment,
 } from "../PollingModeService";
-import { resolveTrackedMessageSyncIdentity, trackedMessageService } from "../TrackedMessageService";
+import { TRACKED_MESSAGE_STATUS, trackedMessageService } from "../TrackedMessageService";
 import {
   buildFwaBasesChecklistReminderContent,
   findPendingFwaBasesChecklistReminderCandidates,
@@ -205,17 +205,19 @@ export class FwaBasesChecklistReminderSchedulerService {
           continue;
         }
 
-        const latestActiveSyncPost = await trackedMessageService
-          .resolveLatestActiveSyncPost(candidate.guildId)
-          .catch(() => null);
-        const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
-        const activeBaseSwap = await trackedMessageService
+        const currentSyncIdentity = candidate.syncMessageId ?? null;
+        const currentSyncIdentitySource = candidate.syncIdentitySource ?? "none";
+        const currentBaseSwap = await trackedMessageService
           .findLatestActiveFwaBaseSwapTrackedMessageForClan({
             guildId: candidate.guildId,
             clanTag: candidate.clanTag,
             syncMessageId: currentSyncIdentity,
           })
           .catch(() => null);
+        const currentBaseSwapStatus = currentBaseSwap?.status ?? null;
+        const currentBaseSwapCompleted =
+          Boolean(currentBaseSwap) &&
+          currentBaseSwapStatus === TRACKED_MESSAGE_STATUS.COMPLETED;
         const activeCompletion = await trackedMessageService
           .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
             guildId: candidate.guildId,
@@ -227,13 +229,15 @@ export class FwaBasesChecklistReminderSchedulerService {
             syncReferenceId: currentSyncIdentity,
           })
           .catch(() => null);
-        if (activeBaseSwap || activeCompletion) {
+        if (currentBaseSwap || activeCompletion) {
           skipped += 1;
-          const suppressionReason = activeBaseSwap
-            ? "base_swap_exists"
+          const suppressionReason = currentBaseSwap
+            ? currentBaseSwapCompleted
+              ? "base_swap_completed"
+              : "base_swap_active_issues"
             : "bases_completion_exists";
           dozzleLog.info(
-            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=${suppressionReason} syncIdentitySource=${currentSyncIdentity ? "active_sync_post" : "expired_sync_post_fallback"} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapMessageId=${activeBaseSwap?.messageId ?? "missing"} completionMessageId=${activeCompletion?.messageId ?? "missing"}`,
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=${suppressionReason} syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapMessageId=${currentBaseSwap?.messageId ?? "missing"} completionMessageId=${activeCompletion?.messageId ?? "missing"}`,
           );
           continue;
         }
