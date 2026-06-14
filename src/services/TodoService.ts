@@ -221,12 +221,47 @@ export async function buildTodoPagesForUser(input: {
     playerTags: linkedTags,
   });
   const snapshotByTag = new Map(snapshotRows.map((row) => [row.playerTag, row]));
-  const clanTags = [
+  const currentMembershipClanTags = [
     ...new Set(
       snapshotRows
         .map((row) => normalizeClanTag(row.clanTag ?? ""))
         .filter(Boolean),
     ),
+  ];
+  const activeWarOwnerClanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) =>
+          row.warActive
+            ? normalizeClanTag(row.warClanTag ?? "") || normalizeClanTag(row.clanTag ?? "")
+            : "",
+        )
+        .filter(Boolean),
+    ),
+  ];
+  const activeRaidOwnerClanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) =>
+          row.raidActive
+            ? normalizeClanTag(row.raidClanTag ?? "") || normalizeClanTag(row.clanTag ?? "")
+            : "",
+        )
+        .filter(Boolean),
+    ),
+  ];
+  const trackedClanLookupTags = [
+    ...new Set([
+      ...currentMembershipClanTags,
+      ...activeWarOwnerClanTags,
+      ...activeRaidOwnerClanTags,
+    ]),
+  ];
+  const raidTrackedClanLookupTags = [
+    ...new Set([...currentMembershipClanTags, ...activeRaidOwnerClanTags]),
+  ];
+  const currentWarLookupTags = [
+    ...new Set([...currentMembershipClanTags, ...activeWarOwnerClanTags]),
   ];
   const cwlClanTags = [
     ...new Set(
@@ -248,21 +283,21 @@ export async function buildTodoPagesForUser(input: {
     activeCwlPlans,
   ] =
     await Promise.all([
-    clanTags.length > 0
+    trackedClanLookupTags.length > 0
       ? prisma.trackedClan.findMany({
-          where: { tag: { in: clanTags } },
+          where: { tag: { in: trackedClanLookupTags } },
           select: { tag: true, clanBadge: true, name: true },
         })
       : Promise.resolve([]),
-    clanTags.length > 0
+    raidTrackedClanLookupTags.length > 0
       ? prisma.raidTrackedClan.findMany({
-          where: { clanTag: { in: clanTags } },
+          where: { clanTag: { in: raidTrackedClanLookupTags } },
           select: { clanTag: true, name: true },
         })
       : Promise.resolve([]),
-    clanTags.length > 0
+    currentWarLookupTags.length > 0
       ? prisma.currentWar.findMany({
-          where: { clanTag: { in: clanTags } },
+          where: { clanTag: { in: currentWarLookupTags } },
           select: {
             clanTag: true,
             clanName: true,
@@ -877,7 +912,7 @@ export async function buildTodoPagesForUser(input: {
     pages: {
       WAR: warView.description,
       CWL: cwlView.description,
-      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length, raidsFreshnessAtMs),
+      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length, raidsFreshnessAtMs, nowMs),
       GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs, gamesFreshnessAtMs),
     },
     sidebarStateByType: {
@@ -1165,8 +1200,9 @@ function buildRaidsPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
   displayedFreshnessAtMs: number | null,
+  nowMs = Date.now(),
 ): string {
-  const hasActive = rows.some((row) => Boolean(row.snapshot?.raidActive));
+  const hasActive = rows.some((row) => isTodoRaidSnapshotActive(row.snapshot, nowMs));
   if (!hasActive) {
     return buildTodoPageDescription({
       heading: "RAIDS",
@@ -1177,13 +1213,13 @@ function buildRaidsPageDescription(
   }
 
   const lines: string[] = [];
-  const sharedEndsAt = getSharedEndsAt(rows, "raid");
+  const sharedEndsAt = getSharedEndsAt(rows, "raid", nowMs);
   if (sharedEndsAt) {
     lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
     lines.push("");
   }
-  for (const row of sortRaidsRows(rows)) {
-    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row)));
+  for (const row of sortRaidsRows(rows, nowMs)) {
+    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row, nowMs), nowMs));
   }
 
   return buildTodoPageDescription({
@@ -1369,7 +1405,7 @@ function getSharedEndsAt(
   const candidates = rows
     .map((row) => {
       if (!row.snapshot) return null;
-      if (mode === "raid" && row.snapshot.raidActive) {
+      if (mode === "raid" && isTodoRaidSnapshotActive(row.snapshot, nowMs)) {
         return row.snapshot.raidEndsAt ?? null;
       }
       if (mode === "games" && isTodoGamesSessionActive(row.snapshot, nowMs)) {
@@ -1423,8 +1459,8 @@ function formatGamesTodoRow(
 }
 
 /** Purpose: format one RAIDS row with completion marker emojis and unchanged status text. */
-function formatRaidsTodoRow(row: TodoRenderRow, status: string): string {
-  const marker = getRaidRowMarker(row);
+function formatRaidsTodoRow(row: TodoRenderRow, status: string, nowMs = Date.now()): string {
+  const marker = getRaidRowMarker(row, nowMs);
   return `${marker} ${row.playerName} - ${status}`;
 }
 
@@ -1605,22 +1641,22 @@ function getCwlRowMarker(row: TodoRenderRow): string {
 }
 
 /** Purpose: build RAIDS row status text with usage only and without per-row timer duplication. */
-function getRaidRowStatus(row: TodoRenderRow): string {
+function getRaidRowStatus(row: TodoRenderRow, nowMs = Date.now()): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "clan capital raids: snapshot unavailable";
   }
 
-  const { used, max } = getRaidRowProgress(row);
+  const { used, max } = getRaidRowProgress(row, nowMs);
   const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
-  if (row.snapshot.raidActive && used > 0 && !row.raidClanTracked) {
+  if (isTodoRaidSnapshotActive(row.snapshot, nowMs) && used > 0 && !row.raidClanTracked) {
     return `started raids in unknown clan${staleSuffix}`;
   }
   return `${used} / ${max}${staleSuffix}`;
 }
 
 /** Purpose: compute stable RAIDS used/max progress and completion flag for row marker decisions. */
-function getRaidRowProgress(row: TodoRenderRow): {
+function getRaidRowProgress(row: TodoRenderRow, nowMs = Date.now()): {
   used: number;
   max: number;
   complete: boolean;
@@ -1628,8 +1664,9 @@ function getRaidRowProgress(row: TodoRenderRow): {
   if (!row.snapshot) {
     return { used: 0, max: 6, complete: false };
   }
+  const active = isTodoRaidSnapshotActive(row.snapshot, nowMs);
   const used = clampInt(
-    row.snapshot.raidAttacksUsed,
+    active ? row.snapshot.raidAttacksUsed : 0,
     0,
     row.snapshot.raidAttacksMax || 6,
   );
@@ -1638,8 +1675,8 @@ function getRaidRowProgress(row: TodoRenderRow): {
 }
 
 /** Purpose: map one RAIDS row into marker semantics for complete/active/not-started states. */
-function getRaidRowMarker(row: TodoRenderRow): string {
-  const progress = getRaidRowProgress(row);
+function getRaidRowMarker(row: TodoRenderRow, nowMs = Date.now()): string {
+  const progress = getRaidRowProgress(row, nowMs);
   if (progress.used <= 0) {
     return ":black_circle:";
   }
@@ -1866,12 +1903,12 @@ function sortGamesRows(rows: TodoRenderRow[]): TodoRenderRow[] {
 }
 
 /** Purpose: sort RAIDS rows by used attacks desc, then TH desc, then stable prior order. */
-function sortRaidsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
+function sortRaidsRows(rows: TodoRenderRow[], nowMs = Date.now()): TodoRenderRow[] {
   return rows
     .map((row, index) => ({ row, index }))
     .sort((a, b) => {
-      const aUsed = getRaidRowProgress(a.row).used;
-      const bUsed = getRaidRowProgress(b.row).used;
+      const aUsed = getRaidRowProgress(a.row, nowMs).used;
+      const bUsed = getRaidRowProgress(b.row, nowMs).used;
       if (aUsed !== bUsed) {
         return bUsed - aUsed;
       }
@@ -1894,6 +1931,16 @@ function sortRaidsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
       return a.index - b.index;
     })
     .map((entry) => entry.row);
+}
+
+/** Purpose: identify whether a RAID snapshot is still inside the current raid window. */
+function isTodoRaidSnapshotActive(
+  snapshot: TodoSnapshotRecord | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!snapshot?.raidActive) return false;
+  if (!(snapshot.raidEndsAt instanceof Date)) return false;
+  return snapshot.raidEndsAt.getTime() > nowMs;
 }
 
 /** Purpose: map games progress points to deterministic status emoji thresholds. */

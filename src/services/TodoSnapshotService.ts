@@ -1369,6 +1369,7 @@ export class TodoSnapshotService {
     let raidPreservedUnavailableCount = 0;
     let raidPreservedFailedCount = 0;
     let raidAuthoritativeClearCount = 0;
+    let raidExpiredContextClearCount = 0;
     const fallbackWarMemberUsedClanTags = new Set<string>();
     const fallbackWarMemberUsedPlayerTags = new Set<string>();
     const currentMembershipSourceCounts = new Map<string, number>();
@@ -1417,6 +1418,10 @@ export class TodoSnapshotService {
         raidClanName: null,
         attacksUsed: 0,
       };
+      const preserveExistingRaidData =
+        Boolean(existing?.raidActive) &&
+        existing?.raidEndsAt instanceof Date &&
+        existing.raidEndsAt.getTime() === raidWindow.endMs;
       const preservedRaidData: TodoRaidSnapshotState = {
         raidActive: existing?.raidActive ?? false,
         raidClanTag: existing?.raidClanTag ?? null,
@@ -1458,14 +1463,28 @@ export class TodoSnapshotService {
             raidAuthoritativeClearCount += 1;
           }
         } else if (raidContext.status === "unavailable") {
-          raidSnapshotData = preservedRaidData;
-          if (existing?.raidActive) {
-            raidPreservedUnavailableCount += 1;
+          if (preserveExistingRaidData) {
+            raidSnapshotData = preservedRaidData;
+            if (existing?.raidActive) {
+              raidPreservedUnavailableCount += 1;
+            }
+          } else {
+            raidSnapshotData = clearedRaidData;
+            if (existing?.raidActive) {
+              raidExpiredContextClearCount += 1;
+            }
           }
         } else {
-          raidSnapshotData = preservedRaidData;
-          if (existing?.raidActive) {
-            raidPreservedFailedCount += 1;
+          if (preserveExistingRaidData) {
+            raidSnapshotData = preservedRaidData;
+            if (existing?.raidActive) {
+              raidPreservedFailedCount += 1;
+            }
+          } else {
+            raidSnapshotData = clearedRaidData;
+            if (existing?.raidActive) {
+              raidExpiredContextClearCount += 1;
+            }
           }
         }
       }
@@ -1779,7 +1798,7 @@ export class TodoSnapshotService {
     }
 
     console.info(
-      `[todo-snapshot] event=raid_snapshot_refresh now_ms=${nowMs} raid_start_ms=${raidWindow.startMs} raid_end_ms=${raidWindow.endMs} raid_active=${raidWindow.active} player_count=${normalizedTags.length} raid_active_rows=${raidActiveTrueCount} raid_inactive_rows=${raidActiveFalseCount} raid_observed_count=${raidObservedCount} raid_preserved_unavailable_count=${raidPreservedUnavailableCount} raid_preserved_failed_count=${raidPreservedFailedCount} raid_authoritative_clear_count=${raidAuthoritativeClearCount} raid_clan_fetch_failure_count=${liveRaidContextLookup.clanFetchFailureCount}`,
+      `[todo-snapshot] event=raid_snapshot_refresh now_ms=${nowMs} raid_start_ms=${raidWindow.startMs} raid_end_ms=${raidWindow.endMs} raid_active=${raidWindow.active} player_count=${normalizedTags.length} raid_active_rows=${raidActiveTrueCount} raid_inactive_rows=${raidActiveFalseCount} raid_observed_count=${raidObservedCount} raid_preserved_unavailable_count=${raidPreservedUnavailableCount} raid_preserved_failed_count=${raidPreservedFailedCount} raid_authoritative_clear_count=${raidAuthoritativeClearCount} raid_expired_context_clear_count=${raidExpiredContextClearCount} raid_clan_fetch_failure_count=${liveRaidContextLookup.clanFetchFailureCount}`,
     );
 
     try {

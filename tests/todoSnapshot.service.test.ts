@@ -3864,6 +3864,102 @@ describe("TodoSnapshotService", () => {
     });
   });
 
+  it("clears expired raid state when the raid source is unavailable for a previous weekend", async () => {
+    const refreshedAt = new Date("2026-03-29T12:00:00.000Z");
+    const previousRaidEndsAt = new Date("2026-03-23T07:00:00.000Z");
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        raidActive: true,
+        raidClanTag: "#PQL0289",
+        raidClanName: "Clan One",
+        raidAttacksUsed: 4,
+        raidAttacksMax: 6,
+        raidEndsAt: previousRaidEndsAt,
+        raidSourceUpdatedAt: new Date("2026-03-22T09:15:00.000Z"),
+        lastUpdatedAt: new Date("2026-03-22T09:15:00.000Z"),
+        updatedAt: new Date("2026-03-22T09:15:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      nowMs: refreshedAt.getTime(),
+    });
+
+    expect(getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289")).toMatchObject({
+      raidActive: false,
+      raidClanTag: null,
+      raidClanName: null,
+      raidAttacksUsed: 0,
+      raidAttacksMax: 6,
+      raidEndsAt: null,
+      raidSourceUpdatedAt: refreshedAt,
+      lastUpdatedAt: refreshedAt,
+    });
+  });
+
+  it("clears expired raid state when a raid clan fetch fails for a previous weekend", async () => {
+    const refreshedAt = new Date("2026-03-29T12:00:00.000Z");
+    const previousRaidEndsAt = new Date("2026-03-23T07:00:00.000Z");
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        raidActive: true,
+        raidClanTag: "#PQL0289",
+        raidClanName: "Clan One",
+        raidAttacksUsed: 4,
+        raidAttacksMax: 6,
+        raidEndsAt: previousRaidEndsAt,
+        raidSourceUpdatedAt: new Date("2026-03-22T09:15:00.000Z"),
+        lastUpdatedAt: new Date("2026-03-22T09:15:00.000Z"),
+        updatedAt: new Date("2026-03-22T09:15:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: { tag: "#PQL0289", name: "Clan One" },
+      }),
+      getClanCapitalRaidSeasons: vi.fn().mockRejectedValue(new Error("raid fetch failed")),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      nowMs: refreshedAt.getTime(),
+    });
+
+    expect(getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289")).toMatchObject({
+      raidActive: false,
+      raidClanTag: null,
+      raidClanName: null,
+      raidAttacksUsed: 0,
+      raidAttacksMax: 6,
+      raidEndsAt: null,
+      raidSourceUpdatedAt: refreshedAt,
+      lastUpdatedAt: refreshedAt,
+    });
+  });
+
   it("preserves active raid progress during unrelated snapshot refresh without raid source access", async () => {
     const raidEndsAt = new Date("2026-03-30T07:00:00.000Z");
     const preservedLastUpdatedAt = new Date("2026-03-24T09:15:00.000Z");
