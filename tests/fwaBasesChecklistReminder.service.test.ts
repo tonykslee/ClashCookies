@@ -301,6 +301,79 @@ describe("fwa bases checklist reminder service", () => {
     });
   });
 
+  it("suppresses a reminder when a current-scope base-swap has already completed", async () => {
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "sync-track-3",
+      guildId: "guild-1",
+      channelId: "sync-channel-1",
+      messageId: "sync-message-3",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-26T12:00:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce({
+      id: "base-swap-3",
+      guildId: "guild-1",
+      channelId: "base-swap-channel-3",
+      messageId: "base-swap-message-3",
+      referenceId: "sync-message-3",
+      clanTag: "#PYPY",
+      createdAt: new Date("2026-05-26T12:15:00.000Z"),
+      expiresAt: new Date("2026-05-27T12:15:00.000Z"),
+      status: "COMPLETED",
+      metadata: {
+        clanName: "Alpha Clan",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-26T12:15:00.000Z",
+        syncMessageId: "sync-message-3",
+        swapReminder: false,
+        entries: [
+          {
+            position: 1,
+            playerTag: "#AAA",
+            playerName: "Player One",
+            discordUserId: "111",
+            townhallLevel: 15,
+            section: "war_bases",
+            acknowledged: true,
+          },
+        ],
+      },
+    } as any);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: `Alpha | \u26ab | \u274c Bases not checked`,
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    await expect(
+      findPendingFwaBasesChecklistReminderCandidates({
+        now: new Date("2026-05-26T15:00:00.000Z"),
+      }),
+    ).resolves.toEqual([]);
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      syncMessageId: "sync-message-3",
+    });
+  });
+
   it("still creates a reminder when only a stale unscoped base-swap row exists", async () => {
     vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
       id: "sync-track-1",

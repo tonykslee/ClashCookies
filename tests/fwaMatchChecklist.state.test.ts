@@ -29,6 +29,7 @@ function makeBaseSwapTrackedMessageRow(params: {
   messageId: string;
   createdAtIso: string;
   syncMessageId?: string | null;
+  status?: "ACTIVE" | "COMPLETED";
   entries: Array<{
     position: number;
     playerTag: string;
@@ -48,6 +49,7 @@ function makeBaseSwapTrackedMessageRow(params: {
     clanTag: "#PYPY",
     createdAt: new Date(params.createdAtIso),
     expiresAt: new Date("2026-06-13T19:00:00.000Z"),
+    status: params.status ?? "ACTIVE",
     metadata: {
       clanKind: "FWA",
       clanName: "Alpha",
@@ -393,6 +395,64 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.referenceId).toBe("sync-message-2");
     expect(state.expiresAt?.toISOString()).toBe("2026-05-14T22:00:00.000Z");
     expect(getCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("treats a completed current-scope base-swap as resolved without a separate checklist completion", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "battle",
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-tracked-2",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-2",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T16:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(
+      makeBaseSwapTrackedMessageRow({
+        messageId: "message-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        syncMessageId: "sync-message-2",
+        status: "COMPLETED",
+        entries: [
+          {
+            position: 12,
+            playerTag: "#AAA",
+            playerName: "PlayerOne",
+            discordUserId: "111",
+            townhallLevel: 15,
+            section: "war_bases",
+            acknowledged: true,
+          },
+        ],
+      }) as any,
+    );
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows[0].compactCopyLine).toContain("✅ Bases checked and all good");
+    expect(state.rows[0].compactCopyLine).not.toContain("❌ Bases not checked");
+    expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).not.toHaveBeenCalled();
   });
 
   it("ignores stale current-war timing and falls back to the provided sync+48h expiry", async () => {
