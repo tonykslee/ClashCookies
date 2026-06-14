@@ -1564,22 +1564,24 @@ function resolveRaidReminderClanName(input: {
   raidTrackedClanNameByTag: Map<string, string | null>;
 }): string | null {
   const persistedRaidClanTag = normalizeClanTag(input.row.raidClanTag ?? "");
-  const currentClanTag = normalizeClanTag(input.row.clanTag ?? "");
-  const currentMembershipClanName =
-    currentClanTag === input.raidClanTag ? sanitizeDisplayText(input.row.clanName) : null;
+  const legacyMembershipClanName = sanitizeDisplayText(input.row.clanName);
   if (persistedRaidClanTag === input.raidClanTag) {
     return (
       sanitizeDisplayText(input.row.raidClanName) ??
-      currentMembershipClanName ??
       input.trackedClanNameByTag.get(input.raidClanTag) ??
       input.raidTrackedClanNameByTag.get(input.raidClanTag) ??
       null
     );
   }
   return (
-    currentMembershipClanName ??
+    sanitizeDisplayText(input.row.raidClanName) ??
     input.trackedClanNameByTag.get(input.raidClanTag) ??
     input.raidTrackedClanNameByTag.get(input.raidClanTag) ??
+    legacyMembershipClanName ??
     null
   );
 }
+
+
+
+
