@@ -3725,6 +3725,8 @@ describe("TodoSnapshotService", () => {
           raidAttacksUsed: 0,
           raidClanTag: null,
           raidClanName: null,
+          raidEndsAt: null,
+          raidSourceUpdatedAt: new Date("2026-04-02T12:00:00.000Z"),
           lastUpdatedAt: new Date("2026-04-02T12:00:00.000Z"),
         }),
       }),

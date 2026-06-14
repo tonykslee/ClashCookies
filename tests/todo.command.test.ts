@@ -3919,11 +3919,16 @@ describe("/todo pagination buttons", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.raidTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlRotationPlan.findMany.mockReset();
+    prismaMock.cwlRotationPlanDay.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([]);
 
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
@@ -4318,6 +4323,11 @@ describe("/todo pagination buttons", () => {
         playerName: "Alpha",
         clanTag: "#PQL0289",
         clanName: "Clan One",
+        warActive: false,
+        cwlActive: false,
+        cwlClanTag: null,
+        cwlClanName: null,
+        gamesActive: false,
         raidActive: true,
         raidClanTag: "#PQL0289",
         raidClanName: "Clan One",
@@ -4339,6 +4349,51 @@ describe("/todo pagination buttons", () => {
     );
     expect(pages.pages.RAIDS).not.toContain(
       `:hourglass: last updated <t:${Math.floor(olderUpdatedAt.getTime() / 1000)}:R>`,
+    );
+  });
+
+  it("falls back to updatedAt when raidSourceUpdatedAt and lastUpdatedAt are missing", async () => {
+    const discordUserId = "111111111111111111";
+    const updatedAt = new Date("2026-03-25T22:00:00.000Z");
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", discordUserId },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { lastUpdatedAt: null, updatedAt },
+    });
+    const snapshotRow = makeSnapshotRow({
+      playerTag: "#PYLQ0289",
+      playerName: "Alpha",
+      clanTag: "#PQL0289",
+      clanName: "Clan One",
+      warActive: false,
+      cwlActive: false,
+      cwlClanTag: null,
+      cwlClanName: null,
+      gamesActive: false,
+      raidActive: true,
+      raidClanTag: "#PQL0289",
+      raidClanName: "Clan One",
+      raidAttacksUsed: 3,
+      raidAttacksMax: 6,
+      raidSourceUpdatedAt: null,
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      {
+        ...snapshotRow,
+        lastUpdatedAt: null,
+        updatedAt,
+      },
+    ]);
+
+    const pages = await buildTodoPagesForUser({
+      discordUserId,
+      nowMs: new Date("2026-03-26T00:00:00.000Z").getTime(),
+    });
+
+    expect(pages.pages.RAIDS).toContain(
+      `:hourglass: last updated <t:${Math.floor(updatedAt.getTime() / 1000)}:R>`,
     );
   });
 
