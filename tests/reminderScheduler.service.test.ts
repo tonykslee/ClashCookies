@@ -25,6 +25,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  raidTrackedClan: {
+    findMany: vi.fn(),
+  },
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
@@ -59,6 +62,8 @@ function setTodoSnapshotRows(input: {
   timedRows?: Array<{
     clanTag: string | null;
     clanName: string | null;
+    raidClanTag?: string | null;
+    raidClanName?: string | null;
     cwlClanTag: string | null;
     cwlClanName: string | null;
     raidActive: boolean;
@@ -71,10 +76,29 @@ function setTodoSnapshotRows(input: {
   const cwlRows = input.cwlRows ?? [];
   const timedRows = input.timedRows ?? [];
   prismaMock.todoPlayerSnapshot.findMany.mockImplementation(async (args: any) => {
-    if (args?.select?.cwlPhase) return cwlRows;
-    if (args?.select?.raidActive || args?.select?.gamesActive) return timedRows;
+    if (args?.select?.cwlPhase) return filterTodoSnapshotRows(cwlRows, args?.where);
+    if (args?.select?.raidActive || args?.select?.gamesActive) return filterTodoSnapshotRows(timedRows, args?.where);
     return [];
   });
+}
+
+function filterTodoSnapshotRows<T extends Record<string, any>>(rows: T[], where: any): T[] {
+  if (!where || Object.keys(where).length === 0) return rows;
+  if (Array.isArray(where.OR) && where.OR.length > 0) {
+    return rows.filter((row) => where.OR.some((clause: any) => matchesTodoSnapshotClause(row, clause)));
+  }
+  return rows.filter((row) => matchesTodoSnapshotClause(row, where));
+}
+
+function matchesTodoSnapshotClause(row: Record<string, any>, clause: any): boolean {
+  if (!clause || typeof clause !== "object") return true;
+  if (clause.cwlActive === true && row.cwlActive === false) return false;
+  if (clause.raidActive === true && row.raidActive === false) return false;
+  if (clause.gamesActive === true && row.gamesActive === false) return false;
+  if (clause.clanTag?.in && !clause.clanTag.in.includes(row.clanTag)) return false;
+  if (clause.cwlClanTag?.in && !clause.cwlClanTag.in.includes(row.cwlClanTag)) return false;
+  if (clause.raidClanTag?.in && !clause.raidClanTag.in.includes(row.raidClanTag)) return false;
+  return true;
 }
 
 describe("ReminderSchedulerService v1 trigger semantics", () => {
@@ -87,6 +111,8 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     prismaMock.maintenanceWindowRuntimeState.upsert.mockResolvedValue({});
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockReset();
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async () => []);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     setTodoSnapshotRows({});
   });
@@ -184,8 +210,10 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
     setTodoSnapshotRows({
       timedRows: [
         {
-          clanTag: "#QGRJ2222",
-          clanName: "Raid Clan 1",
+          clanTag: "#OTHER0001",
+          clanName: "Current Clan",
+          raidClanTag: "#QGRJ2222",
+          raidClanName: "Raid Clan 1",
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: true,
@@ -197,6 +225,8 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
         {
           clanTag: "#2QG2C08UP",
           clanName: "Raid Clan 2",
+          raidClanTag: null,
+          raidClanName: null,
           cwlClanTag: null,
           cwlClanName: null,
           raidActive: false,
@@ -250,9 +280,590 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
       failed: 0,
     });
     expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(3);
-    expect(dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload.clanTag).sort()).toEqual(
-      ["#P2YLC8R0", "#PYLQ0289", "#QGRJ2222"],
+    const payloads = dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload);
+    expect(payloads.map((payload: any) => payload.clanTag).sort()).toEqual([
+      "#P2YLC8R0",
+      "#PYLQ0289",
+      "#QGRJ2222",
+    ]);
+    expect(payloads.find((payload: any) => payload.clanTag === "#QGRJ2222")).toEqual(
+      expect.objectContaining({ clanName: "Raid Clan 1" }),
     );
+  });
+
+  it("keeps RAID ownership on the persisted raid clan and GAMES ownership on current membership for a moved player", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+      {
+        id: "rem-games",
+        guildId: "guild-1",
+        channelId: "channel-games",
+        type: ReminderType.GAMES,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#QGRJ2222", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [
+        { tag: "#QGRJ2222", name: "Current Clan B" },
+      ].filter((row) => !where?.tag?.in || where.tag.in.includes(row.tag)),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [
+        { clanTag: "#PQL0289", name: "Raid Clan A" },
+      ].filter((row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag)),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Current Clan B",
+          raidClanTag: "#PQL0289",
+          raidClanName: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: true,
+          gamesEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    let fireIndex = 0;
+    prismaMock.reminderFireLog.create.mockImplementation(async () => {
+      fireIndex += 1;
+      return { id: `fire-moved-${fireIndex}` };
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-moved",
+      }),
+    };
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 2,
+      fired: 2,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(prismaMock.todoPlayerSnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({ raidClanTag: { in: ["#PQL0289", "#QGRJ2222"] } }),
+          ]),
+        }),
+      }),
+    );
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(2);
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.RAIDS,
+        clanTag: "#PQL0289",
+        clanName: "Raid Clan A",
+      }),
+    );
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.GAMES,
+        clanTag: "#QGRJ2222",
+        clanName: "Current Clan B",
+      }),
+    );
+    const payloads = dispatch.dispatchReminder.mock.calls.map(([, payload]) => payload);
+    expect(
+      payloads.some((payload: any) => payload.type === ReminderType.RAIDS && payload.clanTag === "#QGRJ2222"),
+    ).toBe(false);
+    expect(
+      payloads.some((payload: any) => payload.type === ReminderType.GAMES && payload.clanTag === "#PQL0289"),
+    ).toBe(false);
+  });
+
+  it("does not let a GAMES-only reminder pick up raidClanTag ownership for a moved player", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-games-raid-isolation",
+        guildId: "guild-1",
+        channelId: "channel-games",
+        type: ReminderType.GAMES,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ tag: "#PQL0289", name: "Raid Clan A" }].filter((row) => !where?.tag?.in || where.tag.in.includes(row.tag)),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ clanTag: "#PQL0289", name: "Raid Clan A" }].filter(
+        (row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag),
+      ),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Current Clan B",
+          raidClanTag: "#PQL0289",
+          raidClanName: "Raid Clan A",
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: true,
+          gamesEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-games-raid-isolation",
+      }),
+    };
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 0,
+      fired: 0,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(prismaMock.todoPlayerSnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({ raidClanTag: { in: ["#PQL0289"] } }),
+          ]),
+        }),
+      }),
+    );
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+    expect(
+      dispatch.dispatchReminder.mock.calls.some(
+        ([, payload]: any[]) => payload.type === ReminderType.GAMES && payload.clanTag === "#PQL0289",
+      ),
+    ).toBe(false);
+  });
+
+  it("selects a moved player's persisted raid clan through raidClanTag for RAID-only reminders", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-only",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ tag: "#PQL0289", name: "Raid Clan A" }].filter(
+        (row) => !where?.tag?.in || where.tag.in.includes(row.tag),
+      ),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ clanTag: "#PQL0289", name: "Raid Registry A" }].filter(
+        (row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag),
+      ),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Current Clan B",
+          raidClanTag: "#PQL0289",
+          raidClanName: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-only",
+      }),
+    };
+
+    const counts = await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(prismaMock.todoPlayerSnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({ raidClanTag: { in: ["#PQL0289"] } }),
+          ]),
+        }),
+      }),
+    );
+    expect(dispatch.dispatchReminder).toHaveBeenCalledTimes(1);
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.RAIDS,
+        clanTag: "#PQL0289",
+        clanName: "Raid Clan A",
+      }),
+    );
+    expect(
+      dispatch.dispatchReminder.mock.calls.some(
+        ([, payload]: any[]) => payload.type === ReminderType.RAIDS && payload.clanTag === "#QGRJ2222",
+      ),
+    ).toBe(false);
+  });
+
+  it("prefers configured tracked-clan names for explicit RAID owners over current-membership names", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-explicit",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ tag: "#PQL0289", name: "Configured Raid Clan" }].filter(
+        (row) => !where?.tag?.in || where.tag.in.includes(row.tag),
+      ),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ clanTag: "#PQL0289", name: "Raid Registry Clan" }].filter(
+        (row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag),
+      ),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#PQL0289",
+          clanName: "Stale Membership Label",
+          raidClanTag: "#PQL0289",
+          raidClanName: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-explicit",
+      }),
+    };
+
+    await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.RAIDS,
+        clanTag: "#PQL0289",
+        clanName: "Configured Raid Clan",
+      }),
+    );
+    expect(
+      dispatch.dispatchReminder.mock.calls.some(
+        ([, payload]: any[]) => payload.clanName === "Stale Membership Label",
+      ),
+    ).toBe(false);
+  });
+
+  it("prefers configured tracked-clan names for legacy RAID owners before legacy membership names", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-legacy-configured",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ tag: "#PQL0289", name: "Configured Raid Clan" }].filter(
+        (row) => !where?.tag?.in || where.tag.in.includes(row.tag),
+      ),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [{ clanTag: "#PQL0289", name: "Raid Registry Clan" }].filter(
+        (row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag),
+      ),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#PQL0289",
+          clanName: "Legacy Membership Label",
+          raidClanTag: null,
+          raidClanName: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-legacy-configured",
+      }),
+    };
+
+    await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.RAIDS,
+        clanTag: "#PQL0289",
+        clanName: "Configured Raid Clan",
+      }),
+    );
+    expect(
+      dispatch.dispatchReminder.mock.calls.some(
+        ([, payload]: any[]) => payload.clanName === "Legacy Membership Label",
+      ),
+    ).toBe(false);
+  });
+
+  it("uses legacy membership names only when no configured RAID name exists", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-legacy-membership",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#2QG2C08UP", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [].filter((row) => !where?.tag?.in || where.tag.in.includes(row.tag)),
+    );
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async ({ where }: any) =>
+      [].filter((row) => !where?.clanTag?.in || where.clanTag.in.includes(row.clanTag)),
+    );
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Legacy Membership Label",
+          raidClanTag: null,
+          raidClanName: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: true,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-legacy-membership",
+      }),
+    };
+
+    await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        type: ReminderType.RAIDS,
+        clanTag: "#2QG2C08UP",
+        clanName: "Legacy Membership Label",
+      }),
+    );
+  });
+
+  it("does not dispatch RAID reminders from inactive persisted raid hints", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-inactive",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#PQL0289", name: "Configured Raid Clan" }]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([{ clanTag: "#PQL0289", name: "Raid Registry Clan" }]);
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Current Clan B",
+          raidClanTag: "#PQL0289",
+          raidClanName: "Persisted Raid Name",
+          cwlClanTag: null,
+          cwlClanName: null,
+          raidActive: false,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-inactive",
+      }),
+    };
+
+    await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
+  });
+
+  it("ignores CWL-only ownership when evaluating RAID reminders", async () => {
+    const nowMs = Date.parse("2026-04-05T00:00:00.000Z");
+    prismaMock.reminder.findMany.mockResolvedValue([
+      {
+        id: "rem-raids-cwl-isolation",
+        guildId: "guild-1",
+        channelId: "channel-raids",
+        type: ReminderType.RAIDS,
+        isEnabled: true,
+        times: [{ offsetSeconds: 60 * 60 }],
+        targetClans: [{ clanTag: "#PQL0289", clanType: "FWA" }],
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    setTodoSnapshotRows({
+      timedRows: [
+        {
+          clanTag: "#QGRJ2222",
+          clanName: "Current Clan B",
+          raidClanTag: null,
+          raidClanName: null,
+          cwlClanTag: "#PQL0289",
+          cwlClanName: "CWL Clan A",
+          cwlActive: true,
+          cwlEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          raidActive: false,
+          raidEndsAt: new Date(nowMs + 60 * 60 * 1000),
+          gamesActive: false,
+          gamesEndsAt: null,
+          updatedAt: new Date(nowMs),
+        },
+      ],
+    });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-raids-cwl-isolation",
+      }),
+    };
+
+    await runReminderSchedulerCycle({
+      client: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(dispatch.dispatchReminder).not.toHaveBeenCalled();
   });
 
   it("fires a 24h WAR_CWL reminder when the scheduler lands shortly after battle day start", () => {
@@ -825,6 +1436,7 @@ describe("ReminderSchedulerService v1 trigger semantics", () => {
 
 describe("ReminderSchedulerService startup logging", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -1008,6 +1620,8 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
     prismaMock.reminderFireLog.update.mockResolvedValue({});
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockReset();
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async () => []);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     setTodoSnapshotRows({});
   });
@@ -1025,7 +1639,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
       times: [{ offsetSeconds: 24 * 60 * 60 }],
       targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
     };
-    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.reminder.findMany.mockImplementation(async () => [reminder]);
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
@@ -1125,7 +1739,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
       times: [{ offsetSeconds: 24 * 60 * 60 }],
       targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
     };
-    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.reminder.findMany.mockImplementation(async () => [reminder]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
@@ -1226,7 +1840,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
       times: [{ offsetSeconds: 24 * 60 * 60 } as any],
       targetClans: [{ clanTag: "#R80L8VYG", clanType: "FWA" }],
     };
-    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.reminder.findMany.mockImplementation(async () => [reminder]);
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#R80L8VYG", name: "Tracked Clan" }]);
     const fireLogs = installReminderFireLogStore();
     prismaMock.reminderFireLog.findUnique.mockResolvedValue({
@@ -1275,7 +1889,7 @@ describe("ReminderSchedulerService retryable 24h WAR reminder dispatch", () => {
       times: [{ offsetSeconds: 24 * 60 * 60 }],
       targetClans: [{ clanTag: "#2C80JCVJQ", clanType: ReminderTargetClanType.CWL }],
     };
-    prismaMock.reminder.findMany.mockResolvedValue([reminder]);
+    prismaMock.reminder.findMany.mockImplementation(async () => [reminder]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#2C80JCVJQ", name: "Rising Dynasty" },
@@ -1722,6 +2336,8 @@ describe("ReminderSchedulerService battle-day transition trigger", () => {
     prismaMock.currentWar.findFirst.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockReset();
+    prismaMock.raidTrackedClan.findMany.mockImplementation(async () => []);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     setTodoSnapshotRows({});
   });

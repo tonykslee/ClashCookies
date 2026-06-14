@@ -53,6 +53,8 @@ type ReminderContextBundle = {
 type TimedTargetContextRow = {
   clanTag: string | null;
   clanName: string | null;
+  raidClanTag: string | null;
+  raidClanName: string | null;
   cwlClanTag: string | null;
   cwlClanName: string | null;
   raidActive: boolean;
@@ -1174,7 +1176,14 @@ async function resolveReminderContextBundle(input: {
   }
 
   const season = resolveCurrentCwlSeasonKey(input.nowMs);
-  const [warRows, cwlRows, timedRows, fwaNameRows, cwlNameRows] = await Promise.all([
+  const [
+    warRowsRaw,
+    cwlRowsRaw,
+    timedRowsRaw,
+    trackedClanRowsRaw,
+    raidTrackedClanRowsRaw,
+    cwlNameRowsRaw,
+  ] = await Promise.all([
     prisma.currentWar.findMany({
       where: {
         clanTag: { in: clanTags },
@@ -1204,11 +1213,17 @@ async function resolveReminderContextBundle(input: {
     }),
     prisma.todoPlayerSnapshot.findMany({
       where: {
-        OR: [{ clanTag: { in: clanTags } }, { cwlClanTag: { in: clanTags } }],
+        OR: [
+          { clanTag: { in: clanTags } },
+          { cwlClanTag: { in: clanTags } },
+          { raidClanTag: { in: clanTags } },
+        ],
       },
       select: {
         clanTag: true,
         clanName: true,
+        raidClanTag: true,
+        raidClanName: true,
         cwlClanTag: true,
         cwlClanName: true,
         raidActive: true,
@@ -1222,6 +1237,10 @@ async function resolveReminderContextBundle(input: {
       where: { tag: { in: clanTags } },
       select: { tag: true, name: true },
     }),
+    prisma.raidTrackedClan.findMany({
+      where: { clanTag: { in: clanTags } },
+      select: { clanTag: true, name: true },
+    }),
     prisma.cwlTrackedClan.findMany({
       where: {
         season,
@@ -1230,10 +1249,21 @@ async function resolveReminderContextBundle(input: {
       select: { tag: true, name: true },
     }),
   ]);
+  const warRows = warRowsRaw ?? [];
+  const cwlRows = cwlRowsRaw ?? [];
+  const timedRows = timedRowsRaw ?? [];
+  const trackedClanRows = trackedClanRowsRaw ?? [];
+  const raidTrackedClanRows = raidTrackedClanRowsRaw ?? [];
+  const cwlNameRows = cwlNameRowsRaw ?? [];
 
-  const fwaNameByTag = new Map(
-    fwaNameRows
+  const trackedClanNameByTag = new Map(
+    trackedClanRows
       .map((row) => [normalizeClanTag(row.tag), sanitizeDisplayText(row.name)] as const)
+      .filter((entry): entry is [string, string | null] => Boolean(entry[0])),
+  );
+  const raidTrackedClanNameByTag = new Map(
+    raidTrackedClanRows
+      .map((row) => [normalizeClanTag(row.clanTag), sanitizeDisplayText(row.name)] as const)
       .filter((entry): entry is [string, string | null] => Boolean(entry[0])),
   );
   const cwlNameByTag = new Map(
@@ -1247,7 +1277,7 @@ async function resolveReminderContextBundle(input: {
   for (const clanTag of clanTags) {
     clanNameByTag.set(
       clanTag,
-      cwlNameByTag.get(clanTag) ?? fwaNameByTag.get(clanTag) ?? null,
+      cwlNameByTag.get(clanTag) ?? trackedClanNameByTag.get(clanTag) ?? null,
     );
     const war = latestWarByTag.get(clanTag) ?? null;
     const cwl = latestCwlByTag.get(clanTag) ?? null;
@@ -1255,7 +1285,7 @@ async function resolveReminderContextBundle(input: {
       warByClanTag.set(clanTag, {
         clanTag,
         clanType: ReminderTargetClanType.FWA,
-        clanName: sanitizeDisplayText(war.clanName) ?? fwaNameByTag.get(clanTag) ?? null,
+        clanName: sanitizeDisplayText(war.clanName) ?? trackedClanNameByTag.get(clanTag) ?? null,
         eventEndsAt: war.warEndsAt,
         eventIdentity: `WAR:${war.warIdentity}`,
         eventLabel: "war end",
@@ -1276,27 +1306,20 @@ async function resolveReminderContextBundle(input: {
   const latestRaidByTargetKey = new Map<string, { context: ReminderEventContext; updatedAtMs: number }>();
   const latestGamesByTargetKey = new Map<string, { context: ReminderEventContext; updatedAtMs: number }>();
   for (const row of timedRows) {
-    ingestTimedTargetContexts({
+    ingestRaidTargetContexts({
       nowMs: input.nowMs,
       row,
       clanTagSet,
-      clanNameByTag,
+      trackedClanNameByTag,
+      raidTrackedClanNameByTag,
       latestByTargetKey: latestRaidByTargetKey,
-      eventType: "RAIDS",
-      isActive: row.raidActive,
-      eventEndsAt: row.raidEndsAt,
-      eventLabel: "raid weekend",
     });
-    ingestTimedTargetContexts({
+    ingestGamesTargetContexts({
       nowMs: input.nowMs,
       row,
       clanTagSet,
-      clanNameByTag,
+      trackedClanNameByTag,
       latestByTargetKey: latestGamesByTargetKey,
-      eventType: "GAMES",
-      isActive: row.gamesActive,
-      eventEndsAt: row.gamesEndsAt,
-      eventLabel: "clan games",
     });
   }
 
@@ -1453,68 +1476,112 @@ function isActiveWarState(state: unknown): boolean {
   return normalized.includes("preparation") || normalized.includes("inwar");
 }
 
-/** Purpose: ingest one snapshot row into per-target timed event maps for RAIDS/GAMES semantics. */
-function ingestTimedTargetContexts(input: {
+/** Purpose: ingest one snapshot row into per-target RAID timed event maps without owner mixing. */
+function ingestRaidTargetContexts(input: {
   nowMs: number;
   row: TimedTargetContextRow;
   clanTagSet: Set<string>;
-  clanNameByTag: Map<string, string | null>;
+  trackedClanNameByTag: Map<string, string | null>;
+  raidTrackedClanNameByTag: Map<string, string | null>;
   latestByTargetKey: Map<string, { context: ReminderEventContext; updatedAtMs: number }>;
-  eventType: "RAIDS" | "GAMES";
-  isActive: boolean;
-  eventEndsAt: Date | null;
-  eventLabel: string;
 }): void {
-  if (!input.isActive || !input.eventEndsAt) return;
-  if (input.eventEndsAt.getTime() <= input.nowMs) return;
+  if (!input.row.raidActive || !input.row.raidEndsAt) return;
+  if (input.row.raidEndsAt.getTime() <= input.nowMs) return;
 
-  const upsert = (target: {
-    clanTag: string;
-    clanType: ReminderTargetClanType;
-    clanName: string | null;
-  }) => {
-    if (!input.clanTagSet.has(target.clanTag)) return;
-    const targetKey = buildTargetKey({
-      clanTag: target.clanTag,
-      clanType: target.clanType,
-    });
-    const nextContext: ReminderEventContext = {
-      clanTag: target.clanTag,
-      clanType: target.clanType,
-      clanName: target.clanName,
-      eventEndsAt: input.eventEndsAt!,
-      eventIdentity: `${input.eventType}:${targetKey}:${input.eventEndsAt!.getTime()}`,
-      eventLabel: input.eventLabel,
-    };
-    const nextUpdatedAtMs = input.row.updatedAt.getTime();
-    const existing = input.latestByTargetKey.get(targetKey);
-    if (!existing || nextUpdatedAtMs >= existing.updatedAtMs) {
-      input.latestByTargetKey.set(targetKey, {
-        context: nextContext,
-        updatedAtMs: nextUpdatedAtMs,
-      });
-    }
-  };
+  const persistedRaidClanTag = normalizeClanTag(input.row.raidClanTag ?? "");
+  const legacyRaidClanTag = persistedRaidClanTag ? "" : normalizeClanTag(input.row.clanTag ?? "");
+  const raidClanTag = persistedRaidClanTag || legacyRaidClanTag;
+  if (!raidClanTag || !input.clanTagSet.has(raidClanTag)) return;
 
-  const fwaClanTag = normalizeClanTag(input.row.clanTag ?? "");
-  const fwaClanName = sanitizeDisplayText(input.row.clanName) ?? null;
-  if (fwaClanTag) {
-    input.clanNameByTag.set(fwaClanTag, input.clanNameByTag.get(fwaClanTag) ?? fwaClanName);
-    upsert({
-      clanTag: fwaClanTag,
-      clanType: ReminderTargetClanType.FWA,
-      clanName: fwaClanName,
-    });
-  }
-
-  const cwlClanTag = normalizeClanTag(input.row.cwlClanTag ?? "");
-  const cwlClanName = sanitizeDisplayText(input.row.cwlClanName) ?? null;
-  if (cwlClanTag) {
-    input.clanNameByTag.set(cwlClanTag, input.clanNameByTag.get(cwlClanTag) ?? cwlClanName);
-    upsert({
-      clanTag: cwlClanTag,
-      clanType: ReminderTargetClanType.CWL,
-      clanName: cwlClanName,
+  const raidClanName = resolveRaidReminderClanName({
+    row: input.row,
+    raidClanTag,
+    trackedClanNameByTag: input.trackedClanNameByTag,
+    raidTrackedClanNameByTag: input.raidTrackedClanNameByTag,
+  });
+  const targetKey = buildTargetKey({
+    clanTag: raidClanTag,
+    clanType: ReminderTargetClanType.FWA,
+  });
+  const nextUpdatedAtMs = input.row.updatedAt.getTime();
+  const existing = input.latestByTargetKey.get(targetKey);
+  if (!existing || nextUpdatedAtMs >= existing.updatedAtMs) {
+    input.latestByTargetKey.set(targetKey, {
+      context: {
+        clanTag: raidClanTag,
+        clanType: ReminderTargetClanType.FWA,
+        clanName: raidClanName,
+        eventEndsAt: input.row.raidEndsAt,
+        eventIdentity: `RAIDS:${targetKey}:${input.row.raidEndsAt.getTime()}`,
+        eventLabel: "raid weekend",
+      },
+      updatedAtMs: nextUpdatedAtMs,
     });
   }
 }
+
+/** Purpose: ingest one snapshot row into per-target GAMES timed event maps using current-membership ownership only. */
+function ingestGamesTargetContexts(input: {
+  nowMs: number;
+  row: TimedTargetContextRow;
+  clanTagSet: Set<string>;
+  trackedClanNameByTag: Map<string, string | null>;
+  latestByTargetKey: Map<string, { context: ReminderEventContext; updatedAtMs: number }>;
+}): void {
+  if (!input.row.gamesActive || !input.row.gamesEndsAt) return;
+  if (input.row.gamesEndsAt.getTime() <= input.nowMs) return;
+
+  const clanTag = normalizeClanTag(input.row.clanTag ?? "");
+  if (!clanTag || !input.clanTagSet.has(clanTag)) return;
+
+  const clanName = sanitizeDisplayText(input.row.clanName) ?? input.trackedClanNameByTag.get(clanTag) ?? null;
+  const targetKey = buildTargetKey({
+    clanTag,
+    clanType: ReminderTargetClanType.FWA,
+  });
+  const nextUpdatedAtMs = input.row.updatedAt.getTime();
+  const existing = input.latestByTargetKey.get(targetKey);
+  if (!existing || nextUpdatedAtMs >= existing.updatedAtMs) {
+    input.latestByTargetKey.set(targetKey, {
+      context: {
+        clanTag,
+        clanType: ReminderTargetClanType.FWA,
+        clanName,
+        eventEndsAt: input.row.gamesEndsAt,
+        eventIdentity: `GAMES:${targetKey}:${input.row.gamesEndsAt.getTime()}`,
+        eventLabel: "clan games",
+      },
+      updatedAtMs: nextUpdatedAtMs,
+    });
+  }
+}
+
+/** Purpose: resolve RAID reminder clan names without leaking current-membership ownership into the RAID context. */
+function resolveRaidReminderClanName(input: {
+  row: TimedTargetContextRow;
+  raidClanTag: string;
+  trackedClanNameByTag: Map<string, string | null>;
+  raidTrackedClanNameByTag: Map<string, string | null>;
+}): string | null {
+  const persistedRaidClanTag = normalizeClanTag(input.row.raidClanTag ?? "");
+  const legacyMembershipClanName = sanitizeDisplayText(input.row.clanName);
+  if (persistedRaidClanTag === input.raidClanTag) {
+    return (
+      sanitizeDisplayText(input.row.raidClanName) ??
+      input.trackedClanNameByTag.get(input.raidClanTag) ??
+      input.raidTrackedClanNameByTag.get(input.raidClanTag) ??
+      null
+    );
+  }
+  return (
+    sanitizeDisplayText(input.row.raidClanName) ??
+    input.trackedClanNameByTag.get(input.raidClanTag) ??
+    input.raidTrackedClanNameByTag.get(input.raidClanTag) ??
+    legacyMembershipClanName ??
+    null
+  );
+}
+
+
+
+

@@ -93,7 +93,7 @@ function makeBasesTrackedChecklistRow() {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
     referenceId: "sync-message-1",
     clanTag: "#PYPY",
-    expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+    expiresAt: new Date("2030-06-13T22:00:00.000Z"),
     createdAt: new Date("2026-06-13T17:00:00.000Z"),
     metadata: {
       kind: "bases_checklist",
