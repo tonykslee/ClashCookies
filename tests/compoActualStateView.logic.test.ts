@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CompoWarBucketCounts } from "../src/helper/compoWarBucketCounts";
-import { projectCompoActualStateView } from "../src/helper/compoActualStateView";
+import {
+  isCompoActualStateProjectionComplete,
+  projectCompoActualStateView,
+} from "../src/helper/compoActualStateView";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 function makeBucketCounts(
@@ -303,6 +306,19 @@ describe("projectCompoActualStateView", () => {
     expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(650000);
     expect(result.totalWeight).toBe(635000);
     expect(result.displayCounts.TH18).toBe(0);
+  });
+
+  it("treats unresolved weights as incomplete ACTUAL state even when deviation is low", () => {
+    expect(
+      isCompoActualStateProjectionComplete({
+        unresolvedWeightCount: 0,
+      }),
+    ).toBe(true);
+    expect(
+      isCompoActualStateProjectionComplete({
+        unresolvedWeightCount: 1,
+      }),
+    ).toBe(false);
   });
 
   it("uses weighted deviation scoring to choose the best-fit band", () => {

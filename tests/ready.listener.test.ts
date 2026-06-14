@@ -37,6 +37,7 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 const isActivePollingModeMock = vi.hoisted(() => vi.fn(() => true));
+const isMirrorPollingModeMock = vi.hoisted(() => vi.fn(() => false));
 const resolvePollingModeMock = vi.hoisted(() => vi.fn(() => "active"));
 
 vi.mock("../src/Commands", () => ({
@@ -255,6 +256,7 @@ vi.mock("../src/services/PollCycleGuardService", () => ({
 
 vi.mock("../src/services/PollingModeService", () => ({
   isActivePollingMode: isActivePollingModeMock,
+  isMirrorPollingMode: isMirrorPollingModeMock,
   resolveMirrorSyncIntervalMsFromEnv: vi.fn(() => 60_000),
   resolveRuntimeEnvironment: vi.fn(() => "test"),
   resolvePollingMode: resolvePollingModeMock,

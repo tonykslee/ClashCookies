@@ -3,7 +3,13 @@ import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { todoSnapshotService } from "./TodoSnapshotService";
+import {
+  PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+  isPlayerCurrentStaleForSignup,
+} from "./PlayerCurrentFreshness";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
+
+export { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "./PlayerCurrentFreshness";
 
 export type PlayerCurrentResolutionField =
   | "playerName"
@@ -28,8 +34,6 @@ export type PlayerCurrentResolutionSource =
   | "missing";
 
 export type PlayerCurrentRefreshPolicy = "missing_only" | "missing_or_stale";
-
-export const PLAYER_CURRENT_SIGNUP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export type PlayerCurrentLike = {
   playerTag: string;
@@ -330,17 +334,6 @@ function buildPersistData(record: PlayerCurrentLike): {
 
 function normalizeFields(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
-}
-
-function isPlayerCurrentStaleForSignup(
-  record: PlayerCurrentLike | null | undefined,
-  now: Date,
-  maxAcceptedAgeMs: number,
-): boolean {
-  if (!record?.lastFetchedAt) {
-    return true;
-  }
-  return now.getTime() - record.lastFetchedAt.getTime() >= maxAcceptedAgeMs;
 }
 
 function shouldLiveRefreshForRequiredFields(input: {

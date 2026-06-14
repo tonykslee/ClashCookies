@@ -331,6 +331,13 @@ model TodoPlayerSnapshot {
   townHall        Int?
   clanTag         String?
   clanName        String?
+  warClanTag      String?
+  warClanName     String?
+  warPosition     Int?
+  warSourceUpdatedAt DateTime?
+  clanMembershipObservedAt DateTime?
+  raidClanTag     String?
+  raidClanName    String?
   cwlClanTag      String?
   cwlClanName     String?
   warActive       Boolean  @default(false)
@@ -347,6 +354,7 @@ model TodoPlayerSnapshot {
   raidAttacksUsed Int      @default(0)
   raidAttacksMax  Int      @default(6)
   raidEndsAt      DateTime?
+  raidSourceUpdatedAt DateTime?
   gamesActive     Boolean  @default(false)
   gamesPoints     Int?
   gamesTarget     Int?
@@ -359,6 +367,7 @@ model TodoPlayerSnapshot {
   updatedAt       DateTime @updatedAt
 
   @@index([clanTag])
+  @@index([raidClanTag])
   @@index([cwlClanTag])
   @@index([gamesCycleKey])
   @@index([updatedAt])
@@ -966,6 +975,15 @@ enum TrackedMessageStatus {
   DELETED
 }
 
+enum ScheduledSyncPostStatus {
+  PENDING
+  CLAIMED
+  PUBLISHED
+  FAILED
+  CANCELLED
+  REPLACED
+}
+
 enum RepWorkActivityType {
   BASES_CHECKED
   MAIL_CHECKED
@@ -997,6 +1015,34 @@ model TrackedMessage {
   @@index([featureType, status])
   @@index([guildId, featureType, status])
   @@index([clanTag, featureType, status])
+}
+
+model ScheduledSyncPost {
+  id                  String                  @id @default(cuid())
+  guildId             String
+  channelId           String
+  createdByUserId     String
+  roleId              String
+  syncTime            DateTime
+  publishAt           DateTime
+  timezone            String?
+  status              ScheduledSyncPostStatus @default(PENDING)
+  claimToken          String?
+  claimedAt           DateTime?
+  publishedMessageId  String?
+  publishedAt         DateTime?
+  attemptCount        Int                     @default(0)
+  lastAttemptAt       DateTime?
+  nextAttemptAt       DateTime?
+  failureReason       String?
+  failureCode         String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  @@unique([guildId, syncTime])
+  @@index([guildId, status, publishAt])
+  @@index([status, publishAt])
+  @@index([nextAttemptAt])
 }
 
 model TrackedMessageClaim {

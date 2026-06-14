@@ -47,6 +47,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Manages tracked clan configuration, mail channels/roles, and war plans.
 - Supports player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands.
 - Includes `/fillers` for marking linked player accounts as filler accounts and listing filler accounts by guild, linked user, or current clan.
+- Includes `/sync readiness` for posting the shared FWA readiness dashboard, plus `/sync time post` for scheduled sync-time announcements that publish 2 hours before sync and share the same readiness renderer.
 - Provides FWA-focused tooling for points, match handling, layouts, and related workflows.
 - Adds persisted CWL round tracking plus `/cwl members`, `/cwl rotations`, and CWL sheet import/export planner flows on top of seasonal CWL clan tracking.
 
@@ -64,7 +65,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - `/force mail update` reconciles tracked references before in-place refresh and resumes/stops refresh tracking based on validity.
 - Match state rendering supports deterministic active-war inference and explicit confirmation persistence for BL/MM/FWA decisions.
 - Sync validation uses war-scoped persisted snapshots (`ClanPointsSync`) with explicit force-sync paths for refresh-scrape operations.
-- `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timer for RAIDS, and phased GAMES rendering (active earning, latest-results reward collection through the full claim window, then post-reward lifetime totals) plus CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan.
+- `/todo` renders from precomputed per-player snapshots (`TodoPlayerSnapshot`) so high-traffic reads stay fast and avoid live per-player multi-source aggregation on command execution, with grouped WAR/CWL sections, shared top timer for RAIDS, and phased GAMES rendering (active earning, latest-results reward collection through the full claim window, then post-reward lifetime totals) plus CWL context resolved from a seasonal CWL clan registry/player mapping layer instead of assuming home FWA clan. The snapshot keeps current membership separate from event-owned WAR/RAID/CWL context, while GAMES keeps its lifecycle state but still uses current membership for clan ownership.
 - CWL now has parallel persisted owners for live/prep rounds, ended round history, and planner state so `/todo cwl` and `/cwl ...` commands stay DB-first when persisted state exists.
 - `/reminders` now supports preview-first create/list/edit flows with FWA+CWL clan targeting, persisted reminder configs, and background scheduler dispatch with dedupe fire logs.
 - Reminder deliveries now send plain-text Discord messages so inline user mentions actually notify, with whole-line overflow splitting capped at 3 messages.

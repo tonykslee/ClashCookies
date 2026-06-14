@@ -17,11 +17,6 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
-import {
-  findSyncBadgeEmojiForClan,
-  getSyncBadgeEmojis,
-} from "../helper/syncBadgeEmoji";
-import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
 import {
@@ -30,15 +25,21 @@ import {
 } from "../services/CommandPermissionService";
 import { SettingsService } from "../services/SettingsService";
 import {
-  buildSyncTimeFwaClanListMessagePayload,
-  buildSyncTimeMessageContent,
+  buildSyncReadinessMessagePayload,
+  buildSyncReadinessMessageContent,
+  refreshTrackedClanReadinessState,
 } from "../services/SyncTimeFwaClanListViewService";
 import {
   buildSyncSpinStatusEmbed,
   parseSyncTimeMetadata,
   trackedMessageService,
-  type SyncTimeTrackedMetadata,
+  type SyncReadinessTrackedMetadata,
 } from "../services/TrackedMessageService";
+import {
+  activeSyncPostKey,
+  getSyncBadgesWithTrackedClanFallback,
+} from "../services/SyncTimePostPublisherService";
+import { scheduledSyncPostService } from "../services/ScheduledSyncPostService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
 import {
   autocompleteSyncTimeZones,
@@ -54,8 +55,6 @@ const TIMEZONE_INPUT_ID = "timezone";
 const ROLE_INPUT_ID = "role";
 const IANA_TIMEZONE_HELP_URL =
   "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
-const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
-const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
 const SYNC_UNAVAILABLE_EMOJI = "\u{1F4A4}";
 const SYNC_TIME_POST_CHANNEL_TYPES = [
   ChannelType.GuildText,
@@ -73,187 +72,6 @@ type SyncBadge = {
   matchEmojiIds: string[];
   matchEmojiNames: string[];
 };
-
-function dedupe(values: Array<string | null | undefined>): string[] {
-  return [...new Set(values.filter((v): v is string => Boolean(v && v.trim())).map((v) => v.trim()))];
-}
-
-function toFallbackAbbreviation(clanName: string | null, clanTag: string): string {
-  const source = (clanName?.trim() || clanTag.replace(/^#/, "")).toUpperCase();
-  const lettersAndNumbers = source.replace(/[^A-Z0-9]/g, "");
-  const base = lettersAndNumbers.length > 0 ? lettersAndNumbers : source.replace(/\s+/g, "");
-  if (base.length >= 3) return base.slice(0, 3);
-  const tagBase = clanTag.replace(/^#/, "").toUpperCase();
-  return (base + tagBase).slice(0, 3);
-}
-
-function resolveAbbreviation(
-  shortName: string | null,
-  clanName: string | null,
-  clanTag: string
-): string {
-  const normalized = shortName?.trim().toUpperCase() ?? "";
-  if (normalized.length > 0) return normalized;
-  return toFallbackAbbreviation(clanName, clanTag);
-}
-
-function parseCustomEmoji(raw: string): {
-  animated: boolean;
-  name: string;
-  id: string;
-} | null {
-  const match = raw.trim().match(CUSTOM_EMOJI_PATTERN);
-  if (!match) return null;
-  return {
-    animated: match[1] === "a",
-    name: match[2],
-    id: match[3],
-  };
-}
-
-function makeSyncBadgeFromHardcoded(entry: {
-  code: string;
-  label: string;
-  name: string;
-  id: string;
-},
-overrides?: { code?: string; label?: string }): SyncBadge {
-  return {
-    clanTag: overrides?.label?.startsWith("#") ? (overrides?.label as string) : `#${(overrides?.code ?? entry.code)}` ,
-    code: overrides?.code ?? entry.code,
-    label: overrides?.label ?? entry.label,
-    reactionIdentifier: `${entry.name}:${entry.id}`,
-    emojiInline: `<:${entry.name}:${entry.id}>`,
-    id: entry.id,
-    name: entry.name,
-    matchEmojiIds: dedupe([entry.id]),
-    matchEmojiNames: dedupe([entry.name]),
-  };
-}
-
-function makeSyncBadgeFromTrackedClan(
-  clanTag: string,
-  clanName: string | null,
-  configuredBadge: string,
-  shortName: string | null
-): SyncBadge {
-  const code = resolveAbbreviation(shortName, clanName, clanTag);
-  const label = clanName?.trim() || clanTag;
-  const trimmed = configuredBadge.trim();
-  const custom = parseCustomEmoji(trimmed);
-
-  if (custom) {
-    return {
-      clanTag,
-      code,
-      label,
-      reactionIdentifier: `${custom.name}:${custom.id}`,
-      emojiInline: `<${custom.animated ? "a" : ""}:${custom.name}:${custom.id}>`,
-      id: custom.id,
-      name: custom.name,
-      matchEmojiIds: dedupe([custom.id]),
-      matchEmojiNames: dedupe([custom.name]),
-    };
-  }
-
-  return {
-    clanTag,
-    code,
-    label,
-    reactionIdentifier: trimmed,
-    emojiInline: trimmed,
-    id: null,
-    name: trimmed,
-    matchEmojiIds: [],
-    matchEmojiNames: dedupe([trimmed]),
-  };
-}
-
-function addAlternateEmojiMatch(
-  badge: SyncBadge,
-  alternate: { id: string; name: string } | null
-): SyncBadge {
-  if (!alternate) return badge;
-  return {
-    ...badge,
-    matchEmojiIds: dedupe([...badge.matchEmojiIds, alternate.id]),
-    matchEmojiNames: dedupe([...badge.matchEmojiNames, alternate.name]),
-  };
-}
-
-async function getSyncBadgesWithTrackedClanFallback(
-  botUserId: string | undefined,
-  guild: Guild | null
-): Promise<SyncBadge[]> {
-  const tracked = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, clanBadge: true, shortName: true },
-  });
-
-  const hardcoded = getSyncBadgeEmojis(botUserId);
-  if (tracked.length === 0) {
-    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
-  }
-
-  const badges: SyncBadge[] = [];
-  for (const clan of tracked) {
-    const configuredBadge = clan.clanBadge?.trim() ?? "";
-    if (configuredBadge.length > 0) {
-      const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
-      const fallback = clan.name
-        ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode)
-        : null;
-
-      const shortcodeMatch = configuredBadge.match(SHORTCODE_EMOJI_PATTERN);
-      if (shortcodeMatch && guild) {
-        const shortcodeName = shortcodeMatch[1];
-        let emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
-        if (!emoji) {
-          await guild.emojis.fetch().catch(() => null);
-          emoji = guild.emojis.cache.find((e) => e.name === shortcodeName);
-        }
-        if (emoji) {
-          const emojiToken = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
-          badges.push(
-            addAlternateEmojiMatch(
-              makeSyncBadgeFromTrackedClan(clan.tag, clan.name, emojiToken, clan.shortName),
-              fallback
-            )
-          );
-          continue;
-        }
-      }
-      badges.push(
-        addAlternateEmojiMatch(
-          makeSyncBadgeFromTrackedClan(clan.tag, clan.name, configuredBadge, clan.shortName),
-          fallback
-        )
-      );
-      continue;
-    }
-
-    const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
-    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode) : null;
-    if (fallback) {
-      badges.push(
-        makeSyncBadgeFromHardcoded(fallback, {
-          code: fallbackCode,
-          label: clan.name?.trim() || clan.tag,
-        })
-      );
-    }
-  }
-
-  if (badges.length === 0) {
-    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
-  }
-
-  return badges;
-}
-
-function activeSyncPostKey(guildId: string): string {
-  return `active_sync_post:${guildId}`;
-}
 
 function parseActiveSyncPost(
   raw: string | null
@@ -381,6 +199,104 @@ async function handleSyncSpinStatusSubcommand(
   });
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+function buildStandaloneReadinessTrackedMetadata(now: Date): SyncReadinessTrackedMetadata {
+  return {
+    readinessEnabled: true,
+    createdAtIso: now.toISOString(),
+  };
+}
+
+async function handleSyncReadinessSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  const shouldRefresh = interaction.options.getBoolean("refresh", false) ?? false;
+
+  await interaction.deferReply({ ephemeral: !isPublic });
+
+  const now = new Date();
+  let refreshSummary:
+    | Awaited<ReturnType<typeof refreshTrackedClanReadinessState>>
+    | null = null;
+  if (shouldRefresh && interaction.guildId) {
+    try {
+      refreshSummary = await refreshTrackedClanReadinessState({
+        guildId: interaction.guildId,
+      });
+    } catch (err) {
+      console.error(
+        `[sync-readiness] refresh_failed guild_id=${interaction.guildId} error=${formatError(err)}`,
+      );
+      await interaction.editReply(
+        "Failed to refresh the readiness dashboard. Try again after the clan refresh completes.",
+        );
+      return;
+    }
+  }
+
+  if (
+    refreshSummary &&
+    (refreshSummary.syncAllFailedClanTags.length > 0 ||
+      refreshSummary.currentMemberFailedClanTags.length > 0)
+  ) {
+    console.info(
+      `[sync-readiness] refresh_partial_upstream guild_id=${interaction.guildId ?? "unknown"} tracked_clan_count=${refreshSummary.trackedClanCount} sync_failed_clan_count=${refreshSummary.syncAllFailedClanTags.length} member_failed_clan_count=${refreshSummary.currentMemberFailedClanTags.length}`,
+    );
+  }
+
+  const baseMetadata = buildStandaloneReadinessTrackedMetadata(now);
+  let payload: Awaited<ReturnType<typeof buildSyncReadinessMessagePayload>>;
+  try {
+    payload = await buildSyncReadinessMessagePayload({
+      guildId: interaction.guildId,
+      baseMetadata,
+      now,
+      includeRefreshButton: isPublic,
+    });
+  } catch (err) {
+    console.error(
+      `[sync-readiness] render_failed guild_id=${interaction.guildId} error=${formatError(err)}`,
+    );
+    payload = {
+      content: buildSyncReadinessMessageContent(),
+      embeds: [],
+      components: [],
+      metadata: baseMetadata,
+      trackedClanCount: 0,
+    };
+  }
+
+  const failedClanCount =
+    (refreshSummary?.syncAllFailedClanTags.length ?? 0) +
+    (refreshSummary?.currentMemberFailedClanTags.length ?? 0);
+  if (failedClanCount > 0) {
+    payload = {
+      ...payload,
+      content: `${payload.content}\n\n⚠️ Refresh completed with ${failedClanCount} clan refresh failure${
+        failedClanCount === 1 ? "" : "s"
+      }.`,
+    };
+  }
+
+  await interaction.editReply({
+    content: payload.content,
+    embeds: payload.embeds,
+    components: payload.components,
+  });
+
+  if (isPublic) {
+    const message = await interaction.fetchReply();
+    await trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate({
+      guildId: interaction.guildId!,
+      channelId: message.channelId,
+      messageId: message.id,
+      referenceId: message.id,
+      metadata: payload.metadata as SyncReadinessTrackedMetadata,
+    });
+  }
 }
 
 async function handleSyncClaimStatusSubcommand(
@@ -731,7 +647,7 @@ async function resolveSyncTimePostDestination(input: {
     await botLogChannelService.clearChannelIdForType(input.guildId, "sync");
     return {
       channel: input.invocationChannel,
-      fallbackNotice: `Configured sync bot-log channel <#${typedChannelId}> is unavailable; posted in this channel instead.`,
+      fallbackNotice: `Configured sync bot-log channel <#${typedChannelId}> is unavailable; the scheduled sync post will publish in this channel instead.`,
     };
   }
 
@@ -749,22 +665,11 @@ async function resolveSyncTimePostDestination(input: {
     await input.settings.delete(guildSyncPostChannelKey(input.guildId));
     return {
       channel: input.invocationChannel,
-      fallbackNotice: `Configured sync-time post channel <#${legacyChannelId}> is unavailable; posted in this channel instead.`,
+      fallbackNotice: `Configured sync-time post channel <#${legacyChannelId}> is unavailable; the scheduled sync post will publish in this channel instead.`,
     };
   }
 
   return { channel: input.invocationChannel, fallbackNotice: null };
-}
-
-function summarizePermissionIssue(err: unknown, action: string): string {
-  const code = (err as { code?: number } | null | undefined)?.code;
-  if (code === 50013 || code === 50001) {
-    return `${action} failed due to missing bot permissions in this channel.`;
-  }
-  if (code) {
-    return `${action} failed (Discord code: ${code}). Check bot permissions and logs.`;
-  }
-  return `${action} failed. Check bot permissions and logs.`;
 }
 
 function isBotSyncTimeMessage(content: string): boolean {
@@ -1010,172 +915,74 @@ export async function handlePostModalSubmit(
 
   const canMentionEveryone = permissions.has(PermissionFlagsBits.MentionEveryone);
   const mentionWillNotify = role.mentionable || canMentionEveryone;
-  const notices: string[] = [];
-  const allowedMentions: MessageMentionOptions = mentionWillNotify
-    ? { roles: [role.id] }
-    : { parse: [] };
-
-  const badges = await getSyncBadgesWithTrackedClanFallback(
-    interaction.client.user?.id,
-    interaction.guild
-  );
-  if (badges.length === 0) {
-    await interaction.editReply("No badge emoji configuration found for this bot ID.");
-    return;
-  }
-
-  const baseMetadata = {
-    syncTimeIso: new Date(epochSeconds * 1000).toISOString(),
-    syncEpochSeconds: epochSeconds,
-    roleId: role.id,
-    clans: badges.map((badge) => ({
-      code: badge.code,
-      clanTag: badge.clanTag,
-      clanName: badge.label,
-      emojiId: badge.id,
-      emojiName: badge.name,
-      emojiInline: badge.emojiInline,
-    })),
-  } satisfies SyncTimeTrackedMetadata;
-
-  let syncTimePayload;
-  try {
-    syncTimePayload = await buildSyncTimeFwaClanListMessagePayload({
-      guildId: interaction.guildId,
-      baseMetadata,
-    });
-  } catch (err) {
-    console.error(
-      `[sync-time-fwa-list] render_failed guild_id=${interaction.guildId} error=${formatError(err)}`
+  const publishAt = new Date(epochSeconds * 1000 - 2 * 60 * 60 * 1000);
+  if (publishAt.getTime() <= Date.now()) {
+    await interaction.editReply(
+      "The sync time must be more than 2 hours in the future to schedule a sync post."
     );
-    syncTimePayload = {
-      content: buildSyncTimeMessageContent(epochSeconds, role.id),
-      embeds: [],
-      components: [],
-      metadata: baseMetadata,
-      trackedClanCount: 0,
-    };
-  }
-  const {
-    metadata: syncTimeMetadata,
-    trackedClanCount,
-    ...syncTimeMessagePayload
-  } = syncTimePayload;
-  void trackedClanCount;
-
-  const postedMessage = await channel
-    .send({
-      ...syncTimeMessagePayload,
-      allowedMentions,
-    })
-      .catch(async (err) => {
-        console.error(
-          `[post sync time] send failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} role=${role.id} user=${interaction.user.id} error=${formatError(
-            err
-          )}`
-        );
-        await interaction.editReply(summarizePermissionIssue(err, "Posting sync time"));
-        return null;
-    });
-  if (!postedMessage) {
     return;
   }
-  await settings.set(
-    activeSyncPostKey(interaction.guildId),
-    JSON.stringify({
-      channelId: postedMessage.channelId,
-      messageId: postedMessage.id,
-      epochSeconds,
+
+  const scheduledSyncTime = new Date(epochSeconds * 1000);
+  const result = await scheduledSyncPostService
+    .scheduleSyncTimePost({
+      guildId: interaction.guildId,
+      channelId: channel.id,
+      createdByUserId: interaction.user.id,
+      roleId: role.id,
+      syncTime: scheduledSyncTime,
+      publishAt,
+      timezone: timezoneInput,
     })
-  );
+    .catch(async (err) => {
+      console.error(
+        `[scheduled-sync-post] schedule_failed guild_id=${interaction.guildId} channel_id=${channel.id} role_id=${role.id} user_id=${interaction.user.id} error=${formatError(err)}`,
+      );
+      await interaction.editReply("Could not schedule the sync time post. Check the logs and try again.");
+      return null;
+    });
+  if (!result) {
+    return;
+  }
+
+  if (result.action === "already_published") {
+    const existingLink = result.schedule.publishedMessageId
+      ? `https://discord.com/channels/${guild.id}/${result.schedule.channelId}/${result.schedule.publishedMessageId}`
+      : null;
+    await interaction.editReply(
+      existingLink
+        ? `A sync time post for <t:${epochSeconds}:F> is already published: ${existingLink}`
+        : `A sync time post for <t:${epochSeconds}:F> is already published.`,
+    );
+    return;
+  }
+
+  const notices: string[] = [];
   if (!mentionWillNotify) {
     notices.push(
-      `Role mention was included but may not notify members because \`${role.name}\` is not mentionable and bot lacks \`Mention Everyone\`.`
+      `Role mention may not notify members because \`${role.name}\` is not mentionable and the bot lacks \`Mention Everyone\`.`,
     );
   }
   if (configuredChannelFallbackNotice) {
     notices.push(configuredChannelFallbackNotice);
   }
-  const destinationLine = channel.id !== interaction.channelId ? `\nPosted in <#${channel.id}>.` : "";
-  const badgeEmojiIdentifiers = badges.map((badge) => badge.reactionIdentifier);
-  if (badgeEmojiIdentifiers.length > 0) {
-    let reactedCount = 0;
-    for (const emojiIdentifier of badgeEmojiIdentifiers) {
-      try {
-        await postedMessage.react(emojiIdentifier);
-        reactedCount += 1;
-      } catch (err) {
-        console.error(
-          `[post sync time] react failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} emoji=${emojiIdentifier} user=${interaction.user.id} error=${formatError(
-            err
-          )}`
-        );
-      }
-    }
-    if (reactedCount < badgeEmojiIdentifiers.length) {
-      notices.push(
-        `Some clan badge reactions failed (${reactedCount}/${badgeEmojiIdentifiers.length}). Check bot \`Add Reactions\` and emoji access in this server.`
-      );
-    }
-  }
-  try {
-    await postedMessage.react(SYNC_UNAVAILABLE_EMOJI);
-  } catch (err) {
-    console.error(
-      `[post sync time] react failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} emoji=${SYNC_UNAVAILABLE_EMOJI} user=${interaction.user.id} error=${formatError(
-        err
-      )}`
-    );
-    notices.push(
-      "Could not add :zzz: reaction for unavailable users. Check bot `Add Reactions` permission."
-    );
-  }
-
-  await trackedMessageService.createSyncTimeTrackedMessage({
-    guildId: interaction.guildId,
-    channelId: postedMessage.channelId,
-    messageId: postedMessage.id,
-    remindAt: new Date(epochSeconds * 1000 - 5 * 60 * 1000),
-    expiresAt: new Date(epochSeconds * 1000 + 60 * 60 * 1000),
-    metadata: syncTimeMetadata,
-  });
-
-  try {
-    const pinned = await channel.messages.fetchPinned();
-    for (const pinnedMessage of pinned.values()) {
-      if (pinnedMessage.id === postedMessage.id) continue;
-      if (!pinnedMessage.author.bot) continue;
-      if (!isBotSyncTimeMessage(pinnedMessage.content)) continue;
-      await pinnedMessage.unpin().catch(() => undefined);
-    }
-  } catch (err) {
-    console.error(
-      `[post sync time] fetchPinned/unpin failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} user=${interaction.user.id} error=${formatError(
-        err
-      )}`
-    );
-    notices.push(summarizePermissionIssue(err, "Cleaning previous sync pins"));
-  }
-
-  try {
-    await postedMessage.pin();
-  } catch (err) {
-    console.error(
-      `[post sync time] pin failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} message=${postedMessage.id} user=${interaction.user.id} error=${formatError(
-        err
-      )}`
-    );
-    notices.push(summarizePermissionIssue(err, "Pinning message"));
+  if (result.action === "replaced") {
+    notices.push("Replaced older pending/claimed sync schedules for this guild.");
+  } else if (result.action === "reused") {
+    notices.push("Reused the existing schedule for that sync time.");
+  } else if (result.action === "reactivated") {
+    notices.push("Reactivated the existing terminal schedule for that sync time.");
   }
 
   const noticeBlock =
     notices.length > 0 ? `\n${notices.map((n) => `- ${n}`).join("\n")}` : "";
+  const destinationLine = channel.id !== interaction.channelId ? `\nWill publish in <#${channel.id}>.` : "";
 
   await interaction.editReply(
-    `Sync time message posted.\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
+    `Sync time message scheduled.\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
       time.hour,
       time.minute
-    )}, ${timezoneInput}).${destinationLine}${noticeBlock}`
+    )}, ${timezoneInput}).\nWill publish at <t:${epochSeconds - 2 * 60 * 60}:F> (2 hours before sync).${destinationLine}${noticeBlock}`
   );
 }
 
@@ -1184,13 +991,36 @@ export const Post: Command = {
   description: "Sync posting and status commands",
   options: [
     {
+      name: "readiness",
+      description: "Post the FWA readiness dashboard",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "refresh",
+          description: "Force-refresh tracked clan ACTUAL member data before posting",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
+        },
+        {
+          name: "visibility",
+          description: "Choose whether the readiness post is private or public",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+      ],
+    },
+    {
       name: "time",
       description: "Sync time related commands",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
           name: "post",
-          description: "Post a localized sync time with role ping",
+          description: "Schedule a localized sync time post for 2 hours before sync",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
@@ -1268,6 +1098,11 @@ export const Post: Command = {
 
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
+    if (!subcommandGroup && subcommand === "readiness") {
+      await handleSyncReadinessSubcommand(interaction);
+      return;
+    }
+
     if (!subcommandGroup) {
       await safeReply(interaction, {
         ephemeral: true,
@@ -1317,7 +1152,7 @@ export const Post: Command = {
 
     const modal = new ModalBuilder()
       .setCustomId(buildModalCustomId(interaction.user.id))
-      .setTitle("Post Sync Time");
+      .setTitle("Schedule Sync Time");
 
     const dateInput = new TextInputBuilder()
       .setCustomId(DATE_INPUT_ID)

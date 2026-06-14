@@ -221,7 +221,11 @@ export async function runUserActivityReminderSchedulerCycle(input: {
 
   const warClanTags = [...new Set(
     snapshots
-      .map((row) => normalizeClanTag(row.clanTag ?? ""))
+      .map((row) =>
+        normalizeClanTag(row.warClanTag ?? "") ||
+        (row.warActive ? normalizeClanTag(row.clanTag ?? "") : "") ||
+        "",
+      )
       .filter(Boolean),
   )];
   const currentWarRows =
@@ -230,6 +234,7 @@ export async function runUserActivityReminderSchedulerCycle(input: {
           where: { clanTag: { in: warClanTags } },
           select: {
             clanTag: true,
+            clanName: true,
             warId: true,
             startTime: true,
             endTime: true,
@@ -396,6 +401,7 @@ function resolveReminderEventContext(input: {
   currentWarByClanTag: Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -405,7 +411,11 @@ function resolveReminderEventContext(input: {
   nowMs: number;
 }): ResolvedReminderEventContext | null {
   if (input.ruleType === UserActivityReminderType.WAR) {
-    const clanTag = normalizeClanTag(input.snapshot.clanTag ?? "");
+    const warClanTag = normalizeClanTag(input.snapshot.warClanTag ?? "");
+    const clanTag =
+      warClanTag ||
+      (input.snapshot.warActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
+      "";
     if (!clanTag) return null;
     const war = input.currentWarByClanTag.get(clanTag) ?? null;
     const eventEndsAt = war?.endTime ?? input.snapshot.warEndsAt ?? null;
@@ -414,12 +424,18 @@ function resolveReminderEventContext(input: {
     const eventInstanceKey = war
       ? buildWarEventInstanceKey(clanTag, war)
       : `WAR:${clanTag}:${eventEndsAt.getTime()}`;
+    const clanName = warClanTag
+      ? sanitizeDisplayText(war?.clanName) ||
+        sanitizeDisplayText(input.snapshot.warClanName) ||
+        null
+      : (input.snapshot.warActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+        null;
     return {
       eventInstanceKey,
       eventEndsAt,
       playerTag: input.snapshot.playerTag,
       playerName: sanitizeDisplayText(input.snapshot.playerName),
-      clanName: sanitizeDisplayText(input.snapshot.clanName),
+      clanName,
     };
   }
 
@@ -440,32 +456,34 @@ function resolveReminderEventContext(input: {
   if (input.ruleType === UserActivityReminderType.RAIDS) {
     if (!input.snapshot.raidActive || !input.snapshot.raidEndsAt) return null;
     if (input.snapshot.raidEndsAt.getTime() <= input.nowMs) return null;
+    const raidClanTag = normalizeClanTag(input.snapshot.raidClanTag ?? "");
     const clanTag =
-      normalizeClanTag(input.snapshot.clanTag ?? "") || input.snapshot.playerTag;
+      raidClanTag ||
+      (input.snapshot.raidActive ? normalizeClanTag(input.snapshot.clanTag ?? "") : "") ||
+      input.snapshot.playerTag;
+    const clanName = raidClanTag
+      ? sanitizeDisplayText(input.snapshot.raidClanName) || null
+      : (input.snapshot.raidActive ? sanitizeDisplayText(input.snapshot.clanName) : "") ||
+        null;
     return {
       eventInstanceKey: `RAIDS:${clanTag}:${input.snapshot.raidEndsAt.getTime()}`,
       eventEndsAt: input.snapshot.raidEndsAt,
       playerTag: input.snapshot.playerTag,
       playerName: sanitizeDisplayText(input.snapshot.playerName),
-      clanName: sanitizeDisplayText(input.snapshot.clanName),
+      clanName,
     };
   }
 
   if (!input.snapshot.gamesActive || !input.snapshot.gamesEndsAt) return null;
   if (input.snapshot.gamesEndsAt.getTime() <= input.nowMs) return null;
-  const clanTag =
-    normalizeClanTag(input.snapshot.clanTag ?? "") ||
-    normalizeClanTag(input.snapshot.cwlClanTag ?? "") ||
-    input.snapshot.playerTag;
+  const clanTag = normalizeClanTag(input.snapshot.clanTag ?? "") || input.snapshot.playerTag;
   const cycleKey = sanitizeDisplayText(input.snapshot.gamesCycleKey) ?? String(input.snapshot.gamesEndsAt.getTime());
   return {
     eventInstanceKey: `GAMES:${clanTag}:${cycleKey}`,
     eventEndsAt: input.snapshot.gamesEndsAt,
     playerTag: input.snapshot.playerTag,
     playerName: sanitizeDisplayText(input.snapshot.playerName),
-    clanName:
-      sanitizeDisplayText(input.snapshot.clanName) ??
-      sanitizeDisplayText(input.snapshot.cwlClanName),
+    clanName: sanitizeDisplayText(input.snapshot.clanName),
   };
 }
 
@@ -473,6 +491,7 @@ function resolveReminderEventContext(input: {
 function pickLatestCurrentWarByClanTag(
   rows: Array<{
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -482,6 +501,7 @@ function pickLatestCurrentWarByClanTag(
 ): Map<
   string,
   {
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     endTime: Date | null;
@@ -491,6 +511,7 @@ function pickLatestCurrentWarByClanTag(
   const latest = new Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -504,6 +525,7 @@ function pickLatestCurrentWarByClanTag(
     const existing = latest.get(clanTag);
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
+        clanName: sanitizeDisplayText(row.clanName) || null,
         warId: toFiniteIntOrNull(row.warId),
         startTime: row.startTime ?? null,
         endTime: row.endTime ?? null,
@@ -515,6 +537,7 @@ function pickLatestCurrentWarByClanTag(
   const finalized = new Map<
     string,
     {
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       endTime: Date | null;
@@ -523,6 +546,7 @@ function pickLatestCurrentWarByClanTag(
   >();
   for (const [clanTag, value] of latest.entries()) {
     finalized.set(clanTag, {
+      clanName: value.clanName,
       warId: value.warId,
       startTime: value.startTime,
       endTime: value.endTime,

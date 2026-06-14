@@ -41,11 +41,16 @@ type TodoRenderRow = {
   townHall: number | null;
   clanTag: string | null;
   clanName: string | null;
+  warClanTag: string | null;
+  warClanName: string | null;
   raidClanTracked: boolean;
   cwlClanTag: string | null;
   cwlClanName: string | null;
   cwlPlannedSubInAt: Date | null;
   warPosition: number | null;
+  warSourceUpdatedAt: Date | null;
+  clanMembershipObservedAt: Date | null;
+  currentMembershipFresh: boolean;
   warAttackDetails: Array<{
     defenderPosition: number | null;
     stars: number | null;
@@ -54,6 +59,7 @@ type TodoRenderRow = {
   warMatchIndicator: string;
   inValidatedWarMemberSet: boolean;
   activeTrackedWarClan: boolean;
+  warTrackedClanActive: boolean;
   snapshot: TodoSnapshotRecord | null;
   missingSnapshot: boolean;
   staleSnapshot: boolean;
@@ -120,6 +126,7 @@ const TODO_STALE_ACTIVE_CWL_MS = 5 * 60 * 1000;
 const TODO_STALE_ACTIVE_RAID_MS = 15 * 60 * 1000;
 const TODO_STALE_ACTIVE_GAMES_MS = 30 * 60 * 1000;
 const TODO_STALE_IDLE_MS = 4 * 60 * 60 * 1000;
+const TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS = 60 * 60 * 1000;
 const TODO_DEFAULT_GAMES_TARGET = 4000;
 const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
@@ -214,12 +221,47 @@ export async function buildTodoPagesForUser(input: {
     playerTags: linkedTags,
   });
   const snapshotByTag = new Map(snapshotRows.map((row) => [row.playerTag, row]));
-  const clanTags = [
+  const currentMembershipClanTags = [
     ...new Set(
       snapshotRows
         .map((row) => normalizeClanTag(row.clanTag ?? ""))
         .filter(Boolean),
     ),
+  ];
+  const activeWarOwnerClanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) =>
+          row.warActive
+            ? normalizeClanTag(row.warClanTag ?? "") || normalizeClanTag(row.clanTag ?? "")
+            : "",
+        )
+        .filter(Boolean),
+    ),
+  ];
+  const activeRaidOwnerClanTags = [
+    ...new Set(
+      snapshotRows
+        .map((row) =>
+          row.raidActive
+            ? normalizeClanTag(row.raidClanTag ?? "") || normalizeClanTag(row.clanTag ?? "")
+            : "",
+        )
+        .filter(Boolean),
+    ),
+  ];
+  const trackedClanLookupTags = [
+    ...new Set([
+      ...currentMembershipClanTags,
+      ...activeWarOwnerClanTags,
+      ...activeRaidOwnerClanTags,
+    ]),
+  ];
+  const raidTrackedClanLookupTags = [
+    ...new Set([...currentMembershipClanTags, ...activeRaidOwnerClanTags]),
+  ];
+  const currentWarLookupTags = [
+    ...new Set([...currentMembershipClanTags, ...activeWarOwnerClanTags]),
   ];
   const cwlClanTags = [
     ...new Set(
@@ -241,23 +283,24 @@ export async function buildTodoPagesForUser(input: {
     activeCwlPlans,
   ] =
     await Promise.all([
-    clanTags.length > 0
+    trackedClanLookupTags.length > 0
       ? prisma.trackedClan.findMany({
-          where: { tag: { in: clanTags } },
-          select: { tag: true, clanBadge: true },
+          where: { tag: { in: trackedClanLookupTags } },
+          select: { tag: true, clanBadge: true, name: true },
         })
       : Promise.resolve([]),
-    clanTags.length > 0
+    raidTrackedClanLookupTags.length > 0
       ? prisma.raidTrackedClan.findMany({
-          where: { clanTag: { in: clanTags } },
-          select: { clanTag: true },
+          where: { clanTag: { in: raidTrackedClanLookupTags } },
+          select: { clanTag: true, name: true },
         })
       : Promise.resolve([]),
-    clanTags.length > 0
+    currentWarLookupTags.length > 0
       ? prisma.currentWar.findMany({
-          where: { clanTag: { in: clanTags } },
+          where: { clanTag: { in: currentWarLookupTags } },
           select: {
             clanTag: true,
+            clanName: true,
             warId: true,
             startTime: true,
             matchType: true,
@@ -520,11 +563,23 @@ export async function buildTodoPagesForUser(input: {
       .filter(Boolean),
   );
   const clanBadgeByTag = new Map<string, string>();
+  const trackedClanNameByTag = new Map<string, string | null>();
   for (const row of trackedClanRows as Array<{ tag: string; clanBadge: string | null }>) {
     const clanTag = normalizeClanTag(row.tag);
     const clanBadge = sanitizeStatusText(row.clanBadge);
     if (!clanTag || !clanBadge) continue;
     clanBadgeByTag.set(clanTag, clanBadge);
+  }
+  for (const row of trackedClanRows as Array<{ tag: string; name: string | null }>) {
+    const clanTag = normalizeClanTag(row.tag);
+    if (!clanTag) continue;
+    trackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
+  }
+  const raidTrackedClanNameByTag = new Map<string, string | null>();
+  for (const row of raidTrackedClanRows as Array<{ clanTag: string; name: string | null }>) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    raidTrackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
   }
   const warMatchContextByClanTag =
     pickLatestCurrentWarMatchContextByClanTag(currentWarRows);
@@ -590,22 +645,59 @@ export async function buildTodoPagesForUser(input: {
     const snapshot = snapshotByTag.get(normalizedTag) ?? null;
     const missingSnapshot = snapshot === null;
     const staleSnapshot = snapshot ? isSnapshotStale(snapshot, nowMs) : false;
+    const snapshotWarClanTag = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warClanTag?: string | null }).warClanTag ?? null
+      : null;
+    const snapshotWarClanName = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warClanName?: string | null }).warClanName ?? null
+      : null;
+    const snapshotWarPosition = snapshot
+      ? (snapshot as TodoSnapshotRecord & { warPosition?: number | null }).warPosition ?? null
+      : null;
+    const snapshotWarSourceUpdatedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { warSourceUpdatedAt?: Date | null })
+          .warSourceUpdatedAt ?? null)
+      : null;
+    const snapshotRaidSourceUpdatedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { raidSourceUpdatedAt?: Date | null })
+          .raidSourceUpdatedAt ?? null)
+      : null;
+    const snapshotClanMembershipObservedAt: Date | null = snapshot
+      ? ((snapshot as TodoSnapshotRecord & { clanMembershipObservedAt?: Date | null })
+          .clanMembershipObservedAt ?? null)
+      : null;
+    const snapshotClanMembershipObservedAtMs = toTimestampMs(snapshotClanMembershipObservedAt);
+    const currentMembershipFresh = Boolean(
+      snapshotClanMembershipObservedAtMs !== null &&
+        nowMs - snapshotClanMembershipObservedAtMs < TODO_CURRENT_MEMBERSHIP_MAX_AGE_MS,
+    );
     const resolvedClanTag = normalizeClanTag(snapshot?.clanTag ?? "") || null;
     const resolvedCwlClanTag = normalizeClanTag(snapshot?.cwlClanTag ?? "") || null;
-    const warMemberKey = resolvedClanTag ? `${resolvedClanTag}:${normalizedTag}` : "";
+    const resolvedWarClanTag =
+      (snapshot?.warActive
+        ? normalizeClanTag(snapshotWarClanTag ?? "") ||
+          normalizeClanTag(snapshot?.clanTag ?? "")
+        : normalizeClanTag(snapshotWarClanTag ?? "")) || null;
+    const resolvedWarClanTagKey = resolvedWarClanTag ?? "";
+    const resolvedRaidClanTag =
+      normalizeClanTag(snapshot?.raidClanTag ?? "") ||
+      (snapshot?.raidActive ? normalizeClanTag(snapshot?.clanTag ?? "") : "") ||
+      null;
+    const warTrackedClanActive = Boolean(
+      resolvedWarClanTag && activeTrackedCurrentWarByClanTag.has(resolvedWarClanTag),
+    );
+    const warMemberKey = resolvedWarClanTag ? `${resolvedWarClanTag}:${normalizedTag}` : "";
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
-    const trackedClanActive = Boolean(
-      resolvedClanTag && trackedClanTagSet.has(resolvedClanTag),
-    );
-    const activeTrackedWarClan = Boolean(
+    const currentTrackedWarClanActive = Boolean(
       resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
     );
-    const resolvedWarPosition = trackedClanActive
-      ? toFiniteIntOrNull(trackedWarMember?.position)
+    const inValidatedWarMemberSet = Boolean(warTrackedClanActive && trackedWarMember);
+    const resolvedWarPosition = snapshot?.warActive
+      ? toFiniteIntOrNull(trackedWarMember?.position ?? snapshotWarPosition)
       : null;
-    const resolvedWarAttackDetails = trackedClanActive
+    const resolvedWarAttackDetails = warTrackedClanActive
       ? (trackedWarMember?.attackDetails ?? [])
       : [];
     const resolvedTownHall = (() => {
@@ -649,27 +741,41 @@ export async function buildTodoPagesForUser(input: {
       activePlan: activeCwlPlan,
       playerTag: normalizedTag,
     });
-    const matchContext = resolvedClanTag
-      ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
+    const matchContext = resolvedWarClanTag
+      ? warMatchContextByClanTag.get(resolvedWarClanTag) ?? null
+      : resolvedClanTag
+        ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
-    const raidClanTracked = Boolean(
-      resolvedClanTag &&
-        (trackedClanTagSet.has(resolvedClanTag) ||
-          raidTrackedClanTagSet.has(resolvedClanTag)),
-    );
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
       snapshotPlayerName: snapshot?.playerName,
       linkedName: link.linkedName,
     });
     const warFreshnessCandidates = [
-      resolvedClanTag ? currentWarIdentityByClanTag.get(resolvedClanTag)?.updatedAt.getTime() ?? null : null,
+      resolvedWarClanTag
+        ? currentWarIdentityByClanTag.get(resolvedWarClanTag)?.updatedAt.getTime() ?? null
+        : null,
+      toTimestampMs(snapshotWarSourceUpdatedAt),
       trackedWarMember?.attackDetails
         ? Math.min(
             ...trackedWarMember.attackDetails
               .map((detail) => detail.seenAtMs)
               .filter((value): value is number => Number.isFinite(value)),
           )
+        : null,
+      currentTrackedWarClanActive &&
+      currentMembershipFresh &&
+      Boolean(snapshot) &&
+      !snapshot?.warActive &&
+      !inValidatedWarMemberSet
+        ? toTimestampMs(snapshotClanMembershipObservedAt)
+        : null,
+      currentTrackedWarClanActive &&
+      currentMembershipFresh &&
+      Boolean(snapshot) &&
+      !snapshot?.warActive &&
+      !inValidatedWarMemberSet
+        ? currentWarIdentityByClanTag.get(resolvedClanTag ?? "")?.updatedAt.getTime() ?? null
         : null,
     ].filter((value): value is number => Number.isFinite(value));
     const cwlFreshnessCandidates = [
@@ -683,10 +789,11 @@ export async function buildTodoPagesForUser(input: {
         ? currentCwlMemberByClanAndPlayerTag.get(`${resolvedCwlClanTag}:${normalizedTag}`)?.updatedAt?.getTime() ?? null
         : null,
     ].filter((value): value is number => Number.isFinite(value));
-    const raidFreshnessCandidates = [
+    const raidFreshnessAtMs = resolveFirstTimestampMs([
+      snapshotRaidSourceUpdatedAt?.getTime() ?? null,
       snapshot?.lastUpdatedAt?.getTime() ?? null,
       snapshot?.updatedAt?.getTime() ?? null,
-    ].filter((value): value is number => Number.isFinite(value));
+    ]);
     const gamesFreshnessCandidates = [
       playerSignalStateFreshnessByTag.get(normalizedTag) ?? null,
     ].filter((value): value is number => Number.isFinite(value));
@@ -697,23 +804,50 @@ export async function buildTodoPagesForUser(input: {
       townHall: resolvedTownHall,
       clanTag: resolvedClanTag,
       clanName: snapshot?.clanName ?? null,
+      warClanTag: resolvedWarClanTag,
+      warClanName:
+        (snapshotWarClanTag
+          ? currentWarIdentityByClanTag.get(resolvedWarClanTagKey)?.clanName ??
+            trackedClanNameByTag.get(resolvedWarClanTagKey) ??
+            raidTrackedClanNameByTag.get(resolvedWarClanTagKey) ??
+            snapshotWarClanName ??
+            null
+          : snapshotWarClanName ||
+            (resolvedWarClanTag ? snapshot?.clanName ?? null : null) ||
+            null),
       cwlClanTag: resolvedCwlClanTag,
       cwlClanName: snapshot?.cwlClanName ?? null,
       cwlPlannedSubInAt,
       warPosition: resolvedWarPosition,
+      warSourceUpdatedAt:
+        snapshotWarSourceUpdatedAt ??
+        (resolvedWarClanTag
+          ? currentWarIdentityByClanTag.get(resolvedWarClanTag)?.updatedAt ?? null
+          : null),
+      clanMembershipObservedAt:
+        snapshotClanMembershipObservedAt ??
+        snapshot?.lastUpdatedAt ??
+        snapshot?.updatedAt ??
+        null,
+      currentMembershipFresh,
       warAttackDetails: resolvedWarAttackDetails,
-      warHeaderBadge: resolvedClanTag ? clanBadgeByTag.get(resolvedClanTag) ?? null : null,
+      warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
-      raidClanTracked,
-      inValidatedWarMemberSet: Boolean(trackedClanActive && trackedWarMember),
-      activeTrackedWarClan,
+      raidClanTracked: Boolean(
+        resolvedRaidClanTag &&
+          (trackedClanTagSet.has(resolvedRaidClanTag) ||
+            raidTrackedClanTagSet.has(resolvedRaidClanTag)),
+      ),
+      inValidatedWarMemberSet,
+      activeTrackedWarClan: currentTrackedWarClanActive,
+      warTrackedClanActive,
       snapshot,
       missingSnapshot,
       staleSnapshot,
       displayedFreshnessAtMsByType: {
         WAR: resolveMinimumTimestampMs(warFreshnessCandidates),
         CWL: resolveMinimumTimestampMs(cwlFreshnessCandidates),
-        RAIDS: resolveMinimumTimestampMs(raidFreshnessCandidates),
+        RAIDS: raidFreshnessAtMs,
         GAMES: resolveMinimumTimestampMs(gamesFreshnessCandidates),
       },
     } satisfies TodoRenderRow;
@@ -743,19 +877,34 @@ export async function buildTodoPagesForUser(input: {
   const nonLineupCount = renderRows.filter(
     (row) =>
       row.activeTrackedWarClan &&
+      row.currentMembershipFresh &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet,
+  ).length;
+  const suppressedNonLineupStaleMembershipCount = renderRows.filter(
+    (row) =>
+      row.activeTrackedWarClan &&
+      Boolean(row.snapshot) &&
+      !row.snapshot?.warActive &&
+      !row.inValidatedWarMemberSet &&
+      !row.currentMembershipFresh,
   ).length;
   const activeTrackedWarClanCount = new Set(
     renderRows
       .filter((row) => row.activeTrackedWarClan)
       .map((row) => normalizeClanTag(row.clanTag ?? "")),
   ).size;
+  const missingWarPositionCount = renderRows.filter(
+    (row) => row.snapshot?.warActive && row.warPosition === null,
+  ).length;
+  const legacyWarFieldUsageCount = renderRows.filter(
+    (row) => row.snapshot?.warActive && !row.snapshot?.warClanTag,
+  ).length;
   const missingSnapshotCount = renderRows.filter((row) => row.missingSnapshot).length;
   const staleSnapshotCount = renderRows.filter((row) => row.staleSnapshot).length;
   console.info(
-    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
+    `[todo-service] event=todo_war_render_summary user_id=${input.discordUserId} linked_player_count=${linkedTags.length} active_lineup_count=${activeLineupCount} non_lineup_count=${nonLineupCount} suppressed_non_lineup_stale_membership_count=${suppressedNonLineupStaleMembershipCount} active_tracked_war_clan_count=${activeTrackedWarClanCount} missing_war_position_count=${missingWarPositionCount} legacy_war_field_usage_count=${legacyWarFieldUsageCount} missing_snapshot_count=${missingSnapshotCount} stale_snapshot_count=${staleSnapshotCount} page=WAR`,
   );
   const cwlView = buildCwlPageDescription(renderRows, linkedTags.length, cwlFreshnessAtMs);
   const pages = {
@@ -763,7 +912,7 @@ export async function buildTodoPagesForUser(input: {
     pages: {
       WAR: warView.description,
       CWL: cwlView.description,
-      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length, raidsFreshnessAtMs),
+      RAIDS: buildRaidsPageDescription(renderRows, linkedTags.length, raidsFreshnessAtMs, nowMs),
       GAMES: buildGamesPageDescription(renderRows, linkedTags.length, nowMs, gamesFreshnessAtMs),
     },
     sidebarStateByType: {
@@ -779,6 +928,11 @@ export async function buildTodoPagesForUser(input: {
     pages,
   });
   return pages;
+}
+
+/** Purpose: safely convert nullable Dates into freshness timestamps. */
+function toTimestampMs(input: Date | null | undefined): number | null {
+  return input instanceof Date ? input.getTime() : null;
 }
 
 /** Purpose: build one compact, user-scoped render cache key tied to linked tags + snapshot version. */
@@ -831,6 +985,7 @@ function buildWarPageDescription(
   const nonLineupRows = rows.filter(
     (row) =>
       row.activeTrackedWarClan &&
+      row.currentMembershipFresh &&
       Boolean(row.snapshot) &&
       !row.snapshot?.warActive &&
       !row.inValidatedWarMemberSet,
@@ -1045,8 +1200,9 @@ function buildRaidsPageDescription(
   rows: TodoRenderRow[],
   linkedPlayerCount: number,
   displayedFreshnessAtMs: number | null,
+  nowMs = Date.now(),
 ): string {
-  const hasActive = rows.some((row) => Boolean(row.snapshot?.raidActive));
+  const hasActive = rows.some((row) => isTodoRaidSnapshotActive(row.snapshot, nowMs));
   if (!hasActive) {
     return buildTodoPageDescription({
       heading: "RAIDS",
@@ -1057,13 +1213,13 @@ function buildRaidsPageDescription(
   }
 
   const lines: string[] = [];
-  const sharedEndsAt = getSharedEndsAt(rows, "raid");
+  const sharedEndsAt = getSharedEndsAt(rows, "raid", nowMs);
   if (sharedEndsAt) {
     lines.push(`**Time remaining:** ${formatRelativeTimestamp(sharedEndsAt)}`);
     lines.push("");
   }
-  for (const row of sortRaidsRows(rows)) {
-    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row)));
+  for (const row of sortRaidsRows(rows, nowMs)) {
+    lines.push(formatRaidsTodoRow(row, getRaidRowStatus(row, nowMs), nowMs));
   }
 
   return buildTodoPageDescription({
@@ -1139,8 +1295,13 @@ function buildEventGroups(
         : sanitizeStatusText(row.snapshot.cwlPhase) || "active phase";
     const phaseEndsAt =
       mode === "war" ? row.snapshot.warEndsAt : row.snapshot.cwlEndsAt;
-    const groupedClanTag = mode === "war" ? row.clanTag : row.cwlClanTag;
-    const groupedClanName = mode === "war" ? row.clanName : row.cwlClanName;
+    const groupedClanTag = mode === "war" ? row.warClanTag ?? row.clanTag : row.cwlClanTag;
+    const groupedClanName =
+      mode === "war"
+        ? row.warClanTag
+          ? row.warClanName ?? null
+          : row.clanName
+        : row.cwlClanName;
     const key = [
       groupedClanTag ?? "",
       groupedClanName ?? "",
@@ -1244,7 +1405,7 @@ function getSharedEndsAt(
   const candidates = rows
     .map((row) => {
       if (!row.snapshot) return null;
-      if (mode === "raid" && row.snapshot.raidActive) {
+      if (mode === "raid" && isTodoRaidSnapshotActive(row.snapshot, nowMs)) {
         return row.snapshot.raidEndsAt ?? null;
       }
       if (mode === "games" && isTodoGamesSessionActive(row.snapshot, nowMs)) {
@@ -1298,8 +1459,8 @@ function formatGamesTodoRow(
 }
 
 /** Purpose: format one RAIDS row with completion marker emojis and unchanged status text. */
-function formatRaidsTodoRow(row: TodoRenderRow, status: string): string {
-  const marker = getRaidRowMarker(row);
+function formatRaidsTodoRow(row: TodoRenderRow, status: string, nowMs = Date.now()): string {
+  const marker = getRaidRowMarker(row, nowMs);
   return `${marker} ${row.playerName} - ${status}`;
 }
 
@@ -1480,22 +1641,22 @@ function getCwlRowMarker(row: TodoRenderRow): string {
 }
 
 /** Purpose: build RAIDS row status text with usage only and without per-row timer duplication. */
-function getRaidRowStatus(row: TodoRenderRow): string {
+function getRaidRowStatus(row: TodoRenderRow, nowMs = Date.now()): string {
   if (row.missingSnapshot || !row.snapshot) {
     return "clan capital raids: snapshot unavailable";
   }
 
-  const { used, max } = getRaidRowProgress(row);
+  const { used, max } = getRaidRowProgress(row, nowMs);
   const staleSuffix = row.staleSnapshot ? " - :hourglass:" : "";
 
-  if (row.snapshot.raidActive && used > 0 && !row.raidClanTracked) {
+  if (isTodoRaidSnapshotActive(row.snapshot, nowMs) && used > 0 && !row.raidClanTracked) {
     return `started raids in unknown clan${staleSuffix}`;
   }
   return `${used} / ${max}${staleSuffix}`;
 }
 
 /** Purpose: compute stable RAIDS used/max progress and completion flag for row marker decisions. */
-function getRaidRowProgress(row: TodoRenderRow): {
+function getRaidRowProgress(row: TodoRenderRow, nowMs = Date.now()): {
   used: number;
   max: number;
   complete: boolean;
@@ -1503,8 +1664,9 @@ function getRaidRowProgress(row: TodoRenderRow): {
   if (!row.snapshot) {
     return { used: 0, max: 6, complete: false };
   }
+  const active = isTodoRaidSnapshotActive(row.snapshot, nowMs);
   const used = clampInt(
-    row.snapshot.raidAttacksUsed,
+    active ? row.snapshot.raidAttacksUsed : 0,
     0,
     row.snapshot.raidAttacksMax || 6,
   );
@@ -1513,8 +1675,8 @@ function getRaidRowProgress(row: TodoRenderRow): {
 }
 
 /** Purpose: map one RAIDS row into marker semantics for complete/active/not-started states. */
-function getRaidRowMarker(row: TodoRenderRow): string {
-  const progress = getRaidRowProgress(row);
+function getRaidRowMarker(row: TodoRenderRow, nowMs = Date.now()): string {
+  const progress = getRaidRowProgress(row, nowMs);
   if (progress.used <= 0) {
     return ":black_circle:";
   }
@@ -1660,6 +1822,7 @@ function pickLatestCurrentWarMatchContextByClanTag(
 function pickLatestCurrentWarIdentityByClanTag(
   rows: Array<{
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     state: string | null;
@@ -1669,6 +1832,7 @@ function pickLatestCurrentWarIdentityByClanTag(
   string,
   {
     clanTag: string;
+    clanName: string | null;
     warId: number | null;
     startTime: Date | null;
     state: string | null;
@@ -1679,6 +1843,7 @@ function pickLatestCurrentWarIdentityByClanTag(
     string,
     {
       clanTag: string;
+      clanName: string | null;
       warId: number | null;
       startTime: Date | null;
       state: string | null;
@@ -1692,6 +1857,7 @@ function pickLatestCurrentWarIdentityByClanTag(
     if (!existing || row.updatedAt > existing.updatedAt) {
       latest.set(clanTag, {
         clanTag,
+        clanName: sanitizeStatusText(row.clanName) || null,
         warId: toFiniteIntOrNull(row.warId),
         startTime: row.startTime ?? null,
         state: row.state ?? null,
@@ -1737,12 +1903,12 @@ function sortGamesRows(rows: TodoRenderRow[]): TodoRenderRow[] {
 }
 
 /** Purpose: sort RAIDS rows by used attacks desc, then TH desc, then stable prior order. */
-function sortRaidsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
+function sortRaidsRows(rows: TodoRenderRow[], nowMs = Date.now()): TodoRenderRow[] {
   return rows
     .map((row, index) => ({ row, index }))
     .sort((a, b) => {
-      const aUsed = getRaidRowProgress(a.row).used;
-      const bUsed = getRaidRowProgress(b.row).used;
+      const aUsed = getRaidRowProgress(a.row, nowMs).used;
+      const bUsed = getRaidRowProgress(b.row, nowMs).used;
       if (aUsed !== bUsed) {
         return bUsed - aUsed;
       }
@@ -1765,6 +1931,16 @@ function sortRaidsRows(rows: TodoRenderRow[]): TodoRenderRow[] {
       return a.index - b.index;
     })
     .map((entry) => entry.row);
+}
+
+/** Purpose: identify whether a RAID snapshot is still inside the current raid window. */
+function isTodoRaidSnapshotActive(
+  snapshot: TodoSnapshotRecord | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!snapshot?.raidActive) return false;
+  if (!(snapshot.raidEndsAt instanceof Date)) return false;
+  return snapshot.raidEndsAt.getTime() > nowMs;
 }
 
 /** Purpose: map games progress points to deterministic status emoji thresholds. */
@@ -1982,6 +2158,14 @@ function resolveMinimumTimestampMs(values: Array<number | null | undefined>): nu
   const candidates = values.filter((value): value is number => Number.isFinite(value));
   if (candidates.length <= 0) return null;
   return candidates.reduce((min, value) => (value < min ? value : min), candidates[0]);
+}
+
+/** Purpose: choose the first usable timestamp from one prioritized candidate list. */
+function resolveFirstTimestampMs(values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 /** Purpose: keep status labels compact and deterministic for embed row rendering. */
