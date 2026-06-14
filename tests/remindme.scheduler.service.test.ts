@@ -656,6 +656,65 @@ describe("UserActivityReminderSchedulerService", () => {
     );
   });
 
+  it("keeps GAMES ownership on current membership instead of inheriting cwlClanTag", async () => {
+    const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
+    prismaMock.userActivityReminderRule.findMany.mockResolvedValue([
+      {
+        id: "rule-games-current",
+        discordUserId: "111111111111111111",
+        type: UserActivityReminderType.GAMES,
+        playerTag: "#P4444444",
+        method: UserActivityReminderMethod.DM,
+        offsetMinutes: 60,
+        isActive: true,
+        surfaceChannelId: null,
+      },
+    ]);
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValue([
+      snapshotRow({
+        playerTag: "#P4444444",
+        clanTag: "",
+        clanName: "",
+        cwlClanTag: "#QGRJ2222",
+        cwlClanName: "CWL Clan",
+        gamesActive: true,
+        gamesEndsAt: new Date(nowMs + 30 * 60 * 1000),
+        gamesCycleKey: "cycle-2026-03",
+      }),
+    ]);
+    prismaMock.userActivityReminderDelivery.create.mockResolvedValue({ id: "delivery-games-current" });
+    const dispatch = {
+      dispatchReminder: vi.fn().mockResolvedValue({
+        status: "sent",
+        messageId: "msg-games-current",
+        deliverySurface: "DM:123",
+      }),
+    };
+
+    const counts = await runUserActivityReminderSchedulerCycle({
+      client: {} as any,
+      cocService: {} as any,
+      dispatch: dispatch as any,
+      nowMs,
+      intervalMs: 60_000,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      fired: 1,
+      deduped: 0,
+      failed: 0,
+    });
+    expect(dispatch.dispatchReminder).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        reminderType: UserActivityReminderType.GAMES,
+        clanName: null,
+        eventInstanceKey: `GAMES:#P4444444:cycle-2026-03`,
+      }),
+    );
+  });
+
   it("dedupes already-sent rule/event identities before dispatch", async () => {
     const nowMs = Date.parse("2026-03-27T12:00:00.000Z");
     prismaMock.userActivityReminderRule.findMany.mockResolvedValue([

@@ -476,19 +476,14 @@ function resolveReminderEventContext(input: {
 
   if (!input.snapshot.gamesActive || !input.snapshot.gamesEndsAt) return null;
   if (input.snapshot.gamesEndsAt.getTime() <= input.nowMs) return null;
-  const clanTag =
-    normalizeClanTag(input.snapshot.clanTag ?? "") ||
-    normalizeClanTag(input.snapshot.cwlClanTag ?? "") ||
-    input.snapshot.playerTag;
+  const clanTag = normalizeClanTag(input.snapshot.clanTag ?? "") || input.snapshot.playerTag;
   const cycleKey = sanitizeDisplayText(input.snapshot.gamesCycleKey) ?? String(input.snapshot.gamesEndsAt.getTime());
   return {
     eventInstanceKey: `GAMES:${clanTag}:${cycleKey}`,
     eventEndsAt: input.snapshot.gamesEndsAt,
     playerTag: input.snapshot.playerTag,
     playerName: sanitizeDisplayText(input.snapshot.playerName),
-    clanName:
-      sanitizeDisplayText(input.snapshot.clanName) ??
-      sanitizeDisplayText(input.snapshot.cwlClanName),
+    clanName: sanitizeDisplayText(input.snapshot.clanName),
   };
 }
 
