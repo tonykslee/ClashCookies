@@ -134,7 +134,7 @@ Each domain concept must have exactly one authoritative owner.
 | WAR snapshot context | TodoPlayerSnapshot.warClanTag, TodoPlayerSnapshot.warClanName, TodoPlayerSnapshot.warPosition, TodoPlayerSnapshot.warSourceUpdatedAt, TodoPlayerSnapshot.warActive, TodoPlayerSnapshot.warPhase, TodoPlayerSnapshot.warAttacksUsed, TodoPlayerSnapshot.warAttacksMax, TodoPlayerSnapshot.warEndsAt |
 | RAID snapshot context | TodoPlayerSnapshot.raidClanTag, TodoPlayerSnapshot.raidClanName, TodoPlayerSnapshot.raidSourceUpdatedAt, TodoPlayerSnapshot.raidActive, TodoPlayerSnapshot.raidAttacksUsed, TodoPlayerSnapshot.raidAttacksMax, TodoPlayerSnapshot.raidEndsAt |
 | CWL snapshot context | TodoPlayerSnapshot.cwlClanTag, TodoPlayerSnapshot.cwlClanName, TodoPlayerSnapshot.cwlActive, TodoPlayerSnapshot.cwlPhase, TodoPlayerSnapshot.cwlAttacksUsed, TodoPlayerSnapshot.cwlAttacksMax, TodoPlayerSnapshot.cwlEndsAt |
-| Clan Games snapshot context | TodoPlayerSnapshot.gamesActive, TodoPlayerSnapshot.gamesCycleKey, TodoPlayerSnapshot.gamesPoints, TodoPlayerSnapshot.gamesBaselinePoints, TodoPlayerSnapshot.gamesEndsAt |
+| Clan Games snapshot context | TodoPlayerSnapshot.gamesActive, TodoPlayerSnapshot.gamesCycleKey, TodoPlayerSnapshot.gamesPoints, TodoPlayerSnapshot.gamesTarget, TodoPlayerSnapshot.gamesChampionTotal, TodoPlayerSnapshot.gamesSeasonBaseline, TodoPlayerSnapshot.gamesEndsAt |
 | Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render state) |
 | Guild reminder config and dedupe | Reminder, ReminderTimeOffset, ReminderTargetClan, ReminderFireLog |
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
@@ -203,7 +203,7 @@ Rules:
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
 - `CwlRotationPlan*` owns current-season planner artifacts only, and sheet import/export commands treat those rows as the active planner source once confirmed.
-- Guild reminder schedulers select the clan owner appropriate to the reminder type and must not emit or inherit every clan identity present on one snapshot row. Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
+- Guild and personal reminder schedulers select the clan owner appropriate to the reminder type and must not emit or inherit every clan identity present on one snapshot row. Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
 - Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.
 
