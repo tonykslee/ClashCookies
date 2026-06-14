@@ -811,15 +811,20 @@ export class TodoSnapshotService {
     const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
     const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
     const observedLivePlayerCurrentByTag = input.observedLivePlayerCurrentByTag ?? new Map();
-    const raidDiscoveryTrackedClanRows =
-      input.trackedClanRows ??
-      (raidWindow.active
-        ? await prisma.trackedClan.findMany({
-            select: { tag: true, name: true },
-          })
-        : []);
-    const raidDiscoveryRaidTrackedClanRows =
-      input.raidTrackedClanRows ?? (raidWindow.active ? await listRaidTrackedClanRows() : []);
+    const trackedClanRowsForDiscovery =
+      input.trackedClanRows !== undefined
+        ? input.trackedClanRows
+        : raidWindow.active
+          ? await prisma.trackedClan.findMany({
+              select: { tag: true, name: true },
+            })
+          : [];
+    const raidTrackedClanRowsForDiscovery =
+      input.raidTrackedClanRows !== undefined
+        ? input.raidTrackedClanRows
+        : raidWindow.active
+          ? await listRaidTrackedClanRows()
+          : [];
     const liveClanTagByPlayerTag = await loadLiveClanTagsByPlayerTag({
       cocService: input.cocService,
       playerTags: normalizedTags,
@@ -1001,15 +1006,20 @@ export class TodoSnapshotService {
         ].filter((value): value is string => Boolean(value)),
       ),
     ];
-
-    const [trackedClanRows, currentWarRows, cwlTrackedClanRows, cwlSeasonMappingRows, currentCwlRoundRows, currentCwlMemberRows] =
-      await Promise.all([
-        clanTags.length > 0
-          ? prisma.trackedClan.findMany({
+    const clanTagSet = new Set(clanTags);
+    const trackedClanRows =
+      raidWindow.active || input.trackedClanRows !== undefined
+        ? trackedClanRowsForDiscovery.filter((row) =>
+            clanTagSet.has(normalizeClanTag(row.tag)),
+          )
+        : clanTags.length > 0
+          ? await prisma.trackedClan.findMany({
               where: { tag: { in: clanTags } },
               select: { tag: true, name: true },
             })
-          : Promise.resolve([]),
+          : [];
+    const [currentWarRows, cwlTrackedClanRows, cwlSeasonMappingRows, currentCwlRoundRows, currentCwlMemberRows] =
+      await Promise.all([
         clanTags.length > 0
           ? prisma.currentWar.findMany({
               where: { clanTag: { in: clanTags } },
@@ -1074,9 +1084,7 @@ export class TodoSnapshotService {
         ] as const)
         .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
-    const raidTrackedClanRows = raidDiscoveryRaidTrackedClanRows.length > 0
-      ? raidDiscoveryRaidTrackedClanRows
-      : await listRaidTrackedClanRows();
+    const raidTrackedClanRows = raidTrackedClanRowsForDiscovery;
     const raidTrackedClanNameByTag = new Map(
       raidTrackedClanRows
         .map((row) => [
@@ -1342,8 +1350,8 @@ export class TodoSnapshotService {
       playerTags: normalizedTags,
       currentMembershipByPlayerTag,
       existingByTag,
-      trackedClanRows: raidDiscoveryTrackedClanRows,
-      raidTrackedClanRows: raidDiscoveryRaidTrackedClanRows,
+      trackedClanRows: trackedClanRowsForDiscovery,
+      raidTrackedClanRows: raidTrackedClanRowsForDiscovery,
     });
     const liveRaidContextLookup = await loadLiveRaidContextByPlayerTag({
       cocService: input.cocService,
