@@ -1760,7 +1760,7 @@ describe("TodoSnapshotService", () => {
         if (normalizedClanTag === "#PQGRJ") {
           return [makeRaidSeason([{ tag: "#PYLQ0289", attacks: 5 }])];
         }
-        throw new Error(`Unexpected raid fetch for ${normalizedClanTag}`);
+        return [makeRaidSeason([])];
       }),
     };
     await todoSnapshotService.refreshSnapshotsForPlayerTags({
@@ -1769,8 +1769,14 @@ describe("TodoSnapshotService", () => {
       nowMs: Date.UTC(2026, 2, 29, 12, 0, 0, 0),
     });
 
+    const raidCallTags = cocService.getClanCapitalRaidSeasons.mock.calls.map(([clanTag]) =>
+      normalizeClanTagForTest(String(clanTag)),
+    );
+    expect(raidCallTags).toHaveLength(2);
+    expect(new Set(raidCallTags)).toEqual(new Set(["#2RYGLU2UY", "#PQGRJ"]));
     expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#2RYGLU2UY", 2);
     expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#PQGRJ", 2);
+    expect(cocService.getClanCapitalRaidSeasons).not.toHaveBeenCalledWith("#PQL0289", 2);
     expect(getTodoSnapshotUpsertUpdateForPlayer("#PYLQ0289")).toMatchObject({
       raidActive: true,
       raidClanTag: "#PQGRJ",
