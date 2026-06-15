@@ -255,12 +255,24 @@ function buildSyncReadinessContent(): string {
   return "# FWA readiness";
 }
 
+function buildStandaloneReadinessRefreshExpiresAt(
+  metadata: SyncReadinessTrackedMetadata,
+): Date | null {
+  return parseOptionalIsoDate(metadata.refreshExpiresAtIso ?? null);
+}
+
 function isReadinessRefreshWindowExpired(
-  metadata: SyncTimeTrackedMetadata,
+  metadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata,
   now: Date,
 ): boolean {
-  const expiresAt = buildSyncTimeRefreshExpiresAt(metadata);
-  return !expiresAt || expiresAt.getTime() <= now.getTime();
+  if ("syncTimeIso" in metadata) {
+    const expiresAt = buildSyncTimeRefreshExpiresAt(metadata);
+    return !expiresAt || expiresAt.getTime() <= now.getTime();
+  }
+
+  const expiresAt = buildStandaloneReadinessRefreshExpiresAt(metadata);
+  if (!expiresAt) return false;
+  return expiresAt.getTime() <= now.getTime();
 }
 
 function getCooldownRemainingMs(metadata: {
@@ -286,6 +298,8 @@ function parseStandaloneReadinessMetadata(
   return {
     readinessEnabled: true,
     createdAtIso,
+    refreshExpiresAtIso:
+      typeof data.refreshExpiresAtIso === "string" ? data.refreshExpiresAtIso : null,
     lastRefreshedAtIso:
       typeof data.lastRefreshedAtIso === "string" ? data.lastRefreshedAtIso : null,
     lastSuccessfulRefreshAtIso:
@@ -352,6 +366,11 @@ async function renderReadinessPayload(input: {
     ).trim() || "unknown"} tracked_clan_count=${trackedClanCount}`,
   );
 
+  const refreshExpired =
+    input.mode === "sync_time"
+      ? isReadinessRefreshWindowExpired(input.baseMetadata as SyncTimeTrackedMetadata, now)
+      : isReadinessRefreshWindowExpired(input.baseMetadata as SyncReadinessTrackedMetadata, now);
+
   return {
     content:
       input.mode === "sync_time"
@@ -366,11 +385,7 @@ async function renderReadinessPayload(input: {
         ? []
         : [
             buildRefreshRow({
-              state:
-                input.mode === "sync_time" &&
-                isReadinessRefreshWindowExpired(input.baseMetadata as SyncTimeTrackedMetadata, now)
-                  ? "closed"
-                  : "default",
+              state: refreshExpired ? "closed" : "default",
             }),
           ],
     metadata:
@@ -581,9 +596,13 @@ export async function handleSyncReadinessRefreshButton(
       return;
     }
 
-    if (isSyncTime && isReadinessRefreshWindowExpired(metadata as SyncTimeTrackedMetadata, now)) {
+    if (isReadinessRefreshWindowExpired(metadata, now)) {
+      const expiresAt =
+        "syncTimeIso" in metadata
+          ? (metadata as SyncTimeTrackedMetadata).fwaClanListRefreshExpiresAtIso ?? "missing"
+          : (metadata as SyncReadinessTrackedMetadata).refreshExpiresAtIso ?? "missing";
       console.info(
-        `[sync-time-fwa-list] refresh_expired guild_id=${interaction.guildId} message_id=${interaction.message.id} expires_at=${(metadata as SyncTimeTrackedMetadata).fwaClanListRefreshExpiresAtIso ?? "missing"} now=${now.toISOString()}`,
+        `[sync-time-fwa-list] refresh_expired guild_id=${interaction.guildId} message_id=${interaction.message.id} expires_at=${expiresAt} now=${now.toISOString()}`,
       );
       try {
         await interaction.message.edit({
@@ -732,11 +751,7 @@ export async function handleSyncReadinessRefreshButton(
         await interaction.message.edit({
           components: [
             buildRefreshRow({
-              state:
-                isSyncTime &&
-                isReadinessRefreshWindowExpired(metadata as SyncTimeTrackedMetadata, now)
-                  ? "closed"
-                  : "default",
+              state: isReadinessRefreshWindowExpired(metadata, now) ? "closed" : "default",
             }),
           ],
         });

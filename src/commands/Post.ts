@@ -38,6 +38,8 @@ import {
 import {
   activeSyncPostKey,
   getSyncBadgesWithTrackedClanFallback,
+  scheduledSyncReadinessPublisherService,
+  syncTimePostPublisherService,
 } from "../services/SyncTimePostPublisherService";
 import { scheduledSyncPostService } from "../services/ScheduledSyncPostService";
 import { BotLogChannelService } from "../services/BotLogChannelService";
@@ -71,6 +73,31 @@ type SyncBadge = {
   name: string | null;
   matchEmojiIds: string[];
   matchEmojiNames: string[];
+};
+
+type SyncTimeReadinessFlowStatus =
+  | "scheduled"
+  | "in_progress"
+  | "posted_now"
+  | "already_published"
+  | "schedule_failed"
+  | "immediate_publish_failed";
+
+type SyncTimeReadinessFlowResult = {
+  publishAt: Date;
+  scheduleResult:
+    | Awaited<ReturnType<typeof scheduledSyncPostService.scheduleSyncTimePost>>
+    | null;
+  status: SyncTimeReadinessFlowStatus;
+  readinessLink: string | null;
+  warning: string | null;
+};
+
+type ReusableSyncTimeAnnouncement = {
+  messageId: string;
+  channelId: string;
+  channel: SyncTimePostChannelLike;
+  link: string;
 };
 
 function parseActiveSyncPost(
@@ -110,6 +137,14 @@ async function resolveStoredActiveSyncMessage(
     return message;
   };
 
+  const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
+  if (latestTracked) {
+    const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
+    if (trackedMessage) return trackedMessage;
+    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
+    return null;
+  }
+
   const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
   if (stored) {
     const storedMessage = await fetchTrackedMessage(stored.channelId, stored.messageId);
@@ -117,14 +152,169 @@ async function resolveStoredActiveSyncMessage(
     await settings.delete(activeSyncPostKey(guildId));
   }
 
-  const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
-  if (!latestTracked) return null;
-  const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
-  if (!trackedMessage) {
-    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
+  return null;
+}
+
+async function resolveReusableSameEpochSyncAnnouncement(input: {
+  guild: Guild;
+  epochSeconds: number;
+}): Promise<ReusableSyncTimeAnnouncement | null> {
+  const tracked = await trackedMessageService.resolveLatestActiveSyncPost(input.guild.id);
+  if (
+    !tracked ||
+    tracked.status !== "ACTIVE" ||
+    tracked.featureType !== "SYNC_TIME_POST" ||
+    tracked.referenceId !== null
+  ) {
     return null;
   }
-  return trackedMessage;
+
+  const metadata = parseSyncTimeMetadata(tracked.metadata);
+  if (!metadata || metadata.syncEpochSeconds !== input.epochSeconds) {
+    return null;
+  }
+
+  const channel = await input.guild.channels.fetch(tracked.channelId).catch(() => null);
+  if (!channel?.isTextBased() || !("messages" in channel)) {
+    return null;
+  }
+
+  const message = await channel.messages.fetch(tracked.messageId).catch(() => null);
+  if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
+    return null;
+  }
+
+  const messageEpoch = extractSyncEpochSeconds(message.content);
+  if (messageEpoch !== input.epochSeconds) {
+    return null;
+  }
+
+  return {
+    messageId: message.id,
+    channelId: message.channelId,
+    channel: channel as unknown as SyncTimePostChannelLike,
+    link: `https://discord.com/channels/${input.guild.id}/${message.channelId}/${message.id}`,
+  };
+}
+
+async function handleSyncTimeReadinessFlow(input: {
+  guild: Guild;
+  channel: SyncTimePostChannelLike;
+  createdByUserId: string;
+  roleId: string;
+  syncTime: Date;
+  timezone: string;
+  now: Date;
+}): Promise<SyncTimeReadinessFlowResult> {
+  const publishAt = new Date(input.syncTime.getTime() - 2 * 60 * 60 * 1000);
+  let scheduleResult:
+    | Awaited<ReturnType<typeof scheduledSyncPostService.scheduleSyncTimePost>>
+    | null = null;
+
+  try {
+    scheduleResult = await scheduledSyncPostService.scheduleSyncTimePost({
+      guildId: input.guild.id,
+      channelId: input.channel.id,
+      createdByUserId: input.createdByUserId,
+      roleId: input.roleId,
+      syncTime: input.syncTime,
+      publishAt,
+      timezone: input.timezone,
+    });
+  } catch (err) {
+    console.error(
+      `[sync-readiness-schedule] schedule_failed guild_id=${input.guild.id} channel_id=${input.channel.id} role_id=${input.roleId} user_id=${input.createdByUserId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} error=${formatError(err)}`,
+    );
+    return {
+      publishAt,
+      scheduleResult: null,
+      status: "schedule_failed",
+      readinessLink: null,
+      warning: "Readiness dashboard scheduling is still retryable.",
+    };
+  }
+
+  if (!scheduleResult) {
+    return {
+      publishAt,
+      scheduleResult: null,
+      status: "schedule_failed",
+      readinessLink: null,
+      warning: "Readiness dashboard scheduling is still retryable.",
+    };
+  }
+
+  if (scheduleResult.action === "already_published") {
+    return {
+      publishAt,
+      scheduleResult,
+      status: "already_published",
+      readinessLink: scheduleResult.schedule.publishedMessageId
+        ? `https://discord.com/channels/${scheduleResult.schedule.guildId}/${scheduleResult.schedule.channelId}/${scheduleResult.schedule.publishedMessageId}`
+        : null,
+      warning: null,
+    };
+  }
+
+  if (publishAt.getTime() > input.now.getTime()) {
+    return {
+      publishAt,
+      scheduleResult,
+      status: "scheduled",
+      readinessLink: null,
+      warning: null,
+    };
+  }
+
+  const claim = await scheduledSyncPostService.tryClaimScheduledSyncPost({
+    schedule: scheduleResult.schedule,
+    now: input.now,
+  });
+  if (!claim.claimed || !claim.schedule || !claim.claimToken) {
+    console.warn(
+      `[sync-readiness-publish] immediate_claim_unavailable schedule_id=${scheduleResult.schedule.id} guild_id=${scheduleResult.schedule.guildId} channel_id=${scheduleResult.schedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} claim_reason=${claim.reason}`,
+    );
+    return {
+      publishAt,
+      scheduleResult,
+      status: claim.reason === "busy" ? "in_progress" : "scheduled",
+      readinessLink: null,
+      warning:
+        claim.reason === "busy"
+          ? "Readiness publication is already in progress and remains retryable."
+          : "Readiness dashboard could not be claimed immediately and remains retryable.",
+    };
+  }
+
+  try {
+    const result = await scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost({
+      guild: input.guild,
+      channel: input.channel,
+      schedule: claim.schedule,
+      claimToken: claim.claimToken,
+      publicationMode: "immediate",
+      now: input.now,
+      scheduleService: scheduledSyncPostService,
+    });
+    return {
+      publishAt,
+      scheduleResult,
+      status: "posted_now",
+      readinessLink: `https://discord.com/channels/${input.guild.id}/${result.channelId}/${result.messageId}`,
+      warning: null,
+    };
+  } catch (err) {
+    console.error(
+      `[sync-readiness-publish] immediate_failed schedule_id=${claim.schedule.id} guild_id=${claim.schedule.guildId} channel_id=${claim.schedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} error=${formatError(err)}`,
+    );
+    return {
+      publishAt,
+      scheduleResult,
+      status: "immediate_publish_failed",
+      readinessLink: null,
+      warning: "Readiness dashboard posting failed after being claimed. It is still retryable.",
+    };
+  }
 }
 
 async function resolveSyncStatusMessage(
@@ -478,12 +668,6 @@ function parseTime(input: string): { hour: number; minute: number } | null {
   return { hour, minute };
 }
 
-function to12HourLabel(hour24: number, minute: number): string {
-  const suffix = hour24 >= 12 ? "PM" : "AM";
-  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
-  return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
-}
-
 function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -573,8 +757,16 @@ type SyncTimePostChannelLike = {
   type?: number;
   isTextBased?: () => boolean;
   permissionsFor: (member: { id: string }) => { has: (flag: bigint) => boolean } | null;
-  messages: { fetchPinned: () => Promise<Map<string, SyncTimePostMessageLike>> };
-  send: (payload: { content: string; allowedMentions?: MessageMentionOptions }) => Promise<SyncTimePostMessageLike>;
+  messages: {
+    fetch: (messageId: string) => Promise<SyncTimePostMessageLike | null>;
+    fetchPinned: () => Promise<Map<string, SyncTimePostMessageLike>>;
+  };
+  send: (payload: {
+    content: string;
+    embeds?: unknown[];
+    components?: unknown[];
+    allowedMentions?: MessageMentionOptions;
+  }) => Promise<SyncTimePostMessageLike>;
 };
 
 type SyncTimePostMessageLike = {
@@ -647,7 +839,7 @@ async function resolveSyncTimePostDestination(input: {
     await botLogChannelService.clearChannelIdForType(input.guildId, "sync");
     return {
       channel: input.invocationChannel,
-      fallbackNotice: `Configured sync bot-log channel <#${typedChannelId}> is unavailable; the scheduled sync post will publish in this channel instead.`,
+      fallbackNotice: `Configured sync bot-log channel <#${typedChannelId}> is unavailable; the sync announcement and readiness dashboard will use this channel instead.`,
     };
   }
 
@@ -665,7 +857,7 @@ async function resolveSyncTimePostDestination(input: {
     await input.settings.delete(guildSyncPostChannelKey(input.guildId));
     return {
       channel: input.invocationChannel,
-      fallbackNotice: `Configured sync-time post channel <#${legacyChannelId}> is unavailable; the scheduled sync post will publish in this channel instead.`,
+      fallbackNotice: `Configured sync-time post channel <#${legacyChannelId}> is unavailable; the sync announcement and readiness dashboard will use this channel instead.`,
     };
   }
 
@@ -863,99 +1055,140 @@ export async function handlePostModalSubmit(
     return;
   }
 
-  // Block duplicate submissions when a sync post already exists for the same epoch.
-  const existingActiveSyncPost = await resolveStoredActiveSyncMessage(interaction, settings);
-  const existingActiveEpoch = existingActiveSyncPost
-    ? extractSyncEpochSeconds(existingActiveSyncPost.content)
-    : null;
-  if (existingActiveSyncPost && existingActiveEpoch === epochSeconds) {
-    const existingLink = `https://discord.com/channels/${guild.id}/${existingActiveSyncPost.channelId}/${existingActiveSyncPost.id}`;
-    await interaction.editReply(
-      `A sync time post for <t:${epochSeconds}:F> already exists: ${existingLink}`
-    );
-    return;
-  }
-
-  try {
-    const pinned = await channel.messages.fetchPinned();
-    const duplicatePinned = [...pinned.values()].find((msg) => {
-      if (!msg.author.bot) return false;
-      if (!isBotSyncTimeMessage(msg.content)) return false;
-      const msgEpoch = extractSyncEpochSeconds(msg.content);
-      return msgEpoch === epochSeconds;
-    });
-    if (duplicatePinned) {
-      const existingLink = `https://discord.com/channels/${guild.id}/${duplicatePinned.channelId}/${duplicatePinned.id}`;
-      await interaction.editReply(
-        `A sync time post for <t:${epochSeconds}:F> is already pinned: ${existingLink}`
+  const reusableAnnouncement = await resolveReusableSameEpochSyncAnnouncement({
+    guild,
+    epochSeconds,
+  });
+  const readinessChannel = reusableAnnouncement?.channel ?? channel;
+  if (!reusableAnnouncement) {
+    try {
+      const pinned = await channel.messages.fetchPinned();
+      const duplicatePinned = [...pinned.values()].find((msg) => {
+        if (!msg.author.bot) return false;
+        if (!isBotSyncTimeMessage(msg.content)) return false;
+        const msgEpoch = extractSyncEpochSeconds(msg.content);
+        return msgEpoch === epochSeconds;
+      });
+      if (duplicatePinned) {
+        const existingLink = `https://discord.com/channels/${guild.id}/${duplicatePinned.channelId}/${duplicatePinned.id}`;
+        await interaction.editReply(
+          `A sync time post for <t:${epochSeconds}:F> is already pinned: ${existingLink}`
+        );
+        return;
+      }
+    } catch (err) {
+      console.error(
+        `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} user=${interaction.user.id} error=${formatError(
+          err
+        )}`
       );
-      return;
     }
-  } catch (err) {
-    console.error(
-      `[post sync time] duplicate-check pinned fetch failed guild=${interaction.guildId} invocation_channel=${interaction.channelId} destination_channel=${channel.id} user=${interaction.user.id} error=${formatError(
-        err
-      )}`
-    );
   }
 
   const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
   if (!me) {
-    await interaction.editReply("Could not verify bot permissions in this channel.");
+    await interaction.editReply(
+      reusableAnnouncement
+        ? "Could not verify bot permissions in the reused sync announcement channel."
+        : "Could not verify bot permissions in this channel.",
+    );
     return;
   }
 
-  const permissions = channel.permissionsFor(me);
+  const permissions = readinessChannel.permissionsFor(me);
   if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
     await interaction.editReply(
-      "Could not post sync time: bot is missing `Send Messages` in this channel."
+      reusableAnnouncement
+        ? "Could not post the readiness dashboard in the reused sync announcement channel: bot is missing `Send Messages` there."
+        : "Could not post sync time: bot is missing `Send Messages` in this channel."
     );
     return;
   }
 
   const canMentionEveryone = permissions.has(PermissionFlagsBits.MentionEveryone);
   const mentionWillNotify = role.mentionable || canMentionEveryone;
-  const publishAt = new Date(epochSeconds * 1000 - 2 * 60 * 60 * 1000);
-  if (publishAt.getTime() <= Date.now()) {
-    await interaction.editReply(
-      "The sync time must be more than 2 hours in the future to schedule a sync post."
-    );
-    return;
-  }
-
   const scheduledSyncTime = new Date(epochSeconds * 1000);
-  const result = await scheduledSyncPostService
-    .scheduleSyncTimePost({
-      guildId: interaction.guildId,
-      channelId: channel.id,
-      createdByUserId: interaction.user.id,
-      roleId: role.id,
-      syncTime: scheduledSyncTime,
-      publishAt,
-      timezone: timezoneInput,
-    })
-    .catch(async (err) => {
-      console.error(
-        `[scheduled-sync-post] schedule_failed guild_id=${interaction.guildId} channel_id=${channel.id} role_id=${role.id} user_id=${interaction.user.id} error=${formatError(err)}`,
-      );
-      await interaction.editReply("Could not schedule the sync time post. Check the logs and try again.");
-      return null;
-    });
-  if (!result) {
+  if (scheduledSyncTime.getTime() <= Date.now()) {
+    await interaction.editReply("The sync time must be in the future.");
     return;
   }
 
-  if (result.action === "already_published") {
-    const existingLink = result.schedule.publishedMessageId
-      ? `https://discord.com/channels/${guild.id}/${result.schedule.channelId}/${result.schedule.publishedMessageId}`
-      : null;
-    await interaction.editReply(
-      existingLink
-        ? `A sync time post for <t:${epochSeconds}:F> is already published: ${existingLink}`
-        : `A sync time post for <t:${epochSeconds}:F> is already published.`,
-    );
-    return;
+  let announcementResult:
+    | Awaited<ReturnType<typeof syncTimePostPublisherService.publishImmediateSyncTimePost>>
+    | null = null;
+  let announcementLink = reusableAnnouncement?.link ?? "";
+  const announcementReused = Boolean(reusableAnnouncement);
+  if (!reusableAnnouncement) {
+    try {
+      announcementResult = await syncTimePostPublisherService.publishImmediateSyncTimePost({
+        guild,
+        channel,
+        role,
+        syncTime: scheduledSyncTime,
+        createdByUserId: interaction.user.id,
+        settings,
+        clientUserId: interaction.client.user?.id ?? null,
+        now: new Date(),
+      });
+    } catch (err) {
+      console.error(
+        `[sync-time-announcement] command_failed guild_id=${interaction.guildId} channel_id=${channel.id} role_id=${role.id} user_id=${interaction.user.id} error=${formatError(err)}`,
+      );
+      await interaction.editReply(
+        "Could not post the sync-time announcement. Check the logs and try again.",
+      );
+      return;
+    }
+
+    if (announcementResult.status !== "success") {
+      await interaction.editReply(
+        `Sync announcement tracking failed.\n${
+          announcementResult.partialFailureMessage ??
+          "Please check the logs and try again."
+        }`,
+      );
+      return;
+    }
+
+    announcementLink = announcementResult.messageLink;
   }
+
+  const readinessFlow = await handleSyncTimeReadinessFlow({
+    guild,
+    channel: readinessChannel,
+    createdByUserId: interaction.user.id,
+    roleId: role.id,
+    syncTime: scheduledSyncTime,
+    timezone: timezoneInput,
+    now: new Date(),
+  });
+
+  const announcementLabel = announcementReused
+    ? "Sync announcement already exists and was reused."
+    : `Sync announcement posted now: ${announcementLink}`;
+  const announcementLinkLine = announcementReused
+    ? `Announcement message: ${announcementLink}`
+    : null;
+  const readinessDestinationLine = announcementReused
+    ? `Readiness dashboard destination: <#${readinessChannel.id}>.`
+    : null;
+
+  const readinessScheduleLine =
+    readinessFlow.status === "already_published"
+      ? "Readiness dashboard already published."
+      : readinessFlow.status === "in_progress"
+        ? "Readiness publication is already in progress and remains retryable."
+      : readinessFlow.status === "posted_now"
+        ? "Readiness dashboard posted now."
+        : readinessFlow.status === "immediate_publish_failed"
+          ? "Readiness dashboard posting failed after being claimed. It is still retryable."
+          : readinessFlow.status === "schedule_failed"
+            ? announcementReused
+              ? "Readiness scheduling failed again. Check the logs and try again."
+              : "Could not schedule the readiness dashboard. Check the logs and try again."
+            : `Readiness dashboard scheduled for T-2h at <t:${Math.floor(
+                readinessFlow.publishAt.getTime() / 1000,
+              )}:F>.`;
 
   const notices: string[] = [];
   if (!mentionWillNotify) {
@@ -966,26 +1199,46 @@ export async function handlePostModalSubmit(
   if (configuredChannelFallbackNotice) {
     notices.push(configuredChannelFallbackNotice);
   }
-  if (result.action === "replaced") {
-    notices.push("Replaced older pending/claimed sync schedules for this guild.");
-  } else if (result.action === "reused") {
-    notices.push("Reused the existing schedule for that sync time.");
-  } else if (result.action === "reactivated") {
-    notices.push("Reactivated the existing terminal schedule for that sync time.");
+  if (readinessFlow.scheduleResult?.action === "replaced") {
+    notices.push("Replaced older pending/claimed readiness schedules for this guild.");
+  } else if (readinessFlow.scheduleResult?.action === "reused") {
+    notices.push("Reused the existing readiness schedule for that sync time.");
+  } else if (readinessFlow.scheduleResult?.action === "reactivated") {
+    notices.push("Reactivated the existing terminal readiness schedule for that sync time.");
   }
-
+  if (
+    announcementResult &&
+    announcementResult.totalBadgeReactions > announcementResult.successfulBadgeReactions
+  ) {
+    notices.push(
+      `Some clan badge reactions failed (${announcementResult.successfulBadgeReactions}/${announcementResult.totalBadgeReactions}).`,
+    );
+  }
+  if (announcementResult && !announcementResult.unavailableReactionSucceeded) {
+    notices.push("The unavailable / \u{1F4A4} reaction failed.");
+  }
+  if (announcementResult && !announcementResult.pinSucceeded) {
+    notices.push("Pinning the sync announcement failed.");
+  }
+  if (announcementResult && !announcementResult.activeSettingsPointerSucceeded) {
+    notices.push(
+      "The compatibility active sync pointer could not be saved, but the tracked announcement itself succeeded.",
+    );
+  }
+  if (readinessFlow.warning) {
+    notices.push(readinessFlow.warning);
+  }
   const noticeBlock =
     notices.length > 0 ? `\n${notices.map((n) => `- ${n}`).join("\n")}` : "";
-  const destinationLine = channel.id !== interaction.channelId ? `\nWill publish in <#${channel.id}>.` : "";
+  const destinationLine =
+    !reusableAnnouncement && channel.id !== interaction.channelId
+      ? `\nWill post in <#${channel.id}>.`
+      : "";
 
   await interaction.editReply(
-    `Sync time message scheduled.\nUsed: ${dateInput} ${timeInput} (${to12HourLabel(
-      time.hour,
-      time.minute
-    )}, ${timezoneInput}).\nWill publish at <t:${epochSeconds - 2 * 60 * 60}:F> (2 hours before sync).${destinationLine}${noticeBlock}`
+    `${announcementLabel}${announcementLinkLine ? `\n${announcementLinkLine}` : ""}${readinessDestinationLine ? `\n${readinessDestinationLine}` : ""}\n${readinessScheduleLine}${readinessFlow.readinessLink ? `\nReadiness dashboard message: ${readinessFlow.readinessLink}` : ""}${destinationLine}${noticeBlock}`,
   );
 }
-
 export const Post: Command = {
   name: "sync",
   description: "Sync posting and status commands",
@@ -1020,7 +1273,7 @@ export const Post: Command = {
       options: [
         {
           name: "post",
-          description: "Schedule a localized sync time post for 2 hours before sync",
+          description: "Post the sync announcement now and schedule the readiness dashboard",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {

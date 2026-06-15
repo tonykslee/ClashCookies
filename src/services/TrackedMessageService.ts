@@ -1,4 +1,5 @@
 import { Client, EmbedBuilder } from "discord.js";
+import { Prisma } from "@prisma/client";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
@@ -101,6 +102,7 @@ export type SyncTimeTrackedMetadata = {
 export type SyncReadinessTrackedMetadata = {
   readinessEnabled: true;
   createdAtIso: string;
+  refreshExpiresAtIso?: string | null;
   lastRefreshedAtIso?: string | null;
   lastSuccessfulRefreshAtIso?: string | null;
   refreshInProgressAtIso?: string | null;
@@ -403,6 +405,14 @@ function activeWhere(featureType?: TrackedMessageFeatureType) {
   return {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
     ...(featureType ? { featureType: featureType as any } : {}),
+  };
+}
+
+function activeRootSyncWhere(guildId: string) {
+  return {
+    guildId: String(guildId ?? "").trim(),
+    referenceId: null,
+    ...activeWhere(TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST),
   };
 }
 
@@ -1784,6 +1794,79 @@ export class TrackedMessageService {
     });
   }
 
+  async replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate(params: {
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    remindAt?: Date | null;
+    expiresAt: Date;
+    metadata: SyncTimeTrackedMetadata;
+  }): Promise<number> {
+    const guildId = String(params.guildId ?? "").trim();
+    const channelId = String(params.channelId ?? "").trim();
+    const messageId = String(params.messageId ?? "").trim();
+    const remindAt = params.remindAt ?? null;
+    const expiresAt = params.expiresAt;
+    const metadata = params.metadata;
+    if (!guildId || !channelId || !messageId || !(expiresAt instanceof Date)) {
+      throw new Error("Missing required sync root ownership fields.");
+    }
+
+    const syncEpochSeconds = Number(metadata.syncEpochSeconds);
+    if (!Number.isFinite(syncEpochSeconds)) {
+      throw new Error("Missing sync epoch metadata for sync root ownership.");
+    }
+
+    const replacedRootCount = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(Prisma.sql`
+        SELECT pg_advisory_xact_lock(hashtext(${guildId})::bigint)
+      `);
+
+      const replaced = await tx.trackedMessage.updateMany({
+        where: {
+          ...activeRootSyncWhere(guildId),
+          messageId: { not: messageId },
+        },
+        data: {
+          status: TRACKED_MESSAGE_STATUS.REPLACED,
+        },
+      });
+
+      await tx.trackedMessage.upsert({
+        where: { messageId },
+        update: {
+          guildId,
+          channelId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          referenceId: null,
+          remindAt,
+          expiresAt,
+          metadata: metadata as any,
+        },
+        create: {
+          guildId,
+          channelId,
+          messageId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          referenceId: null,
+          remindAt,
+          expiresAt,
+          metadata: metadata as any,
+        },
+      });
+
+      return replaced.count;
+    });
+
+    console.info(
+      `[tracked-message] sync_root_ownership_switched guild_id=${guildId} new_message_id=${messageId} replaced_root_count=${replacedRootCount} sync_epoch=${syncEpochSeconds}`,
+    );
+
+    return replacedRootCount;
+  }
+
   async createSyncReadinessTrackedMessage(params: {
     guildId: string;
     channelId: string;
@@ -2490,12 +2573,8 @@ export class TrackedMessageService {
 
   async resolveLatestActiveSyncPost(guildId: string) {
     return prisma.trackedMessage.findFirst({
-      where: {
-        guildId,
-        referenceId: null,
-        ...activeWhere(TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST),
-      },
-      orderBy: [{ remindAt: "desc" }, { createdAt: "desc" }],
+      where: activeRootSyncWhere(guildId),
+      orderBy: [{ createdAt: "desc" }, { messageId: "desc" }],
     });
   }
 

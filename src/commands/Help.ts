@@ -804,10 +804,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   sync: {
     summary: "Post structured messages such as sync time announcements.",
     details: [
-      "`/sync time post` opens a modal to capture date/time/timezone and role ping, then schedules the sync-time announcement to publish 2 hours before sync. Configure its destination with `/bot-logs type:sync channel:<channel>`; when unset, it schedules publication in the invocation channel, with legacy saved sync-post channels still honored as fallback.",
+      "`/sync time post` opens a modal to capture date/time/timezone and role ping, then posts the sync announcement immediately and schedules the readiness dashboard for 2 hours before sync. Configure its destination with `/bot-logs type:sync channel:<channel>`; when unset, both messages use the invocation channel, with legacy saved sync-post channels still honored as fallback.",
       "Optional `timezone` autocompletes IANA zones and prefills the modal timezone field while keeping the field editable.",
       "Timezone input accepts IANA names like `America/New_York` plus common US aliases such as `EST`, `EDT`, `PST`, and `PDT`.",
-      "Creates and pins a sync-time message in the active channel, then adds clan badge reactions.",
+      "Creates and pins the sync announcement in the active channel, then adds clan badge reactions.",
+      "The readiness dashboard is a separate message with the shared FWA refresh button and no role ping or badge reactions.",
       "`/sync readiness [refresh:true|false] [visibility:private|public]` renders the same FWA readiness dashboard from persisted data, with `refresh:true` forcing a fresh ACTUAL member reload before rendering.",
       "Public readiness responses include a shared refresh button that any guild member can use; private responses stay ephemeral.",
       "`/sync readiness` is FWA Leader role + Administrator by default.",

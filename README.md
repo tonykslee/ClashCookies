@@ -47,7 +47,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Manages tracked clan configuration, mail channels/roles, and war plans.
 - Supports player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands.
 - Includes `/fillers` for marking linked player accounts as filler accounts and listing filler accounts by guild, linked user, or current clan.
-- Includes `/sync readiness` for posting the shared FWA readiness dashboard, plus `/sync time post` for scheduled sync-time announcements that publish 2 hours before sync and share the same readiness renderer.
+- Includes `/sync readiness` for posting the shared FWA readiness dashboard, plus `/sync time post` for immediate sync announcements that also schedule the companion readiness dashboard 2 hours before sync.
 - Provides FWA-focused tooling for points, match handling, layouts, and related workflows.
 - Adds persisted CWL round tracking plus `/cwl members`, `/cwl rotations`, and CWL sheet import/export planner flows on top of seasonal CWL clan tracking.
 
