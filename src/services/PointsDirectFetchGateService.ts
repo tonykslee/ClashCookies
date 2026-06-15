@@ -2,6 +2,7 @@ import { WarMailLifecycleStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
 import type { PointsApiFetchReason, PointsLifecycleState } from "./PointsFetchTypes";
+import { parseSyncTimeMetadata, trackedMessageService } from "./TrackedMessageService";
 
 type WarStateForPolicy = "notInWar" | "preparation" | "inWar";
 
@@ -149,6 +150,8 @@ const PRESYNC_UNLOCK_OFFSET_MS = 10 * 60 * 1000;
 const MM_POSTWAR_UNLOCK_DELAY_MS = 60 * 60 * 1000;
 const ACTIVE_SYNC_POST_KEY_PREFIX = "active_sync_post:";
 const LOCK_STATE_KEY_PREFIX = "points_lock_state:";
+
+type PostedSyncAtResolutionSource = "tracked_message" | "legacy_setting" | "none";
 
 /** Purpose: normalize clan tag into canonical #TAG form. */
 function normalizeTag(input: string | null | undefined): string | null {
@@ -528,6 +531,15 @@ function buildLockStateKey(clanTag: string): string {
 /** Purpose: construct active sync-post lookup key for a guild. */
 function buildActiveSyncPostKey(guildId: string): string {
   return `${ACTIVE_SYNC_POST_KEY_PREFIX}${guildId}`;
+}
+
+function parseTrackedSyncPostedAtMs(value: unknown): number | null {
+  const metadata = parseSyncTimeMetadata(value);
+  const syncEpochSeconds = metadata?.syncEpochSeconds ?? null;
+  if (syncEpochSeconds === null || !Number.isFinite(syncEpochSeconds) || syncEpochSeconds <= 0) {
+    return null;
+  }
+  return Math.trunc(syncEpochSeconds * 1000);
 }
 
 /** Purpose: parse persisted active-sync metadata and extract epoch milliseconds when available. */
@@ -942,6 +954,40 @@ export class PointsDirectFetchGateService {
   }
 
   /** Purpose: load runtime policy inputs from authoritative tracked/current/sync state. */
+  private async resolvePostedSyncAtMs(guildId: string): Promise<{
+    postedSyncAtMs: number | null;
+    source: PostedSyncAtResolutionSource;
+  }> {
+    const normalizedGuildId = String(guildId ?? "").trim();
+    if (!normalizedGuildId) {
+      return { postedSyncAtMs: null, source: "none" };
+    }
+
+    const trackedActiveSync = await trackedMessageService
+      .resolveLatestActiveSyncPost(normalizedGuildId)
+      .catch(() => null);
+    const trackedPostedSyncAtMs = parseTrackedSyncPostedAtMs(trackedActiveSync?.metadata);
+    if (trackedPostedSyncAtMs !== null) {
+      return {
+        postedSyncAtMs: trackedPostedSyncAtMs,
+        source: "tracked_message",
+      };
+    }
+
+    const legacyPostedSyncAtMs = parsePostedSyncAtMs(
+      await this.settings.get(buildActiveSyncPostKey(normalizedGuildId)),
+    );
+    if (legacyPostedSyncAtMs !== null) {
+      return {
+        postedSyncAtMs: legacyPostedSyncAtMs,
+        source: "legacy_setting",
+      };
+    }
+
+    return { postedSyncAtMs: null, source: "none" };
+  }
+
+  /** Purpose: load runtime policy inputs from authoritative tracked/current/sync state. */
   private async loadRuntimeSnapshot(clanTag: string): Promise<PointsLockRuntimeSnapshot> {
     const normalizedTag = normalizeTag(clanTag) ?? clanTag;
     const [tracked, currentWar] = await Promise.all([
@@ -1027,13 +1073,10 @@ export class PointsDirectFetchGateService {
         orderBy: [
           { warStartTime: "desc" },
           { syncFetchedAt: "desc" },
-          { updatedAt: "desc" },
-        ],
+            { updatedAt: "desc" },
+          ],
       }));
-    const postedSyncAtMs =
-      guildId !== null
-        ? parsePostedSyncAtMs(await this.settings.get(buildActiveSyncPostKey(guildId)))
-        : null;
+    const { postedSyncAtMs } = await this.resolvePostedSyncAtMs(guildId ?? "");
     const lifecycle =
       latestSync === null
         ? null

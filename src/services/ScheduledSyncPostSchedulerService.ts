@@ -10,15 +10,14 @@ import {
   scheduledSyncPostService,
 } from "./ScheduledSyncPostService";
 import {
-  syncTimePostPublisherService,
+  scheduledSyncReadinessPublisherService,
   type SyncTimePostChannelLike,
   SyncTimePostPublishError,
 } from "./SyncTimePostPublisherService";
-import { SettingsService } from "./SettingsService";
 
 export const DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS = 15 * 1000;
 export const SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY = "scheduled_sync_post_scheduler";
-export const SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME = "Scheduled sync post scheduler";
+export const SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME = "Scheduled readiness post scheduler";
 const MAX_PUBLISH_ATTEMPTS = 5;
 
 export type ScheduledSyncPostSchedulerStartResult =
@@ -65,7 +64,7 @@ function computeRetryAfterMs(attemptCount: number): number {
   return Math.min(backoff, 5 * 60_000);
 }
 
-/** Purpose: poll durable scheduled sync posts and publish them exactly once in active mode. */
+/** Purpose: poll durable scheduled readiness rows and publish them exactly once in active mode. */
 export class ScheduledSyncPostSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
@@ -78,7 +77,7 @@ export class ScheduledSyncPostSchedulerService {
 
   start(): ScheduledSyncPostSchedulerStartResult {
     dozzleLog.info(
-      `[scheduled-sync-post] scheduler_start_requested interval_ms=${this.intervalMs} has_timer=${Boolean(this.timer)}`,
+      `[scheduled-readiness-post] scheduler_start_requested interval_ms=${this.intervalMs} has_timer=${Boolean(this.timer)}`,
     );
 
     if (isMirrorPollingMode(process.env)) {
@@ -88,7 +87,7 @@ export class ScheduledSyncPostSchedulerService {
         metadata: { reason: "mirror" },
       }).catch((err) => {
         dozzleLog.warn(
-          `[scheduled-sync-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
+          `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
         );
       });
       dozzleLog.info(
@@ -99,21 +98,21 @@ export class ScheduledSyncPostSchedulerService {
 
     if (this.timer) {
       dozzleLog.debug(
-        `[scheduled-sync-post] scheduler_start_skipped reason=already_started interval_ms=${this.intervalMs}`,
+        `[scheduled-readiness-post] scheduler_start_skipped reason=already_started interval_ms=${this.intervalMs}`,
       );
       return { started: false, reason: "already_started" };
     }
 
     void this.runCycle().catch((err) => {
-      dozzleLog.error(`[scheduled-sync-post] immediate_cycle_failed error=${formatError(err)}`);
+      dozzleLog.error(`[scheduled-readiness-post] immediate_cycle_failed error=${formatError(err)}`);
     });
     this.timer = setInterval(() => {
       void this.runCycle().catch((err) => {
-        dozzleLog.error(`[scheduled-sync-post] interval_cycle_failed error=${formatError(err)}`);
+        dozzleLog.error(`[scheduled-readiness-post] interval_cycle_failed error=${formatError(err)}`);
       });
     }, this.intervalMs);
 
-    dozzleLog.info(`[scheduled-sync-post] scheduler_started interval_ms=${this.intervalMs}`);
+    dozzleLog.info(`[scheduled-readiness-post] scheduler_started interval_ms=${this.intervalMs}`);
     return { started: true };
   }
 
@@ -125,7 +124,7 @@ export class ScheduledSyncPostSchedulerService {
 
   async runCycle(nowMs: number = Date.now()): Promise<ScheduledSyncPostSchedulerCounts> {
     if (this.inFlight) {
-      dozzleLog.debug("[scheduled-sync-post] cycle_skipped reason=in_flight");
+      dozzleLog.debug("[scheduled-readiness-post] cycle_skipped reason=in_flight");
       return zeroCounts();
     }
     if (isMirrorPollingMode(process.env)) {
@@ -135,7 +134,7 @@ export class ScheduledSyncPostSchedulerService {
         metadata: { reason: "mirror" },
       }).catch((err) => {
         dozzleLog.warn(
-          `[scheduled-sync-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
+          `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=disabled error=${formatError(err)}`,
         );
       });
       dozzleLog.info(
@@ -153,7 +152,7 @@ export class ScheduledSyncPostSchedulerService {
         nextDueAt: new Date(nowMs + this.intervalMs),
       }).catch((err) => {
         dozzleLog.warn(
-          `[scheduled-sync-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
+          `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
         );
       });
 
@@ -178,7 +177,7 @@ export class ScheduledSyncPostSchedulerService {
         }
         expired += 1;
         dozzleLog.info(
-          `[scheduled-sync-post] expired schedule_id=${row.id} guild_id=${row.guildId} sync_epoch=${Math.floor(row.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(row.publishAt.getTime() / 1000)}`,
+          `[scheduled-readiness-post] expired schedule_id=${row.id} guild_id=${row.guildId} sync_epoch=${Math.floor(row.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(row.publishAt.getTime() / 1000)}`,
         );
       }
 
@@ -199,14 +198,14 @@ export class ScheduledSyncPostSchedulerService {
         claimed += 1;
         const claimedSchedule = claim.schedule;
         dozzleLog.info(
-          `[scheduled-sync-post] claimed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} attempt=${claimedSchedule.attemptCount} claim_reason=${claim.reason}`,
+          `[scheduled-readiness-post] claimed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} attempt=${claimedSchedule.attemptCount} claim_reason=${claim.reason}`,
         );
 
         const guild = await this.client.guilds.fetch(claimedSchedule.guildId).catch(() => null);
         if (!guild) {
           failed += 1;
           dozzleLog.warn(
-            `[scheduled-sync-post] publish_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} reason=missing_guild`,
+            `[scheduled-readiness-post] publish_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} reason=missing_guild`,
           );
           await scheduledSyncPostService.markFailed({
             scheduleId: claimedSchedule.id,
@@ -224,7 +223,7 @@ export class ScheduledSyncPostSchedulerService {
         if (!isSupportedSyncTimePostChannel(channel)) {
           failed += 1;
           dozzleLog.warn(
-            `[scheduled-sync-post] publish_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} channel_id=${claimedSchedule.channelId} reason=missing_channel`,
+            `[scheduled-readiness-post] publish_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} channel_id=${claimedSchedule.channelId} reason=missing_channel`,
           );
           await scheduledSyncPostService.markFailed({
             scheduleId: claimedSchedule.id,
@@ -236,37 +235,19 @@ export class ScheduledSyncPostSchedulerService {
           continue;
         }
 
-        const role = await guild.roles.fetch(claimedSchedule.roleId).catch(() => null);
-        if (!role) {
-          failed += 1;
-          dozzleLog.warn(
-            `[scheduled-sync-post] publish_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} role_id=${claimedSchedule.roleId} reason=missing_role`,
-          );
-          await scheduledSyncPostService.markFailed({
-            scheduleId: claimedSchedule.id,
-            claimToken: claim.claimToken,
-            failureReason: "sync role missing at publish time",
-            failureCode: "missing_role",
-            now,
-          });
-          continue;
-        }
-
         try {
-          const result = await syncTimePostPublisherService.publishScheduledSyncTimePost({
+          const result = await scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost({
             guild,
             channel,
-            role,
             schedule: claimedSchedule,
             claimToken: claim.claimToken,
-            clientUserId: this.client.user?.id ?? null,
-            settings: new SettingsService(),
+            publicationMode: "scheduled",
             now,
             scheduleService: scheduledSyncPostService,
           });
           published += 1;
           dozzleLog.info(
-            `[scheduled-sync-post] published schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} channel_id=${result.channelId} message_id=${result.messageId} tracked_clan_count=${result.trackedClanCount} used_fallback_render=${result.usedFallbackRender}`,
+            `[scheduled-readiness-post] published schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} channel_id=${result.channelId} message_id=${result.messageId} tracked_clan_count=${result.trackedClanCount} publication_mode=${result.publicationMode} used_fallback_render=${result.usedFallbackRender}`,
           );
         } catch (err) {
           const isPublishError = err instanceof SyncTimePostPublishError;
@@ -274,7 +255,7 @@ export class ScheduledSyncPostSchedulerService {
           const code = isPublishError ? err.code : "publish_failed";
           const message = formatError(err);
           dozzleLog.error(
-            `[scheduled-sync-post] publish_error schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} code=${code} retryable=${retryable} error=${message}`,
+            `[scheduled-readiness-post] publish_error schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} code=${code} retryable=${retryable} error=${message}`,
           );
 
           if (now.getTime() >= claimedSchedule.syncTime.getTime() || !retryable) {
@@ -316,7 +297,7 @@ export class ScheduledSyncPostSchedulerService {
       }
 
       dozzleLog.debug(
-        `[scheduled-sync-post] cycle_complete scanned=${scanned} due=${due} claimed=${claimed} published=${published} retried=${retried} expired=${expired} failed=${failed} skipped=${skipped}`,
+        `[scheduled-readiness-post] cycle_complete scanned=${scanned} due=${due} claimed=${claimed} published=${published} retried=${retried} expired=${expired} failed=${failed} skipped=${skipped}`,
       );
       await this.statusService.markSucceeded(SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY, {
         displayName: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
@@ -334,19 +315,19 @@ export class ScheduledSyncPostSchedulerService {
         },
       }).catch((err) => {
         dozzleLog.warn(
-          `[scheduled-sync-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=succeeded error=${formatError(err)}`,
+          `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=succeeded error=${formatError(err)}`,
         );
       });
       return { scanned, due, claimed, published, retried, expired, failed, skipped };
     } catch (err) {
-      dozzleLog.error(`[scheduled-sync-post] cycle_failed error=${formatError(err)}`);
+      dozzleLog.error(`[scheduled-readiness-post] cycle_failed error=${formatError(err)}`);
       await this.statusService.markFailed(SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY, err, {
         displayName: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
         intervalMs: this.intervalMs,
         nextDueAt: new Date(nowMs + this.intervalMs),
       }).catch((statusErr) => {
         dozzleLog.warn(
-          `[scheduled-sync-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=failed error=${formatError(statusErr)}`,
+          `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=failed error=${formatError(statusErr)}`,
         );
       });
       throw err;

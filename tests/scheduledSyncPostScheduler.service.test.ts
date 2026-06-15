@@ -10,7 +10,7 @@ import {
   SCHEDULED_SYNC_POST_STATUS,
 } from "../src/services/ScheduledSyncPostService";
 import {
-  syncTimePostPublisherService,
+  scheduledSyncReadinessPublisherService,
   SyncTimePostPublishError,
 } from "../src/services/SyncTimePostPublisherService";
 
@@ -98,13 +98,6 @@ describe("ScheduledSyncPostSchedulerService", () => {
             channels: {
               fetch: vi.fn().mockResolvedValue(makeChannel()),
             },
-            roles: {
-              fetch: vi.fn().mockResolvedValue({
-                id: "role-1",
-                name: "War",
-                mentionable: true,
-              }),
-            },
           }),
         },
       } as any,
@@ -143,13 +136,14 @@ describe("ScheduledSyncPostSchedulerService", () => {
       attemptCount: 1,
     };
     const publisherSpy = vi
-      .spyOn(syncTimePostPublisherService, "publishScheduledSyncTimePost")
+      .spyOn(scheduledSyncReadinessPublisherService, "publishScheduledSyncReadinessPost")
       .mockResolvedValue({
         messageId: "message-1",
         channelId: "channel-1",
         trackedClanCount: 2,
         sentNewMessage: true,
         usedFallbackRender: false,
+        publicationMode: "scheduled",
       });
     const serviceSpy = vi
       .spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts")
@@ -183,13 +177,6 @@ describe("ScheduledSyncPostSchedulerService", () => {
             id: "guild-1",
             channels: {
               fetch: vi.fn().mockResolvedValue(makeChannel()),
-            },
-            roles: {
-              fetch: vi.fn().mockResolvedValue({
-                id: "role-1",
-                name: "War",
-                mentionable: true,
-              }),
             },
           }),
         },
@@ -241,7 +228,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       status: SCHEDULED_SYNC_POST_STATUS.PENDING,
     } as any);
     const failedSpy = vi.spyOn(scheduledSyncPostService, "markFailed").mockResolvedValue(null);
-    vi.spyOn(syncTimePostPublisherService, "publishScheduledSyncTimePost").mockRejectedValue(
+    vi.spyOn(scheduledSyncReadinessPublisherService, "publishScheduledSyncReadinessPost").mockRejectedValue(
       new SyncTimePostPublishError("temporary", "temporary", true),
     );
 
@@ -261,13 +248,6 @@ describe("ScheduledSyncPostSchedulerService", () => {
             id: "guild-1",
             channels: {
               fetch: vi.fn().mockResolvedValue(makeChannel()),
-            },
-            roles: {
-              fetch: vi.fn().mockResolvedValue({
-                id: "role-1",
-                name: "War",
-                mentionable: true,
-              }),
             },
           }),
         },
@@ -315,7 +295,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       } as any,
     });
     const failedSpy = vi.spyOn(scheduledSyncPostService, "markFailed").mockResolvedValue(null);
-    vi.spyOn(syncTimePostPublisherService, "publishScheduledSyncTimePost").mockRejectedValue(
+    vi.spyOn(scheduledSyncReadinessPublisherService, "publishScheduledSyncReadinessPost").mockRejectedValue(
       new SyncTimePostPublishError("terminal", "terminal", false),
     );
 

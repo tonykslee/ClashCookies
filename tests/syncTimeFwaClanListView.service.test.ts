@@ -508,4 +508,96 @@ describe("SyncTimeFwaClanListViewService", () => {
       readinessPayload.embeds[0].toJSON().title,
     );
   });
+
+  it("keeps manual standalone readiness refreshable when no expiry is recorded", async () => {
+    mockReadinessState();
+
+    const payload = await buildSyncReadinessMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+      },
+      now: new Date("2026-06-10T12:01:00.000Z"),
+    });
+
+    const button = payload.components[0]?.toJSON().components[0] as any;
+    expect(button.label).toBe("Refresh");
+    expect(button.disabled).toBe(false);
+  });
+
+  it("lets standalone readiness refresh clicks proceed when no expiry is recorded", async () => {
+    mockReadinessState();
+    const syncAllSpy = vi
+      .spyOn(FwaClanMembersSyncService.prototype, "syncAllTrackedClans")
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 1,
+        changedRowCount: 1,
+        failedClans: [],
+      });
+    const refreshCurrentSpy = vi
+      .spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags")
+      .mockResolvedValue({
+        clanCount: 1,
+        rowCount: 1,
+        changedRowCount: 1,
+        failedClans: [],
+      });
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce({
+      id: "tracked-standalone-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-1",
+      updatedAt: new Date("2026-06-10T12:00:00.000Z"),
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      status: TRACKED_MESSAGE_STATUS.COMPLETED,
+      referenceId: null,
+      clanTag: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+      },
+      claims: [],
+    });
+
+    const interaction = makeButtonInteraction();
+
+    await handleSyncTimeFwaClanListRefreshButton(interaction as any);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.reply).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "The FWA clan-list refresh window has expired.",
+      }),
+    );
+    expect(interaction.message.edit).toHaveBeenCalledTimes(2);
+    const payload = interaction.message.edit.mock.calls[1]?.[0] as any;
+    expect(payload.components[0].toJSON().components[0].label).toBe("Refresh");
+    expect(payload.components[0].toJSON().components[0].disabled).toBe(false);
+    expect(syncAllSpy).toHaveBeenCalledWith({ force: true });
+    expect(refreshCurrentSpy).toHaveBeenCalledWith(["#2QG2C08UP"]);
+    syncAllSpy.mockRestore();
+    refreshCurrentSpy.mockRestore();
+  });
+
+  it("closes the standalone readiness refresh button once its expiry passes", async () => {
+    mockReadinessState();
+
+    const payload = await buildSyncReadinessMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+        refreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
+      },
+      now: new Date("2026-06-10T12:01:00.000Z"),
+    });
+
+    const button = payload.components[0]?.toJSON().components[0] as any;
+    expect(button.label).toBe("Refresh closed");
+    expect(button.disabled).toBe(true);
+  });
 });

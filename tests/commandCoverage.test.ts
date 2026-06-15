@@ -254,6 +254,7 @@ describe("command coverage", () => {
     const syncHelpText = helpEmbedText("sync");
     const normalized = syncHelpText.toLowerCase();
     expect(syncHelpText).toContain("/sync readiness");
+    expect(normalized).toContain("posts the sync announcement immediately");
     expect(normalized).toContain("refresh:true|false");
     expect(normalized).toContain("visibility:private|public");
     expect(normalized).toContain("shared refresh button");
