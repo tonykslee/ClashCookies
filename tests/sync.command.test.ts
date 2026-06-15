@@ -88,6 +88,7 @@ function makeSendableChannel(input: {
       has: vi.fn().mockReturnValue(input.canSend ?? true),
     }),
     messages: {
+      fetch: vi.fn().mockResolvedValue(null),
       fetchPinned,
     },
     send,
@@ -220,6 +221,51 @@ function makeSubmitInteraction(input: {
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeReusableSyncAnnouncement(input: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  epochSeconds: number;
+  roleId?: string;
+}) {
+  const message = {
+    id: input.messageId,
+    channelId: input.channelId,
+    author: { bot: true },
+    content: `# Sync time :gem: <t:${input.epochSeconds}:F> (<t:${input.epochSeconds}:R>)`,
+  };
+
+  return {
+    message,
+    tracked: {
+      id: `tracked-${input.messageId}`,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      messageId: input.messageId,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: new Date(input.epochSeconds * 1000).toISOString(),
+        syncEpochSeconds: input.epochSeconds,
+        roleId: input.roleId ?? "123456789012345678",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -1017,6 +1063,178 @@ describe("/sync time post modal submit", () => {
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Readiness dashboard already published"),
+    );
+  });
+
+  it("reuses the tracked same-epoch announcement and recovers readiness scheduling on retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T20:00:00.000Z"));
+
+    const syncTime = new Date("2026-06-15T21:50:00.000Z");
+    const epochSeconds = Math.floor(syncTime.getTime() / 1000);
+    const reusable = makeReusableSyncAnnouncement({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-announcement-1",
+      epochSeconds,
+    });
+    const currentChannel = makeSendableChannel({
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    currentChannel.messages.fetch.mockResolvedValue(reusable.message);
+    currentChannel.messages.fetchPinned.mockResolvedValue(new Map());
+
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost)
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce(reusable.tracked as any);
+    vi.mocked(syncTimePostPublisherService.publishImmediateSyncTimePost).mockResolvedValueOnce({
+      status: "success",
+      messageId: reusable.message.id,
+      channelId: reusable.message.channelId,
+      messageLink: `https://discord.com/channels/guild-1/channel-1/${reusable.message.id}`,
+      trackedClanCount: 0,
+      sentNewMessage: true,
+      totalBadgeReactions: 0,
+      successfulBadgeReactions: 0,
+      badgeReactionCount: 0,
+      badgeReactionsSucceeded: 0,
+      unavailableReactionSucceeded: true,
+      activeSettingsPointerSucceeded: true,
+      pinSucceeded: true,
+      trackedMessageCreated: true,
+    } as any);
+    vi.mocked(scheduledSyncPostService.scheduleSyncTimePost)
+      .mockRejectedValueOnce(new Error("schedule boom"))
+      .mockResolvedValueOnce({
+        schedule: {
+          id: "scheduled-sync-2",
+          guildId: "guild-1",
+          channelId: "channel-1",
+          createdByUserId: "user-1",
+          roleId: "123456789012345678",
+          syncTime,
+          publishAt: new Date("2026-06-15T19:50:00.000Z"),
+          timezone: "UTC",
+          status: "PENDING",
+          claimToken: null,
+          claimedAt: null,
+          publishedMessageId: null,
+          publishedAt: null,
+          attemptCount: 0,
+          lastAttemptAt: null,
+          nextAttemptAt: null,
+          failureReason: null,
+          failureCode: null,
+          createdAt: new Date("2026-06-10T00:00:00.000Z"),
+          updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+        } as any,
+        action: "created",
+      } as any);
+    vi.spyOn(scheduledSyncPostService, "tryClaimScheduledSyncPost").mockResolvedValueOnce({
+      claimed: true,
+      claimToken: "claim-token-1",
+      reason: "claimed",
+      schedule: {
+        id: "scheduled-sync-2",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime,
+        publishAt: new Date("2026-06-15T19:50:00.000Z"),
+        timezone: "UTC",
+        status: "CLAIMED",
+        claimToken: "claim-token-1",
+        claimedAt: new Date("2026-06-15T20:00:00.000Z"),
+        publishedMessageId: null,
+        publishedAt: null,
+        attemptCount: 1,
+        lastAttemptAt: new Date("2026-06-15T20:00:00.000Z"),
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+    } as any);
+    vi.spyOn(
+      scheduledSyncReadinessPublisherService,
+      "publishScheduledSyncReadinessPost",
+    ).mockResolvedValueOnce({
+      messageId: "readiness-1",
+      channelId: "channel-1",
+      trackedClanCount: 0,
+      sentNewMessage: true,
+      usedFallbackRender: false,
+      publicationMode: "immediate",
+    } as any);
+
+    const first = makeSubmitInteraction({
+      timezone: "UTC",
+      date: "2026-06-15",
+      time: "21:50",
+      role: "<@&123456789012345678>",
+      currentChannel,
+    });
+    const second = makeSubmitInteraction({
+      timezone: "UTC",
+      date: "2026-06-15",
+      time: "21:50",
+      role: "<@&123456789012345678>",
+      currentChannel,
+    });
+
+    await handlePostModalSubmit(first as any);
+    await handlePostModalSubmit(second as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledTimes(1);
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledTimes(2);
+    expect(scheduledSyncPostService.tryClaimScheduledSyncPost).toHaveBeenCalledTimes(1);
+    expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).toHaveBeenCalledTimes(1);
+    expect(first.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Could not schedule the readiness dashboard"),
+    );
+    expect(second.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Sync announcement already exists and was reused."),
+    );
+    expect(second.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Readiness dashboard posted now."),
+    );
+    vi.useRealTimers();
+  });
+
+  it("does not reuse a pinned same-epoch message unless it has authoritative tracked ownership", async () => {
+    const currentChannel = makeSendableChannel({
+      id: "channel-1",
+      guildId: "guild-1",
+      type: ChannelType.GuildText,
+    });
+    const pinnedMessage = makeReusableSyncAnnouncement({
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "pinned-1",
+      epochSeconds: Math.floor(new Date("2026-06-15T23:50:00.000Z").getTime() / 1000),
+    }).message;
+    currentChannel.messages.fetchPinned.mockResolvedValue(new Map([["pinned-1", pinnedMessage]]));
+
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "UTC",
+      date: "2026-06-15",
+      time: "23:50",
+      role: "<@&123456789012345678>",
+      currentChannel,
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).not.toHaveBeenCalled();
+    expect(scheduledSyncPostService.scheduleSyncTimePost).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("already pinned"),
     );
   });
 
