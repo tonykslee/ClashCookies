@@ -448,7 +448,7 @@ export class SyncTimePostPublisherService {
 
     let trackedMessageCreated = false;
     try {
-      await trackedMessageService.createSyncTimeTrackedMessage({
+      await trackedMessageService.replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate({
         guildId: guild.id,
         channelId: message.channelId,
         messageId: message.id,

@@ -46,7 +46,10 @@ describe("SyncTimePostPublisherService", () => {
       },
     ]);
     vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
-    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockResolvedValue(undefined);
+    vi.spyOn(
+      trackedMessageService,
+      "replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate",
+    ).mockResolvedValue(0);
     vi.spyOn(
       trackedMessageService,
       "replacePriorSyncReadinessTrackedMessagesForGuildAndCreate",
@@ -108,9 +111,11 @@ describe("SyncTimePostPublisherService", () => {
         allowedMentions: { roles: ["role-1"] },
       }),
     );
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledTimes(1);
+    expect(
+      trackedMessageService.replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate,
+    ).toHaveBeenCalledTimes(1);
     expect(SettingsService.prototype.set).toHaveBeenCalledTimes(1);
-    const trackedOrder = trackedMessageService.createSyncTimeTrackedMessage.mock
+    const trackedOrder = trackedMessageService.replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate.mock
       .invocationCallOrder[0] as number;
     const settingsOrder = SettingsService.prototype.set.mock.invocationCallOrder[0] as number;
     const firstReactOrder = message.react.mock.invocationCallOrder[0] as number;
@@ -139,7 +144,10 @@ describe("SyncTimePostPublisherService", () => {
   });
 
   it("attempts to delete the announcement when the authoritative tracked row cannot be written", async () => {
-    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockRejectedValueOnce(
+    vi.spyOn(
+      trackedMessageService,
+      "replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate",
+    ).mockRejectedValueOnce(
       new Error("tracked row boom"),
     );
     const message = {
@@ -192,7 +200,10 @@ describe("SyncTimePostPublisherService", () => {
   });
 
   it("reports an explicit partial failure with a message link when rollback cleanup also fails", async () => {
-    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockRejectedValueOnce(
+    vi.spyOn(
+      trackedMessageService,
+      "replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate",
+    ).mockRejectedValueOnce(
       new Error("tracked row boom"),
     );
     const message = {
@@ -382,7 +393,9 @@ describe("SyncTimePostPublisherService", () => {
     expect(message.react).not.toHaveBeenCalled();
     expect(message.pin).not.toHaveBeenCalled();
     expect(SettingsService.prototype.set).not.toHaveBeenCalled();
-    expect(trackedMessageService.createSyncTimeTrackedMessage).not.toHaveBeenCalled();
+    expect(
+      trackedMessageService.replacePriorRootSyncTimeTrackedMessagesForGuildAndCreate,
+    ).not.toHaveBeenCalled();
     expect(
       trackedMessageService.replacePriorSyncReadinessTrackedMessagesForGuildAndCreate,
     ).toHaveBeenCalledTimes(1);

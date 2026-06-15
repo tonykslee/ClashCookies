@@ -506,6 +506,172 @@ describe("/sync post status reaction scan", () => {
     expect(embed.description).toContain("**Unclaimed Clans**");
     expect(embed.footer.text).toContain("Leader eligibility:");
   });
+
+  it("defaults /sync post status to the newest authoritative active sync announcement", async () => {
+    const syncMessage = {
+      id: "sync-message-b",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: {
+        cache: new Map(),
+      },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message: syncMessage,
+      membersById: {},
+    });
+
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "tracked-b",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+      claims: [],
+    } as any);
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValueOnce({
+      id: "tracked-b",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+      claims: [],
+    } as any);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(trackedMessageService.resolveLatestActiveSyncPost).toHaveBeenCalledWith("guild-1");
+    expect(trackedMessageService.fetchSyncTrackedMessageWithClaims).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls
+      .map((call) => call[0])
+      .find((value) => value && typeof value === "object" && "embeds" in value) as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Sync Claim Status");
+  });
+
+  it("defaults /sync spin status to the newest authoritative active sync announcement", async () => {
+    const syncMessage = {
+      id: "sync-message-b",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: {
+        cache: new Map(),
+      },
+    };
+    const interaction = makeStatusInteraction({
+      group: "spin",
+      messageId: "",
+      message: syncMessage,
+      membersById: {},
+    });
+
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      id: "tracked-b",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+      claims: [],
+    } as any);
+    const fetchTrackedSpy = vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims);
+    fetchTrackedSpy.mockReset();
+    fetchTrackedSpy.mockResolvedValue({
+      id: "tracked-b",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+      claims: [],
+    } as any);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(trackedMessageService.resolveLatestActiveSyncPost).toHaveBeenCalledWith("guild-1");
+    expect(fetchTrackedSpy).toHaveBeenCalledWith("sync-message-b");
+    const payload = interaction.editReply.mock.calls
+      .map((call) => call[0])
+      .find((value) => value && typeof value === "object" && "embeds" in value) as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Sync Spin Status");
+  });
 });
 
 describe("/sync status command shape", () => {
