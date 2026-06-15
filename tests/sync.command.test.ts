@@ -286,6 +286,7 @@ function makeStatusInteraction(input: {
       id: "guild-1",
       channels: {
         cache: channelCache,
+        fetch: vi.fn(async (channelId: string) => channelCache.get(channelId) ?? null),
       },
       members: {
         fetch: vi.fn(async (userId: string) => input.membersById[userId] ?? null),
@@ -690,13 +691,20 @@ describe("/sync time post modal submit", () => {
     vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
     vi.spyOn(syncTimePostPublisherService, "publishImmediateSyncTimePost").mockResolvedValue({
+      status: "success",
       messageId: "sync-announcement-1",
       channelId: "channel-1",
+      messageLink: "https://discord.com/channels/guild-1/channel-1/sync-announcement-1",
       trackedClanCount: 3,
       sentNewMessage: true,
+      totalBadgeReactions: 3,
+      successfulBadgeReactions: 3,
       badgeReactionCount: 3,
       badgeReactionsSucceeded: 3,
+      unavailableReactionSucceeded: true,
+      activeSettingsPointerSucceeded: true,
       pinSucceeded: true,
+      trackedMessageCreated: true,
     });
     vi.spyOn(
       scheduledSyncReadinessPublisherService,
@@ -766,6 +774,85 @@ describe("/sync time post modal submit", () => {
     expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Sync announcement posted now"),
+    );
+  });
+
+  it("warns when the immediate sync announcement has partial publish degradation", async () => {
+    vi.mocked(syncTimePostPublisherService.publishImmediateSyncTimePost).mockResolvedValueOnce({
+      status: "success",
+      messageId: "sync-announcement-2",
+      channelId: "channel-1",
+      messageLink: "https://discord.com/channels/guild-1/channel-1/sync-announcement-2",
+      trackedClanCount: 3,
+      sentNewMessage: true,
+      totalBadgeReactions: 3,
+      successfulBadgeReactions: 1,
+      badgeReactionCount: 3,
+      badgeReactionsSucceeded: 1,
+      unavailableReactionSucceeded: false,
+      activeSettingsPointerSucceeded: false,
+      pinSucceeded: false,
+      trackedMessageCreated: true,
+    } as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Some clan badge reactions failed"),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("The unavailable / 💤 reaction failed."),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Pinning the sync announcement failed."),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "The compatibility active sync pointer could not be saved, but the tracked announcement itself succeeded.",
+      ),
+    );
+  });
+
+  it("returns a partial failure notice when the tracked announcement cannot be preserved", async () => {
+    vi.mocked(syncTimePostPublisherService.publishImmediateSyncTimePost).mockResolvedValueOnce({
+      status: "partial_failure",
+      messageId: "sync-announcement-3",
+      channelId: "channel-1",
+      messageLink: "https://discord.com/channels/guild-1/channel-1/sync-announcement-3",
+      trackedClanCount: 3,
+      sentNewMessage: true,
+      totalBadgeReactions: 0,
+      successfulBadgeReactions: 0,
+      badgeReactionCount: 0,
+      badgeReactionsSucceeded: 0,
+      unavailableReactionSucceeded: false,
+      activeSettingsPointerSucceeded: false,
+      pinSucceeded: false,
+      trackedMessageCreated: false,
+      rollbackAttempted: true,
+      rollbackSucceeded: false,
+      partialFailureMessage:
+        "Could not save the tracked sync announcement and cleanup failed. A visible untracked message may remain: https://discord.com/channels/guild-1/channel-1/sync-announcement-3",
+    } as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Chicago",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(scheduledSyncPostService.scheduleSyncTimePost).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Could not save the tracked sync announcement"),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("visible untracked message may remain"),
     );
   });
 

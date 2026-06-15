@@ -60,18 +60,32 @@ export type SyncTimePostMessageLike = {
   author: { bot: boolean };
   content: string;
   react: (emoji: string) => Promise<void>;
+  delete?: () => Promise<void>;
   pin: () => Promise<void>;
   unpin: () => Promise<void>;
 };
 
+export type SyncTimePostPublishStatus = "success" | "partial_failure";
+
 export type SyncTimePostPublishResult = {
+  status: SyncTimePostPublishStatus;
   messageId: string;
   channelId: string;
+  messageLink: string;
   trackedClanCount: number;
   sentNewMessage: boolean;
+  totalBadgeReactions: number;
+  successfulBadgeReactions: number;
   badgeReactionCount: number;
   badgeReactionsSucceeded: number;
+  unavailableReactionSucceeded: boolean;
+  activeSettingsPointerSucceeded: boolean;
   pinSucceeded: boolean;
+  trackedMessageCreated: boolean;
+  rollbackSucceeded?: boolean;
+  rollbackAttempted?: boolean;
+  partialFailureReason?: "tracked_message_failed" | "tracked_message_failed_and_delete_failed" | null;
+  partialFailureMessage?: string | null;
 };
 
 export type ScheduledSyncReadinessPublishResult = {
@@ -297,6 +311,56 @@ function buildScheduledReadinessMetadata(input: {
   };
 }
 
+function buildDiscordMessageLink(input: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+}): string {
+  return `https://discord.com/channels/${input.guildId}/${input.channelId}/${input.messageId}`;
+}
+
+function buildTrackedAnnouncementRecoveryResult(input: {
+  guildId: string;
+  message: SyncTimePostMessageLike;
+  trackedClanCount: number;
+  deleteSucceeded: boolean;
+  deleteFailed: boolean;
+}): SyncTimePostPublishResult {
+  const messageLink = buildDiscordMessageLink({
+    guildId: input.guildId,
+    channelId: input.message.channelId,
+    messageId: input.message.id,
+  });
+  const compensationSucceeded = input.deleteSucceeded;
+  const partialFailureReason = input.deleteFailed
+    ? "tracked_message_failed_and_delete_failed"
+    : "tracked_message_failed";
+  const partialFailureMessage = input.deleteFailed
+    ? `Could not save the tracked sync announcement and cleanup failed. A visible untracked message may remain: ${messageLink}`
+    : "Could not save the tracked sync announcement. The announcement was rolled back and can be retried safely.";
+
+  return {
+    status: "partial_failure",
+    messageId: input.message.id,
+    channelId: input.message.channelId,
+    messageLink,
+    trackedClanCount: input.trackedClanCount,
+    sentNewMessage: true,
+    totalBadgeReactions: 0,
+    successfulBadgeReactions: 0,
+    badgeReactionCount: 0,
+    badgeReactionsSucceeded: 0,
+    unavailableReactionSucceeded: false,
+    activeSettingsPointerSucceeded: false,
+    pinSucceeded: false,
+    trackedMessageCreated: false,
+    rollbackAttempted: true,
+    rollbackSucceeded: compensationSucceeded,
+    partialFailureReason,
+    partialFailureMessage,
+  };
+}
+
 /** Purpose: publish the immediate sync-time announcement and own the active sync tracked row. */
 export class SyncTimePostPublisherService {
   async publishImmediateSyncTimePost(input: {
@@ -376,20 +440,75 @@ export class SyncTimePostPublisherService {
       );
     });
 
-    await settings.set(
-      activeSyncPostKey(guild.id),
-      JSON.stringify({
+    const messageLink = buildDiscordMessageLink({
+      guildId: guild.id,
+      channelId: message.channelId,
+      messageId: message.id,
+    });
+
+    let trackedMessageCreated = false;
+    try {
+      await trackedMessageService.createSyncTimeTrackedMessage({
+        guildId: guild.id,
         channelId: message.channelId,
         messageId: message.id,
-        epochSeconds: syncEpochSeconds,
-      }),
-    ).catch((err) => {
-      throwPublishError(
-        `Could not persist the active sync post setting: ${formatError(err)}`,
-        "active_sync_setting_failed",
-        true,
+        remindAt: new Date(syncEpochSeconds * 1000 - 5 * 60 * 1000),
+        expiresAt: new Date(syncEpochSeconds * 1000 + 60 * 60 * 1000),
+        metadata: baseMetadata,
+      });
+      trackedMessageCreated = true;
+    } catch (err) {
+      console.error(
+        `[sync-time-announcement] tracked_message_failed guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} created_by_user_id=${input.createdByUserId} sync_epoch=${syncEpochSeconds} error=${formatError(err)}`,
       );
-    });
+
+      let deleteSucceeded = false;
+      let deleteFailed = false;
+      let deleteError: string | null = null;
+      if (typeof message.delete === "function") {
+        try {
+          await message.delete();
+          deleteSucceeded = true;
+        } catch (deleteErr) {
+          deleteFailed = true;
+          deleteError = formatError(deleteErr);
+          console.error(
+            `[sync-time-announcement] delete_failed guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} created_by_user_id=${input.createdByUserId} sync_epoch=${syncEpochSeconds} error=${deleteError}`,
+          );
+        }
+      } else {
+        deleteFailed = true;
+        deleteError = "message_delete_unavailable";
+        console.error(
+          `[sync-time-announcement] delete_failed guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} created_by_user_id=${input.createdByUserId} sync_epoch=${syncEpochSeconds} error=${deleteError}`,
+        );
+      }
+
+      return buildTrackedAnnouncementRecoveryResult({
+        guildId: guild.id,
+        message,
+        trackedClanCount: badges.length,
+        deleteSucceeded,
+        deleteFailed,
+      });
+    }
+
+    let activeSettingsPointerSucceeded = false;
+    try {
+      await settings.set(
+        activeSyncPostKey(guild.id),
+        JSON.stringify({
+          channelId: message.channelId,
+          messageId: message.id,
+          epochSeconds: syncEpochSeconds,
+        }),
+      );
+      activeSettingsPointerSucceeded = true;
+    } catch (err) {
+      console.warn(
+        `[sync-time-announcement] active_sync_setting_failed guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} created_by_user_id=${input.createdByUserId} sync_epoch=${syncEpochSeconds} error=${formatError(err)}`,
+      );
+    }
 
     let badgeReactionCount = 0;
     let badgeReactionsSucceeded = 0;
@@ -414,21 +533,6 @@ export class SyncTimePostPublisherService {
         `[sync-time-announcement] react_failed guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} emoji=${SYNC_UNAVAILABLE_EMOJI} created_by_user_id=${input.createdByUserId} sync_epoch=${syncEpochSeconds} error=${formatError(err)}`,
       );
     }
-
-    await trackedMessageService.createSyncTimeTrackedMessage({
-      guildId: guild.id,
-      channelId: message.channelId,
-      messageId: message.id,
-      remindAt: new Date(syncEpochSeconds * 1000 - 5 * 60 * 1000),
-      expiresAt: new Date(syncEpochSeconds * 1000 + 60 * 60 * 1000),
-      metadata: baseMetadata,
-    }).catch((err) => {
-      throwPublishError(
-        `Could not create the tracked sync-time row: ${formatError(err)}`,
-        "tracked_message_failed",
-        true,
-      );
-    });
 
     let pinSucceeded = false;
     try {
@@ -455,17 +559,24 @@ export class SyncTimePostPublisherService {
     }
 
     console.info(
-      `[sync-time-announcement] published guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} sync_epoch=${syncEpochSeconds} role_id=${role.id} created_by_user_id=${input.createdByUserId} badge_reaction_count=${badgeReactionCount} badge_reactions_succeeded=${badgeReactionsSucceeded} unavailable_reaction_succeeded=${unavailableSucceeded} pin_succeeded=${pinSucceeded}`,
+      `[sync-time-announcement] published guild_id=${guild.id} channel_id=${message.channelId} message_id=${message.id} sync_epoch=${syncEpochSeconds} role_id=${role.id} created_by_user_id=${input.createdByUserId} badge_reaction_count=${badgeReactionCount} badge_reactions_succeeded=${badgeReactionsSucceeded} unavailable_reaction_succeeded=${unavailableSucceeded} active_settings_pointer_succeeded=${activeSettingsPointerSucceeded} pin_succeeded=${pinSucceeded}`,
     );
 
     return {
+      status: "success",
       messageId: message.id,
       channelId: message.channelId,
+      messageLink,
       trackedClanCount: badges.length,
       sentNewMessage: true,
+      totalBadgeReactions: badgeReactionCount,
+      successfulBadgeReactions: badgeReactionsSucceeded,
       badgeReactionCount,
       badgeReactionsSucceeded,
+      unavailableReactionSucceeded: unavailableSucceeded,
+      activeSettingsPointerSucceeded,
       pinSucceeded,
+      trackedMessageCreated,
     };
   }
 }

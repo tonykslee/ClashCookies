@@ -265,11 +265,14 @@ function isReadinessRefreshWindowExpired(
   metadata: SyncTimeTrackedMetadata | SyncReadinessTrackedMetadata,
   now: Date,
 ): boolean {
-  const expiresAt =
-    "syncTimeIso" in metadata
-      ? buildSyncTimeRefreshExpiresAt(metadata)
-      : buildStandaloneReadinessRefreshExpiresAt(metadata);
-  return !expiresAt || expiresAt.getTime() <= now.getTime();
+  if ("syncTimeIso" in metadata) {
+    const expiresAt = buildSyncTimeRefreshExpiresAt(metadata);
+    return !expiresAt || expiresAt.getTime() <= now.getTime();
+  }
+
+  const expiresAt = buildStandaloneReadinessRefreshExpiresAt(metadata);
+  if (!expiresAt) return false;
+  return expiresAt.getTime() <= now.getTime();
 }
 
 function getCooldownRemainingMs(metadata: {

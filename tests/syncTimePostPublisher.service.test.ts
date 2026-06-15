@@ -69,6 +69,7 @@ describe("SyncTimePostPublisherService", () => {
       id: "message-1",
       channelId: "channel-1",
       react: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
       pin: vi.fn().mockResolvedValue(undefined),
       unpin: vi.fn().mockResolvedValue(undefined),
     };
@@ -107,19 +108,188 @@ describe("SyncTimePostPublisherService", () => {
         allowedMentions: { roles: ["role-1"] },
       }),
     );
+    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledTimes(1);
+    expect(SettingsService.prototype.set).toHaveBeenCalledTimes(1);
+    const trackedOrder = trackedMessageService.createSyncTimeTrackedMessage.mock
+      .invocationCallOrder[0] as number;
+    const settingsOrder = SettingsService.prototype.set.mock.invocationCallOrder[0] as number;
+    const firstReactOrder = message.react.mock.invocationCallOrder[0] as number;
+    expect(trackedOrder).toBeLessThan(settingsOrder);
+    expect(settingsOrder).toBeLessThan(firstReactOrder);
     expect(message.react).toHaveBeenCalledWith("rr:111");
     expect(message.react).toHaveBeenCalledWith("\u{1F4A4}");
     expect(pinnedMessage.unpin).toHaveBeenCalledTimes(1);
     expect(message.pin).toHaveBeenCalledTimes(1);
-    expect(SettingsService.prototype.set).toHaveBeenCalledTimes(1);
-    expect(trackedMessageService.createSyncTimeTrackedMessage).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
+      status: "success",
       channelId: "channel-1",
+      messageLink: "https://discord.com/channels/guild-1/channel-1/message-1",
       messageId: "message-1",
       trackedClanCount: 1,
       sentNewMessage: true,
+      totalBadgeReactions: 1,
+      successfulBadgeReactions: 1,
       badgeReactionCount: 1,
       badgeReactionsSucceeded: 1,
+      unavailableReactionSucceeded: true,
+      activeSettingsPointerSucceeded: true,
+      pinSucceeded: true,
+      trackedMessageCreated: true,
+    });
+  });
+
+  it("attempts to delete the announcement when the authoritative tracked row cannot be written", async () => {
+    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockRejectedValueOnce(
+      new Error("tracked row boom"),
+    );
+    const message = {
+      id: "message-2",
+      channelId: "channel-1",
+      react: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+      pin: vi.fn().mockResolvedValue(undefined),
+      unpin: vi.fn().mockResolvedValue(undefined),
+    };
+    const channel = {
+      id: "channel-1",
+      isTextBased: () => true,
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+      messages: {
+        fetch: vi.fn(),
+        fetchPinned: vi.fn().mockResolvedValue(new Map()),
+      },
+      send: vi.fn().mockResolvedValue(message),
+    };
+
+    const result = await syncTimePostPublisherService.publishImmediateSyncTimePost({
+      guild: {
+        id: "guild-1",
+        client: { user: { id: "bot-1" } },
+        members: { me: { id: "bot-1" } },
+      } as any,
+      channel: channel as any,
+      role: { id: "role-1", name: "War", mentionable: true },
+      syncTime: new Date("2026-06-16T01:30:00.000Z"),
+      createdByUserId: "user-1",
+      settings: new SettingsService(),
+      clientUserId: "bot-1",
+      now: new Date("2026-06-15T23:00:00.000Z"),
+    });
+
+    expect(message.delete).toHaveBeenCalledTimes(1);
+    expect(message.react).not.toHaveBeenCalled();
+    expect(SettingsService.prototype.set).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      trackedMessageCreated: false,
+      rollbackAttempted: true,
+      rollbackSucceeded: true,
+      partialFailureReason: "tracked_message_failed",
+      partialFailureMessage: expect.stringContaining("rolled back"),
+    });
+  });
+
+  it("reports an explicit partial failure with a message link when rollback cleanup also fails", async () => {
+    vi.spyOn(trackedMessageService, "createSyncTimeTrackedMessage").mockRejectedValueOnce(
+      new Error("tracked row boom"),
+    );
+    const message = {
+      id: "message-3",
+      channelId: "channel-1",
+      react: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockRejectedValue(new Error("delete boom")),
+      pin: vi.fn().mockResolvedValue(undefined),
+      unpin: vi.fn().mockResolvedValue(undefined),
+    };
+    const channel = {
+      id: "channel-1",
+      isTextBased: () => true,
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+      messages: {
+        fetch: vi.fn(),
+        fetchPinned: vi.fn().mockResolvedValue(new Map()),
+      },
+      send: vi.fn().mockResolvedValue(message),
+    };
+
+    const result = await syncTimePostPublisherService.publishImmediateSyncTimePost({
+      guild: {
+        id: "guild-1",
+        client: { user: { id: "bot-1" } },
+        members: { me: { id: "bot-1" } },
+      } as any,
+      channel: channel as any,
+      role: { id: "role-1", name: "War", mentionable: true },
+      syncTime: new Date("2026-06-16T01:30:00.000Z"),
+      createdByUserId: "user-1",
+      settings: new SettingsService(),
+      clientUserId: "bot-1",
+      now: new Date("2026-06-15T23:00:00.000Z"),
+    });
+
+    expect(message.delete).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      trackedMessageCreated: false,
+      rollbackAttempted: true,
+      rollbackSucceeded: false,
+      partialFailureReason: "tracked_message_failed_and_delete_failed",
+      messageLink: "https://discord.com/channels/guild-1/channel-1/message-3",
+    });
+    expect(result.partialFailureMessage).toContain("visible untracked message may remain");
+  });
+
+  it("keeps the tracked announcement functional when the compatibility settings pointer cannot be saved", async () => {
+    vi.spyOn(SettingsService.prototype, "set").mockRejectedValueOnce(new Error("settings boom"));
+    const message = {
+      id: "message-4",
+      channelId: "channel-1",
+      react: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+      pin: vi.fn().mockResolvedValue(undefined),
+      unpin: vi.fn().mockResolvedValue(undefined),
+    };
+    const channel = {
+      id: "channel-1",
+      isTextBased: () => true,
+      permissionsFor: vi.fn().mockReturnValue({
+        has: vi.fn().mockReturnValue(true),
+      }),
+      messages: {
+        fetch: vi.fn(),
+        fetchPinned: vi.fn().mockResolvedValue(new Map()),
+      },
+      send: vi.fn().mockResolvedValue(message),
+    };
+
+    const result = await syncTimePostPublisherService.publishImmediateSyncTimePost({
+      guild: {
+        id: "guild-1",
+        client: { user: { id: "bot-1" } },
+        members: { me: { id: "bot-1" } },
+      } as any,
+      channel: channel as any,
+      role: { id: "role-1", name: "War", mentionable: true },
+      syncTime: new Date("2026-06-16T01:30:00.000Z"),
+      createdByUserId: "user-1",
+      settings: new SettingsService(),
+      clientUserId: "bot-1",
+      now: new Date("2026-06-15T23:00:00.000Z"),
+    });
+
+    expect(message.react).toHaveBeenCalledTimes(2);
+    expect(message.pin).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "success",
+      activeSettingsPointerSucceeded: false,
+      trackedMessageCreated: true,
+      totalBadgeReactions: 1,
+      successfulBadgeReactions: 1,
+      unavailableReactionSucceeded: true,
       pinSucceeded: true,
     });
   });

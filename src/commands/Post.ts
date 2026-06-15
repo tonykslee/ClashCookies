@@ -112,6 +112,14 @@ async function resolveStoredActiveSyncMessage(
     return message;
   };
 
+  const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
+  if (latestTracked) {
+    const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
+    if (trackedMessage) return trackedMessage;
+    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
+    return null;
+  }
+
   const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
   if (stored) {
     const storedMessage = await fetchTrackedMessage(stored.channelId, stored.messageId);
@@ -119,14 +127,7 @@ async function resolveStoredActiveSyncMessage(
     await settings.delete(activeSyncPostKey(guildId));
   }
 
-  const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
-  if (!latestTracked) return null;
-  const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
-  if (!trackedMessage) {
-    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
-    return null;
-  }
-  return trackedMessage;
+  return null;
 }
 
 async function resolveSyncStatusMessage(
@@ -945,6 +946,16 @@ export async function handlePostModalSubmit(
     return;
   }
 
+  if (announcementResult.status !== "success") {
+    await interaction.editReply(
+      `Sync announcement tracking failed.\n${
+        announcementResult.partialFailureMessage ??
+        "Please check the logs and try again."
+      }`,
+    );
+    return;
+  }
+
   const publishAt = new Date(epochSeconds * 1000 - 2 * 60 * 60 * 1000);
   let scheduleResult:
     | Awaited<ReturnType<typeof scheduledSyncPostService.scheduleSyncTimePost>>
@@ -967,7 +978,6 @@ export async function handlePostModalSubmit(
     console.error(
       `[sync-readiness-schedule] schedule_failed guild_id=${interaction.guildId} channel_id=${channel.id} role_id=${role.id} user_id=${interaction.user.id} sync_epoch=${epochSeconds} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} error=${formatError(err)}`,
     );
-    const announcementLink = `https://discord.com/channels/${guild.id}/${announcementResult.channelId}/${announcementResult.messageId}`;
     const notices: string[] = [];
     if (!mentionWillNotify) {
       notices.push(
@@ -981,6 +991,7 @@ export async function handlePostModalSubmit(
       notices.length > 0 ? `\n${notices.map((n) => `- ${n}`).join("\n")}` : "";
     const destinationLine =
       channel.id !== interaction.channelId ? `\nWill post in <#${channel.id}>.` : "";
+    const announcementLink = announcementResult.messageLink;
     await interaction.editReply(
       `Sync announcement posted now: ${announcementLink}\nCould not schedule the readiness dashboard. Check the logs and try again.${destinationLine}${noticeBlock}`,
     );
@@ -1046,8 +1057,24 @@ export async function handlePostModalSubmit(
   } else if (scheduleResult.action === "reactivated") {
     notices.push("Reactivated the existing terminal readiness schedule for that sync time.");
   }
+  if (announcementResult.totalBadgeReactions > announcementResult.successfulBadgeReactions) {
+    notices.push(
+      `Some clan badge reactions failed (${announcementResult.successfulBadgeReactions}/${announcementResult.totalBadgeReactions}).`,
+    );
+  }
+  if (!announcementResult.unavailableReactionSucceeded) {
+    notices.push("The unavailable / 💤 reaction failed.");
+  }
+  if (!announcementResult.pinSucceeded) {
+    notices.push("Pinning the sync announcement failed.");
+  }
+  if (!announcementResult.activeSettingsPointerSucceeded) {
+    notices.push(
+      "The compatibility active sync pointer could not be saved, but the tracked announcement itself succeeded.",
+    );
+  }
 
-  const announcementLink = `https://discord.com/channels/${guild.id}/${announcementResult.channelId}/${announcementResult.messageId}`;
+  const announcementLink = announcementResult.messageLink;
   const readinessScheduleLine =
     readinessOutcome ?? `scheduled for <t:${Math.floor(publishAt.getTime() / 1000)}:F>`;
   if (readinessPartialFailure && !readinessLink) {
