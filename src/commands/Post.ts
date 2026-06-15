@@ -77,6 +77,7 @@ type SyncBadge = {
 
 type SyncTimeReadinessFlowStatus =
   | "scheduled"
+  | "in_progress"
   | "posted_now"
   | "already_published"
   | "schedule_failed"
@@ -95,6 +96,7 @@ type SyncTimeReadinessFlowResult = {
 type ReusableSyncTimeAnnouncement = {
   messageId: string;
   channelId: string;
+  channel: SyncTimePostChannelLike;
   link: string;
 };
 
@@ -190,6 +192,7 @@ async function resolveReusableSameEpochSyncAnnouncement(input: {
   return {
     messageId: message.id,
     channelId: message.channelId,
+    channel: channel as unknown as SyncTimePostChannelLike,
     link: `https://discord.com/channels/${input.guild.id}/${message.channelId}/${message.id}`,
   };
 }
@@ -263,35 +266,32 @@ async function handleSyncTimeReadinessFlow(input: {
     };
   }
 
-  let claimToken = scheduleResult.schedule.claimToken;
-  let claimedSchedule = scheduleResult.schedule;
-  if (claimedSchedule.status !== "CLAIMED" || !claimToken) {
-    const claim = await scheduledSyncPostService.tryClaimScheduledSyncPost({
-      schedule: scheduleResult.schedule,
-      now: input.now,
-    });
-    if (!claim.claimed || !claim.schedule || !claim.claimToken) {
-      console.warn(
-        `[sync-readiness-publish] immediate_claim_unavailable schedule_id=${scheduleResult.schedule.id} guild_id=${scheduleResult.schedule.guildId} channel_id=${scheduleResult.schedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} claim_reason=${claim.reason}`,
-      );
-      return {
-        publishAt,
-        scheduleResult,
-        status: "scheduled",
-        readinessLink: null,
-        warning: "Readiness dashboard could not be claimed immediately and remains retryable.",
-      };
-    }
-    claimToken = claim.claimToken;
-    claimedSchedule = claim.schedule;
+  const claim = await scheduledSyncPostService.tryClaimScheduledSyncPost({
+    schedule: scheduleResult.schedule,
+    now: input.now,
+  });
+  if (!claim.claimed || !claim.schedule || !claim.claimToken) {
+    console.warn(
+      `[sync-readiness-publish] immediate_claim_unavailable schedule_id=${scheduleResult.schedule.id} guild_id=${scheduleResult.schedule.guildId} channel_id=${scheduleResult.schedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} claim_reason=${claim.reason}`,
+    );
+    return {
+      publishAt,
+      scheduleResult,
+      status: claim.reason === "busy" ? "in_progress" : "scheduled",
+      readinessLink: null,
+      warning:
+        claim.reason === "busy"
+          ? "Readiness publication is already in progress and remains retryable."
+          : "Readiness dashboard could not be claimed immediately and remains retryable.",
+    };
   }
 
   try {
     const result = await scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost({
       guild: input.guild,
       channel: input.channel,
-      schedule: claimedSchedule,
-      claimToken,
+      schedule: claim.schedule,
+      claimToken: claim.claimToken,
       publicationMode: "immediate",
       now: input.now,
       scheduleService: scheduledSyncPostService,
@@ -305,7 +305,7 @@ async function handleSyncTimeReadinessFlow(input: {
     };
   } catch (err) {
     console.error(
-      `[sync-readiness-publish] immediate_failed schedule_id=${claimedSchedule.id} guild_id=${claimedSchedule.guildId} channel_id=${claimedSchedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} error=${formatError(err)}`,
+      `[sync-readiness-publish] immediate_failed schedule_id=${claim.schedule.id} guild_id=${claim.schedule.guildId} channel_id=${claim.schedule.channelId} sync_epoch=${Math.floor(input.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} error=${formatError(err)}`,
     );
     return {
       publishAt,
@@ -1059,6 +1059,7 @@ export async function handlePostModalSubmit(
     guild,
     epochSeconds,
   });
+  const readinessChannel = reusableAnnouncement?.channel ?? channel;
   if (!reusableAnnouncement) {
     try {
       const pinned = await channel.messages.fetchPinned();
@@ -1086,14 +1087,20 @@ export async function handlePostModalSubmit(
 
   const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
   if (!me) {
-    await interaction.editReply("Could not verify bot permissions in this channel.");
+    await interaction.editReply(
+      reusableAnnouncement
+        ? "Could not verify bot permissions in the reused sync announcement channel."
+        : "Could not verify bot permissions in this channel.",
+    );
     return;
   }
 
-  const permissions = channel.permissionsFor(me);
+  const permissions = readinessChannel.permissionsFor(me);
   if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
     await interaction.editReply(
-      "Could not post sync time: bot is missing `Send Messages` in this channel."
+      reusableAnnouncement
+        ? "Could not post the readiness dashboard in the reused sync announcement channel: bot is missing `Send Messages` there."
+        : "Could not post sync time: bot is missing `Send Messages` in this channel."
     );
     return;
   }
@@ -1148,7 +1155,7 @@ export async function handlePostModalSubmit(
 
   const readinessFlow = await handleSyncTimeReadinessFlow({
     guild,
-    channel,
+    channel: readinessChannel,
     createdByUserId: interaction.user.id,
     roleId: role.id,
     syncTime: scheduledSyncTime,
@@ -1162,10 +1169,15 @@ export async function handlePostModalSubmit(
   const announcementLinkLine = announcementReused
     ? `Announcement message: ${announcementLink}`
     : null;
+  const readinessDestinationLine = announcementReused
+    ? `Readiness dashboard destination: <#${readinessChannel.id}>.`
+    : null;
 
   const readinessScheduleLine =
     readinessFlow.status === "already_published"
       ? "Readiness dashboard already published."
+      : readinessFlow.status === "in_progress"
+        ? "Readiness publication is already in progress and remains retryable."
       : readinessFlow.status === "posted_now"
         ? "Readiness dashboard posted now."
         : readinessFlow.status === "immediate_publish_failed"
@@ -1219,10 +1231,12 @@ export async function handlePostModalSubmit(
   const noticeBlock =
     notices.length > 0 ? `\n${notices.map((n) => `- ${n}`).join("\n")}` : "";
   const destinationLine =
-    channel.id !== interaction.channelId ? `\nWill post in <#${channel.id}>.` : "";
+    !reusableAnnouncement && channel.id !== interaction.channelId
+      ? `\nWill post in <#${channel.id}>.`
+      : "";
 
   await interaction.editReply(
-    `${announcementLabel}${announcementLinkLine ? `\n${announcementLinkLine}` : ""}\n${readinessScheduleLine}${readinessFlow.readinessLink ? `\nReadiness dashboard message: ${readinessFlow.readinessLink}` : ""}${destinationLine}${noticeBlock}`,
+    `${announcementLabel}${announcementLinkLine ? `\n${announcementLinkLine}` : ""}${readinessDestinationLine ? `\n${readinessDestinationLine}` : ""}\n${readinessScheduleLine}${readinessFlow.readinessLink ? `\nReadiness dashboard message: ${readinessFlow.readinessLink}` : ""}${destinationLine}${noticeBlock}`,
   );
 }
 export const Post: Command = {
