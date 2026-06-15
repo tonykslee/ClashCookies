@@ -6,6 +6,10 @@ import { trackedMessageService } from "../src/services/TrackedMessageService";
 import * as syncTimeFwaClanListViewService from "../src/services/SyncTimeFwaClanListViewService";
 import { SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID } from "../src/services/SyncTimeFwaClanListViewService";
 import { scheduledSyncPostService } from "../src/services/ScheduledSyncPostService";
+import {
+  scheduledSyncReadinessPublisherService,
+  syncTimePostPublisherService,
+} from "../src/services/SyncTimePostPublisherService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -685,6 +689,26 @@ describe("/sync time post modal submit", () => {
     vi.spyOn(SettingsService.prototype, "set").mockResolvedValue(undefined);
     vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
+    vi.spyOn(syncTimePostPublisherService, "publishImmediateSyncTimePost").mockResolvedValue({
+      messageId: "sync-announcement-1",
+      channelId: "channel-1",
+      trackedClanCount: 3,
+      sentNewMessage: true,
+      badgeReactionCount: 3,
+      badgeReactionsSucceeded: 3,
+      pinSucceeded: true,
+    });
+    vi.spyOn(
+      scheduledSyncReadinessPublisherService,
+      "publishScheduledSyncReadinessPost",
+    ).mockResolvedValue({
+      messageId: "readiness-1",
+      channelId: "channel-1",
+      trackedClanCount: 3,
+      sentNewMessage: true,
+      usedFallbackRender: false,
+      publicationMode: "immediate",
+    });
     vi.spyOn(scheduledSyncPostService, "scheduleSyncTimePost").mockResolvedValue({
       schedule: {
         id: "scheduled-sync-1",
@@ -712,7 +736,7 @@ describe("/sync time post modal submit", () => {
     } as any);
   });
 
-  it("uses the submitted modal timezone even when the slash arg had a different seed", async () => {
+  it("posts the sync announcement immediately and schedules the readiness dashboard", async () => {
     const interaction = makeSubmitInteraction({
       timezone: "America/Chicago",
       role: "<@&123456789012345678>",
@@ -724,6 +748,12 @@ describe("/sync time post modal submit", () => {
       "user_timezone:user-1",
       "America/Chicago",
     );
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdByUserId: "user-1",
+        syncTime: new Date("2026-06-16T01:30:00.000Z"),
+      }),
+    );
     expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: "channel-1",
@@ -733,8 +763,86 @@ describe("/sync time post modal submit", () => {
         publishAt: new Date("2026-06-15T23:30:00.000Z"),
       }),
     );
-    expect(interaction.channel.send).not.toHaveBeenCalled();
-    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("scheduled"));
+    expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Sync announcement posted now"),
+    );
+  });
+
+  it("posts the readiness dashboard immediately when the sync is under two hours away", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T23:05:00.000Z"));
+    vi.mocked(scheduledSyncPostService.scheduleSyncTimePost).mockResolvedValueOnce({
+      schedule: {
+        id: "scheduled-sync-2",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime: new Date("2026-06-15T23:50:00.000Z"),
+        publishAt: new Date("2026-06-15T21:50:00.000Z"),
+        timezone: "UTC",
+        status: "PENDING",
+        claimToken: null,
+        claimedAt: null,
+        publishedMessageId: null,
+        publishedAt: null,
+        attemptCount: 0,
+        lastAttemptAt: null,
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+      action: "created",
+    } as any);
+    vi.spyOn(scheduledSyncPostService, "tryClaimScheduledSyncPost").mockResolvedValueOnce({
+      claimed: true,
+      claimToken: "claim-token-2",
+      reason: "claimed",
+      schedule: {
+        id: "scheduled-sync-2",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        createdByUserId: "user-1",
+        roleId: "123456789012345678",
+        syncTime: new Date("2026-06-15T23:50:00.000Z"),
+        publishAt: new Date("2026-06-15T21:50:00.000Z"),
+        timezone: "UTC",
+        status: "CLAIMED",
+        claimToken: "claim-token-2",
+        claimedAt: new Date("2026-06-15T23:05:00.000Z"),
+        publishedMessageId: null,
+        publishedAt: null,
+        attemptCount: 1,
+        lastAttemptAt: new Date("2026-06-15T23:05:00.000Z"),
+        nextAttemptAt: null,
+        failureReason: null,
+        failureCode: null,
+        createdAt: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      } as any,
+    } as any);
+
+    const interaction = makeSubmitInteraction({
+      timezone: "UTC",
+      date: "2026-06-15",
+      time: "23:50",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publicationMode: "immediate",
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Readiness dashboard posted now"),
+    );
+    vi.useRealTimers();
   });
 
   it("reports reactivated schedules when a terminal same-sync row is revived", async () => {
@@ -771,13 +879,17 @@ describe("/sync time post modal submit", () => {
 
     await handlePostModalSubmit(interaction as any);
 
-    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledTimes(1);
+    expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("Reactivated the existing terminal schedule for that sync time."),
+      expect.stringContaining("Reactivated the existing terminal readiness schedule for that sync time."),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Sync announcement posted now"),
     );
   });
 
-  it("reports already published schedules without claiming a new schedule", async () => {
+  it("reports already published readiness rows without republishing them", async () => {
     vi.mocked(scheduledSyncPostService.scheduleSyncTimePost).mockResolvedValueOnce({
       schedule: {
         id: "scheduled-sync-1",
@@ -811,12 +923,13 @@ describe("/sync time post modal submit", () => {
 
     await handlePostModalSubmit(interaction as any);
 
-    expect(interaction.channel.send).not.toHaveBeenCalled();
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledTimes(1);
+    expect(scheduledSyncReadinessPublisherService.publishScheduledSyncReadinessPost).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("A sync time post for <t:"),
+      expect.stringContaining("Sync announcement posted now"),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("is already published"),
+      expect.stringContaining("Readiness dashboard already published"),
     );
   });
 
@@ -848,7 +961,7 @@ describe("/sync time post modal submit", () => {
       }),
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("Will publish in <#222222222222222222>."),
+      expect.stringContaining("Will post in <#222222222222222222>."),
     );
   });
 
@@ -917,23 +1030,25 @@ describe("/sync time post modal submit", () => {
     );
   });
 
-  it("rejects scheduling when the sync time is too close", async () => {
+  it("rejects scheduling when the sync time is already in the past", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-12T19:00:00.000Z"));
 
     const interaction = makeSubmitInteraction({
       timezone: "UTC",
       date: "2026-06-12",
-      time: "20:30",
+      time: "18:30",
       role: "<@&123456789012345678>",
     });
 
     await handlePostModalSubmit(interaction as any);
 
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).not.toHaveBeenCalled();
     expect(scheduledSyncPostService.scheduleSyncTimePost).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
-      expect.stringContaining("more than 2 hours in the future"),
+      expect.stringContaining("must be in the future"),
     );
+    vi.useRealTimers();
   });
 
   it("renders sync spin status with the shared spin-status renderer", async () => {

@@ -101,6 +101,7 @@ export type SyncTimeTrackedMetadata = {
 export type SyncReadinessTrackedMetadata = {
   readinessEnabled: true;
   createdAtIso: string;
+  refreshExpiresAtIso?: string | null;
   lastRefreshedAtIso?: string | null;
   lastSuccessfulRefreshAtIso?: string | null;
   refreshInProgressAtIso?: string | null;

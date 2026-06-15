@@ -100,7 +100,7 @@ function buildRetainedScheduleFields(input: {
 
 /** Purpose: own durable scheduled sync-time post rows and the atomic guild-scoped replacement lifecycle. */
 export class ScheduledSyncPostService {
-  /** Purpose: persist or reuse one scheduled sync post per guild+syncTime under a guild-scoped DB lock. */
+  /** Purpose: persist or reuse one scheduled readiness companion row per guild+syncTime under a guild-scoped DB lock. */
   async scheduleSyncTimePost(input: {
     guildId: string;
     channelId: string;
@@ -137,7 +137,7 @@ export class ScheduledSyncPostService {
       if (existing) {
         if (existing.status === SCHEDULED_SYNC_POST_STATUS.PUBLISHED) {
           console.info(
-            `[sync-schedule] schedule_already_published schedule_id=${existing.id} guild_id=${guildId} channel_id=${existing.channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} message_id=${existing.publishedMessageId ?? "null"}`,
+            `[sync-readiness-schedule] schedule_already_published schedule_id=${existing.id} guild_id=${guildId} channel_id=${existing.channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} message_id=${existing.publishedMessageId ?? "null"}`,
           );
           return { schedule: existing, action: "already_published" };
         }
@@ -163,7 +163,7 @@ export class ScheduledSyncPostService {
             },
           });
           console.info(
-            `[sync-schedule] schedule_reused schedule_id=${reused.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} status=${reused.status}`,
+            `[sync-readiness-schedule] schedule_reused schedule_id=${reused.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} status=${reused.status}`,
           );
           return { schedule: reused, action: "reused" };
         }
@@ -192,7 +192,7 @@ export class ScheduledSyncPostService {
           },
         });
         console.info(
-          `[sync-schedule] schedule_reactivated schedule_id=${reactivated.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} previous_status=${existing.status}`,
+          `[sync-readiness-schedule] schedule_reactivated schedule_id=${reactivated.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} previous_status=${existing.status}`,
         );
         return { schedule: reactivated, action: "reactivated" };
       }
@@ -228,7 +228,7 @@ export class ScheduledSyncPostService {
       });
 
       console.info(
-        `[sync-schedule] schedule_created schedule_id=${schedule.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} role_id=${roleId} replaced_count=${replacedCount.count}`,
+        `[sync-readiness-schedule] schedule_created schedule_id=${schedule.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} role_id=${roleId} replaced_count=${replacedCount.count}`,
       );
 
       return {
@@ -238,7 +238,7 @@ export class ScheduledSyncPostService {
     });
   }
 
-  /** Purpose: fetch sync posts due for publication in publish order. */
+  /** Purpose: fetch readiness rows due for publication in publish order. */
   async findDueScheduledSyncPosts(now: Date): Promise<ScheduledSyncPostRow[]> {
     const rows = await prisma.scheduledSyncPost.findMany({
       where: {
@@ -253,7 +253,7 @@ export class ScheduledSyncPostService {
     return rows.filter((row) => isDueForPublish(row, now));
   }
 
-  /** Purpose: fetch sync posts that expired before they could be published. */
+  /** Purpose: fetch readiness rows that expired before they could be published. */
   async findExpiredScheduledSyncPosts(now: Date): Promise<ScheduledSyncPostRow[]> {
     return prisma.scheduledSyncPost.findMany({
       where: {
@@ -267,7 +267,7 @@ export class ScheduledSyncPostService {
     });
   }
 
-  /** Purpose: claim one due sync post with a unique token, or detect stale/retryable states. */
+  /** Purpose: claim one due readiness row with a unique token, or detect stale/retryable states. */
   async tryClaimScheduledSyncPost(input: {
     schedule: ScheduledSyncPostRow;
     now: Date;
@@ -355,7 +355,7 @@ export class ScheduledSyncPostService {
     }
 
     console.info(
-      `[sync-schedule] claim_acquired schedule_id=${claimed.id} guild_id=${claimed.guildId} channel_id=${claimed.channelId} sync_epoch=${Math.floor(claimed.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(claimed.publishAt.getTime() / 1000)} attempt=${claimed.attemptCount} claim_token=${claimToken} reason=${row.status === SCHEDULED_SYNC_POST_STATUS.CLAIMED ? "stale_recovered" : "claimed"}`,
+      `[sync-readiness-schedule] claim_acquired schedule_id=${claimed.id} guild_id=${claimed.guildId} channel_id=${claimed.channelId} sync_epoch=${Math.floor(claimed.syncTime.getTime() / 1000)} publish_epoch=${Math.floor(claimed.publishAt.getTime() / 1000)} attempt=${claimed.attemptCount} claim_token=${claimToken} reason=${row.status === SCHEDULED_SYNC_POST_STATUS.CLAIMED ? "stale_recovered" : "claimed"}`,
     );
 
     return {

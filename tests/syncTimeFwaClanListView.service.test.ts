@@ -508,4 +508,22 @@ describe("SyncTimeFwaClanListViewService", () => {
       readinessPayload.embeds[0].toJSON().title,
     );
   });
+
+  it("closes the standalone readiness refresh button once its expiry passes", async () => {
+    mockReadinessState();
+
+    const payload = await buildSyncReadinessMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: {
+        readinessEnabled: true,
+        createdAtIso: "2026-06-10T12:00:00.000Z",
+        refreshExpiresAtIso: "2026-06-10T12:00:00.000Z",
+      },
+      now: new Date("2026-06-10T12:01:00.000Z"),
+    });
+
+    const button = payload.components[0]?.toJSON().components[0] as any;
+    expect(button.label).toBe("Refresh closed");
+    expect(button.disabled).toBe(true);
+  });
 });
