@@ -4,6 +4,7 @@ import { rosterService } from "../src/services/RosterService";
 
 const txMock = vi.hoisted(() => ({
   cwlRotationPlan: {
+    findFirst: vi.fn(),
     updateMany: vi.fn(),
     create: vi.fn(),
   },
@@ -89,6 +90,9 @@ describe("CwlRotationService", () => {
     prismaMock.roster.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    txMock.cwlRotationPlan.findFirst.mockImplementation((...args: any[]) =>
+      prismaMock.cwlRotationPlan.findFirst(...args),
+    );
     txMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     txMock.cwlRotationPlan.create.mockResolvedValue({ id: "plan-1" });
     txMock.cwlRotationPlanDay.create.mockImplementation(async (args: any) => ({
@@ -159,6 +163,29 @@ describe("CwlRotationService", () => {
     });
     vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue(observedRosterRows);
     return { observedRosterRows, roundMembers };
+  }
+
+  function mockRotationPlanHistory(
+    rows: Array<{
+      clanTag: string;
+      season: string;
+      version: number;
+      isActive: boolean;
+      updatedAt?: Date;
+      id?: string;
+    }>,
+  ) {
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(async ({ where }: any) => {
+      const filtered = rows
+        .filter((row) => {
+          if (where?.clanTag && row.clanTag !== where.clanTag) return false;
+          if (where?.season && row.season !== where.season) return false;
+          if (typeof where?.isActive === "boolean" && row.isActive !== where.isActive) return false;
+          return true;
+        })
+        .sort((left, right) => right.version - left.version);
+      return filtered[0] ?? null;
+    });
   }
 
   it("creates a versioned current-season plan and warns when 5-day coverage is impossible", async () => {
@@ -425,6 +452,323 @@ describe("CwlRotationService", () => {
       ),
     ).toBe(true);
     expect(observedRosterRows).toHaveLength(11);
+  });
+
+  it("advances from inactive history to version 2 instead of restarting at 1", async () => {
+    mockRotationPlanHistory([
+      {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: false,
+        id: "plan-1",
+      },
+    ]);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      version: 2,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          version: 2,
+        }),
+      }),
+    );
+  });
+
+  it("uses max persisted history instead of the active row when overwriting an existing plan", async () => {
+    mockRotationPlanHistory([
+      {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 2,
+        isActive: true,
+        id: "plan-active",
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 7,
+        isActive: false,
+        id: "plan-historical",
+      },
+    ]);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+      overwrite: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      version: 8,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          version: 8,
+        }),
+      }),
+    );
+  });
+
+  it("preserves the max persisted version across manual, roster-backed, and imported rotation creation", async () => {
+    mockRotationPlanHistory([
+      {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 10,
+        isActive: false,
+        id: "plan-10",
+      },
+    ]);
+
+    const manualRoster = setupManualCreateRosterFixture({ rosterCount: 11 });
+    const manualResult = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+    expect(manualResult).toMatchObject({ outcome: "created", version: 11 });
+    expect(manualRoster.observedRosterRows).toHaveLength(11);
+
+    vi.clearAllMocks();
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(async ({ where }: any) => {
+      if (where?.isActive) {
+        return null;
+      }
+      return {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 10,
+        isActive: false,
+      };
+    });
+    txMock.cwlRotationPlan.findFirst.mockImplementation((...args: any[]) =>
+      prismaMock.cwlRotationPlan.findFirst(...args),
+    );
+    txMock.cwlRotationPlan.create.mockResolvedValue({ id: "plan-roster" });
+    txMock.cwlRotationPlanDay.create.mockImplementation(async (args: any) => ({
+      id: 200 + Number(args?.data?.roundDay ?? 0),
+    }));
+    txMock.cwlRotationPlanMember.createMany.mockResolvedValue({ count: 0 });
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue(
+      Array.from({ length: 11 }, (_value, index) => {
+        const digits = index
+          .toString(4)
+          .padStart(4, "0")
+          .split("")
+          .map((char) => ["0", "2", "8", "9"][Number(char)])
+          .join("");
+        return {
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          playerTag: `#PYLQ${digits}`,
+          playerName: `Roster Player ${index + 1}`,
+          townHall: 16,
+          linkedDiscordUserId: null,
+          linkedDiscordUsername: null,
+          daysParticipated: 0,
+          currentRound: null,
+        };
+      }),
+    );
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
+      roster: {
+        id: "roster-allocator",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "Allocator roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: null,
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 11,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: null,
+      groups: [
+        {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      ],
+      signups: Array.from({ length: 11 }, (_value, index) => {
+        const digits = index
+          .toString(4)
+          .padStart(4, "0")
+          .split("")
+          .map((char) => ["0", "2", "8", "9"][Number(char)])
+          .join("");
+        return {
+          id: `signup-${index + 1}`,
+          rosterId: "roster-allocator",
+          groupId: "group-confirmed",
+          playerTag: `#PYLQ${digits}`,
+          playerName: `Roster Player ${index + 1}`,
+          discordUserId: `${index + 1}`.padStart(18, "1"),
+          signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+          createdAt: new Date("2026-04-20T00:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+          weight: 100_000 - index,
+          weightSource: "Manual",
+          weightMeasuredAt: new Date("2026-04-20T01:00:00.000Z"),
+          townHall: 16,
+          discordDisplayName: null,
+          discordUsername: null,
+          clanTag: null,
+          clanName: null,
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: null,
+            sortOrder: 0,
+          },
+        };
+      }),
+      totalSignupCount: 11,
+    } as any);
+
+    const rosterResult = await cwlRotationService.createPlanFromRoster({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-allocator",
+      guildId: "guild-1",
+      season: "2026-04",
+    });
+    expect(rosterResult).toMatchObject({ outcome: "created", version: 11 });
+
+    vi.clearAllMocks();
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(async ({ where }: any) => {
+      if (where?.isActive) {
+        return null;
+      }
+      return {
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 10,
+        isActive: false,
+      };
+    });
+    txMock.cwlRotationPlan.findFirst.mockImplementation((...args: any[]) =>
+      prismaMock.cwlRotationPlan.findFirst(...args),
+    );
+    txMock.cwlRotationPlan.create.mockResolvedValue({ id: "plan-import" });
+    txMock.cwlRotationPlanDay.create.mockImplementation(async (args: any) => ({
+      id: 300 + Number(args?.data?.roundDay ?? 0),
+    }));
+    txMock.cwlRotationPlanMember.createMany.mockResolvedValue({ count: 0 });
+
+    const importedResult = await cwlRotationService.persistImportedPlan({
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Rotation",
+      sourceTabName: "Day 1",
+      season: "2026-04",
+      rosterRows: Array.from({ length: 11 }, (_value, index) => {
+        const digits = index
+          .toString(4)
+          .padStart(4, "0")
+          .split("")
+          .map((char) => ["0", "2", "8", "9"][Number(char)])
+          .join("");
+        return {
+          playerTag: `#PYLQ${digits}`,
+          playerName: `Imported Player ${index + 1}`,
+        };
+      }),
+      days: [
+        {
+          roundDay: 1,
+          lineupSize: 11,
+          locked: false,
+          rows: Array.from({ length: 11 }, (_value, index) => {
+            const digits = index
+              .toString(4)
+              .padStart(4, "0")
+              .split("")
+              .map((char) => ["0", "2", "8", "9"][Number(char)])
+              .join("");
+            return {
+              playerTag: `#PYLQ${digits}`,
+              playerName: `Imported Player ${index + 1}`,
+              subbedOut: false,
+              assignmentOrder: index,
+            };
+          }),
+          activeMembers: Array.from({ length: 11 }, (_value, index) => {
+            const digits = index
+              .toString(4)
+              .padStart(4, "0")
+              .split("")
+              .map((char) => ["0", "2", "8", "9"][Number(char)])
+              .join("");
+            return {
+              playerTag: `#PYLQ${digits}`,
+              playerName: `Imported Player ${index + 1}`,
+              assignmentOrder: index,
+            };
+          }),
+        },
+      ],
+    });
+    expect(importedResult).toMatchObject({ outcome: "created", version: 11 });
+  });
+
+  it("retries a transient version collision instead of surfacing P2002", async () => {
+    mockRotationPlanHistory([]);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+    txMock.cwlRotationPlan.create.mockRejectedValueOnce({ code: "P2002" } as any);
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      version: 1,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledTimes(2);
   });
 
   it("rejects invalid current-season lineup sizes before persistence", async () => {
