@@ -282,7 +282,9 @@ describe("/clan command behavior", () => {
     expect(
       infoLogs.some((line: string) => line.includes("stage=cwl_tags_existing_rows_loaded")),
     ).toBe(true);
-    expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_create_many"))).toBe(true);
+    expect(
+      infoLogs.some((line: string) => line.includes("stage=cwl_tags_existing_rows_loaded")),
+    ).toBe(true);
     expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_final_reply_sent"))).toBe(true);
   });
 

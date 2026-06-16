@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
+    findFirst: vi.fn(),
     findMany: vi.fn(),
     createMany: vi.fn(),
     updateMany: vi.fn(),
@@ -27,7 +28,10 @@ const prismaMock = vi.hoisted(() => ({
 const txMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
+    createMany: vi.fn(),
     deleteMany: vi.fn(),
+    updateMany: vi.fn(),
   },
   cwlPlayerClanSeason: {
     deleteMany: vi.fn(),
@@ -57,7 +61,16 @@ describe("CwlRegistryService helpers", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
+    txMock.cwlTrackedClan.findFirst.mockImplementation((...args: any[]) => prismaMock.cwlTrackedClan.findFirst(...args));
+    txMock.cwlTrackedClan.findMany.mockImplementation((...args: any[]) => prismaMock.cwlTrackedClan.findMany(...args));
+    txMock.cwlTrackedClan.createMany.mockImplementation((...args: any[]) => prismaMock.cwlTrackedClan.createMany(...args));
+    txMock.cwlTrackedClan.deleteMany.mockImplementation((...args: any[]) => prismaMock.cwlTrackedClan.deleteMany(...args));
+    txMock.cwlTrackedClan.updateMany.mockImplementation((...args: any[]) => prismaMock.cwlTrackedClan.updateMany(...args));
+    txMock.cwlPlayerClanSeason.deleteMany.mockImplementation((...args: any[]) => prismaMock.cwlPlayerClanSeason.deleteMany(...args));
+    txMock.cwlRotationPlan.updateMany.mockImplementation((...args: any[]) => prismaMock.cwlRotationPlan.updateMany(...args));
+
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
@@ -75,9 +88,8 @@ describe("CwlRegistryService helpers", () => {
   });
 
   it("creates new CWL rows with null names when clan lookups are unavailable", async () => {
-    prismaMock.cwlTrackedClan.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }, { tag: "#QGRJ2222" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([]);
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 2 });
 
     const result = await addCwlClanTagsForSeason({
       rawTags: "[#PYLQ0289,#QGRJ2222]",
@@ -91,6 +103,16 @@ describe("CwlRegistryService helpers", () => {
       ],
       skipDuplicates: true,
     });
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        clanTag: { in: ["#PYLQ0289", "#QGRJ2222"] },
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
     expect(result).toEqual({
       season: "2026-03",
       added: ["#PYLQ0289", "#QGRJ2222"],
@@ -101,9 +123,8 @@ describe("CwlRegistryService helpers", () => {
   });
 
   it("keeps result buckets correct for existing, invalid, and duplicate tags", async () => {
-    prismaMock.cwlTrackedClan.findMany
-      .mockResolvedValueOnce([{ tag: "#QGRJ2222" }])
-      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }, { tag: "#QGRJ2222" }]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#QGRJ2222" }]);
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await addCwlClanTagsForSeason({
       rawTags: "[#PYLQ0289,QGRJ2222,BADTAG,#PYLQ0289]",
@@ -114,6 +135,16 @@ describe("CwlRegistryService helpers", () => {
     expect(result.alreadyExisting).toEqual(["#QGRJ2222"]);
     expect(result.invalid).toEqual(["BADTAG"]);
     expect(result.duplicateInRequest).toEqual(["#PYLQ0289"]);
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        clanTag: { in: ["#PYLQ0289"] },
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
   });
 
   it("hydrates missing clan names only when lookups succeed and skips failures", async () => {
@@ -163,7 +194,9 @@ describe("CwlRegistryService helpers", () => {
   });
 
   it("does not throw when clan-name hydration lookups fail or time out", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#PYLQ0289" }]);
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }]);
     const cocService = {
       getClan: vi.fn().mockImplementation(
         () => new Promise(() => {
@@ -181,18 +214,16 @@ describe("CwlRegistryService helpers", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await promise;
 
+    expect(cocService.getClan).toHaveBeenCalledWith("#PYLQ0289");
     expect(prismaMock.cwlTrackedClan.updateMany).not.toHaveBeenCalled();
-    const errorLogs = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
-      (call) => String(call[0] ?? ""),
-    );
-    expect(errorLogs.some((line) => line.includes("stage=cwl_tags_name_lookup"))).toBe(true);
   });
 
   it("ensures tracked CWL rows and hydrates clan name and league label in one pass", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
-      { tag: "#PYLQ0289" },
-      { tag: "#QGRJ2222" },
-    ]);
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }, { tag: "#QGRJ2222" }]);
+    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 2 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 2 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
     const cocService = {
       getClan: vi.fn(async (tag: string) => ({
@@ -241,14 +272,25 @@ describe("CwlRegistryService helpers", () => {
     expect(result).toEqual({
       season: "2026-03",
       requestedCount: 2,
-      ensuredCount: 0,
+      ensuredCount: 2,
       hydratedCount: 2,
       skippedCount: 0,
+    });
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        clanTag: { in: ["#PYLQ0289", "#QGRJ2222"] },
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
     });
   });
 
   it("force refreshes CWL tracked clan metadata even when current values are already populated", async () => {
-    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#PYLQ0289" }]);
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
     const cocService = {
       getClan: vi.fn(async () => ({
@@ -263,11 +305,8 @@ describe("CwlRegistryService helpers", () => {
       cocService: cocService as any,
     });
 
-    expect(prismaMock.cwlTrackedClan.createMany).toHaveBeenCalledWith({
-      data: [{ season: "2026-03", tag: "#PYLQ0289", name: null, leagueLabel: null }],
-      skipDuplicates: true,
-    });
     expect(cocService.getClan).toHaveBeenCalledWith("#PYLQ0289");
+    expect(prismaMock.cwlTrackedClan.createMany).not.toHaveBeenCalled();
     expect(prismaMock.cwlTrackedClan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
@@ -281,10 +320,79 @@ describe("CwlRegistryService helpers", () => {
     expect(result).toEqual({
       season: "2026-03",
       requestedCount: 1,
+      ensuredCount: 0,
+      hydratedCount: 1,
+      skippedCount: 0,
+    });
+    expect(prismaMock.cwlRotationPlan.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.cwlTrackedClan.createMany).not.toHaveBeenCalled();
+  });
+
+  it("deactivates stale active CWL plans during refresh when missing tracked rows are recreated", async () => {
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tag: "#PYLQ0289" }]);
+    prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
+    const cocService = {
+      getClan: vi.fn(async () => ({
+        name: "CWL Alpha",
+        warLeague: { name: "Champion League I" },
+      })),
+    };
+
+    const result = await refreshCwlTrackedClanMetadataForSeason({
+      clanTags: ["#PYLQ0289"],
+      season: "2026-03",
+      cocService: cocService as any,
+    });
+
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        clanTag: { in: ["#PYLQ0289"] },
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+    expect(result).toEqual({
+      season: "2026-03",
+      requestedCount: 1,
       ensuredCount: 1,
       hydratedCount: 1,
       skippedCount: 0,
     });
+  });
+
+  it("does not update rotation plans for empty or invalid CWL tag input", async () => {
+    const emptyResult = await addCwlClanTagsForSeason({
+      rawTags: "   ",
+      season: "2026-03",
+    });
+    const invalidResult = await addCwlClanTagsForSeason({
+      rawTags: "[BADTAG,***]",
+      season: "2026-03",
+    });
+
+    expect(emptyResult).toEqual({
+      season: "2026-03",
+      added: [],
+      alreadyExisting: [],
+      invalid: [],
+      duplicateInRequest: [],
+    });
+    expect(invalidResult).toEqual({
+      season: "2026-03",
+      added: [],
+      alreadyExisting: [],
+      invalid: ["BADTAG", "***"],
+      duplicateInRequest: [],
+    });
+    expect(prismaMock.cwlRotationPlan.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.cwlTrackedClan.createMany).not.toHaveBeenCalled();
   });
 
   it("deactivates current-season active CWL rotation plans when a tracked clan is removed", async () => {

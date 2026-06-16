@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
-  $transaction: vi.fn(),
+  $transaction: vi.fn(async (arg: any) => {
+    if (typeof arg === "function") {
+      return arg(prismaMock);
+    }
+    if (Array.isArray(arg)) {
+      return Promise.all(arg);
+    }
+    return arg;
+  }),
   roster: {
     create: vi.fn(),
     findUnique: vi.fn(),
@@ -51,6 +59,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findFirst: vi.fn(),
     createMany: vi.fn(),
+    updateMany: vi.fn(),
+  },
+  cwlRotationPlan: {
     updateMany: vi.fn(),
   },
   cwlPlayerClanSeason: {
@@ -510,6 +521,7 @@ describe("RosterService", () => {
     });
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -588,7 +600,9 @@ describe("RosterService", () => {
   });
 
   it("hydrates CWL tracked-clan metadata while creating a CWL roster", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 1 });
 
     await rosterService.createRoster({
@@ -4496,6 +4510,9 @@ describe("RosterService", () => {
       leagueLabel: "Champion League III",
     };
     prismaMock.cwlTrackedClan.findFirst.mockImplementation(async () => trackedClanRecord as any);
+    prismaMock.cwlTrackedClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tag: "#2QG2C08UP" }]);
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 1 } as any);
     prismaMock.cwlTrackedClan.updateMany.mockImplementation(async ({ data }: any) => {
       Object.assign(trackedClanRecord, data);
