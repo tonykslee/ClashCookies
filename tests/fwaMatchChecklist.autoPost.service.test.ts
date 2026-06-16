@@ -206,6 +206,54 @@ describe("FwaMatchChecklistAutoPostService", () => {
     );
   });
 
+  it("passes the exact unknown mail row through the automatic-post path", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Mail",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "📭 | 🔘 | ☐ | Alpha vs `-`",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+        },
+      ],
+      scopeKey: "mail-unknown-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+      emptyMessage: null,
+    });
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+      },
+      createdByUserId: "user-1",
+      viewType: "Mail",
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+        referenceId: "sync-message-1",
+        rows: [
+          expect.objectContaining({
+            compactCopyLine: "📭 | 🔘 | ☐ | Alpha vs `-`",
+          }),
+        ],
+      }),
+    );
+  });
+
   it("preserves a known war-end expiry when render state already knows it", async () => {
     const knownWarEnd = new Date("2026-05-14T22:00:00.000Z");
     renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({

@@ -884,6 +884,8 @@ describe("/sync readiness direct post", () => {
 
 describe("/sync time post modal submit", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T19:00:00.000Z"));
     vi.restoreAllMocks();
     checklistAutoPostMock.postForSyncTrackedMessage.mockResolvedValue({
       posted: 0,
