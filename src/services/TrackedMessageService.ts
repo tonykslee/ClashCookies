@@ -329,10 +329,14 @@ export function buildFwaMatchCompactCopyLine(params: {
     clanName: params.clanName,
   });
   const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
-  const opponentTagRaw = normalizeTagBare(String(params.opponentTag ?? ""));
-  const opponentTag = opponentTagRaw
-    ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
-    : "—";
+  const opponentTagInput = String(params.opponentTag ?? "").trim();
+  const opponentTagRaw = normalizeTagBare(opponentTagInput);
+  const opponentTag =
+    opponentTagInput === "-"
+      ? "-"
+      : opponentTagRaw
+        ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
+        : "—";
   const matchStateEmoji = resolveFwaMatchStateEmoji({
     matchType: params.matchType,
     outcome: params.outcome,

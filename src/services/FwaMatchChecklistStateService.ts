@@ -248,6 +248,20 @@ function normalizeWarState(
   return "unknown";
 }
 
+type MailChecklistWarRenderState = {
+  shouldResolveMailStatus: boolean;
+  opponentName: string;
+  opponentTag: string | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  warId: number | null;
+  warStartTime: Date | null;
+  liveRevisionFields: {
+    warId: number | null;
+    opponentTag: string | null;
+  } | null;
+};
+
 function isFreshMailChecklistWarIdentity(input: {
   currentWar: {
     state?: string | null;
@@ -284,6 +298,116 @@ function isFreshMailChecklistWarIdentity(input: {
   }
 
   return true;
+}
+
+function resolveMailChecklistStaleIdentityReason(input: {
+  currentWar: {
+    state?: string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null;
+  liveWar: {
+    state?: string | null;
+    startTime?: string | null;
+    opponent?: {
+      tag?: string | null;
+    } | null;
+  } | null;
+}): string | null {
+  const currentWar = input.currentWar;
+  const liveWar = input.liveWar;
+  if (!currentWar) return "current_war_missing";
+  if (!liveWar) return "live_war_missing";
+
+  const liveWarState = normalizeWarState(liveWar.state ?? null);
+  if (liveWarState === "notInWar") return "not_in_war";
+  if (liveWarState !== "preparation" && liveWarState !== "inWar") return "live_state_unknown";
+
+  if (!(currentWar.startTime instanceof Date) || !Number.isFinite(currentWar.startTime.getTime())) {
+    return "current_start_missing";
+  }
+  const liveWarStartMs = parseCocApiTime(liveWar.startTime ?? null);
+  if (liveWarStartMs === null) return "live_start_missing";
+  if (currentWar.startTime.getTime() !== liveWarStartMs) {
+    return "start_mismatch";
+  }
+
+  const currentOpponentTag = normalizeChecklistClanTag(currentWar.opponentTag ?? "");
+  const liveOpponentTag = normalizeChecklistClanTag(liveWar.opponent?.tag ?? "");
+  if (!currentOpponentTag) return "current_opponent_missing";
+  if (!liveOpponentTag) return "live_opponent_missing";
+  if (currentOpponentTag !== liveOpponentTag) return "opponent_mismatch";
+
+  return null;
+}
+
+function resolveMailChecklistWarRenderState(input: {
+  currentWar: {
+    state?: string | null;
+    startTime?: Date | null;
+    endTime?: Date | null;
+    warId?: number | null;
+    opponentTag?: string | null;
+    matchType?: string | null;
+    outcome?: string | null;
+  } | null;
+  liveWar: {
+    state?: string | null;
+    startTime?: string | null;
+    opponent?: {
+      tag?: string | null;
+      name?: string | null;
+    } | null;
+  } | null;
+  guildId: string;
+  clanTag: string;
+}): MailChecklistWarRenderState {
+  const isFresh = isFreshMailChecklistWarIdentity({
+    currentWar: input.currentWar,
+    liveWar: input.liveWar,
+  });
+  if (!isFresh) {
+    const staleReason = resolveMailChecklistStaleIdentityReason({
+      currentWar: input.currentWar,
+      liveWar: input.liveWar,
+    });
+    console.debug(
+      `[fwa_checklist_mail_identity_suppressed] guildId=${input.guildId} clanTag=${input.clanTag} reason=${staleReason} currentState=${input.currentWar?.state ?? "missing"} liveState=${input.liveWar?.state ?? "missing"}`,
+    );
+    return {
+      shouldResolveMailStatus: false,
+      opponentName: "-",
+      opponentTag: "-",
+      matchType: "UNKNOWN",
+      outcome: null,
+      warId: null,
+      warStartTime: null,
+      liveRevisionFields: null,
+    };
+  }
+
+  const liveWarStartMs = parseCocApiTime(input.liveWar?.startTime ?? null);
+  const opponentTag = normalizeChecklistClanTag(String(input.liveWar?.opponent?.tag ?? ""));
+  const opponentName = sanitizeClanName(String(input.liveWar?.opponent?.name ?? "")) ?? "Unknown Opponent";
+  const warId = input.currentWar?.warId ?? null;
+  const warStartTime =
+    input.currentWar?.startTime ??
+    (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
+  const matchType = normalizeMatchType(input.currentWar?.matchType ?? null);
+  const outcome = normalizeOutcome(input.currentWar?.outcome ?? null);
+  return {
+    shouldResolveMailStatus: true,
+    opponentName,
+    opponentTag: opponentTag || null,
+    matchType,
+    outcome: matchType === "FWA" ? outcome ?? "UNKNOWN" : outcome,
+    warId,
+    warStartTime,
+    liveRevisionFields: {
+      warId,
+      opponentTag: opponentTag || null,
+    },
+  };
 }
 
 function getCurrentWarCached(
@@ -712,48 +836,47 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       clanTag,
       params.warLookupCache,
     ).catch(() => null);
-    const liveOpponentTag = normalizeChecklistClanTag(
-      String(liveWar?.opponent?.tag ?? currentWar?.opponentTag ?? ""),
-    );
-    const liveOpponentName =
-      sanitizeClanName(String(liveWar?.opponent?.name ?? "")) ?? "Unknown Opponent";
-    const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
-    const warId = currentWar?.warId ?? null;
     const liveWarStartMs = parseCocApiTime(liveWar?.startTime ?? null);
-    const warStartTime =
-      currentWar?.startTime ??
-      (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
-    const shouldResolveMailStatus = isFreshMailChecklistWarIdentity({
+    const checklistWarStartTime =
+      currentWar?.startTime ?? (liveWarStartMs !== null ? new Date(liveWarStartMs) : null);
+    const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
+    const mailRenderState = resolveMailChecklistWarRenderState({
       currentWar: currentWar
         ? {
             state: currentWar.state ?? null,
             startTime: currentWar.startTime ?? null,
+            endTime: currentWar.endTime ?? null,
+            warId: currentWar.warId ?? null,
             opponentTag: currentWar.opponentTag ?? null,
+            matchType: currentWar.matchType ?? null,
+            outcome: currentWar.outcome ?? null,
           }
         : null,
       liveWar: liveWar
         ? {
-            state: liveWar.state ?? null,
-            startTime: liveWar.startTime ?? null,
-            opponent: liveWar.opponent ?? null,
-          }
+          state: liveWar.state ?? null,
+          startTime: liveWar.startTime ?? null,
+          opponent: liveWar.opponent ?? null,
+        }
         : null,
+      guildId: params.guildId,
+      clanTag,
     });
     checklistExpiresAtCandidates.push(
       ...buildChecklistWarTimingCandidates({
         prepStartTime: currentWar?.prepStartTime ?? null,
-        startTime: warStartTime,
+        startTime: checklistWarStartTime,
         endTime: currentWar?.endTime ?? null,
       }),
     );
-    const mailStatus = shouldResolveMailStatus
+    const mailStatus = mailRenderState.shouldResolveMailStatus
       ? await warMailLifecycleService.resolveStatusForCurrentWar({
           client: params.client,
           guildId: params.guildId,
           clanTag,
-          warId,
-          warStartTime,
-          opponentTag: liveOpponentTag || currentWar?.opponentTag || null,
+          warId: mailRenderState.warId,
+          warStartTime: mailRenderState.warStartTime,
+          opponentTag: mailRenderState.opponentTag,
           sentEmoji: MAILBOX_SENT_EMOJI,
           unsentEmoji: MAILBOX_NOT_SENT_EMOJI,
         })
@@ -762,24 +885,18 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
           mailStatusEmoji: MAILBOX_NOT_SENT_EMOJI,
           debug: null,
         };
-    const matchType = normalizeMatchType(currentWar?.matchType ?? null);
-    const outcome = normalizeOutcome(currentWar?.outcome ?? null);
-    const effectiveOutcome = matchType === "FWA" ? outcome ?? "UNKNOWN" : outcome;
     const compactCopyLine = buildFwaMatchCompactCopyLine({
       mailStatusEmoji: mailStatus.mailStatusEmoji,
       checklist: true,
       clanShortName: clan.shortName,
       clanName,
-      opponentName: liveOpponentName,
-      opponentTag: liveOpponentTag || currentWar?.opponentTag || null,
-      matchType,
-      outcome: effectiveOutcome,
+      opponentName: mailRenderState.opponentName,
+      opponentTag: mailRenderState.opponentTag,
+      matchType: mailRenderState.matchType,
+      outcome: mailRenderState.outcome,
     });
     singleViews[clanTag] = {
-      liveRevisionFields: {
-        warId,
-        opponentTag: liveOpponentTag || currentWar?.opponentTag || null,
-      },
+      liveRevisionFields: mailRenderState.liveRevisionFields,
     };
     copyLines.push(compactCopyLine);
   }

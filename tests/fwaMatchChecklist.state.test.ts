@@ -203,7 +203,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.expiresAt?.toISOString()).toBe("2026-05-14T22:00:00.000Z");
   });
 
-  it("renders a preserved ended FWA outcome for a notInWar current-war row", async () => {
+  it("renders a safe unknown mail row for a notInWar current-war row", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
     ]);
@@ -219,16 +219,32 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         state: "notInWar",
       },
     ]);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "notInWar",
+      }),
+    );
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
     const state = await buildFwaMatchChecklistRenderStateForGuild({
-      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      cocService: { getCurrentWar } as any,
       guildId: "guild-1",
       client: {} as any,
     });
 
     expect(state.rows).toHaveLength(1);
-    expect(state.rows[0].compactCopyLine).toContain("\u{1F7E2}");
+    expect(state.rows[0].compactCopyLine).toContain("\u{1F4ED} | \u{1F518} | A vs `-` (`-`)");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F7E2}");
     expect(state.rows[0].compactCopyLine).not.toContain("\u{1F534}");
+    expect(state.rows[0].compactCopyLine).not.toContain("#OPP1");
+    expect(state.rows[0].contextKey).toBeNull();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[fwa_checklist_mail_identity_suppressed]"),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("reason=not_in_war"));
+    expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
   });
 
   it("falls back to the existing 30-minute expiry when war timing is unavailable", async () => {
@@ -1064,6 +1080,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
     expect(state.rows[0].compactCopyLine).toContain("\u{1F4ED}");
     expect(state.rows[0].compactCopyLine).not.toContain("\u{1F4EC}");
+    expect(state.rows[0].compactCopyLine).toContain("vs `-`");
+    expect(state.rows[0].compactCopyLine).not.toContain("#PYLQ");
   });
 
   it("renders unsent mail when the live war start time does not match the current-war row", async () => {
@@ -1099,6 +1117,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
     expect(state.rows[0].compactCopyLine).toContain("\u{1F4ED}");
     expect(state.rows[0].compactCopyLine).not.toContain("\u{1F4EC}");
+    expect(state.rows[0].compactCopyLine).toContain("vs `-`");
+    expect(state.rows[0].compactCopyLine).not.toContain("#PYLQ");
   });
 
   it("does not let checked-clan state change the mailbox emoji for stale current-war rows", async () => {
