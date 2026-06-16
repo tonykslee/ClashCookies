@@ -280,7 +280,7 @@ describe("/clan command behavior", () => {
     expect(infoLogs.some((line: string) => line.includes("stage=interaction_deferred"))).toBe(true);
     expect(infoLogs.some((line: string) => line.includes("stage=cwl_tags_parsed"))).toBe(true);
     expect(
-      infoLogs.some((line: string) => line.includes("stage=cwl_tags_existing_rows_loaded")),
+      infoLogs.some((line: string) => line.includes("stage=cwl_tags_registry_reconcile")),
     ).toBe(true);
     expect(
       infoLogs.some((line: string) => line.includes("stage=cwl_tags_existing_rows_loaded")),

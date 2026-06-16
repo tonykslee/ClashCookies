@@ -241,7 +241,7 @@ export async function addCwlClanTagsForSeason(input: {
   }
 
   const batchResult = await runBoundedCwlTagStage({
-    stage: "cwl_tags_existing_rows_query",
+    stage: "cwl_tags_registry_reconcile",
     timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
     details: { season, valid_count: parsed.validTags.length },
     action: () => createMissingCwlTrackedClansAndDeactivateStalePlans({ season, clanTags: parsed.validTags }),
