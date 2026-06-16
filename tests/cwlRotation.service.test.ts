@@ -412,8 +412,18 @@ describe("CwlRotationService", () => {
         }),
       }),
     );
-    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalled();
-    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data).toHaveLength(11);
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanDay.create.mock.calls.every(
+        ([call]) => call?.data?.lineupSize === 11,
+      ),
+    ).toBe(true);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls.every(
+        ([call]) => call?.data?.length === 11,
+      ),
+    ).toBe(true);
     expect(observedRosterRows).toHaveLength(11);
   });
 
@@ -1226,7 +1236,18 @@ describe("CwlRotationService", () => {
         }),
       }),
     );
-    expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data).toHaveLength(11);
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(7);
+    expect(
+      txMock.cwlRotationPlanDay.create.mock.calls.every(
+        ([call]) => call?.data?.lineupSize === 11,
+      ),
+    ).toBe(true);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(7);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls.every(
+        ([call]) => call?.data?.length === 11,
+      ),
+    ).toBe(true);
   });
 
   it("creates roster-backed 30-player plans when size 30 is selected", async () => {

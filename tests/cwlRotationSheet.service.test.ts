@@ -27,6 +27,15 @@ import { cwlRotationSheetService } from "../src/services/CwlRotationSheetService
 import { cwlStateService } from "../src/services/CwlStateService";
 import { PublicGoogleSheetsService } from "../src/services/PublicGoogleSheetsService";
 
+function buildValidCwlTag(index: number): string {
+  const digits = index.toString(4).padStart(4, "0");
+  const mapped = digits
+    .split("")
+    .map((char) => ["0", "2", "8", "9"][Number(char)])
+    .join("");
+  return `#PYLQ${mapped}`;
+}
+
 describe("CwlRotationSheetService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -1054,27 +1063,35 @@ describe("CwlRotationSheetService", () => {
   });
 
   it("reimports canonical exported planner data with exact tag-based parity and no review", async () => {
-    const lineupRows = Array.from({ length: 11 }, (_value, index) => ({
-      playerTag: `#PYLQ${String(index + 1).padStart(4, "0")}`,
-      playerName: `Player ${index + 1}`,
-      subbedOut: false,
-      assignmentOrder: index,
-    }));
+    const lineupRows = [
+      {
+        playerTag: buildValidCwlTag(0),
+        playerName: "Alpha",
+        subbedOut: false,
+        assignmentOrder: 0,
+      },
+      {
+        playerTag: buildValidCwlTag(1),
+        playerName: "Bravo",
+        subbedOut: true,
+        assignmentOrder: 1,
+      },
+    ];
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "CWL Alpha",
         version: 3,
-        rosterSize: 11,
+        rosterSize: 2,
         generatedFromRoundDay: 2,
-        excludedPlayerTags: [],
+        excludedPlayerTags: [buildValidCwlTag(1)],
         warningSummary: null,
         metadata: { source: "sheet-import" },
         days: [
           {
             roundDay: 1,
-            lineupSize: 11,
+            lineupSize: 2,
             locked: false,
             metadata: { source: "sheet-import" },
             rows: lineupRows,
@@ -1125,10 +1142,93 @@ describe("CwlRotationSheetService", () => {
     expect(preview.matchedClans[0]?.importable).toBe(true);
     expect(preview.matchedClans[0]?.reviewRequiredRowCount).toBe(0);
     expect(preview.matchedClans[0]?.parsedRows.every((row) => row.classification === "exact_match")).toBe(true);
+    expect(preview.matchedClans[0]?.days[0]?.lineupSize).toBe(1);
+    expect(preview.matchedClans[0]?.days[0]?.members).toHaveLength(2);
+    expect(preview.matchedClans[0]?.days[0]?.members[0]?.subbedOut).toBe(false);
+    expect(preview.matchedClans[0]?.days[0]?.members[1]?.subbedOut).toBe(true);
+    expect(preview.matchedClans[0]?.parsedRows).toHaveLength(2);
+  });
+
+  it("round-trips an 11-player exported planner day through explicit valid tags", async () => {
+    const lineupRows = Array.from({ length: 11 }, (_value, index) => ({
+      playerTag: buildValidCwlTag(index),
+      playerName: `Imported Player ${index + 1}`,
+      subbedOut: false,
+      assignmentOrder: index,
+    }));
+    const expectedTags = lineupRows.map((row) => row.playerTag);
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        version: 4,
+        rosterSize: 11,
+        generatedFromRoundDay: 2,
+        excludedPlayerTags: [],
+        warningSummary: null,
+        metadata: { source: "sheet-import" },
+        days: [
+          {
+            roundDay: 1,
+            lineupSize: 11,
+            locked: false,
+            metadata: { source: "sheet-import" },
+            rows: lineupRows,
+          },
+        ],
+      },
+    ]);
+    vi.spyOn(GoogleSheetsService.prototype, "createSpreadsheet").mockResolvedValue({
+      spreadsheetId: "sheet-11",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-11/edit?usp=sharing",
+    });
+    const writeTabs = vi.spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs").mockResolvedValue(undefined);
+    vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic").mockResolvedValue(undefined);
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue(
+      lineupRows.map((row, index) => ({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: row.playerTag,
+        playerName: `Roster Player ${index + 1}`,
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      })) as any,
+    );
+
+    await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+    });
+
+    const exportedValues = (writeTabs.mock.calls[0]?.[0] as any)?.tabs?.[0]?.values as string[][];
+    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockResolvedValue({
+      spreadsheetId: "sheet-11",
+      title: "Valid 11 CWL Export",
+      sheets: [{ sheetId: 1, title: "CWL Alpha #2QG2C08UP", index: 0, hidden: false, tables: [] }],
+    });
+    vi.spyOn(GoogleSheetsService.prototype, "readValues").mockResolvedValue(exportedValues);
+
+    const preview = await cwlRotationSheetService.buildImportPreview({
+      sheetLink: "https://docs.google.com/spreadsheets/d/sheet-11/edit",
+      overwrite: false,
+    });
+
+    expect(preview.matchedClans).toHaveLength(1);
+    expect(preview.matchedClans[0]?.importable).toBe(true);
+    expect(preview.matchedClans[0]?.reviewRequiredRowCount).toBe(0);
     expect(preview.matchedClans[0]?.days[0]?.lineupSize).toBe(11);
     expect(preview.matchedClans[0]?.days[0]?.members).toHaveLength(11);
+    expect(preview.matchedClans[0]?.days[0]?.members.every((member) => member.subbedOut === false)).toBe(true);
     expect(preview.matchedClans[0]?.parsedRows).toHaveLength(11);
-    expect(preview.matchedClans[0]?.days[0]?.members?.map((member) => member.playerTag)).toContain("#PYLQ0001");
-    expect(preview.matchedClans[0]?.days[0]?.members?.map((member) => member.playerTag)).toContain("#PYLQ0011");
+    expect(preview.matchedClans[0]?.parsedRows.every((row) => row.classification === "exact_match")).toBe(true);
+    expect(preview.matchedClans[0]?.parsedRows.map((row) => row.resolvedPlayerTag).sort()).toEqual(
+      [...expectedTags].sort(),
+    );
+    expect(preview.matchedClans[0]?.days[0]?.members.map((member) => member.playerTag).sort()).toEqual(
+      [...expectedTags].sort(),
+    );
   });
 });
