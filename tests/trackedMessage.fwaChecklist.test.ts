@@ -28,6 +28,7 @@ import messageReactionRemove from "../src/listeners/messageReactionRemove";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
+  buildFwaMatchCompactCopyLine,
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistPublicationClaimKey,
   buildFwaMatchChecklistMessageContent,
@@ -191,6 +192,36 @@ describe("fwa checklist tracked messages", () => {
     vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
       null as any,
     );
+  });
+
+  it("renders the deliberate unknown opponent sentinel without tag parentheses", () => {
+    expect(
+      buildFwaMatchCompactCopyLine({
+        mailStatusEmoji: "\u{1F4ED}",
+        checklist: true,
+        checklistChecked: false,
+        clanShortName: "A",
+        clanName: "Alpha",
+        opponentName: "-",
+        opponentTag: "-",
+        matchType: "UNKNOWN",
+        outcome: null,
+      }),
+    ).toBe("\u{1F4ED} | \u{1F518} | \u{2610} | A vs `-`");
+  });
+
+  it("renders a known opponent tag with a missing name as a hyphen", () => {
+    expect(
+      buildFwaMatchCompactCopyLine({
+        mailStatusEmoji: "\u{1F4ED}",
+        clanShortName: "A",
+        clanName: "Alpha",
+        opponentName: "",
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        outcome: "WIN",
+      }),
+    ).toBe("\u{1F4ED} | \u{1F7E2} | A vs `-` (`#OPP1`)");
   });
 
   it("normalizes checklist kinds and keeps mail and bases claim keys separate", () => {

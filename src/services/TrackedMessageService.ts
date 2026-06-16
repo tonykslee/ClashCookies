@@ -328,7 +328,7 @@ export function buildFwaMatchCompactCopyLine(params: {
     shortName: params.clanShortName,
     clanName: params.clanName,
   });
-  const opponentName = sanitizeFwaMatchCopyText(params.opponentName) || "unknown";
+  const opponentName = sanitizeFwaMatchCopyText(params.opponentName).trim() || "-";
   const opponentTagInput = String(params.opponentTag ?? "").trim();
   const opponentTagRaw = normalizeTagBare(opponentTagInput);
   const opponentTag =
@@ -344,6 +344,10 @@ export function buildFwaMatchCompactCopyLine(params: {
   const checklistColumn = params.checklist
     ? ` | ${params.checklistChecked ? FWA_MATCH_CHECKLIST_CHECKED_EMOJI : FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI}`
     : "";
+
+  if (opponentTagInput === "-") {
+    return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\``;
+  }
 
   return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
 }

@@ -374,6 +374,98 @@ describe("FWA match checklist service", () => {
     expect(followUp).not.toHaveBeenCalled();
   });
 
+  it("refreshes an unknown mail row into a confirmed row on a later refresh", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "message-1",
+        reactions: {
+          cache: {
+            values: () => [][Symbol.iterator](),
+          },
+        },
+        edit,
+        react,
+      },
+    } as any;
+
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            clanTag: "#PYPY",
+            compactCopyLine: "📭 | 🔘 | ☐ | A vs `-`",
+            badgeEmojiId: "111",
+            badgeEmojiName: "rr",
+            badgeEmojiInline: "<:rr:111>",
+            contextKey: "ctx-rr-unknown",
+          },
+        ],
+        scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr-unknown",
+        checkedClanTags: [],
+        referenceId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+        emptyMessage: null,
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            clanTag: "#PYPY",
+            compactCopyLine: "📬 | 🔘 | ☐ | A vs `Opponent` (`#PYPL`)",
+            badgeEmojiId: "111",
+            badgeEmojiName: "rr",
+            badgeEmojiInline: "<:rr:111>",
+            contextKey: "ctx-rr-confirmed",
+          },
+        ],
+        scopeKey: "fwa_match_checklist|guild=guild-1|clan=all|rows=ctx-rr-confirmed",
+        checkedClanTags: [],
+        referenceId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+        emptyMessage: null,
+      });
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValue(true);
+    trackedMessageMock.getActiveByMessageId.mockResolvedValue({
+      status: "ACTIVE",
+    });
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: "message-1" }),
+      null,
+      expect.objectContaining({
+        rows: [
+          expect.objectContaining({
+            compactCopyLine: "📭 | 🔘 | ☐ | A vs `-`",
+          }),
+        ],
+      }),
+    );
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "message-1" }),
+      null,
+      expect.objectContaining({
+        rows: [
+          expect.objectContaining({
+            compactCopyLine: "📬 | 🔘 | ☐ | A vs `Opponent` (`#PYPL`)",
+          }),
+        ],
+      }),
+    );
+  });
+
   it("refreshes a public bases checklist message in place with the bases render path", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const followUp = vi.fn().mockResolvedValue(undefined);
