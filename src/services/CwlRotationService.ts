@@ -629,13 +629,20 @@ function buildCwlRotationNotEnoughPlayersDiagnostics(input: CwlRotationNotEnough
   return input;
 }
 
-const CWL_ROTATION_ALLOWED_LINEUP_SIZES = new Set([15, 30]);
+export const CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES = [11, 15, 30] as const;
+export type CwlRotationSupportedExplicitLineupSize =
+  (typeof CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES)[number];
 
-function normalizeCwlRotationLineupSize(input: unknown): 15 | 30 | null {
+export function formatCwlRotationSupportedExplicitLineupSizes(): string {
+  const sizes = CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES;
+  return `${sizes.slice(0, -1).join(", ")}, or ${sizes[sizes.length - 1]}`;
+}
+
+function normalizeCwlRotationLineupSize(input: unknown): CwlRotationSupportedExplicitLineupSize | null {
   const size = Math.trunc(Number(input));
   if (!Number.isFinite(size)) return null;
-  if (!CWL_ROTATION_ALLOWED_LINEUP_SIZES.has(size)) return null;
-  return size as 15 | 30;
+  if (!(CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES as readonly number[]).includes(size)) return null;
+  return size as CwlRotationSupportedExplicitLineupSize;
 }
 
 async function loadActivePlan(input: {

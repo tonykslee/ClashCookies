@@ -29,7 +29,11 @@ import {
 } from "../services/RosterService";
 import { showRosterMutationApplyingState } from "../services/RosterInteractionStateService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
-import { cwlRotationService } from "../services/CwlRotationService";
+import {
+  cwlRotationService,
+  CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES,
+  formatCwlRotationSupportedExplicitLineupSizes,
+} from "../services/CwlRotationService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   cwlRotationSheetService,
@@ -53,6 +57,10 @@ const CWL_ROTATION_SHOW_OVERVIEW_MAX_OPTIONS = 25;
 const CWL_ROTATION_SHOW_DAY_CHOICES = [1, 2, 3, 4, 5, 6, 7].map((day) => ({
   name: `Day ${day}`,
   value: day,
+}));
+const CWL_ROTATION_SIZE_CHOICES = CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES.map((size) => ({
+  name: String(size),
+  value: size,
 }));
 type CwlRotationPlanExport = Awaited<ReturnType<typeof cwlRotationService.listActivePlanExports>>[number];
 type CwlRotationRosterCreateSuccess = Extract<CreateCwlRotationRosterPlanResult, { outcome: "created" }>;
@@ -2924,7 +2932,9 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     return;
   }
   if (result.outcome === "invalid_size") {
-    await interaction.editReply("CWL rotation lineup size must be 15 or 30.");
+    await interaction.editReply(
+      `CWL rotation lineup size must be ${formatCwlRotationSupportedExplicitLineupSizes()}.`,
+    );
     return;
   }
   if (!rosterId && result.outcome === "not_preparation") {
@@ -4253,10 +4263,7 @@ export const Cwl: Command = {
               description: "CWL lineup size",
               type: ApplicationCommandOptionType.Integer,
               required: false,
-              choices: [
-                { name: "15", value: 15 },
-                { name: "30", value: 30 },
-              ],
+              choices: CWL_ROTATION_SIZE_CHOICES,
             },
             {
               name: "roster",
