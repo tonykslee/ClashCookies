@@ -753,6 +753,105 @@ describe("CwlRotationService", () => {
     expect(importedResult).toMatchObject({ outcome: "created", version: 11 });
   });
 
+  it("blocks a non-overwrite create when the transaction sees an active plan after a stale outside precheck", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValueOnce(null);
+    txMock.cwlRotationPlan.findFirst.mockResolvedValueOnce({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      version: 1,
+      isActive: true,
+    } as any);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toEqual({
+      outcome: "blocked_existing",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      existingVersion: 1,
+    });
+    expect(txMock.cwlRotationPlan.create).not.toHaveBeenCalled();
+    expect(txMock.cwlRotationPlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("retries a version collision and then blocks once the retried transaction sees the active plan", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValueOnce(null);
+    txMock.cwlRotationPlan.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ version: 1 } as any)
+      .mockResolvedValueOnce({
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      } as any);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+    txMock.cwlRotationPlan.create.mockRejectedValueOnce({ code: "P2002" } as any);
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toEqual({
+      outcome: "blocked_existing",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      existingVersion: 1,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces an active plan that appears after the outside precheck when overwrite is authorized", async () => {
+    prismaMock.cwlRotationPlan.findFirst.mockResolvedValueOnce(null);
+    txMock.cwlRotationPlan.findFirst.mockResolvedValueOnce({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      version: 1,
+      isActive: true,
+    } as any);
+    txMock.cwlRotationPlan.findFirst.mockResolvedValueOnce({ version: 7 } as any);
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+    txMock.cwlRotationPlan.create.mockResolvedValueOnce({ id: "plan-8" });
+    txMock.cwlRotationPlan.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+      overwrite: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      version: 8,
+    });
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          clanTag: "#2QG2C08UP",
+          season: "2026-04",
+          isActive: true,
+        }),
+        data: { isActive: false },
+      }),
+    );
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          version: 8,
+          isActive: true,
+        }),
+      }),
+    );
+  });
+
   it("retries a transient version collision instead of surfacing P2002", async () => {
     mockRotationPlanHistory([]);
     setupManualCreateRosterFixture({ rosterCount: 11 });

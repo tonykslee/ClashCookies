@@ -43,7 +43,6 @@ type CwlRotationPlanWriteInput = {
   clanTag: string;
   season: string;
   version: number;
-  overwriteExisting: boolean;
   rosterSize: number;
   generatedFromRoundDay: number | null;
   excludedPlayerTags: string[];
@@ -687,6 +686,26 @@ async function loadNextRotationPlanVersion(
   return (latestPlan?.version ?? 0) + 1;
 }
 
+async function loadActiveRotationPlanInTransaction(
+  tx: CwlRotationPlanWriteTx,
+  input: {
+    clanTag: string;
+    season: string;
+  },
+) {
+  return tx.cwlRotationPlan.findFirst({
+    where: {
+      clanTag: input.clanTag,
+      season: input.season,
+      isActive: true,
+    },
+    select: {
+      version: true,
+    },
+    orderBy: [{ version: "desc" }, { updatedAt: "desc" }, { id: "desc" }],
+  });
+}
+
 type CwlRotationPlanWriteRetryResult<T> =
   | { outcome: "created"; value: T }
   | { outcome: "blocked_existing"; existingVersion: number };
@@ -694,49 +713,70 @@ type CwlRotationPlanWriteRetryResult<T> =
 async function runCwlRotationPlanWriteWithRetry<T>(input: {
   clanTag: string;
   season: string;
-  overwriteExisting: boolean;
+  overwriteAuthorized: boolean;
   write: (tx: CwlRotationPlanWriteTx, version: number) => Promise<T>;
 }): Promise<CwlRotationPlanWriteRetryResult<T>> {
   let lastError: unknown = null;
+  let attempts = 0;
 
   for (let attempt = 1; attempt <= CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT; attempt += 1) {
+    attempts = attempt;
     try {
-      const value = await prisma.$transaction(async (tx) => {
+      const transactionResult = await prisma.$transaction(async (tx) => {
+        const activePlan = await loadActiveRotationPlanInTransaction(tx, {
+          clanTag: input.clanTag,
+          season: input.season,
+        });
+        if (activePlan && !input.overwriteAuthorized) {
+          return {
+            outcome: "blocked_existing" as const,
+            existingVersion: activePlan.version,
+          };
+        }
+        if (activePlan && input.overwriteAuthorized) {
+          await tx.cwlRotationPlan.updateMany({
+            where: {
+              clanTag: input.clanTag,
+              season: input.season,
+              isActive: true,
+            },
+            data: { isActive: false },
+          });
+        }
         const version = await loadNextRotationPlanVersion(tx, {
           clanTag: input.clanTag,
           season: input.season,
         });
         return input.write(tx, version);
+        }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       });
-      return { outcome: "created", value };
+      if (
+        transactionResult &&
+        typeof transactionResult === "object" &&
+        (transactionResult as { outcome?: unknown }).outcome === "blocked_existing"
+      ) {
+        return transactionResult as { outcome: "blocked_existing"; existingVersion: number };
+      }
+      return { outcome: "created", value: transactionResult as Awaited<T> };
     } catch (error) {
       lastError = error;
       if (!isRetryableCwlRotationPlanWriteError(error) || attempt >= CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT) {
         break;
       }
-
-      if (!input.overwriteExisting) {
-        const existingActivePlan = await loadActivePlan({
-          clanTag: input.clanTag,
-          season: input.season,
-        });
-        if (existingActivePlan) {
-          return {
-            outcome: "blocked_existing",
-            existingVersion: existingActivePlan.version,
-          };
-        }
-      }
     }
   }
 
+  const attemptsText = attempts > 0 ? attempts.toString() : "0";
+  const code = lastError && typeof lastError === "object" ? String((lastError as { code?: unknown }).code ?? "") : "";
   const message =
-    lastError instanceof Error && String(lastError.message ?? "").trim()
-      ? lastError.message
-      : "unknown error";
-  throw new Error(
-    `Failed to persist CWL rotation plan after ${CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT} attempts: ${message}`,
-  );
+    lastError instanceof Error && String(lastError.message ?? "").trim() ? lastError.message : "unknown error";
+  const error = new Error(`Failed to persist CWL rotation plan after ${attemptsText} attempt(s): ${message}`);
+  if (code) {
+    (error as { code?: string }).code = code;
+  }
+  (error as { attempts?: number }).attempts = attempts;
+  throw error;
 }
 
 async function loadTrackedClanTagsForSeason(season: string): Promise<string[]> {
@@ -1158,17 +1198,6 @@ async function persistRotationPlanVersion(
   tx: CwlRotationPlanWriteTx,
   input: CwlRotationPlanWriteInput,
 ): Promise<{ version: number }> {
-  if (input.overwriteExisting) {
-    await tx.cwlRotationPlan.updateMany({
-      where: {
-        clanTag: input.clanTag,
-        season: input.season,
-        isActive: true,
-      },
-      data: { isActive: false },
-    });
-  }
-
   const createdPlan = await tx.cwlRotationPlan.create({
     data: {
       clanTag: input.clanTag,
@@ -1413,13 +1442,12 @@ export class CwlRotationService {
     const writeResult = await runCwlRotationPlanWriteWithRetry({
       clanTag,
       season,
-      overwriteExisting: Boolean(existingActivePlan),
+      overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
           clanTag,
           season,
           version,
-          overwriteExisting: Boolean(existingActivePlan),
           rosterSize: lineupSize,
           generatedFromRoundDay: currentRound.roundDay,
           excludedPlayerTags: excludeTags,
@@ -1778,13 +1806,12 @@ export class CwlRotationService {
     const writeResult = await runCwlRotationPlanWriteWithRetry({
       clanTag,
       season,
-      overwriteExisting: Boolean(existingActivePlan),
+      overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
           clanTag,
           season,
           version,
-          overwriteExisting: Boolean(existingActivePlan),
           rosterSize: lineupSize,
           generatedFromRoundDay: null,
           excludedPlayerTags: [],
@@ -1958,13 +1985,12 @@ export class CwlRotationService {
     const writeResult = await runCwlRotationPlanWriteWithRetry({
       clanTag,
       season,
-      overwriteExisting: Boolean(existingActivePlan),
+      overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
           clanTag,
           season,
           version,
-          overwriteExisting: Boolean(existingActivePlan),
           rosterSize,
           generatedFromRoundDay: input.generatedFromRoundDay ?? null,
           excludedPlayerTags: [],
