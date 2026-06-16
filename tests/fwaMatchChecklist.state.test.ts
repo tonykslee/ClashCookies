@@ -114,12 +114,13 @@ function makeLiveWarSnapshot(params: {
   startTimeIso: string;
   opponentTag: string;
   state?: string | null;
+  opponentName?: string | null;
 }) {
   return {
     startTime: toClashApiTime(params.startTimeIso),
     opponent: {
       tag: params.opponentTag,
-      name: "Opponent",
+      name: params.opponentName ?? "Opponent",
     },
     state: params.state ?? "preparation",
   } as any;
@@ -144,6 +145,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchType: "BL",
         inferredMatchType: null,
         outcome: null,
+        state: "preparation",
       },
       {
         clanTag: "#PYPL",
@@ -153,6 +155,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchType: "BL",
         inferredMatchType: null,
         outcome: null,
+        state: "preparation",
       },
     ]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
@@ -193,9 +196,26 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     vi.useRealTimers();
   });
 
-  it("uses the latest current-war end time as the checklist expiry", async () => {
+  it("uses the latest confirmed current-war end time as the checklist expiry", async () => {
+    const getCurrentWar = vi.fn().mockImplementation(async (clanTag: string) => {
+      if (clanTag === "#PYPY") {
+        return makeLiveWarSnapshot({
+          startTimeIso: "2026-05-13T18:00:00.000Z",
+          opponentTag: "#OPP1",
+          state: "preparation",
+        });
+      }
+      if (clanTag === "#PYPL") {
+        return makeLiveWarSnapshot({
+          startTimeIso: "2026-05-13T22:00:00.000Z",
+          opponentTag: "#OPP2",
+          state: "preparation",
+        });
+      }
+      return null;
+    });
     const state = await buildFwaMatchChecklistRenderStateForGuild({
-      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      cocService: { getCurrentWar } as any,
       guildId: "guild-1",
       client: {} as any,
     });
@@ -203,7 +223,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.expiresAt?.toISOString()).toBe("2026-05-14T22:00:00.000Z");
   });
 
-  it("renders a preserved ended FWA outcome for a notInWar current-war row", async () => {
+  it("renders a safe unknown mail row for a notInWar current-war row", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
     ]);
@@ -219,16 +239,192 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         state: "notInWar",
       },
     ]);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+    );
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
     const state = await buildFwaMatchChecklistRenderStateForGuild({
-      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      cocService: { getCurrentWar } as any,
       guildId: "guild-1",
       client: {} as any,
     });
 
     expect(state.rows).toHaveLength(1);
-    expect(state.rows[0].compactCopyLine).toContain("\u{1F7E2}");
-    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F534}");
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+    expect(state.rows[0].compactCopyLine).not.toContain("(");
+    expect(state.rows[0].contextKey).toBeNull();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[fwa_checklist_mail_identity_suppressed]"),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("reason=current_not_in_war"));
+    expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("renders a safe unknown mail row when the persisted state is unknown", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "MM",
+        inferredMatchType: null,
+        outcome: null,
+        state: "mystery",
+      },
+    ]);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+    );
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar } as any,
+      guildId: "guild-1",
+      client: {} as any,
+    });
+
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("reason=current_state_unknown"));
+  });
+
+  it("renders a stale BL row as the neutral unknown mail row", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "mystery",
+      },
+    ]);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar } as any,
+      guildId: "guild-1",
+      client: {} as any,
+    });
+
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{26AB}");
+  });
+
+  it("renders a stale MM row as the neutral unknown mail row", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "MM",
+        inferredMatchType: null,
+        outcome: null,
+        state: "mystery",
+      },
+    ]);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar } as any,
+      guildId: "guild-1",
+      client: {} as any,
+    });
+
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{26AA}");
+  });
+
+  it("does not let a stale previous-war row override the supplied fallback expiry", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        prepStartTime: new Date("2026-05-11T13:00:00.000Z"),
+        startTime: null,
+        endTime: new Date("2026-05-11T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "notInWar",
+      },
+    ]);
+    const fallbackExpiresAt = new Date("2026-05-15T16:00:00.000Z");
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockRejectedValue(new Error("boom")) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      fallbackExpiresAt,
+    });
+
+    expect(state.expiresAt).toBeInstanceOf(Date);
+    expect(state.expiresAt!.toISOString()).toBe(fallbackExpiresAt.toISOString());
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+  });
+
+  it("uses missing_identity and the 30-minute fallback when the live war API fails", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        prepStartTime: new Date("2026-05-11T13:00:00.000Z"),
+        startTime: new Date("2026-05-11T18:00:00.000Z"),
+        endTime: new Date("2026-05-11T19:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: null,
+        outcome: null,
+        state: "preparation",
+      },
+    ]);
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const before = Date.now();
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockRejectedValue(new Error("boom")) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+    });
+
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
+    expect(state.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 30 * 60 * 1000);
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("reason=missing_identity"));
   });
 
   it("falls back to the existing 30-minute expiry when war timing is unavailable", async () => {
@@ -241,6 +437,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchType: "BL",
         inferredMatchType: null,
         outcome: null,
+        state: "mystery",
       },
     ]);
     const before = Date.now();
@@ -252,6 +449,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.expiresAt).toBeInstanceOf(Date);
     expect(state.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 30 * 60 * 1000);
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
   });
 
   it("renders a bases checklist from current-war and tracked base-swap metadata", async () => {
@@ -487,18 +685,26 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         clanTag: "#PYPY",
         warId: 1,
         prepStartTime: null,
-        startTime: null,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
         endTime: new Date("2026-05-14T18:00:00.000Z"),
         opponentTag: "#OPP1",
         matchType: "BL",
         inferredMatchType: null,
         outcome: null,
+        state: "preparation",
       },
     ]);
 
     const fallbackExpiresAt = new Date("2026-05-15T16:00:00.000Z");
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-05-13T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+    );
     const state = await buildFwaMatchChecklistRenderStateForGuild({
-      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      cocService: { getCurrentWar } as any,
       guildId: "guild-1",
       client: {} as any,
       fallbackExpiresAt,
@@ -975,6 +1181,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         startTimeIso: "2026-06-11T13:20:00.000Z",
         endTimeIso: "2026-06-11T14:20:00.000Z",
         opponentTag: "#PYPL",
+        matchType: null,
         state: "preparation",
       }),
     ]);
@@ -1027,8 +1234,66 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         unsentEmoji: "\u{1F4ED}",
       }),
     );
-    expect(state.rows[0].compactCopyLine).toContain("\u{1F4EC}");
-    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F4ED}");
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4EC} | \u{1F518} | A vs `Opponent` (`#PYPL`)");
+  });
+
+  it("renders a confirmed identity with a missing opponent name using a hyphen", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1000481,
+        prepStartTimeIso: "2026-06-11T13:05:00.000Z",
+        startTimeIso: "2026-06-11T13:20:00.000Z",
+        endTimeIso: "2026-06-11T14:20:00.000Z",
+        opponentTag: "#PYPL",
+        matchType: null,
+        state: "preparation",
+      }),
+    ]);
+    const resolveStatusForCurrentWar = vi
+      .mocked(WarMailLifecycleService.prototype.resolveStatusForCurrentWar)
+      .mockResolvedValue({
+        status: "posted",
+        mailStatusEmoji: "\u{1F4EC}",
+        debug: {
+          currentWarId: 1000481,
+          trackedMailWarId: 1000481,
+          trackedChannelId: "channel-1",
+          trackedMessageId: "message-1",
+          trackedMessageExists: "yes",
+          currentWarConfigMatchesTrackedMessage: true,
+          winningSource: "tracked",
+          finalNormalizedStatus: "posted",
+          reconciliationOutcome: "not_checked",
+          reconciliationCertainty: "not_checked",
+          debugReasonCode: "posted",
+          debugReason: "Posted lifecycle row exists.",
+          environmentMismatchSignal: false,
+          trackingCleared: false,
+        },
+      } as any);
+    const getCurrentWar = vi.fn().mockResolvedValue(
+      makeLiveWarSnapshot({
+        startTimeIso: "2026-06-11T13:20:00.000Z",
+        opponentTag: "#PYPL",
+        opponentName: "",
+        state: "preparation",
+      }),
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+    });
+
+    expect(resolveStatusForCurrentWar).toHaveBeenCalledTimes(1);
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4EC} | \u{1F518} | A vs `-` (`#PYPL`)");
+    expect(state.rows[0].compactCopyLine).not.toContain("Unknown Opponent");
   });
 
   it("renders unsent mail when the live war opponent does not match the current-war row", async () => {
@@ -1062,8 +1327,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
-    expect(state.rows[0].compactCopyLine).toContain("\u{1F4ED}");
-    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F4EC}");
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
   });
 
   it("renders unsent mail when the live war start time does not match the current-war row", async () => {
@@ -1097,8 +1361,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(WarMailLifecycleService.prototype.resolveStatusForCurrentWar).not.toHaveBeenCalled();
-    expect(state.rows[0].compactCopyLine).toContain("\u{1F4ED}");
-    expect(state.rows[0].compactCopyLine).not.toContain("\u{1F4EC}");
+    expect(state.rows[0].compactCopyLine).toBe("\u{1F4ED} | \u{1F518} | A vs `-`");
   });
 
   it("does not let checked-clan state change the mailbox emoji for stale current-war rows", async () => {
