@@ -116,6 +116,7 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiId: string | null;
   badgeEmojiName: string | null;
   badgeEmojiInline: string;
+  basesStatus?: "not_checked" | "issues" | "all_good" | "skipped" | null;
   matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   contextKey?: string | null;
   detailLines?: string[] | null;
@@ -1038,6 +1039,14 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
   if (!clanTag || !compactCopyLine) return null;
   const badgeEmojiId = String(value.badgeEmojiId ?? "").trim();
   const badgeEmojiName = String(value.badgeEmojiName ?? "").trim();
+  const basesStatusRaw = String(value.basesStatus ?? "").trim().toLowerCase();
+  const basesStatus =
+    basesStatusRaw === "not_checked" ||
+    basesStatusRaw === "issues" ||
+    basesStatusRaw === "all_good" ||
+    basesStatusRaw === "skipped"
+      ? basesStatusRaw
+      : null;
   const detailLines = Array.isArray(value.detailLines)
     ? value.detailLines
         .map((line) => String(line ?? "").trimEnd())
@@ -1049,6 +1058,7 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiId: badgeEmojiId || null,
     badgeEmojiName: badgeEmojiName || null,
     badgeEmojiInline: badgeEmojiInline || "",
+    basesStatus,
     contextKey: String(value.contextKey ?? "").trim() || null,
     detailLines: detailLines && detailLines.length > 0 ? detailLines : null,
     warId: normalizeWarIdText(value.warId as string | number | null | undefined),
@@ -3342,9 +3352,9 @@ export class TrackedMessageService {
           (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
         );
         console.debug(
-          `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? "matched_row" : "row_not_found"}`,
+          `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? (matchedRow.basesStatus === "skipped" ? "skipped_row" : "matched_row") : "row_not_found"}`,
         );
-        if (matchedRow) {
+        if (matchedRow && matchedRow.basesStatus !== "skipped") {
           const checked =
             reactionChange.kind === "add" ||
             (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
@@ -3401,6 +3411,12 @@ export class TrackedMessageService {
             `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=${Boolean(reaction && (reaction.count ?? 0) > 1)} reason=${reaction ? (reaction.count ?? 0) > 1 ? "reaction_count_gt_1" : "reaction_count_le_1" : "no_reaction"}`,
           );
           if (!reaction) continue;
+          if (row.basesStatus === "skipped") {
+            console.debug(
+              `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=false reason=skipped_row`,
+            );
+            continue;
+          }
           if ((reaction.count ?? 0) > 1) {
             await persistBasesCheckedStateForRow(row, true);
           }

@@ -242,7 +242,7 @@ function normalizeWarState(
   if (normalized === "inwar" || normalized === "in_war") {
     return "inWar";
   }
-  if (normalized === "notinwar" || normalized === "not_in_war") {
+  if (normalized === "notinwar" || normalized === "not_in_war" || normalized === "not in war") {
     return "notInWar";
   }
   return "unknown";
@@ -523,10 +523,33 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
-    const activeCurrentWar =
-      currentWar && String(currentWar.state ?? "").trim().toLowerCase() !== "notinwar"
-        ? currentWar
-        : null;
+    const currentWarState = normalizeWarState(currentWar?.state ?? null);
+    const activeCurrentWar = currentWarState === "notInWar" ? null : currentWar;
+    const clanLabel =
+      sanitizeClanName(clan.shortName) ??
+      sanitizeClanName(clan.name) ??
+      `#${clanTag}`;
+    const clanBadge = parseTrackedClanBadge(clan.clanBadge);
+    if (currentWarState === "notInWar") {
+      console.debug(
+        `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=false syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapReason=skipped baseSwapSyncMessageId=missing completionReason=skipped finalStatus=skipped currentWarState=${currentWarState}`,
+      );
+      rows.push({
+        clanTag,
+        compactCopyLine: `${clanLabel} | \u{1F518} | Skipped this sync \u{1F634}`,
+        badgeEmojiId: clanBadge.badgeEmojiId,
+        badgeEmojiName: clanBadge.badgeEmojiName,
+        badgeEmojiInline: clanBadge.badgeEmojiInline,
+        basesStatus: "skipped",
+        matchType: "SKIP",
+        warId: null,
+        opponentTag: null,
+        warStartTimeIso: null,
+        contextKey: null,
+        detailLines: null,
+      });
+      continue;
+    }
     if (activeCurrentWar) {
       checklistExpiresAtCandidates.push(
         ...buildChecklistWarTimingCandidates({
@@ -581,11 +604,6 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       matchType,
       outcome,
     });
-    const clanLabel =
-      sanitizeClanName(clan.shortName) ??
-      sanitizeClanName(clan.name) ??
-      `#${clanTag}`;
-    const clanBadge = parseTrackedClanBadge(clan.clanBadge);
     const issueLink = currentBaseSwap
       ? buildDiscordMessageLink({
           guildId: currentBaseSwap.guildId,
@@ -645,13 +663,18 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           ? "base_swap_completed"
         : "none";
     const visibleReaction = issueSummary.hasIssues || Boolean(allGoodCompletion);
+    const basesStatus = issueSummary.hasIssues
+      ? "issues"
+      : allGoodCompletion
+        ? "all_good"
+        : "not_checked";
     const statusText = issueSummary.hasIssues
       ? `${issueSummary.statusText}${issueLink ? `: [base-swap post](${issueLink})` : ""}`
       : allGoodCompletion
         ? "\u2705 Bases checked and all good"
         : "\u274c Bases not checked";
     console.debug(
-      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwapReason=${baseSwapSource} baseSwapSyncMessageId=${currentBaseSwapSyncIdentity ?? "missing"} completionReason=${completionSource} finalStatus=${issueSummary.hasIssues ? "issues" : allGoodCompletion ? "all_good" : "not_checked"}`,
+      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwapReason=${baseSwapSource} baseSwapSyncMessageId=${currentBaseSwapSyncIdentity ?? "missing"} completionReason=${completionSource} finalStatus=${basesStatus}`,
     );
     rows.push({
       clanTag,
@@ -659,6 +682,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       badgeEmojiId: clanBadge.badgeEmojiId,
       badgeEmojiName: clanBadge.badgeEmojiName,
       badgeEmojiInline: clanBadge.badgeEmojiInline,
+      basesStatus,
       matchType,
       warId: activeCurrentWar?.warId ?? null,
       opponentTag: activeCurrentWar?.opponentTag ?? null,
