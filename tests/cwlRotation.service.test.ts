@@ -388,20 +388,86 @@ describe("CwlRotationService", () => {
     expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data).toHaveLength(15);
   });
 
+  it("creates a current-season 11-player plan when size 11 is selected", async () => {
+    const { observedRosterRows } = setupManualCreateRosterFixture({ rosterCount: 11 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      version: 1,
+      lineupSize: 11,
+      playersIncludedCount: 11,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rosterSize: 11,
+        }),
+      }),
+    );
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanDay.create.mock.calls.every(
+        ([call]) => call?.data?.lineupSize === 11,
+      ),
+    ).toBe(true);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls.every(
+        ([call]) => call?.data?.length === 11,
+      ),
+    ).toBe(true);
+    expect(observedRosterRows).toHaveLength(11);
+  });
+
   it("rejects invalid current-season lineup sizes before persistence", async () => {
     const result = await cwlRotationService.createPlan({
       clanTag: "#2QG2C08UP",
       season: "2026-04",
-      lineupSize: 20 as any,
+      lineupSize: 12 as any,
     });
 
     expect(result).toEqual({
       outcome: "invalid_size",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
-      requestedLineupSize: 20,
+      requestedLineupSize: 12,
     });
     expect(prismaMock.cwlTrackedClan.findFirst).not.toHaveBeenCalled();
+    expect(txMock.cwlRotationPlan.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects current-season 11-player plans when fewer than 11 players remain", async () => {
+    setupManualCreateRosterFixture({ rosterCount: 10 });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toEqual({
+      outcome: "not_enough_players",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      lineupSize: 11,
+      availablePlayers: 10,
+      diagnostics: {
+        sourceMode: "manual_observed_season_roster",
+        observedSeasonRosterCount: 10,
+        correspondingSignupRosterCount: null,
+        currentRoundMemberCount: 10,
+        excludedCount: 0,
+        eligibleAfterExclusionsCount: 10,
+      },
+    });
     expect(txMock.cwlRotationPlan.create).not.toHaveBeenCalled();
   });
 
@@ -1042,6 +1108,146 @@ describe("CwlRotationService", () => {
       }),
     );
     expect(txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data).toHaveLength(30);
+  });
+
+  it("creates roster-backed 11-player plans when size 11 is selected", async () => {
+    const rosterRows = Array.from({ length: 11 }, (_value, index) => {
+      const digits = index
+        .toString(4)
+        .padStart(4, "0")
+        .split("")
+        .map((char) => ["0", "2", "8", "9"][Number(char)])
+        .join("");
+      return {
+        playerTag: `#PYLQ${digits}`,
+        playerName: `Player ${index + 1}`,
+      };
+    });
+    vi.spyOn(rosterService, "getRosterView").mockResolvedValue({
+      roster: {
+        id: "roster-11",
+        guildId: "guild-1",
+        rosterType: "CWL",
+        rosterCategory: "signup",
+        title: "CWL Alpha roster",
+        clanTag: "#2QG2C08UP",
+        startsAt: null,
+        endsAt: null,
+        timezone: "UTC",
+        displayTimezone: "UTC",
+        maxMembers: 11,
+        maxAccountsPerUser: null,
+        minTownhall: null,
+        maxTownhall: null,
+        rosterRoleId: null,
+        allowMultiSignup: true,
+        sortBy: null,
+        displayColumns: null,
+        importMembers: false,
+        postButtonMode: "standard",
+        lifecycleState: "OPEN",
+        postedChannelId: null,
+        postedMessageId: null,
+        postedMessageUrl: null,
+        postedAt: null,
+        createdByDiscordUserId: null,
+        updatedByDiscordUserId: null,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: null,
+      groups: [
+        {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      ],
+      signups: rosterRows.map((row, index) => ({
+        id: `signup-${index + 1}`,
+        rosterId: "roster-11",
+        groupId: "group-confirmed",
+        playerTag: row.playerTag,
+        playerName: row.playerName,
+        discordUserId: `${index + 1}`.padStart(18, "1"),
+        signedUpAt: new Date(`2026-04-20T00:${String(index).padStart(2, "0")}:00.000Z`),
+        createdAt: new Date(`2026-04-20T00:${String(index).padStart(2, "0")}:00.000Z`),
+        updatedAt: new Date(`2026-04-20T00:${String(index).padStart(2, "0")}:00.000Z`),
+        weight: null,
+        weightSource: "Unknown",
+        weightMeasuredAt: null,
+        townHall: 15,
+        discordDisplayName: null,
+        discordUsername: null,
+        clanTag: null,
+        clanName: null,
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: null,
+          sortOrder: 0,
+        },
+      })),
+      totalSignupCount: rosterRows.length,
+    } as any);
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue(
+      rosterRows.map((row) => ({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: row.playerTag,
+        playerName: row.playerName,
+        townHall: 15,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 0,
+        currentRound: null,
+      })),
+    );
+
+    const result = await cwlRotationService.createPlanFromRoster({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-11",
+      guildId: "guild-1",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-11",
+      rosterTitle: "CWL Alpha roster",
+      lineupSize: 11,
+      playersIncludedCount: 11,
+    });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rosterSize: 11,
+          metadata: expect.objectContaining({
+            confirmedRosterSize: 11,
+            lineupSize: 11,
+          }),
+        }),
+      }),
+    );
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(7);
+    expect(
+      txMock.cwlRotationPlanDay.create.mock.calls.every(
+        ([call]) => call?.data?.lineupSize === 11,
+      ),
+    ).toBe(true);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(7);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls.every(
+        ([call]) => call?.data?.length === 11,
+      ),
+    ).toBe(true);
   });
 
   it("creates roster-backed 30-player plans when size 30 is selected", async () => {
