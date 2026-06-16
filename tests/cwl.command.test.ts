@@ -1602,6 +1602,41 @@ describe("/cwl command", () => {
     expect(descriptions).toContain("Could not reach 5 planned CWL days");
   });
 
+  it("accepts 11-player lineup size for /cwl rotations create", async () => {
+    vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 8,
+      lineupSize: 11,
+      playersIncludedCount: 11,
+      excludedPlayers: [],
+      warnings: [],
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      size: 11,
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      excludeTagsRaw: null,
+      lineupSize: 11,
+      overwrite: true,
+      guildId: "guild-1",
+    });
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction).join("\n");
+    expect(descriptions).toContain("Created CWL rotation plan for CWL Alpha (#2QG2C08UP).");
+    expect(descriptions).toContain("Players included in rotation: 11");
+    expect(descriptions).toContain("Lineup size: 11");
+  });
+
   it("forwards whitespace-separated exclude tags and renders all excluded players for /cwl rotations create", async () => {
     vi.spyOn(cwlRotationService, "createPlan").mockResolvedValue({
       outcome: "created",
@@ -1741,13 +1776,13 @@ describe("/cwl command", () => {
       outcome: "invalid_size",
       season: "2026-04",
       clanTag: "#2QG2C08UP",
-      requestedLineupSize: 20,
+      requestedLineupSize: 12,
     } as any);
     const interaction = makeInteraction({
       group: "rotations",
       subcommand: "create",
       clan: "#2QG2C08UP",
-      size: 20,
+      size: 12,
     });
 
     await Cwl.run({} as any, interaction as any);
@@ -1755,12 +1790,12 @@ describe("/cwl command", () => {
     expect(cwlRotationService.createPlan).toHaveBeenCalledWith({
       clanTag: "#2QG2C08UP",
       excludeTagsRaw: null,
-      lineupSize: 20,
+      lineupSize: 12,
       overwrite: false,
       guildId: "guild-1",
     });
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
-      "CWL rotation lineup size must be 15 or 30.",
+      "CWL rotation lineup size must be 11, 15, or 30.",
     );
   });
 
@@ -1812,6 +1847,45 @@ describe("/cwl command", () => {
     expect(descriptions).toContain("Version: 3");
     expect(descriptions).toContain("Lineup size: 30");
     expect(descriptions).toContain("Missing Town Hall data for confirmed roster players");
+  });
+
+  it("accepts 11-player lineup size for roster-backed /cwl rotations create", async () => {
+    vi.spyOn(cwlRotationService, "createPlanFromRoster").mockResolvedValue({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      rosterId: "roster-1",
+      rosterTitle: "CWL Alpha roster",
+      rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      version: 9,
+      lineupSize: 11,
+      playersIncludedCount: 11,
+      excludedPlayers: [],
+      warnings: [],
+      sourceLabel: "CWL roster - CWL Alpha roster",
+    });
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      roster: "roster-1",
+      size: 11,
+      overwrite: true,
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlRotationService.createPlanFromRoster).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      rosterId: "roster-1",
+      guildId: "guild-1",
+      lineupSize: 11,
+      overwrite: true,
+    });
+    const descriptions = getAllEmbedDescriptionsAcrossReplies(interaction).join("\n");
+    expect(descriptions).toContain("Players included in rotation: 11");
+    expect(descriptions).toContain("Lineup size: 11");
   });
 
   it("splits /cwl rotations create success output across multiple embeds and follow-ups when needed", async () => {
