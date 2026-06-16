@@ -659,6 +659,15 @@ async function loadActivePlan(input: {
   });
 }
 
+async function loadTrackedClanTagsForSeason(season: string): Promise<string[]> {
+  const trackedClans = await prisma.cwlTrackedClan.findMany({
+    where: { season },
+    select: { tag: true },
+    orderBy: [{ tag: "asc" }],
+  });
+  return [...new Set(trackedClans.map((row) => normalizeClanTag(row.tag)).filter(Boolean))];
+}
+
 async function loadPlanDaysWithMembers(planId: string) {
   return prisma.cwlRotationPlanDay.findMany({
     where: { planId },
@@ -1874,12 +1883,21 @@ export class CwlRotationService {
     clanTags?: string[];
   }): Promise<CwlRotationPlanExport[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (trackedClanTags.length <= 0) {
+      return [];
+    }
     const clanTags = [...new Set((input?.clanTags ?? []).map((tag) => normalizeClanTag(tag)).filter(Boolean))];
+    const activeClanTags =
+      clanTags.length > 0 ? clanTags.filter((tag) => trackedClanTags.includes(tag)) : trackedClanTags;
+    if (activeClanTags.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
-        ...(clanTags.length > 0 ? { clanTag: { in: clanTags } } : {}),
+        clanTag: { in: activeClanTags },
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
@@ -2122,13 +2140,21 @@ export class CwlRotationService {
     refreshLeadershipMembers?: boolean;
   }): Promise<CwlRotationOverviewEntry[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (trackedClanTags.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
+        clanTag: { in: trackedClanTags },
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
+    if (activePlans.length <= 0) {
+      return [];
+    }
     const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
     const uniquePlans = new Map<string, typeof activePlans[number]>();
     for (const plan of activePlans) {
@@ -2240,6 +2266,9 @@ export class CwlRotationService {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
+
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (!trackedClanTags.includes(clanTag)) return null;
 
     const activePlan = await loadActivePlan({ clanTag, season });
     if (!activePlan) return null;

@@ -7,6 +7,7 @@ const prismaMock = vi.hoisted(() => {
   const trackedClan = {
     findMany: vi.fn(),
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
     deleteMany: vi.fn(),
     upsert: vi.fn(),
   };
@@ -23,6 +24,9 @@ const prismaMock = vi.hoisted(() => {
       createMany: vi.fn(),
       findFirst: vi.fn(),
       deleteMany: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    cwlRotationPlan: {
       updateMany: vi.fn(),
     },
     raidTrackedClan: {
@@ -58,7 +62,15 @@ const prismaMock = vi.hoisted(() => {
     },
     $transaction: vi.fn(async (arg: any) => {
       if (Array.isArray(arg)) return Promise.all(arg);
-      if (typeof arg === "function") return arg({ trackedClan, trackedClanRep });
+      if (typeof arg === "function") {
+        return arg({
+          trackedClan,
+          trackedClanRep,
+          cwlTrackedClan: prismaMock.cwlTrackedClan,
+          cwlPlayerClanSeason: prismaMock.cwlPlayerClanSeason,
+          cwlRotationPlan: prismaMock.cwlRotationPlan,
+        });
+      }
       return arg;
     }),
   };
@@ -199,6 +211,7 @@ describe("/clan command behavior", () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.raidTrackedClan.updateMany.mockResolvedValue({ count: 0 });
@@ -2417,8 +2430,10 @@ describe("/clan command behavior", () => {
   });
 
   it("removes from CWL registry when explicit type:CWL is provided", async () => {
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ id: 99 } as any);
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 1 });
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 2 });
+    prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 1 });
     const interaction = createInteraction({
       subcommand: "remove",
       strings: { tag: "#PYLQ0289", type: "CWL" },
@@ -2426,8 +2441,25 @@ describe("/clan command behavior", () => {
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
+    expect(prismaMock.cwlTrackedClan.findFirst).toHaveBeenCalledWith({
+      where: { season: "2026-03", tag: "#PYLQ0289" },
+      select: { id: true },
+    });
     expect(prismaMock.cwlTrackedClan.deleteMany).toHaveBeenCalledWith({
       where: { season: "2026-03", tag: "#PYLQ0289" },
+    });
+    expect(prismaMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith({
+      where: { season: "2026-03", cwlClanTag: "#PYLQ0289" },
+    });
+    expect(prismaMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        season: "2026-03",
+        clanTag: "#PYLQ0289",
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
     });
     expect(prismaMock.currentWar.deleteMany).not.toHaveBeenCalled();
     expect(getReplyContent(interaction)).toContain(

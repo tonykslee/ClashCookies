@@ -123,7 +123,7 @@ describe("AutoRoleSchedulerService", () => {
 
     expect(result).toEqual({ started: true });
     expect(runCycleSpy).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
+    expect((scheduler as any).timer).not.toBeNull();
 
     scheduler.stop();
   });

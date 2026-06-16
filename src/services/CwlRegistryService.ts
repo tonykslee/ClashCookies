@@ -577,15 +577,33 @@ export async function removeTrackedClanTagFromRegistries(input: {
   }
 
   if (input.type === "CWL") {
-    const [deletedClans, deletedMappings] = await prisma.$transaction([
-      prisma.cwlTrackedClan.deleteMany({
+    const result = await prisma.$transaction(async (tx) => {
+      const existingClan = await tx.cwlTrackedClan.findFirst({
         where: { season, tag: normalizedTag },
-      }),
-      prisma.cwlPlayerClanSeason.deleteMany({
+        select: { id: true },
+      });
+      if (!existingClan) {
+        return null;
+      }
+      const deletedClans = await tx.cwlTrackedClan.deleteMany({
+        where: { season, tag: normalizedTag },
+      });
+      const deletedMappings = await tx.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
-      }),
-    ]);
-    if (deletedClans.count <= 0) {
+      });
+      await tx.cwlRotationPlan.updateMany({
+        where: {
+          season,
+          clanTag: normalizedTag,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
+      });
+      return { deletedClans, deletedMappings };
+    });
+    if (!result) {
       return { outcome: "not_found", tag: normalizedTag, season };
     }
     return {
@@ -593,7 +611,7 @@ export async function removeTrackedClanTagFromRegistries(input: {
       tag: normalizedTag,
       removedFrom: "CWL",
       season,
-      removedCount: deletedClans.count + deletedMappings.count,
+      removedCount: result.deletedClans.count + result.deletedMappings.count,
     };
   }
 
@@ -656,6 +674,16 @@ export async function removeTrackedClanTagFromRegistries(input: {
       }),
       prisma.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
+      }),
+      prisma.cwlRotationPlan.updateMany({
+        where: {
+          season,
+          clanTag: normalizedTag,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
       }),
     ]);
     return {
