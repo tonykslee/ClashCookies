@@ -985,6 +985,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows[0]).toMatchObject({
       compactCopyLine: "Alpha | 🔘 | Skipped this sync 😴",
       basesStatus: "skipped",
+      matchType: "UNKNOWN",
       warId: null,
       opponentTag: null,
       warStartTimeIso: null,

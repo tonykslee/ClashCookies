@@ -541,7 +541,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         badgeEmojiName: clanBadge.badgeEmojiName,
         badgeEmojiInline: clanBadge.badgeEmojiInline,
         basesStatus: "skipped",
-        matchType: "SKIP",
+        matchType: "UNKNOWN",
         warId: null,
         opponentTag: null,
         warStartTimeIso: null,
