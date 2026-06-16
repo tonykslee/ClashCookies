@@ -5,6 +5,7 @@ import { isTodoWarStateActive } from "../TodoTrackedWarStateService";
 import {
   buildFwaBasesChecklistReminderMessageId,
   TRACKED_MESSAGE_STATUS,
+  type FwaMatchChecklistTrackedRow,
   resolveTrackedMessageSyncIdentity,
   trackedMessageService,
 } from "../TrackedMessageService";
@@ -115,8 +116,11 @@ function buildBasesChecklistReminderContent(input: {
   ].join("\n");
 }
 
-function isBasesChecklistUncheckedRow(line: string | null | undefined): boolean {
-  return String(line ?? "").includes("❌ Bases not checked");
+function isBasesChecklistUncheckedRow(row: Pick<FwaMatchChecklistTrackedRow, "compactCopyLine" | "basesStatus">): boolean {
+  if (row.basesStatus) {
+    return row.basesStatus === "not_checked";
+  }
+  return String(row.compactCopyLine ?? "").includes("❌ Bases not checked");
 }
 
 /** Purpose: find Bases checklist reminder candidates from persisted checklist state only. */
@@ -172,7 +176,10 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
   if (activeGuildIds.length === 0) return [];
 
   const trackedClanByTag = new Map<string, TrackedClanRow>();
-  const currentWarByGuildAndTag = new Map<string, { prepStartTime: Date | null; startTime: Date | null }>();
+  const currentWarByGuildAndTag = new Map<
+    string,
+    { prepStartTime: Date | null; startTime: Date | null; state: string | null }
+  >();
   for (const clan of trackedClans) {
     const clanTag = normalizeClanTag(clan.tag);
     if (!clanTag) continue;
@@ -185,6 +192,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
     currentWarByGuildAndTag.set(`${guildId}:${clanTag}`, {
       prepStartTime: row.prepStartTime instanceof Date ? row.prepStartTime : null,
       startTime: row.startTime instanceof Date ? row.startTime : null,
+      state: row.state ?? null,
     });
   }
 
@@ -201,9 +209,18 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
       viewType: "Bases",
     });
     for (const row of renderState.rows) {
-      if (!isBasesChecklistUncheckedRow(row.compactCopyLine)) continue;
-      if (!row.warStartTimeIso) continue;
-      const battleDayStart = new Date(row.warStartTimeIso);
+      const currentWar = currentWarByGuildAndTag.get(`${guildId}:${normalizeClanTag(row.clanTag)}`) ?? null;
+      if (!isTodoWarStateActive(currentWar?.state ?? null)) {
+        if (row.basesStatus === "skipped" || isBasesChecklistUncheckedRow(row)) {
+          dozzleLog.debug(
+            `[fwa bases-check reminder] candidate_suppressed guildId=${guildId} clanTag=${row.clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} reason=inactive_war_state syncIdentitySource=none syncMessageId=missing baseSwapMessageId=missing completionMessageId=missing`,
+          );
+        }
+        continue;
+      }
+      if (!isBasesChecklistUncheckedRow(row)) continue;
+      const battleDayStart = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
+      if (!battleDayStart) continue;
       if (!Number.isFinite(battleDayStart.getTime())) continue;
       if (normalizeDateMs(battleDayStart) === null) continue;
       if (normalizeDateMs(now) !== null && now.getTime() >= battleDayStart.getTime()) continue;
@@ -212,7 +229,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
       if (!clanTag) continue;
       const trackedClan = trackedClanByTag.get(clanTag) ?? null;
       if (!trackedClan) continue;
-      const currentWar = currentWarByGuildAndTag.get(`${guildId}:${clanTag}`) ?? null;
+      const currentWarRow = currentWarByGuildAndTag.get(`${guildId}:${clanTag}`) ?? null;
 
       const dueOffsets = resolveDueFwaBasesChecklistDueOffsets({
         now,
@@ -235,7 +252,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
             guildId,
             clanTag,
             battleDayStart,
-            prepStartTime: currentWar?.prepStartTime ?? null,
+            prepStartTime: currentWarRow?.prepStartTime ?? null,
             now,
           })
           .catch(() => null);

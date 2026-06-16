@@ -146,6 +146,55 @@ describe("fwa bases checklist reminder service", () => {
     );
   });
 
+  it("skips reminder eligibility for a skipped bases row even when another clan keeps the guild active", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "guild-1",
+        clanTag: "#ACTIVE",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        state: "preparation",
+      },
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        state: "notInWar",
+      },
+    ]);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | \u{1F518} | Skipped this sync \u{1F634}",
+          basesStatus: "skipped",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          detailLines: null,
+          warId: null,
+          opponentTag: null,
+          warStartTimeIso: null,
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+
+    expect(candidates).toEqual([]);
+    expect(
+      trackedMessageService.resolveLatestRelevantSyncPostForClanWar,
+    ).not.toHaveBeenCalled();
+    expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan,
+    ).not.toHaveBeenCalled();
+  });
+
   it("queries CurrentWar with both bare and hash clan-tag variants", async () => {
     prismaMock.currentWar.findMany.mockImplementation(async (args: any) => {
       const queryTags = Array.isArray(args?.where?.clanTag?.in)

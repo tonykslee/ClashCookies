@@ -12,6 +12,7 @@ import { CoCService } from "./CoCService";
 import {
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistRowContextKey,
+  shouldApplyFwaMatchChecklistBadgeReaction,
   trackedMessageService,
   resolveFwaMatchChecklistViewType,
   type FwaMatchChecklistTrackedRow,
@@ -180,9 +181,10 @@ export function buildFwaMatchChecklistComponents(params?: {
 async function addFwaMatchChecklistReactions(
   message: { id: string; react: (emoji: string) => Promise<unknown> },
   rows: FwaMatchChecklistTrackedRow[],
+  viewType: "Mail" | "Bases" = "Mail",
 ): Promise<void> {
   for (const row of rows) {
-    if (!row.badgeEmojiInline) continue;
+    if (!shouldApplyFwaMatchChecklistBadgeReaction(row, viewType)) continue;
     try {
       await message.react(row.badgeEmojiInline);
     } catch (err) {
@@ -270,7 +272,7 @@ export async function finalizeFwaMatchChecklistPublication(
       }),
     );
   }
-  await addFwaMatchChecklistReactions(params.message, params.rows);
+  await addFwaMatchChecklistReactions(params.message, params.rows, params.viewType ?? "Mail");
   try {
     await params.message.pin();
   } catch (err) {

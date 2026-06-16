@@ -932,6 +932,70 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows[0].detailLines).toBeNull();
   });
 
+  it("renders a skipped bases row when the authoritative current war is not in war", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha Clan", shortName: "Alpha" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1,
+        prepStartTime: new Date("2026-05-13T17:00:00.000Z"),
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        endTime: new Date("2026-05-13T19:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: null,
+        outcome: null,
+        state: "notInWar",
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue({
+      id: "sync-track-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "sync-message-1",
+      referenceId: null,
+      clanTag: null,
+      createdAt: new Date("2026-05-13T16:55:00.000Z"),
+      expiresAt: null,
+      metadata: {} as any,
+    } as any);
+    const resolveRelevant = vi.spyOn(
+      trackedMessageService,
+      "resolveLatestRelevantSyncPostForClanWar",
+    );
+    const findBaseSwap = vi.spyOn(
+      trackedMessageService,
+      "findLatestActiveFwaBaseSwapTrackedMessageForClan",
+    );
+    const findCompletion = vi.spyOn(
+      trackedMessageService,
+      "findLatestFwaMatchChecklistBasesCompletionForClan",
+    );
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({
+      compactCopyLine: "Alpha | 🔘 | Skipped this sync 😴",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+      contextKey: null,
+    });
+    expect(resolveRelevant).not.toHaveBeenCalled();
+    expect(findBaseSwap).not.toHaveBeenCalled();
+    expect(findCompletion).not.toHaveBeenCalled();
+  });
+
   it("treats fwa bases as a checklist issue for BL matches", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },

@@ -77,6 +77,35 @@ function buildMixedRows() {
   });
 }
 
+function buildBasesPublicationRows() {
+  return [
+    {
+      clanTag: "#PYPY",
+      compactCopyLine: "Alpha | ⚫ | ❌ Bases not checked",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+      basesStatus: "not_checked",
+      matchType: "BL",
+      warId: 1001,
+      opponentTag: "#OPP1",
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    },
+    {
+      clanTag: "#PYPL",
+      compactCopyLine: "Beta | 🔘 | Skipped this sync 😴",
+      badgeEmojiId: "222",
+      badgeEmojiName: "twc",
+      badgeEmojiInline: "<:twc:222>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+  ] as const;
+}
+
 
 describe("FWA match checklist service", () => {
   beforeEach(() => {
@@ -747,6 +776,109 @@ describe("FWA match checklist service", () => {
     );
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(payload.components?.[0]?.toJSON?.().components?.[0]?.label).toBe("Refresh");
+  });
+
+  it("does not add a clan badge reaction for a skipped bases row", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply: vi.fn().mockResolvedValue(undefined),
+      fetchReply: vi.fn().mockResolvedValue({
+        id: "message-1",
+        react,
+        pin,
+      }),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | ⚫ | Skipped this sync 😴",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+          basesStatus: "skipped",
+          matchType: "UNKNOWN",
+          warId: null,
+          opponentTag: null,
+          warStartTimeIso: null,
+        },
+      ],
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: [],
+    });
+
+    expect(react).not.toHaveBeenCalled();
+    expect(pin).toHaveBeenCalledTimes(1);
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          kind: "bases_checklist",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              basesStatus: "skipped",
+              matchType: "UNKNOWN",
+              badgeEmojiInline: "<:rr:111>",
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it("reacts only to active bases rows while preserving skipped badge metadata", async () => {
+    const react = vi.fn().mockResolvedValue(undefined);
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      user: { id: "user-1" },
+      editReply: vi.fn().mockResolvedValue(undefined),
+      fetchReply: vi.fn().mockResolvedValue({
+        id: "message-1",
+        react,
+        pin,
+      }),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await postFwaMatchChecklistMessage({
+      interaction,
+      isPublic: true,
+      viewType: "Bases",
+      rows: buildBasesPublicationRows() as any,
+      clanTag: null,
+      scopeKey: "scope-key",
+      checkedClanTags: [],
+    });
+
+    expect(react).toHaveBeenCalledTimes(1);
+    expect(react).toHaveBeenCalledWith("<:rr:111>");
+    expect(react).not.toHaveBeenCalledWith("<:twc:222>");
+    expect(trackedMessageMock.createFwaMatchChecklistTrackedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              clanTag: "#PYPL",
+              basesStatus: "skipped",
+              matchType: "UNKNOWN",
+              badgeEmojiInline: "<:twc:222>",
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(pin).toHaveBeenCalledTimes(1);
   });
 
   it("publishes a mail checklist directly to a channel with reactions, pinning, and tracked kind", async () => {
