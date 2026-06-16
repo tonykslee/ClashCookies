@@ -43,7 +43,6 @@ type CwlRotationPlanWriteInput = {
   clanTag: string;
   season: string;
   version: number;
-  overwriteExisting: boolean;
   rosterSize: number;
   generatedFromRoundDay: number | null;
   excludedPlayerTags: string[];
@@ -659,6 +658,136 @@ async function loadActivePlan(input: {
   });
 }
 
+const CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT = 3;
+
+function isRetryableCwlRotationPlanWriteError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = String((error as { code?: unknown }).code ?? "");
+  return code === "P2002" || code === "P2034";
+}
+
+async function loadNextRotationPlanVersion(
+  tx: CwlRotationPlanWriteTx,
+  input: {
+    clanTag: string;
+    season: string;
+  },
+): Promise<number> {
+  const latestPlan = await tx.cwlRotationPlan.findFirst({
+    where: {
+      clanTag: input.clanTag,
+      season: input.season,
+    },
+    select: {
+      version: true,
+    },
+    orderBy: [{ version: "desc" }, { updatedAt: "desc" }, { id: "desc" }],
+  });
+  return (latestPlan?.version ?? 0) + 1;
+}
+
+async function loadActiveRotationPlanInTransaction(
+  tx: CwlRotationPlanWriteTx,
+  input: {
+    clanTag: string;
+    season: string;
+  },
+) {
+  return tx.cwlRotationPlan.findFirst({
+    where: {
+      clanTag: input.clanTag,
+      season: input.season,
+      isActive: true,
+    },
+    select: {
+      version: true,
+    },
+    orderBy: [{ version: "desc" }, { updatedAt: "desc" }, { id: "desc" }],
+  });
+}
+
+type CwlRotationPlanWriteRetryResult<T> =
+  | { outcome: "created"; value: T }
+  | { outcome: "blocked_existing"; existingVersion: number };
+
+async function runCwlRotationPlanWriteWithRetry<T>(input: {
+  clanTag: string;
+  season: string;
+  overwriteAuthorized: boolean;
+  write: (tx: CwlRotationPlanWriteTx, version: number) => Promise<T>;
+}): Promise<CwlRotationPlanWriteRetryResult<T>> {
+  let lastError: unknown = null;
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT; attempt += 1) {
+    attempts = attempt;
+    try {
+      const transactionResult = await prisma.$transaction(async (tx) => {
+        const activePlan = await loadActiveRotationPlanInTransaction(tx, {
+          clanTag: input.clanTag,
+          season: input.season,
+        });
+        if (activePlan && !input.overwriteAuthorized) {
+          return {
+            outcome: "blocked_existing" as const,
+            existingVersion: activePlan.version,
+          };
+        }
+        if (activePlan && input.overwriteAuthorized) {
+          await tx.cwlRotationPlan.updateMany({
+            where: {
+              clanTag: input.clanTag,
+              season: input.season,
+              isActive: true,
+            },
+            data: { isActive: false },
+          });
+        }
+        const version = await loadNextRotationPlanVersion(tx, {
+          clanTag: input.clanTag,
+          season: input.season,
+        });
+        return input.write(tx, version);
+        }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+      if (
+        transactionResult &&
+        typeof transactionResult === "object" &&
+        (transactionResult as { outcome?: unknown }).outcome === "blocked_existing"
+      ) {
+        return transactionResult as { outcome: "blocked_existing"; existingVersion: number };
+      }
+      return { outcome: "created", value: transactionResult as Awaited<T> };
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableCwlRotationPlanWriteError(error) || attempt >= CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT) {
+        break;
+      }
+    }
+  }
+
+  const attemptsText = attempts > 0 ? attempts.toString() : "0";
+  const code = lastError && typeof lastError === "object" ? String((lastError as { code?: unknown }).code ?? "") : "";
+  const message =
+    lastError instanceof Error && String(lastError.message ?? "").trim() ? lastError.message : "unknown error";
+  const error = new Error(`Failed to persist CWL rotation plan after ${attemptsText} attempt(s): ${message}`);
+  if (code) {
+    (error as { code?: string }).code = code;
+  }
+  (error as { attempts?: number }).attempts = attempts;
+  throw error;
+}
+
+async function loadTrackedClanTagsForSeason(season: string): Promise<string[]> {
+  const trackedClans = await prisma.cwlTrackedClan.findMany({
+    where: { season },
+    select: { tag: true },
+    orderBy: [{ tag: "asc" }],
+  });
+  return [...new Set(trackedClans.map((row) => normalizeClanTag(row.tag)).filter(Boolean))];
+}
+
 async function loadPlanDaysWithMembers(planId: string) {
   return prisma.cwlRotationPlanDay.findMany({
     where: { planId },
@@ -1069,17 +1198,6 @@ async function persistRotationPlanVersion(
   tx: CwlRotationPlanWriteTx,
   input: CwlRotationPlanWriteInput,
 ): Promise<{ version: number }> {
-  if (input.overwriteExisting) {
-    await tx.cwlRotationPlan.updateMany({
-      where: {
-        clanTag: input.clanTag,
-        season: input.season,
-        isActive: true,
-      },
-      data: { isActive: false },
-    });
-  }
-
   const createdPlan = await tx.cwlRotationPlan.create({
     data: {
       clanTag: input.clanTag,
@@ -1302,7 +1420,6 @@ export class CwlRotationService {
       };
     }
 
-    const version = (existingActivePlan?.version ?? 0) + 1;
     const sourceOrderedRoster = buildStableRosterOrder({
       roster: eligibleRosterEntries,
       currentLineupTags: eligibleLineupTags,
@@ -1322,44 +1439,56 @@ export class CwlRotationService {
     });
     const rosterRows = buildRosterRowsForMetadata(sourceOrderedRoster);
 
-    await prisma.$transaction(async (tx) => {
-      await persistRotationPlanVersion(tx, {
-        clanTag,
-        season,
-        version,
-        overwriteExisting: Boolean(existingActivePlan),
-        rosterSize: lineupSize,
-        generatedFromRoundDay: currentRound.roundDay,
-        excludedPlayerTags: excludeTags,
-        warningSummary: warnings.join(" | ") || null,
-        metadata: {
-          source: "manual",
-          clanName: currentRound.clanName,
-          createdFromRoundState: currentRound.roundState,
-          hasOverlapPreparation,
-          currentLineupTags: eligibleLineupTags,
-          rosterRows,
-        } as Prisma.InputJsonValue,
-        days: planDays.map((day) => ({
-          roundDay: day.roundDay,
-          lineupSize,
-          locked: hasOverlapPreparation
-            ? day.roundDay <= currentRound.roundDay
-            : day.roundDay < currentRound.roundDay,
+    const writeResult = await runCwlRotationPlanWriteWithRetry({
+      clanTag,
+      season,
+      overwriteAuthorized: Boolean(input.overwrite),
+      write: async (tx, version) =>
+        persistRotationPlanVersion(tx, {
+          clanTag,
+          season,
+          version,
+          rosterSize: lineupSize,
+          generatedFromRoundDay: currentRound.roundDay,
+          excludedPlayerTags: excludeTags,
+          warningSummary: warnings.join(" | ") || null,
           metadata: {
             source: "manual",
-            generatedFromRoundDay: currentRound.roundDay,
-            rosterRows: buildRosterRowsForMetadata(day.members),
+            clanName: currentRound.clanName,
+            createdFromRoundState: currentRound.roundState,
+            hasOverlapPreparation,
+            currentLineupTags: eligibleLineupTags,
+            rosterRows,
           } as Prisma.InputJsonValue,
-          members: day.members.map((member, index) => ({
-            playerTag: member.playerTag,
-            playerName: member.playerName,
-            assignmentOrder: index,
-            manualOverride: false,
+          days: planDays.map((day) => ({
+            roundDay: day.roundDay,
+            lineupSize,
+            locked: hasOverlapPreparation
+              ? day.roundDay <= currentRound.roundDay
+              : day.roundDay < currentRound.roundDay,
+            metadata: {
+              source: "manual",
+              generatedFromRoundDay: currentRound.roundDay,
+              rosterRows: buildRosterRowsForMetadata(day.members),
+            } as Prisma.InputJsonValue,
+            members: day.members.map((member, index) => ({
+              playerTag: member.playerTag,
+              playerName: member.playerName,
+              assignmentOrder: index,
+              manualOverride: false,
+            })),
           })),
-        })),
-      });
+        }),
     });
+    if (writeResult.outcome === "blocked_existing") {
+      return {
+        outcome: "blocked_existing",
+        season,
+        clanTag,
+        existingVersion: writeResult.existingVersion,
+      };
+    }
+    const version = writeResult.value.version;
 
     return {
       outcome: "created",
@@ -1674,49 +1803,62 @@ export class CwlRotationService {
       };
     }
 
-    const version = (existingActivePlan?.version ?? 0) + 1;
-    await prisma.$transaction(async (tx) => {
-      await persistRotationPlanVersion(tx, {
-        clanTag,
-        season,
-        version,
-        overwriteExisting: Boolean(existingActivePlan),
-        rosterSize: lineupSize,
-        generatedFromRoundDay: null,
-        excludedPlayerTags: [],
-        warningSummary: warnings.join(" | ") || null,
-        metadata: {
-          source: sourceLabel,
-          clanName: trackedClan.name,
-          rosterId,
-          rosterTitle,
-          rosterShortName,
-          rosterClanTag,
-          rosterRows,
-          confirmedRosterSize: rosterEntries.length,
-          lineupSize,
-        } as Prisma.InputJsonValue,
-        days: planDays.map((day) => ({
-          roundDay: day.roundDay,
-          lineupSize,
-          locked: false,
+    const writeResult = await runCwlRotationPlanWriteWithRetry({
+      clanTag,
+      season,
+      overwriteAuthorized: Boolean(input.overwrite),
+      write: async (tx, version) =>
+        persistRotationPlanVersion(tx, {
+          clanTag,
+          season,
+          version,
+          rosterSize: lineupSize,
+          generatedFromRoundDay: null,
+          excludedPlayerTags: [],
+          warningSummary: warnings.join(" | ") || null,
           metadata: {
             source: sourceLabel,
             clanName: trackedClan.name,
             rosterId,
             rosterTitle,
             rosterShortName,
-            generatedFromRoundDay: null,
+            rosterClanTag,
+            rosterRows,
+            confirmedRosterSize: rosterEntries.length,
+            lineupSize,
           } as Prisma.InputJsonValue,
-          members: day.members.map((member, index) => ({
-            playerTag: member.playerTag,
-            playerName: member.playerName,
-            assignmentOrder: index,
-            manualOverride: false,
+          days: planDays.map((day) => ({
+            roundDay: day.roundDay,
+            lineupSize,
+            locked: false,
+            metadata: {
+              source: sourceLabel,
+              clanName: trackedClan.name,
+              rosterId,
+              rosterTitle,
+              rosterShortName,
+              generatedFromRoundDay: null,
+            } as Prisma.InputJsonValue,
+            members: day.members.map((member, index) => ({
+              playerTag: member.playerTag,
+              playerName: member.playerName,
+              assignmentOrder: index,
+              manualOverride: false,
+            })),
           })),
-        })),
-      });
+        }),
     });
+    if (writeResult.outcome === "blocked_existing") {
+      return {
+        outcome: "blocked_existing",
+        season,
+        clanTag,
+        rosterId,
+        rosterTitle,
+        existingVersion: writeResult.existingVersion,
+      };
+    }
+    const version = writeResult.value.version;
 
     return {
       outcome: "created",
@@ -1828,7 +1970,6 @@ export class CwlRotationService {
     const rosterRows = [...new Map(input.rosterRows.map((row) => [row.playerTag, row])).values()];
     const activeMemberCountByDay = activeDays.map((day) => day.members.length);
     const rosterSize = Math.max(...activeMemberCountByDay, 0);
-    const version = (existingActivePlan?.version ?? 0) + 1;
     const warningSummary = input.warningSummary?.trim() || null;
     const inputMetadata = toRecordValue(input.metadata);
     const metadata = ({
@@ -1841,20 +1982,34 @@ export class CwlRotationService {
       ...(inputMetadata ?? {}),
     } as Prisma.InputJsonValue);
 
-    await prisma.$transaction(async (tx) => {
-      await persistRotationPlanVersion(tx, {
-        clanTag,
-        season,
-        version,
-        overwriteExisting: Boolean(existingActivePlan),
-        rosterSize,
-        generatedFromRoundDay: input.generatedFromRoundDay ?? null,
-        excludedPlayerTags: [],
-        warningSummary,
-        metadata,
-        days: activeDays,
-      });
+    const writeResult = await runCwlRotationPlanWriteWithRetry({
+      clanTag,
+      season,
+      overwriteAuthorized: Boolean(input.overwrite),
+      write: async (tx, version) =>
+        persistRotationPlanVersion(tx, {
+          clanTag,
+          season,
+          version,
+          rosterSize,
+          generatedFromRoundDay: input.generatedFromRoundDay ?? null,
+          excludedPlayerTags: [],
+          warningSummary,
+          metadata,
+          days: activeDays,
+        }),
     });
+    if (writeResult.outcome === "blocked_existing") {
+      return {
+        outcome: "blocked_existing",
+        season,
+        clanTag,
+        clanName: input.clanName,
+        existingVersion: writeResult.existingVersion,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+    const version = writeResult.value.version;
 
     return {
       outcome: "created",
@@ -1874,12 +2029,21 @@ export class CwlRotationService {
     clanTags?: string[];
   }): Promise<CwlRotationPlanExport[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (trackedClanTags.length <= 0) {
+      return [];
+    }
     const clanTags = [...new Set((input?.clanTags ?? []).map((tag) => normalizeClanTag(tag)).filter(Boolean))];
+    const activeClanTags =
+      clanTags.length > 0 ? clanTags.filter((tag) => trackedClanTags.includes(tag)) : trackedClanTags;
+    if (activeClanTags.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
-        ...(clanTags.length > 0 ? { clanTag: { in: clanTags } } : {}),
+        clanTag: { in: activeClanTags },
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
@@ -2122,13 +2286,21 @@ export class CwlRotationService {
     refreshLeadershipMembers?: boolean;
   }): Promise<CwlRotationOverviewEntry[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (trackedClanTags.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
+        clanTag: { in: trackedClanTags },
       },
       orderBy: [{ clanTag: "asc" }, { version: "desc" }],
     });
+    if (activePlans.length <= 0) {
+      return [];
+    }
     const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
     const uniquePlans = new Map<string, typeof activePlans[number]>();
     for (const plan of activePlans) {
@@ -2240,6 +2412,9 @@ export class CwlRotationService {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
+
+    const trackedClanTags = await loadTrackedClanTagsForSeason(season);
+    if (!trackedClanTags.includes(clanTag)) return null;
 
     const activePlan = await loadActivePlan({ clanTag, season });
     if (!activePlan) return null;

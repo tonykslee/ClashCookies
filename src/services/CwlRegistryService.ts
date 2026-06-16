@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
@@ -54,6 +55,77 @@ function formatCwlTagStageDetails(details?: CwlTagStageDetails): string {
 
 function normalizeUniqueCwlClanTags(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizeClanTag(String(tag ?? ""))).filter(Boolean))];
+}
+
+type CwlTrackedClanRegistryCreationResult = {
+  existingTags: string[];
+  missingTags: string[];
+  ensuredCount: number;
+  deactivatedPlanCount: number;
+};
+
+async function createMissingCwlTrackedClansAndDeactivateStalePlans(input: {
+  season: string;
+  clanTags: string[];
+}): Promise<CwlTrackedClanRegistryCreationResult> {
+  const clanTags = normalizeUniqueCwlClanTags(input.clanTags);
+  if (clanTags.length <= 0) {
+    return {
+      existingTags: [],
+      missingTags: [],
+      ensuredCount: 0,
+      deactivatedPlanCount: 0,
+    };
+  }
+
+  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const existingRows = await tx.cwlTrackedClan.findMany({
+      where: {
+        season: input.season,
+        tag: { in: clanTags },
+      },
+      select: { tag: true },
+    });
+    const existingSet = new Set(existingRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean));
+    const existingTags = clanTags.filter((tag) => existingSet.has(tag));
+    const missingTags = clanTags.filter((tag) => !existingSet.has(tag));
+    if (missingTags.length <= 0) {
+      return {
+        existingTags,
+        missingTags,
+        ensuredCount: 0,
+        deactivatedPlanCount: 0,
+      };
+    }
+
+    const deactivatedPlans = await tx.cwlRotationPlan.updateMany({
+      where: {
+        season: input.season,
+        clanTag: { in: missingTags },
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+
+    const ensured = await tx.cwlTrackedClan.createMany({
+      data: missingTags.map((tag) => ({
+        season: input.season,
+        tag,
+        name: null,
+        leagueLabel: null,
+      })),
+      skipDuplicates: true,
+    });
+
+    return {
+      existingTags,
+      missingTags,
+      ensuredCount: ensured.count,
+      deactivatedPlanCount: deactivatedPlans.count,
+    };
+  });
 }
 
 async function runBoundedCwlTagStage<T>(input: {
@@ -168,73 +240,20 @@ export async function addCwlClanTagsForSeason(input: {
     };
   }
 
-  const existing = await runBoundedCwlTagStage({
-    stage: "cwl_tags_existing_rows_query",
+  const batchResult = await runBoundedCwlTagStage({
+    stage: "cwl_tags_registry_reconcile",
     timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
     details: { season, valid_count: parsed.validTags.length },
-    action: () =>
-      prisma.cwlTrackedClan.findMany({
-        where: {
-          season,
-          tag: { in: parsed.validTags },
-        },
-        select: { tag: true },
-      }),
+    action: () => createMissingCwlTrackedClansAndDeactivateStalePlans({ season, clanTags: parsed.validTags }),
   });
-  const existingSet = new Set(existing.map((row) => normalizeClanTag(row.tag)).filter(Boolean));
-  const toCreate = parsed.validTags.filter((tag) => !existingSet.has(tag));
   console.info(
-    `[tracked-clan] stage=cwl_tags_existing_rows_loaded season=${season} existing_count=${existing.length} to_create_count=${toCreate.length}`,
+    `[tracked-clan] stage=cwl_tags_existing_rows_loaded season=${season} existing_count=${batchResult.existingTags.length} to_create_count=${batchResult.missingTags.length} deactivated_plan_count=${batchResult.deactivatedPlanCount}`,
   );
-
-  if (toCreate.length > 0) {
-    await runBoundedCwlTagStage({
-      stage: "cwl_tags_create_many",
-      timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
-      details: { season, to_create_count: toCreate.length },
-      action: () =>
-        prisma.cwlTrackedClan.createMany({
-          data: toCreate.map((tag) => ({
-            season,
-            tag,
-            name: null,
-            leagueLabel: null,
-          })),
-          skipDuplicates: true,
-        }),
-    });
-  }
-
-  const finalRows = await runBoundedCwlTagStage({
-    stage: "cwl_tags_final_rows_query",
-    timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
-    details: { season, valid_count: parsed.validTags.length },
-    action: () =>
-      prisma.cwlTrackedClan.findMany({
-        where: {
-          season,
-          tag: { in: parsed.validTags },
-        },
-        select: { tag: true },
-      }),
-  });
-  const finalSet = new Set(finalRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean));
-
-  const added: string[] = [];
-  const alreadyExisting: string[] = [];
-  for (const tag of parsed.validTags) {
-    if (!finalSet.has(tag)) continue;
-    if (existingSet.has(tag)) {
-      alreadyExisting.push(tag);
-      continue;
-    }
-    added.push(tag);
-  }
 
   return {
     season,
-    added,
-    alreadyExisting,
+    added: batchResult.missingTags,
+    alreadyExisting: batchResult.existingTags,
     invalid: parsed.invalidTags,
     duplicateInRequest: parsed.duplicateTagsInRequest,
   };
@@ -266,21 +285,12 @@ export async function ensureAndHydrateCwlTrackedClanMetadataForSeason(input: {
   }
 
   const ensured = input.ensureRows === false
-    ? { count: 0 }
+    ? { ensuredCount: 0 }
     : await runBoundedCwlTagStage({
         stage: "cwl_tags_ensure_rows",
         timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
         details: { season, requested_count: clanTags.length },
-        action: () =>
-          prisma.cwlTrackedClan.createMany({
-            data: clanTags.map((tag) => ({
-              season,
-              tag,
-              name: null,
-              leagueLabel: null,
-            })),
-            skipDuplicates: true,
-          }),
+        action: () => createMissingCwlTrackedClansAndDeactivateStalePlans({ season, clanTags }),
       });
 
   const missingRows = await runBoundedCwlTagStage({
@@ -305,12 +315,12 @@ export async function ensureAndHydrateCwlTrackedClanMetadataForSeason(input: {
 
   if (missingRows.length <= 0) {
     console.info(
-      `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=0 skipped_count=0`,
+      `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.ensuredCount} hydrated_count=0 skipped_count=0`,
     );
     return {
       season,
       requestedCount: clanTags.length,
-      ensuredCount: ensured.count,
+      ensuredCount: ensured.ensuredCount,
       hydratedCount: 0,
       skippedCount: 0,
     };
@@ -374,13 +384,13 @@ export async function ensureAndHydrateCwlTrackedClanMetadataForSeason(input: {
   );
 
   console.info(
-    `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+    `[tracked-clan] stage=cwl_tags_metadata_hydration_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.ensuredCount} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
   );
 
   return {
     season,
     requestedCount: clanTags.length,
-    ensuredCount: ensured.count,
+    ensuredCount: ensured.ensuredCount,
     hydratedCount,
     skippedCount,
   };
@@ -412,21 +422,12 @@ export async function refreshCwlTrackedClanMetadataForSeason(input: {
   }
 
   const ensured = input.ensureRows === false
-    ? { count: 0 }
+    ? { ensuredCount: 0 }
     : await runBoundedCwlTagStage({
         stage: "cwl_tags_force_metadata_ensure_rows",
         timeoutMs: CWL_TAG_DB_STAGE_TIMEOUT_MS,
         details: { season, requested_count: clanTags.length },
-        action: () =>
-          prisma.cwlTrackedClan.createMany({
-            data: clanTags.map((tag) => ({
-              season,
-              tag,
-              name: null,
-              leagueLabel: null,
-            })),
-            skipDuplicates: true,
-          }),
+        action: () => createMissingCwlTrackedClansAndDeactivateStalePlans({ season, clanTags }),
       });
 
   let hydratedCount = 0;
@@ -480,13 +481,13 @@ export async function refreshCwlTrackedClanMetadataForSeason(input: {
   );
 
   console.info(
-    `[tracked-clan] stage=cwl_tags_force_metadata_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.count} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
+    `[tracked-clan] stage=cwl_tags_force_metadata_completed season=${season} requested_count=${clanTags.length} ensured_count=${ensured.ensuredCount} hydrated_count=${hydratedCount} skipped_count=${skippedCount}`,
   );
 
   return {
     season,
     requestedCount: clanTags.length,
-    ensuredCount: ensured.count,
+    ensuredCount: ensured.ensuredCount,
     hydratedCount,
     skippedCount,
   };
@@ -577,15 +578,33 @@ export async function removeTrackedClanTagFromRegistries(input: {
   }
 
   if (input.type === "CWL") {
-    const [deletedClans, deletedMappings] = await prisma.$transaction([
-      prisma.cwlTrackedClan.deleteMany({
+    const result = await prisma.$transaction(async (tx) => {
+      const existingClan = await tx.cwlTrackedClan.findFirst({
         where: { season, tag: normalizedTag },
-      }),
-      prisma.cwlPlayerClanSeason.deleteMany({
+        select: { id: true },
+      });
+      if (!existingClan) {
+        return null;
+      }
+      const deletedClans = await tx.cwlTrackedClan.deleteMany({
+        where: { season, tag: normalizedTag },
+      });
+      const deletedMappings = await tx.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
-      }),
-    ]);
-    if (deletedClans.count <= 0) {
+      });
+      await tx.cwlRotationPlan.updateMany({
+        where: {
+          season,
+          clanTag: normalizedTag,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
+      });
+      return { deletedClans, deletedMappings };
+    });
+    if (!result) {
       return { outcome: "not_found", tag: normalizedTag, season };
     }
     return {
@@ -593,7 +612,7 @@ export async function removeTrackedClanTagFromRegistries(input: {
       tag: normalizedTag,
       removedFrom: "CWL",
       season,
-      removedCount: deletedClans.count + deletedMappings.count,
+      removedCount: result.deletedClans.count + result.deletedMappings.count,
     };
   }
 
@@ -656,6 +675,16 @@ export async function removeTrackedClanTagFromRegistries(input: {
       }),
       prisma.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
+      }),
+      prisma.cwlRotationPlan.updateMany({
+        where: {
+          season,
+          clanTag: normalizedTag,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
       }),
     ]);
     return {
