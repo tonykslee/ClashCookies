@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const txMock = vi.hoisted(() => ({
@@ -64,8 +65,28 @@ const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
   },
-  $transaction: vi.fn(async (fn: (tx: typeof txMock) => Promise<unknown>) => fn(txMock)),
+  $transaction: vi.fn(async (fn: (tx: typeof txMock) => Promise<unknown>, _options?: unknown) => fn(txMock)),
 }));
+
+const CWL_TAG_ALPHABET = "PYLQGRJCUV0289";
+
+function buildValidCwlTag(index: number): string {
+  let value = Math.max(0, Math.trunc(index));
+  const body: string[] = [];
+  for (let position = 0; position < 4; position += 1) {
+    body.unshift(CWL_TAG_ALPHABET[value % CWL_TAG_ALPHABET.length]);
+    value = Math.floor(value / CWL_TAG_ALPHABET.length);
+  }
+  return `#${body.join("")}`;
+}
+
+function buildValidCwlRosterMembers(count: number, labelPrefix = "Player") {
+  return Array.from({ length: count }, (_, index) => ({
+    tag: buildValidCwlTag(index),
+    name: `${labelPrefix} ${index + 1}`,
+    townHallLevel: 16 - (index % 6),
+  }));
+}
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -88,6 +109,7 @@ describe("CwlStateService", () => {
     prismaMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.$transaction.mockImplementation(async (fn: (tx: typeof txMock) => Promise<unknown>, _options?: unknown) => fn(txMock));
 
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.deleteMany.mockResolvedValue({ count: 0 });
@@ -490,6 +512,273 @@ describe("CwlStateService", () => {
       ),
     ).toBe(true);
     infoSpy.mockRestore();
+  });
+
+  it("retries a serializable season roster conflict and rejects a later 15-player shrink after observing an authoritative count of 30", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    let serializableAttempts = 0;
+    prismaMock.$transaction.mockImplementation(async (fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
+      if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
+        serializableAttempts += 1;
+        const result = await fn(txMock);
+        if (serializableAttempts === 1) {
+          throw { code: "P2034" };
+        }
+        return result;
+      }
+      return fn(txMock);
+    });
+    txMock.cwlPlayerClanSeason.count.mockResolvedValueOnce(0).mockResolvedValueOnce(30);
+    txMock.cwlSeasonRosterState.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        authoritativeRosterCount: 30,
+        reconciledAt: new Date("2026-04-01T00:00:00.000Z"),
+      } as any);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(15, "Alpha"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(
+      prismaMock.$transaction.mock.calls.filter(([, options]) =>
+        Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
+      ),
+    ).toHaveLength(2);
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(15);
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledTimes(1);
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=15 distinct_roster_count=15 previous_persisted_count=30 previous_authoritative_count=30 stale_rows_removed=0 allowed=no reason=suspicious_roster_shrink",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
+  it("retries a conflicting 32-player season roster after a 35-player accept and then rejects the shrink", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    let serializableAttempts = 0;
+    prismaMock.$transaction.mockImplementation(async (fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
+      if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
+        serializableAttempts += 1;
+        const result = await fn(txMock);
+        if (serializableAttempts === 1) {
+          throw { code: "P2034" };
+        }
+        return result;
+      }
+      return fn(txMock);
+    });
+    txMock.cwlPlayerClanSeason.count.mockResolvedValueOnce(30).mockResolvedValueOnce(35);
+    txMock.cwlSeasonRosterState.findUnique
+      .mockResolvedValueOnce({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        authoritativeRosterCount: 30,
+        reconciledAt: new Date("2026-04-01T00:00:00.000Z"),
+      } as any)
+      .mockResolvedValueOnce({
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        authoritativeRosterCount: 35,
+        reconciledAt: new Date("2026-04-02T00:00:00.000Z"),
+      } as any);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(32, "Bravo"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(
+      prismaMock.$transaction.mock.calls.filter(([, options]) =>
+        Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
+      ),
+    ).toHaveLength(2);
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(32);
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledTimes(1);
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=32 distinct_roster_count=32 previous_persisted_count=35 previous_authoritative_count=35 stale_rows_removed=0 allowed=no reason=suspicious_roster_shrink",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
+  it("writes the accepted season roster rows, stale-row pruning, and authoritative state exactly once after a successful attempt", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(18);
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 3 });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(15, "Gamma"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(15);
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledTimes(1);
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledTimes(1);
+    expect(txMock.currentCwlPrepSnapshot.upsert).not.toHaveBeenCalled();
+    expect(
+      prismaMock.$transaction.mock.calls.filter(([, options]) =>
+        Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("preserves the Prisma code and actual attempt count when serializable retries are exhausted", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.$transaction.mockImplementation(async (_fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
+      if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
+        throw { code: "P2034" };
+      }
+      return _fn(txMock);
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(15, "Delta"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await expect(
+      cwlStateService.refreshTrackedCwlState({
+        cocService: cocService as any,
+        season: "2026-04",
+      }),
+    ).rejects.toMatchObject({
+      code: "P2034",
+      attempts: 3,
+    });
+    expect(
+      prismaMock.$transaction.mock.calls.filter(([, options]) =>
+        Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
+      ),
+    ).toHaveLength(3);
+  });
+
+  it("attempts non-retryable season roster failures only once", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.$transaction.mockImplementation(async (_fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
+      if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
+        throw new Error("boom");
+      }
+      return _fn(txMock);
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(15, "Echo"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await expect(
+      cwlStateService.refreshTrackedCwlState({
+        cocService: cocService as any,
+        season: "2026-04",
+      }),
+    ).rejects.toThrow("boom");
+    expect(
+      prismaMock.$transaction.mock.calls.filter(([, options]) =>
+        Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not let season roster reconciliation own currentCwlPrepSnapshot writes", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(0);
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: buildValidCwlRosterMembers(15, "Foxtrot"),
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(txMock.currentCwlPrepSnapshot.upsert).not.toHaveBeenCalled();
   });
 
   it("refreshes one clan only when asked for a targeted CWL clan refresh", async () => {
