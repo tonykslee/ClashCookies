@@ -472,6 +472,89 @@ describe("/cwl command", () => {
     expect(description).not.toContain("preparation 0/0");
   });
 
+  it("deduplicates normalized roster tags when counting and rendering /cwl members", async () => {
+    vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 16,
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "alpha-user",
+        daysParticipated: 2,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: true,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#pylq0289",
+        playerName: "Alpha Duplicate",
+        townHall: 16,
+        linkedDiscordUserId: null,
+        linkedDiscordUsername: null,
+        daysParticipated: 2,
+        currentRound: {
+          roundDay: 1,
+          roundState: "preparation",
+          inCurrentLineup: true,
+          attacksUsed: 0,
+          attacksAvailable: 0,
+          opponentTag: "#OPP1",
+          opponentName: "Opponent One",
+          phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        },
+      },
+    ]);
+    (rosterService.findCwlRosterForClan as any).mockResolvedValue({
+      id: "roster-1",
+      title: "CWL Alpha Signup",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      signups: [{ playerTag: "#PYLQ0289" }],
+    });
+    vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 1,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: null,
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      members: [],
+    });
+    const interaction = makeInteraction({
+      subcommand: "members",
+      clan: "#2QG2C08UP",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getAllEmbedDescriptions(interaction).join("\n");
+    expect(description).toContain("Members spun in CWL: 1");
+    expect(description).toContain("Signed up + spun in CWL: 1");
+    expect(description.match(/Alpha `#PYLQ0289`/g) ?? []).toHaveLength(1);
+    expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
+    expect(description).not.toContain("Alpha Duplicate");
+    expect(description).toContain("Not signed up but included in CWL\nnone");
+  });
+
   it("shows roster context but marks signups unavailable when the roster view cannot be loaded", async () => {
     vi.spyOn(cwlStateService, "listSeasonRosterForClan").mockResolvedValue([
       {
@@ -656,7 +739,7 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#P1",
+        playerTag: "#PYLQ0289",
         playerName: "Alpha",
         townHall: 18,
         linkedDiscordUserId: null,
@@ -667,7 +750,7 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#P2",
+        playerTag: "#QGRJ2222",
         playerName: "Bravo",
         townHall: null,
         linkedDiscordUserId: null,
@@ -677,7 +760,6 @@ describe("/cwl command", () => {
       },
     ]);
     vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue(null);
-
     const interaction = makeInteraction({
       subcommand: "members",
       clan: "#2QG2C08UP",
@@ -686,8 +768,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     const description = getAllEmbedDescriptions(interaction).join("\n");
-    expect(description).toContain("TH18 Alpha `#P1` - days 2 - unlinked - no current round");
-    expect(description).toContain("TH? Bravo `#P2` - days 1 - unlinked - no current round");
+    expect(description).toContain("TH18 Alpha `#PYLQ0289` - days 2 - unlinked - no current round");
+    expect(description).toContain("TH? Bravo `#QGRJ2222` - days 1 - unlinked - no current round");
     expect(description).not.toContain(":warning:");
     expect(description).toContain("Roster: none found");
     expect(description).toContain("Members spun in CWL: 2");
@@ -729,16 +811,16 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#QGRJ2222",
-        playerName: "Bravo",
-        townHall: 15,
+        playerTag: "#pylq0289",
+        playerName: "Alpha Duplicate",
+        townHall: 16,
         linkedDiscordUserId: null,
         linkedDiscordUsername: null,
-        daysParticipated: 1,
+        daysParticipated: 2,
         currentRound: {
           roundDay: 1,
           roundState: "preparation",
-          inCurrentLineup: false,
+          inCurrentLineup: true,
           attacksUsed: 0,
           attacksAvailable: 0,
           opponentTag: "#OPP1",
@@ -778,10 +860,11 @@ describe("/cwl command", () => {
     );
     expect(description).toContain("Members spun in CWL: 1");
     expect(description).toContain("Signed up + spun in CWL: 1");
+    expect(description.match(/Alpha `#PYLQ0289`/g) ?? []).toHaveLength(1);
     expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
-    expect(description).not.toContain("Bravo `#QGRJ2222`");
     expect(description).toContain("Not signed up but included in CWL");
     expect(description).toContain("none");
+    expect(description).not.toContain("Alpha Duplicate");
   });
 
   it("splits large /cwl members output across embeds instead of truncating", async () => {

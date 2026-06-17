@@ -708,6 +708,18 @@ model CwlPlayerClanSeason {
   @@index([season, playerTag])
 }
 
+model CwlSeasonRosterState {
+  season                  String
+  clanTag                 String
+  authoritativeRosterCount Int
+  reconciledAt            DateTime
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@id([season, clanTag])
+  @@index([season, reconciledAt])
+}
+
 model CurrentCwlRound {
   season               String
   clanTag              String

@@ -18,6 +18,7 @@ const prismaMock = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/prisma", () => ({
+  hasInitializedPrismaClient: () => false,
   prisma: prismaMock,
 }));
 
@@ -279,6 +280,9 @@ describe("CwlRotationSheetService", () => {
 
   it("still requires credentials for non-public Google Sheets links", async () => {
     const publicWorkbookSpy = vi.spyOn(PublicGoogleSheetsService.prototype, "readPublishedWorkbook");
+    vi.spyOn(GoogleSheetsService.prototype, "getSpreadsheetMetadata").mockRejectedValue(
+      new Error("Google Sheets credentials missing"),
+    );
     const interactionLink = "https://docs.google.com/spreadsheets/d/standard-sheet-id/edit";
 
     await expect(
