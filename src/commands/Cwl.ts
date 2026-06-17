@@ -42,7 +42,7 @@ import {
   type CwlRotationSheetImportPreview,
   type CwlRotationImportRow,
 } from "../services/CwlRotationSheetService";
-import { cwlStateService } from "../services/CwlStateService";
+import { cwlStateService, canonicalizeCwlSeasonRosterEntries } from "../services/CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 import { normalizeSyncTimeZone, autocompleteSyncTimeZones } from "../services/syncTimeZone";
 import type { CreateCwlRotationRosterPlanResult } from "../services/CwlRotationService";
@@ -212,17 +212,6 @@ async function resolveCwlRosterContext(input: {
     rosterPostedMessageUrl,
     signupTagSet,
   };
-}
-
-function dedupeCwlSeasonRosterEntries<T extends { playerTag: string }>(entries: T[]): T[] {
-  const byTag = new Map<string, T>();
-  for (const entry of entries) {
-    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
-    const playerTag = normalizedPlayerTag && normalizedPlayerTag.trim().length > 0 ? normalizedPlayerTag : String(entry.playerTag ?? "").trim();
-    if (!playerTag || byTag.has(playerTag)) continue;
-    byTag.set(playerTag, entry);
-  }
-  return [...byTag.values()];
 }
 
 function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
@@ -2820,7 +2809,7 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
-  const distinctRosterEntries = dedupeCwlSeasonRosterEntries(roster);
+  const distinctRosterEntries = canonicalizeCwlSeasonRosterEntries(roster);
   const [townHallEmojiByLevel, rosterContext] = await Promise.all([
     resolveTownHallEmojiMap(interaction.client),
     resolveCwlRosterContext({

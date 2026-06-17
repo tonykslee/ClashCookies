@@ -95,6 +95,20 @@ export type CwlSeasonRosterEntry = {
   } | null;
 };
 
+export type CwlSeasonRosterReconciliationRecord = {
+  authoritativeRosterCount: number;
+  reconciledAtIso: string;
+};
+
+type CwlPrepSnapshotLineupMember = {
+  playerTag: string;
+  playerName: string;
+  mapPosition: number | null;
+  townHall: number | null;
+  subbedIn: boolean;
+  subbedOut: boolean;
+};
+
 export type CwlActualLineup = {
   season: string;
   clanTag: string;
@@ -181,6 +195,7 @@ type ObservedSeasonRosterReconciliation = {
   rawObservedCount: number;
   distinctRosterCount: number;
   previousPersistedCount: number;
+  previousAuthoritativeRosterCount: number | null;
   staleRowsRemoved: number;
 };
 
@@ -194,6 +209,20 @@ type ObservedTrackedClanState = {
   seasonRoster: ObservedSeasonRosterMember[];
   seasonRosterReconciliation: ObservedSeasonRosterReconciliation;
 };
+
+export function canonicalizeCwlSeasonRosterEntries<T extends { playerTag: string }>(entries: T[]): T[] {
+  const byTag = new Map<string, T>();
+  for (const entry of entries) {
+    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+    const playerTag =
+      normalizedPlayerTag && normalizedPlayerTag.trim().length > 0
+        ? normalizedPlayerTag
+        : String(entry.playerTag ?? "").trim();
+    if (!playerTag || byTag.has(playerTag)) continue;
+    byTag.set(playerTag, entry);
+  }
+  return [...byTag.values()];
+}
 
 function sanitizeCwlName(input: unknown, fallback: string | null = null): string | null {
   return normalizePersistedPlayerName(input) ?? fallback;
@@ -321,29 +350,30 @@ function normalizeBooleanValue(value: unknown, fallback: boolean): boolean {
 }
 
 function normalizePrepSnapshotMembers(value: unknown): CwlPreparationSnapshotRecord["members"] {
-  if (!Array.isArray(value)) return [];
-  return value
+  const record = toRecordValue(value);
+  const membersValue = Array.isArray(value) ? value : Array.isArray(record?.members) ? record.members : [];
+  return membersValue
     .map((entry) => {
-      const record = toRecordValue(entry);
-      if (!record) return null;
-      const playerTag = normalizePlayerTag(String(record.playerTag ?? ""));
+      const entryRecord = toRecordValue(entry);
+      if (!entryRecord) return null;
+      const playerTag = normalizePlayerTag(String(entryRecord.playerTag ?? ""));
       if (!playerTag) return null;
       const playerName =
-        sanitizeCwlName(record.playerName, playerTag) ??
+        sanitizeCwlName(entryRecord.playerName, playerTag) ??
         playerTag;
-      const mapPosition = Number.isFinite(Number(record.mapPosition))
-        ? Math.trunc(Number(record.mapPosition))
+      const mapPosition = Number.isFinite(Number(entryRecord.mapPosition))
+        ? Math.trunc(Number(entryRecord.mapPosition))
         : null;
-      const townHall = Number.isFinite(Number(record.townHall))
-        ? Math.trunc(Number(record.townHall))
+      const townHall = Number.isFinite(Number(entryRecord.townHall))
+        ? Math.trunc(Number(entryRecord.townHall))
         : null;
       return {
         playerTag,
         playerName,
         mapPosition,
         townHall,
-        subbedIn: normalizeBooleanValue(record.subbedIn, true),
-        subbedOut: normalizeBooleanValue(record.subbedOut, false),
+        subbedIn: normalizeBooleanValue(entryRecord.subbedIn, true),
+        subbedOut: normalizeBooleanValue(entryRecord.subbedOut, false),
       };
     })
     .filter((member): member is CwlPreparationSnapshotRecord["members"][number] => Boolean(member))
@@ -351,23 +381,42 @@ function normalizePrepSnapshotMembers(value: unknown): CwlPreparationSnapshotRec
 }
 
 function buildPrepSnapshotLineupJson(
-  members: ObservedCwlRoundMember[],
-): Array<{
-  playerTag: string;
-  playerName: string;
-  mapPosition: number | null;
-  townHall: number | null;
-  subbedIn: boolean;
-  subbedOut: boolean;
-}> {
-  return members.map((member) => ({
-    playerTag: member.playerTag,
-    playerName: member.playerName,
-    mapPosition: member.mapPosition,
-    townHall: member.townHall,
-    subbedIn: member.subbedIn,
-    subbedOut: member.subbedOut,
-  }));
+  members: ReadonlyArray<CwlPrepSnapshotLineupMember>,
+  seasonRosterReconciliation: CwlSeasonRosterReconciliationRecord | null,
+): {
+  members: CwlPrepSnapshotLineupMember[];
+  seasonRosterReconciliation: CwlSeasonRosterReconciliationRecord | null;
+} {
+  return {
+    members: members.map((member) => ({
+      playerTag: member.playerTag,
+      playerName: member.playerName,
+      mapPosition: member.mapPosition,
+      townHall: member.townHall,
+      subbedIn: member.subbedIn,
+      subbedOut: member.subbedOut,
+    })),
+    seasonRosterReconciliation,
+  };
+}
+
+function buildCwlSeasonRosterReconciliationRecord(input: {
+  authoritativeRosterCount: number;
+  reconciledAt: Date;
+}): CwlSeasonRosterReconciliationRecord {
+  return {
+    authoritativeRosterCount: Math.max(1, Math.trunc(Number(input.authoritativeRosterCount) || 0)),
+    reconciledAtIso: input.reconciledAt.toISOString(),
+  };
+}
+
+function parseCwlSeasonRosterReconciliationCount(value: unknown): number | null {
+  const record = toRecordValue(value);
+  if (!record) return null;
+  const reconciliation = toRecordValue(record.seasonRosterReconciliation);
+  const count = Number(reconciliation?.authoritativeRosterCount);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  return Math.trunc(count);
 }
 
 function buildCwlPersistLogSuffix(input: {
@@ -800,6 +849,7 @@ function logCwlSeasonRosterReconciliation(input: {
   rawObservedCount: number;
   distinctRosterCount: number;
   previousPersistedCount: number;
+  previousAuthoritativeRosterCount: number | null;
   staleRowsRemoved: number;
   allowed: boolean;
   reason: string | null;
@@ -811,6 +861,7 @@ function logCwlSeasonRosterReconciliation(input: {
     `raw_observed_count=${input.rawObservedCount}`,
     `distinct_roster_count=${input.distinctRosterCount}`,
     `previous_persisted_count=${input.previousPersistedCount}`,
+    `previous_authoritative_count=${input.previousAuthoritativeRosterCount ?? "none"}`,
     `stale_rows_removed=${input.staleRowsRemoved}`,
     `allowed=${input.allowed ? "yes" : "no"}`,
   ];
@@ -848,6 +899,7 @@ async function loadObservedTrackedClanState(input: {
         rawObservedCount: 0,
         distinctRosterCount: 0,
         previousPersistedCount: 0,
+        previousAuthoritativeRosterCount: null,
         staleRowsRemoved: 0,
       },
     };
@@ -855,13 +907,28 @@ async function loadObservedTrackedClanState(input: {
 
   const season = normalizeSeasonKey(group?.season, input.defaultSeason);
   const leagueGroupState = sanitizeCwlName(group?.state) ?? null;
+  const existingPrepSnapshot = await prisma.currentCwlPrepSnapshot.findUnique({
+    where: {
+      season_clanTag: {
+        season,
+        clanTag: normalizeClanTag(input.trackedClanTag),
+      },
+    },
+    select: {
+      lineupJson: true,
+    },
+  });
   const trackedLeagueClan = resolveTrackedLeagueRosterClan(input.trackedClanTag, group);
   const trackedLeagueClanMembers = Array.isArray(trackedLeagueClan?.members) ? trackedLeagueClan.members : [];
   const leagueRosterByTag = buildLeagueRosterMap(trackedLeagueClanMembers);
   const rawObservedCount = trackedLeagueClanMembers.length;
   const distinctRosterCount = leagueRosterByTag.size;
+  const previousAuthoritativeRosterCount = parseCwlSeasonRosterReconciliationCount(existingPrepSnapshot?.lineupJson);
   const authoritativeSeasonRosterAllowed =
-    Boolean(trackedLeagueClan) && rawObservedCount > 0 && distinctRosterCount > 0;
+    Boolean(trackedLeagueClan) &&
+    rawObservedCount > 0 &&
+    distinctRosterCount > 0 &&
+    (previousAuthoritativeRosterCount === null || distinctRosterCount >= previousAuthoritativeRosterCount);
   const authoritativeSeasonRosterSkipReason = !group
     ? "league_group_missing"
     : !trackedLeagueClan
@@ -870,6 +937,8 @@ async function loadObservedTrackedClanState(input: {
         ? "empty_members"
         : distinctRosterCount <= 0
           ? "no_valid_member_tags"
+          : previousAuthoritativeRosterCount !== null && distinctRosterCount < previousAuthoritativeRosterCount
+            ? "suspicious_roster_shrink"
           : null;
   const observedRounds: ObservedCwlRound[] = [];
   const rounds = Array.isArray(group?.rounds) ? group.rounds : [];
@@ -950,6 +1019,7 @@ async function loadObservedTrackedClanState(input: {
       rawObservedCount,
       distinctRosterCount,
       previousPersistedCount: 0,
+      previousAuthoritativeRosterCount,
       staleRowsRemoved: 0,
     },
   };
@@ -1458,6 +1528,12 @@ export class CwlStateService {
             endTime: observed.currentPreparationRound.endTime,
             lineupJson: buildPrepSnapshotLineupJson(
               observed.currentPreparationRound.members,
+              observed.seasonRosterReconciliation.previousAuthoritativeRosterCount !== null
+                ? buildCwlSeasonRosterReconciliationRecord({
+                    authoritativeRosterCount: observed.seasonRosterReconciliation.previousAuthoritativeRosterCount,
+                    reconciledAt: observed.currentPreparationRound.sourceUpdatedAt,
+                  })
+                : null,
             ),
             sourceUpdatedAt: observed.currentPreparationRound.sourceUpdatedAt,
           }
@@ -1829,6 +1905,7 @@ export class CwlStateService {
               rawObservedCount: observed.seasonRosterReconciliation.rawObservedCount,
               distinctRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
               previousPersistedCount,
+              previousAuthoritativeRosterCount: observed.seasonRosterReconciliation.previousAuthoritativeRosterCount,
               staleRowsRemoved: 0,
               allowed: false,
               reason: observed.seasonRosterReconciliation.reason,
@@ -1907,10 +1984,61 @@ export class CwlStateService {
             rawObservedCount: observed.seasonRosterReconciliation.rawObservedCount,
             distinctRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
             previousPersistedCount,
+            previousAuthoritativeRosterCount: observed.seasonRosterReconciliation.previousAuthoritativeRosterCount,
             staleRowsRemoved,
             allowed: true,
             reason: null,
           });
+          if (currentPrepSnapshotPlan && observed.seasonRosterReconciliation.allowed) {
+            await tx.currentCwlPrepSnapshot.upsert({
+              where: {
+                season_clanTag: {
+                  season: observed.season,
+                  clanTag: observed.clanTag,
+                },
+              },
+              create: {
+                season: observed.season,
+                clanTag: observed.clanTag,
+                roundDay: currentPrepSnapshotPlan.roundDay,
+                clanName: currentPrepSnapshotPlan.clanName,
+                opponentTag: currentPrepSnapshotPlan.opponentTag,
+                opponentName: currentPrepSnapshotPlan.opponentName,
+                roundState: currentPrepSnapshotPlan.roundState,
+                leagueGroupState: currentPrepSnapshotPlan.leagueGroupState,
+                preparationStartTime: currentPrepSnapshotPlan.preparationStartTime,
+                startTime: currentPrepSnapshotPlan.startTime,
+                endTime: currentPrepSnapshotPlan.endTime,
+                lineupJson: buildPrepSnapshotLineupJson(
+                  currentPrepSnapshotPlan.lineupJson.members,
+                  buildCwlSeasonRosterReconciliationRecord({
+                    authoritativeRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
+                    reconciledAt: currentPrepSnapshotPlan.sourceUpdatedAt,
+                  }),
+                ),
+                sourceUpdatedAt: currentPrepSnapshotPlan.sourceUpdatedAt,
+              },
+              update: {
+                roundDay: currentPrepSnapshotPlan.roundDay,
+                clanName: currentPrepSnapshotPlan.clanName,
+                opponentTag: currentPrepSnapshotPlan.opponentTag,
+                opponentName: currentPrepSnapshotPlan.opponentName,
+                roundState: currentPrepSnapshotPlan.roundState,
+                leagueGroupState: currentPrepSnapshotPlan.leagueGroupState,
+                preparationStartTime: currentPrepSnapshotPlan.preparationStartTime,
+                startTime: currentPrepSnapshotPlan.startTime,
+                endTime: currentPrepSnapshotPlan.endTime,
+                lineupJson: buildPrepSnapshotLineupJson(
+                  currentPrepSnapshotPlan.lineupJson.members,
+                  buildCwlSeasonRosterReconciliationRecord({
+                    authoritativeRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
+                    reconciledAt: currentPrepSnapshotPlan.sourceUpdatedAt,
+                  }),
+                ),
+                sourceUpdatedAt: currentPrepSnapshotPlan.sourceUpdatedAt,
+              },
+            });
+          }
         },
       });
     }
@@ -2153,7 +2281,7 @@ export class CwlStateService {
     const playerCurrentByTag = new Map(
       playerCurrents.map((row) => [row.playerTag, row]),
     );
-    return rosterRows.map((row) => {
+    return canonicalizeCwlSeasonRosterEntries(rosterRows.map((row) => {
       const currentMember = currentMemberByTag.get(row.playerTag) ?? null;
       const playerLink = playerLinkByTag.get(row.playerTag) ?? null;
       const playerCurrent = playerCurrentByTag.get(row.playerTag) ?? null;
@@ -2189,7 +2317,7 @@ export class CwlStateService {
               }
             : null,
       };
-    });
+    }));
   }
 }
 

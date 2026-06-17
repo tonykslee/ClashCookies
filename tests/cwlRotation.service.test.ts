@@ -448,10 +448,53 @@ describe("CwlRotationService", () => {
     expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(5);
     expect(
       txMock.cwlRotationPlanMember.createMany.mock.calls.every(
-        ([call]) => call?.data?.length === 11,
+        ([call]) => {
+          const rows = Array.isArray(call?.data) ? call.data : [];
+          return rows.length === 11 && new Set(rows.map((row: any) => row.playerTag)).size === 11;
+        },
       ),
     ).toBe(true);
     expect(observedRosterRows).toHaveLength(11);
+  });
+
+  it("dedupes normalized season-roster rows and repeated excludes in manual 11-player creation", async () => {
+    const { observedRosterRows } = setupManualCreateRosterFixture({ rosterCount: 13 });
+    observedRosterRows[1].playerTag = observedRosterRows[0].playerTag.toLowerCase();
+    observedRosterRows[1].playerName = "Alpha Duplicate";
+    const excludedTag = observedRosterRows[2].playerTag;
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+      excludeTagsRaw: `${excludedTag} ${excludedTag}`,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      version: 1,
+      lineupSize: 11,
+      playersIncludedCount: 11,
+    });
+    expect(result.outcome === "created" ? result.excludedPlayers.map((row) => row.playerTag) : []).toEqual([
+      excludedTag,
+    ]);
+    expect(txMock.cwlRotationPlanDay.create).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanDay.create.mock.calls.every(([call]) => call?.data?.lineupSize === 11),
+    ).toBe(true);
+    expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(5);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls.every(([call]) => {
+        const rows = Array.isArray(call?.data) ? call.data : [];
+        return rows.length === 11 && new Set(rows.map((row: any) => row.playerTag)).size === 11;
+      }),
+    ).toBe(true);
+    expect(
+      txMock.cwlRotationPlanMember.createMany.mock.calls[0]?.[0]?.data.map((row: any) => row.playerTag),
+    ).not.toContain(observedRosterRows[1].playerTag);
   });
 
   it("advances from inactive history to version 2 instead of restarting at 1", async () => {
@@ -1688,7 +1731,10 @@ describe("CwlRotationService", () => {
     expect(txMock.cwlRotationPlanMember.createMany).toHaveBeenCalledTimes(7);
     expect(
       txMock.cwlRotationPlanMember.createMany.mock.calls.every(
-        ([call]) => call?.data?.length === 11,
+        ([call]) => {
+          const rows = Array.isArray(call?.data) ? call.data : [];
+          return rows.length === 11 && new Set(rows.map((row: any) => row.playerTag)).size === 11;
+        },
       ),
     ).toBe(true);
   });

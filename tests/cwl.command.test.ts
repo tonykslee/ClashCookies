@@ -549,9 +549,10 @@ describe("/cwl command", () => {
     const description = getAllEmbedDescriptions(interaction).join("\n");
     expect(description).toContain("Members spun in CWL: 1");
     expect(description).toContain("Signed up + spun in CWL: 1");
+    expect(description.match(/Alpha `#PYLQ0289`/g) ?? []).toHaveLength(1);
     expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
     expect(description).not.toContain("Alpha Duplicate");
-    expect(description).not.toContain("not signed up but included in CWL: #PYLQ0289");
+    expect(description).toContain("Not signed up but included in CWL\nnone");
   });
 
   it("shows roster context but marks signups unavailable when the roster view cannot be loaded", async () => {
@@ -810,16 +811,16 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#QGRJ2222",
-        playerName: "Bravo",
-        townHall: 15,
+        playerTag: "#pylq0289",
+        playerName: "Alpha Duplicate",
+        townHall: 16,
         linkedDiscordUserId: null,
         linkedDiscordUsername: null,
-        daysParticipated: 1,
+        daysParticipated: 2,
         currentRound: {
           roundDay: 1,
           roundState: "preparation",
-          inCurrentLineup: false,
+          inCurrentLineup: true,
           attacksUsed: 0,
           attacksAvailable: 0,
           opponentTag: "#OPP1",
@@ -859,10 +860,11 @@ describe("/cwl command", () => {
     );
     expect(description).toContain("Members spun in CWL: 1");
     expect(description).toContain("Signed up + spun in CWL: 1");
+    expect(description.match(/Alpha `#PYLQ0289`/g) ?? []).toHaveLength(1);
     expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
-    expect(description).not.toContain("Bravo `#QGRJ2222`");
     expect(description).toContain("Not signed up but included in CWL");
     expect(description).toContain("none");
+    expect(description).not.toContain("Alpha Duplicate");
   });
 
   it("splits large /cwl members output across embeds instead of truncating", async () => {

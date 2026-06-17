@@ -1,7 +1,12 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
-import { cwlStateService, type CwlActualLineup, type CwlSeasonRosterEntry } from "./CwlStateService";
+import {
+  cwlStateService,
+  canonicalizeCwlSeasonRosterEntries,
+  type CwlActualLineup,
+  type CwlSeasonRosterEntry,
+} from "./CwlStateService";
 import { normalizeClanTag, normalizePersistedPlayerName, normalizePlayerTag } from "./PlayerLinkService";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { rosterService, ROSTER_LIFECYCLE_STATE } from "./RosterService";
@@ -642,17 +647,6 @@ function normalizeCwlRotationLineupSize(input: unknown): CwlRotationSupportedExp
   if (!Number.isFinite(size)) return null;
   if (!(CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES as readonly number[]).includes(size)) return null;
   return size as CwlRotationSupportedExplicitLineupSize;
-}
-
-function dedupeCwlSeasonRosterEntries<T extends { playerTag: string }>(entries: T[]): T[] {
-  const byTag = new Map<string, T>();
-  for (const entry of entries) {
-    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
-    const playerTag = normalizedPlayerTag && normalizedPlayerTag.trim().length > 0 ? normalizedPlayerTag : String(entry.playerTag ?? "").trim();
-    if (!playerTag || byTag.has(playerTag)) continue;
-    byTag.set(playerTag, entry);
-  }
-  return [...byTag.values()];
 }
 
 async function loadActivePlan(input: {
@@ -1375,7 +1369,7 @@ export class CwlRotationService {
       };
     }
     const excludeTags = parsedExcludeTags.excludeTags;
-    const seasonRoster = dedupeCwlSeasonRosterEntries(
+    const seasonRoster = canonicalizeCwlSeasonRosterEntries(
       await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
     );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
@@ -1656,7 +1650,7 @@ export class CwlRotationService {
       };
     }
 
-    const seasonRoster = dedupeCwlSeasonRosterEntries(
+    const seasonRoster = canonicalizeCwlSeasonRosterEntries(
       await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
     );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));

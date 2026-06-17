@@ -7,6 +7,7 @@ const txMock = vi.hoisted(() => ({
   },
   currentCwlPrepSnapshot: {
     upsert: vi.fn(),
+    update: vi.fn(),
     deleteMany: vi.fn(),
   },
   cwlRoundMemberCurrent: {
@@ -83,6 +84,7 @@ describe("CwlStateService", () => {
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.deleteMany.mockResolvedValue({ count: 0 });
     txMock.currentCwlPrepSnapshot.upsert.mockResolvedValue(undefined);
+    txMock.currentCwlPrepSnapshot.update.mockResolvedValue(undefined);
     txMock.currentCwlPrepSnapshot.deleteMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundMemberCurrent.deleteMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundMemberCurrent.createMany.mockResolvedValue({ count: 0 });
@@ -194,10 +196,11 @@ describe("CwlStateService", () => {
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(5);
   });
 
-  it("reconciles the authoritative CWL season roster and prunes stale rows only when the fetched roster is usable", async () => {
+  it("reconciles the first trusted authoritative CWL season roster even when legacy persisted rows were inflated", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
-    txMock.cwlPlayerClanSeason.count.mockResolvedValue(3);
-    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 1 });
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(30);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 15 });
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const cocService = {
       getClanWarLeagueGroup: vi.fn().mockResolvedValue({
@@ -208,8 +211,20 @@ describe("CwlStateService", () => {
             tag: "#2QG2C08UP",
             members: [
               { tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 },
-              { tag: "#PYLQ0289", name: "Alpha Duplicate", townHallLevel: 16 },
               { tag: "#QGRJ2222", name: "Bravo", townHallLevel: 15 },
+              { tag: "#CUV9082", name: "Charlie", townHallLevel: 15 },
+              { tag: "#LQ9P8R2", name: "Delta", townHallLevel: 14 },
+              { tag: "#RJCUV08", name: "Echo", townHallLevel: 13 },
+              { tag: "#GRJCU08", name: "Foxtrot", townHallLevel: 13 },
+              { tag: "#QCUV289", name: "Golf", townHallLevel: 12 },
+              { tag: "#PYLQ289", name: "Hotel", townHallLevel: 12 },
+              { tag: "#V0289PY", name: "India", townHallLevel: 11 },
+              { tag: "#U0289PY", name: "Juliet", townHallLevel: 11 },
+              { tag: "#CUV0289", name: "Kilo", townHallLevel: 10 },
+              { tag: "#GRJ0289", name: "Lima", townHallLevel: 10 },
+              { tag: "#QGR0289", name: "Mike", townHallLevel: 9 },
+              { tag: "#LQG0289", name: "November", townHallLevel: 9 },
+              { tag: "#JCUV289", name: "Oscar", townHallLevel: 8 },
             ],
           },
         ],
@@ -228,20 +243,107 @@ describe("CwlStateService", () => {
       trackedClanCount: 1,
       refreshedClanCount: 1,
     });
-    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(2);
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(15);
     expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           season: "2026-04",
           cwlClanTag: "#2QG2C08UP",
-          playerTag: { notIn: ["#PYLQ0289", "#QGRJ2222"] },
+          playerTag: {
+            notIn: [
+              "#PYLQ0289",
+              "#QGRJ2222",
+              "#CUV9082",
+              "#LQ9P8R2",
+              "#RJCUV08",
+              "#GRJCU08",
+              "#QCUV289",
+              "#PYLQ289",
+              "#V0289PY",
+              "#U0289PY",
+              "#CUV0289",
+              "#GRJ0289",
+              "#QGR0289",
+              "#LQG0289",
+              "#JCUV289",
+            ],
+          },
         },
       }),
     );
     expect(
       infoSpy.mock.calls.some(([message]) =>
         String(message).includes(
-          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=3 distinct_roster_count=2 previous_persisted_count=3 stale_rows_removed=1 allowed=yes",
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=15 distinct_roster_count=15 previous_persisted_count=30 previous_authoritative_count=none stale_rows_removed=15 allowed=yes",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
+  it("skips destructive season roster pruning when a later non-empty snapshot shrinks below the last authoritative count", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      lineupJson: {
+        members: [],
+        seasonRosterReconciliation: {
+          authoritativeRosterCount: 30,
+          reconciledAtIso: "2026-04-01T00:00:00.000Z",
+        },
+      },
+    } as any);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(30);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: [
+              { tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 },
+              { tag: "#QGRJ2222", name: "Bravo", townHallLevel: 15 },
+              { tag: "#CUV9082", name: "Charlie", townHallLevel: 15 },
+              { tag: "#LQ9P8R2", name: "Delta", townHallLevel: 14 },
+              { tag: "#RJCUV08", name: "Echo", townHallLevel: 13 },
+              { tag: "#GRJCU08", name: "Foxtrot", townHallLevel: 13 },
+              { tag: "#QCUV289", name: "Golf", townHallLevel: 12 },
+              { tag: "#PYLQ289", name: "Hotel", townHallLevel: 12 },
+              { tag: "#V0289PY", name: "India", townHallLevel: 11 },
+              { tag: "#U0289PY", name: "Juliet", townHallLevel: 11 },
+              { tag: "#CUV0289", name: "Kilo", townHallLevel: 10 },
+              { tag: "#GRJ0289", name: "Lima", townHallLevel: 10 },
+              { tag: "#QGR0289", name: "Mike", townHallLevel: 9 },
+              { tag: "#LQG0289", name: "November", townHallLevel: 9 },
+              { tag: "#JCUV289", name: "Oscar", townHallLevel: 8 },
+            ],
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
+    expect(txMock.cwlPlayerClanSeason.deleteMany).not.toHaveBeenCalled();
+    expect(txMock.currentCwlPrepSnapshot.update).not.toHaveBeenCalled();
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=15 distinct_roster_count=15 previous_persisted_count=30 previous_authoritative_count=30 stale_rows_removed=0 allowed=no reason=suspicious_roster_shrink",
         ),
       ),
     ).toBe(true);
@@ -282,7 +384,7 @@ describe("CwlStateService", () => {
     expect(
       infoSpy.mock.calls.some(([message]) =>
         String(message).includes(
-          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=0 distinct_roster_count=0 previous_persisted_count=4 stale_rows_removed=0 allowed=no reason=empty_members",
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=0 distinct_roster_count=0 previous_persisted_count=4 previous_authoritative_count=none stale_rows_removed=0 allowed=no reason=empty_members",
         ),
       ),
     ).toBe(true);
@@ -461,16 +563,18 @@ describe("CwlStateService", () => {
           roundDay: 2,
           roundState: "preparation",
           opponentName: "Opponent Two",
-          lineupJson: expect.arrayContaining([
-            expect.objectContaining({
-              playerTag: "#PYLQ0289",
-              playerName: "Alpha",
-              mapPosition: 1,
-              townHall: 16,
-              subbedIn: true,
-              subbedOut: false,
-            }),
-          ]),
+          lineupJson: expect.objectContaining({
+            members: expect.arrayContaining([
+              expect.objectContaining({
+                playerTag: "#PYLQ0289",
+                playerName: "Alpha",
+                mapPosition: 1,
+                townHall: 16,
+                subbedIn: true,
+                subbedOut: false,
+              }),
+            ]),
+          }),
         }),
       }),
     );
@@ -931,24 +1035,27 @@ describe("CwlStateService", () => {
       preparationStartTime: new Date("2026-04-02T10:00:00.000Z"),
       startTime: new Date("2026-04-02T12:00:00.000Z"),
       endTime: new Date("2026-04-03T12:00:00.000Z"),
-      lineupJson: [
-        {
-          playerTag: "#QGRJ2222",
-          playerName: "Bravo",
-          mapPosition: 1,
-          townHall: 15,
-          subbedIn: true,
-          subbedOut: false,
-        },
-        {
-          playerTag: "#CUV9082",
-          playerName: "Charlie",
-          mapPosition: 2,
-          townHall: 15,
-          subbedIn: true,
-          subbedOut: false,
-        },
-      ],
+      lineupJson: {
+        members: [
+          {
+            playerTag: "#QGRJ2222",
+            playerName: "Bravo",
+            mapPosition: 1,
+            townHall: 15,
+            subbedIn: true,
+            subbedOut: false,
+          },
+          {
+            playerTag: "#CUV9082",
+            playerName: "Charlie",
+            mapPosition: 2,
+            townHall: 15,
+            subbedIn: true,
+            subbedOut: false,
+          },
+        ],
+        seasonRosterReconciliation: null,
+      },
       sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
     });
 
@@ -1068,7 +1175,10 @@ describe("CwlStateService", () => {
           startTime: new Date("2026-04-03T12:00:00.000Z"),
           endTime: new Date("2026-04-04T12:00:00.000Z"),
           sourceUpdatedAt: new Date("2026-04-03T00:00:00.000Z"),
-          lineupJson: [],
+          lineupJson: {
+            members: [],
+            seasonRosterReconciliation: null,
+          },
         };
       }
       return null;
