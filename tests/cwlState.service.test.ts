@@ -26,6 +26,10 @@ const txMock = vi.hoisted(() => ({
     upsert: vi.fn(),
     deleteMany: vi.fn(),
   },
+  cwlSeasonRosterState: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
 }));
 
 const prismaMock = vi.hoisted(() => ({
@@ -50,6 +54,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlPlayerClanSeason: {
     count: vi.fn(),
     findMany: vi.fn(),
+  },
+  cwlSeasonRosterState: {
+    findUnique: vi.fn(),
   },
   playerCurrent: {
     findMany: vi.fn(),
@@ -78,6 +85,7 @@ describe("CwlStateService", () => {
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.count.mockResolvedValue(0);
+    prismaMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
 
@@ -94,6 +102,8 @@ describe("CwlStateService", () => {
     txMock.cwlPlayerClanSeason.count.mockResolvedValue(0);
     txMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
     txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
+    txMock.cwlSeasonRosterState.upsert.mockResolvedValue(undefined);
   });
 
   it("persists a current preparation round and current-member summaries for tracked clans", async () => {
@@ -198,7 +208,7 @@ describe("CwlStateService", () => {
 
   it("reconciles the first trusted authoritative CWL season roster even when legacy persisted rows were inflated", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
-    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
     txMock.cwlPlayerClanSeason.count.mockResolvedValue(30);
     txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 15 });
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -271,6 +281,19 @@ describe("CwlStateService", () => {
         },
       }),
     );
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          authoritativeRosterCount: 15,
+        }),
+        update: expect.objectContaining({
+          authoritativeRosterCount: 15,
+        }),
+      }),
+    );
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
     expect(
       infoSpy.mock.calls.some(([message]) =>
         String(message).includes(
@@ -283,16 +306,11 @@ describe("CwlStateService", () => {
 
   it("skips destructive season roster pruning when a later non-empty snapshot shrinks below the last authoritative count", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
-    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue({
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue({
       season: "2026-04",
       clanTag: "#2QG2C08UP",
-      lineupJson: {
-        members: [],
-        seasonRosterReconciliation: {
-          authoritativeRosterCount: 30,
-          reconciledAtIso: "2026-04-01T00:00:00.000Z",
-        },
-      },
+      authoritativeRosterCount: 30,
+      reconciledAt: new Date("2026-04-01T00:00:00.000Z"),
     } as any);
     txMock.cwlPlayerClanSeason.count.mockResolvedValue(30);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -339,7 +357,9 @@ describe("CwlStateService", () => {
     });
     expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
     expect(txMock.cwlPlayerClanSeason.deleteMany).not.toHaveBeenCalled();
+    expect(txMock.cwlSeasonRosterState.upsert).not.toHaveBeenCalled();
     expect(txMock.currentCwlPrepSnapshot.update).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
     expect(
       infoSpy.mock.calls.some(([message]) =>
         String(message).includes(
@@ -350,9 +370,88 @@ describe("CwlStateService", () => {
     infoSpy.mockRestore();
   });
 
+  it.each([
+    ["equal", 15],
+    ["expanded", 10],
+  ] as const)("allows %s authoritative counts to refresh when the candidate is not smaller", async (_label, previousAuthoritativeRosterCount) => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      authoritativeRosterCount: previousAuthoritativeRosterCount,
+      reconciledAt: new Date("2026-04-01T00:00:00.000Z"),
+    } as any);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(18);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 3 });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: [
+              { tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 },
+              { tag: "#QGRJ2222", name: "Bravo", townHallLevel: 15 },
+              { tag: "#CUV9082", name: "Charlie", townHallLevel: 15 },
+              { tag: "#LQ9P8R2", name: "Delta", townHallLevel: 14 },
+              { tag: "#RJCUV08", name: "Echo", townHallLevel: 13 },
+              { tag: "#GRJCU08", name: "Foxtrot", townHallLevel: 13 },
+              { tag: "#QCUV289", name: "Golf", townHallLevel: 12 },
+              { tag: "#PYLQ289", name: "Hotel", townHallLevel: 12 },
+              { tag: "#V0289PY", name: "India", townHallLevel: 11 },
+              { tag: "#U0289PY", name: "Juliet", townHallLevel: 11 },
+              { tag: "#CUV0289", name: "Kilo", townHallLevel: 10 },
+              { tag: "#GRJ0289", name: "Lima", townHallLevel: 10 },
+              { tag: "#QGR0289", name: "Mike", townHallLevel: 9 },
+              { tag: "#LQG0289", name: "November", townHallLevel: 9 },
+              { tag: "#JCUV289", name: "Oscar", townHallLevel: 8 },
+            ],
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(15);
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalled();
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          authoritativeRosterCount: 15,
+        }),
+        update: expect.objectContaining({
+          authoritativeRosterCount: 15,
+        }),
+      }),
+    );
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          `event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=15 distinct_roster_count=15 previous_persisted_count=18 previous_authoritative_count=${previousAuthoritativeRosterCount} stale_rows_removed=3 allowed=yes`,
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
   it("skips season roster reconciliation when the fetched league roster is missing or empty and preserves the prior roster", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     txMock.cwlPlayerClanSeason.count.mockResolvedValue(4);
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue(null);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const cocService = {
       getClanWarLeagueGroup: vi.fn().mockResolvedValue({
@@ -381,6 +480,8 @@ describe("CwlStateService", () => {
     });
     expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
     expect(txMock.cwlPlayerClanSeason.deleteMany).not.toHaveBeenCalled();
+    expect(txMock.cwlSeasonRosterState.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findUnique).not.toHaveBeenCalled();
     expect(
       infoSpy.mock.calls.some(([message]) =>
         String(message).includes(
@@ -563,18 +664,16 @@ describe("CwlStateService", () => {
           roundDay: 2,
           roundState: "preparation",
           opponentName: "Opponent Two",
-          lineupJson: expect.objectContaining({
-            members: expect.arrayContaining([
-              expect.objectContaining({
-                playerTag: "#PYLQ0289",
-                playerName: "Alpha",
-                mapPosition: 1,
-                townHall: 16,
-                subbedIn: true,
-                subbedOut: false,
-              }),
-            ]),
-          }),
+          lineupJson: expect.arrayContaining([
+            expect.objectContaining({
+              playerTag: "#PYLQ0289",
+              playerName: "Alpha",
+              mapPosition: 1,
+              townHall: 16,
+              subbedIn: true,
+              subbedOut: false,
+            }),
+          ]),
         }),
       }),
     );
@@ -1035,27 +1134,24 @@ describe("CwlStateService", () => {
       preparationStartTime: new Date("2026-04-02T10:00:00.000Z"),
       startTime: new Date("2026-04-02T12:00:00.000Z"),
       endTime: new Date("2026-04-03T12:00:00.000Z"),
-      lineupJson: {
-        members: [
-          {
-            playerTag: "#QGRJ2222",
-            playerName: "Bravo",
-            mapPosition: 1,
-            townHall: 15,
-            subbedIn: true,
-            subbedOut: false,
-          },
-          {
-            playerTag: "#CUV9082",
-            playerName: "Charlie",
-            mapPosition: 2,
-            townHall: 15,
-            subbedIn: true,
-            subbedOut: false,
-          },
-        ],
-        seasonRosterReconciliation: null,
-      },
+      lineupJson: [
+        {
+          playerTag: "#QGRJ2222",
+          playerName: "Bravo",
+          mapPosition: 1,
+          townHall: 15,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          playerTag: "#CUV9082",
+          playerName: "Charlie",
+          mapPosition: 2,
+          townHall: 15,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
       sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
     });
 
@@ -1175,10 +1271,7 @@ describe("CwlStateService", () => {
           startTime: new Date("2026-04-03T12:00:00.000Z"),
           endTime: new Date("2026-04-04T12:00:00.000Z"),
           sourceUpdatedAt: new Date("2026-04-03T00:00:00.000Z"),
-          lineupJson: {
-            members: [],
-            seasonRosterReconciliation: null,
-          },
+          lineupJson: [],
         };
       }
       return null;
@@ -1352,6 +1445,109 @@ describe("CwlStateService", () => {
           }),
         }),
       ]),
+    );
+  });
+
+  it("returns one normalized canonical row when duplicate persisted tags differ only by case", async () => {
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      {
+        season: "2026-04",
+        cwlClanTag: "#2QG2C08UP",
+        playerTag: "#pylq0289",
+        playerName: "Lower Alpha",
+        townHall: 16,
+        daysParticipated: 2,
+        lastRoundDay: 2,
+      },
+      {
+        season: "2026-04",
+        cwlClanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Upper Alpha",
+        townHall: 17,
+        daysParticipated: 4,
+        lastRoundDay: 3,
+      },
+      {
+        season: "2026-04",
+        cwlClanTag: "#2QG2C08UP",
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 15,
+        daysParticipated: 1,
+        lastRoundDay: 1,
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        currentWeight: 177,
+        role: "leader",
+      },
+    ]);
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      roundDay: 3,
+      clanName: "CWL Alpha",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      roundState: "preparation",
+      startTime: new Date("2026-04-03T12:00:00.000Z"),
+      endTime: new Date("2026-04-04T12:00:00.000Z"),
+    });
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+        playerName: "Round Alpha",
+        townHall: 16,
+        attacksUsed: 0,
+        attacksAvailable: 0,
+        subbedIn: true,
+      },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        discordUserId: "111111111111111111",
+        discordUsername: "alpha-user",
+      },
+    ]);
+
+    const roster = await cwlStateService.listSeasonRosterForClan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+    });
+
+    expect(roster).toHaveLength(2);
+    expect(roster.map((row) => row.playerTag)).toEqual(["#PYLQ0289", "#QGRJ2222"]);
+    expect(roster[0]).toEqual(
+      expect.objectContaining({
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        townHall: 16,
+        currentWeight: 177,
+        role: "leader",
+        linkedDiscordUserId: "111111111111111111",
+        linkedDiscordUsername: "alpha-user",
+        daysParticipated: 2,
+        currentRound: expect.objectContaining({
+          roundDay: 3,
+          inCurrentLineup: true,
+          opponentTag: "#OPP1",
+        }),
+      }),
+    );
+    expect(roster[1]).toEqual(
+      expect.objectContaining({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        linkedDiscordUserId: null,
+        daysParticipated: 1,
+      }),
     );
   });
 });

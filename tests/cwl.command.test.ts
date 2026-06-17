@@ -739,7 +739,7 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#P1",
+        playerTag: "#PYLQ0289",
         playerName: "Alpha",
         townHall: 18,
         linkedDiscordUserId: null,
@@ -750,7 +750,7 @@ describe("/cwl command", () => {
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
-        playerTag: "#P2",
+        playerTag: "#QGRJ2222",
         playerName: "Bravo",
         townHall: null,
         linkedDiscordUserId: null,
@@ -768,8 +768,8 @@ describe("/cwl command", () => {
     await Cwl.run({} as any, interaction as any);
 
     const description = getAllEmbedDescriptions(interaction).join("\n");
-    expect(description).toContain("TH18 Alpha `#P1` - days 2 - unlinked - no current round");
-    expect(description).toContain("TH? Bravo `#P2` - days 1 - unlinked - no current round");
+    expect(description).toContain("TH18 Alpha `#PYLQ0289` - days 2 - unlinked - no current round");
+    expect(description).toContain("TH? Bravo `#QGRJ2222` - days 1 - unlinked - no current round");
     expect(description).not.toContain(":warning:");
     expect(description).toContain("Roster: none found");
     expect(description).toContain("Members spun in CWL: 2");
