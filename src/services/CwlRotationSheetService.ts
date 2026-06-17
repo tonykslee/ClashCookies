@@ -16,6 +16,27 @@ import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 
 const CWL_IMPORT_RANGE = "A:AZ";
 
+export function buildCwlRotationSpreadsheetTitle(season: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(season);
+  if (!match) {
+    return `${season} CWL Rotation`;
+  }
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+
+  if (monthIndex < 0 || monthIndex > 11) {
+    return `${season} CWL Rotation`;
+  }
+
+  const monthName = new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, monthIndex, 1)));
+
+  return `${monthName} ${year} CWL Rotation`;
+}
+
 export type CwlRotationImportDayPreview = {
   roundDay: number;
   lineupSize: number;
@@ -514,7 +535,7 @@ export class CwlRotationSheetService {
     }
 
     const spreadsheet = await this.sheets.createSpreadsheet({
-      title: `ClashCookies CWL Rotation Export ${season}`,
+      title: buildCwlRotationSpreadsheetTitle(season),
       tabNames: payload.tabs.map((tab) => tab.tabName),
     });
     await this.sheets.writeSpreadsheetTabs({

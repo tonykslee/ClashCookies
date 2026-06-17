@@ -675,7 +675,7 @@ describe("CwlRotationSheetService", () => {
     });
 
     expect(createSpreadsheet).toHaveBeenCalledWith({
-      title: "ClashCookies CWL Rotation Export 2026-04",
+      title: "April 2026 CWL Rotation",
       tabNames: ["M1 [A] | Rising Thrones"],
     });
     expect(writeTabs).toHaveBeenCalledWith(
