@@ -42,7 +42,7 @@ import {
   type CwlRotationSheetImportPreview,
   type CwlRotationImportRow,
 } from "../services/CwlRotationSheetService";
-import { cwlStateService } from "../services/CwlStateService";
+import { cwlStateService, canonicalizeCwlSeasonRosterEntries } from "../services/CwlStateService";
 import { normalizeClanTag, normalizePlayerTag } from "../services/PlayerLinkService";
 import { normalizeSyncTimeZone, autocompleteSyncTimeZones } from "../services/syncTimeZone";
 import type { CreateCwlRotationRosterPlanResult } from "../services/CwlRotationService";
@@ -2809,6 +2809,7 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
+  const distinctRosterEntries = canonicalizeCwlSeasonRosterEntries(roster);
   const [townHallEmojiByLevel, rosterContext] = await Promise.all([
     resolveTownHallEmojiMap(interaction.client),
     resolveCwlRosterContext({
@@ -2824,8 +2825,8 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
   }
 
   const entries = inWarOnly
-    ? roster.filter((entry) => entry.currentRound?.inCurrentLineup)
-    : roster;
+    ? distinctRosterEntries.filter((entry) => entry.currentRound?.inCurrentLineup)
+    : distinctRosterEntries;
   const rosterSignupTagSet = rosterContext.kind === "loaded" ? rosterContext.signupTagSet : null;
   const signedUpAndSpunCount = rosterContext.kind === "loaded"
     ? entries.filter((entry) => {

@@ -1,7 +1,12 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
-import { cwlStateService, type CwlActualLineup, type CwlSeasonRosterEntry } from "./CwlStateService";
+import {
+  cwlStateService,
+  canonicalizeCwlSeasonRosterEntries,
+  type CwlActualLineup,
+  type CwlSeasonRosterEntry,
+} from "./CwlStateService";
 import { normalizeClanTag, normalizePersistedPlayerName, normalizePlayerTag } from "./PlayerLinkService";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { rosterService, ROSTER_LIFECYCLE_STATE } from "./RosterService";
@@ -1364,7 +1369,9 @@ export class CwlRotationService {
       };
     }
     const excludeTags = parsedExcludeTags.excludeTags;
-    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
+    const seasonRoster = canonicalizeCwlSeasonRosterEntries(
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+    );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));
     if (invalidTags.length > 0) {
@@ -1643,7 +1650,9 @@ export class CwlRotationService {
       };
     }
 
-    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
+    const seasonRoster = canonicalizeCwlSeasonRosterEntries(
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+    );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
     const normalizedConfirmedSignups = confirmedSignups
