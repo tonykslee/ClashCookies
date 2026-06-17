@@ -214,6 +214,17 @@ async function resolveCwlRosterContext(input: {
   };
 }
 
+function dedupeCwlSeasonRosterEntries<T extends { playerTag: string }>(entries: T[]): T[] {
+  const byTag = new Map<string, T>();
+  for (const entry of entries) {
+    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+    const playerTag = normalizedPlayerTag && normalizedPlayerTag.trim().length > 0 ? normalizedPlayerTag : String(entry.playerTag ?? "").trim();
+    if (!playerTag || byTag.has(playerTag)) continue;
+    byTag.set(playerTag, entry);
+  }
+  return [...byTag.values()];
+}
+
 function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
   const normalized = String(input ?? "")
     .trim()
@@ -2809,6 +2820,7 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
     await interaction.editReply(`No tracked CWL clan found for ${clanTag} in season ${season}.`);
     return;
   }
+  const distinctRosterEntries = dedupeCwlSeasonRosterEntries(roster);
   const [townHallEmojiByLevel, rosterContext] = await Promise.all([
     resolveTownHallEmojiMap(interaction.client),
     resolveCwlRosterContext({
@@ -2824,8 +2836,8 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
   }
 
   const entries = inWarOnly
-    ? roster.filter((entry) => entry.currentRound?.inCurrentLineup)
-    : roster;
+    ? distinctRosterEntries.filter((entry) => entry.currentRound?.inCurrentLineup)
+    : distinctRosterEntries;
   const rosterSignupTagSet = rosterContext.kind === "loaded" ? rosterContext.signupTagSet : null;
   const signedUpAndSpunCount = rosterContext.kind === "loaded"
     ? entries.filter((entry) => {

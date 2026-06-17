@@ -21,7 +21,9 @@ const txMock = vi.hoisted(() => ({
     createMany: vi.fn(),
   },
   cwlPlayerClanSeason: {
+    count: vi.fn(),
     upsert: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -45,6 +47,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   cwlPlayerClanSeason: {
+    count: vi.fn(),
     findMany: vi.fn(),
   },
   playerCurrent: {
@@ -73,6 +76,7 @@ describe("CwlStateService", () => {
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.count.mockResolvedValue(0);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
 
@@ -85,7 +89,9 @@ describe("CwlStateService", () => {
     txMock.cwlRoundHistory.upsert.mockResolvedValue(undefined);
     txMock.cwlRoundMemberHistory.deleteMany.mockResolvedValue({ count: 0 });
     txMock.cwlRoundMemberHistory.createMany.mockResolvedValue({ count: 0 });
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(0);
     txMock.cwlPlayerClanSeason.upsert.mockResolvedValue(undefined);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   it("persists a current preparation round and current-member summaries for tracked clans", async () => {
@@ -186,6 +192,101 @@ describe("CwlStateService", () => {
       where: { season: "2026-04", clanTag: "#2QG2C08UP" },
     });
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(5);
+  });
+
+  it("reconciles the authoritative CWL season roster and prunes stale rows only when the fetched roster is usable", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(3);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 1 });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: [
+              { tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 },
+              { tag: "#PYLQ0289", name: "Alpha Duplicate", townHallLevel: 16 },
+              { tag: "#QGRJ2222", name: "Bravo", townHallLevel: 15 },
+            ],
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledTimes(2);
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          season: "2026-04",
+          cwlClanTag: "#2QG2C08UP",
+          playerTag: { notIn: ["#PYLQ0289", "#QGRJ2222"] },
+        },
+      }),
+    );
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=3 distinct_roster_count=2 previous_persisted_count=3 stale_rows_removed=1 allowed=yes",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
+  it("skips season roster reconciliation when the fetched league roster is missing or empty and preserves the prior roster", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(4);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [
+          {
+            tag: "#2QG2C08UP",
+            members: [],
+          },
+        ],
+        rounds: [],
+      }),
+      getClanWarLeagueWar: vi.fn(),
+    };
+
+    const result = await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-04",
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-04",
+      trackedClanCount: 1,
+      refreshedClanCount: 1,
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
+    expect(txMock.cwlPlayerClanSeason.deleteMany).not.toHaveBeenCalled();
+    expect(
+      infoSpy.mock.calls.some(([message]) =>
+        String(message).includes(
+          "event=tracked_cwl_season_roster_reconcile season=2026-04 clan_tag=#2QG2C08UP raw_observed_count=0 distinct_roster_count=0 previous_persisted_count=4 stale_rows_removed=0 allowed=no reason=empty_members",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
   });
 
   it("refreshes one clan only when asked for a targeted CWL clan refresh", async () => {

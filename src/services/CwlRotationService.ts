@@ -644,6 +644,17 @@ function normalizeCwlRotationLineupSize(input: unknown): CwlRotationSupportedExp
   return size as CwlRotationSupportedExplicitLineupSize;
 }
 
+function dedupeCwlSeasonRosterEntries<T extends { playerTag: string }>(entries: T[]): T[] {
+  const byTag = new Map<string, T>();
+  for (const entry of entries) {
+    const normalizedPlayerTag = normalizePlayerTag(entry.playerTag);
+    const playerTag = normalizedPlayerTag && normalizedPlayerTag.trim().length > 0 ? normalizedPlayerTag : String(entry.playerTag ?? "").trim();
+    if (!playerTag || byTag.has(playerTag)) continue;
+    byTag.set(playerTag, entry);
+  }
+  return [...byTag.values()];
+}
+
 async function loadActivePlan(input: {
   clanTag: string;
   season: string;
@@ -1364,7 +1375,9 @@ export class CwlRotationService {
       };
     }
     const excludeTags = parsedExcludeTags.excludeTags;
-    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
+    const seasonRoster = dedupeCwlSeasonRosterEntries(
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+    );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));
     if (invalidTags.length > 0) {
@@ -1643,7 +1656,9 @@ export class CwlRotationService {
       };
     }
 
-    const seasonRoster = await cwlStateService.listSeasonRosterForClan({ clanTag, season });
+    const seasonRoster = dedupeCwlSeasonRosterEntries(
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+    );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
     const normalizedConfirmedSignups = confirmedSignups

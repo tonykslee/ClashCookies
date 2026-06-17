@@ -175,6 +175,15 @@ type ObservedSeasonRosterMember = {
   lastRoundDay: number | null;
 };
 
+type ObservedSeasonRosterReconciliation = {
+  allowed: boolean;
+  reason: string | null;
+  rawObservedCount: number;
+  distinctRosterCount: number;
+  previousPersistedCount: number;
+  staleRowsRemoved: number;
+};
+
 type ObservedTrackedClanState = {
   season: string;
   clanTag: string;
@@ -183,6 +192,7 @@ type ObservedTrackedClanState = {
   currentPreparationRound: ObservedCwlRound | null;
   historyRounds: ObservedCwlRound[];
   seasonRoster: ObservedSeasonRosterMember[];
+  seasonRosterReconciliation: ObservedSeasonRosterReconciliation;
 };
 
 function sanitizeCwlName(input: unknown, fallback: string | null = null): string | null {
@@ -611,24 +621,24 @@ function sumAttackDestruction(member: ClanWarMember | null | undefined): number 
   );
 }
 
-function resolveTrackedLeagueRosterMember(
+function resolveTrackedLeagueRosterClan(
   trackedClanTag: string,
   group: ClanWarLeagueGroup | null,
-): ClanWarLeagueClanMember[] {
-  if (!group || !Array.isArray(group.clans)) return [];
+): NonNullable<ClanWarLeagueGroup["clans"]>[number] | null {
+  if (!group || !Array.isArray(group.clans)) return null;
   const normalizedTrackedClanTag = normalizeClanTag(trackedClanTag);
-  const trackedClan = group.clans.find(
+  return (
+    group.clans.find(
     (clan) => normalizeClanTag(String(clan?.tag ?? "")) === normalizedTrackedClanTag,
+    ) ?? null
   );
-  return Array.isArray(trackedClan?.members) ? trackedClan.members : [];
 }
 
 function buildLeagueRosterMap(
-  trackedClanTag: string,
-  group: ClanWarLeagueGroup | null,
+  trackedClanMembers: ClanWarLeagueClanMember[],
 ): Map<string, { playerName: string; townHall: number | null }> {
   const map = new Map<string, { playerName: string; townHall: number | null }>();
-  for (const member of resolveTrackedLeagueRosterMember(trackedClanTag, group)) {
+  for (const member of trackedClanMembers) {
     const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
     if (!playerTag) continue;
     map.set(playerTag, {
@@ -753,6 +763,7 @@ function buildObservedSeasonRoster(input: {
   const registerRoundMembers = (round: ObservedCwlRound) => {
     for (const member of round.members) {
       const existing = byTag.get(member.playerTag);
+      if (!existing) continue;
       const nextDays = (existing?.daysParticipated ?? 0) + (member.subbedIn ? 1 : 0);
       byTag.set(member.playerTag, {
         playerTag: member.playerTag,
@@ -783,6 +794,32 @@ function buildObservedSeasonRoster(input: {
   });
 }
 
+function logCwlSeasonRosterReconciliation(input: {
+  season: string;
+  clanTag: string;
+  rawObservedCount: number;
+  distinctRosterCount: number;
+  previousPersistedCount: number;
+  staleRowsRemoved: number;
+  allowed: boolean;
+  reason: string | null;
+}): void {
+  const parts = [
+    `[cwl-state] event=tracked_cwl_season_roster_reconcile`,
+    `season=${input.season}`,
+    `clan_tag=${input.clanTag}`,
+    `raw_observed_count=${input.rawObservedCount}`,
+    `distinct_roster_count=${input.distinctRosterCount}`,
+    `previous_persisted_count=${input.previousPersistedCount}`,
+    `stale_rows_removed=${input.staleRowsRemoved}`,
+    `allowed=${input.allowed ? "yes" : "no"}`,
+  ];
+  if (input.reason) {
+    parts.push(`reason=${input.reason}`);
+  }
+  console.info(parts.join(" "));
+}
+
 async function loadObservedTrackedClanState(input: {
   cwlFetchSource: CwlLeagueFetchSource;
   trackedClanTag: string;
@@ -805,12 +842,35 @@ async function loadObservedTrackedClanState(input: {
       currentPreparationRound: null,
       historyRounds: [],
       seasonRoster: [],
+      seasonRosterReconciliation: {
+        allowed: false,
+        reason: "league_group_fetch_failed",
+        rawObservedCount: 0,
+        distinctRosterCount: 0,
+        previousPersistedCount: 0,
+        staleRowsRemoved: 0,
+      },
     };
   }
 
   const season = normalizeSeasonKey(group?.season, input.defaultSeason);
   const leagueGroupState = sanitizeCwlName(group?.state) ?? null;
-  const leagueRosterByTag = buildLeagueRosterMap(input.trackedClanTag, group);
+  const trackedLeagueClan = resolveTrackedLeagueRosterClan(input.trackedClanTag, group);
+  const trackedLeagueClanMembers = Array.isArray(trackedLeagueClan?.members) ? trackedLeagueClan.members : [];
+  const leagueRosterByTag = buildLeagueRosterMap(trackedLeagueClanMembers);
+  const rawObservedCount = trackedLeagueClanMembers.length;
+  const distinctRosterCount = leagueRosterByTag.size;
+  const authoritativeSeasonRosterAllowed =
+    Boolean(trackedLeagueClan) && rawObservedCount > 0 && distinctRosterCount > 0;
+  const authoritativeSeasonRosterSkipReason = !group
+    ? "league_group_missing"
+    : !trackedLeagueClan
+      ? "tracked_clan_missing"
+      : rawObservedCount <= 0
+        ? "empty_members"
+        : distinctRosterCount <= 0
+          ? "no_valid_member_tags"
+          : null;
   const observedRounds: ObservedCwlRound[] = [];
   const rounds = Array.isArray(group?.rounds) ? group.rounds : [];
 
@@ -884,6 +944,14 @@ async function loadObservedTrackedClanState(input: {
       currentRound,
       historyRounds,
     }),
+    seasonRosterReconciliation: {
+      allowed: authoritativeSeasonRosterAllowed,
+      reason: authoritativeSeasonRosterAllowed ? null : authoritativeSeasonRosterSkipReason,
+      rawObservedCount,
+      distinctRosterCount,
+      previousPersistedCount: 0,
+      staleRowsRemoved: 0,
+    },
   };
 }
 
@@ -1748,6 +1816,32 @@ export class CwlStateService {
         historyMemberCount: historyMemberCountForClan,
         phase: "season_roster",
         work: async (tx, trackBlock) => {
+          const previousPersistedCount = await tx.cwlPlayerClanSeason.count({
+            where: {
+              season: observed.season,
+              cwlClanTag: observed.clanTag,
+            },
+          });
+          if (!observed.seasonRosterReconciliation.allowed) {
+            logCwlSeasonRosterReconciliation({
+              season: observed.season,
+              clanTag: observed.clanTag,
+              rawObservedCount: observed.seasonRosterReconciliation.rawObservedCount,
+              distinctRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
+              previousPersistedCount,
+              staleRowsRemoved: 0,
+              allowed: false,
+              reason: observed.seasonRosterReconciliation.reason,
+            });
+            return;
+          }
+
+          const authoritativeTags = [
+            ...new Set(
+              seasonRosterRows.map((rosterMember) => normalizePlayerTag(rosterMember.playerTag)).filter(Boolean),
+            ),
+          ];
+          let staleRowsRemoved = 0;
           for (const rosterMember of seasonRosterRows) {
             trackBlock(rosterMember.playerTag);
             logCwlPersistPhase({
@@ -1797,6 +1891,26 @@ export class CwlStateService {
               status: "block_complete",
             });
           }
+          if (authoritativeTags.length > 0) {
+            const deleted = await tx.cwlPlayerClanSeason.deleteMany({
+              where: {
+                season: observed.season,
+                cwlClanTag: observed.clanTag,
+                playerTag: { notIn: authoritativeTags },
+              },
+            });
+            staleRowsRemoved = deleted.count;
+          }
+          logCwlSeasonRosterReconciliation({
+            season: observed.season,
+            clanTag: observed.clanTag,
+            rawObservedCount: observed.seasonRosterReconciliation.rawObservedCount,
+            distinctRosterCount: observed.seasonRosterReconciliation.distinctRosterCount,
+            previousPersistedCount,
+            staleRowsRemoved,
+            allowed: true,
+            reason: null,
+          });
         },
       });
     }
