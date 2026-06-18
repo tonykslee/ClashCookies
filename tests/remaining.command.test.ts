@@ -11,6 +11,10 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
   },
+  cwlEventClan: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+  },
   currentWar: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -61,6 +65,19 @@ function makeInteraction(params: {
 describe("/remaining war command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.cwlEventClan.findFirst.mockResolvedValue({
+      eventInstance: {
+        id: "event-current",
+        season: "2026-03",
+        anchorWarTag: "#Y2CQ",
+        firstObservedAt: new Date("2026-03-08T09:00:00.000Z"),
+        lastObservedAt: new Date("2026-03-08T10:30:00.000Z"),
+      },
+    });
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({ clanTag, eventInstanceId: "event-current" }));
+    });
   });
 
   afterEach(() => {
@@ -161,6 +178,19 @@ describe("/remaining war command default selection behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    prismaMock.cwlEventClan.findFirst.mockResolvedValue({
+      eventInstance: {
+        id: "event-current",
+        season: "2026-03",
+        anchorWarTag: "#Y2CQ",
+        firstObservedAt: new Date("2026-03-08T09:00:00.000Z"),
+        lastObservedAt: new Date("2026-03-08T10:30:00.000Z"),
+      },
+    });
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({ clanTag, eventInstanceId: "event-current" }));
+    });
   });
 
   it("uses the stored last-viewed clan when tag is omitted and all is not requested", async () => {

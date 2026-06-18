@@ -9,6 +9,7 @@ import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import type { CwlLeagueFetchSource } from "./CwlFetchCycleCache";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import {
   normalizeClanTag,
@@ -193,6 +194,11 @@ type ObservedTrackedClanState = {
   season: string;
   clanTag: string;
   fetched: boolean;
+  eventInstanceId: string | null;
+  eventCreated: boolean;
+  eventCurrentChanged: boolean;
+  eventAnchorWarTag: string | null;
+  eventObservedWarTagCount: number;
   currentRound: ObservedCwlRound | null;
   currentPreparationRound: ObservedCwlRound | null;
   historyRounds: ObservedCwlRound[];
@@ -295,6 +301,7 @@ function resolveLiveCwlSide(
 }
 
 type CwlActualLineupOwner = {
+  eventInstanceId: string;
   season: string;
   clanTag: string;
   clanName: string | null;
@@ -464,11 +471,13 @@ type CwlSeasonRosterReconciliationTxOutcome =
     };
 
 async function runCwlSeasonRosterReconciliationWithRetry(input: {
+  eventInstanceId: string;
   season: string;
   clanTag: string;
   rawObservedCount: number;
   distinctRosterCount: number;
   seasonRosterRows: Array<{
+    eventInstanceId: string;
     season: string;
     playerTag: string;
     cwlClanTag: string;
@@ -517,14 +526,15 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
           const candidateRosterCount = candidateRows.length;
           const previousPersistedCount = await tx.cwlPlayerClanSeason.count({
             where: {
+              eventInstanceId: input.eventInstanceId,
               season: input.season,
               cwlClanTag: input.clanTag,
             },
           });
           const existingRosterState = await tx.cwlSeasonRosterState.findUnique({
             where: {
-              season_clanTag: {
-                season: input.season,
+              eventInstanceId_clanTag: {
+                eventInstanceId: input.eventInstanceId,
                 clanTag: input.clanTag,
               },
             },
@@ -552,12 +562,13 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
           for (const rosterMember of candidateRows) {
             await tx.cwlPlayerClanSeason.upsert({
               where: {
-                season_playerTag: {
-                  season: input.season,
+                eventInstanceId_playerTag: {
+                  eventInstanceId: input.eventInstanceId,
                   playerTag: rosterMember.playerTag,
                 },
               },
               create: {
+                eventInstanceId: input.eventInstanceId,
                 season: input.season,
                 playerTag: rosterMember.playerTag,
                 cwlClanTag: input.clanTag,
@@ -567,6 +578,7 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
                 lastRoundDay: rosterMember.lastRoundDay,
               },
               update: {
+                eventInstanceId: input.eventInstanceId,
                 cwlClanTag: input.clanTag,
                 playerName: rosterMember.playerName,
                 townHall: rosterMember.townHall,
@@ -580,6 +592,7 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
           if (candidateRosterTags.length > 0) {
             const deleted = await tx.cwlPlayerClanSeason.deleteMany({
               where: {
+                eventInstanceId: input.eventInstanceId,
                 season: input.season,
                 cwlClanTag: input.clanTag,
                 playerTag: { notIn: candidateRosterTags },
@@ -591,18 +604,20 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
           const reconciledAt = new Date();
           await tx.cwlSeasonRosterState.upsert({
             where: {
-              season_clanTag: {
-                season: input.season,
+              eventInstanceId_clanTag: {
+                eventInstanceId: input.eventInstanceId,
                 clanTag: input.clanTag,
               },
             },
             create: {
+              eventInstanceId: input.eventInstanceId,
               season: input.season,
               clanTag: input.clanTag,
               authoritativeRosterCount: candidateRosterCount,
               reconciledAt,
             },
             update: {
+              eventInstanceId: input.eventInstanceId,
               authoritativeRosterCount: candidateRosterCount,
               reconciledAt,
             },
@@ -770,7 +785,7 @@ async function loadPersistedCwlActualLineup(input: {
     input.memberSource === "current"
       ? await prisma.cwlRoundMemberCurrent.findMany({
           where: {
-            season: input.owner.season,
+            eventInstanceId: input.owner.eventInstanceId,
             clanTag: input.owner.clanTag,
             roundDay: input.owner.roundDay,
           },
@@ -778,7 +793,7 @@ async function loadPersistedCwlActualLineup(input: {
         })
       : await prisma.cwlRoundMemberHistory.findMany({
           where: {
-            season: input.owner.season,
+            eventInstanceId: input.owner.eventInstanceId,
             clanTag: input.owner.clanTag,
             roundDay: input.owner.roundDay,
           },
@@ -837,9 +852,18 @@ async function loadPersistedCwlDayOwner(input: {
   clanTag: string;
   season: string;
   roundDay: number;
+  eventInstanceId?: string | null;
 }): Promise<CwlDayOwnerResolution | null> {
+  const eventInstanceId =
+    input.eventInstanceId ?? (await cwlEventResolutionService.resolveCurrentCwlEventForClan({
+      clanTag: input.clanTag,
+    }))?.id ?? null;
+  if (!eventInstanceId) {
+    return null;
+  }
+
   const currentRound = await prisma.currentCwlRound.findUnique({
-    where: { season_clanTag: { season: input.season, clanTag: input.clanTag } },
+    where: { eventInstanceId_clanTag: { eventInstanceId, clanTag: input.clanTag } },
   });
   if (currentRound && currentRound.roundDay === input.roundDay) {
     return { owner: currentRound, source: "current" };
@@ -847,7 +871,11 @@ async function loadPersistedCwlDayOwner(input: {
 
   const historyRound = await prisma.cwlRoundHistory.findUnique({
     where: {
-      season_clanTag_roundDay: { season: input.season, clanTag: input.clanTag, roundDay: input.roundDay },
+      eventInstanceId_clanTag_roundDay: {
+        eventInstanceId,
+        clanTag: input.clanTag,
+        roundDay: input.roundDay,
+      },
     },
   });
   if (historyRound) {
@@ -856,7 +884,7 @@ async function loadPersistedCwlDayOwner(input: {
 
   const preparationSnapshot = await prisma.currentCwlPrepSnapshot.findUnique({
     where: {
-      season_clanTag: { season: input.season, clanTag: input.clanTag },
+      eventInstanceId_clanTag: { eventInstanceId, clanTag: input.clanTag },
     },
   });
   if (preparationSnapshot && preparationSnapshot.roundDay === input.roundDay) {
@@ -864,6 +892,20 @@ async function loadPersistedCwlDayOwner(input: {
   }
 
   return null;
+}
+
+async function resolveCwlEventInstanceIdForClan(input: {
+  clanTag: string;
+  eventInstanceId?: string | null;
+}): Promise<string | null> {
+  const explicitEventInstanceId = String(input.eventInstanceId ?? "").trim();
+  if (explicitEventInstanceId) {
+    return explicitEventInstanceId;
+  }
+  const currentEvent = await cwlEventResolutionService.resolveCurrentCwlEventForClan({
+    clanTag: input.clanTag,
+  });
+  return currentEvent?.id ?? null;
 }
 
 function compareRoundMembers(a: { mapPosition: number | null; playerName: string; playerTag: string }, b: { mapPosition: number | null; playerName: string; playerTag: string }): number {
@@ -1098,6 +1140,7 @@ async function loadObservedTrackedClanState(input: {
   warByWarTag: Map<string, ClanWar | null>;
 }): Promise<ObservedTrackedClanState> {
   const sourceUpdatedAt = new Date();
+  const normalizedTrackedClanTag = normalizeClanTag(input.trackedClanTag);
   let group: ClanWarLeagueGroup | null = null;
   try {
     group = await input.cwlFetchSource.getClanWarLeagueGroup(input.trackedClanTag);
@@ -1107,8 +1150,13 @@ async function loadObservedTrackedClanState(input: {
     );
     return {
       season: input.defaultSeason,
-      clanTag: normalizeClanTag(input.trackedClanTag),
+      clanTag: normalizedTrackedClanTag,
       fetched: false,
+      eventInstanceId: null,
+      eventCreated: false,
+      eventCurrentChanged: false,
+      eventAnchorWarTag: null,
+      eventObservedWarTagCount: 0,
       currentRound: null,
       currentPreparationRound: null,
       historyRounds: [],
@@ -1128,6 +1176,7 @@ async function loadObservedTrackedClanState(input: {
   const rawObservedCount = trackedLeagueClanMembers.length;
   const distinctRosterCount = leagueRosterByTag.size;
   const observedRounds: ObservedCwlRound[] = [];
+  const observedWarTags = new Set<string>();
   const rounds = Array.isArray(group?.rounds) ? group.rounds : [];
 
   for (const [index, round] of rounds.entries()) {
@@ -1139,6 +1188,9 @@ async function loadObservedTrackedClanState(input: {
       ),
     ];
     if (warTags.length <= 0) continue;
+    for (const warTag of warTags) {
+      observedWarTags.add(warTag);
+    }
 
     for (const warTag of warTags) {
       let war = input.warByWarTag.get(warTag) ?? null;
@@ -1188,10 +1240,45 @@ async function loadObservedTrackedClanState(input: {
     .filter((round) => isEndedRoundState(round.roundState))
     .sort((a, b) => a.roundDay - b.roundDay);
 
+  const resolution = await prisma.$transaction(async (tx) =>
+    cwlEventResolutionService.resolveCwlEventInTransaction({
+      tx: tx as any,
+      season,
+      clanTag: normalizedTrackedClanTag,
+      observedWarTags: [...observedWarTags],
+      observedAt: sourceUpdatedAt,
+    }),
+  );
+  if (resolution.kind !== "resolved") {
+    return {
+      season,
+      clanTag: normalizedTrackedClanTag,
+      fetched: false,
+      eventInstanceId: null,
+      eventCreated: false,
+      eventCurrentChanged: false,
+      eventAnchorWarTag: null,
+      eventObservedWarTagCount: resolution.observedWarTagCount,
+      currentRound: null,
+      currentPreparationRound: null,
+      historyRounds: [],
+      seasonRoster: [],
+      seasonRosterReconciliation: {
+        rawObservedCount: 0,
+        distinctRosterCount: 0,
+      },
+    };
+  }
+
   return {
     season,
-    clanTag: normalizeClanTag(input.trackedClanTag),
+    clanTag: normalizedTrackedClanTag,
     fetched: true,
+    eventInstanceId: resolution.eventInstanceId,
+    eventCreated: resolution.created,
+    eventCurrentChanged: resolution.previousCurrentEventInstanceId !== resolution.eventInstanceId,
+    eventAnchorWarTag: resolution.anchorWarTag,
+    eventObservedWarTagCount: resolution.observedWarTagCount,
     currentRound,
     currentPreparationRound,
     historyRounds,
@@ -1237,18 +1324,20 @@ export class CwlStateService {
         playerTag: { in: normalizedTags },
       },
       select: {
+        eventInstanceId: true,
         playerTag: true,
         cwlClanTag: true,
       },
     });
-    const mappingByPlayerTag = new Map(
-      existingMappings
-        .map((row) => [
-          normalizePlayerTag(row.playerTag),
-          normalizeClanTag(row.cwlClanTag),
-        ] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
-    );
+    const existingMappingsByPlayerTag = new Map<string, Set<string>>();
+    for (const row of existingMappings) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+      if (!playerTag || !eventInstanceId) continue;
+      const current = existingMappingsByPlayerTag.get(playerTag) ?? new Set<string>();
+      current.add(eventInstanceId);
+      existingMappingsByPlayerTag.set(playerTag, current);
+    }
 
     const directEvidenceRows = await Promise.all([
       prisma.cwlRoundMemberCurrent.findMany({
@@ -1257,6 +1346,7 @@ export class CwlStateService {
           playerTag: { in: normalizedTags },
         },
         select: {
+          eventInstanceId: true,
           playerTag: true,
           clanTag: true,
           playerName: true,
@@ -1270,6 +1360,7 @@ export class CwlStateService {
           playerTag: { in: normalizedTags },
         },
         select: {
+          eventInstanceId: true,
           playerTag: true,
           clanTag: true,
           playerName: true,
@@ -1291,6 +1382,7 @@ export class CwlStateService {
     const evidenceByPlayerTag = new Map<
       string,
       {
+        eventInstanceId: string;
         clanTag: string;
         playerName: string | null;
         townHall: number | null;
@@ -1302,8 +1394,10 @@ export class CwlStateService {
     for (const row of directEvidenceRows[0]) {
       const playerTag = normalizePlayerTag(row.playerTag);
       const clanTag = normalizeClanTag(row.clanTag);
-      if (!playerTag || !clanTag) continue;
+      const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+      if (!playerTag || !clanTag || !eventInstanceId) continue;
       const next = {
+        eventInstanceId,
         clanTag,
         playerName: sanitizeCwlName(row.playerName) ?? playerTag,
         townHall: Number.isFinite(Number(row.townHall))
@@ -1328,8 +1422,10 @@ export class CwlStateService {
     for (const row of directEvidenceRows[1]) {
       const playerTag = normalizePlayerTag(row.playerTag);
       const clanTag = normalizeClanTag(row.clanTag);
-      if (!playerTag || !clanTag) continue;
+      const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+      if (!playerTag || !clanTag || !eventInstanceId) continue;
       const next = {
+        eventInstanceId,
         clanTag,
         playerName: sanitizeCwlName(row.playerName) ?? playerTag,
         townHall: Number.isFinite(Number(row.townHall))
@@ -1362,9 +1458,32 @@ export class CwlStateService {
       ),
     ];
 
+    const currentEventRows = candidateClanTags.length > 0
+      ? await prisma.cwlEventClan.findMany({
+          where: {
+            clanTag: { in: candidateClanTags },
+            isCurrent: true,
+          },
+          select: {
+            clanTag: true,
+            eventInstanceId: true,
+          },
+        })
+      : [];
+    const currentEventIdByClanTag = new Map(
+      currentEventRows
+        .map((row) => {
+          const clanTag = normalizeClanTag(row.clanTag);
+          const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+          return clanTag && eventInstanceId ? [clanTag, eventInstanceId] as const : null;
+        })
+        .filter((entry): entry is readonly [string, string] => Boolean(entry)),
+    );
+
     const liveEvidenceByPlayerTag = new Map<
       string,
       {
+        eventInstanceId: string;
         clanTag: string;
         playerName: string | null;
         townHall: number | null;
@@ -1373,7 +1492,8 @@ export class CwlStateService {
       }
     >();
     const remainingPlayerTags = normalizedTags.filter(
-      (playerTag) => !mappingByPlayerTag.has(playerTag) && !evidenceByPlayerTag.has(playerTag),
+      (playerTag) =>
+        !existingMappingsByPlayerTag.has(playerTag) && !evidenceByPlayerTag.has(playerTag),
     );
     const cwlFetchSource = input.cwlFetchCycleCache ?? input.cocService ?? null;
     const liveDiscoveryRan = Boolean(
@@ -1416,8 +1536,11 @@ export class CwlStateService {
               const playerTag = normalizePlayerTag(String(member?.tag ?? ""));
               if (!playerTag || !targetPlayerTagSet.has(playerTag)) continue;
               const existing = liveEvidenceByPlayerTag.get(playerTag);
+              const eventInstanceId = currentEventIdByClanTag.get(normalizeClanTag(clanTag)) ?? "";
+              if (!eventInstanceId) continue;
               if (!existing || roundScore > existing.sourceRank) {
                 liveEvidenceByPlayerTag.set(playerTag, {
+                  eventInstanceId,
                   clanTag: normalizeClanTag(clanTag),
                   playerName: sanitizeCwlName(member?.name) ?? playerTag,
                   townHall: Number.isFinite(Number(member?.townhallLevel))
@@ -1429,9 +1552,9 @@ export class CwlStateService {
               }
             }
 
-            const remaining = [...targetPlayerTagSet].filter(
-              (playerTag) =>
-                !mappingByPlayerTag.has(playerTag) &&
+              const remaining = [...targetPlayerTagSet].filter(
+                (playerTag) =>
+                !existingMappingsByPlayerTag.has(playerTag) &&
                 !evidenceByPlayerTag.has(playerTag) &&
                 !liveEvidenceByPlayerTag.has(playerTag),
             );
@@ -1446,7 +1569,12 @@ export class CwlStateService {
     let liveEvidenceCount = 0;
     await prisma.$transaction(async (tx) => {
       for (const playerTag of normalizedTags) {
-        const hadExistingMapping = mappingByPlayerTag.has(playerTag);
+        const evidence =
+          evidenceByPlayerTag.get(playerTag) ?? liveEvidenceByPlayerTag.get(playerTag) ?? null;
+        const candidateEventInstanceId = evidence?.eventInstanceId ?? "";
+        const hadExistingMapping =
+          candidateEventInstanceId.length > 0 &&
+          (existingMappingsByPlayerTag.get(playerTag)?.has(candidateEventInstanceId) ?? false);
         if (hadExistingMapping) {
           console.info(
             `[cwl-mapping] season=${season} player_tag=${playerTag} existing_mapping=yes live_discovery_ran=${liveDiscoveryRan ? "yes" : "no"} learned_clan=no source=existing_mapping`,
@@ -1457,14 +1585,12 @@ export class CwlStateService {
         const persistedClanTag = evidenceByPlayerTag.get(playerTag)?.clanTag ?? "";
         const liveClanTag = liveEvidenceByPlayerTag.get(playerTag)?.clanTag ?? "";
         const clanTag = normalizeClanTag(persistedClanTag || liveClanTag);
-        if (!clanTag) {
+        if (!clanTag || !candidateEventInstanceId) {
           console.info(
             `[cwl-mapping] season=${season} player_tag=${playerTag} existing_mapping=no live_discovery_ran=${liveDiscoveryRan ? "yes" : "no"} learned_clan=no source=${persistedClanTag ? "persisted" : liveClanTag ? "live" : "none"}`,
           );
           continue;
         }
-        const evidence =
-          evidenceByPlayerTag.get(playerTag) ?? liveEvidenceByPlayerTag.get(playerTag) ?? null;
 
         if (persistedClanTag) {
           persistedEvidenceCount += 1;
@@ -1474,12 +1600,13 @@ export class CwlStateService {
 
         await tx.cwlPlayerClanSeason.upsert({
           where: {
-            season_playerTag: {
-              season,
+            eventInstanceId_playerTag: {
+              eventInstanceId: candidateEventInstanceId,
               playerTag,
             },
           },
           create: {
+            eventInstanceId: candidateEventInstanceId,
             season,
             playerTag,
             cwlClanTag: clanTag,
@@ -1489,6 +1616,7 @@ export class CwlStateService {
             lastRoundDay: null,
           },
           update: {
+            eventInstanceId: candidateEventInstanceId,
             cwlClanTag: clanTag,
             playerName: evidence?.playerName ?? playerTag,
             townHall: evidence?.townHall ?? null,
@@ -1502,13 +1630,13 @@ export class CwlStateService {
     });
 
     console.info(
-      `[cwl-mapping] season=${season} requested_player_count=${normalizedTags.length} existing_mapping_count=${mappingByPlayerTag.size} persisted_evidence_count=${persistedEvidenceCount} live_evidence_count=${liveEvidenceCount} learned_clan_count=${learnedClanCount} candidate_clan_count=${candidateClanTags.length}`,
+      `[cwl-mapping] season=${season} requested_player_count=${normalizedTags.length} existing_mapping_count=${existingMappingsByPlayerTag.size} persisted_evidence_count=${persistedEvidenceCount} live_evidence_count=${liveEvidenceCount} learned_clan_count=${learnedClanCount} candidate_clan_count=${candidateClanTags.length}`,
     );
 
     return {
       season,
       playerCount: normalizedTags.length,
-      existingMappingCount: mappingByPlayerTag.size,
+      existingMappingCount: existingMappingsByPlayerTag.size,
       persistedEvidenceCount,
       liveEvidenceCount,
       learnedClanCount,
@@ -1661,9 +1789,11 @@ export class CwlStateService {
 
     for (const observed of observedStates) {
       if (!observed.fetched) continue;
+      const eventInstanceId = observed.eventInstanceId ?? "";
 
       const currentRoundPlan = observed.currentRound
         ? {
+            eventInstanceId,
             roundDay: observed.currentRound.roundDay,
             clanName: observed.currentRound.clanName,
             opponentTag: observed.currentRound.opponentTag,
@@ -1678,6 +1808,7 @@ export class CwlStateService {
             sourceUpdatedAt: observed.currentRound.sourceUpdatedAt,
             memberRows: observed.currentRound.members.map((member) => ({
               season: observed.season,
+              eventInstanceId,
               clanTag: observed.clanTag,
               playerTag: member.playerTag,
               roundDay: observed.currentRound!.roundDay,
@@ -1699,6 +1830,7 @@ export class CwlStateService {
 
       const currentPrepSnapshotPlan = observed.currentPreparationRound
         ? {
+            eventInstanceId,
             roundDay: observed.currentPreparationRound.roundDay,
             clanName: observed.currentPreparationRound.clanName,
             opponentTag: observed.currentPreparationRound.opponentTag,
@@ -1714,6 +1846,7 @@ export class CwlStateService {
         : null;
 
       const historyRoundPlans = observed.historyRounds.map((round) => ({
+        eventInstanceId,
         roundDay: round.roundDay,
         clanName: round.clanName,
         opponentTag: round.opponentTag,
@@ -1728,6 +1861,7 @@ export class CwlStateService {
         sourceUpdatedAt: round.sourceUpdatedAt,
         memberRows: round.members.map((member) => ({
           season: observed.season,
+          eventInstanceId,
           clanTag: observed.clanTag,
           roundDay: round.roundDay,
           playerTag: member.playerTag,
@@ -1749,6 +1883,7 @@ export class CwlStateService {
       );
 
       const seasonRosterRows = observed.seasonRoster.map((rosterMember) => ({
+        eventInstanceId,
         season: observed.season,
         playerTag: rosterMember.playerTag,
         cwlClanTag: observed.clanTag,
@@ -1787,12 +1922,13 @@ export class CwlStateService {
           if (currentRoundPlan) {
             await tx.currentCwlRound.upsert({
               where: {
-                season_clanTag: {
-                  season: observed.season,
+                eventInstanceId_clanTag: {
+                  eventInstanceId,
                   clanTag: observed.clanTag,
                 },
               },
               create: {
+                eventInstanceId,
                 season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: currentRoundPlan.roundDay,
@@ -1809,6 +1945,7 @@ export class CwlStateService {
                 sourceUpdatedAt: currentRoundPlan.sourceUpdatedAt,
               },
               update: {
+                eventInstanceId,
                 roundDay: currentRoundPlan.roundDay,
                 clanName: currentRoundPlan.clanName,
                 opponentTag: currentRoundPlan.opponentTag,
@@ -1825,6 +1962,7 @@ export class CwlStateService {
             });
             await tx.cwlRoundMemberCurrent.deleteMany({
               where: {
+                eventInstanceId,
                 season: observed.season,
                 clanTag: observed.clanTag,
               },
@@ -1836,10 +1974,10 @@ export class CwlStateService {
             }
           } else {
             await tx.cwlRoundMemberCurrent.deleteMany({
-              where: { season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
             });
             await tx.currentCwlRound.deleteMany({
-              where: { season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
             });
           }
           logCwlPersistPhase({
@@ -1880,12 +2018,13 @@ export class CwlStateService {
           if (currentPrepSnapshotPlan) {
             await tx.currentCwlPrepSnapshot.upsert({
               where: {
-                season_clanTag: {
-                  season: observed.season,
+                eventInstanceId_clanTag: {
+                  eventInstanceId,
                   clanTag: observed.clanTag,
                 },
               },
               create: {
+                eventInstanceId,
                 season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: currentPrepSnapshotPlan.roundDay,
@@ -1901,6 +2040,7 @@ export class CwlStateService {
                 sourceUpdatedAt: currentPrepSnapshotPlan.sourceUpdatedAt,
               },
               update: {
+                eventInstanceId,
                 roundDay: currentPrepSnapshotPlan.roundDay,
                 clanName: currentPrepSnapshotPlan.clanName,
                 opponentTag: currentPrepSnapshotPlan.opponentTag,
@@ -1916,7 +2056,7 @@ export class CwlStateService {
             });
           } else {
             await tx.currentCwlPrepSnapshot.deleteMany({
-              where: { season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
             });
           }
           logCwlPersistPhase({
@@ -1957,13 +2097,14 @@ export class CwlStateService {
             });
             await tx.cwlRoundHistory.upsert({
               where: {
-                season_clanTag_roundDay: {
-                  season: observed.season,
+                eventInstanceId_clanTag_roundDay: {
+                  eventInstanceId,
                   clanTag: observed.clanTag,
                   roundDay: round.roundDay,
                 },
               },
               create: {
+                eventInstanceId,
                 season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: round.roundDay,
@@ -1980,6 +2121,7 @@ export class CwlStateService {
                 sourceUpdatedAt: round.sourceUpdatedAt,
               },
               update: {
+                eventInstanceId,
                 clanName: round.clanName,
                 opponentTag: round.opponentTag,
                 opponentName: round.opponentName,
@@ -2032,6 +2174,7 @@ export class CwlStateService {
             });
             await tx.cwlRoundMemberHistory.deleteMany({
               where: {
+                eventInstanceId,
                 season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: round.roundDay,
@@ -2058,6 +2201,7 @@ export class CwlStateService {
       });
 
       await runCwlSeasonRosterReconciliationWithRetry({
+        eventInstanceId,
         season: observed.season,
         clanTag: observed.clanTag,
         rawObservedCount: observed.seasonRosterReconciliation.rawObservedCount,
@@ -2085,15 +2229,21 @@ export class CwlStateService {
   async getCurrentRoundForClan(input: {
     clanTag: string;
     season?: string;
+    eventInstanceId?: string | null;
   }): Promise<CwlCurrentRoundRecord | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
+    const eventInstanceId = await resolveCwlEventInstanceIdForClan({
+      clanTag,
+      eventInstanceId: input.eventInstanceId,
+    });
+    if (!eventInstanceId) return null;
 
     const round = await prisma.currentCwlRound.findUnique({
       where: {
-        season_clanTag: {
-          season,
+        eventInstanceId_clanTag: {
+          eventInstanceId,
           clanTag,
         },
       },
@@ -2101,7 +2251,7 @@ export class CwlStateService {
     if (!round) return null;
 
     const members = await prisma.cwlRoundMemberCurrent.findMany({
-      where: { season, clanTag },
+      where: { eventInstanceId, clanTag },
       orderBy: [{ mapPosition: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
     });
 
@@ -2141,15 +2291,21 @@ export class CwlStateService {
   async getCurrentPreparationSnapshotForClan(input: {
     clanTag: string;
     season?: string;
+    eventInstanceId?: string | null;
   }): Promise<CwlPreparationSnapshotRecord | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
+    const eventInstanceId = await resolveCwlEventInstanceIdForClan({
+      clanTag,
+      eventInstanceId: input.eventInstanceId,
+    });
+    if (!eventInstanceId) return null;
 
     const snapshot = await prisma.currentCwlPrepSnapshot.findUnique({
       where: {
-        season_clanTag: {
-          season,
+        eventInstanceId_clanTag: {
+          eventInstanceId,
           clanTag,
         },
       },
@@ -2176,6 +2332,7 @@ export class CwlStateService {
   async getParticipationCountsForClanDay(input: {
     clanTag: string;
     season?: string;
+    eventInstanceId?: string | null;
     throughRoundDay: number;
   }): Promise<Map<string, number>> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
@@ -2184,11 +2341,16 @@ export class CwlStateService {
     if (!clanTag || throughRoundDay <= 0) {
       return new Map();
     }
+    const eventInstanceId = await resolveCwlEventInstanceIdForClan({
+      clanTag,
+      eventInstanceId: input.eventInstanceId,
+    });
+    if (!eventInstanceId) return new Map();
 
     const [historyMembers, currentMembers] = await Promise.all([
       prisma.cwlRoundMemberHistory.findMany({
         where: {
-          season,
+          eventInstanceId,
           clanTag,
           roundDay: { lte: throughRoundDay },
           subbedIn: true,
@@ -2199,7 +2361,7 @@ export class CwlStateService {
       }),
       prisma.cwlRoundMemberCurrent.findMany({
         where: {
-          season,
+          eventInstanceId,
           clanTag,
           roundDay: { lte: throughRoundDay },
           subbedIn: true,
@@ -2224,13 +2386,19 @@ export class CwlStateService {
     clanTag: string;
     season?: string;
     roundDay: number;
+    eventInstanceId?: string | null;
   }): Promise<CwlActualLineup | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
     if (!clanTag || roundDay <= 0) return null;
 
-    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    const resolvedOwner = await loadPersistedCwlDayOwner({
+      clanTag,
+      season,
+      roundDay,
+      eventInstanceId: input.eventInstanceId,
+    });
     if (!resolvedOwner) {
       return null;
     }
@@ -2249,13 +2417,19 @@ export class CwlStateService {
     clanTag: string;
     season?: string;
     roundDay: number;
+    eventInstanceId?: string | null;
   }): Promise<Date | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     const roundDay = Math.max(1, Math.trunc(Number(input.roundDay) || 0));
     if (!clanTag || roundDay <= 0) return null;
 
-    const resolvedOwner = await loadPersistedCwlDayOwner({ clanTag, season, roundDay });
+    const resolvedOwner = await loadPersistedCwlDayOwner({
+      clanTag,
+      season,
+      roundDay,
+      eventInstanceId: input.eventInstanceId,
+    });
     return resolvedOwner?.owner.startTime ?? null;
   }
 
@@ -2263,13 +2437,19 @@ export class CwlStateService {
   async listSeasonRosterForClan(input: {
     clanTag: string;
     season?: string;
+    eventInstanceId?: string | null;
   }): Promise<CwlSeasonRosterEntry[]> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return [];
+    const eventInstanceId = await resolveCwlEventInstanceIdForClan({
+      clanTag,
+      eventInstanceId: input.eventInstanceId,
+    });
+    if (!eventInstanceId) return [];
 
     const rosterRows = await prisma.cwlPlayerClanSeason.findMany({
-      where: { season, cwlClanTag: clanTag },
+      where: { eventInstanceId, cwlClanTag: clanTag },
       orderBy: [{ lastRoundDay: "asc" }, { playerName: "asc" }, { playerTag: "asc" }],
     });
     const rosterRowsByTag = new Map<string, (typeof rosterRows)[number]>();
@@ -2281,10 +2461,10 @@ export class CwlStateService {
     const rosterTags = [...rosterRowsByTag.keys()];
     const [currentRound, currentMembers, playerLinks, playerCurrents] = await Promise.all([
       prisma.currentCwlRound.findUnique({
-        where: { season_clanTag: { season, clanTag } },
+        where: { eventInstanceId_clanTag: { eventInstanceId, clanTag } },
       }),
       prisma.cwlRoundMemberCurrent.findMany({
-        where: { season, clanTag },
+        where: { eventInstanceId, clanTag },
       }),
       prisma.playerLink.findMany({
         where: {

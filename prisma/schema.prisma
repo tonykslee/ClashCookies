@@ -678,6 +678,58 @@ model FwaPoliceHandledViolation {
   @@index([clanTag, warId, createdAt])
 }
 
+model CwlEventInstance {
+  id             String   @id @default(cuid())
+  season         String
+  anchorWarTag   String
+  firstObservedAt DateTime
+  lastObservedAt DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  clans          CwlEventClan[]
+  warTags        CwlEventWarTag[]
+  currentRounds  CurrentCwlRound[]
+  prepSnapshots  CurrentCwlPrepSnapshot[]
+  historyRounds  CwlRoundHistory[]
+  playerSeasons  CwlPlayerClanSeason[]
+  rosterStates   CwlSeasonRosterState[]
+
+  @@unique([anchorWarTag])
+  @@index([season, lastObservedAt])
+}
+
+model CwlEventWarTag {
+  id                String   @id @default(cuid())
+  eventInstanceId   String
+  season            String
+  warTag            String   @unique
+  firstObservedAt    DateTime
+  lastObservedAt     DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  eventInstance     CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([eventInstanceId])
+  @@index([season, warTag])
+}
+
+model CwlEventClan {
+  id               String   @id @default(cuid())
+  eventInstanceId  String
+  season           String
+  clanTag          String
+  isCurrent        Boolean  @default(true)
+  firstObservedAt  DateTime
+  lastObservedAt   DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  eventInstance    CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([eventInstanceId, clanTag])
+  @@index([clanTag, isCurrent])
+  @@index([season, clanTag])
+}
+
 model CwlTrackedClan {
   id        Int      @id @default(autoincrement())
   season    String
@@ -692,19 +744,22 @@ model CwlTrackedClan {
 }
 
 model CwlPlayerClanSeason {
-  id         Int      @id @default(autoincrement())
-  season     String
-  playerTag  String
-  cwlClanTag String
-  playerName String?
-  townHall   Int?
-  daysParticipated Int @default(0)
-  lastRoundDay Int?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  eventInstanceId  String
+  season           String
+  playerTag        String
+  cwlClanTag       String
+  playerName       String?
+  townHall         Int?
+  daysParticipated Int      @default(0)
+  lastRoundDay     Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  eventInstance    CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
-  @@unique([season, playerTag])
-  @@index([season, cwlClanTag])
+  @@unique([eventInstanceId, playerTag])
+  @@index([eventInstanceId, cwlClanTag])
+  @@index([eventInstanceId, playerTag])
   @@index([season, playerTag])
 }
 
@@ -780,18 +835,22 @@ model CwlAllianceSeasonBaselineMember {
 }
 
 model CwlSeasonRosterState {
-  season                  String
-  clanTag                 String
+  eventInstanceId          String
+  season                   String
+  clanTag                  String
   authoritativeRosterCount Int
-  reconciledAt            DateTime
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  reconciledAt             DateTime
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  eventInstance            CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
-  @@id([season, clanTag])
+  @@id([eventInstanceId, clanTag])
+  @@index([eventInstanceId, reconciledAt])
   @@index([season, reconciledAt])
 }
 
 model CurrentCwlRound {
+  eventInstanceId      String
   season               String
   clanTag              String
   roundDay             Int
@@ -809,14 +868,16 @@ model CurrentCwlRound {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   members              CwlRoundMemberCurrent[]
+  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
-  @@id([season, clanTag])
-  @@unique([season, clanTag, roundDay])
-  @@index([season, roundDay])
+  @@id([eventInstanceId, clanTag])
+  @@unique([eventInstanceId, clanTag, roundDay])
+  @@index([eventInstanceId, roundDay])
   @@index([roundState, updatedAt])
 }
 
 model CwlRoundMemberCurrent {
+  eventInstanceId  String
   season           String
   clanTag          String
   playerTag        String
@@ -833,15 +894,16 @@ model CwlRoundMemberCurrent {
   sourceRoundState String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
-  currentRound     CurrentCwlRound @relation(fields: [season, clanTag], references: [season, clanTag], onDelete: Cascade)
+  currentRound     CurrentCwlRound @relation(fields: [eventInstanceId, clanTag], references: [eventInstanceId, clanTag], onDelete: Cascade)
 
-  @@id([season, clanTag, playerTag])
-  @@index([season, clanTag, roundDay])
-  @@index([season, playerTag])
-  @@index([season, clanTag, subbedIn])
+  @@id([eventInstanceId, clanTag, playerTag])
+  @@index([eventInstanceId, clanTag, roundDay])
+  @@index([eventInstanceId, playerTag])
+  @@index([eventInstanceId, clanTag, subbedIn])
 }
 
 model CurrentCwlPrepSnapshot {
+  eventInstanceId      String
   season               String
   clanTag              String
   roundDay             Int
@@ -857,14 +919,16 @@ model CurrentCwlPrepSnapshot {
   sourceUpdatedAt      DateTime
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
-  @@id([season, clanTag])
-  @@unique([season, clanTag, roundDay])
-  @@index([season, roundDay])
+  @@id([eventInstanceId, clanTag])
+  @@unique([eventInstanceId, clanTag, roundDay])
+  @@index([eventInstanceId, roundDay])
   @@index([roundState, updatedAt])
 }
 
 model CwlRoundHistory {
+  eventInstanceId      String
   season               String
   clanTag              String
   roundDay             Int
@@ -882,13 +946,16 @@ model CwlRoundHistory {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   members              CwlRoundMemberHistory[]
+  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
-  @@id([season, clanTag, roundDay])
-  @@index([season, clanTag, endTime])
+  @@id([eventInstanceId, clanTag, roundDay])
+  @@index([eventInstanceId, clanTag, endTime])
+  @@index([eventInstanceId, roundDay])
   @@index([season, roundDay])
 }
 
 model CwlRoundMemberHistory {
+  eventInstanceId  String
   season           String
   clanTag          String
   roundDay         Int
@@ -904,11 +971,11 @@ model CwlRoundMemberHistory {
   subbedOut        Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
-  round            CwlRoundHistory @relation(fields: [season, clanTag, roundDay], references: [season, clanTag, roundDay], onDelete: Cascade)
+  round            CwlRoundHistory @relation(fields: [eventInstanceId, clanTag, roundDay], references: [eventInstanceId, clanTag, roundDay], onDelete: Cascade)
 
-  @@id([season, clanTag, roundDay, playerTag])
-  @@index([season, clanTag, playerTag])
-  @@index([season, playerTag])
+  @@id([eventInstanceId, clanTag, roundDay, playerTag])
+  @@index([eventInstanceId, clanTag, playerTag])
+  @@index([eventInstanceId, playerTag])
 }
 
 model CwlRotationPlan {

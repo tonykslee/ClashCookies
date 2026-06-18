@@ -1518,25 +1518,46 @@ export class TodoSnapshotService {
         resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
           ? resolvedClanTag
           : "";
-      const resolvedCwlClanTag =
+      const persistedOrTrackedCwlClanTag =
         normalizeClanTag(
           activeMappedCwlClanTag ||
             persistedMappedCwlClanTag ||
             fallbackCwlClanTag,
-        ) ||
-        normalizeClanTag(existing?.cwlClanTag ?? "") ||
-        null;
-      const liveNonTrackedCwlContext =
-        resolvedCwlClanTag && !cwlTrackedTagSet.has(resolvedCwlClanTag)
-          ? liveNonTrackedCwlContextByClanTag.get(resolvedCwlClanTag) ?? null
-          : null;
+        ) || null;
+      const discoveredCwlClanTag =
+        cwlDiscoveryClanTagByPlayerTag.get(playerTag) ?? null;
+      const discoveredLiveCwlClanTag = input.includeNonTrackedCwlRefresh
+        ? normalizeClanTag(membershipContext?.clanTag ?? discoveredCwlClanTag ?? "") ||
+          null
+        : null;
+      const liveNonTrackedCwlCandidateClanTag =
+        persistedOrTrackedCwlClanTag &&
+        !cwlTrackedTagSet.has(persistedOrTrackedCwlClanTag)
+          ? persistedOrTrackedCwlClanTag
+          : discoveredLiveCwlClanTag && !cwlTrackedTagSet.has(discoveredLiveCwlClanTag)
+            ? discoveredLiveCwlClanTag
+            : null;
+      const liveNonTrackedCwlContext = liveNonTrackedCwlCandidateClanTag
+        ? liveNonTrackedCwlContextByClanTag.get(liveNonTrackedCwlCandidateClanTag) ?? null
+        : null;
       const liveNonTrackedCwlMember = liveNonTrackedCwlContext
         ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
         : null;
-      const resolvedLiveCwlClanTag =
-        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? "") || null;
+      const resolvedCwlClanTag =
+        persistedOrTrackedCwlClanTag ||
+        (input.includeNonTrackedCwlRefresh &&
+        membershipContext?.source !== "observed_live" &&
+        membershipContext?.source !== "no_clan"
+          ? normalizeClanTag(existing?.cwlClanTag ?? "")
+          : null) ||
+        null;
       const finalResolvedCwlClanTag =
-        resolvedCwlClanTag || resolvedLiveCwlClanTag || null;
+        normalizeClanTag(
+          liveNonTrackedCwlContext?.clanTag ??
+            liveNonTrackedCwlCandidateClanTag ??
+            resolvedCwlClanTag ??
+            "",
+        ) || null;
       const resolvedCwlClanName =
         (finalResolvedCwlClanTag
           ? currentCwlRoundByClanTag.get(finalResolvedCwlClanTag)?.clanName ||
@@ -1727,7 +1748,7 @@ export class TodoSnapshotService {
               liveCurrentWarFallbackContext?.sourceUpdatedAt ??
               null,
         clanMembershipObservedAt: membershipContext.observedAt ?? null,
-        cwlClanTag: resolvedCwlClanTag,
+        cwlClanTag: finalResolvedCwlClanTag,
         cwlClanName: resolvedCwlClanName,
         warActive,
         warAttacksUsed,
@@ -2909,7 +2930,17 @@ function resolveTodoCurrentMembershipContext(input: {
 }): TodoCurrentMembershipContext {
   const observedLiveClanTag = normalizeClanTag(input.liveClanTagEntry?.clanTag ?? "");
   if (input.liveClanTagEntry) {
-    if (!observedLiveClanTag) {
+    if (observedLiveClanTag) {
+      return {
+        clanTag: observedLiveClanTag,
+        clanName:
+          sanitizeDisplayText(input.liveClanTagEntry.clanName ?? "") || null,
+        observedAt: input.now,
+        fresh: true,
+        source: input.liveClanTagEntry.source,
+      };
+    }
+    if (input.liveClanTagEntry.source === "observed_live") {
       return {
         clanTag: null,
         clanName: null,
@@ -2918,14 +2949,6 @@ function resolveTodoCurrentMembershipContext(input: {
         source: "no_clan",
       };
     }
-    return {
-      clanTag: observedLiveClanTag,
-      clanName:
-        sanitizeDisplayText(input.liveClanTagEntry.clanName ?? "") || null,
-      observedAt: input.now,
-      fresh: true,
-      source: input.liveClanTagEntry.source,
-    };
   }
 
   const playerCurrentClanTag = normalizeClanTag(input.playerCurrent?.currentClanTag ?? "");

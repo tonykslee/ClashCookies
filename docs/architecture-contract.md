@@ -57,6 +57,8 @@ TodoPlayerSnapshot
 
 CWL state:
 
+CwlEventInstance / CwlEventClan / CwlEventWarTag
+    ->
 CwlTrackedClan
     ->
 CwlStateService
@@ -119,6 +121,9 @@ Each domain concept must have exactly one authoritative owner.
 
 | Concept | Owner |
 | --- | --- |
+| CWL event identity | CwlEventInstance |
+| CWL clan-to-current-event pointer | CwlEventClan |
+| CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Seasonal CWL tracked clans | CwlTrackedClan |
@@ -128,6 +133,7 @@ Each domain concept must have exactly one authoritative owner.
 | Ended CWL round canonical history | CwlRoundHistory |
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived current-season CWL roster summary | CwlPlayerClanSeason |
+| CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | Current-season CWL planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
@@ -210,10 +216,13 @@ Rules:
 - Clan Games lifecycle and progress are owned by the dedicated `gamesActive`, `gamesCycleKey`, stored baseline/point totals, and `gamesEndsAt` fields, while clan ownership for GAMES intentionally remains current membership through `clanTag`/`clanName`.
 - Changing current clans does not rewrite an already-observed active WAR, RAID, or CWL owner.
 - `TodoUserUsage` is the lightweight per-user activation owner for `/todo` background refresh eligibility.
-- `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth.
-- `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot when the next day is simultaneously in preparation.
-- `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth.
-- `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary.
+- `CwlEventInstance` owns CWL event identity and lifecycle, while `season` remains display metadata rather than event identity.
+- `CwlEventClan` owns the authoritative current-event pointer for a clan.
+- `CwlEventWarTag` owns the war-tag-to-event mapping used to resolve later refreshes idempotently.
+- `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth for one event instance.
+- `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot for one event instance when the next day is simultaneously in preparation.
+- `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth for one event instance.
+- `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary for one event instance.
 - `CwlRotationPlan*` owns current-season planner artifacts only, and sheet import/export commands treat those rows as the active planner source once confirmed.
 - Guild and personal reminder schedulers select the clan owner appropriate to the reminder type and must not emit or inherit every clan identity present on one snapshot row. Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.

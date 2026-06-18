@@ -2,6 +2,21 @@ import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const txMock = vi.hoisted(() => ({
+  cwlEventInstance: {
+    create: vi.fn(),
+    update: vi.fn(),
+    findUnique: vi.fn(),
+  },
+  cwlEventWarTag: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+  },
+  cwlEventClan: {
+    findFirst: vi.fn(),
+    updateMany: vi.fn(),
+    update: vi.fn(),
+    create: vi.fn(),
+  },
   currentCwlRound: {
     upsert: vi.fn(),
     deleteMany: vi.fn(),
@@ -34,6 +49,10 @@ const txMock = vi.hoisted(() => ({
 }));
 
 const prismaMock = vi.hoisted(() => ({
+  cwlEventClan: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+  },
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
@@ -88,6 +107,35 @@ function buildValidCwlRosterMembers(count: number, labelPrefix = "Player") {
   }));
 }
 
+function buildNeutralLeagueWar(clanTag: string, clanName = "CWL Alpha") {
+  return {
+    state: "notInWar",
+    attacksPerMember: 1,
+    teamSize: 15,
+    clan: {
+      tag: clanTag,
+      name: clanName,
+      members: [],
+    },
+    opponent: {
+      tag: "#Q2V8P9L2",
+      name: "Opponent One",
+      members: [],
+    },
+  };
+}
+
+const DEFAULT_EVENT_INSTANCE_ID = "event-current";
+const DEFAULT_WAR_TAG_1 = buildValidCwlTag(5001);
+const DEFAULT_WAR_TAG_2 = buildValidCwlTag(5002);
+const DEFAULT_EVENT_RECORD = {
+  id: DEFAULT_EVENT_INSTANCE_ID,
+  season: "2026-04",
+  anchorWarTag: DEFAULT_WAR_TAG_1,
+  firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+  lastObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+};
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -98,6 +146,16 @@ describe("CwlStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    prismaMock.cwlEventClan.findFirst.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+      eventInstance: DEFAULT_EVENT_RECORD,
+    });
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+      },
+    ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
     prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
@@ -111,6 +169,15 @@ describe("CwlStateService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.$transaction.mockImplementation(async (fn: (tx: typeof txMock) => Promise<unknown>, _options?: unknown) => fn(txMock));
 
+    txMock.cwlEventInstance.create.mockResolvedValue(DEFAULT_EVENT_RECORD);
+    txMock.cwlEventInstance.update.mockResolvedValue(DEFAULT_EVENT_RECORD);
+    txMock.cwlEventInstance.findUnique.mockResolvedValue(DEFAULT_EVENT_RECORD);
+    txMock.cwlEventWarTag.findMany.mockResolvedValue([]);
+    txMock.cwlEventWarTag.create.mockResolvedValue(undefined);
+    txMock.cwlEventClan.findFirst.mockResolvedValue(null);
+    txMock.cwlEventClan.updateMany.mockResolvedValue({ count: 0 });
+    txMock.cwlEventClan.update.mockResolvedValue(undefined);
+    txMock.cwlEventClan.create.mockResolvedValue(undefined);
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.deleteMany.mockResolvedValue({ count: 0 });
     txMock.currentCwlPrepSnapshot.upsert.mockResolvedValue(undefined);
@@ -145,7 +212,7 @@ describe("CwlStateService", () => {
             ],
           },
         ],
-        rounds: [{ warTags: ["#WAR1"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
       getClanWarLeagueWar: vi.fn().mockResolvedValue({
         state: "preparation",
@@ -223,9 +290,13 @@ describe("CwlStateService", () => {
       }),
     );
     expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
-      where: { season: "2026-04", clanTag: "#2QG2C08UP" },
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+      },
     });
-    expect(prismaMock.$transaction).toHaveBeenCalledTimes(5);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(6);
   });
 
   it("reconciles the first trusted authoritative CWL season roster even when legacy persisted rows were inflated", async () => {
@@ -260,9 +331,9 @@ describe("CwlStateService", () => {
             ],
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     const result = await cwlStateService.refreshTrackedCwlState({
@@ -279,6 +350,7 @@ describe("CwlStateService", () => {
     expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           season: "2026-04",
           cwlClanTag: "#2QG2C08UP",
           playerTag: {
@@ -362,9 +434,9 @@ describe("CwlStateService", () => {
             ],
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     const result = await cwlStateService.refreshTrackedCwlState({
@@ -432,9 +504,9 @@ describe("CwlStateService", () => {
             ],
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     const result = await cwlStateService.refreshTrackedCwlState({
@@ -485,9 +557,9 @@ describe("CwlStateService", () => {
             members: [],
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     const result = await cwlStateService.refreshTrackedCwlState({
@@ -548,9 +620,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(15, "Alpha"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await cwlStateService.refreshTrackedCwlState({
@@ -615,9 +687,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(32, "Bravo"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await cwlStateService.refreshTrackedCwlState({
@@ -658,9 +730,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(15, "Gamma"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await cwlStateService.refreshTrackedCwlState({
@@ -697,9 +769,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(15, "Delta"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await expect(
@@ -736,9 +808,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(15, "Echo"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await expect(
@@ -768,9 +840,9 @@ describe("CwlStateService", () => {
             members: buildValidCwlRosterMembers(15, "Foxtrot"),
           },
         ],
-        rounds: [],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
-      getClanWarLeagueWar: vi.fn(),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
     await cwlStateService.refreshTrackedCwlState({
@@ -792,7 +864,7 @@ describe("CwlStateService", () => {
             members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }],
           },
         ],
-        rounds: [{ warTags: ["#WAR1"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
       getClanWarLeagueWar: vi.fn().mockResolvedValue({
         state: "preparation",
@@ -848,10 +920,10 @@ describe("CwlStateService", () => {
             members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }],
           },
         ],
-        rounds: [{ warTags: ["#WAR1"] }, { warTags: ["#WAR2"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }, { warTags: [DEFAULT_WAR_TAG_2] }],
       }),
       getClanWarLeagueWar: vi.fn().mockImplementation(async (warTag: string) => {
-        if (warTag === "#WAR1") {
+        if (warTag === DEFAULT_WAR_TAG_1) {
           return {
             state: "inWar",
             preparationStartTime: "20260401T120000.000Z",
@@ -982,7 +1054,7 @@ describe("CwlStateService", () => {
             members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }],
           },
         ],
-        rounds: [{ warTags: ["#WAR1"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
       getClanWarLeagueWar: vi.fn().mockResolvedValue({
         state: "warEnded",
@@ -1021,10 +1093,18 @@ describe("CwlStateService", () => {
     expect(result.historyRoundCount).toBe(1);
     expect(result.historyMemberCount).toBe(1);
     expect(txMock.currentCwlRound.deleteMany).toHaveBeenCalledWith({
-      where: { season: "2026-04", clanTag: "#2QG2C08UP" },
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+      },
     });
     expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
-      where: { season: "2026-04", clanTag: "#2QG2C08UP" },
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+      },
     });
     expect(txMock.cwlRoundHistory.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1055,7 +1135,11 @@ describe("CwlStateService", () => {
 
   it("keeps an existing seasonal CWL mapping without running live discovery", async () => {
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ0289", cwlClanTag: "#2QG2C08UP" },
+      {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        playerTag: "#PYLQ0289",
+        cwlClanTag: "#2QG2C08UP",
+      },
     ]);
     const cocService = {
       getClanWarLeagueGroup: vi.fn(),
@@ -1086,6 +1170,7 @@ describe("CwlStateService", () => {
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([
       {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
         playerTag: "#PYLQ0289",
         clanTag: "#2QG2C08UP",
         playerName: "Alpha",
@@ -1114,7 +1199,14 @@ describe("CwlStateService", () => {
     });
     expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: {
+          eventInstanceId_playerTag: {
+            eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+            playerTag: "#PYLQ0289",
+          },
+        },
         create: expect.objectContaining({
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           season: "2026-04",
           playerTag: "#PYLQ0289",
           cwlClanTag: "#2QG2C08UP",
@@ -1122,6 +1214,7 @@ describe("CwlStateService", () => {
           townHall: 16,
         }),
         update: expect.objectContaining({
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           cwlClanTag: "#2QG2C08UP",
           playerName: "Alpha",
           townHall: 16,
@@ -1145,7 +1238,7 @@ describe("CwlStateService", () => {
             name: "Nontracked Clan",
           },
         ],
-        rounds: [{ warTags: ["#WAR1"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
       getClanWarLeagueWar: vi.fn().mockResolvedValue({
         state: "preparation",
@@ -1189,7 +1282,14 @@ describe("CwlStateService", () => {
     });
     expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: {
+          eventInstanceId_playerTag: {
+            eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+            playerTag: "#PYLQ0289",
+          },
+        },
         create: expect.objectContaining({
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           season: "2026-04",
           playerTag: "#PYLQ0289",
           cwlClanTag: "#2QG2C08UP",
@@ -1199,7 +1299,7 @@ describe("CwlStateService", () => {
       }),
     );
     expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#2QG2C08UP");
-    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith("#WAR1");
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith(DEFAULT_WAR_TAG_1);
   });
 
   it("returns without inventing a mapping when no current or live CWL proof exists", async () => {
@@ -1211,7 +1311,7 @@ describe("CwlStateService", () => {
         season: "2026-04",
         state: "preparation",
         clans: [{ tag: "#2QG2C08UP", name: "Nontracked Clan" }],
-        rounds: [{ warTags: ["#WAR1"] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
       }),
       getClanWarLeagueWar: vi.fn().mockResolvedValue({
         state: "preparation",
@@ -1251,6 +1351,7 @@ describe("CwlStateService", () => {
 
   it("returns the persisted current-day lineup when the current round matches the requested day", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1329,6 +1430,7 @@ describe("CwlStateService", () => {
 
   it("returns the persisted history lineup when the requested day is in history", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1342,6 +1444,7 @@ describe("CwlStateService", () => {
       sourceUpdatedAt: new Date("2026-04-03T00:00:00.000Z"),
     });
     prismaMock.cwlRoundHistory.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       roundDay: 1,
@@ -1400,6 +1503,7 @@ describe("CwlStateService", () => {
 
   it("returns the persisted next-day preparation lineup from the live prep snapshot when the current round remains in war", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1413,6 +1517,7 @@ describe("CwlStateService", () => {
       sourceUpdatedAt: new Date("2026-04-01T00:00:00.000Z"),
     });
     prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1453,8 +1558,8 @@ describe("CwlStateService", () => {
     expect(prismaMock.currentCwlPrepSnapshot.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          season_clanTag: {
-            season: "2026-04",
+          eventInstanceId_clanTag: {
+            eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
             clanTag: "#2QG2C08UP",
           },
         },
@@ -1492,6 +1597,7 @@ describe("CwlStateService", () => {
 
   it("returns null for a future day that is not yet in preparation", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1517,6 +1623,7 @@ describe("CwlStateService", () => {
 
   it("loads the persisted battle-day start timestamp from current, history, and prep owners", async () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
@@ -1530,8 +1637,9 @@ describe("CwlStateService", () => {
       sourceUpdatedAt: new Date("2026-04-02T00:00:00.000Z"),
     });
     prismaMock.cwlRoundHistory.findUnique.mockImplementation(async ({ where }: any) => {
-      if (where.season_clanTag_roundDay.roundDay === 1) {
+      if (where.eventInstanceId_clanTag_roundDay.roundDay === 1) {
         return {
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           season: "2026-04",
           clanTag: "#2QG2C08UP",
           clanName: "CWL Alpha",
@@ -1547,8 +1655,9 @@ describe("CwlStateService", () => {
       return null;
     });
     prismaMock.currentCwlPrepSnapshot.findUnique.mockImplementation(async ({ where }: any) => {
-      if (where.season_clanTag.clanTag === "#2QG2C08UP") {
+      if (where.eventInstanceId_clanTag.clanTag === "#2QG2C08UP") {
         return {
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           season: "2026-04",
           clanTag: "#2QG2C08UP",
           clanName: "CWL Alpha",
@@ -1616,7 +1725,7 @@ describe("CwlStateService", () => {
     expect(prismaMock.cwlRoundMemberHistory.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          season: "2026-04",
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           clanTag: "#2QG2C08UP",
           roundDay: { lte: 2 },
           subbedIn: true,
@@ -1627,7 +1736,7 @@ describe("CwlStateService", () => {
     expect(prismaMock.cwlRoundMemberCurrent.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          season: "2026-04",
+          eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
           clanTag: "#2QG2C08UP",
           roundDay: { lte: 2 },
           subbedIn: true,
@@ -1669,6 +1778,7 @@ describe("CwlStateService", () => {
       },
     ]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       roundDay: 3,
@@ -1775,6 +1885,7 @@ describe("CwlStateService", () => {
       },
     ]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
       season: "2026-04",
       clanTag: "#2QG2C08UP",
       roundDay: 3,
