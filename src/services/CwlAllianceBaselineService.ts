@@ -284,9 +284,6 @@ function isCurrentRosterValidated(input: {
   if (String(input.currentWar.matchType ?? "").toUpperCase() !== "FWA") {
     return false;
   }
-  if (!(input.currentWar.startTime instanceof Date)) {
-    return false;
-  }
   if (!(input.roster.observedAt instanceof Date)) {
     return false;
   }
@@ -299,21 +296,13 @@ function isCurrentRosterValidated(input: {
 
   const currentOpponentTag = normalizeClanTag(String(input.currentWar.opponentTag ?? ""));
   const rosterOpponentTag = normalizeClanTag(String(input.roster.opponentTag ?? ""));
-  const opponentMatches =
-    !currentOpponentTag ||
-    !rosterOpponentTag ||
-    currentOpponentTag === rosterOpponentTag;
-  if (!opponentMatches) {
+  if (!currentOpponentTag || !rosterOpponentTag || currentOpponentTag !== rosterOpponentTag) {
     return false;
   }
 
   const rosterUpdatedAt =
     input.roster.sourceUpdatedAt ?? input.roster.observedAt ?? null;
-  const warAnchorTime =
-    input.currentWar.prepStartTime ??
-    input.currentWar.startTime ??
-    input.currentWar.endTime ??
-    null;
+  const warAnchorTime = input.currentWar.prepStartTime ?? input.currentWar.startTime ?? null;
   if (
     !(rosterUpdatedAt instanceof Date) ||
     !(warAnchorTime instanceof Date) ||
@@ -323,6 +312,82 @@ function isCurrentRosterValidated(input: {
   }
 
   return true;
+}
+
+function validateHistoricalRosterRows(input: {
+  rows: Array<{
+    playerTag: string;
+    playerName: string | null;
+    townHall: number | null;
+    position: number | null;
+  }>;
+}):
+  | {
+      kind: "ok";
+      rows: Array<{
+        playerTag: string;
+        playerName: string | null;
+        townHall: number | null;
+        position: number;
+      }>;
+    }
+  | { kind: "invalid"; reason: string } {
+  if (input.rows.length !== 50) {
+    return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_INCOMPLETE" };
+  }
+
+  const seenPlayerTags = new Set<string>();
+  const seenPositions = new Set<number>();
+  const normalizedRows: Array<{
+    playerTag: string;
+    playerName: string | null;
+    townHall: number | null;
+    position: number;
+  }> = [];
+
+  for (const row of input.rows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_INVALID_MEMBER" };
+    }
+    if (seenPlayerTags.has(playerTag)) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_DUPLICATE_PLAYER" };
+    }
+
+    const rawPosition = row.position;
+    if (rawPosition === null || rawPosition === undefined) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_MISSING_POSITIONS" };
+    }
+
+    const numericPosition = Number(rawPosition);
+    if (!Number.isInteger(numericPosition) || numericPosition <= 0) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_INVALID_MEMBER" };
+    }
+    const position = numericPosition;
+    if (seenPositions.has(position)) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_DUPLICATE_POSITION" };
+    }
+
+    seenPlayerTags.add(playerTag);
+    seenPositions.add(position);
+    normalizedRows.push({
+      playerTag,
+      playerName: row.playerName,
+      townHall: row.townHall,
+      position,
+    });
+  }
+
+  if (seenPositions.size !== 50) {
+    return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_INCOMPLETE" };
+  }
+  for (let position = 1; position <= 50; position += 1) {
+    if (!seenPositions.has(position)) {
+      return { kind: "invalid", reason: "LATEST_FWA_WAR_ROSTER_POSITION_GAP" };
+    }
+  }
+
+  return { kind: "ok", rows: normalizedRows };
 }
 
 function buildSelectedMembers(input: {
@@ -376,7 +441,7 @@ function buildCapturedClanSnapshotFromCurrentWar(input: {
   | { kind: "captured"; clan: CandidateClanRow; members: CandidateMemberRow[] }
   | { kind: "unavailable"; reason: string } {
   if (!isCurrentRosterValidated(input)) {
-    return { kind: "unavailable", reason: "CURRENT_FWA_WAR_UNVERIFIED" };
+    return { kind: "unavailable", reason: "CURRENT_FWA_WAR_ROSTER_IDENTITY_UNVERIFIED" };
   }
 
   const baselineClanId = randomUUID();
@@ -405,7 +470,7 @@ function buildCapturedClanSnapshotFromCurrentWar(input: {
     captureStatus: "CAPTURED",
     sourceType: "CURRENT_FWA_WAR",
     sourceWarId: toNullableInt(input.currentWar.warId),
-    sourceWarStartTime: input.currentWar.startTime,
+    sourceWarStartTime: input.currentWar.prepStartTime ?? input.currentWar.startTime ?? null,
     sourceWarEndTime: input.currentWar.endTime,
     sourceOpponentTag:
       normalizeClanTag(String(input.currentWar.opponentTag ?? "")) ||
@@ -434,8 +499,17 @@ function buildCapturedClanSnapshotFromLatestWar(input: {
   if (!(input.history.warStartTime instanceof Date)) {
     return { kind: "unavailable", reason: "LATEST_FWA_WAR_UNVERIFIED" };
   }
-  if (input.participationRows.length <= 0) {
-    return { kind: "unavailable", reason: "LATEST_FWA_WAR_NO_PARTICIPATION" };
+
+  const normalizedRoster = validateHistoricalRosterRows({
+    rows: input.participationRows.map((row) => ({
+      playerTag: row.playerTag,
+      playerName: row.playerName,
+      townHall: row.townHall,
+      position: row.playerPosition,
+    })),
+  });
+  if (normalizedRoster.kind === "invalid") {
+    return { kind: "unavailable", reason: normalizedRoster.reason };
   }
 
   const baselineClanId = randomUUID();
@@ -443,12 +517,7 @@ function buildCapturedClanSnapshotFromLatestWar(input: {
     baselineId: input.baselineId,
     baselineClanId,
     clanTag: input.trackedClan.clanTag,
-    rows: input.participationRows.map((row) => ({
-      playerTag: row.playerTag,
-      playerName: row.playerName,
-      townHall: row.townHall,
-      position: row.playerPosition,
-    })),
+    rows: normalizedRoster.rows,
     linkedDiscordUserIdByPlayerTag: input.linkedDiscordUserIdByPlayerTag,
   });
   if (selectedMembers.kind === "invalid") {
@@ -1045,7 +1114,7 @@ export class CwlAllianceBaselineService {
               linkedDiscordUserIdByPlayerTag: new Map(),
             })
           : currentWar
-            ? ({ kind: "unavailable", reason: "CURRENT_FWA_WAR_UNVERIFIED" } as const)
+            ? ({ kind: "unavailable", reason: "CURRENT_FWA_WAR_ROSTER_IDENTITY_UNVERIFIED" } as const)
             : ({ kind: "unavailable", reason: "NO_CURRENT_FWA_WAR" } as const);
 
       if (currentSelection.kind === "captured") {

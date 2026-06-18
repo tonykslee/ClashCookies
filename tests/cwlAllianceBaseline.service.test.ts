@@ -408,6 +408,36 @@ function makeParticipation(
   }));
 }
 
+function makeCompleteParticipationRows(
+  clanTag: string,
+  warId: number,
+  options?: {
+    attacksUsed?: (position: number) => number;
+    playerTagPrefix?: string;
+    playerNamePrefix?: string;
+    townHall?: (position: number) => number | null;
+  },
+): TestParticipationRow[] {
+  const validTagChars = ["P", "Y", "L", "Q", "G", "R", "J", "C", "U", "V", "0", "2", "8", "9"];
+  return Array.from({ length: 50 }, (_, index) => {
+    const position = index + 1;
+    const tagIndex = index;
+    const high = Math.floor(tagIndex / validTagChars.length);
+    const low = tagIndex % validTagChars.length;
+    return {
+      guildId: "guild-1",
+      warId: String(warId),
+      clanTag,
+      playerTag:
+        `${options?.playerTagPrefix ?? "#Q"}0${validTagChars[high]}${validTagChars[low]}`,
+      playerName: `${options?.playerNamePrefix ?? "Player"} ${position}`,
+      playerPosition: position,
+      townHall: options?.townHall?.(position) ?? 16,
+      attacksUsed: options?.attacksUsed?.(position) ?? 2,
+    };
+  });
+}
+
 describe("CwlAllianceBaselineService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -468,6 +498,41 @@ describe("CwlAllianceBaselineService", () => {
     expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to historical capture when the current war roster opponent tag is missing", async () => {
+    state.trackedClans = [makeTrackedClan("#P028", "Fallback Clan")];
+    state.currentWars = [
+      makeCurrentWar({ clanTag: "#P028", opponentTag: null, warId: 203 }),
+    ];
+    state.rosters = [
+      makeRoster({
+        clanTag: "#P028",
+        members: [{ position: 1, playerTag: "#Q028", playerName: "Ignored", townHall: 15 }],
+      }),
+    ];
+    state.histories = [makeHistory({ clanTag: "#P028", warId: 202 })];
+    state.participations = makeCompleteParticipationRows("#P028", 202, {
+      attacksUsed: (position) => (position === 1 ? 0 : 2),
+    });
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result.coverageSummaries[0]).toMatchObject({
+      captureStatus: "CAPTURED",
+      sourceType: "LATEST_FWA_WAR",
+      sourceWarId: 202,
+      rosterSize: 50,
+      failureReason: null,
+    });
+    expect(result.currentWarSourceCount).toBe(0);
+    expect(result.latestWarFallbackCount).toBe(1);
+    expect(result.memberAccountCount).toBe(50);
+    expect(state.baselineMembers).toHaveLength(50);
+    expect(state.baselineMembers[0]?.playerTag).toBe("#Q0PP");
+  });
+
   it("rejects a current MM war and falls back to the latest canonical FWA history", async () => {
     state.trackedClans = [makeTrackedClan("#P029", "Fallback Clan")];
     state.currentWars = [
@@ -476,13 +541,11 @@ describe("CwlAllianceBaselineService", () => {
     state.rosters = [
       makeRoster({
         clanTag: "#P029",
-        members: [{ position: 1, playerTag: "#Q082", playerName: "Ignored", townHall: 15 }],
+        members: [{ position: 1, playerTag: "#Q029", playerName: "Ignored", townHall: 15 }],
       }),
     ];
     state.histories = [makeHistory({ clanTag: "#P029", warId: 201 })];
-    state.participations = makeParticipation("#P029", 201, [
-      { playerTag: "#Q089", playerName: "History One", playerPosition: 1, townHall: 16, attacksUsed: 2 },
-    ]);
+    state.participations = makeCompleteParticipationRows("#P029", 201);
 
     const service = makeService();
     const result = await service.captureAllianceSeasonBaseline({
@@ -499,7 +562,31 @@ describe("CwlAllianceBaselineService", () => {
     expect(result.latestWarFallbackCount).toBe(1);
   });
 
-  it("skips a newer non-FWA history row in favor of an older FWA roster and keeps zero-attack members", async () => {
+  it("rejects incomplete historical rosters with all-null positions", async () => {
+    state.trackedClans = [makeTrackedClan("#P082", "History Clan")];
+    state.histories = [makeHistory({ clanTag: "#P082", warId: 300 })];
+    state.participations = makeCompleteParticipationRows("#P082", 300, {
+      attacksUsed: () => 0,
+    }).map((row) => ({
+      ...row,
+      playerPosition: null,
+    }));
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result.unavailableClanCount).toBe(1);
+    expect(result.currentWarSourceCount).toBe(0);
+    expect(result.latestWarFallbackCount).toBe(0);
+    expect(result.coverageSummaries[0]).toMatchObject({
+      captureStatus: "UNAVAILABLE",
+      failureReason: "LATEST_FWA_WAR_ROSTER_MISSING_POSITIONS",
+    });
+  });
+
+  it("accepts a complete 50-member historical roster and keeps zero-attack members", async () => {
     state.trackedClans = [makeTrackedClan("#P082", "History Clan")];
     state.histories = [
       makeHistory({
@@ -517,10 +604,9 @@ describe("CwlAllianceBaselineService", () => {
         updatedAt: new Date("2026-06-15T02:05:00.000Z"),
       }),
     ];
-    state.participations = makeParticipation("#P082", 300, [
-      { playerTag: "#Q222", playerName: "Zero Attack", playerPosition: 1, townHall: 16, attacksUsed: 0 },
-      { playerTag: "#Q228", playerName: "Two Attacks", playerPosition: 2, townHall: 15, attacksUsed: 2 },
-    ]);
+    state.participations = makeCompleteParticipationRows("#P082", 300, {
+      attacksUsed: (position) => (position % 2 === 0 ? 0 : 2),
+    });
 
     const result = await makeService().captureAllianceSeasonBaseline({
       guildId: "guild-1",
@@ -530,10 +616,11 @@ describe("CwlAllianceBaselineService", () => {
     expect(result.coverageSummaries[0]).toMatchObject({
       sourceType: "LATEST_FWA_WAR",
       sourceWarId: 300,
-      rosterSize: 2,
+      rosterSize: 50,
     });
-    expect(result.memberAccountCount).toBe(2);
-    expect(state.baselineMembers.map((row) => row.playerTag)).toEqual(["#Q222", "#Q228"]);
+    expect(result.memberAccountCount).toBe(50);
+    expect(state.baselineMembers).toHaveLength(50);
+    expect(state.baselineMembers[0]?.playerTag).toBe("#Q0PP");
   });
 
   it("marks unavailable clans explicitly without blocking other clans", async () => {
