@@ -904,6 +904,7 @@ export class WarEventHistoryService {
           player.playerName?.trim() ||
           attackRows[0]?.playerName?.trim() ||
           player.playerTag,
+        playerPosition: player.playerPosition,
         townHall: null,
         attacksUsed,
         attacksMissed: Math.max(0, 2 - attacksUsed),

@@ -47,6 +47,7 @@ Core subsystems:
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
 - Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
 - CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
+- CWL measurement baseline: `TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink -> CwlAllianceBaselineService -> CwlAllianceSeasonBaseline / CwlAllianceSeasonBaselineClan / CwlAllianceSeasonBaselineMember`
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
 - Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 
@@ -70,6 +71,7 @@ Important owners:
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived observed CWL season roster | CwlPlayerClanSeason |
 | CWL planner artifacts | CwlRotationPlan* tables |
+| Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
@@ -83,6 +85,7 @@ Important owners:
 | Personal reminders | UserActivityReminder* tables |
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
+| CWL measurement baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | FWA compo reference bands | HeatMapRef |
 | Telemetry rollups and report schedules | Telemetry* tables |
 

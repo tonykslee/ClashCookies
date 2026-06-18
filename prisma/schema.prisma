@@ -708,6 +708,77 @@ model CwlPlayerClanSeason {
   @@index([season, playerTag])
 }
 
+enum CwlAllianceSeasonBaselineCaptureStatus {
+  CAPTURED
+  UNAVAILABLE
+}
+
+enum CwlAllianceSeasonBaselineSourceType {
+  CURRENT_FWA_WAR
+  LATEST_FWA_WAR
+}
+
+model CwlAllianceSeasonBaseline {
+  id              String   @id @default(cuid())
+  guildId         String
+  season          String
+  capturedAt      DateTime
+  capturedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  clans           CwlAllianceSeasonBaselineClan[]
+  members         CwlAllianceSeasonBaselineMember[]
+
+  @@unique([guildId, season])
+  @@index([season, capturedAt])
+  @@index([guildId, capturedAt])
+}
+
+model CwlAllianceSeasonBaselineClan {
+  id               String   @id @default(cuid())
+  baselineId       String
+  clanTag          String   @db.VarChar(16)
+  clanName         String?
+  captureStatus    CwlAllianceSeasonBaselineCaptureStatus
+  sourceType       CwlAllianceSeasonBaselineSourceType?
+  sourceWarId      Int?
+  sourceWarStartTime DateTime?
+  sourceWarEndTime DateTime?
+  sourceOpponentTag String?  @db.VarChar(16)
+  sourceObservedAt DateTime?
+  rosterSize       Int
+  failureReason    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  baseline         CwlAllianceSeasonBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  members          CwlAllianceSeasonBaselineMember[]
+
+  @@unique([baselineId, clanTag])
+  @@index([baselineId, captureStatus])
+  @@index([baselineId])
+  @@index([clanTag])
+}
+
+model CwlAllianceSeasonBaselineMember {
+  id                  String   @id @default(cuid())
+  baselineId          String
+  baselineClanId      String
+  playerTag           String   @db.VarChar(16)
+  playerName          String
+  townHall            Int?
+  position            Int?
+  linkedDiscordUserId  String?
+  createdAt           DateTime @default(now())
+  baseline            CwlAllianceSeasonBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  baselineClan        CwlAllianceSeasonBaselineClan @relation(fields: [baselineClanId], references: [id], onDelete: Cascade)
+
+  @@unique([baselineId, playerTag])
+  @@index([baselineId])
+  @@index([baselineClanId])
+  @@index([playerTag])
+  @@index([linkedDiscordUserId])
+}
+
 model CwlSeasonRosterState {
   season                  String
   clanTag                 String
@@ -1514,6 +1585,7 @@ model ClanWarParticipation {
   opponentTag       String?
   playerTag         String
   playerName        String?
+  playerPosition    Int?
   townHall          Int?
   attacksUsed       Int
   attacksMissed     Int

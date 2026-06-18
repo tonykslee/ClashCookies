@@ -144,6 +144,7 @@ async function main(): Promise<void> {
     opponentTag: row.opponentTag,
     playerTag: row.playerTag,
     playerName: row.playerName,
+    playerPosition: row.playerPosition,
     townHall: row.townHall,
     attacksUsed: row.attacksUsed,
     attacksMissed: row.attacksMissed,
