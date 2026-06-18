@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   cwlEventClan: {
-    findFirst: vi.fn(),
     findMany: vi.fn(),
   },
   cwlTrackedClan: {
@@ -27,15 +26,19 @@ describe("remaining CWL service", () => {
   });
 
   it("loads one tracked clan view from persisted current round state only", async () => {
-    prismaMock.cwlEventClan.findFirst.mockResolvedValue({
-      eventInstance: {
-        id: "event-current",
-        season: "2026-03",
-        anchorWarTag: "#Y2CQ",
-        firstObservedAt: new Date("2026-03-08T09:00:00.000Z"),
-        lastObservedAt: new Date("2026-03-08T10:30:00.000Z"),
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        eventInstanceId: "event-current",
+        eventInstance: {
+          id: "event-current",
+          season: "2026-03",
+          anchorWarTag: "#Y2CQ",
+          firstObservedAt: new Date("2026-03-08T09:00:00.000Z"),
+          lastObservedAt: new Date("2026-03-08T10:30:00.000Z"),
+        },
       },
-    });
+    ]);
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha CWL",

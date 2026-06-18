@@ -15,6 +15,7 @@ import {
   type TodoSnapshotRecord,
 } from "./TodoSnapshotService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { cwlRotationService } from "./CwlRotationService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
@@ -270,6 +271,12 @@ export async function buildTodoPagesForUser(input: {
         .filter(Boolean),
     ),
   ];
+  const cwlCurrentEvents = cwlClanTags.length > 0
+    ? await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+        clanTags: cwlClanTags,
+      })
+    : new Map();
+  const cwlEventIds = [...new Set([...cwlCurrentEvents.values()].map((event) => event.id))];
 
   const [
     trackedClanRows,
@@ -345,11 +352,11 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : Promise.resolve([]),
-    cwlClanTags.length > 0
+    cwlEventIds.length > 0
       ? prisma.currentCwlRound.findMany({
-          where: { clanTag: { in: cwlClanTags } },
+          where: { eventInstanceId: { in: cwlEventIds } },
           select: {
-            season: true,
+            eventInstanceId: true,
             clanTag: true,
             clanName: true,
             roundDay: true,
@@ -361,12 +368,13 @@ export async function buildTodoPagesForUser(input: {
           },
         })
       : Promise.resolve([]),
-    cwlClanTags.length > 0
+    cwlEventIds.length > 0
       ? prisma.cwlRoundMemberCurrent.findMany({
           where: {
-            clanTag: { in: cwlClanTags },
+            eventInstanceId: { in: cwlEventIds },
           },
           select: {
+            eventInstanceId: true,
             clanTag: true,
             playerTag: true,
             subbedIn: true,
@@ -470,7 +478,6 @@ export async function buildTodoPagesForUser(input: {
     }
   >();
   for (const row of currentCwlRoundList as Array<{
-    season: string;
     clanTag: string;
     clanName: string | null;
     roundDay: number;
@@ -483,7 +490,7 @@ export async function buildTodoPagesForUser(input: {
     const clanTag = normalizeClanTag(row.clanTag);
     if (!clanTag) continue;
     currentCwlRoundByClanTag.set(clanTag, {
-      season: row.season,
+      season: resolveCurrentCwlSeasonKey(),
       clanTag,
       clanName: sanitizeStatusText(row.clanName) || null,
       roundDay: Math.max(1, Math.trunc(Number(row.roundDay) || 1)),

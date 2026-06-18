@@ -2,6 +2,14 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { normalizeClanTag } from "./PlayerLinkService";
 
+export type CwlCurrentEventSummary = {
+  id: string;
+  season: string;
+  anchorWarTag: string;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+};
+
 export type CwlEventResolutionOutcome =
   | {
       kind: "resolved";
@@ -30,6 +38,8 @@ type CwlEventResolutionTx = Pick<
   "cwlEventClan" | "cwlEventInstance" | "cwlEventWarTag"
 >;
 
+const CWL_EVENT_RESOLUTION_RETRY_LIMIT = 3;
+
 function normalizeObservedWarTags(warTags: string[]): string[] {
   return [
     ...new Set(
@@ -47,7 +57,75 @@ function buildLegacyAnchorWarTag(input: {
   return `legacy:${input.season}:${input.clanTag}`;
 }
 
-/** Purpose: resolve or create one authoritative CWL event instance from observed league-group war tags. */
+function isRetryableCwlEventResolutionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = String((error as { code?: unknown }).code ?? "");
+  return code === "P2002" || code === "P2034";
+}
+
+function compareCurrentEventSummaries(
+  a: CwlCurrentEventSummary,
+  b: CwlCurrentEventSummary,
+): number {
+  const byLastObservedAt = b.lastObservedAt.getTime() - a.lastObservedAt.getTime();
+  if (byLastObservedAt !== 0) return byLastObservedAt;
+  const byFirstObservedAt = b.firstObservedAt.getTime() - a.firstObservedAt.getTime();
+  if (byFirstObservedAt !== 0) return byFirstObservedAt;
+  return b.id.localeCompare(a.id);
+}
+
+async function resolveCurrentCwlEventSummariesForClanTags(input: {
+  clanTags: string[];
+}): Promise<Map<string, CwlCurrentEventSummary>> {
+  const clanTags = [
+    ...new Set(
+      input.clanTags
+        .map((clanTag) => normalizeClanTag(String(clanTag ?? "")))
+        .filter((clanTag): clanTag is string => Boolean(clanTag)),
+    ),
+  ];
+  if (clanTags.length <= 0) return new Map();
+
+  const rows = await prisma.cwlEventClan.findMany({
+    where: {
+      clanTag: { in: clanTags },
+      isCurrent: true,
+    },
+    select: {
+      clanTag: true,
+      eventInstance: {
+        select: {
+          id: true,
+          season: true,
+          anchorWarTag: true,
+          firstObservedAt: true,
+          lastObservedAt: true,
+        },
+      },
+    },
+  });
+
+  const result = new Map<string, CwlCurrentEventSummary>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const event = row.eventInstance;
+    if (!clanTag || !event) continue;
+    const next = {
+      id: event.id,
+      season: event.season,
+      anchorWarTag: event.anchorWarTag,
+      firstObservedAt: event.firstObservedAt,
+      lastObservedAt: event.lastObservedAt,
+    };
+    const existing = result.get(clanTag);
+    if (!existing || compareCurrentEventSummaries(next, existing) < 0) {
+      result.set(clanTag, next);
+    }
+  }
+
+  return result;
+}
+
 async function resolveCwlEventInTransaction(input: {
   tx: CwlEventResolutionTx;
   season: string;
@@ -56,7 +134,11 @@ async function resolveCwlEventInTransaction(input: {
   observedAt: Date;
 }): Promise<CwlEventResolutionOutcome> {
   const normalizedClanTag = normalizeClanTag(input.clanTag);
-  const observedWarTags = normalizeObservedWarTags(input.observedWarTags);
+  const observedWarTags = [
+    ...new Set(
+      normalizeObservedWarTags(input.observedWarTags).sort((a, b) => a.localeCompare(b)),
+    ),
+  ];
   if (observedWarTags.length <= 0) {
     console.warn(
       [
@@ -100,17 +182,41 @@ async function resolveCwlEventInTransaction(input: {
     };
   }
 
-  const previousCurrentEventClan = await input.tx.cwlEventClan.findFirst({
+  const currentClanRows = await input.tx.cwlEventClan.findMany({
     where: {
       clanTag: normalizedClanTag,
       isCurrent: true,
     },
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
     select: {
       eventInstanceId: true,
+      eventInstance: {
+        select: {
+          id: true,
+          season: true,
+          anchorWarTag: true,
+          firstObservedAt: true,
+          lastObservedAt: true,
+        },
+      },
     },
   });
-  const previousCurrentEventInstanceId = previousCurrentEventClan?.eventInstanceId ?? null;
+  let previousCurrentEventInstanceId: string | null = null;
+  let previousCurrentSummary: CwlCurrentEventSummary | null = null;
+  for (const row of currentClanRows) {
+    const event = row.eventInstance;
+    if (!event) continue;
+    const nextSummary: CwlCurrentEventSummary = {
+      id: event.id,
+      season: event.season,
+      anchorWarTag: event.anchorWarTag,
+      firstObservedAt: event.firstObservedAt,
+      lastObservedAt: event.lastObservedAt,
+    };
+    if (!previousCurrentSummary || compareCurrentEventSummaries(nextSummary, previousCurrentSummary) < 0) {
+      previousCurrentSummary = nextSummary;
+      previousCurrentEventInstanceId = event.id;
+    }
+  }
 
   let eventInstanceId = mappedEventIds[0] ?? null;
   let created = false;
@@ -120,18 +226,17 @@ async function resolveCwlEventInTransaction(input: {
     const createdEvent = await input.tx.cwlEventInstance.create({
       data: {
         season: input.season,
-        anchorWarTag: buildLegacyAnchorWarTag({
-          season: input.season,
-          clanTag: normalizedClanTag,
-        }),
+        anchorWarTag,
         firstObservedAt: input.observedAt,
         lastObservedAt: input.observedAt,
       },
       select: {
         id: true,
+        anchorWarTag: true,
       },
     });
     eventInstanceId = createdEvent.id;
+    anchorWarTag = createdEvent.anchorWarTag;
     created = true;
   } else {
     await input.tx.cwlEventInstance.update({
@@ -140,21 +245,30 @@ async function resolveCwlEventInTransaction(input: {
         lastObservedAt: input.observedAt,
       },
     });
-    const event = await input.tx.cwlEventInstance.findUnique({
+    const existingEvent = await input.tx.cwlEventInstance.findUnique({
       where: { id: eventInstanceId },
       select: { anchorWarTag: true },
     });
-    anchorWarTag = event?.anchorWarTag ?? anchorWarTag;
+    anchorWarTag = existingEvent?.anchorWarTag ?? anchorWarTag;
   }
 
-  const existingWarTagRows = await input.tx.cwlEventWarTag.findMany({
+  await input.tx.cwlEventWarTag.updateMany({
+    where: {
+      eventInstanceId,
+      warTag: { in: observedWarTags },
+    },
+    data: {
+      lastObservedAt: input.observedAt,
+    },
+  });
+  const existingWarTags = await input.tx.cwlEventWarTag.findMany({
     where: {
       eventInstanceId,
       warTag: { in: observedWarTags },
     },
     select: { warTag: true },
   });
-  const existingWarTagSet = new Set(existingWarTagRows.map((row) => row.warTag));
+  const existingWarTagSet = new Set(existingWarTags.map((row) => row.warTag));
   const attachedWarTags: string[] = [];
   for (const warTag of observedWarTags) {
     if (existingWarTagSet.has(warTag)) continue;
@@ -183,57 +297,40 @@ async function resolveCwlEventInTransaction(input: {
     );
   }
 
-  const existingCurrentClan = await input.tx.cwlEventClan.findFirst({
+  await input.tx.cwlEventClan.updateMany({
     where: {
       clanTag: normalizedClanTag,
-      eventInstanceId,
-    },
-    select: {
-      id: true,
       isCurrent: true,
+      eventInstanceId: {
+        not: eventInstanceId,
+      },
+    },
+    data: {
+      isCurrent: false,
     },
   });
-  if (previousCurrentEventInstanceId && previousCurrentEventInstanceId !== eventInstanceId) {
-    await input.tx.cwlEventClan.updateMany({
-      where: {
-        clanTag: normalizedClanTag,
-        isCurrent: true,
-        eventInstanceId: {
-          not: eventInstanceId,
-        },
-      },
-      data: {
-        isCurrent: false,
-      },
-    });
-  }
 
-  if (existingCurrentClan) {
-    await input.tx.cwlEventClan.update({
-      where: {
-        eventInstanceId_clanTag: {
-          eventInstanceId,
-          clanTag: normalizedClanTag,
-        },
-      },
-      data: {
-        season: input.season,
-        isCurrent: true,
-        lastObservedAt: input.observedAt,
-      },
-    });
-  } else {
-    await input.tx.cwlEventClan.create({
-      data: {
+  await input.tx.cwlEventClan.upsert({
+    where: {
+      eventInstanceId_clanTag: {
         eventInstanceId,
-        season: input.season,
         clanTag: normalizedClanTag,
-        isCurrent: true,
-        firstObservedAt: input.observedAt,
-        lastObservedAt: input.observedAt,
       },
-    });
-  }
+    },
+    create: {
+      eventInstanceId,
+      season: input.season,
+      clanTag: normalizedClanTag,
+      isCurrent: true,
+      firstObservedAt: input.observedAt,
+      lastObservedAt: input.observedAt,
+    },
+    update: {
+      season: input.season,
+      isCurrent: true,
+      lastObservedAt: input.observedAt,
+    },
+  });
 
   if (previousCurrentEventInstanceId !== eventInstanceId) {
     console.info(
@@ -260,35 +357,59 @@ async function resolveCwlEventInTransaction(input: {
   };
 }
 
+/** Purpose: resolve or create one authoritative CWL event instance from observed league-group war tags. */
+async function resolveCwlEventForClan(input: {
+  season: string;
+  clanTag: string;
+  observedWarTags: string[];
+  observedAt: Date;
+}): Promise<CwlEventResolutionOutcome> {
+  for (let attempt = 1; attempt <= CWL_EVENT_RESOLUTION_RETRY_LIMIT; attempt += 1) {
+    try {
+      return await prisma.$transaction(async (tx) =>
+        resolveCwlEventInTransaction({
+          tx: tx as CwlEventResolutionTx,
+          season: input.season,
+          clanTag: input.clanTag,
+          observedWarTags: input.observedWarTags,
+          observedAt: input.observedAt,
+        }),
+      );
+    } catch (error) {
+      if (!isRetryableCwlEventResolutionError(error) || attempt >= CWL_EVENT_RESOLUTION_RETRY_LIMIT) {
+        throw error;
+      }
+      console.warn(
+        [
+          "[cwl-event] event=event_resolution_retry",
+          `season=${input.season}`,
+          `clan_tag=${normalizeClanTag(input.clanTag)}`,
+          `attempt=${attempt}`,
+          `retry_limit=${CWL_EVENT_RESOLUTION_RETRY_LIMIT}`,
+          `reason=${String((error as { code?: unknown }).code ?? "unknown")}`,
+        ].join(" "),
+      );
+    }
+  }
+
+  throw new Error("Unreachable CWL event resolution retry exit.");
+}
+
 /** Purpose: resolve the current CWL event for one clan from the authoritative current pointer. */
 async function resolveCurrentCwlEventForClan(input: {
   clanTag: string;
 }) {
   const clanTag = normalizeClanTag(input.clanTag);
   if (!clanTag) return null;
-  const current = await prisma.cwlEventClan.findFirst({
-    where: {
-      clanTag,
-      isCurrent: true,
-    },
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-    select: {
-      eventInstanceId: true,
-      eventInstance: {
-        select: {
-          id: true,
-          season: true,
-          anchorWarTag: true,
-          firstObservedAt: true,
-          lastObservedAt: true,
-        },
-      },
-    },
+  const currentEvents = await resolveCurrentCwlEventSummariesForClanTags({
+    clanTags: [clanTag],
   });
-  return current?.eventInstance ?? null;
+  return currentEvents.get(clanTag) ?? null;
 }
 
 export const cwlEventResolutionService = {
+  resolveCwlEventForClan,
   resolveCwlEventInTransaction,
   resolveCurrentCwlEventForClan,
+  resolveCurrentCwlEventSummariesForClanTags,
 };

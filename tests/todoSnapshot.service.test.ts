@@ -55,7 +55,6 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   cwlEventClan: {
-    findFirst: vi.fn(),
     findMany: vi.fn(),
   },
   currentCwlRound: {
@@ -278,24 +277,38 @@ describe("TodoSnapshotService", () => {
     resetTodoSnapshotServiceForTest();
     cwlSeasonMappingRows = [];
 
-    prismaMock.cwlEventClan.findFirst.mockImplementation(async ({ where }: any) => {
-      const clanTag = String(where?.clanTag ?? where?.clanTag?.equals ?? "").trim().toUpperCase();
-      if (!clanTag || clanTag === "#QGRJ") return null;
-      return {
-        eventInstance: {
-          id: `event-${clanTag}`,
-          season: "2026-03",
-          anchorWarTag: "#Y2CQ",
-          firstObservedAt: new Date("2026-03-26T00:00:00.000Z"),
-          lastObservedAt: new Date("2026-03-26T00:00:00.000Z"),
-        },
-      };
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags
+        .map((clanTag: string) => String(clanTag ?? "").trim().toUpperCase())
+        .filter((clanTag: string) => Boolean(clanTag))
+        .map((clanTag: string) => ({
+          clanTag,
+          eventInstanceId: `event-${clanTag}`,
+          eventInstance: {
+            id: `event-${clanTag}`,
+            season: "2026-03",
+            anchorWarTag: "#Y2CQ",
+            firstObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+            lastObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+        }));
     });
     prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
       const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
       return clanTags
-        .filter((clanTag: string) => String(clanTag ?? "").toUpperCase() !== "#QGRJ")
-        .map((clanTag: string) => ({ clanTag, eventInstanceId: `event-${clanTag}` }));
+        .filter((clanTag: string) => Boolean(String(clanTag ?? "").trim()))
+        .map((clanTag: string) => ({
+          clanTag,
+          eventInstanceId: `event-${clanTag}`,
+          eventInstance: {
+            id: `event-${clanTag}`,
+            season: "2026-03",
+            anchorWarTag: "#Y2CQ",
+            firstObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+            lastObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+        }));
     });
 
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
@@ -818,6 +831,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findMany.mockResolvedValue([
       {
+        eventInstanceId: "event-current",
         season: "2026-04",
         clanTag: "#QGRJ",
         clanName: "Old War Clan",
@@ -828,6 +842,7 @@ describe("TodoSnapshotService", () => {
     ]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
       {
+        eventInstanceId: "event-current",
         season: "2026-04",
         clanTag: "#QGRJ",
         playerTag: "#PYLQ0289",
@@ -910,14 +925,14 @@ describe("TodoSnapshotService", () => {
     });
 
     expect(result.playerCount).toBe(1);
-    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
+    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
-          cwlClanTag: "#QGRJ",
-          cwlClanName: "Old War Clan",
-          cwlActive: true,
-          cwlPhase: "preparation",
+          clanTag: null,
+          cwlClanTag: null,
+          cwlClanName: null,
+          cwlActive: false,
         }),
       }),
     );
@@ -929,7 +944,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ0289", cwlClanTag: "#QGRJ" },
+      { eventInstanceId: "event-current", playerTag: "#PYLQ0289", cwlClanTag: "#QGRJ" },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {

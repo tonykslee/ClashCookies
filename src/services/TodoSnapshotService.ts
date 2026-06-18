@@ -6,6 +6,7 @@ import {
   extractGamesChampionTotalFromSignalState,
 } from "./ActivitySignalService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
 import type { CwlLeagueFetchSource } from "./CwlFetchCycleCache";
 import { cocRequestQueueService } from "./CoCRequestQueueService";
@@ -1018,63 +1019,86 @@ export class TodoSnapshotService {
               select: { tag: true, name: true },
             })
           : [];
-    const [currentWarRows, cwlTrackedClanRows, cwlSeasonMappingRows, currentCwlRoundRows, currentCwlMemberRows] =
-      await Promise.all([
-        clanTags.length > 0
-          ? prisma.currentWar.findMany({
-              where: { clanTag: { in: clanTags } },
-              select: {
-                clanTag: true,
-                warId: true,
-                state: true,
-                startTime: true,
-                endTime: true,
-                updatedAt: true,
-              },
-            })
-          : Promise.resolve([]),
-        prisma.cwlTrackedClan.findMany({
-          where: { season: currentCwlSeason },
-          select: { tag: true, name: true },
-        }),
-        prisma.cwlPlayerClanSeason.findMany({
-          where: {
-            season: currentCwlSeason,
-            playerTag: { in: normalizedTags },
-          },
-          select: {
-            playerTag: true,
-            cwlClanTag: true,
-          },
-        }),
-        prisma.currentCwlRound.findMany({
-          where: {
-            season: currentCwlSeason,
-          },
-          select: {
-            season: true,
-            clanTag: true,
-            clanName: true,
-            roundState: true,
-            startTime: true,
-            endTime: true,
-          },
-        }),
-        prisma.cwlRoundMemberCurrent.findMany({
-          where: {
-            season: currentCwlSeason,
-            playerTag: { in: normalizedTags },
-          },
-          select: {
-            season: true,
-            clanTag: true,
-            playerTag: true,
-            attacksUsed: true,
-            attacksAvailable: true,
-            subbedIn: true,
-          },
-        }),
-      ]);
+    const cwlTrackedClanRows = await prisma.cwlTrackedClan.findMany({
+      where: { season: currentCwlSeason },
+      select: { tag: true, name: true },
+    });
+    const currentCwlClanTags = [
+      ...new Set(
+        [
+          ...cwlTrackedClanRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean),
+          ...Array.from(existingByTag.values())
+            .map((row) => normalizeClanTag(row.cwlClanTag ?? ""))
+            .filter((value): value is string => Boolean(value)),
+        ],
+      ),
+    ];
+    const currentCwlEventRows = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags(
+      {
+        clanTags: currentCwlClanTags,
+      },
+    );
+    const currentCwlEventIds = [...new Set([...currentCwlEventRows.values()].map((event) => event.id))];
+    let cwlSeasonMappingRows =
+      normalizedTags.length > 0
+        ? await prisma.cwlPlayerClanSeason.findMany({
+            where: {
+              season: currentCwlSeason,
+              playerTag: { in: normalizedTags },
+            },
+            select: {
+              playerTag: true,
+              cwlClanTag: true,
+            },
+          })
+        : [];
+
+    const [currentWarRows, currentCwlRoundRows, currentCwlMemberRows] = await Promise.all([
+      clanTags.length > 0
+        ? prisma.currentWar.findMany({
+            where: { clanTag: { in: clanTags } },
+            select: {
+              clanTag: true,
+              warId: true,
+              state: true,
+              startTime: true,
+              endTime: true,
+              updatedAt: true,
+            },
+          })
+        : Promise.resolve([]),
+      currentCwlEventIds.length > 0
+        ? prisma.currentCwlRound.findMany({
+            where: {
+              eventInstanceId: { in: currentCwlEventIds },
+            },
+            select: {
+              eventInstanceId: true,
+              clanTag: true,
+              clanName: true,
+              roundState: true,
+              startTime: true,
+              endTime: true,
+            },
+          })
+        : Promise.resolve([]),
+      currentCwlEventIds.length > 0
+        ? prisma.cwlRoundMemberCurrent.findMany({
+            where: {
+              eventInstanceId: { in: currentCwlEventIds },
+              playerTag: { in: normalizedTags },
+            },
+            select: {
+              eventInstanceId: true,
+              clanTag: true,
+              playerTag: true,
+              attacksUsed: true,
+              attacksAvailable: true,
+              subbedIn: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
 
     const trackedClanNameByTag = new Map(
       trackedClanRows
@@ -1518,46 +1542,25 @@ export class TodoSnapshotService {
         resolvedClanTag && cwlTrackedTagSet.has(resolvedClanTag)
           ? resolvedClanTag
           : "";
-      const persistedOrTrackedCwlClanTag =
+      const resolvedCwlClanTag =
         normalizeClanTag(
           activeMappedCwlClanTag ||
             persistedMappedCwlClanTag ||
             fallbackCwlClanTag,
-        ) || null;
-      const discoveredCwlClanTag =
-        cwlDiscoveryClanTagByPlayerTag.get(playerTag) ?? null;
-      const discoveredLiveCwlClanTag = input.includeNonTrackedCwlRefresh
-        ? normalizeClanTag(membershipContext?.clanTag ?? discoveredCwlClanTag ?? "") ||
-          null
-        : null;
-      const liveNonTrackedCwlCandidateClanTag =
-        persistedOrTrackedCwlClanTag &&
-        !cwlTrackedTagSet.has(persistedOrTrackedCwlClanTag)
-          ? persistedOrTrackedCwlClanTag
-          : discoveredLiveCwlClanTag && !cwlTrackedTagSet.has(discoveredLiveCwlClanTag)
-            ? discoveredLiveCwlClanTag
-            : null;
-      const liveNonTrackedCwlContext = liveNonTrackedCwlCandidateClanTag
-        ? liveNonTrackedCwlContextByClanTag.get(liveNonTrackedCwlCandidateClanTag) ?? null
-        : null;
+        ) ||
+        normalizeClanTag(existing?.cwlClanTag ?? "") ||
+        null;
+      const liveNonTrackedCwlContext =
+        resolvedCwlClanTag && !cwlTrackedTagSet.has(resolvedCwlClanTag)
+          ? liveNonTrackedCwlContextByClanTag.get(resolvedCwlClanTag) ?? null
+          : null;
       const liveNonTrackedCwlMember = liveNonTrackedCwlContext
         ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
         : null;
-      const resolvedCwlClanTag =
-        persistedOrTrackedCwlClanTag ||
-        (input.includeNonTrackedCwlRefresh &&
-        membershipContext?.source !== "observed_live" &&
-        membershipContext?.source !== "no_clan"
-          ? normalizeClanTag(existing?.cwlClanTag ?? "")
-          : null) ||
-        null;
+      const resolvedLiveCwlClanTag =
+        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? "") || null;
       const finalResolvedCwlClanTag =
-        normalizeClanTag(
-          liveNonTrackedCwlContext?.clanTag ??
-            liveNonTrackedCwlCandidateClanTag ??
-            resolvedCwlClanTag ??
-            "",
-        ) || null;
+        resolvedCwlClanTag || resolvedLiveCwlClanTag || null;
       const resolvedCwlClanName =
         (finalResolvedCwlClanTag
           ? currentCwlRoundByClanTag.get(finalResolvedCwlClanTag)?.clanName ||
@@ -2930,17 +2933,7 @@ function resolveTodoCurrentMembershipContext(input: {
 }): TodoCurrentMembershipContext {
   const observedLiveClanTag = normalizeClanTag(input.liveClanTagEntry?.clanTag ?? "");
   if (input.liveClanTagEntry) {
-    if (observedLiveClanTag) {
-      return {
-        clanTag: observedLiveClanTag,
-        clanName:
-          sanitizeDisplayText(input.liveClanTagEntry.clanName ?? "") || null,
-        observedAt: input.now,
-        fresh: true,
-        source: input.liveClanTagEntry.source,
-      };
-    }
-    if (input.liveClanTagEntry.source === "observed_live") {
+    if (!observedLiveClanTag) {
       return {
         clanTag: null,
         clanName: null,
@@ -2949,6 +2942,14 @@ function resolveTodoCurrentMembershipContext(input: {
         source: "no_clan",
       };
     }
+    return {
+      clanTag: observedLiveClanTag,
+      clanName:
+        sanitizeDisplayText(input.liveClanTagEntry.clanName ?? "") || null,
+      observedAt: input.now,
+      fresh: true,
+      source: input.liveClanTagEntry.source,
+    };
   }
 
   const playerCurrentClanTag = normalizeClanTag(input.playerCurrent?.currentClanTag ?? "");

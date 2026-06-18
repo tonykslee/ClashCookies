@@ -9,13 +9,15 @@ const txMock = vi.hoisted(() => ({
   },
   cwlEventWarTag: {
     findMany: vi.fn(),
+    updateMany: vi.fn(),
     create: vi.fn(),
   },
   cwlEventClan: {
-    findFirst: vi.fn(),
+    findMany: vi.fn(),
     updateMany: vi.fn(),
     update: vi.fn(),
     create: vi.fn(),
+    upsert: vi.fn(),
   },
   currentCwlRound: {
     upsert: vi.fn(),
@@ -50,7 +52,6 @@ const txMock = vi.hoisted(() => ({
 
 const prismaMock = vi.hoisted(() => ({
   cwlEventClan: {
-    findFirst: vi.fn(),
     findMany: vi.fn(),
   },
   cwlTrackedClan: {
@@ -146,14 +147,11 @@ describe("CwlStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    prismaMock.cwlEventClan.findFirst.mockResolvedValue({
-      eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-      eventInstance: DEFAULT_EVENT_RECORD,
-    });
     prismaMock.cwlEventClan.findMany.mockResolvedValue([
       {
         clanTag: "#2QG2C08UP",
         eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        eventInstance: DEFAULT_EVENT_RECORD,
       },
     ]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
@@ -173,11 +171,13 @@ describe("CwlStateService", () => {
     txMock.cwlEventInstance.update.mockResolvedValue(DEFAULT_EVENT_RECORD);
     txMock.cwlEventInstance.findUnique.mockResolvedValue(DEFAULT_EVENT_RECORD);
     txMock.cwlEventWarTag.findMany.mockResolvedValue([]);
+    txMock.cwlEventWarTag.updateMany.mockResolvedValue({ count: 0 });
     txMock.cwlEventWarTag.create.mockResolvedValue(undefined);
-    txMock.cwlEventClan.findFirst.mockResolvedValue(null);
+    txMock.cwlEventClan.findMany.mockResolvedValue([]);
     txMock.cwlEventClan.updateMany.mockResolvedValue({ count: 0 });
     txMock.cwlEventClan.update.mockResolvedValue(undefined);
     txMock.cwlEventClan.create.mockResolvedValue(undefined);
+    txMock.cwlEventClan.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.upsert.mockResolvedValue(undefined);
     txMock.currentCwlRound.deleteMany.mockResolvedValue({ count: 0 });
     txMock.currentCwlPrepSnapshot.upsert.mockResolvedValue(undefined);

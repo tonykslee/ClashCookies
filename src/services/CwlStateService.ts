@@ -1240,15 +1240,12 @@ async function loadObservedTrackedClanState(input: {
     .filter((round) => isEndedRoundState(round.roundState))
     .sort((a, b) => a.roundDay - b.roundDay);
 
-  const resolution = await prisma.$transaction(async (tx) =>
-    cwlEventResolutionService.resolveCwlEventInTransaction({
-      tx: tx as any,
-      season,
-      clanTag: normalizedTrackedClanTag,
-      observedWarTags: [...observedWarTags],
-      observedAt: sourceUpdatedAt,
-    }),
-  );
+  const resolution = await cwlEventResolutionService.resolveCwlEventForClan({
+    season,
+    clanTag: normalizedTrackedClanTag,
+    observedWarTags: [...observedWarTags],
+    observedAt: sourceUpdatedAt,
+  });
   if (resolution.kind !== "resolved") {
     return {
       season,
@@ -1318,17 +1315,61 @@ export class CwlStateService {
       };
     }
 
-    const existingMappings = await prisma.cwlPlayerClanSeason.findMany({
-      where: {
-        season,
-        playerTag: { in: normalizedTags },
-      },
-      select: {
-        eventInstanceId: true,
-        playerTag: true,
-        cwlClanTag: true,
-      },
+    const trackedClanRows = await prisma.cwlTrackedClan.findMany({
+      where: { season },
+      select: { tag: true },
     });
+    const trackedClanTagSet = new Set(
+      trackedClanRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean),
+    );
+    const candidateClanTags = [
+      ...new Set(
+        (input.candidateClanTags ?? [])
+          .map((tag) => normalizeClanTag(tag))
+          .filter(
+            (tag): tag is string => Boolean(tag && !trackedClanTagSet.has(tag)),
+          ),
+      ),
+    ];
+    const currentEventRows =
+      trackedClanTagSet.size > 0 || candidateClanTags.length > 0
+        ? await prisma.cwlEventClan.findMany({
+            where: {
+              clanTag: {
+                in: [...new Set([...trackedClanTagSet, ...candidateClanTags])],
+              },
+              isCurrent: true,
+            },
+            select: {
+              clanTag: true,
+              eventInstanceId: true,
+            },
+          })
+        : [];
+    const currentEventIdByClanTag = new Map(
+      currentEventRows
+        .map((row) => {
+          const clanTag = normalizeClanTag(row.clanTag);
+          const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+          return clanTag && eventInstanceId ? [clanTag, eventInstanceId] as const : null;
+        })
+        .filter((entry): entry is readonly [string, string] => Boolean(entry)),
+    );
+    const currentEventIds = [...new Set(currentEventRows.map((row) => String(row.eventInstanceId ?? "").trim()).filter(Boolean))];
+
+    const existingMappings = currentEventIds.length > 0
+      ? await prisma.cwlPlayerClanSeason.findMany({
+          where: {
+            eventInstanceId: { in: currentEventIds },
+            playerTag: { in: normalizedTags },
+          },
+          select: {
+            eventInstanceId: true,
+            playerTag: true,
+            cwlClanTag: true,
+          },
+        })
+      : [];
     const existingMappingsByPlayerTag = new Map<string, Set<string>>();
     for (const row of existingMappings) {
       const playerTag = normalizePlayerTag(row.playerTag);
@@ -1340,44 +1381,40 @@ export class CwlStateService {
     }
 
     const directEvidenceRows = await Promise.all([
-      prisma.cwlRoundMemberCurrent.findMany({
-        where: {
-          season,
-          playerTag: { in: normalizedTags },
-        },
-        select: {
-          eventInstanceId: true,
-          playerTag: true,
-          clanTag: true,
-          playerName: true,
-          townHall: true,
-          roundDay: true,
-        },
-      }),
-      prisma.cwlRoundMemberHistory.findMany({
-        where: {
-          season,
-          playerTag: { in: normalizedTags },
-        },
-        select: {
-          eventInstanceId: true,
-          playerTag: true,
-          clanTag: true,
-          playerName: true,
-          townHall: true,
-          roundDay: true,
-        },
-        orderBy: [{ roundDay: "desc" }, { updatedAt: "desc" }, { playerTag: "asc" }],
-      }),
+      currentEventIds.length > 0
+        ? prisma.cwlRoundMemberCurrent.findMany({
+            where: {
+              eventInstanceId: { in: currentEventIds },
+              playerTag: { in: normalizedTags },
+            },
+            select: {
+              eventInstanceId: true,
+              playerTag: true,
+              clanTag: true,
+              playerName: true,
+              townHall: true,
+              roundDay: true,
+            },
+          })
+        : Promise.resolve([]),
+      currentEventIds.length > 0
+        ? prisma.cwlRoundMemberHistory.findMany({
+            where: {
+              eventInstanceId: { in: currentEventIds },
+              playerTag: { in: normalizedTags },
+            },
+            select: {
+              eventInstanceId: true,
+              playerTag: true,
+              clanTag: true,
+              playerName: true,
+              townHall: true,
+              roundDay: true,
+            },
+            orderBy: [{ roundDay: "desc" }, { updatedAt: "desc" }, { playerTag: "asc" }],
+          })
+        : Promise.resolve([]),
     ]);
-
-    const trackedClanRows = await prisma.cwlTrackedClan.findMany({
-      where: { season },
-      select: { tag: true },
-    });
-    const trackedClanTagSet = new Set(
-      trackedClanRows.map((row) => normalizeClanTag(row.tag)).filter(Boolean),
-    );
 
     const evidenceByPlayerTag = new Map<
       string,
@@ -1447,38 +1484,6 @@ export class CwlStateService {
         evidenceByPlayerTag.set(playerTag, next);
       }
     }
-
-    const candidateClanTags = [
-      ...new Set(
-        (input.candidateClanTags ?? [])
-          .map((tag) => normalizeClanTag(tag))
-          .filter(
-            (tag): tag is string => Boolean(tag && !trackedClanTagSet.has(tag)),
-          ),
-      ),
-    ];
-
-    const currentEventRows = candidateClanTags.length > 0
-      ? await prisma.cwlEventClan.findMany({
-          where: {
-            clanTag: { in: candidateClanTags },
-            isCurrent: true,
-          },
-          select: {
-            clanTag: true,
-            eventInstanceId: true,
-          },
-        })
-      : [];
-    const currentEventIdByClanTag = new Map(
-      currentEventRows
-        .map((row) => {
-          const clanTag = normalizeClanTag(row.clanTag);
-          const eventInstanceId = String(row.eventInstanceId ?? "").trim();
-          return clanTag && eventInstanceId ? [clanTag, eventInstanceId] as const : null;
-        })
-        .filter((entry): entry is readonly [string, string] => Boolean(entry)),
-    );
 
     const liveEvidenceByPlayerTag = new Map<
       string,

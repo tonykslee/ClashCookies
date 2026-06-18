@@ -134,17 +134,37 @@ INSERT INTO "CwlEventClan" (
   "createdAt",
   "updatedAt"
 )
+WITH ranked_legacy_events AS (
+  SELECT
+    'legacy:' || "season" || ':' || "clanTag" || ':clan' AS "id",
+    'legacy:' || "season" || ':' || "clanTag" AS "eventInstanceId",
+    "season",
+    "clanTag",
+    "firstObservedAt",
+    "lastObservedAt",
+    "firstObservedAt" AS "createdAt",
+    "lastObservedAt" AS "updatedAt",
+    ROW_NUMBER() OVER (
+      PARTITION BY "clanTag"
+      ORDER BY "lastObservedAt" DESC, "season" DESC, "eventInstanceId" DESC
+    ) AS "currentRank"
+  FROM legacy_event_bounds
+)
 SELECT
-  'legacy:' || "season" || ':' || "clanTag" || ':clan' AS "id",
-  'legacy:' || "season" || ':' || "clanTag" AS "eventInstanceId",
+  "id",
+  "eventInstanceId",
   "season",
   "clanTag",
-  true,
+  "currentRank" = 1 AS "isCurrent",
   "firstObservedAt",
   "lastObservedAt",
-  "firstObservedAt",
-  "lastObservedAt"
-FROM legacy_event_bounds;
+  "createdAt",
+  "updatedAt"
+FROM ranked_legacy_events;
+
+CREATE UNIQUE INDEX "CwlEventClan_current_clan_key"
+  ON "CwlEventClan"("clanTag")
+  WHERE "isCurrent" = true;
 
 UPDATE "CwlPlayerClanSeason"
 SET "eventInstanceId" = 'legacy:' || "season" || ':' || "cwlClanTag";
