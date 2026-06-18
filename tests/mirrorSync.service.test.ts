@@ -19,34 +19,77 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     TrackedClanRep: [{ clanTag: "#AAA111", playerTag: "#P1" }],
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
-  CurrentCwlRound: [],
-  CurrentCwlPrepSnapshot: [],
-  CwlRoundMemberCurrent: [],
-  CwlRoundHistory: [],
-  CwlRoundMemberHistory: [],
-  CwlRotationPlan: [],
-  CwlRotationPlanDay: [],
-  CwlRotationPlanMember: [],
-  ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
-  ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
-  ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
-  WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
-  ExternalPlayerWeightCurrent: [
-    {
-      id: "w1",
-      playerTag: "#P1",
-      weight: 145000,
-      source: "ROSTER_MANAGE",
-      measuredAt: new Date("2026-04-01T00:00:00.000Z"),
-      createdByUserId: "u1",
-      updatedByUserId: "u1",
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    },
-  ],
-  HeatMapRef: [
-    {
-      id: 1,
+    ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
+    ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
+    ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
+    CwlAllianceSeasonBaseline: [
+      {
+        id: "baseline1",
+        guildId: "g1",
+        season: "2026-06",
+        capturedAt: new Date("2026-06-01T00:00:00.000Z"),
+        capturedByUserId: "u1",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ],
+    CwlAllianceSeasonBaselineClan: [
+      {
+        id: "baseline-clan-1",
+        baselineId: "baseline1",
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        captureStatus: "CAPTURED",
+        sourceType: "CURRENT_FWA_WAR",
+        sourceWarId: 1,
+        sourceWarStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        sourceOpponentTag: "#BBB222",
+        sourceObservedAt: new Date("2026-03-30T01:05:00.000Z"),
+        rosterSize: 1,
+        failureReason: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ],
+    CwlAllianceSeasonBaselineMember: [
+      {
+        id: "baseline-member-1",
+        baselineId: "baseline1",
+        baselineClanId: "baseline-clan-1",
+        playerTag: "#P1",
+        playerName: "Player 1",
+        townHall: 16,
+        position: 1,
+        linkedDiscordUserId: "u1",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ],
+    WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
+    CurrentCwlRound: [],
+    CurrentCwlPrepSnapshot: [],
+    CwlRoundMemberCurrent: [],
+    CwlRoundHistory: [],
+    CwlRoundMemberHistory: [],
+    CwlRotationPlan: [],
+    CwlRotationPlanDay: [],
+    CwlRotationPlanMember: [],
+    ExternalPlayerWeightCurrent: [
+      {
+        id: "w1",
+        playerTag: "#P1",
+        weight: 145000,
+        source: "ROSTER_MANAGE",
+        measuredAt: new Date("2026-04-01T00:00:00.000Z"),
+        createdByUserId: "u1",
+        updatedByUserId: "u1",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ],
+    HeatMapRef: [
+      {
+        id: 1,
         weightMinInclusive: 0,
         weightMaxInclusive: 100000,
         th18Count: 0,
@@ -140,6 +183,15 @@ function buildSourceClient(
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
+    cwlAllianceSeasonBaseline: {
+      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaseline)),
+    },
+    cwlAllianceSeasonBaselineClan: {
+      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaselineClan)),
+    },
+    cwlAllianceSeasonBaselineMember: {
+      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaselineMember)),
+    },
     warLookup: {
       findMany: vi.fn(async () => cloneRows(store.WarLookup)),
     },
@@ -222,6 +274,18 @@ function buildTargetClient(
       deleteMany: deleteMany("ClanWarParticipation"),
       createMany: createMany("ClanWarParticipation"),
     },
+    cwlAllianceSeasonBaseline: {
+      deleteMany: deleteMany("CwlAllianceSeasonBaseline"),
+      createMany: createMany("CwlAllianceSeasonBaseline"),
+    },
+    cwlAllianceSeasonBaselineClan: {
+      deleteMany: deleteMany("CwlAllianceSeasonBaselineClan"),
+      createMany: createMany("CwlAllianceSeasonBaselineClan"),
+    },
+    cwlAllianceSeasonBaselineMember: {
+      deleteMany: deleteMany("CwlAllianceSeasonBaselineMember"),
+      createMany: createMany("CwlAllianceSeasonBaselineMember"),
+    },
     warLookup: { deleteMany: deleteMany("WarLookup"), createMany: createMany("WarLookup") },
     heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
     externalPlayerWeightCurrent: {
@@ -286,6 +350,9 @@ describe("MirrorSyncService", () => {
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
+    expect(targetStore.CwlAllianceSeasonBaseline).toEqual(sourceStore.CwlAllianceSeasonBaseline);
+    expect(targetStore.CwlAllianceSeasonBaselineClan).toEqual(sourceStore.CwlAllianceSeasonBaselineClan);
+    expect(targetStore.CwlAllianceSeasonBaselineMember).toEqual(sourceStore.CwlAllianceSeasonBaselineMember);
     expect(targetStore.WarLookup).toEqual(sourceStore.WarLookup);
     expect(targetClient.$executeRawUnsafe.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(logger.info).toHaveBeenCalledWith(

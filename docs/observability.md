@@ -71,6 +71,21 @@ Queue observability now includes:
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 - maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 
+CWL measurement baseline logs should stay structured and compact. The baseline capture service should emit:
+
+- `guildId`
+- `season`
+- `replaceExisting`
+- `trackedClanCount`
+- `capturedClanCount`
+- `unavailableClanCount`
+- `memberCount`
+- `linkedCount`
+- `currentSourceCount`
+- `fallbackCount`
+- `durationMs`
+- per-clan failure reasons for unavailable coverage rows
+
 ## External Droplet Observability
 
 The current droplet stack uses:

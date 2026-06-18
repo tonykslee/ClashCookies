@@ -77,6 +77,16 @@ CwlRotationPlan
 CwlRotationPlanDay
 CwlRotationPlanMember
 
+CWL measurement baseline:
+
+TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink
+    ->
+CwlAllianceBaselineService
+    ->
+CwlAllianceSeasonBaseline
+CwlAllianceSeasonBaselineClan
+CwlAllianceSeasonBaselineMember
+
 Reminder / UserActivityReminder config
     + TodoPlayerSnapshot / CurrentWar
     ->
@@ -119,6 +129,7 @@ Each domain concept must have exactly one authoritative owner.
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived current-season CWL roster summary | CwlPlayerClanSeason |
 | Current-season CWL planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
+| Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
@@ -140,6 +151,7 @@ Each domain concept must have exactly one authoritative owner.
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
 | Rep-work attribution snapshots | RepWorkActivityEvent |
+| CWL measurement baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
