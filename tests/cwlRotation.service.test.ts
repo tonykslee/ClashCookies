@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   cwlPlayerClanSeason: {
     findMany: vi.fn(),
   },
@@ -75,6 +78,33 @@ describe("CwlRotationService", () => {
 
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        eventInstanceId: "event-current",
+        eventInstance: {
+          id: "event-current",
+          season: "2026-04",
+          anchorWarTag: "#Y2CQ",
+          firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({
+        clanTag,
+        eventInstanceId: "event-current",
+        eventInstance: {
+          id: "event-current",
+          season: "2026-04",
+          anchorWarTag: "#Y2CQ",
+          firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      }));
+    });
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);

@@ -45,7 +45,7 @@ Core subsystems:
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
-- Persisted CWL state: `CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`
+- Persisted CWL state: `CwlEventInstance / CwlEventClan / CwlEventWarTag -> CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`, with event identity authoritative and `season` treated as display metadata.
 - CWL planner state: `CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with sheet import/export orchestration layered on top for admin-only planner exchange flows.
 - CWL measurement baseline: `TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink -> CwlAllianceBaselineService -> CwlAllianceSeasonBaseline / CwlAllianceSeasonBaselineClan / CwlAllianceSeasonBaselineMember`
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
@@ -61,6 +61,9 @@ Important owners:
 
 | Concept | Owner |
 | --- | --- |
+| CWL event identity | CwlEventInstance |
+| CWL clan-to-current-event pointer | CwlEventClan |
+| CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Seasonal CWL tracked clans | CwlTrackedClan |
@@ -70,6 +73,7 @@ Important owners:
 | Ended CWL round history | CwlRoundHistory |
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived observed CWL season roster | CwlPlayerClanSeason |
+| CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL planner artifacts | CwlRotationPlan* tables |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
@@ -99,7 +103,7 @@ Do not duplicate ownership across tables.
 - Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
 - Expensive upstream fetches should happen in background services, not in user-facing commands.
 - Derived tables and snapshots must be recreatable by their owning service.
-- Mirror runtime should include runtime-owned CWL round/history tables, and planner tables when staging needs consistent `/cwl` rendering against mirrored prod data.
+- Mirror runtime should include runtime-owned CWL round/history tables, event identity tables, and planner tables when staging needs consistent `/cwl` rendering against mirrored prod data.
 
 ---
 

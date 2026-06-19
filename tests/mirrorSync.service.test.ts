@@ -66,6 +66,56 @@ function makeDefaultTableStore(): MirrorTableDataStore {
       },
     ],
     WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
+    CwlEventInstance: [
+      {
+        id: "event-current",
+        season: "2026-04",
+        anchorWarTag: "#Y2CQ",
+        firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ],
+    CwlEventWarTag: [
+      {
+        id: "event-war-1",
+        eventInstanceId: "event-current",
+        season: "2026-04",
+        warTag: "#Y2CQ",
+        firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ],
+    CwlEventClan: [
+      {
+        id: "event-clan-1",
+        eventInstanceId: "event-current",
+        season: "2026-04",
+        clanTag: "#AAA111",
+        isCurrent: true,
+        firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ],
+    CwlPlayerClanSeason: [
+      {
+        id: "pcs-1",
+        eventInstanceId: "event-current",
+        season: "2026-04",
+        playerTag: "#P1",
+        cwlClanTag: "#AAA111",
+        daysParticipated: 3,
+        lastRoundDay: 2,
+      },
+    ],
+    CwlSeasonRosterState: [
+      {
+        season: "2026-04",
+        clanTag: "#AAA111",
+        eventInstanceId: "event-current",
+        authoritativeRosterCount: 15,
+        reconciledAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ],
     CurrentCwlRound: [],
     CurrentCwlPrepSnapshot: [],
     CwlRoundMemberCurrent: [],
@@ -195,6 +245,21 @@ function buildSourceClient(
     warLookup: {
       findMany: vi.fn(async () => cloneRows(store.WarLookup)),
     },
+    cwlEventInstance: {
+      findMany: vi.fn(async () => cloneRows(store.CwlEventInstance)),
+    },
+    cwlEventWarTag: {
+      findMany: vi.fn(async () => cloneRows(store.CwlEventWarTag)),
+    },
+    cwlEventClan: {
+      findMany: vi.fn(async () => cloneRows(store.CwlEventClan)),
+    },
+    cwlPlayerClanSeason: {
+      findMany: vi.fn(async () => cloneRows(store.CwlPlayerClanSeason)),
+    },
+    cwlSeasonRosterState: {
+      findMany: vi.fn(async () => cloneRows(store.CwlSeasonRosterState)),
+    },
     heatMapRef: {
       findMany: vi.fn(async () => cloneRows(store.HeatMapRef)),
     },
@@ -287,6 +352,26 @@ function buildTargetClient(
       createMany: createMany("CwlAllianceSeasonBaselineMember"),
     },
     warLookup: { deleteMany: deleteMany("WarLookup"), createMany: createMany("WarLookup") },
+    cwlEventInstance: {
+      deleteMany: deleteMany("CwlEventInstance"),
+      createMany: createMany("CwlEventInstance"),
+    },
+    cwlEventWarTag: {
+      deleteMany: deleteMany("CwlEventWarTag"),
+      createMany: createMany("CwlEventWarTag"),
+    },
+    cwlEventClan: {
+      deleteMany: deleteMany("CwlEventClan"),
+      createMany: createMany("CwlEventClan"),
+    },
+    cwlPlayerClanSeason: {
+      deleteMany: deleteMany("CwlPlayerClanSeason"),
+      createMany: createMany("CwlPlayerClanSeason"),
+    },
+    cwlSeasonRosterState: {
+      deleteMany: deleteMany("CwlSeasonRosterState"),
+      createMany: createMany("CwlSeasonRosterState"),
+    },
     heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
     externalPlayerWeightCurrent: {
       deleteMany: deleteMany("ExternalPlayerWeightCurrent"),
@@ -339,6 +424,11 @@ describe("MirrorSyncService", () => {
     expect(targetStore.TrackedClanRep).toEqual(sourceStore.TrackedClanRep);
     expect(targetStore.CurrentWar).toEqual(sourceStore.CurrentWar);
     expect(targetStore.WarAttacks).toEqual(sourceStore.WarAttacks);
+    expect(targetStore.CwlEventInstance).toEqual(sourceStore.CwlEventInstance);
+    expect(targetStore.CwlEventWarTag).toEqual(sourceStore.CwlEventWarTag);
+    expect(targetStore.CwlEventClan).toEqual(sourceStore.CwlEventClan);
+    expect(targetStore.CwlPlayerClanSeason).toEqual(sourceStore.CwlPlayerClanSeason);
+    expect(targetStore.CwlSeasonRosterState).toEqual(sourceStore.CwlSeasonRosterState);
     expect(targetStore.CurrentCwlRound).toEqual(sourceStore.CurrentCwlRound);
     expect(targetStore.CurrentCwlPrepSnapshot).toEqual(sourceStore.CurrentCwlPrepSnapshot);
     expect(targetStore.CwlRoundMemberCurrent).toEqual(sourceStore.CwlRoundMemberCurrent);
@@ -354,6 +444,21 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CwlAllianceSeasonBaselineClan).toEqual(sourceStore.CwlAllianceSeasonBaselineClan);
     expect(targetStore.CwlAllianceSeasonBaselineMember).toEqual(sourceStore.CwlAllianceSeasonBaselineMember);
     expect(targetStore.WarLookup).toEqual(sourceStore.WarLookup);
+    const mirroredTables = result.tableSummaries.map((summary) => summary.table);
+    const eventTableStart = mirroredTables.indexOf("CwlEventInstance");
+    expect(eventTableStart).toBeGreaterThanOrEqual(0);
+    expect(mirroredTables.slice(eventTableStart, eventTableStart + 10)).toEqual([
+      "CwlEventInstance",
+      "CwlEventWarTag",
+      "CwlEventClan",
+      "CwlPlayerClanSeason",
+      "CwlSeasonRosterState",
+      "CurrentCwlRound",
+      "CurrentCwlPrepSnapshot",
+      "CwlRoundMemberCurrent",
+      "CwlRoundHistory",
+      "CwlRoundMemberHistory",
+    ]);
     expect(targetClient.$executeRawUnsafe.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(logger.info).toHaveBeenCalledWith(
       expect.stringContaining("[mirror-sync] event=manual_completed"),

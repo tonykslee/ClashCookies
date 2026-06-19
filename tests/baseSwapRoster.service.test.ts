@@ -9,6 +9,9 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   currentWar: {
     findFirst: vi.fn(),
   },
@@ -48,6 +51,7 @@ beforeEach(() => {
   prismaMock.trackedClan.findMany.mockResolvedValue([]);
   prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
   prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+  prismaMock.cwlEventClan.findMany.mockResolvedValue([]);
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
   prismaMock.currentCwlRound.findUnique.mockResolvedValue(null);
   prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
@@ -146,6 +150,18 @@ describe("BaseSwapRosterService", () => {
       endTime: new Date("2026-05-02T13:00:00.000Z"),
       sourceUpdatedAt: new Date("2026-05-02T12:15:00.000Z"),
     });
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: fwaClanTag,
+        eventInstance: {
+          id: "cwl-event-2026-05-alpha",
+          season: "2026-05",
+          anchorWarTag: "#2PP0QJ2P",
+          firstObservedAt: new Date("2026-05-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-05-02T12:15:00.000Z"),
+        },
+      },
+    ]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: playerAlphaTag,

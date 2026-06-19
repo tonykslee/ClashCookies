@@ -26,6 +26,9 @@ const prismaMock = vi.hoisted(() => {
       deleteMany: vi.fn(),
       updateMany: vi.fn(),
     },
+    cwlEventClan: {
+      findMany: vi.fn(),
+    },
     cwlRotationPlan: {
       updateMany: vi.fn(),
     },
@@ -79,6 +82,26 @@ const prismaMock = vi.hoisted(() => {
 const cocQueueMock = vi.hoisted(() => ({
   runWithCoCQueueContext: vi.fn(async (_context: unknown, run: () => Promise<unknown>) => run()),
 }));
+
+function buildMockCurrentCwlEventClanRows(tags: string[]) {
+  const observedAt = new Date("2026-03-26T00:00:00.000Z");
+  return tags.map((tag, index) => ({
+    clanTag: tag,
+    eventInstance: {
+      id: `mock-cwl-event-${index + 1}`,
+      season: "2026-03",
+      anchorWarTag: `#MOCKWAR${index + 1}`,
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt,
+    },
+  }));
+}
+
+function mockCurrentCwlEventsForRequestedTags() {
+  prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) =>
+    buildMockCurrentCwlEventClanRows(args?.where?.clanTag?.in ?? []),
+  );
+}
 
 const fwaClanMembersSyncMock = vi.hoisted(() => ({
   refreshCurrentClanMembersForClanTags: vi.fn(),
@@ -211,6 +234,8 @@ describe("/clan command behavior", () => {
     prismaMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlEventClan.findMany.mockReset();
+    mockCurrentCwlEventsForRequestedTags();
     prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.raidTrackedClan.createMany.mockResolvedValue({ count: 0 });

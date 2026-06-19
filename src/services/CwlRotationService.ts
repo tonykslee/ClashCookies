@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import {
   cwlStateService,
   canonicalizeCwlSeasonRosterEntries,
@@ -832,26 +833,33 @@ async function loadCwlRotationExportClanNameMap(input: {
     setClanName(row.tag, row.name);
   }
 
-  const prepRows = await prisma.currentCwlPrepSnapshot.findMany({
-    where: {
-      season: input.season,
-      clanTag: { in: clanTagFilter },
-    },
-    select: { clanTag: true, clanName: true },
-    orderBy: [{ clanTag: "asc" }],
+  const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+    clanTags: clanTagFilter,
   });
+  const currentCwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
+
+  const prepRows = currentCwlEventIds.length > 0
+    ? await prisma.currentCwlPrepSnapshot.findMany({
+        where: {
+          eventInstanceId: { in: currentCwlEventIds },
+        },
+        select: { clanTag: true, clanName: true },
+        orderBy: [{ clanTag: "asc" }],
+      })
+    : [];
   for (const row of prepRows) {
     setClanName(row.clanTag, row.clanName);
   }
 
-  const historyRows = await prisma.cwlRoundHistory.findMany({
-    where: {
-      season: input.season,
-      clanTag: { in: clanTagFilter },
-    },
-    select: { clanTag: true, clanName: true, roundDay: true, updatedAt: true },
-    orderBy: [{ clanTag: "asc" }, { roundDay: "desc" }, { updatedAt: "desc" }],
-  });
+  const historyRows = currentCwlEventIds.length > 0
+    ? await prisma.cwlRoundHistory.findMany({
+        where: {
+          eventInstanceId: { in: currentCwlEventIds },
+        },
+        select: { clanTag: true, clanName: true, roundDay: true, updatedAt: true },
+        orderBy: [{ clanTag: "asc" }, { roundDay: "desc" }, { updatedAt: "desc" }],
+      })
+    : [];
   for (const row of historyRows) {
     setClanName(row.clanTag, row.clanName);
   }

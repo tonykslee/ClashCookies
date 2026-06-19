@@ -36,6 +36,7 @@ import {
 } from "./PlayerLinkService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 
 export type AutoRoleRefreshScope =
   | { kind: "guild" }
@@ -1201,9 +1202,18 @@ async function loadTrackedClanMembershipScope(input: {
 
   const cwlMemberTags = new Set<string>();
   let cwlClanFetchCount = 0;
-  const cwlRoundRows = cwlClanTags.size > 0
+  const cwlCurrentEvents = cwlClanTags.size > 0
+    ? await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+        clanTags: [...cwlClanTags],
+      })
+    : new Map();
+  const cwlEventIds = [...new Set([...cwlCurrentEvents.values()].map((event) => event.id))];
+  const cwlRoundRows = cwlEventIds.length > 0
     ? await prisma.cwlRoundMemberCurrent.findMany({
-        where: { season: input.season, clanTag: { in: [...cwlClanTags] } },
+        where: {
+          eventInstanceId: { in: cwlEventIds },
+          clanTag: { in: [...cwlClanTags] },
+        },
         select: {
           clanTag: true,
           playerTag: true,
@@ -1311,10 +1321,16 @@ async function loadClanMembershipIndex(input: {
   }
 
   if (cwlClanTags.length > 0) {
-    const cwlMembershipRows = await prisma.cwlPlayerClanSeason.findMany({
-      where: { season: input.season, cwlClanTag: { in: cwlClanTags } },
-      select: { cwlClanTag: true, playerTag: true },
+    const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+      clanTags: cwlClanTags,
     });
+    const cwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
+    const cwlMembershipRows = cwlEventIds.length > 0
+      ? await prisma.cwlPlayerClanSeason.findMany({
+          where: { eventInstanceId: { in: cwlEventIds }, cwlClanTag: { in: cwlClanTags } },
+          select: { cwlClanTag: true, playerTag: true },
+        })
+      : [];
     for (const clanTag of cwlClanTags) {
       index.set(clanTag, {
         source: "CWL",
@@ -1329,15 +1345,21 @@ async function loadClanMembershipIndex(input: {
   }
 
   if (ambiguousTags.length > 0) {
+    const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+      clanTags: ambiguousTags,
+    });
+    const cwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
     const [fwaMembershipRows, cwlMembershipRows] = await Promise.all([
       prisma.fwaClanMemberCurrent.findMany({
         where: { clanTag: { in: ambiguousTags } },
         select: { clanTag: true, playerTag: true },
       }),
-      prisma.cwlPlayerClanSeason.findMany({
-        where: { season: input.season, cwlClanTag: { in: ambiguousTags } },
-        select: { cwlClanTag: true, playerTag: true },
-      }),
+      cwlEventIds.length > 0
+        ? prisma.cwlPlayerClanSeason.findMany({
+            where: { eventInstanceId: { in: cwlEventIds }, cwlClanTag: { in: ambiguousTags } },
+            select: { cwlClanTag: true, playerTag: true },
+          })
+        : Promise.resolve([] as Array<{ cwlClanTag: string; playerTag: string }>),
     ]);
     for (const clanTag of ambiguousTags) {
       const playerTags = new Set<string>();

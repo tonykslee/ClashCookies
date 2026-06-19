@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { normalizeClanTag } from "./PlayerLinkService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 
 export type RemainingCwlClanView = {
   clanTag: string;
@@ -86,22 +87,26 @@ export class RemainingCwlService {
         },
         select: { tag: true, name: true },
       }),
-      prisma.currentCwlRound.findUnique({
-        where: {
-          season_clanTag: {
-            season,
-            clanTag,
-          },
-        },
-        select: {
-          clanTag: true,
-          clanName: true,
-          roundDay: true,
-          roundState: true,
-          startTime: true,
-          endTime: true,
-        },
-      }),
+      cwlEventResolutionService.resolveCurrentCwlEventForClan({ clanTag }).then((event) =>
+        event
+          ? prisma.currentCwlRound.findUnique({
+              where: {
+                eventInstanceId_clanTag: {
+                  eventInstanceId: event.id,
+                  clanTag,
+                },
+              },
+              select: {
+                clanTag: true,
+                clanName: true,
+                roundDay: true,
+                roundState: true,
+                startTime: true,
+                endTime: true,
+              },
+            })
+          : Promise.resolve(null),
+      ),
     ]);
 
     if (!trackedClan) return null;
@@ -129,32 +134,45 @@ export class RemainingCwlService {
 
   async listClanViews(input?: { season?: string }): Promise<RemainingCwlClanView[]> {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
-    const [trackedClans, currentRounds] = await Promise.all([
-      prisma.cwlTrackedClan.findMany({
-        where: { season },
-        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
-        select: { tag: true, name: true },
-      }),
-      prisma.currentCwlRound.findMany({
-        where: { season },
-        select: {
-          clanTag: true,
-          clanName: true,
-          roundDay: true,
-          roundState: true,
-          startTime: true,
-          endTime: true,
-        },
-      }),
-    ]);
-
-    const currentRoundByTag = new Map(
-      currentRounds.map((round) => [normalizeClanTag(round.clanTag), round]),
+    const trackedClans = await prisma.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      select: { tag: true, name: true },
+    });
+    const clanTags = trackedClans.map((trackedClan) => normalizeClanTag(trackedClan.tag));
+    const currentEventRows =
+      clanTags.length > 0
+        ? (await prisma.cwlEventClan.findMany({
+            where: {
+              clanTag: { in: clanTags },
+              isCurrent: true,
+            },
+            select: { clanTag: true, eventInstanceId: true },
+          })) ?? []
+        : [];
+    const eventIds = [...new Set(currentEventRows.map((row) => row.eventInstanceId))];
+    const currentRounds =
+      eventIds.length > 0
+        ? (await prisma.currentCwlRound.findMany({
+            where: { eventInstanceId: { in: eventIds } },
+            select: {
+              eventInstanceId: true,
+              clanTag: true,
+              clanName: true,
+              roundDay: true,
+              roundState: true,
+              startTime: true,
+              endTime: true,
+            },
+          })) ?? []
+        : [];
+    const currentRoundByClanTag = new Map(
+      currentRounds.map((round) => [normalizeClanTag(round.clanTag), round] as const),
     );
 
     return trackedClans.map((trackedClan) => {
       const clanTag = normalizeClanTag(trackedClan.tag);
-      const currentRound = currentRoundByTag.get(clanTag) ?? null;
+      const currentRound = currentRoundByClanTag.get(clanTag) ?? null;
       if (!currentRound) {
         return {
           clanTag,
