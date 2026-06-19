@@ -3,6 +3,7 @@ import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import { normalizeClanTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 
 export type TrackedClanRegistryType = "FWA" | "CWL" | "RAIDS";
 
@@ -64,6 +65,22 @@ type CwlTrackedClanRegistryCreationResult = {
   deactivatedPlanCount: number;
 };
 
+async function resolveCurrentCwlPlanScopesForClanTags(input: {
+  season: string;
+  clanTags: string[];
+}): Promise<Array<{ clanTag: string; eventInstanceId: string }>> {
+  const currentEventsByClanTag = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+    clanTags: input.clanTags,
+  });
+  return input.clanTags
+    .map((clanTag) => {
+      const currentEvent = currentEventsByClanTag.get(clanTag);
+      if (!currentEvent || currentEvent.season !== input.season) return null;
+      return { clanTag, eventInstanceId: currentEvent.id };
+    })
+    .filter((entry): entry is { clanTag: string; eventInstanceId: string } => Boolean(entry));
+}
+
 async function createMissingCwlTrackedClansAndDeactivateStalePlans(input: {
   season: string;
   clanTags: string[];
@@ -98,16 +115,22 @@ async function createMissingCwlTrackedClansAndDeactivateStalePlans(input: {
       };
     }
 
-    const deactivatedPlans = await tx.cwlRotationPlan.updateMany({
-      where: {
-        season: input.season,
-        clanTag: { in: missingTags },
-        isActive: true,
-      },
-      data: {
-        isActive: false,
-      },
+    const currentPlanScopes = await resolveCurrentCwlPlanScopesForClanTags({
+      season: input.season,
+      clanTags: missingTags,
     });
+    const deactivatedPlans = currentPlanScopes.length > 0
+      ? await tx.cwlRotationPlan.updateMany({
+          where: {
+            season: input.season,
+            isActive: true,
+            OR: currentPlanScopes,
+          },
+          data: {
+            isActive: false,
+          },
+        })
+      : { count: 0 };
 
     const ensured = await tx.cwlTrackedClan.createMany({
       data: missingTags.map((tag) => ({
@@ -578,6 +601,10 @@ export async function removeTrackedClanTagFromRegistries(input: {
   }
 
   if (input.type === "CWL") {
+    const currentPlanScopes = await resolveCurrentCwlPlanScopesForClanTags({
+      season,
+      clanTags: [normalizedTag],
+    });
     const result = await prisma.$transaction(async (tx) => {
       const existingClan = await tx.cwlTrackedClan.findFirst({
         where: { season, tag: normalizedTag },
@@ -592,16 +619,18 @@ export async function removeTrackedClanTagFromRegistries(input: {
       const deletedMappings = await tx.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
       });
-      await tx.cwlRotationPlan.updateMany({
-        where: {
-          season,
-          clanTag: normalizedTag,
-          isActive: true,
-        },
-        data: {
-          isActive: false,
-        },
-      });
+      if (currentPlanScopes.length > 0) {
+        await tx.cwlRotationPlan.updateMany({
+          where: {
+            season,
+            isActive: true,
+            OR: currentPlanScopes,
+          },
+          data: {
+            isActive: false,
+          },
+        });
+      }
       return { deletedClans, deletedMappings };
     });
     if (!result) {
@@ -669,6 +698,10 @@ export async function removeTrackedClanTagFromRegistries(input: {
   }
 
   if (cwlRow) {
+    const currentPlanScopes = await resolveCurrentCwlPlanScopesForClanTags({
+      season,
+      clanTags: [normalizedTag],
+    });
     const [deletedClans, deletedMappings] = await prisma.$transaction([
       prisma.cwlTrackedClan.deleteMany({
         where: { season, tag: normalizedTag },
@@ -676,16 +709,20 @@ export async function removeTrackedClanTagFromRegistries(input: {
       prisma.cwlPlayerClanSeason.deleteMany({
         where: { season, cwlClanTag: normalizedTag },
       }),
-      prisma.cwlRotationPlan.updateMany({
-        where: {
-          season,
-          clanTag: normalizedTag,
-          isActive: true,
-        },
-        data: {
-          isActive: false,
-        },
-      }),
+      ...(currentPlanScopes.length > 0
+        ? [
+            prisma.cwlRotationPlan.updateMany({
+              where: {
+                season,
+                isActive: true,
+                OR: currentPlanScopes,
+              },
+              data: {
+                isActive: false,
+              },
+            }),
+          ]
+        : []),
     ]);
     return {
       outcome: "removed",

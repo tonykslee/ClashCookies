@@ -3,6 +3,13 @@ import {
   type ClanPointsSync,
   type ClanWarHistory,
   type ClanWarParticipation,
+  type CwlAllianceSeasonBaseline,
+  type CwlAllianceSeasonBaselineClan,
+  type CwlAllianceSeasonBaselineMember,
+  type CwlEventClan,
+  type CwlEventInstance,
+  type CwlEventWarTag,
+  type CwlPlayerClanSeason,
   type CurrentCwlPrepSnapshot,
   type CurrentCwlRound,
   type CurrentWar,
@@ -13,6 +20,7 @@ import {
   type CwlRoundHistory,
   type CwlRoundMemberCurrent,
   type CwlRoundMemberHistory,
+  type CwlSeasonRosterState,
   type HeatMapRef,
   type TrackedClan,
   type TrackedClanRep,
@@ -36,7 +44,15 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanPointsSync",
   "ClanWarHistory",
   "ClanWarParticipation",
+  "CwlAllianceSeasonBaseline",
+  "CwlAllianceSeasonBaselineClan",
+  "CwlAllianceSeasonBaselineMember",
   "WarLookup",
+  "CwlEventInstance",
+  "CwlEventWarTag",
+  "CwlEventClan",
+  "CwlPlayerClanSeason",
+  "CwlSeasonRosterState",
   "CurrentCwlRound",
   "CurrentCwlPrepSnapshot",
   "CwlRoundMemberCurrent",
@@ -89,7 +105,21 @@ type MirrorSyncSourceClient = {
   clanWarParticipation: {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
+  cwlAllianceSeasonBaseline: {
+    findMany: (args?: unknown) => Promise<CwlAllianceSeasonBaseline[]>;
+  };
+  cwlAllianceSeasonBaselineClan: {
+    findMany: (args?: unknown) => Promise<CwlAllianceSeasonBaselineClan[]>;
+  };
+  cwlAllianceSeasonBaselineMember: {
+    findMany: (args?: unknown) => Promise<CwlAllianceSeasonBaselineMember[]>;
+  };
   warLookup: { findMany: (args?: unknown) => Promise<WarLookup[]> };
+  cwlEventInstance: { findMany: (args?: unknown) => Promise<CwlEventInstance[]> };
+  cwlEventWarTag: { findMany: (args?: unknown) => Promise<CwlEventWarTag[]> };
+  cwlEventClan: { findMany: (args?: unknown) => Promise<CwlEventClan[]> };
+  cwlPlayerClanSeason: { findMany: (args?: unknown) => Promise<CwlPlayerClanSeason[]> };
+  cwlSeasonRosterState: { findMany: (args?: unknown) => Promise<CwlSeasonRosterState[]> };
   currentCwlRound: { findMany: (args?: unknown) => Promise<CurrentCwlRound[]> };
   currentCwlPrepSnapshot: { findMany: (args?: unknown) => Promise<CurrentCwlPrepSnapshot[]> };
   cwlRoundMemberCurrent: {
@@ -141,9 +171,41 @@ type MirrorSyncTargetClient = {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: ClanWarParticipation[] }) => Promise<CreateManyResult>;
   };
+  cwlAllianceSeasonBaseline: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlAllianceSeasonBaseline[] }) => Promise<CreateManyResult>;
+  };
+  cwlAllianceSeasonBaselineClan: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlAllianceSeasonBaselineClan[] }) => Promise<CreateManyResult>;
+  };
+  cwlAllianceSeasonBaselineMember: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlAllianceSeasonBaselineMember[] }) => Promise<CreateManyResult>;
+  };
   warLookup: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: WarLookup[] }) => Promise<CreateManyResult>;
+  };
+  cwlEventInstance: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlEventInstance[] }) => Promise<CreateManyResult>;
+  };
+  cwlEventWarTag: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlEventWarTag[] }) => Promise<CreateManyResult>;
+  };
+  cwlEventClan: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlEventClan[] }) => Promise<CreateManyResult>;
+  };
+  cwlPlayerClanSeason: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlPlayerClanSeason[] }) => Promise<CreateManyResult>;
+  };
+  cwlSeasonRosterState: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: CwlSeasonRosterState[] }) => Promise<CreateManyResult>;
   };
   currentCwlRound: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -218,7 +280,15 @@ type MirrorSyncSourceRows = {
   ClanPointsSync: ClanPointsSync[];
   ClanWarHistory: ClanWarHistory[];
   ClanWarParticipation: ClanWarParticipation[];
+  CwlAllianceSeasonBaseline: CwlAllianceSeasonBaseline[];
+  CwlAllianceSeasonBaselineClan: CwlAllianceSeasonBaselineClan[];
+  CwlAllianceSeasonBaselineMember: CwlAllianceSeasonBaselineMember[];
   WarLookup: WarLookup[];
+  CwlEventInstance: CwlEventInstance[];
+  CwlEventWarTag: CwlEventWarTag[];
+  CwlEventClan: CwlEventClan[];
+  CwlPlayerClanSeason: CwlPlayerClanSeason[];
+  CwlSeasonRosterState: CwlSeasonRosterState[];
   CurrentCwlRound: CurrentCwlRound[];
   CurrentCwlPrepSnapshot: CurrentCwlPrepSnapshot[];
   CwlRoundMemberCurrent: CwlRoundMemberCurrent[];
@@ -473,15 +543,15 @@ export class MirrorSyncService {
     sourceClient: MirrorSyncSourceClient,
   ): Promise<MirrorSyncSourceRows> {
     return {
-    TrackedClan: await sourceClient.trackedClan.findMany({
-      orderBy: [{ id: "asc" }],
-    }),
-    TrackedClanRep: await sourceClient.trackedClanRep.findMany({
-      orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
-    }),
-    CurrentWar: await sourceClient.currentWar.findMany({
-      orderBy: [{ clanTag: "asc" }, { guildId: "asc" }],
-    }),
+      TrackedClan: await sourceClient.trackedClan.findMany({
+        orderBy: [{ id: "asc" }],
+      }),
+      TrackedClanRep: await sourceClient.trackedClanRep.findMany({
+        orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
+      }),
+      CurrentWar: await sourceClient.currentWar.findMany({
+        orderBy: [{ clanTag: "asc" }, { guildId: "asc" }],
+      }),
       WarAttacks: await sourceClient.warAttacks.findMany({
         orderBy: [{ warId: "asc" }, { playerTag: "asc" }, { attackNumber: "asc" }],
       }),
@@ -494,31 +564,55 @@ export class MirrorSyncService {
       ClanWarParticipation: await sourceClient.clanWarParticipation.findMany({
         orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
       }),
+      CwlAllianceSeasonBaseline: await sourceClient.cwlAllianceSeasonBaseline.findMany({
+        orderBy: [{ guildId: "asc" }, { season: "asc" }],
+      }),
+      CwlAllianceSeasonBaselineClan: await sourceClient.cwlAllianceSeasonBaselineClan.findMany({
+        orderBy: [{ baselineId: "asc" }, { clanTag: "asc" }],
+      }),
+      CwlAllianceSeasonBaselineMember: await sourceClient.cwlAllianceSeasonBaselineMember.findMany({
+        orderBy: [{ baselineId: "asc" }, { playerTag: "asc" }],
+      }),
       WarLookup: await sourceClient.warLookup.findMany({
         orderBy: [{ warId: "asc" }],
       }),
+      CwlEventInstance: await sourceClient.cwlEventInstance.findMany({
+        orderBy: [{ season: "asc" }, { lastObservedAt: "asc" }, { id: "asc" }],
+      }),
+      CwlEventWarTag: await sourceClient.cwlEventWarTag.findMany({
+        orderBy: [{ season: "asc" }, { warTag: "asc" }],
+      }),
+      CwlEventClan: await sourceClient.cwlEventClan.findMany({
+        orderBy: [{ clanTag: "asc" }, { updatedAt: "asc" }, { id: "asc" }],
+      }),
+      CwlPlayerClanSeason: await sourceClient.cwlPlayerClanSeason.findMany({
+        orderBy: [{ eventInstanceId: "asc" }, { playerTag: "asc" }],
+      }),
+      CwlSeasonRosterState: await sourceClient.cwlSeasonRosterState.findMany({
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }],
+      }),
       CurrentCwlRound: await sourceClient.currentCwlRound.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }],
       }),
       CurrentCwlPrepSnapshot: await sourceClient.currentCwlPrepSnapshot.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }],
       }),
       CwlRoundMemberCurrent: await sourceClient.cwlRoundMemberCurrent.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }],
       }),
       CwlRoundHistory: await sourceClient.cwlRoundHistory.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { roundDay: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }, { roundDay: "asc" }],
       }),
       CwlRoundMemberHistory: await sourceClient.cwlRoundMemberHistory.findMany({
         orderBy: [
-          { season: "asc" },
+          { eventInstanceId: "asc" },
           { clanTag: "asc" },
           { roundDay: "asc" },
           { playerTag: "asc" },
         ],
       }),
       CwlRotationPlan: await sourceClient.cwlRotationPlan.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { version: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }, { version: "asc" }],
       }),
       CwlRotationPlanDay: await sourceClient.cwlRotationPlanDay.findMany({
         orderBy: [{ id: "asc" }],
@@ -593,6 +687,78 @@ export class MirrorSyncService {
       const insertedRows = await this.insertBatches(
         rows as ClanWarParticipation[],
         (batch) => tx.clanWarParticipation.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlAllianceSeasonBaseline") {
+      const deletedRows = (await tx.cwlAllianceSeasonBaseline.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlAllianceSeasonBaseline[],
+        (batch) => tx.cwlAllianceSeasonBaseline.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlAllianceSeasonBaselineClan") {
+      const deletedRows = (await tx.cwlAllianceSeasonBaselineClan.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlAllianceSeasonBaselineClan[],
+        (batch) => tx.cwlAllianceSeasonBaselineClan.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlAllianceSeasonBaselineMember") {
+      const deletedRows = (await tx.cwlAllianceSeasonBaselineMember.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlAllianceSeasonBaselineMember[],
+        (batch) => tx.cwlAllianceSeasonBaselineMember.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlEventInstance") {
+      const deletedRows = (await tx.cwlEventInstance.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlEventInstance[],
+        (batch) => tx.cwlEventInstance.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlEventWarTag") {
+      const deletedRows = (await tx.cwlEventWarTag.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlEventWarTag[],
+        (batch) => tx.cwlEventWarTag.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlEventClan") {
+      const deletedRows = (await tx.cwlEventClan.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlEventClan[],
+        (batch) => tx.cwlEventClan.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlPlayerClanSeason") {
+      const deletedRows = (await tx.cwlPlayerClanSeason.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlPlayerClanSeason[],
+        (batch) => tx.cwlPlayerClanSeason.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "CwlSeasonRosterState") {
+      const deletedRows = (await tx.cwlSeasonRosterState.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as CwlSeasonRosterState[],
+        (batch) => tx.cwlSeasonRosterState.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

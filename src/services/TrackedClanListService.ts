@@ -17,6 +17,7 @@ import {
   refreshCwlTrackedClanMetadataForSeason,
   resolveCurrentCwlSeasonKey,
 } from "./CwlRegistryService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { listTrackedClanRepTagsForClanTags } from "./TrackedClanRepService";
 
 export type FwaTrackedClanDisplayRow = {
@@ -416,18 +417,24 @@ async function loadCwlTrackedClanDetailedRows(input: {
   if (trackedTags.length <= 0) {
     return [];
   }
+  const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+    clanTags: trackedTags,
+  });
+  const currentCwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
 
   const [observedRosterRows, memberCountRows, activeRosterRows, currentRoundRows, prepRows, historyRows] = await Promise.all([
-    prisma.cwlPlayerClanSeason.groupBy({
-      by: ["cwlClanTag"],
-      where: {
-        season,
-        cwlClanTag: { in: trackedTags },
-      },
-      _count: {
-        cwlClanTag: true,
-      },
-    }),
+    currentCwlEventIds.length > 0
+      ? prisma.cwlPlayerClanSeason.groupBy({
+          by: ["cwlClanTag"],
+          where: {
+            eventInstanceId: { in: currentCwlEventIds },
+            cwlClanTag: { in: trackedTags },
+          },
+          _count: {
+            cwlClanTag: true,
+          },
+        })
+      : Promise.resolve([]),
     guildId
       ? prisma.fwaClanMemberCurrent.groupBy({
           by: ["clanTag"],
@@ -459,24 +466,30 @@ async function loadCwlTrackedClanDetailedRows(input: {
           },
         })
       : Promise.resolve([]),
-    prisma.currentCwlRound.findMany({
-      where: { season, clanTag: { in: trackedTags } },
-      select: {
-        clanTag: true,
-      },
-    }),
-    prisma.currentCwlPrepSnapshot.findMany({
-      where: { season, clanTag: { in: trackedTags } },
-      select: {
-        clanTag: true,
-      },
-    }),
-    prisma.cwlRoundHistory.findMany({
-      where: { season, clanTag: { in: trackedTags } },
-      select: {
-        clanTag: true,
-      },
-    }),
+    currentCwlEventIds.length > 0
+      ? prisma.currentCwlRound.findMany({
+          where: { eventInstanceId: { in: currentCwlEventIds } },
+          select: {
+            clanTag: true,
+          },
+        })
+      : Promise.resolve([]),
+    currentCwlEventIds.length > 0
+      ? prisma.currentCwlPrepSnapshot.findMany({
+          where: { eventInstanceId: { in: currentCwlEventIds } },
+          select: {
+            clanTag: true,
+          },
+        })
+      : Promise.resolve([]),
+    currentCwlEventIds.length > 0
+      ? prisma.cwlRoundHistory.findMany({
+          where: { eventInstanceId: { in: currentCwlEventIds } },
+          select: {
+            clanTag: true,
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   const observedRosterCountByTag = new Map<string, number>();

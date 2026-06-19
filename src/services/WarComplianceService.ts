@@ -1351,6 +1351,7 @@ export class WarComplianceService {
         select: {
           playerTag: true,
           playerName: true,
+          playerPosition: true,
           attacksUsed: true,
           firstAttackAt: true,
         },
@@ -1622,6 +1623,7 @@ export class WarComplianceService {
     participationRows: Array<{
       playerTag: string;
       playerName: string | null;
+      playerPosition: number | null;
       attacksUsed: number;
       firstAttackAt: Date | null;
     }>;
@@ -1639,6 +1641,10 @@ export class WarComplianceService {
       const playerTag = normalizeTag(row.playerTag);
       if (!playerTag) continue;
       const member = input.clanMembersByTag.get(playerTag);
+      const playerPosition =
+        row.playerPosition !== null && row.playerPosition !== undefined
+          ? Math.trunc(Number(row.playerPosition))
+          : null;
       byTag.set(playerTag, {
         playerTag,
         playerName:
@@ -1648,7 +1654,7 @@ export class WarComplianceService {
         attacksUsed: Number.isFinite(Number(row.attacksUsed))
           ? Math.max(0, Math.trunc(Number(row.attacksUsed)))
           : (attacksUsedByTag.get(playerTag) ?? 0),
-        playerPosition: member?.mapPosition ?? null,
+        playerPosition: playerPosition ?? member?.mapPosition ?? null,
       });
     }
 
