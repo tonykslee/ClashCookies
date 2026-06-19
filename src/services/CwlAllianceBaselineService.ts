@@ -856,6 +856,17 @@ export class CwlAllianceBaselineService {
     return summary;
   }
 
+  /** Purpose: read the frozen alliance baseline status for one guild-season pair without mutating it. */
+  async getAllianceSeasonBaselineStatus(input: {
+    guildId: string;
+    season?: string | null;
+  }): Promise<CwlAllianceBaselineCaptureSummary | null> {
+    const guildId = normalizeGuildId(input.guildId);
+    const season = normalizeSeasonKey(input.season ?? null);
+    const existingBaseline = await this.loadExistingBaseline(guildId, season);
+    return existingBaseline ? summarizeStoredBaseline(existingBaseline) : null;
+  }
+
   /** Purpose: load one existing frozen baseline together with its child coverage rows. */
   private async loadExistingBaseline(
     guildId: string,
