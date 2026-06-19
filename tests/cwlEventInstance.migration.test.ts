@@ -116,7 +116,7 @@ function sqlText(value: string): string {
 }
 
 function sqlTimestamp(value: Date): string {
-  return `TIMESTAMPTZ ${sqlText(value.toISOString())}`;
+  return `TIMESTAMP(3) ${sqlText(value.toISOString().slice(0, 23).replace("T", " "))}`;
 }
 
 async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Promise<T>): Promise<T> {
@@ -519,7 +519,7 @@ function buildDiagnosedRepairRows(): {
       version: 3,
       createdAt: new Date("2026-06-02T13:48:00.361Z"),
       eventInstanceId: "legacy:2026-06:#2CCJVQ0YC",
-      currentEventInstanceId: "legacy:2026-06:#2CCJVQ0YC",
+      currentEventInstanceId: "cmqkolhist0001newerplan0",
     },
     {
       id: "cmpwp0qa60109rofm41zh7ile",
@@ -608,23 +608,23 @@ function buildRepairMigrationSchemaSql(): string {
     'CREATE TABLE "CwlEventInstance" (',
     '  id text PRIMARY KEY,',
     '  season text NOT NULL,',
-    '  "firstObservedAt" timestamptz NOT NULL,',
-    '  "lastObservedAt" timestamptz NOT NULL',
+    '  "firstObservedAt" timestamp(3) NOT NULL,',
+    '  "lastObservedAt" timestamp(3) NOT NULL',
     ");",
     'CREATE TABLE "CwlEventClan" (',
     '  "clanTag" text NOT NULL,',
     '  "eventInstanceId" text NOT NULL,',
     '  "isCurrent" boolean NOT NULL,',
-    '  "firstObservedAt" timestamptz NOT NULL,',
-    '  "lastObservedAt" timestamptz NOT NULL',
+    '  "firstObservedAt" timestamp(3) NOT NULL,',
+    '  "lastObservedAt" timestamp(3) NOT NULL',
     ");",
     'CREATE TABLE "CwlRotationPlan" (',
     '  id text PRIMARY KEY,',
     '  "clanTag" text NOT NULL,',
     '  season text NOT NULL,',
     '  version integer NOT NULL,',
-    '  "createdAt" timestamptz NOT NULL,',
-    '  "updatedAt" timestamptz NOT NULL,',
+    '  "createdAt" timestamp(3) NOT NULL,',
+    '  "updatedAt" timestamp(3) NOT NULL,',
     '  "eventInstanceId" text NOT NULL,',
     '  "isActive" boolean NOT NULL',
     ");",
@@ -982,6 +982,8 @@ describe("CWL rotation event-scope migration", () => {
     expect(migration).toContain('incident_season AS (');
     expect(migration).toContain('explicit_repair_candidates AS (');
     expect(migration).toContain('plan."createdAt" = candidate."createdAt"');
+    expect(migration).toContain("TIMESTAMP(3) '2026-06-17 03:39:25.684'");
+    expect(migration).not.toContain('TIMESTAMPTZ');
     expect(migration).toContain('source_event."isCurrent" = false');
     expect(migration).toContain('current_plan."isActive" = true');
     expect(migration).toContain('current_version.version = plan.version');
@@ -999,6 +1001,7 @@ describe("CWL rotation event-scope migration", () => {
 
     await withTemporaryPostgres(async ({ runSql }) => {
       runSql(buildRepairMigrationSchemaSql());
+      runSql("SET TIME ZONE 'America/Los_Angeles';");
       runSql(buildRepairMigrationSeedSql(seed));
 
       runSql(migration);
@@ -1011,6 +1014,9 @@ describe("CWL rotation event-scope migration", () => {
       for (const row of diagnosed.historical) {
         expect(repairedById.get(row.id)).toBe(row.eventInstanceId);
       }
+      expect(
+        repairedRows.some(([, eventInstanceId]) => eventInstanceId === diagnosed.historical[0]!.currentEventInstanceId),
+      ).toBe(false);
       for (const row of diagnosed.unrelatedSeason) {
         expect(repairedById.get(row.id)).toBe(row.eventInstanceId);
       }

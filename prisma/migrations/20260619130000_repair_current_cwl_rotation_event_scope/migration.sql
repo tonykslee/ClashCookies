@@ -4,19 +4,19 @@ WITH incident_season AS (
 explicit_repair_candidates AS (
   SELECT *
   FROM (VALUES
-    ('cmqhiv81g01i4tr40oiyg33ig'::text, '#2C0UURLQU'::text, '2026-06'::text, 5::integer, TIMESTAMPTZ '2026-06-17 03:39:25.684+00', 'legacy:2026-06:#2C0UURLQU'::text, 'cmqkolj7800yly017ec8wb9qe'::text),
-    ('cmqhcyu4j05wt4ll0715ru1bh'::text, '#2C998J8LY'::text, '2026-06'::text, 3::integer, TIMESTAMPTZ '2026-06-17 00:54:16.579+00', 'legacy:2026-06:#2C998J8LY'::text, 'cmqkolpxc0105y017ee11ejb1'::text),
-    ('cmqhcwtp105wp4ll03qzam7au'::text, '#2CCR8UYG0'::text, '2026-06'::text, 5::integer, TIMESTAMPTZ '2026-06-17 00:52:42.709+00', 'legacy:2026-06:#2CCR8UYG0'::text, 'cmqkolnd800zdy017nbp6eo7a'::text),
-    ('cmqh1bx6j0fp9gxnd4njg87ef'::text, '#2CCUGYG8V'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-16 19:28:31.675+00', 'legacy:2026-06:#2CCUGYG8V'::text, 'cmqkolyfb011py01743rhinex'::text),
-    ('cmqhcy2yp05wr4ll0lesacl7k'::text, '#2CGG9GGRV'::text, '2026-06'::text, 4::integer, TIMESTAMPTZ '2026-06-17 00:53:41.376+00', 'legacy:2026-06:#2CGG9GGRV'::text, 'cmqkolfu100xty017110lj7yu'::text),
-    ('cmqh1edsu0grcgxndx3zp8kux'::text, '#2CLVCCG2R'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-16 19:30:26.527+00', 'legacy:2026-06:#2CLVCCG2R'::text, 'cmqkom0j1012hy0178cj40kw5'::text),
-    ('cmqhjzn3f05i5tr406yddz1pc'::text, '#2CPLCLRQL'::text, '2026-06'::text, 4::integer, TIMESTAMPTZ '2026-06-17 04:10:51.435+00', 'legacy:2026-06:#2CPLCLRQL'::text, 'cmqkol87800w9y0174mi8rtut'::text),
-    ('cmqh1mnc80hp3gxndzusw87l7'::text, '#2CY29QRGU'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-16 19:36:52.136+00', 'legacy:2026-06:#2CY29QRGU'::text, 'cmqkomfjm015ly017l1oinli3'::text),
-    ('cmqh1knmq0hp1gxndp5vkx52a'::text, '#2CYGCCGVC'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-16 19:35:19.203+00', 'legacy:2026-06:#2CYGCCGVC'::text, 'cmqkom5400139y017ytj05qeo'::text),
-    ('cmqhatho700024ll0y3yojyfq'::text, '#2RJC2UCC2'::text, '2026-06'::text, 3::integer, TIMESTAMPTZ '2026-06-16 23:54:07.927+00', 'legacy:2026-06:#2RJC2UCC2'::text, 'cmqkolvge010xy017nesp9vtk'::text),
-    ('cmqh1999g0fp7gxndssslydqs'::text, '#2RQCVGGVL'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-16 19:26:27.364+00', 'legacy:2026-06:#2RQCVGGVL'::text, 'cmqkom8wg0141y017adcxnjrw'::text),
-    ('cmqharu4r00xjbarui311v5xf'::text, '#2RVP0J80G'::text, '2026-06'::text, 3::integer, TIMESTAMPTZ '2026-06-16 23:52:50.759+00', 'legacy:2026-06:#2RVP0J80G'::text, 'cmqkolbyb00x1y0179ojj2k2v'::text),
-    ('cmqhcv98s05114ll07y06cy7o'::text, '#2U0JGVC8Y'::text, '2026-06'::text, 1::integer, TIMESTAMPTZ '2026-06-17 00:51:29.548+00', 'legacy:2026-06:#2U0JGVC8Y'::text, 'cmqkomaz0014ty017fcrmdp3t'::text)
+    ('cmqhiv81g01i4tr40oiyg33ig'::text, '#2C0UURLQU'::text, '2026-06'::text, 5::integer, TIMESTAMP(3) '2026-06-17 03:39:25.684', 'legacy:2026-06:#2C0UURLQU'::text, 'cmqkolj7800yly017ec8wb9qe'::text),
+    ('cmqhcyu4j05wt4ll0715ru1bh'::text, '#2C998J8LY'::text, '2026-06'::text, 3::integer, TIMESTAMP(3) '2026-06-17 00:54:16.579', 'legacy:2026-06:#2C998J8LY'::text, 'cmqkolpxc0105y017ee11ejb1'::text),
+    ('cmqhcwtp105wp4ll03qzam7au'::text, '#2CCR8UYG0'::text, '2026-06'::text, 5::integer, TIMESTAMP(3) '2026-06-17 00:52:42.709', 'legacy:2026-06:#2CCR8UYG0'::text, 'cmqkolnd800zdy017nbp6eo7a'::text),
+    ('cmqh1bx6j0fp9gxnd4njg87ef'::text, '#2CCUGYG8V'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-16 19:28:31.675', 'legacy:2026-06:#2CCUGYG8V'::text, 'cmqkolyfb011py01743rhinex'::text),
+    ('cmqhcy2yp05wr4ll0lesacl7k'::text, '#2CGG9GGRV'::text, '2026-06'::text, 4::integer, TIMESTAMP(3) '2026-06-17 00:53:41.376', 'legacy:2026-06:#2CGG9GGRV'::text, 'cmqkolfu100xty017110lj7yu'::text),
+    ('cmqh1edsu0grcgxndx3zp8kux'::text, '#2CLVCCG2R'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-16 19:30:26.527', 'legacy:2026-06:#2CLVCCG2R'::text, 'cmqkom0j1012hy0178cj40kw5'::text),
+    ('cmqhjzn3f05i5tr406yddz1pc'::text, '#2CPLCLRQL'::text, '2026-06'::text, 4::integer, TIMESTAMP(3) '2026-06-17 04:10:51.435', 'legacy:2026-06:#2CPLCLRQL'::text, 'cmqkol87800w9y0174mi8rtut'::text),
+    ('cmqh1mnc80hp3gxndzusw87l7'::text, '#2CY29QRGU'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-16 19:36:52.136', 'legacy:2026-06:#2CY29QRGU'::text, 'cmqkomfjm015ly017l1oinli3'::text),
+    ('cmqh1knmq0hp1gxndp5vkx52a'::text, '#2CYGCCGVC'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-16 19:35:19.203', 'legacy:2026-06:#2CYGCCGVC'::text, 'cmqkom5400139y017ytj05qeo'::text),
+    ('cmqhatho700024ll0y3yojyfq'::text, '#2RJC2UCC2'::text, '2026-06'::text, 3::integer, TIMESTAMP(3) '2026-06-16 23:54:07.927', 'legacy:2026-06:#2RJC2UCC2'::text, 'cmqkolvge010xy017nesp9vtk'::text),
+    ('cmqh1999g0fp7gxndssslydqs'::text, '#2RQCVGGVL'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-16 19:26:27.364', 'legacy:2026-06:#2RQCVGGVL'::text, 'cmqkom8wg0141y017adcxnjrw'::text),
+    ('cmqharu4r00xjbarui311v5xf'::text, '#2RVP0J80G'::text, '2026-06'::text, 3::integer, TIMESTAMP(3) '2026-06-16 23:52:50.759', 'legacy:2026-06:#2RVP0J80G'::text, 'cmqkolbyb00x1y0179ojj2k2v'::text),
+    ('cmqhcv98s05114ll07y06cy7o'::text, '#2U0JGVC8Y'::text, '2026-06'::text, 1::integer, TIMESTAMP(3) '2026-06-17 00:51:29.548', 'legacy:2026-06:#2U0JGVC8Y'::text, 'cmqkomaz0014ty017fcrmdp3t'::text)
   ) AS candidate("planId", "clanTag", "repairSeason", "version", "createdAt", "legacyEventInstanceId", "currentEventInstanceId")
   CROSS JOIN incident_season s
   WHERE candidate."repairSeason" = s.season
