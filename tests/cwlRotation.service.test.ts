@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { rosterService } from "../src/services/RosterService";
+import { cwlEventResolutionService } from "../src/services/CwlEventResolutionService";
 
 const txMock = vi.hoisted(() => ({
   cwlRotationPlan: {
@@ -216,6 +217,44 @@ describe("CwlRotationService", () => {
         .sort((left, right) => right.version - left.version);
       return filtered[0] ?? null;
     });
+  }
+
+  type ScopedRotationPlanFixture = {
+    id: string;
+    eventInstanceId: string;
+    clanTag: string;
+    season: string;
+    version: number;
+    isActive: boolean;
+  };
+
+  function createScopedRotationPlanStore(rows: ScopedRotationPlanFixture[]) {
+    const plans = rows.map((row) => ({ ...row }));
+    const matchesWhere = (where: any, row: ScopedRotationPlanFixture) => {
+      if (where?.eventInstanceId && row.eventInstanceId !== where.eventInstanceId) return false;
+      if (where?.clanTag && row.clanTag !== where.clanTag) return false;
+      if (where?.season && row.season !== where.season) return false;
+      if (typeof where?.isActive === "boolean" && row.isActive !== where.isActive) return false;
+      return true;
+    };
+
+    const findFirst = vi.fn(async ({ where }: any) => {
+      const match = plans
+        .filter((row) => matchesWhere(where, row))
+        .sort((left, right) => right.version - left.version || right.id.localeCompare(left.id))[0];
+      return match ?? null;
+    });
+    const updateMany = vi.fn(async ({ where, data }: any) => {
+      let count = 0;
+      for (const plan of plans) {
+        if (!matchesWhere(where, plan)) continue;
+        Object.assign(plan, data);
+        count += 1;
+      }
+      return { count };
+    });
+
+    return { plans, findFirst, updateMany };
   }
 
   it("creates a versioned current-season plan and warns when 5-day coverage is impossible", async () => {
@@ -597,6 +636,107 @@ describe("CwlRotationService", () => {
     );
   });
 
+  it("overwrites only Event B when a same-month historical plan also exists for Event A", async () => {
+    const planStore = createScopedRotationPlanStore([
+      {
+        id: "plan-event-a-v1",
+        eventInstanceId: "event-a",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+      {
+        id: "plan-event-b-v1",
+        eventInstanceId: "event-b",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+    ]);
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(planStore.findFirst);
+    txMock.cwlRotationPlan.findFirst.mockImplementation(planStore.findFirst);
+    txMock.cwlRotationPlan.updateMany.mockImplementation(planStore.updateMany);
+    txMock.cwlRotationPlan.create.mockResolvedValue({ id: "plan-event-b-v2" });
+    const { roundMembers } = setupManualCreateRosterFixture({ rosterCount: 11 });
+    vi.mocked(cwlStateService.getCurrentRoundForClan).mockResolvedValue({
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      roundDay: 3,
+      roundState: "preparation",
+      opponentTag: "#OPP1",
+      opponentName: "Opponent One",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-04-03T12:00:00.000Z"),
+      startTime: new Date("2026-04-04T12:00:00.000Z"),
+      endTime: new Date("2026-04-05T12:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-04-04T00:00:00.000Z"),
+      members: roundMembers,
+    } as any);
+    vi.mocked(cwlStateService.getCurrentPreparationSnapshotForClan).mockResolvedValue(null);
+    vi.spyOn(cwlEventResolutionService, "resolveCurrentCwlEventForClan").mockResolvedValue({
+      id: "event-b",
+      season: "2026-04",
+      anchorWarTag: "#WAR-B",
+      firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+      lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+    } as any);
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+      overwrite: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      version: 2,
+    });
+    expect(prismaMock.cwlRotationPlan.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          eventInstanceId: "event-b",
+          clanTag: "#2QG2C08UP",
+        }),
+      }),
+    );
+    expect(cwlStateService.getCurrentRoundForClan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      eventInstanceId: "event-b",
+    });
+    expect(cwlStateService.getCurrentPreparationSnapshotForClan).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      eventInstanceId: "event-b",
+    });
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          eventInstanceId: "event-b",
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          isActive: true,
+        }),
+      }),
+    );
+    expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledTimes(1);
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventInstanceId: "event-b",
+          version: 2,
+        }),
+      }),
+    );
+    expect(planStore.plans.find((plan) => plan.id === "plan-event-a-v1")).toMatchObject({ isActive: true });
+    expect(planStore.plans.find((plan) => plan.id === "plan-event-b-v1")).toMatchObject({ isActive: false });
+  });
+
   it("preserves the max persisted version across manual, roster-backed, and imported rotation creation", async () => {
     mockRotationPlanHistory([
       {
@@ -770,6 +910,7 @@ describe("CwlRotationService", () => {
     txMock.cwlRotationPlanMember.createMany.mockResolvedValue({ count: 0 });
 
     const importedResult = await cwlRotationService.persistImportedPlan({
+      eventInstanceId: "event-current",
       clanTag: "#2QG2C08UP",
       clanName: "CWL Alpha",
       sourceSheetId: "sheet-1",
@@ -824,6 +965,38 @@ describe("CwlRotationService", () => {
       ],
     });
     expect(importedResult).toMatchObject({ outcome: "created", version: 11 });
+  });
+
+  it("rejects imported persistence when the captured event no longer matches the authoritative current pointer", async () => {
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({ tag: "#2QG2C08UP", name: "CWL Alpha" });
+    vi.spyOn(cwlEventResolutionService, "resolveCurrentCwlEventForClan").mockResolvedValue({
+      id: "event-b",
+      season: "2026-04",
+      anchorWarTag: "#WAR-B",
+      firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+      lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+    } as any);
+
+    const result = await cwlRotationService.persistImportedPlan({
+      eventInstanceId: "event-a",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Rotation",
+      sourceTabName: "Day 1",
+      season: "2026-04",
+      rosterRows: [],
+      days: [],
+    });
+
+    expect(result).toEqual({
+      outcome: "event_changed",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      sourceTabName: "Day 1",
+    });
+    expect(txMock.cwlRotationPlan.create).not.toHaveBeenCalled();
   });
 
   it("blocks a non-overwrite create when the transaction sees an active plan after a stale outside precheck", async () => {
@@ -909,6 +1082,7 @@ describe("CwlRotationService", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           clanTag: "#2QG2C08UP",
+          eventInstanceId: "event-current",
           season: "2026-04",
           isActive: true,
         }),
@@ -2067,6 +2241,7 @@ describe("CwlRotationService", () => {
   it("returns only currently tracked active plans in exports and ignores stale active clans", async () => {
     const trackedPlan = {
       id: "plan-tracked",
+      eventInstanceId: "event-current",
       clanTag: "#2QG2C08UP",
       season: "2026-04",
       version: 4,
@@ -2083,6 +2258,7 @@ describe("CwlRotationService", () => {
     } as any;
     const stalePlan = {
       id: "plan-stale",
+      eventInstanceId: "event-stale",
       clanTag: "#9GLGQCCU",
       season: "2026-04",
       version: 5,
@@ -2101,8 +2277,12 @@ describe("CwlRotationService", () => {
       { tag: "#2QG2C08UP", name: "Rising Thrones" } as any,
     ]);
     prismaMock.cwlRotationPlan.findMany.mockImplementation(async ({ where }: any) => {
-      const requestedTags = new Set<string>((where?.clanTag?.in ?? []) as string[]);
-      return [trackedPlan, stalePlan].filter((plan) => requestedTags.has(plan.clanTag));
+      const requestedScopes = new Set<string>(
+        ((where?.OR ?? []) as Array<{ clanTag: string; eventInstanceId: string }>).map(
+          (scope) => `${scope.eventInstanceId}:${scope.clanTag}`,
+        ),
+      );
+      return [trackedPlan, stalePlan].filter((plan) => requestedScopes.has(`${plan.eventInstanceId}:${plan.clanTag}`));
     });
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
     prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
@@ -2115,7 +2295,7 @@ describe("CwlRotationService", () => {
         where: expect.objectContaining({
           season: "2026-04",
           isActive: true,
-          clanTag: { in: ["#2QG2C08UP"] },
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-current" }],
         }),
       }),
     );
@@ -2126,6 +2306,7 @@ describe("CwlRotationService", () => {
   it("intersects explicit export clan tags with the currently tracked CWL clans", async () => {
     const trackedPlan = {
       id: "plan-tracked",
+      eventInstanceId: "event-current",
       clanTag: "#2QG2C08UP",
       season: "2026-04",
       version: 4,
@@ -2142,6 +2323,7 @@ describe("CwlRotationService", () => {
     } as any;
     const stalePlan = {
       id: "plan-stale",
+      eventInstanceId: "event-stale",
       clanTag: "#9GLGQCCU",
       season: "2026-04",
       version: 5,
@@ -2160,8 +2342,12 @@ describe("CwlRotationService", () => {
       { tag: "#2QG2C08UP", name: "Rising Thrones" } as any,
     ]);
     prismaMock.cwlRotationPlan.findMany.mockImplementation(async ({ where }: any) => {
-      const requestedTags = new Set<string>((where?.clanTag?.in ?? []) as string[]);
-      return [trackedPlan, stalePlan].filter((plan) => requestedTags.has(plan.clanTag));
+      const requestedScopes = new Set<string>(
+        ((where?.OR ?? []) as Array<{ clanTag: string; eventInstanceId: string }>).map(
+          (scope) => `${scope.eventInstanceId}:${scope.clanTag}`,
+        ),
+      );
+      return [trackedPlan, stalePlan].filter((plan) => requestedScopes.has(`${plan.eventInstanceId}:${plan.clanTag}`));
     });
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
     prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValue([]);
@@ -2177,12 +2363,195 @@ describe("CwlRotationService", () => {
         where: expect.objectContaining({
           season: "2026-04",
           isActive: true,
-          clanTag: { in: ["#2QG2C08UP"] },
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-current" }],
         }),
       }),
     );
     expect(exports).toHaveLength(1);
     expect(exports[0]?.clanTag).toBe("#2QG2C08UP");
+  });
+
+  it("ignores a previous same-month event plan when the current event has no active plan", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Rising Thrones" } as any,
+    ]);
+    prismaMock.cwlEventClan.findMany.mockImplementation(async () => [
+      {
+        clanTag: "#2QG2C08UP",
+        eventInstanceId: "event-b",
+        eventInstance: {
+          id: "event-b",
+          season: "2026-04",
+          anchorWarTag: "#WAR-B",
+          firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+        },
+      },
+    ]);
+    const eventAPlan = {
+      id: "plan-event-a",
+      eventInstanceId: "event-a",
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      version: 1,
+      isActive: true,
+    };
+    prismaMock.cwlRotationPlan.findMany.mockImplementation(async ({ where }: any) => {
+      const requestedScopes = new Set<string>(
+        ((where?.OR ?? []) as Array<{ clanTag: string; eventInstanceId: string }>).map(
+          (scope) => `${scope.eventInstanceId}:${scope.clanTag}`,
+        ),
+      );
+      return [eventAPlan].filter((plan) => requestedScopes.has(`${plan.eventInstanceId}:${plan.clanTag}`));
+    });
+
+    const exports = await cwlRotationService.listActivePlanExports({ season: "2026-04" });
+
+    expect(exports).toEqual([]);
+    expect(prismaMock.cwlRotationPlan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-b" }],
+        }),
+      }),
+    );
+  });
+
+  it("starts current event plan versions at one even when a previous same-month event has a plan", async () => {
+    prismaMock.cwlEventClan.findMany.mockImplementation(async () => [
+      {
+        clanTag: "#2QG2C08UP",
+        eventInstanceId: "event-b",
+        eventInstance: {
+          id: "event-b",
+          season: "2026-04",
+          anchorWarTag: "#WAR-B",
+          firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(async ({ where }: any) => {
+      if (where?.eventInstanceId === "event-b") return null;
+      return { id: "plan-event-a", eventInstanceId: "event-a", clanTag: "#2QG2C08UP", version: 1 };
+    });
+    txMock.cwlRotationPlan.findFirst.mockImplementation(async ({ where }: any) => {
+      if (where?.eventInstanceId === "event-b") return null;
+      return { id: "plan-event-a", eventInstanceId: "event-a", clanTag: "#2QG2C08UP", version: 1 };
+    });
+    setupManualCreateRosterFixture({ rosterCount: 11 });
+    txMock.cwlRotationPlan.create.mockResolvedValueOnce({ id: "plan-event-b" });
+
+    const result = await cwlRotationService.createPlan({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      lineupSize: 11,
+    });
+
+    expect(result).toMatchObject({ outcome: "created", version: 1 });
+    expect(txMock.cwlRotationPlan.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventInstanceId: "event-b",
+          version: 1,
+        }),
+      }),
+    );
+  });
+
+  it("resolves the current export event scope once and keeps clan-name hydration pinned to that scope", async () => {
+    const currentEventResolutionSpy = vi
+      .spyOn(cwlEventResolutionService, "resolveCurrentCwlEventSummariesForClanTags")
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            "#2QG2C08UP",
+            {
+              id: "event-current",
+              season: "2026-04",
+              anchorWarTag: "#WAR-CURRENT",
+              firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+              lastObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+            },
+          ],
+        ]) as any,
+      )
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            "#2QG2C08UP",
+            {
+              id: "event-stale",
+              season: "2026-04",
+              anchorWarTag: "#WAR-STALE",
+              firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+              lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+            },
+          ],
+        ]) as any,
+      );
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP", name: "Rising Thrones" } as any]);
+    prismaMock.cwlRotationPlan.findMany.mockImplementation(async ({ where }: any) => {
+      const requestedScopes = new Set<string>(
+        ((where?.OR ?? []) as Array<{ clanTag: string; eventInstanceId: string }>).map(
+          (scope) => `${scope.eventInstanceId}:${scope.clanTag}`,
+        ),
+      );
+      return requestedScopes.has("event-current:#2QG2C08UP")
+        ? [
+            {
+              id: "plan-current",
+              eventInstanceId: "event-current",
+              clanTag: "#2QG2C08UP",
+              season: "2026-04",
+              version: 2,
+              isActive: true,
+              rosterSize: 2,
+              generatedFromRoundDay: null,
+              excludedPlayerTags: [],
+              warningSummary: null,
+              metadata: {
+                source: "manual",
+              },
+              createdAt: new Date("2026-04-20T00:00:00.000Z"),
+              updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+            } as any,
+          ]
+        : [];
+    });
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlPrepSnapshot.findMany.mockImplementation(async ({ where }: any) => {
+      expect(where).toEqual(
+        expect.objectContaining({
+          season: "2026-04",
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-current" }],
+        }),
+      );
+      return [{ clanTag: "#2QG2C08UP", clanName: "Rising Thrones" } as any];
+    });
+    prismaMock.cwlRoundHistory.findMany.mockImplementation(async ({ where }: any) => {
+      expect(where).toEqual(
+        expect.objectContaining({
+          season: "2026-04",
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-current" }],
+        }),
+      );
+      return [];
+    });
+
+    const exports = await cwlRotationService.listActivePlanExports({ season: "2026-04" });
+
+    expect(currentEventResolutionSpy).toHaveBeenCalledTimes(1);
+    expect(exports).toHaveLength(1);
+    expect(exports[0]).toEqual(
+      expect.objectContaining({
+        clanTag: "#2QG2C08UP",
+        clanName: "Rising Thrones",
+        clanDisplayName: "Rising Thrones",
+        eventInstanceId: "event-current",
+      }),
+    );
   });
 
   it("deactivates the active CWL rotation plan without deleting history rows", async () => {
@@ -2217,6 +2586,7 @@ describe("CwlRotationService", () => {
     });
     expect(prismaMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
+        eventInstanceId: "event-current",
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         isActive: true,
@@ -2225,6 +2595,71 @@ describe("CwlRotationService", () => {
         isActive: false,
       },
     });
+  });
+
+  it("deletes only Event B when Event A has the same-season historical plan", async () => {
+    const planStore = createScopedRotationPlanStore([
+      {
+        id: "plan-event-a-v1",
+        eventInstanceId: "event-a",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+      {
+        id: "plan-event-b-v1",
+        eventInstanceId: "event-b",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+    ]);
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(planStore.findFirst);
+    prismaMock.cwlRotationPlan.updateMany.mockImplementation(planStore.updateMany);
+    vi.spyOn(cwlEventResolutionService, "resolveCurrentCwlEventForClan").mockResolvedValue({
+      id: "event-b",
+      season: "2026-04",
+      anchorWarTag: "#WAR-B",
+      firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+      lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+    } as any);
+
+    const result = await cwlRotationService.deleteActivePlan({
+      clanTag: "#2qg2c08up",
+      season: "2026-04",
+    });
+
+    expect(result).toEqual({
+      outcome: "deleted",
+      season: "2026-04",
+      clanTag: "#2QG2C08UP",
+      clanName: "CWL Alpha",
+      version: 1,
+    });
+    expect(prismaMock.cwlRotationPlan.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          eventInstanceId: "event-b",
+          clanTag: "#2QG2C08UP",
+          isActive: true,
+        }),
+      }),
+    );
+    expect(prismaMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: "event-b",
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        isActive: true,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+    expect(planStore.plans.find((plan) => plan.id === "plan-event-a-v1")).toMatchObject({ isActive: true });
+    expect(planStore.plans.find((plan) => plan.id === "plan-event-b-v1")).toMatchObject({ isActive: false });
   });
 
   it("returns not_found when deleting a clan with no active CWL rotation", async () => {
@@ -2490,6 +2925,7 @@ describe("CwlRotationService", () => {
   it("filters overview to tracked clans before leadership refresh, state lookups, and validation", async () => {
     const trackedPlan = {
       id: "plan-tracked",
+      eventInstanceId: "event-current",
       clanTag: "#2QG2C08UP",
       season: "2026-04",
       version: 6,
@@ -2501,6 +2937,7 @@ describe("CwlRotationService", () => {
     } as any;
     const stalePlan = {
       id: "plan-stale",
+      eventInstanceId: "event-stale",
       clanTag: "#9GLGQCCU",
       season: "2026-04",
       version: 2,
@@ -2514,8 +2951,12 @@ describe("CwlRotationService", () => {
       { tag: "#2QG2C08UP", name: "Rising Thrones" } as any,
     ]);
     prismaMock.cwlRotationPlan.findMany.mockImplementation(async ({ where }: any) => {
-      const requestedTags = new Set<string>((where?.clanTag?.in ?? []) as string[]);
-      return [trackedPlan, stalePlan].filter((plan) => requestedTags.has(plan.clanTag));
+      const requestedScopes = new Set<string>(
+        ((where?.OR ?? []) as Array<{ clanTag: string; eventInstanceId: string }>).map(
+          (scope) => `${scope.eventInstanceId}:${scope.clanTag}`,
+        ),
+      );
+      return [trackedPlan, stalePlan].filter((plan) => requestedScopes.has(`${plan.eventInstanceId}:${plan.clanTag}`));
     });
     const refreshSpy = vi
       .spyOn(FwaClanMembersSyncService.prototype, "refreshCurrentClanMembersForClanTags")
@@ -2596,7 +3037,7 @@ describe("CwlRotationService", () => {
         where: expect.objectContaining({
           season: "2026-04",
           isActive: true,
-          clanTag: { in: ["#2QG2C08UP"] },
+          OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-current" }],
         }),
       }),
     );
@@ -2793,6 +3234,107 @@ describe("CwlRotationService", () => {
       missingExpectedPlayerTags: ["#QGRJ2222"],
       extraActualPlayerTags: ["#CUV9082"],
       currentState: "inWar",
+    });
+  });
+
+  it("validates the current event lineup without reading the same-month historical event", async () => {
+    const eventAActualLineup = ["#PYLQ0289", "#EVENTA"];
+    const eventBActualLineup = ["#PYLQ0289", "#CUV9082"];
+    expect(eventAActualLineup).not.toEqual(eventBActualLineup);
+    const planStore = createScopedRotationPlanStore([
+      {
+        id: "plan-event-a-v1",
+        eventInstanceId: "event-a",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+      {
+        id: "plan-event-b-v1",
+        eventInstanceId: "event-b",
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+        version: 1,
+        isActive: true,
+      },
+    ]);
+    prismaMock.cwlRotationPlan.findFirst.mockImplementation(planStore.findFirst);
+    prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([
+      {
+        roundDay: 3,
+        lineupSize: 2,
+        members: [
+          { playerTag: "#PYLQ0289", playerName: "Alpha", assignmentOrder: 0 },
+          { playerTag: "#QGRJ2222", playerName: "Bravo", assignmentOrder: 1 },
+        ],
+      },
+    ]);
+    vi.spyOn(cwlEventResolutionService, "resolveCurrentCwlEventForClan").mockResolvedValue({
+      id: "event-b",
+      season: "2026-04",
+      anchorWarTag: "#WAR-B",
+      firstObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+      lastObservedAt: new Date("2026-04-15T00:00:00.000Z"),
+    } as any);
+    vi.spyOn(cwlStateService, "getActualLineupForDay").mockImplementation(async ({ eventInstanceId }) => {
+      expect(eventInstanceId).toBe("event-b");
+      return {
+        season: "2026-04",
+        clanTag: "#2QG2C08UP",
+        clanName: "CWL Alpha",
+        roundDay: 3,
+        roundState: "inWar",
+        opponentTag: "#OPP1",
+        opponentName: "Opponent One",
+        phaseEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+        members: eventBActualLineup.map((playerTag, index) => ({
+          playerTag,
+          playerName: index === 0 ? "Alpha" : "Charlie",
+          mapPosition: index + 1,
+          townHall: index === 0 ? 16 : 15,
+          attacksUsed: index === 0 ? 1 : 0,
+          attacksAvailable: 1,
+          subbedIn: true,
+          subbedOut: false,
+        })),
+      };
+    });
+
+    const result = await cwlRotationService.validatePlanDay({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 3,
+    });
+
+    expect(result).toMatchObject({
+      complete: false,
+      actualAvailable: true,
+      missingExpectedPlayerTags: ["#QGRJ2222"],
+      extraActualPlayerTags: ["#CUV9082"],
+      currentState: "inWar",
+    });
+    expect(prismaMock.cwlRotationPlan.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          eventInstanceId: "event-b",
+          clanTag: "#2QG2C08UP",
+          isActive: true,
+        }),
+      }),
+    );
+    expect(prismaMock.cwlRotationPlanDay.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          planId: "plan-event-b-v1",
+        }),
+      }),
+    );
+    expect(cwlStateService.getActualLineupForDay).toHaveBeenCalledWith({
+      clanTag: "#2QG2C08UP",
+      season: "2026-04",
+      roundDay: 3,
+      eventInstanceId: "event-b",
     });
   });
 

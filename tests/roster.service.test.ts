@@ -61,6 +61,9 @@ const prismaMock = vi.hoisted(() => ({
     createMany: vi.fn(),
     updateMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   cwlRotationPlan: {
     updateMany: vi.fn(),
   },
@@ -521,6 +524,19 @@ describe("RosterService", () => {
     });
     prismaMock.cwlTrackedClan.createMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({
+        clanTag,
+        eventInstance: {
+          id: `event-${clanTag.replace(/[^A-Z0-9]/g, "").toLowerCase()}`,
+          season: resolveCurrentCwlSeasonKey(),
+          anchorWarTag: `#WAR${clanTag.slice(-2)}`,
+          firstObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      }));
+    });
     prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);

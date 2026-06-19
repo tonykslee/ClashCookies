@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
+    findMany: vi.fn(),
+  },
+  cwlEventClan: {
     findMany: vi.fn(),
   },
   cwlRotationPlan: {
@@ -41,11 +44,27 @@ describe("CwlRotationSheetService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-15T00:00:00.000Z"));
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { tag: "#2QG2C08UP", name: "CWL Alpha" },
       { tag: "#9GLGQCCU", name: "CWL Beta" },
     ]);
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({
+        clanTag,
+        eventInstanceId: `event-${clanTag.replace(/[^A-Z0-9]/g, "").toLowerCase()}`,
+        eventInstance: {
+          id: `event-${clanTag.replace(/[^A-Z0-9]/g, "").toLowerCase()}`,
+          season: "2026-04",
+          anchorWarTag: `#WAR${clanTag.slice(-2)}`,
+          firstObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-04-01T00:00:00.000Z"),
+        },
+      }));
+    });
     prismaMock.cwlRotationPlan.findFirst.mockResolvedValue(null);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
@@ -76,6 +95,10 @@ describe("CwlRotationSheetService", () => {
         currentRound: null,
       },
     ] as any);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("builds a preview from a public sheet, matches clan-name containment, and skips unmatched tabs", async () => {
@@ -416,6 +439,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         matchedClans: [
           {
+            eventInstanceId: "event-2qg2c08up",
             clanTag: "#2QG2C08UP",
             clanName: "CWL Alpha",
             tabTitle: "CWL Alpha roster",
@@ -525,6 +549,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         matchedClans: [
           {
+            eventInstanceId: "event-2qg2c08up",
             clanTag: "#2QG2C08UP",
             clanName: "CWL Alpha",
             tabTitle: "CWL Alpha roster",
