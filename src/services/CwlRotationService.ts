@@ -684,6 +684,7 @@ function buildCwlRotationNotEnoughPlayersDiagnostics(input: CwlRotationNotEnough
   return input;
 }
 
+// Keep overview plan selection deterministic when multiple active rows exist for one clan.
 function compareCwlRotationOverviewPlanRecords(
   a: CwlRotationOverviewPlanRecord,
   b: CwlRotationOverviewPlanRecord,
@@ -697,12 +698,14 @@ function compareCwlRotationOverviewPlanRecords(
   return b.id.localeCompare(a.id);
 }
 
+// Pick the newest active plan row for a clan-scoped overview entry.
 function pickLatestCwlRotationOverviewPlanRecord(
   plans: CwlRotationOverviewPlanRecord[],
 ): CwlRotationOverviewPlanRecord | null {
   return [...plans].sort(compareCwlRotationOverviewPlanRecords)[0] ?? null;
 }
 
+// Emit structured overview diagnostics with stable reason codes and entity context.
 function formatCwlRotationOverviewLog(input: {
   operation: string;
   season: string;
@@ -793,6 +796,7 @@ function formatCwlRotationOverviewLog(input: {
   return parts.join(" ");
 }
 
+// Load active plans once per clan so overview can classify matched, stale, and missing rows.
 async function loadActivePlansForOverview(input: {
   season: string;
   clanTags: string[];
