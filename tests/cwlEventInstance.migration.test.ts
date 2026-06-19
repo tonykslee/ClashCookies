@@ -8,6 +8,9 @@ const MIGRATION_PATH = fileURLToPath(
 const ROTATION_MIGRATION_PATH = fileURLToPath(
   new URL("../prisma/migrations/20260619120000_scope_cwl_rotation_plans_by_event/migration.sql", import.meta.url),
 );
+const REPAIR_ROTATION_MIGRATION_PATH = fileURLToPath(
+  new URL("../prisma/migrations/20260619130000_repair_current_cwl_rotation_event_scope/migration.sql", import.meta.url),
+);
 
 type HistoricalEventFixture = {
   id: string;
@@ -30,6 +33,23 @@ type ActivePlanFixture = {
   version: number;
   updatedAt: Date;
   isActive: boolean;
+};
+
+type RepairCurrentPlanFixture = {
+  id: string;
+  eventInstanceId: string;
+  clanTag: string;
+  season: string;
+  version: number;
+  createdAt: Date;
+  updatedAt: Date;
+  isActive: boolean;
+};
+
+type RepairCurrentEventFixture = {
+  clanTag: string;
+  currentEventInstanceId: string;
+  season: string;
 };
 
 function loadMigration(): string {
@@ -148,6 +168,65 @@ function repairDuplicateActivePlans(rows: ActivePlanFixture[]): ActivePlanFixtur
     kept.push(winner);
   }
   return kept;
+}
+
+function selectRepairableCurrentPlanIds(
+  season: string,
+  plans: RepairCurrentPlanFixture[],
+  currentEvents: RepairCurrentEventFixture[],
+): string[] {
+  const currentEventByClanTag = new Map(
+    currentEvents
+      .filter((row) => row.season === season)
+      .map((row) => [row.clanTag, row.currentEventInstanceId] as const),
+  );
+  const rankedCandidatesByClanTag = new Map<string, RepairCurrentPlanFixture[]>();
+
+  for (const plan of plans) {
+    if (!plan.isActive || plan.season !== season) {
+      continue;
+    }
+    const currentEventInstanceId = currentEventByClanTag.get(plan.clanTag);
+    if (!currentEventInstanceId || currentEventInstanceId === plan.eventInstanceId) {
+      continue;
+    }
+    const currentPlanExists = plans.some(
+      (row) =>
+        row.isActive &&
+        row.season === season &&
+        row.clanTag === plan.clanTag &&
+        row.eventInstanceId === currentEventInstanceId,
+    );
+    if (currentPlanExists) {
+      continue;
+    }
+    const currentVersionExists = plans.some(
+      (row) =>
+        row.season === season &&
+        row.clanTag === plan.clanTag &&
+        row.eventInstanceId === currentEventInstanceId &&
+        row.version === plan.version,
+    );
+    if (currentVersionExists) {
+      continue;
+    }
+    const rankedCandidates = rankedCandidatesByClanTag.get(plan.clanTag) ?? [];
+    rankedCandidates.push(plan);
+    rankedCandidatesByClanTag.set(plan.clanTag, rankedCandidates);
+  }
+
+  return [...rankedCandidatesByClanTag.values()]
+    .map((candidatePlans) =>
+      [...candidatePlans].sort((left, right) => {
+        if (left.version !== right.version) return right.version - left.version;
+        const byUpdatedAt = right.updatedAt.getTime() - left.updatedAt.getTime();
+        if (byUpdatedAt !== 0) return byUpdatedAt;
+        return right.id.localeCompare(left.id);
+      })[0],
+    )
+    .filter((plan): plan is RepairCurrentPlanFixture => Boolean(plan))
+    .map((plan) => plan.id)
+    .sort((left, right) => left.localeCompare(right));
 }
 
 describe("CWL event instance migration", () => {
@@ -388,5 +467,87 @@ describe("CWL rotation event-scope migration", () => {
     expect(dropIndex).toBeGreaterThan(clanInsertIndex);
     expect(rankedActiveIndex).toBeGreaterThan(dropIndex);
     expectNoLaterStatementReferences(statements, dropIndex, '_CwlRotationOrphanGroup');
+  });
+
+  it("repairs only unambiguous current-event plan mismatches and stays idempotent", () => {
+    const migration = readFileSync(REPAIR_ROTATION_MIGRATION_PATH, "utf8");
+    expect(migration).toContain('resolved_current_events AS (');
+    expect(migration).toContain('ROW_NUMBER() OVER (');
+    expect(migration).toContain('PARTITION BY plan."clanTag"');
+    expect(migration).toContain('plan."eventInstanceId" <> current_event."currentEventInstanceId"');
+    expect(migration).toContain('AND NOT EXISTS (');
+    expect(migration).toContain('current_plan."isActive" = true');
+    expect(migration).toContain('current_version.version = plan.version');
+    expect(migration).toContain('SET "eventInstanceId" = ranked."currentEventInstanceId"');
+
+    const season = "2026-06";
+    const currentEvents: RepairCurrentEventFixture[] = [
+      {
+        clanTag: "#2C0UURLQU",
+        currentEventInstanceId: "cmqkolj7800yly017ec8wb9qe",
+        season,
+      },
+      {
+        clanTag: "#2C80JCVJQ",
+        currentEventInstanceId: "legacy:2026-06:#2C80JCVJQ",
+        season,
+      },
+      {
+        clanTag: "#2C998J8LY",
+        currentEventInstanceId: "cmqkolpxc0105y017ee11ejb1",
+        season,
+      },
+    ];
+    const plans: RepairCurrentPlanFixture[] = [
+      {
+        id: "plan-mismatch",
+        eventInstanceId: "legacy:2026-06:#2C0UURLQU",
+        clanTag: "#2C0UURLQU",
+        season,
+        version: 5,
+        createdAt: new Date("2026-06-17T03:39:25.684Z"),
+        updatedAt: new Date("2026-06-17T03:39:25.684Z"),
+        isActive: true,
+      },
+      {
+        id: "plan-current",
+        eventInstanceId: "legacy:2026-06:#2C80JCVJQ",
+        clanTag: "#2C80JCVJQ",
+        season,
+        version: 3,
+        createdAt: new Date("2026-06-10T05:17:59.240Z"),
+        updatedAt: new Date("2026-06-10T05:17:59.240Z"),
+        isActive: true,
+      },
+      {
+        id: "plan-legacy",
+        eventInstanceId: "legacy:2026-06:#2C998J8LY",
+        clanTag: "#2C998J8LY",
+        season,
+        version: 3,
+        createdAt: new Date("2026-06-17T00:54:16.579Z"),
+        updatedAt: new Date("2026-06-17T00:54:16.579Z"),
+        isActive: true,
+      },
+      {
+        id: "plan-current-valid",
+        eventInstanceId: "cmqkolpxc0105y017ee11ejb1",
+        clanTag: "#2C998J8LY",
+        season,
+        version: 4,
+        createdAt: new Date("2026-06-19T08:43:15.259Z"),
+        updatedAt: new Date("2026-06-19T09:05:57.701Z"),
+        isActive: true,
+      },
+    ];
+
+    expect(selectRepairableCurrentPlanIds(season, plans, currentEvents)).toEqual(["plan-mismatch"]);
+
+    const repairedPlans = plans.map((plan) =>
+      plan.id === "plan-mismatch"
+        ? { ...plan, eventInstanceId: "cmqkolj7800yly017ec8wb9qe" }
+        : plan,
+    );
+    expect(selectRepairableCurrentPlanIds(season, repairedPlans, currentEvents)).toEqual([]);
   });
 });
