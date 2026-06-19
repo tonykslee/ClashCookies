@@ -19,7 +19,6 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     TrackedClanRep: [{ clanTag: "#AAA111", playerTag: "#P1" }],
     CurrentWar: [{ guildId: "g1", clanTag: "#AAA111", channelId: "c1", notify: true }],
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
-<<<<<<< Updated upstream
     ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
     ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
@@ -67,7 +66,6 @@ function makeDefaultTableStore(): MirrorTableDataStore {
       },
     ],
     WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
-=======
     CwlEventInstance: [
       {
         id: "event-current",
@@ -118,7 +116,6 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         reconciledAt: new Date("2026-04-01T01:00:00.000Z"),
       },
     ],
->>>>>>> Stashed changes
     CurrentCwlRound: [],
     CurrentCwlPrepSnapshot: [],
     CwlRoundMemberCurrent: [],
@@ -127,13 +124,6 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     CwlRotationPlan: [],
     CwlRotationPlanDay: [],
     CwlRotationPlanMember: [],
-<<<<<<< Updated upstream
-=======
-    ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
-    ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
-    ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1" }],
-    WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
->>>>>>> Stashed changes
     ExternalPlayerWeightCurrent: [
       {
         id: "w1",
