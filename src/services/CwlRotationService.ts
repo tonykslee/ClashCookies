@@ -398,6 +398,24 @@ export type CwlRotationOverviewEntry = {
   extraActualPlayerTags: string[];
 };
 
+type CwlRotationOverviewPlanRecord = {
+  id: string;
+  clanTag: string;
+  eventInstanceId: string;
+  season: string;
+  version: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type CwlRotationOverviewReason =
+  | "NO_TRACKED_CLANS"
+  | "NO_CURRENT_EVENT"
+  | "CURRENT_EVENT_SEASON_MISMATCH"
+  | "NO_ACTIVE_PLAN_FOR_RESOLVED_EVENT"
+  | "ACTIVE_PLAN_EVENT_MISMATCH_DETECTED"
+  | "SUMMARY";
+
 type CwlClanLeadershipRow = {
   clanTag: string;
   playerTag: string;
@@ -664,6 +682,163 @@ function formatCwlRosterRotationPlayerLabel(input: { playerName: string | null; 
 
 function buildCwlRotationNotEnoughPlayersDiagnostics(input: CwlRotationNotEnoughPlayersDiagnostics): CwlRotationNotEnoughPlayersDiagnostics {
   return input;
+}
+
+// Keep overview plan selection deterministic when multiple active rows exist for one clan.
+function compareCwlRotationOverviewPlanRecords(
+  a: CwlRotationOverviewPlanRecord,
+  b: CwlRotationOverviewPlanRecord,
+): number {
+  const byVersion = b.version - a.version;
+  if (byVersion !== 0) return byVersion;
+  const byUpdatedAt = b.updatedAt.getTime() - a.updatedAt.getTime();
+  if (byUpdatedAt !== 0) return byUpdatedAt;
+  const byCreatedAt = b.createdAt.getTime() - a.createdAt.getTime();
+  if (byCreatedAt !== 0) return byCreatedAt;
+  return b.id.localeCompare(a.id);
+}
+
+// Pick the newest active plan row for a clan-scoped overview entry.
+function pickLatestCwlRotationOverviewPlanRecord(
+  plans: CwlRotationOverviewPlanRecord[],
+): CwlRotationOverviewPlanRecord | null {
+  return [...plans].sort(compareCwlRotationOverviewPlanRecords)[0] ?? null;
+}
+
+// Emit structured overview diagnostics with stable reason codes and entity context.
+function formatCwlRotationOverviewLog(input: {
+  operation: string;
+  season: string;
+  reason: CwlRotationOverviewReason;
+  clanTag?: string | null;
+  currentEventId?: string | null;
+  currentEventSeason?: string | null;
+  currentEventIsCurrent?: boolean | null;
+  activePlanId?: string | null;
+  activePlanVersion?: number | null;
+  activePlanEventInstanceId?: string | null;
+  mismatchedActivePlanId?: string | null;
+  mismatchedActivePlanVersion?: number | null;
+  mismatchedActivePlanEventInstanceId?: string | null;
+  activePlanCount?: number | null;
+  mismatchedActivePlanCount?: number | null;
+  matchedActivePlanCount?: number | null;
+  trackedClanCount?: number | null;
+  returnedOverviewCount?: number | null;
+  noCurrentEventCount?: number | null;
+  currentEventSeasonMismatchCount?: number | null;
+  noActivePlanCount?: number | null;
+  activePlanMismatchCount?: number | null;
+}): string {
+  const parts = [
+    "[cwl-rotation] event=list_overview",
+    `operation=${input.operation}`,
+    `season=${input.season}`,
+    `reason=${input.reason}`,
+  ];
+  if (input.clanTag !== undefined) {
+    parts.push(`clan_tag=${input.clanTag ?? "none"}`);
+  }
+  if (input.currentEventId !== undefined) {
+    parts.push(`current_event_id=${input.currentEventId ?? "none"}`);
+  }
+  if (input.currentEventSeason !== undefined) {
+    parts.push(`current_event_season=${input.currentEventSeason ?? "none"}`);
+  }
+  if (input.currentEventIsCurrent !== undefined) {
+    parts.push(`current_event_is_current=${input.currentEventIsCurrent ? "true" : "false"}`);
+  }
+  if (input.activePlanId !== undefined) {
+    parts.push(`active_plan_id=${input.activePlanId ?? "none"}`);
+  }
+  if (input.activePlanVersion !== undefined && input.activePlanVersion !== null) {
+    parts.push(`active_plan_version=${input.activePlanVersion}`);
+  }
+  if (input.activePlanEventInstanceId !== undefined) {
+    parts.push(`active_plan_event_instance_id=${input.activePlanEventInstanceId ?? "none"}`);
+  }
+  if (input.mismatchedActivePlanId !== undefined) {
+    parts.push(`mismatched_active_plan_id=${input.mismatchedActivePlanId ?? "none"}`);
+  }
+  if (input.mismatchedActivePlanVersion !== undefined && input.mismatchedActivePlanVersion !== null) {
+    parts.push(`mismatched_active_plan_version=${input.mismatchedActivePlanVersion}`);
+  }
+  if (input.mismatchedActivePlanEventInstanceId !== undefined) {
+    parts.push(`mismatched_active_plan_event_instance_id=${input.mismatchedActivePlanEventInstanceId ?? "none"}`);
+  }
+  if (input.activePlanCount !== undefined && input.activePlanCount !== null) {
+    parts.push(`active_plan_count=${input.activePlanCount}`);
+  }
+  if (input.mismatchedActivePlanCount !== undefined && input.mismatchedActivePlanCount !== null) {
+    parts.push(`mismatched_active_plan_count=${input.mismatchedActivePlanCount}`);
+  }
+  if (input.matchedActivePlanCount !== undefined && input.matchedActivePlanCount !== null) {
+    parts.push(`matched_active_plan_count=${input.matchedActivePlanCount}`);
+  }
+  if (input.trackedClanCount !== undefined && input.trackedClanCount !== null) {
+    parts.push(`tracked_clan_count=${input.trackedClanCount}`);
+  }
+  if (input.returnedOverviewCount !== undefined && input.returnedOverviewCount !== null) {
+    parts.push(`returned_overview_count=${input.returnedOverviewCount}`);
+  }
+  if (input.noCurrentEventCount !== undefined && input.noCurrentEventCount !== null) {
+    parts.push(`no_current_event_count=${input.noCurrentEventCount}`);
+  }
+  if (input.currentEventSeasonMismatchCount !== undefined && input.currentEventSeasonMismatchCount !== null) {
+    parts.push(`current_event_season_mismatch_count=${input.currentEventSeasonMismatchCount}`);
+  }
+  if (input.noActivePlanCount !== undefined && input.noActivePlanCount !== null) {
+    parts.push(`no_active_plan_count=${input.noActivePlanCount}`);
+  }
+  if (input.activePlanMismatchCount !== undefined && input.activePlanMismatchCount !== null) {
+    parts.push(`active_plan_mismatch_count=${input.activePlanMismatchCount}`);
+  }
+  return parts.join(" ");
+}
+
+// Load active plans once per clan so overview can classify matched, stale, and missing rows.
+async function loadActivePlansForOverview(input: {
+  season: string;
+  clanTags: string[];
+}): Promise<Map<string, CwlRotationOverviewPlanRecord[]>> {
+  const clanTags = [...new Set(input.clanTags.map((clanTag) => normalizeClanTag(clanTag)).filter(Boolean))];
+  if (clanTags.length <= 0) {
+    return new Map();
+  }
+
+  const plans = (await prisma.cwlRotationPlan.findMany({
+    where: {
+      season: input.season,
+      isActive: true,
+      clanTag: { in: clanTags },
+    },
+    select: {
+      id: true,
+      clanTag: true,
+      eventInstanceId: true,
+      season: true,
+      version: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+    orderBy: [
+      { clanTag: "asc" },
+      { eventInstanceId: "asc" },
+      { version: "desc" },
+      { updatedAt: "desc" },
+      { id: "desc" },
+    ],
+  })) as CwlRotationOverviewPlanRecord[];
+
+  const plansByClanTag = new Map<string, CwlRotationOverviewPlanRecord[]>();
+  for (const plan of plans) {
+    const clanTag = normalizeClanTag(plan.clanTag);
+    if (!clanTag) continue;
+    const clanPlans = plansByClanTag.get(clanTag) ?? [];
+    clanPlans.push(plan);
+    plansByClanTag.set(clanTag, clanPlans);
+  }
+  return plansByClanTag;
 }
 
 export const CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES = [11, 15, 30] as const;
@@ -2520,54 +2695,28 @@ export class CwlRotationService {
     const season = input?.season ?? resolveCurrentCwlSeasonKey();
     const trackedClanTags = await loadTrackedClanTagsForSeason(season);
     if (trackedClanTags.length <= 0) {
+      console.info(
+        formatCwlRotationOverviewLog({
+          operation: "list_overview",
+          season,
+          reason: "NO_TRACKED_CLANS",
+          trackedClanCount: 0,
+          returnedOverviewCount: 0,
+        }),
+      );
       return [];
     }
-    const currentEventsByClanTag = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
-      clanTags: trackedClanTags,
-    });
-    const eventScopePairs = trackedClanTags
-      .map((clanTag) => {
-        const currentEvent = currentEventsByClanTag.get(clanTag);
-        if (!currentEvent || currentEvent.season !== season) {
-          console.info(
-            [
-              "[cwl-rotation] event=no_current_event",
-              "operation=list_overview",
-              `season=${season}`,
-              `clan_tag=${clanTag}`,
-              `event_instance_id=${currentEvent?.id ?? "none"}`,
-            ].join(" "),
-          );
-          return null;
-        }
-        return { clanTag, eventInstanceId: currentEvent.id };
-      })
-      .filter((entry): entry is { clanTag: string; eventInstanceId: string } => Boolean(entry));
-    if (eventScopePairs.length <= 0) {
-      return [];
-    }
-    const activePlans = await prisma.cwlRotationPlan.findMany({
-      where: {
+    const [currentEventsByClanTag, activePlansByClanTag] = await Promise.all([
+      cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+        clanTags: trackedClanTags,
+      }),
+      loadActivePlansForOverview({
         season,
-        isActive: true,
-        OR: eventScopePairs.map((scope) => ({
-          clanTag: scope.clanTag,
-          eventInstanceId: scope.eventInstanceId,
-        })),
-      },
-      orderBy: [{ clanTag: "asc" }, { eventInstanceId: "asc" }, { version: "desc" }],
-    });
-    if (activePlans.length <= 0) {
-      return [];
-    }
-    const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
-    const uniquePlans = new Map<string, typeof activePlans[number]>();
-    for (const plan of activePlans) {
-      const key = `${plan.eventInstanceId}:${plan.clanTag}`;
-      if (!uniquePlans.has(key)) {
-        uniquePlans.set(key, plan);
-      }
-    }
+        clanTags: trackedClanTags,
+      }),
+    ]);
+
+    const clanTags = [...new Set([...activePlansByClanTag.keys()])];
 
     const { leaderNamesByClanTag, failedLeadershipClanTags } = await this.loadClanLeadershipNamesByClanTag({
       clanTags,
@@ -2575,32 +2724,140 @@ export class CwlRotationService {
     });
 
     const entries: CwlRotationOverviewEntry[] = [];
-    for (const plan of uniquePlans.values()) {
-      const refreshFailed = failedLeadershipClanTags.has(plan.clanTag);
-      const leaderNames = refreshFailed ? [] : leaderNamesByClanTag.get(plan.clanTag) ?? [];
+    let noCurrentEventCount = 0;
+    let currentEventSeasonMismatchCount = 0;
+    let noActivePlanCount = 0;
+    let activePlanMismatchCount = 0;
+    for (const clanTag of trackedClanTags) {
+      const currentEvent = currentEventsByClanTag.get(clanTag);
+      if (!currentEvent) {
+        noCurrentEventCount += 1;
+        console.warn(
+          formatCwlRotationOverviewLog({
+            operation: "list_overview",
+            season,
+            reason: "NO_CURRENT_EVENT",
+            clanTag,
+            currentEventId: null,
+            currentEventSeason: null,
+            currentEventIsCurrent: false,
+          }),
+        );
+        continue;
+      }
+      if (currentEvent.season !== season) {
+        currentEventSeasonMismatchCount += 1;
+        console.warn(
+          formatCwlRotationOverviewLog({
+            operation: "list_overview",
+            season,
+            reason: "CURRENT_EVENT_SEASON_MISMATCH",
+            clanTag,
+            currentEventId: currentEvent.id,
+            currentEventSeason: currentEvent.season,
+            currentEventIsCurrent: true,
+          }),
+        );
+        continue;
+      }
+
+      const activePlans = activePlansByClanTag.get(clanTag) ?? [];
+      const currentEventPlans = activePlans.filter((plan) => plan.eventInstanceId === currentEvent.id);
+      const currentPlan = pickLatestCwlRotationOverviewPlanRecord(currentEventPlans);
+      const mismatchedActivePlans = activePlans.filter((plan) => plan.eventInstanceId !== currentEvent.id);
+
+      if (currentPlan && mismatchedActivePlans.length > 0) {
+        activePlanMismatchCount += 1;
+        const mismatchedPlan = pickLatestCwlRotationOverviewPlanRecord(mismatchedActivePlans);
+        console.warn(
+          formatCwlRotationOverviewLog({
+            operation: "list_overview",
+            season,
+            reason: "ACTIVE_PLAN_EVENT_MISMATCH_DETECTED",
+            clanTag,
+            currentEventId: currentEvent.id,
+            currentEventSeason: currentEvent.season,
+            currentEventIsCurrent: true,
+            activePlanId: currentPlan.id,
+            activePlanVersion: currentPlan.version,
+            activePlanEventInstanceId: currentPlan.eventInstanceId,
+            mismatchedActivePlanId: mismatchedPlan?.id ?? null,
+            mismatchedActivePlanVersion: mismatchedPlan?.version ?? null,
+            mismatchedActivePlanEventInstanceId: mismatchedPlan?.eventInstanceId ?? null,
+            activePlanCount: activePlans.length,
+            mismatchedActivePlanCount: mismatchedActivePlans.length,
+            matchedActivePlanCount: currentEventPlans.length,
+          }),
+        );
+      }
+
+      if (!currentPlan) {
+        if (activePlans.length <= 0) {
+          noActivePlanCount += 1;
+          console.info(
+            formatCwlRotationOverviewLog({
+              operation: "list_overview",
+              season,
+              reason: "NO_ACTIVE_PLAN_FOR_RESOLVED_EVENT",
+              clanTag,
+              currentEventId: currentEvent.id,
+              currentEventSeason: currentEvent.season,
+              currentEventIsCurrent: true,
+              activePlanId: null,
+              activePlanCount: 0,
+              mismatchedActivePlanCount: 0,
+              matchedActivePlanCount: 0,
+            }),
+          );
+        } else {
+          activePlanMismatchCount += 1;
+          const latestActivePlan = pickLatestCwlRotationOverviewPlanRecord(activePlans);
+          console.warn(
+            formatCwlRotationOverviewLog({
+              operation: "list_overview",
+              season,
+              reason: "ACTIVE_PLAN_EVENT_MISMATCH_DETECTED",
+              clanTag,
+              currentEventId: currentEvent.id,
+              currentEventSeason: currentEvent.season,
+              currentEventIsCurrent: true,
+              activePlanId: latestActivePlan?.id ?? null,
+              activePlanVersion: latestActivePlan?.version ?? null,
+              activePlanEventInstanceId: latestActivePlan?.eventInstanceId ?? null,
+              activePlanCount: activePlans.length,
+              mismatchedActivePlanCount: activePlans.filter((plan) => plan.eventInstanceId !== currentEvent.id).length,
+              matchedActivePlanCount: 0,
+            }),
+          );
+        }
+        continue;
+      }
+
+      const refreshFailed = failedLeadershipClanTags.has(clanTag);
+      const leaderNames = refreshFailed ? [] : leaderNamesByClanTag.get(clanTag) ?? [];
       if (input?.refreshLeadershipMembers) {
         console.info(
-          `[cwl] overview leadership clan=${plan.clanTag} leaders=${leaderNames.length} refresh_failed=${refreshFailed ? "yes" : "no"}`,
+          `[cwl] overview leadership clan=${clanTag} leaders=${leaderNames.length} refresh_failed=${refreshFailed ? "yes" : "no"}`,
         );
       }
       const [currentRound, preferredDay] = await Promise.all([
         cwlStateService.getCurrentRoundForClan({
-          clanTag: plan.clanTag,
+          clanTag,
           season,
-          eventInstanceId: plan.eventInstanceId,
+          eventInstanceId: currentEvent.id,
         }),
         this.getPreferredDisplayDay({
-          clanTag: plan.clanTag,
+          clanTag,
           season,
-          eventInstanceId: plan.eventInstanceId,
+          eventInstanceId: currentEvent.id,
         }),
       ]);
       if (!currentRound) {
         entries.push({
           season,
-          clanTag: plan.clanTag,
+          clanTag,
           clanName: null,
-          version: plan.version,
+          version: currentPlan.version,
           roundDay: null,
           battleDayStartAt: null,
           leaderNames,
@@ -2613,24 +2870,24 @@ export class CwlRotationService {
       const targetRoundDay = preferredDay ?? currentRound.roundDay;
       const [validation, battleDayStartAt] = await Promise.all([
         this.validatePlanDay({
-          clanTag: plan.clanTag,
+          clanTag,
           season,
           roundDay: targetRoundDay,
-          eventInstanceId: plan.eventInstanceId,
+          eventInstanceId: currentEvent.id,
         }),
         cwlStateService.getBattleDayStartForClanDay({
-          clanTag: plan.clanTag,
+          clanTag,
           season,
           roundDay: targetRoundDay,
-          eventInstanceId: plan.eventInstanceId,
+          eventInstanceId: currentEvent.id,
         }),
       ]);
       if (!validation || validation.plannedPlayerTags.length <= 0) {
         entries.push({
           season,
-          clanTag: plan.clanTag,
+          clanTag,
           clanName: currentRound.clanName,
-          version: plan.version,
+          version: currentPlan.version,
           roundDay: targetRoundDay,
           battleDayStartAt,
           leaderNames,
@@ -2642,9 +2899,9 @@ export class CwlRotationService {
       }
       entries.push({
         season,
-        clanTag: plan.clanTag,
+        clanTag,
         clanName: currentRound.clanName,
-        version: plan.version,
+        version: currentPlan.version,
         roundDay: targetRoundDay,
         battleDayStartAt,
         leaderNames,
@@ -2653,6 +2910,19 @@ export class CwlRotationService {
         extraActualPlayerTags: validation.extraActualPlayerTags,
       });
     }
+    console.info(
+      formatCwlRotationOverviewLog({
+        operation: "list_overview",
+        season,
+        reason: "SUMMARY",
+        trackedClanCount: trackedClanTags.length,
+        returnedOverviewCount: entries.length,
+        noCurrentEventCount,
+        currentEventSeasonMismatchCount,
+        noActivePlanCount,
+        activePlanMismatchCount,
+      }),
+    );
     return entries.sort((a, b) => a.clanTag.localeCompare(b.clanTag));
   }
 
