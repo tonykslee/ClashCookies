@@ -26,7 +26,7 @@ FROM ranked_candidates ranked
 WHERE ranked."planId" = plan."id"
   AND ranked."candidateRank" = 1;
 
-CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS
+CREATE TEMP TABLE "_CwlRotationOrphanGroup" AS
 WITH orphan_groups AS (
   SELECT
     plan."season",
@@ -120,6 +120,8 @@ FROM "_CwlRotationOrphanGroup" orphan
 WHERE plan."eventInstanceId" IS NULL
   AND plan."season" = orphan."season"
   AND plan."clanTag" = orphan."clanTag";
+
+DROP TABLE "_CwlRotationOrphanGroup";
 
 WITH ranked_active AS (
   SELECT
