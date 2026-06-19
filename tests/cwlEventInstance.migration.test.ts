@@ -36,13 +36,39 @@ function loadMigration(): string {
   return readFileSync(ROTATION_MIGRATION_PATH, "utf8");
 }
 
-function expectOrphanRankingStructure(migration: string) {
-  expect(migration).toMatch(/orphan_groups AS \([\s\S]*?ranked_orphans AS \([\s\S]*?ROW_NUMBER\(\) OVER \(\s*PARTITION BY orphan\."clanTag"\s*ORDER BY\s*orphan\."lastUpdatedAt" DESC,\s*orphan\."firstCreatedAt" DESC,\s*orphan\."season" DESC,\s*orphan\."eventInstanceId" DESC\s*\) AS "orphanRank"/);
-  expect(migration).toContain('FROM orphan_groups orphan');
-  expect(migration).toContain('FROM ranked_orphans orphan');
-  expect(migration).toContain('orphan."orphanRank" = 1');
-  expect(migration).toContain('NOT EXISTS (');
-  expect(migration).toContain('current_clan."isCurrent" = true');
+function loadMigrationStatements(): string[] {
+  return loadMigration()
+    .split(/;\s*(?:\r?\n|$)/g)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+function findStatementIndex(statements: string[], pattern: string): number {
+  return statements.findIndex((statement) => statement.includes(pattern));
+}
+
+function expectNoLaterStatementReferences(statements: string[], startIndex: number, pattern: string) {
+  expect(statements.slice(startIndex + 1).some((statement) => statement.includes(pattern))).toBe(false);
+}
+
+function expectOrphanTempTableStructure(statement: string) {
+  expect(statement).toContain('CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS');
+  expect(statement).toContain('WHERE plan."eventInstanceId" IS NULL');
+  expect(statement).toContain('orphan_groups AS (');
+  expect(statement).toContain('ranked_orphans AS (');
+  expect(statement).toContain('FROM ranked_orphans orphan');
+  expect(statement).toMatch(
+    /ROW_NUMBER\(\) OVER \(\s*PARTITION BY orphan\."clanTag"\s*ORDER BY\s*orphan\."lastUpdatedAt" DESC,\s*orphan\."firstCreatedAt" DESC,\s*orphan\."season" DESC,\s*orphan\."eventInstanceId" DESC\s*\) AS "orphanRank"/,
+  );
+}
+
+function expectSyntheticCurrentStructure(statement: string) {
+  expect(statement).toContain('FROM "_CwlRotationOrphanGroup" orphan');
+  expect(statement).toContain('orphan."orphanRank" = 1');
+  expect(statement).toContain('NOT EXISTS (');
+  expect(statement).toContain('current_clan."clanTag" = orphan."clanTag"');
+  expect(statement).toContain('current_clan."isCurrent" = true');
+  expect(statement).toContain('ELSE false');
 }
 
 function selectHistoricalEvent(
@@ -137,22 +163,65 @@ describe("CWL event instance migration", () => {
 });
 
 describe("CWL rotation event-scope migration", () => {
-  it("preserves historical plan-to-event association ordering", () => {
-    const migration = loadMigration();
+  it("assigns historical plans before materializing orphan groups", () => {
+    const statements = loadMigrationStatements();
+    const historicalUpdateIndex = findStatementIndex(statements, 'WITH ranked_candidates AS (');
+    const tempTableIndex = findStatementIndex(statements, 'CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS');
+    const eventInstanceInsertIndex = findStatementIndex(statements, 'INSERT INTO "CwlEventInstance"');
+    const eventClanInsertIndex = findStatementIndex(statements, 'INSERT INTO "CwlEventClan"');
+    const orphanPlanUpdateIndex = findStatementIndex(statements, 'SET "eventInstanceId" = orphan."eventInstanceId"');
 
-    expect(migration).toContain('clan."firstObservedAt" <= plan."createdAt"');
-    expect(migration).toContain('CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN 0 ELSE 1 END ASC');
-    expect(migration).toContain('CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN clan."firstObservedAt" END DESC');
-    expect(migration).toContain('CASE WHEN clan."firstObservedAt" > plan."createdAt" THEN clan."firstObservedAt" END ASC');
+    expect(historicalUpdateIndex).toBeGreaterThanOrEqual(0);
+    expect(tempTableIndex).toBeGreaterThan(historicalUpdateIndex);
+    expect(eventInstanceInsertIndex).toBeGreaterThan(tempTableIndex);
+    expect(eventClanInsertIndex).toBeGreaterThan(eventInstanceInsertIndex);
+    expect(orphanPlanUpdateIndex).toBeGreaterThan(eventClanInsertIndex);
+
+    const tempTableStatement = statements[tempTableIndex]!;
+    expectOrphanTempTableStructure(tempTableStatement);
+    expectNoLaterStatementReferences(statements, tempTableIndex, 'orphan_groups');
+    expectNoLaterStatementReferences(statements, tempTableIndex, 'ranked_orphans');
+
+    const laterStatements = statements.slice(tempTableIndex + 1);
+    const tempReferences = laterStatements.filter((statement) => statement.includes('_CwlRotationOrphanGroup'));
+    expect(tempReferences.length).toBeGreaterThan(0);
+    expect(tempReferences.every((statement) => !statement.includes('orphan_groups'))).toBe(true);
+    expect(tempReferences.every((statement) => !statement.includes('ranked_orphans'))).toBe(true);
+
+    const historicalStatement = statements[historicalUpdateIndex]!;
+    expect(historicalStatement).toContain('clan."firstObservedAt" <= plan."createdAt"');
+    expect(historicalStatement).toContain('CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN 0 ELSE 1 END ASC');
+    expect(historicalStatement).toContain('CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN clan."firstObservedAt" END DESC');
+    expect(historicalStatement).toContain('CASE WHEN clan."firstObservedAt" > plan."createdAt" THEN clan."firstObservedAt" END ASC');
+  });
+
+  it("materializes only still-null plans into the orphan table and keeps the temp table local", () => {
+    const migration = loadMigration();
+    const statements = loadMigrationStatements();
+    const tempTableIndex = findStatementIndex(statements, 'CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS');
+    const tempTableStatement = statements[tempTableIndex]!;
+
+    expect(migration).toContain('CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS');
+    expect(tempTableStatement).toContain('WHERE plan."eventInstanceId" IS NULL');
+    expect(tempTableStatement).toContain('ON COMMIT DROP');
+    expect(tempTableStatement).toContain('orphan_groups AS (');
+    expect(tempTableStatement).toContain('ranked_orphans AS (');
+    expectNoLaterStatementReferences(statements, tempTableIndex, 'orphan_groups');
+    expectNoLaterStatementReferences(statements, tempTableIndex, 'ranked_orphans');
+
+    const orphanPlanMaterializationIndex = findStatementIndex(
+      statements,
+      'SET "eventInstanceId" = orphan."eventInstanceId"',
+    );
+    expect(orphanPlanMaterializationIndex).toBeGreaterThan(tempTableIndex);
   });
 
   it("nominates at most one orphan event as current per clan and leaves existing pointers alone", () => {
-    const migration = loadMigration();
+    const statements = loadMigrationStatements();
+    const clanInsertIndex = findStatementIndex(statements, 'INSERT INTO "CwlEventClan"');
+    const clanInsertStatement = statements[clanInsertIndex]!;
 
-    expectOrphanRankingStructure(migration);
-    expect(migration).toContain('CASE');
-    expect(migration).toContain('THEN true');
-    expect(migration).toContain('ELSE false');
+    expectSyntheticCurrentStructure(clanInsertStatement);
 
     const orphanGroups: OrphanPlanFixture[] = [
       {
@@ -182,9 +251,9 @@ describe("CWL rotation event-scope migration", () => {
     expect(existingCurrentSynthetic).toBeNull();
   });
 
-  it("attaches a historical plan to the earlier observed event even when a later event is currently selected", () => {
+  it("attaches a historical plan to the earliest eligible event and keeps tie-breakers deterministic", () => {
     const planCreatedAt = new Date("2026-06-05T00:00:00.000Z");
-    const selectedEvent = selectHistoricalEvent(planCreatedAt, [
+    const selectedPastEvent = selectHistoricalEvent(planCreatedAt, [
       {
         id: "event-a",
         season: "2026-06",
@@ -194,12 +263,33 @@ describe("CWL rotation event-scope migration", () => {
       {
         id: "event-b",
         season: "2026-06",
+        firstObservedAt: new Date("2026-06-01T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+      {
+        id: "event-c",
+        season: "2026-06",
         firstObservedAt: new Date("2026-06-15T00:00:00.000Z"),
         lastObservedAt: new Date("2026-06-15T00:00:00.000Z"),
       },
     ]);
+    const selectedFutureEvent = selectHistoricalEvent(new Date("2026-05-01T00:00:00.000Z"), [
+      {
+        id: "event-d",
+        season: "2026-06",
+        firstObservedAt: new Date("2026-06-10T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-06-10T00:00:00.000Z"),
+      },
+      {
+        id: "event-e",
+        season: "2026-06",
+        firstObservedAt: new Date("2026-06-20T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-06-20T00:00:00.000Z"),
+      },
+    ]);
 
-    expect(selectedEvent.id).toBe("event-a");
+    expect(selectedPastEvent.id).toBe("event-b");
+    expect(selectedFutureEvent.id).toBe("event-d");
   });
 
   it("repairs duplicate active plans and enforces event-scoped uniqueness", () => {
@@ -254,7 +344,7 @@ describe("CWL rotation event-scope migration", () => {
   it("chooses only one synthetic current pointer when multiple orphan seasons exist for one clan", () => {
     const migration = loadMigration();
 
-    expectOrphanRankingStructure(migration);
+    expectOrphanTempTableStructure(migration);
 
     const orphanGroups: OrphanPlanFixture[] = [
       {

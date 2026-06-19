@@ -12,15 +12,22 @@ WITH ranked_candidates AS (
         CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN 0 ELSE 1 END ASC,
         CASE WHEN clan."firstObservedAt" <= plan."createdAt" THEN clan."firstObservedAt" END DESC,
         CASE WHEN clan."firstObservedAt" > plan."createdAt" THEN clan."firstObservedAt" END ASC,
-        clan."lastObservedAt" ASC,
-        clan."eventInstanceId" ASC
+        clan."lastObservedAt" DESC,
+        clan."eventInstanceId" DESC
     ) AS "candidateRank"
   FROM "CwlRotationPlan" plan
   JOIN "CwlEventClan" clan
     ON clan."clanTag" = plan."clanTag"
    AND clan."season" = plan."season"
-),
-orphan_groups AS (
+)
+UPDATE "CwlRotationPlan" plan
+SET "eventInstanceId" = ranked."eventInstanceId"
+FROM ranked_candidates ranked
+WHERE ranked."planId" = plan."id"
+  AND ranked."candidateRank" = 1;
+
+CREATE TEMP TABLE "_CwlRotationOrphanGroup" ON COMMIT DROP AS
+WITH orphan_groups AS (
   SELECT
     plan."season",
     plan."clanTag",
@@ -44,11 +51,14 @@ ranked_orphans AS (
     ) AS "orphanRank"
   FROM orphan_groups orphan
 )
-UPDATE "CwlRotationPlan" plan
-SET "eventInstanceId" = ranked."eventInstanceId"
-FROM ranked_candidates ranked
-WHERE ranked."planId" = plan."id"
-  AND ranked."candidateRank" = 1;
+SELECT
+  orphan."season",
+  orphan."clanTag",
+  orphan."eventInstanceId",
+  orphan."firstCreatedAt",
+  orphan."lastUpdatedAt",
+  orphan."orphanRank"
+FROM ranked_orphans orphan;
 
 INSERT INTO "CwlEventInstance" (
   "id",
@@ -67,7 +77,7 @@ SELECT
   orphan."lastUpdatedAt",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt"
-FROM orphan_groups orphan
+FROM "_CwlRotationOrphanGroup" orphan
 ON CONFLICT ("anchorWarTag") DO NOTHING;
 
 INSERT INTO "CwlEventClan" (
@@ -101,12 +111,15 @@ SELECT
   orphan."lastUpdatedAt",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt"
-FROM ranked_orphans orphan
+FROM "_CwlRotationOrphanGroup" orphan
 ON CONFLICT ("eventInstanceId", "clanTag") DO NOTHING;
 
 UPDATE "CwlRotationPlan" plan
-SET "eventInstanceId" = 'legacy-rotation:' || plan."season" || ':' || plan."clanTag"
-WHERE plan."eventInstanceId" IS NULL;
+SET "eventInstanceId" = orphan."eventInstanceId"
+FROM "_CwlRotationOrphanGroup" orphan
+WHERE plan."eventInstanceId" IS NULL
+  AND plan."season" = orphan."season"
+  AND plan."clanTag" = orphan."clanTag";
 
 WITH ranked_active AS (
   SELECT
