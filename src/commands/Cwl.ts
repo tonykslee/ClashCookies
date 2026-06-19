@@ -2401,6 +2401,10 @@ function buildCwlRotationImportSummaryEmbed(input: {
       lines.push(
         `Blocked ${saved.clanName || saved.clanTag} from ${saved.sourceTabName}: active version ${saved.existingVersion}.`,
       );
+    } else if (saved.outcome === "event_changed") {
+      lines.push(
+        `Skipped ${saved.clanName || saved.clanTag} from ${saved.sourceTabName}: CWL event changed since preview; rebuild the import preview.`,
+      );
     } else {
       lines.push(`Skipped ${saved.clanName || saved.clanTag} from ${saved.sourceTabName}.`);
     }

@@ -19,6 +19,30 @@ WITH ranked_candidates AS (
   JOIN "CwlEventClan" clan
     ON clan."clanTag" = plan."clanTag"
    AND clan."season" = plan."season"
+),
+orphan_groups AS (
+  SELECT
+    plan."season",
+    plan."clanTag",
+    'legacy-rotation:' || plan."season" || ':' || plan."clanTag" AS "eventInstanceId",
+    MIN(plan."createdAt") AS "firstCreatedAt",
+    MAX(plan."updatedAt") AS "lastUpdatedAt"
+  FROM "CwlRotationPlan" plan
+  WHERE plan."eventInstanceId" IS NULL
+  GROUP BY plan."season", plan."clanTag"
+),
+ranked_orphans AS (
+  SELECT
+    orphan.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY orphan."clanTag"
+      ORDER BY
+        orphan."lastUpdatedAt" DESC,
+        orphan."firstCreatedAt" DESC,
+        orphan."season" DESC,
+        orphan."eventInstanceId" DESC
+    ) AS "orphanRank"
+  FROM orphan_groups orphan
 )
 UPDATE "CwlRotationPlan" plan
 SET "eventInstanceId" = ranked."eventInstanceId"
@@ -36,23 +60,14 @@ INSERT INTO "CwlEventInstance" (
   "updatedAt"
 )
 SELECT
-  'legacy-rotation:' || orphan."season" || ':' || orphan."clanTag" AS "id",
+  orphan."eventInstanceId" AS "id",
   orphan."season",
-  'legacy-rotation:' || orphan."season" || ':' || orphan."clanTag" AS "anchorWarTag",
+  orphan."eventInstanceId" AS "anchorWarTag",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt"
-FROM (
-  SELECT
-    plan."season",
-    plan."clanTag",
-    MIN(plan."createdAt") AS "firstCreatedAt",
-    MAX(plan."updatedAt") AS "lastUpdatedAt"
-  FROM "CwlRotationPlan" plan
-  WHERE plan."eventInstanceId" IS NULL
-  GROUP BY plan."season", plan."clanTag"
-) orphan
+FROM orphan_groups orphan
 ON CONFLICT ("anchorWarTag") DO NOTHING;
 
 INSERT INTO "CwlEventClan" (
@@ -68,29 +83,25 @@ INSERT INTO "CwlEventClan" (
 )
 SELECT
   'legacy-rotation:' || orphan."season" || ':' || orphan."clanTag" || ':clan' AS "id",
-  'legacy-rotation:' || orphan."season" || ':' || orphan."clanTag" AS "eventInstanceId",
+  orphan."eventInstanceId",
   orphan."season",
   orphan."clanTag",
-  NOT EXISTS (
-    SELECT 1
-    FROM "CwlEventClan" current_clan
-    WHERE current_clan."clanTag" = orphan."clanTag"
-      AND current_clan."isCurrent" = true
-  ) AS "isCurrent",
+  CASE
+    WHEN orphan."orphanRank" = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "CwlEventClan" current_clan
+        WHERE current_clan."clanTag" = orphan."clanTag"
+          AND current_clan."isCurrent" = true
+      )
+    THEN true
+    ELSE false
+  END AS "isCurrent",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt",
   orphan."firstCreatedAt",
   orphan."lastUpdatedAt"
-FROM (
-  SELECT
-    plan."season",
-    plan."clanTag",
-    MIN(plan."createdAt") AS "firstCreatedAt",
-    MAX(plan."updatedAt") AS "lastUpdatedAt"
-  FROM "CwlRotationPlan" plan
-  WHERE plan."eventInstanceId" IS NULL
-  GROUP BY plan."season", plan."clanTag"
-) orphan
+FROM ranked_orphans orphan
 ON CONFLICT ("eventInstanceId", "clanTag") DO NOTHING;
 
 UPDATE "CwlRotationPlan" plan

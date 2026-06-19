@@ -395,6 +395,55 @@ describe("MirrorSyncService", () => {
   it("runs full-overwrite sync for only the allowlisted runtime tables", async () => {
     const sourceStore = makeDefaultTableStore();
     const targetStore = makeDefaultTableStore();
+    sourceStore.CwlRotationPlan = [
+      {
+        id: "plan-1",
+        eventInstanceId: "event-current",
+        clanTag: "#AAA111",
+        season: "2026-04",
+        version: 3,
+        rosterSize: 15,
+        generatedFromRoundDay: 1,
+        excludedPlayerTags: ["#P9"],
+        warningSummary: null,
+        metadata: { source: "sheet-import" },
+        isActive: true,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ];
+    sourceStore.CwlRotationPlanDay = [
+      {
+        id: "plan-day-1",
+        planId: "plan-1",
+        eventInstanceId: "event-current",
+        clanTag: "#AAA111",
+        season: "2026-04",
+        roundDay: 1,
+        lineupSize: 15,
+        locked: false,
+        metadata: { source: "sheet-import" },
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ];
+    sourceStore.CwlRotationPlanMember = [
+      {
+        id: "plan-member-1",
+        planId: "plan-1",
+        planDayId: "plan-day-1",
+        eventInstanceId: "event-current",
+        clanTag: "#AAA111",
+        season: "2026-04",
+        roundDay: 1,
+        playerTag: "#P1",
+        playerName: "Player 1",
+        assignmentOrder: 0,
+        manualOverride: false,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T01:00:00.000Z"),
+      },
+    ];
     targetStore.TrackedClan = [{ id: 99, tag: "#OLD" }];
     const schemaColumns = makeSchemaColumns();
     const sourceClient = buildSourceClient(sourceStore, schemaColumns);
@@ -437,6 +486,9 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CwlRotationPlan).toEqual(sourceStore.CwlRotationPlan);
     expect(targetStore.CwlRotationPlanDay).toEqual(sourceStore.CwlRotationPlanDay);
     expect(targetStore.CwlRotationPlanMember).toEqual(sourceStore.CwlRotationPlanMember);
+    expect(targetStore.CwlRotationPlan[0]?.eventInstanceId).toBe("event-current");
+    expect(targetStore.CwlRotationPlanDay[0]?.eventInstanceId).toBe("event-current");
+    expect(targetStore.CwlRotationPlanMember[0]?.eventInstanceId).toBe("event-current");
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
@@ -447,7 +499,7 @@ describe("MirrorSyncService", () => {
     const mirroredTables = result.tableSummaries.map((summary) => summary.table);
     const eventTableStart = mirroredTables.indexOf("CwlEventInstance");
     expect(eventTableStart).toBeGreaterThanOrEqual(0);
-    expect(mirroredTables.slice(eventTableStart, eventTableStart + 10)).toEqual([
+    expect(mirroredTables.slice(eventTableStart, eventTableStart + 13)).toEqual([
       "CwlEventInstance",
       "CwlEventWarTag",
       "CwlEventClan",
@@ -458,6 +510,9 @@ describe("MirrorSyncService", () => {
       "CwlRoundMemberCurrent",
       "CwlRoundHistory",
       "CwlRoundMemberHistory",
+      "CwlRotationPlan",
+      "CwlRotationPlanDay",
+      "CwlRotationPlanMember",
     ]);
     expect(targetClient.$executeRawUnsafe.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(logger.info).toHaveBeenCalledWith(

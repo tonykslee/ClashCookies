@@ -361,6 +361,13 @@ export type PersistImportedCwlRotationPlanResult =
       clanTag: string;
       clanName: string | null;
       sourceTabName: string;
+    }
+  | {
+      outcome: "event_changed";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      sourceTabName: string;
     };
 
 export type CwlRotationValidationResult = {
@@ -878,9 +885,18 @@ async function loadPlanDaysWithMembers(planId: string) {
 
 async function loadCwlRotationExportClanNameMap(input: {
   season: string;
-  clanTags: string[];
+  eventScopePairs: Array<{ clanTag: string; eventInstanceId: string }>;
 }): Promise<Map<string, string>> {
-  const clanTagFilter = [...new Set(input.clanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean))];
+  const eventScopePairs = input.eventScopePairs
+    .map((scope) => ({
+      clanTag: normalizeClanTag(scope.clanTag),
+      eventInstanceId: String(scope.eventInstanceId ?? "").trim(),
+    }))
+    .filter(
+      (scope): scope is { clanTag: string; eventInstanceId: string } =>
+        Boolean(scope.clanTag) && Boolean(scope.eventInstanceId),
+    );
+  const clanTagFilter = [...new Set(eventScopePairs.map((scope) => scope.clanTag))];
   const clanNameByClanTag = new Map<string, string>();
   if (clanTagFilter.length <= 0) return clanNameByClanTag;
 
@@ -903,15 +919,11 @@ async function loadCwlRotationExportClanNameMap(input: {
     setClanName(row.tag, row.name);
   }
 
-  const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
-    clanTags: clanTagFilter,
-  });
-  const currentCwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
-
-  const prepRows = currentCwlEventIds.length > 0
+  const prepRows = eventScopePairs.length > 0
     ? await prisma.currentCwlPrepSnapshot.findMany({
         where: {
-          eventInstanceId: { in: currentCwlEventIds },
+          season: input.season,
+          OR: eventScopePairs,
         },
         select: { clanTag: true, clanName: true },
         orderBy: [{ clanTag: "asc" }],
@@ -921,10 +933,11 @@ async function loadCwlRotationExportClanNameMap(input: {
     setClanName(row.clanTag, row.clanName);
   }
 
-  const historyRows = currentCwlEventIds.length > 0
+  const historyRows = eventScopePairs.length > 0
     ? await prisma.cwlRoundHistory.findMany({
         where: {
-          eventInstanceId: { in: currentCwlEventIds },
+          season: input.season,
+          OR: eventScopePairs,
         },
         select: { clanTag: true, clanName: true, roundDay: true, updatedAt: true },
         orderBy: [{ clanTag: "asc" }, { roundDay: "desc" }, { updatedAt: "desc" }],
@@ -2012,7 +2025,7 @@ export class CwlRotationService {
 
   /** Purpose: persist one confirmed imported CWL planner plan into the active-season planner tables. */
   async persistImportedPlan(input: {
-    eventInstanceId?: string | null;
+    eventInstanceId: string;
     clanTag: string;
     clanName: string | null;
     sourceSheetId: string;
@@ -2076,7 +2089,25 @@ export class CwlRotationService {
       operation: "persist_imported_plan",
     });
     const capturedEventInstanceId = String(input.eventInstanceId ?? "").trim();
-    if (!eventScope || (capturedEventInstanceId && eventScope.eventInstanceId !== capturedEventInstanceId)) {
+    if (!eventScope) {
+      console.warn(
+        [
+          "[cwl-rotation] event=no_current_event",
+          "operation=persist_imported_plan",
+          `season=${season}`,
+          `clan_tag=${clanTag}`,
+          `event_instance_id=${capturedEventInstanceId || "none"}`,
+        ].join(" "),
+      );
+      return {
+        outcome: "no_current_event",
+        season,
+        clanTag,
+        clanName: input.clanName,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+    if (!capturedEventInstanceId || eventScope.eventInstanceId !== capturedEventInstanceId) {
       console.warn(
         [
           "[cwl-rotation] event=stale_import_preview_rejected",
@@ -2085,10 +2116,10 @@ export class CwlRotationService {
           `clan_tag=${clanTag}`,
           `event_instance_id=${capturedEventInstanceId || "none"}`,
           `current_event_instance_id=${eventScope?.eventInstanceId ?? "none"}`,
-        ].join(" "),
+          ].join(" "),
       );
       return {
-        outcome: "no_current_event",
+        outcome: "event_changed",
         season,
         clanTag,
         clanName: input.clanName,
@@ -2247,9 +2278,7 @@ export class CwlRotationService {
 
     const clanNameByClanTag = await loadCwlRotationExportClanNameMap({
       season,
-      clanTags: [...uniquePlans.values()]
-        .map((plan) => normalizeClanTag(plan.clanTag))
-        .filter((clanTag): clanTag is string => Boolean(clanTag)),
+      eventScopePairs,
     });
     const rosterDetailsByPlanId = await loadCwlRotationExportRosterDetailsMap({
       season,

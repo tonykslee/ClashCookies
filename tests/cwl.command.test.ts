@@ -4051,6 +4051,124 @@ describe("/cwl command", () => {
     expect(confirmInteraction.editReply).toHaveBeenCalled();
   });
 
+  it("surfaces a stale import preview warning when the CWL event changes before confirmation", async () => {
+    const preview: CwlRotationSheetImportPreview = {
+      sourceSheetId: "sheet-1",
+      sourceSheetTitle: "Imported CWL Planner",
+      season: "2026-04",
+      matchedClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          tabTitle: "CWL Alpha roster",
+          existingVersion: null,
+          importable: true,
+          importBlockedReason: null,
+          warnings: [],
+          structuralRowCount: 0,
+          reviewRequiredRowCount: 0,
+          ignoredRowCount: 0,
+          rosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+          days: [
+            {
+              roundDay: 1,
+              lineupSize: 1,
+              rows: [
+                {
+                  playerTag: "#PYLQ0289",
+                  playerName: "Alpha",
+                  subbedOut: false,
+                  assignmentOrder: 0,
+                },
+              ],
+              members: [
+                {
+                  playerTag: "#PYLQ0289",
+                  playerName: "Alpha",
+                  subbedOut: false,
+                  assignmentOrder: 0,
+                },
+              ],
+            },
+          ],
+          parsedRows: [
+            {
+              rowId: "cwl-alpha-roster:3",
+              sheetRowNumber: 3,
+              tabTitle: "CWL Alpha roster",
+              clanTag: "#2QG2C08UP",
+              clanName: "CWL Alpha",
+              rawText: "Alpha | #PYLQ0289 | 12 | IN",
+              rawPlayerNameSnippet: "Alpha",
+              parsedPlayerTag: "#PYLQ0289",
+              parsedPlayerName: "Alpha",
+              classification: "exact_match",
+              reason: null,
+              suggestions: [],
+              dayRows: [{ roundDay: 1, subbedOut: false, assignmentOrder: 0 }],
+              resolvedPlayerTag: "#PYLQ0289",
+              resolvedPlayerName: "Alpha",
+              ignored: false,
+            },
+          ],
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      warnings: [],
+    };
+    vi.mocked(cwlRotationSheetService.buildImportPreview).mockResolvedValue(preview);
+    vi.mocked(cwlRotationSheetService.confirmImport).mockResolvedValue({
+      season: "2026-04",
+      saved: [
+        {
+          outcome: "event_changed",
+          season: "2026-04",
+          clanTag: "#2QG2C08UP",
+          clanName: "CWL Alpha",
+          sourceTabName: "CWL Alpha roster",
+        },
+      ],
+      skippedTrackedClans: [],
+      skippedTabs: [],
+      ignoredRows: [],
+    } as any);
+
+    const interaction = makeInteraction({
+      group: "rotations",
+      subcommand: "import",
+    });
+    (interaction.options.getString as any).mockImplementation((name: string) => {
+      if (name === "sheet") return "https://docs.google.com/spreadsheets/d/sheet-1/edit";
+      if (name === "visibility") return null;
+      return null;
+    });
+    (interaction.options.getBoolean as any).mockImplementation((name: string) => {
+      if (name === "overwrite") return false;
+      return null;
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const confirmId = getComponentButtonCustomIds(interaction).find((id) => id.includes(":confirm:"));
+    expect(confirmId).toBeTruthy();
+    const confirmInteraction = {
+      customId: confirmId,
+      user: { id: "111111111111111111" },
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCwlRotationImportButtonInteraction(confirmInteraction as any);
+
+    expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledTimes(1);
+    expect(getEditedDescription(confirmInteraction)).toContain(
+      "CWL event changed since preview; rebuild the import preview.",
+    );
+  });
+
   it("switches preview clans directly, preserves the selected day, and surfaces unavailable clans for that day", async () => {
     const preview: CwlRotationSheetImportPreview = {
       sourceSheetId: "sheet-1",
