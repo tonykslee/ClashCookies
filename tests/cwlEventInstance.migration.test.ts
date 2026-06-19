@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,20 @@ type TempPgCluster = {
   runSql: (sql: string) => string;
 };
 
+type PostgresCommandFailure = {
+  command: string;
+  args: string[];
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+};
+
+type PostgresExitState = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
+
 function sqlText(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -243,6 +257,72 @@ function buildPostgresSessionEnv(sessionTimezone?: string): NodeJS.ProcessEnv {
   };
 }
 
+// Build the temporary server arguments that keep the cluster TCP-only and bound to localhost.
+function buildPostgresServerArgs(dataDir: string, port: number): string[] {
+  const args = ["-D", dataDir, "-h", "127.0.0.1", "-p", String(port)];
+  if (process.platform !== "win32") {
+    args.push("-c", "unix_socket_directories=");
+  }
+  return args;
+}
+
+// Read the temporary cluster startup log without failing the harness cleanup path.
+function readStartupLogContents(startupLogPath: string): string {
+  try {
+    return readFileSync(startupLogPath, "utf8").trim();
+  } catch {
+    return "<startup log unavailable>";
+  }
+}
+
+// Format a startup failure with the command, exit status, and server log for quick diagnosis.
+function formatPostgresStartupFailure(
+  phase: "start" | "readiness",
+  failure: PostgresCommandFailure | null,
+  startupCommand: string,
+  startupArgs: string[],
+  startupLogPath: string,
+  dataDir: string,
+  port: number,
+): Error {
+  const exitSummary = failure
+    ? `exit_code=${failure.exitCode ?? "unknown"} signal=${failure.signal ?? "none"}`
+    : "exit_code=unknown signal=unknown";
+  const commandSummary = [startupCommand, ...startupArgs].join(" ");
+  const logContents = readStartupLogContents(startupLogPath);
+  const details = [
+    `Temporary PostgreSQL ${phase} failed for cwlEventInstance.migration.test.ts.`,
+    `command=${commandSummary}`,
+    `status=${exitSummary}`,
+    `data_dir=${dataDir}`,
+    `port=${port}`,
+  ];
+  if (failure) {
+    details.push(`stdout=${failure.stdout.trim() || "<empty>"}`);
+    details.push(`stderr=${failure.stderr.trim() || "<empty>"}`);
+  }
+  details.push(`startup_log=${logContents || "<empty>"}`);
+  return new Error(details.join(" "));
+}
+
+// Capture an execFileSync failure in a structured form for actionable startup errors.
+function toPostgresCommandFailure(command: string, args: string[], error: unknown): PostgresCommandFailure {
+  const failure = error as NodeJS.ErrnoException & {
+    status?: number | null;
+    signal?: string | null;
+    stdout?: string | Buffer | null;
+    stderr?: string | Buffer | null;
+  };
+  return {
+    command,
+    args,
+    exitCode: typeof failure.status === "number" ? failure.status : null,
+    signal: typeof failure.signal === "string" ? failure.signal : null,
+    stdout: typeof failure.stdout === "string" ? failure.stdout : Buffer.isBuffer(failure.stdout) ? failure.stdout.toString("utf8") : "",
+    stderr: typeof failure.stderr === "string" ? failure.stderr : Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : "",
+  };
+}
+
 async function withTemporaryPostgres<T>(
   callback: (cluster: TempPgCluster) => Promise<T>,
   sessionTimezone?: string,
@@ -252,57 +332,70 @@ async function withTemporaryPostgres<T>(
   const dataDir = join(tempBaseDir, `cluster-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   rmSync(dataDir, { recursive: true, force: true });
   const tracePath = join(tempBaseDir, `trace-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
+  const startupLogPath = join(tempBaseDir, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
   const trace = (message: string) => appendFileSync(tracePath, `${message}\n`, "utf8");
   const port = await reserveFreePort();
   const toolchain = resolvePostgresToolchainOrThrow(sessionTimezone);
-  let postgresPid: number | null = null;
+  const startupLogFd = openSync(startupLogPath, "a");
+  let started = false;
+  let postgresProcessExited: PostgresExitState | null = null;
+  let postgresLaunchFailure: PostgresCommandFailure | null = null;
   try {
     trace(`initdb_start ${dataDir}`);
     execFileSync(toolchain.initdb.command, ["-D", dataDir, "--auth=trust", "--username=postgres"], {
       encoding: "utf8",
     });
     trace(`initdb_done ${dataDir}`);
-    const postgresProcess = spawn(
-      toolchain.postgres.command,
-      ["-D", dataDir, "-h", "127.0.0.1", "-p", String(port)],
-      {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      },
-    );
-    postgresPid = postgresProcess.pid ?? null;
-    postgresProcess.unref();
-    trace(`postgres_spawned ${postgresPid ?? "unknown"}`);
-
-    const runPsql = (sql: string) =>
-      execFileSync(
-        toolchain.psql.command,
-        [
-          "-h",
-          "127.0.0.1",
-          "-p",
-          String(port),
-          "-U",
-          "postgres",
-          "-d",
-          "postgres",
-          "-v",
-          "ON_ERROR_STOP=1",
-          "-q",
-          "-A",
-          "-t",
-          "-F",
-          "\t",
-        ],
-        {
-          encoding: "utf8",
-          input: sql,
-          env: toolchain.sessionEnv,
-        },
-      ).trim();
-
+    const postgresArgs = buildPostgresServerArgs(dataDir, port);
+    trace(`postgres_start ${toolchain.postgres.command} ${postgresArgs.join(" ")}`);
+    const postgresProcess = spawn(toolchain.postgres.command, postgresArgs, {
+      stdio: ["ignore", startupLogFd, startupLogFd],
+      windowsHide: true,
+    });
+    const postgresExitPromise = new Promise<PostgresExitState | null>((resolve) => {
+      postgresProcess.once("error", (error) => {
+        postgresLaunchFailure = toPostgresCommandFailure(toolchain.postgres.command, postgresArgs, error);
+        resolve(null);
+      });
+      postgresProcess.once("exit", (code, signal) => {
+        const exitState = {
+          code,
+          signal,
+        };
+        postgresProcessExited = exitState;
+        resolve(exitState);
+      });
+    });
     for (let attempt = 0; attempt < 60; attempt += 1) {
+      if (postgresLaunchFailure) {
+        throw formatPostgresStartupFailure(
+          "start",
+          postgresLaunchFailure,
+          toolchain.postgres.command,
+          postgresArgs,
+          startupLogPath,
+          dataDir,
+          port,
+        );
+      }
+      if (postgresProcessExited) {
+        throw formatPostgresStartupFailure(
+          "start",
+          {
+            command: toolchain.postgres.command,
+            args: postgresArgs,
+            exitCode: postgresProcessExited.code,
+            signal: postgresProcessExited.signal,
+            stdout: "",
+            stderr: "",
+          },
+          toolchain.postgres.command,
+          postgresArgs,
+          startupLogPath,
+          dataDir,
+          port,
+        );
+      }
       try {
         execFileSync(
           toolchain.psql.command,
@@ -331,72 +424,127 @@ async function withTemporaryPostgres<T>(
           },
         );
         trace(`postgres_ready ${port}`);
+        started = true;
         break;
       } catch (error) {
-        if (attempt === 59) {
-          throw error;
+        if (postgresLaunchFailure) {
+          throw formatPostgresStartupFailure(
+            "start",
+            postgresLaunchFailure,
+            toolchain.postgres.command,
+            postgresArgs,
+            startupLogPath,
+            dataDir,
+            port,
+          );
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (postgresProcessExited) {
+          throw formatPostgresStartupFailure(
+            "readiness",
+            {
+              command: toolchain.postgres.command,
+              args: postgresArgs,
+              exitCode: postgresProcessExited.code,
+              signal: postgresProcessExited.signal,
+              stdout: "",
+              stderr: "",
+            },
+            toolchain.postgres.command,
+            postgresArgs,
+            startupLogPath,
+            dataDir,
+            port,
+          );
+        }
+        if (attempt === 59) {
+          throw formatPostgresStartupFailure(
+            "readiness",
+            toPostgresCommandFailure(toolchain.psql.command, ["select 1;"], error),
+            toolchain.postgres.command,
+            postgresArgs,
+            startupLogPath,
+            dataDir,
+            port,
+          );
+        }
+        await Promise.race([new Promise((resolve) => setTimeout(resolve, 250)), postgresExitPromise]);
+        if (postgresLaunchFailure) {
+          throw formatPostgresStartupFailure(
+            "start",
+            postgresLaunchFailure,
+            toolchain.postgres.command,
+            postgresArgs,
+            startupLogPath,
+            dataDir,
+            port,
+          );
+        }
+        if (postgresProcessExited) {
+          throw formatPostgresStartupFailure(
+            "start",
+            {
+              command: toolchain.postgres.command,
+              args: postgresArgs,
+              exitCode: postgresProcessExited.code,
+              signal: postgresProcessExited.signal,
+              stdout: "",
+              stderr: "",
+            },
+            toolchain.postgres.command,
+            postgresArgs,
+            startupLogPath,
+            dataDir,
+            port,
+          );
+        }
       }
     }
 
-    const runSql = runPsql;
+    const runSql = (sql: string) =>
+      execFileSync(
+        toolchain.psql.command,
+        [
+          "-h",
+          "127.0.0.1",
+          "-p",
+          String(port),
+          "-U",
+          "postgres",
+          "-d",
+          "postgres",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-q",
+          "-A",
+          "-t",
+          "-F",
+          "\t",
+        ],
+        {
+          encoding: "utf8",
+          input: sql,
+          env: toolchain.sessionEnv,
+        },
+      ).trim();
 
     return await callback({ port, dataDir, runSql });
   } finally {
-    trace(`pg_ctl_stop ${port}`);
-    try {
-      execFileSync(toolchain.pgCtl.command, ["-D", dataDir, "-m", "fast", "stop"], {
-        encoding: "utf8",
-        env: toolchain.sessionEnv,
-      });
-    } catch {
-      // Best-effort cleanup after temporary migration verification.
-      if (postgresPid !== null) {
-        if (process.platform === "win32") {
-          try {
-            execFileSync("taskkill", ["/PID", String(postgresPid), "/T", "/F"], {
-              encoding: "utf8",
-            });
-          } catch {
-            // If Windows cleanup fails, fall through to the final directory cleanup retry.
-          }
-        } else {
-          try {
-            process.kill(postgresPid, "SIGTERM");
-          } catch {
-            // If the process is already gone, the retry loop below will confirm cleanup.
-          }
-          for (let attempt = 0; attempt < 20; attempt += 1) {
-            if (!isProcessAlive(postgresPid)) {
-              break;
-            }
-            if (attempt === 19) {
-              try {
-                process.kill(postgresPid, "SIGKILL");
-              } catch {
-                // Final best-effort escalation after the process ignored SIGTERM.
-              }
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 250));
-          }
-        }
+    closeSync(startupLogFd);
+    if (started) {
+      trace(`pg_ctl_stop ${port}`);
+      try {
+        execFileSync(toolchain.pgCtl.command, ["-D", dataDir, "-m", "fast", "-w", "stop"], {
+          encoding: "utf8",
+          env: toolchain.sessionEnv,
+        });
+      } catch {
+        // Best-effort cleanup after temporary migration verification.
       }
     }
     await waitForDirectoryRelease(dataDir);
     trace(`cleanup ${port}`);
     rmSync(dataDir, { recursive: true, force: true });
-  }
-}
-
-// Check whether a temporary PostgreSQL process is still alive after shutdown attempts.
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    rmSync(startupLogPath, { force: true });
   }
 }
 
