@@ -192,6 +192,204 @@ describe("CwlEventResolutionService", () => {
     );
   });
 
+  it("reuses an already mapped event and refreshes event, war-tag, and clan timestamps", async () => {
+    const observedAt = new Date("2026-04-01T05:00:00.000Z");
+    txMock.cwlEventWarTag.findMany
+      .mockResolvedValueOnce([
+        { warTag: "#PYLQ0289", eventInstanceId: "event-existing" },
+        { warTag: "#QGRJ2222", eventInstanceId: "event-existing" },
+      ])
+      .mockResolvedValueOnce([
+        { warTag: "#PYLQ0289" },
+        { warTag: "#QGRJ2222" },
+      ]);
+    txMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        eventInstanceId: "event-existing",
+        eventInstance: makeEventSummary({
+          id: "event-existing",
+          anchorWarTag: "#PYLQ0289",
+        }),
+      },
+    ]);
+    txMock.cwlEventInstance.findUnique.mockResolvedValue({
+      anchorWarTag: "#PYLQ0289",
+    });
+
+    const result = await cwlEventResolutionService.resolveCwlEventForClan({
+      season: "2026-04",
+      clanTag: "#PYLQ0289",
+      observedWarTags: ["#PYLQ0289", "#QGRJ2222"],
+      observedAt,
+    });
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      eventInstanceId: "event-existing",
+      created: false,
+      attachedWarTags: [],
+      previousCurrentEventInstanceId: "event-existing",
+    });
+    expect(txMock.cwlEventInstance.create).not.toHaveBeenCalled();
+    expect(txMock.cwlEventInstance.update).toHaveBeenCalledWith({
+      where: { id: "event-existing" },
+      data: { lastObservedAt: observedAt },
+    });
+    expect(txMock.cwlEventWarTag.updateMany).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: "event-existing",
+        warTag: { in: ["#PYLQ0289", "#QGRJ2222"] },
+      },
+      data: { lastObservedAt: observedAt },
+    });
+    expect(txMock.cwlEventWarTag.create).not.toHaveBeenCalled();
+    expect(txMock.cwlEventClan.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          eventInstanceId_clanTag: {
+            eventInstanceId: "event-existing",
+            clanTag: "#PYLQ0289",
+          },
+        },
+        update: expect.objectContaining({
+          isCurrent: true,
+          lastObservedAt: observedAt,
+        }),
+      }),
+    );
+  });
+
+  it("attaches a later-observed unmapped war tag to the existing event", async () => {
+    const observedAt = new Date("2026-04-01T06:00:00.000Z");
+    txMock.cwlEventWarTag.findMany
+      .mockResolvedValueOnce([
+        { warTag: "#PYLQ0289", eventInstanceId: "event-existing" },
+      ])
+      .mockResolvedValueOnce([
+        { warTag: "#PYLQ0289" },
+      ]);
+    txMock.cwlEventInstance.findUnique.mockResolvedValue({
+      anchorWarTag: "#PYLQ0289",
+    });
+
+    const result = await cwlEventResolutionService.resolveCwlEventForClan({
+      season: "2026-04",
+      clanTag: "#PYLQ0289",
+      observedWarTags: ["#PYLQ0289", "#2QG2C08UP"],
+      observedAt,
+    });
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      eventInstanceId: "event-existing",
+      created: false,
+      attachedWarTags: ["#2QG2C08UP"],
+    });
+    expect(txMock.cwlEventInstance.create).not.toHaveBeenCalled();
+    expect(txMock.cwlEventWarTag.create).toHaveBeenCalledTimes(1);
+    expect(txMock.cwlEventWarTag.create).toHaveBeenCalledWith({
+      data: {
+        eventInstanceId: "event-existing",
+        season: "2026-04",
+        warTag: "#2QG2C08UP",
+        firstObservedAt: observedAt,
+        lastObservedAt: observedAt,
+      },
+    });
+  });
+
+  it("retains two disjoint same-month events for one clan and marks only the latest current", async () => {
+    const firstObservedAt = new Date("2026-06-01T04:00:00.000Z");
+    const secondObservedAt = new Date("2026-06-15T04:00:00.000Z");
+    txMock.cwlEventWarTag.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    txMock.cwlEventInstance.create
+      .mockResolvedValueOnce({
+        id: "event-june-a",
+        anchorWarTag: "#PYLQ0289",
+      })
+      .mockResolvedValueOnce({
+        id: "event-june-b",
+        anchorWarTag: "#2QG2C08UP",
+      });
+    txMock.cwlEventClan.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          eventInstanceId: "event-june-a",
+          eventInstance: makeEventSummary({
+            id: "event-june-a",
+            season: "2026-06",
+            anchorWarTag: "#PYLQ0289",
+            firstObservedAt,
+            lastObservedAt: firstObservedAt,
+          }),
+        },
+      ]);
+
+    const first = await cwlEventResolutionService.resolveCwlEventForClan({
+      season: "2026-06",
+      clanTag: "#PYLQ0289",
+      observedWarTags: ["#PYLQ0289"],
+      observedAt: firstObservedAt,
+    });
+    const second = await cwlEventResolutionService.resolveCwlEventForClan({
+      season: "2026-06",
+      clanTag: "#PYLQ0289",
+      observedWarTags: ["#2QG2C08UP"],
+      observedAt: secondObservedAt,
+    });
+
+    expect(first).toMatchObject({
+      kind: "resolved",
+      eventInstanceId: "event-june-a",
+      created: true,
+      previousCurrentEventInstanceId: null,
+    });
+    expect(second).toMatchObject({
+      kind: "resolved",
+      eventInstanceId: "event-june-b",
+      created: true,
+      previousCurrentEventInstanceId: "event-june-a",
+    });
+    expect(txMock.cwlEventInstance.create).toHaveBeenCalledTimes(2);
+    expect(txMock.cwlEventClan.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          clanTag: "#PYLQ0289",
+          isCurrent: true,
+          eventInstanceId: {
+            not: "event-june-b",
+          },
+        },
+        data: {
+          isCurrent: false,
+        },
+      }),
+    );
+    expect(txMock.cwlEventClan.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          eventInstanceId_clanTag: {
+            eventInstanceId: "event-june-b",
+            clanTag: "#PYLQ0289",
+          },
+        },
+        create: expect.objectContaining({
+          eventInstanceId: "event-june-b",
+          season: "2026-06",
+          clanTag: "#PYLQ0289",
+          isCurrent: true,
+          firstObservedAt: secondObservedAt,
+          lastObservedAt: secondObservedAt,
+        }),
+      }),
+    );
+  });
+
   it("retries a transient transaction conflict before resolving the event", async () => {
     let transactionAttempts = 0;
     prismaMock.$transaction.mockImplementation(async (fn: (tx: typeof txMock) => Promise<unknown>) => {

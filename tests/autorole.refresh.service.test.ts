@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   cwlRoundMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -36,6 +39,26 @@ const prismaMock = vi.hoisted(() => ({
     deleteMany: vi.fn(),
   },
 }));
+
+function buildMockCurrentCwlEventClanRows(tags: string[]) {
+  const observedAt = new Date("2026-04-15T00:00:00.000Z");
+  return tags.map((tag, index) => ({
+    clanTag: tag,
+    eventInstance: {
+      id: `mock-cwl-event-${index + 1}`,
+      season: "2026-04",
+      anchorWarTag: `#MOCKWAR${index + 1}`,
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt,
+    },
+  }));
+}
+
+function mockCurrentCwlEventsForRequestedTags() {
+  prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) =>
+    buildMockCurrentCwlEventClanRows(args?.where?.clanTag?.in ?? []),
+  );
+}
 
 const cwlRegistryMock = vi.hoisted(() => ({
   resolveCurrentCwlSeasonKey: vi.fn(),
@@ -274,6 +297,8 @@ describe("AutoRoleRefreshService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlEventClan.findMany.mockReset();
+    mockCurrentCwlEventsForRequestedTags();
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
@@ -2045,6 +2070,14 @@ describe("AutoRoleRefreshService", () => {
         select: { tag: true },
       }),
     );
+    expect(prismaMock.cwlEventClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          clanTag: { in: ["#PYLQ0289"] },
+          isCurrent: true,
+        },
+      }),
+    );
     expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { clanTag: { in: ["#2QG2C08UP"] } },
@@ -2053,7 +2086,10 @@ describe("AutoRoleRefreshService", () => {
     );
     expect(prismaMock.cwlRoundMemberCurrent.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { season: "2026-04", clanTag: { in: ["#PYLQ0289"] } },
+        where: {
+          eventInstanceId: { in: ["mock-cwl-event-1"] },
+          clanTag: { in: ["#PYLQ0289"] },
+        },
         select: { clanTag: true, playerTag: true },
       }),
     );

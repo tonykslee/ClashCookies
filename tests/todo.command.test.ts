@@ -42,6 +42,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlTrackedClan: {
     findMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   currentCwlRound: {
     findMany: vi.fn(),
   },
@@ -84,6 +87,26 @@ const prismaMock = vi.hoisted(() => ({
     return arg;
   }),
 }));
+
+function buildMockCurrentCwlEventClanRows(tags: string[]) {
+  const observedAt = new Date("2026-03-26T00:00:00.000Z");
+  return tags.map((tag, index) => ({
+    clanTag: tag,
+    eventInstance: {
+      id: `mock-cwl-event-${index + 1}`,
+      season: "2026-03",
+      anchorWarTag: `#MOCKWAR${index + 1}`,
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt,
+    },
+  }));
+}
+
+function mockCurrentCwlEventsForRequestedTags() {
+  prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) =>
+    buildMockCurrentCwlEventClanRows(args?.where?.clanTag?.in ?? []),
+  );
+}
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -365,6 +388,7 @@ describe("/todo command", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.raidTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlEventClan.findMany.mockReset();
     prismaMock.currentCwlRound.findMany.mockReset();
     prismaMock.cwlRoundMemberCurrent.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
@@ -381,6 +405,7 @@ describe("/todo command", () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    mockCurrentCwlEventsForRequestedTags();
     prismaMock.$transaction.mockClear();
 
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
@@ -4074,12 +4099,14 @@ describe("/todo pagination buttons", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.raidTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlEventClan.findMany.mockReset();
     prismaMock.cwlRotationPlan.findMany.mockReset();
     prismaMock.cwlRotationPlanDay.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    mockCurrentCwlEventsForRequestedTags();
     prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlan.findMany.mockResolvedValue([]);
     prismaMock.cwlRotationPlanDay.findMany.mockResolvedValue([]);
@@ -4603,10 +4630,12 @@ describe("/todo refresh button", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.raidTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlEventClan.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.findMany.mockReset();
     prismaMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.botSetting.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    mockCurrentCwlEventsForRequestedTags();
 
     prismaMock.playerLink.findMany.mockImplementation(async (args: any) => {
       const userId = String(args?.where?.discordUserId ?? "");

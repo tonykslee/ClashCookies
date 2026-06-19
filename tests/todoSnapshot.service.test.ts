@@ -885,39 +885,12 @@ describe("TodoSnapshotService", () => {
   });
 
   it("falls back to the pinned clan when live clan discovery is unavailable", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
-      { tag: "#QGRJ", name: "Old War Clan" },
-    ]);
-    prismaMock.cwlEventClan.findMany.mockResolvedValue([
-      buildCurrentCwlEventRowForTest({
-        clanTag: "#QGRJ",
-        eventInstanceId: "event-current",
-        season: "2026-04",
-      }),
-    ]);
-    prismaMock.currentCwlRound.findMany.mockResolvedValue([
-      {
-        eventInstanceId: "event-current",
-        season: "2026-04",
-        clanTag: "#QGRJ",
-        clanName: "Old War Clan",
-        roundState: "preparation",
-        startTime: new Date("2026-04-03T12:00:00.000Z"),
-        endTime: new Date("2026-04-04T12:00:00.000Z"),
-      },
-    ]);
-    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
-      {
-        eventInstanceId: "event-current",
-        season: "2026-04",
-        clanTag: "#QGRJ",
-        playerTag: "#PYLQ0289",
-        attacksUsed: 0,
-        attacksAvailable: 1,
-        subbedIn: false,
-      },
-    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -930,6 +903,8 @@ describe("TodoSnapshotService", () => {
         playerName: "Alpha",
         clanTag: "#QGRJ",
         clanName: "Old War Clan",
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Old War Clan",
         warActive: true,
         raidActive: false,
       }),
@@ -991,23 +966,130 @@ describe("TodoSnapshotService", () => {
     });
 
     expect(result.playerCount).toBe(1);
-    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          season: "2026-04",
+          playerTag: "#PYLQ0289",
+          cwlClanTag: "#QGRJ",
+          playerName: "Alpha",
+          townHall: 16,
+        }),
+      }),
+    );
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
           cwlClanTag: "#QGRJ",
           cwlClanName: "Old War Clan",
-          cwlActive: false,
+          cwlActive: true,
           cwlPhase: "preparation",
           cwlEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+          cwlAttacksUsed: 0,
+          cwlAttacksMax: 0,
+        }),
+      }),
+    );
+  });
+
+  it("clears a pinned non-tracked CWL clan when its current live event does not contain the player", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#QGRJ",
+        clanName: "Old War Clan",
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Old War Clan",
+        cwlActive: true,
+        cwlPhase: "battle day",
+        cwlEndsAt: new Date("2026-04-03T12:00:00.000Z"),
+      }),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue({
+        tag: "#PYLQ0289",
+        clan: null,
+      }),
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-04",
+        state: "preparation",
+        clans: [{ tag: "#QGRJ", name: "Old War Clan" }],
+        rounds: [{ warTags: ["#2QG2C08UP"] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        attacksPerMember: 1,
+        startTime: "20260403T120000.000Z",
+        endTime: "20260404T120000.000Z",
+        clan: {
+          tag: "#QGRJ",
+          name: "Old War Clan",
+          members: [
+            {
+              tag: "#QGRJ2222",
+              name: "Bravo",
+              townhallLevel: 15,
+              attacks: [],
+            },
+          ],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent One",
+          members: [],
+        },
+      }),
+    };
+
+    const result = await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: ["#PYLQ0289"],
+      cocService: cocService as any,
+      includeNonTrackedCwlRefresh: true,
+      nowMs: Date.UTC(2026, 3, 8, 17, 0, 0, 0),
+    });
+
+    expect(result.playerCount).toBe(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
+    expect(cocService.getClanWarLeagueWar).toHaveBeenCalledWith("#2QG2C08UP");
+    expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          cwlClanTag: null,
+          cwlClanName: null,
+          cwlActive: false,
+          cwlPhase: null,
+          cwlEndsAt: null,
+          cwlAttacksUsed: 0,
+          cwlAttacksMax: 0,
         }),
       }),
     );
   });
 
   it("uses a persisted seasonal CWL clan mapping even after the linked player has returned to a different current clan", async () => {
-    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
-      { tag: "#QGRJ", name: "Nontracked Clan" },
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#NEWCLAN",
+        clanName: "New Clan",
+        cwlClanTag: "#QGRJ",
+        cwlClanName: "Nontracked Clan",
+      }),
     ]);
     prismaMock.cwlEventClan.findMany.mockResolvedValue([
       buildCurrentCwlEventRowForTest({
@@ -1100,7 +1182,7 @@ describe("TodoSnapshotService", () => {
     });
 
     expect(result.playerCount).toBe(1);
-    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({

@@ -8,7 +8,7 @@ import {
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { CoCService, type ClanCapitalRaidSeason } from "./CoCService";
-import type { CwlLeagueFetchSource } from "./CwlFetchCycleCache";
+import { CwlFetchCycleCache, type CwlLeagueFetchSource } from "./CwlFetchCycleCache";
 import { cocRequestQueueService } from "./CoCRequestQueueService";
 import { cwlStateService } from "./CwlStateService";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
@@ -811,6 +811,11 @@ export class TodoSnapshotService {
     const gamesWindow = resolveClanGamesWindow(nowMs);
     const gamesCycleKey = buildClanGamesCycleKey(gamesWindow.startMs);
     const currentCwlSeason = resolveCurrentCwlSeasonKey(nowMs);
+    const cwlFetchCycleCache =
+      input.cwlFetchCycleCache ??
+      (input.includeNonTrackedCwlRefresh && input.cocService
+        ? new CwlFetchCycleCache(input.cocService)
+        : null);
     const observedLivePlayerCurrentByTag = input.observedLivePlayerCurrentByTag ?? new Map();
     const trackedClanRowsForDiscovery =
       input.trackedClanRows !== undefined
@@ -930,16 +935,24 @@ export class TodoSnapshotService {
         existingSnapshot: fromExisting,
       });
       currentMembershipByPlayerTag.set(playerTag, resolvedMembership);
-      const cwlDiscoveryClanTag = normalizeClanTag(
-        resolvedMembership.clanTag ?? livePlayer?.clanTag ?? observedLivePlayer?.clanTag ?? "",
-      ) || null;
+      const pinnedCwlClanTag =
+        resolvedMembership.clanTag === null
+          ? normalizeClanTag(fromExisting?.cwlClanTag ?? "")
+          : "";
+      const currentCwlDiscoveryClanTag = normalizeClanTag(
+        resolvedMembership.clanTag ??
+          livePlayer?.clanTag ??
+          observedLivePlayer?.clanTag ??
+          "",
+      );
+      const cwlDiscoveryClanTag = currentCwlDiscoveryClanTag || pinnedCwlClanTag || null;
       cwlDiscoveryClanTagByPlayerTag.set(playerTag, cwlDiscoveryClanTag);
     }
     if (input.includeNonTrackedCwlRefresh) {
       try {
         await cwlStateService.refreshSeasonalCwlClanMappingsForPlayerTags({
           cocService: input.cocService,
-          cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
+          cwlFetchCycleCache,
           playerTags: normalizedTags,
           season: currentCwlSeason,
           candidateClanTags: [
@@ -1322,7 +1335,7 @@ export class TodoSnapshotService {
     const liveNonTrackedCwlContextByClanTag = input.includeNonTrackedCwlRefresh
       ? await loadLiveNonTrackedCwlContextsByClanTag({
           cocService: input.cocService,
-          cwlFetchCycleCache: input.cwlFetchCycleCache ?? null,
+          cwlFetchCycleCache,
           clanTags: [
             ...new Set(
               [
@@ -1567,19 +1580,21 @@ export class TodoSnapshotService {
             fallbackCwlClanTag,
         ) || null;
       const liveCandidateCwlClanTag =
-        !resolvedCwlClanTag && resolvedClanTag && !cwlTrackedTagSet.has(resolvedClanTag)
-          ? resolvedClanTag
+        !resolvedCwlClanTag
+          ? normalizeClanTag(cwlDiscoveryClanTagByPlayerTag.get(playerTag) ?? "")
           : null;
       const liveNonTrackedCwlContext =
-        liveCandidateCwlClanTag
+        liveCandidateCwlClanTag && !cwlTrackedTagSet.has(liveCandidateCwlClanTag)
           ? liveNonTrackedCwlContextByClanTag.get(liveCandidateCwlClanTag) ?? null
           : null;
       const liveNonTrackedCwlMember = liveNonTrackedCwlContext
         ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
         : null;
       const resolvedLiveCwlClanTag =
-        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? liveCandidateCwlClanTag ?? "") ||
-        null;
+        liveNonTrackedCwlMember
+          ? normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? liveCandidateCwlClanTag ?? "") ||
+            null
+          : null;
       const finalResolvedCwlClanTag =
         resolvedCwlClanTag || resolvedLiveCwlClanTag || null;
       const resolvedCwlClanName =
@@ -1594,7 +1609,8 @@ export class TodoSnapshotService {
       const persistedCurrentCwlRound = finalResolvedCwlClanTag
         ? currentCwlRoundByClanTag.get(finalResolvedCwlClanTag) ?? null
         : null;
-      const currentCwlRound = liveNonTrackedCwlContext ?? persistedCurrentCwlRound;
+      const currentCwlRound =
+        liveNonTrackedCwlMember ? liveNonTrackedCwlContext : persistedCurrentCwlRound;
       const currentCwlMember =
         liveNonTrackedCwlMember ??
         currentCwlMemberByPlayerTag.get(playerTag) ??
@@ -1605,17 +1621,17 @@ export class TodoSnapshotService {
           currentCwlMember.subbedIn &&
           currentCwlMember.clanTag === finalResolvedCwlClanTag,
       );
-      const cwlHasContext = Boolean(
-        currentCwlRound || liveNonTrackedCwlContext,
-      );
+      const cwlHasContext = Boolean(currentCwlRound);
       const cwlActive = cwlHasContext && cwlParticipant;
       const cwlPhase = cwlHasContext
         ? normalizeWarPhaseLabel(
             currentCwlRound?.roundState ?? persistedCurrentCwlRound?.roundState ?? "",
           )
         : null;
-      const cwlEndsAt = liveNonTrackedCwlContext?.phaseEndsAt
-        ? liveNonTrackedCwlContext.phaseEndsAt
+      const liveCwlPhaseEndsAt =
+        liveNonTrackedCwlMember ? liveNonTrackedCwlContext?.phaseEndsAt ?? null : null;
+      const cwlEndsAt = liveCwlPhaseEndsAt
+        ? liveCwlPhaseEndsAt
         : persistedCurrentCwlRound
           ? resolveCurrentWarPhaseEnd({
               state: persistedCurrentCwlRound.roundState ?? null,
