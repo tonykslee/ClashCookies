@@ -1134,6 +1134,9 @@ describe("CwlStateService", () => {
   });
 
   it("keeps an existing seasonal CWL mapping without running live discovery", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP" },
+    ]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
       {
         eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
@@ -1162,10 +1165,14 @@ describe("CwlStateService", () => {
       learnedClanCount: 0,
     });
     expect(txMock.cwlPlayerClanSeason.upsert).not.toHaveBeenCalled();
-    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
   });
 
   it("learns a missing seasonal CWL mapping from persisted CWL evidence before probing live clans", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP" },
+    ]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([
@@ -1221,7 +1228,8 @@ describe("CwlStateService", () => {
         }),
       }),
     );
-    expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledTimes(1);
+    expect(cocService.getClanWarLeagueGroup).toHaveBeenCalledWith("#QGRJ");
   });
 
   it("learns a missing seasonal CWL mapping from live non-tracked CWL evidence when persisted rows are absent", async () => {

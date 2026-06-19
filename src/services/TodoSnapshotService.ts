@@ -1038,20 +1038,38 @@ export class TodoSnapshotService {
         clanTags: currentCwlClanTags,
       },
     );
-    const currentCwlEventIds = [...new Set([...currentCwlEventRows.values()].map((event) => event.id))];
+    const currentCwlEventIdByClanTag = new Map(
+      [...currentCwlEventRows.entries()].map(([clanTag, event]) => [
+        normalizeClanTag(clanTag),
+        event.id,
+      ] as const),
+    );
+    const currentCwlEventIds = [
+      ...new Set([...currentCwlEventRows.values()].map((event) => event.id)),
+    ];
     let cwlSeasonMappingRows =
-      normalizedTags.length > 0
+      normalizedTags.length > 0 && currentCwlEventIds.length > 0
         ? await prisma.cwlPlayerClanSeason.findMany({
             where: {
-              season: currentCwlSeason,
+              eventInstanceId: { in: currentCwlEventIds },
               playerTag: { in: normalizedTags },
             },
             select: {
+              eventInstanceId: true,
               playerTag: true,
               cwlClanTag: true,
             },
           })
         : [];
+    cwlSeasonMappingRows = cwlSeasonMappingRows.filter((row) => {
+      const clanTag = normalizeClanTag(row.cwlClanTag ?? "");
+      const eventInstanceId = String(row.eventInstanceId ?? "").trim();
+      return Boolean(
+        clanTag &&
+          eventInstanceId &&
+          currentCwlEventIdByClanTag.get(clanTag) === eventInstanceId,
+      );
+    });
 
     const [currentWarRows, currentCwlRoundRows, currentCwlMemberRows] = await Promise.all([
       clanTags.length > 0
@@ -1547,18 +1565,21 @@ export class TodoSnapshotService {
           activeMappedCwlClanTag ||
             persistedMappedCwlClanTag ||
             fallbackCwlClanTag,
-        ) ||
-        normalizeClanTag(existing?.cwlClanTag ?? "") ||
-        null;
+        ) || null;
+      const liveCandidateCwlClanTag =
+        !resolvedCwlClanTag && resolvedClanTag && !cwlTrackedTagSet.has(resolvedClanTag)
+          ? resolvedClanTag
+          : null;
       const liveNonTrackedCwlContext =
-        resolvedCwlClanTag && !cwlTrackedTagSet.has(resolvedCwlClanTag)
-          ? liveNonTrackedCwlContextByClanTag.get(resolvedCwlClanTag) ?? null
+        liveCandidateCwlClanTag
+          ? liveNonTrackedCwlContextByClanTag.get(liveCandidateCwlClanTag) ?? null
           : null;
       const liveNonTrackedCwlMember = liveNonTrackedCwlContext
         ? liveNonTrackedCwlContext.membersByPlayerTag.get(playerTag) ?? null
         : null;
       const resolvedLiveCwlClanTag =
-        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? "") || null;
+        normalizeClanTag(liveNonTrackedCwlContext?.clanTag ?? liveCandidateCwlClanTag ?? "") ||
+        null;
       const finalResolvedCwlClanTag =
         resolvedCwlClanTag || resolvedLiveCwlClanTag || null;
       const resolvedCwlClanName =
@@ -1569,7 +1590,6 @@ export class TodoSnapshotService {
             resolvedClanName ||
             trackedClanNameByTag.get(finalResolvedCwlClanTag)
           : null) ||
-        sanitizeDisplayText(existing?.cwlClanName ?? "") ||
         null;
       const persistedCurrentCwlRound = finalResolvedCwlClanTag
         ? currentCwlRoundByClanTag.get(finalResolvedCwlClanTag) ?? null
@@ -1586,10 +1606,7 @@ export class TodoSnapshotService {
           currentCwlMember.clanTag === finalResolvedCwlClanTag,
       );
       const cwlHasContext = Boolean(
-        currentCwlRound ||
-          liveNonTrackedCwlContext ||
-          existing?.cwlClanTag ||
-          existing?.cwlClanName,
+        currentCwlRound || liveNonTrackedCwlContext,
       );
       const cwlActive = cwlHasContext && cwlParticipant;
       const cwlPhase = cwlHasContext
