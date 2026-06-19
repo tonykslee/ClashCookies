@@ -688,6 +688,7 @@ model CwlEventInstance {
   updatedAt      DateTime @updatedAt
   clans          CwlEventClan[]
   warTags        CwlEventWarTag[]
+  rotationPlans  CwlRotationPlan[]
   currentRounds  CurrentCwlRound[]
   prepSnapshots  CurrentCwlPrepSnapshot[]
   historyRounds  CwlRoundHistory[]
@@ -724,6 +725,7 @@ model CwlEventClan {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   eventInstance    CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  rotationPlans    CwlRotationPlan[]
 
   @@unique([eventInstanceId, clanTag])
   @@index([clanTag, isCurrent])
@@ -980,6 +982,7 @@ model CwlRoundMemberHistory {
 
 model CwlRotationPlan {
   id                   String   @id @default(cuid())
+  eventInstanceId      String
   clanTag              String
   season               String
   version              Int
@@ -991,10 +994,13 @@ model CwlRotationPlan {
   metadata             Json?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  eventClan            CwlEventClan @relation(fields: [eventInstanceId, clanTag], references: [eventInstanceId, clanTag], onDelete: Cascade)
   days                 CwlRotationPlanDay[]
 
-  @@unique([clanTag, season, version])
-  @@index([clanTag, season, isActive])
+  @@unique([eventInstanceId, clanTag, version])
+  @@index([eventInstanceId, clanTag, isActive])
+  @@index([season, clanTag])
 }
 
 model CwlRotationPlanDay {

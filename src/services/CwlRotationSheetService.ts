@@ -10,6 +10,7 @@ import {
   type CwlRotationPlanExport,
   type PersistImportedCwlRotationPlanResult,
 } from "./CwlRotationService";
+import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
 import { normalizeClanTag, normalizeDiscordUserId, normalizePlayerTag } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
@@ -109,6 +110,7 @@ export type CwlRotationImportPreview = {
 };
 
 export type CwlRotationSheetClanImportTab = {
+  eventInstanceId: string;
   clanTag: string;
   clanName: string | null;
   tabTitle: string;
@@ -264,14 +266,27 @@ export class CwlRotationSheetService {
       }> = [];
       const warnings: string[] = [];
       const usedTabTitles = new Map<string, string>();
+      const currentEventsByClanTag = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+        clanTags: trackedClans.map((clan) => clan.tag),
+      });
 
       for (const clan of trackedClans) {
         const clanTag = normalizeClanTag(clan.tag);
+        const clanName = sanitizeDisplayText(clan.name) || null;
+        const currentEvent = currentEventsByClanTag.get(clanTag);
+        if (!currentEvent || currentEvent.season !== season) {
+          skippedTrackedClans.push({
+            clanTag,
+            clanName,
+            reason: "No current CWL event is selected for this clan.",
+          });
+          continue;
+        }
         const match = matchedTabs.get(clanTag);
         if (!match) {
           skippedTrackedClans.push({
             clanTag,
-            clanName: sanitizeDisplayText(clan.name) || null,
+            clanName,
             reason: "No workbook tab name contained this tracked CWL clan name.",
           });
           continue;
@@ -302,6 +317,7 @@ export class CwlRotationSheetService {
         const rosterEntries = await cwlStateService.listSeasonRosterForClan({
           clanTag: match.clanTag,
           season,
+          eventInstanceId: currentEvent.id,
         });
         const parsed = parseCwlPlannerTab(tabValues, rosterEntries);
         warnings.push(...parsed.warnings);
@@ -319,11 +335,12 @@ export class CwlRotationSheetService {
 
         const existingVersion = await loadActiveRotationPlanVersion({
           clanTag: match.clanTag,
-          season,
+          eventInstanceId: currentEvent.id,
         });
         const needsReview = parsed.reviewRequiredRowCount > 0;
         const importable = (!existingVersion || Boolean(input.overwrite)) && !needsReview;
         matchedClans.push({
+          eventInstanceId: currentEvent.id,
           clanTag: match.clanTag,
           clanName: match.clanName,
           tabTitle: match.tabTitle,
@@ -409,6 +426,7 @@ export class CwlRotationSheetService {
   }): Promise<CwlRotationSheetImportConfirmResult> {
     const overwrite = Boolean(input.overwrite);
     const saved: PersistImportedCwlRotationPlanResult[] = [];
+    const skippedTrackedClans = [...input.preview.skippedTrackedClans];
     const ignoredRows: Array<{
       clanTag: string;
       clanName: string | null;
@@ -447,6 +465,17 @@ export class CwlRotationSheetService {
     }
 
     for (const clan of input.preview.matchedClans) {
+      const currentEvent = await cwlEventResolutionService.resolveCurrentCwlEventForClan({
+        clanTag: clan.clanTag,
+      });
+      if (!currentEvent || currentEvent.id !== clan.eventInstanceId) {
+        skippedTrackedClans.push({
+          clanTag: clan.clanTag,
+          clanName: clan.clanName,
+          reason: "CWL event changed since preview; rebuild the import preview.",
+        });
+        continue;
+      }
       if (!clan.importable) {
         saved.push({
           outcome: "blocked_existing",
@@ -460,6 +489,7 @@ export class CwlRotationSheetService {
       }
 
       const result = await cwlRotationService.persistImportedPlan({
+        eventInstanceId: clan.eventInstanceId,
         clanTag: clan.clanTag,
         clanName: clan.clanName,
         sourceSheetId: input.preview.sourceSheetId,
@@ -494,7 +524,7 @@ export class CwlRotationSheetService {
     return {
       season: input.preview.season,
       saved,
-      skippedTrackedClans: input.preview.skippedTrackedClans,
+      skippedTrackedClans,
       skippedTabs: input.preview.skippedTabs,
       ignoredRows,
     };
@@ -684,9 +714,15 @@ function buildCwlRotationExportPayload(input: {
     values: tab.values,
     tableRanges: tab.tableRanges,
   }));
+  const eventScope = input.plans
+    .map((plan) => ({
+      clanTag: plan.clanTag,
+      eventInstanceId: plan.eventInstanceId,
+    }))
+    .sort((a, b) => a.clanTag.localeCompare(b.clanTag) || a.eventInstanceId.localeCompare(b.eventInstanceId));
   const fingerprint = crypto
     .createHash("sha256")
-    .update(JSON.stringify({ season: input.season, tabs }))
+    .update(JSON.stringify({ season: input.season, eventScope, tabs }))
     .digest("hex");
   return { tabs, fingerprint };
 }
@@ -968,13 +1004,13 @@ function compareCwlRotationExportPlayerRows(
 }
 
 async function loadActiveRotationPlanVersion(input: {
+  eventInstanceId: string;
   clanTag: string;
-  season: string;
 }): Promise<number | null> {
   const plan = await prisma.cwlRotationPlan.findFirst({
     where: {
+      eventInstanceId: input.eventInstanceId,
       clanTag: input.clanTag,
-      season: input.season,
       isActive: true,
     },
     orderBy: [{ version: "desc" }],

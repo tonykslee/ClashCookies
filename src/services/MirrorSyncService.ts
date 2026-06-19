@@ -612,7 +612,7 @@ export class MirrorSyncService {
         ],
       }),
       CwlRotationPlan: await sourceClient.cwlRotationPlan.findMany({
-        orderBy: [{ season: "asc" }, { clanTag: "asc" }, { version: "asc" }],
+        orderBy: [{ eventInstanceId: "asc" }, { clanTag: "asc" }, { version: "asc" }],
       }),
       CwlRotationPlanDay: await sourceClient.cwlRotationPlanDay.findMany({
         orderBy: [{ id: "asc" }],

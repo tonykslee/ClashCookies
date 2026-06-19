@@ -2481,8 +2481,8 @@ describe("/clan command behavior", () => {
     expect(prismaMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: "#PYLQ0289",
         isActive: true,
+        OR: [{ clanTag: "#PYLQ0289", eventInstanceId: "mock-cwl-event-1" }],
       },
       data: {
         isActive: false,

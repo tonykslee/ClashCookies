@@ -46,6 +46,7 @@ type CwlRotationPlanDayWriteInput = {
 };
 
 type CwlRotationPlanWriteInput = {
+  eventInstanceId: string;
   clanTag: string;
   season: string;
   version: number;
@@ -76,6 +77,7 @@ export type CwlRotationPlanExportDay = {
 };
 
 export type CwlRotationPlanExport = {
+  eventInstanceId: string;
   season: string;
   clanTag: string;
   clanName: string | null;
@@ -175,6 +177,11 @@ export type CreateCwlRotationPlanResult =
       clanTag: string;
     }
   | {
+      outcome: "no_current_event";
+      season: string;
+      clanTag: string;
+    }
+  | {
       outcome: "not_preparation";
       season: string;
       clanTag: string;
@@ -234,6 +241,12 @@ export type CreateCwlRotationRosterPlanResult =
     }
   | {
       outcome: "not_tracked";
+      season: string;
+      clanTag: string;
+      rosterId: string;
+    }
+  | {
+      outcome: "no_current_event";
       season: string;
       clanTag: string;
       rosterId: string;
@@ -309,6 +322,11 @@ export type DeleteCwlRotationPlanResult =
       outcome: "invalid_clan";
       season: string;
       clanTag: string;
+    }
+  | {
+      outcome: "no_current_event";
+      season: string;
+      clanTag: string;
     };
 
 export type PersistImportedCwlRotationPlanResult =
@@ -332,6 +350,13 @@ export type PersistImportedCwlRotationPlanResult =
     }
   | {
       outcome: "not_tracked";
+      season: string;
+      clanTag: string;
+      clanName: string | null;
+      sourceTabName: string;
+    }
+  | {
+      outcome: "no_current_event";
       season: string;
       clanTag: string;
       clanName: string | null;
@@ -651,17 +676,50 @@ function normalizeCwlRotationLineupSize(input: unknown): CwlRotationSupportedExp
 }
 
 async function loadActivePlan(input: {
+  eventInstanceId: string;
   clanTag: string;
-  season: string;
 }) {
   return prisma.cwlRotationPlan.findFirst({
     where: {
+      eventInstanceId: input.eventInstanceId,
       clanTag: input.clanTag,
-      season: input.season,
       isActive: true,
     },
-    orderBy: [{ version: "desc" }],
+    orderBy: [{ version: "desc" }, { updatedAt: "desc" }, { id: "desc" }],
   });
+}
+
+type CwlRotationCurrentEventScope = {
+  eventInstanceId: string;
+  season: string;
+  clanTag: string;
+};
+
+async function resolveCurrentCwlRotationEventScope(input: {
+  clanTag: string;
+  season: string;
+  operation: string;
+}): Promise<CwlRotationCurrentEventScope | null> {
+  const currentEvent = await cwlEventResolutionService.resolveCurrentCwlEventForClan({
+    clanTag: input.clanTag,
+  });
+  if (!currentEvent || currentEvent.season !== input.season) {
+    console.warn(
+      [
+        "[cwl-rotation] event=no_current_event",
+        `operation=${input.operation}`,
+        `season=${input.season}`,
+        `clan_tag=${input.clanTag}`,
+        `event_instance_id=${currentEvent?.id ?? "none"}`,
+      ].join(" "),
+    );
+    return null;
+  }
+  return {
+    eventInstanceId: currentEvent.id,
+    season: currentEvent.season,
+    clanTag: input.clanTag,
+  };
 }
 
 const CWL_ROTATION_PLAN_WRITE_RETRY_LIMIT = 3;
@@ -675,14 +733,14 @@ function isRetryableCwlRotationPlanWriteError(error: unknown): boolean {
 async function loadNextRotationPlanVersion(
   tx: CwlRotationPlanWriteTx,
   input: {
+    eventInstanceId: string;
     clanTag: string;
-    season: string;
   },
 ): Promise<number> {
   const latestPlan = await tx.cwlRotationPlan.findFirst({
     where: {
+      eventInstanceId: input.eventInstanceId,
       clanTag: input.clanTag,
-      season: input.season,
     },
     select: {
       version: true,
@@ -695,14 +753,14 @@ async function loadNextRotationPlanVersion(
 async function loadActiveRotationPlanInTransaction(
   tx: CwlRotationPlanWriteTx,
   input: {
+    eventInstanceId: string;
     clanTag: string;
-    season: string;
   },
 ) {
   return tx.cwlRotationPlan.findFirst({
     where: {
+      eventInstanceId: input.eventInstanceId,
       clanTag: input.clanTag,
-      season: input.season,
       isActive: true,
     },
     select: {
@@ -717,6 +775,7 @@ type CwlRotationPlanWriteRetryResult<T> =
   | { outcome: "blocked_existing"; existingVersion: number };
 
 async function runCwlRotationPlanWriteWithRetry<T>(input: {
+  eventInstanceId: string;
   clanTag: string;
   season: string;
   overwriteAuthorized: boolean;
@@ -730,8 +789,8 @@ async function runCwlRotationPlanWriteWithRetry<T>(input: {
     try {
       const transactionResult = await prisma.$transaction(async (tx) => {
         const activePlan = await loadActiveRotationPlanInTransaction(tx, {
+          eventInstanceId: input.eventInstanceId,
           clanTag: input.clanTag,
-          season: input.season,
         });
         if (activePlan && !input.overwriteAuthorized) {
           return {
@@ -742,16 +801,27 @@ async function runCwlRotationPlanWriteWithRetry<T>(input: {
         if (activePlan && input.overwriteAuthorized) {
           await tx.cwlRotationPlan.updateMany({
             where: {
+              eventInstanceId: input.eventInstanceId,
               clanTag: input.clanTag,
               season: input.season,
               isActive: true,
             },
             data: { isActive: false },
           });
+          console.info(
+            [
+              "[cwl-rotation] event=overwrite_limited_to_event",
+              `operation=write_plan`,
+              `season=${input.season}`,
+              `clan_tag=${input.clanTag}`,
+              `event_instance_id=${input.eventInstanceId}`,
+              `plan_version=${activePlan.version}`,
+            ].join(" "),
+          );
         }
         const version = await loadNextRotationPlanVersion(tx, {
+          eventInstanceId: input.eventInstanceId,
           clanTag: input.clanTag,
-          season: input.season,
         });
         return input.write(tx, version);
         }, {
@@ -1213,6 +1283,7 @@ async function persistRotationPlanVersion(
 ): Promise<{ version: number }> {
   const createdPlan = await tx.cwlRotationPlan.create({
     data: {
+      eventInstanceId: input.eventInstanceId,
       clanTag: input.clanTag,
       season: input.season,
       version: input.version,
@@ -1294,14 +1365,23 @@ export class CwlRotationService {
   async getPreferredDisplayDay(input: {
     clanTag: string;
     season?: string;
+    eventInstanceId?: string | null;
   }): Promise<number | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
+    const eventInstanceId =
+      String(input.eventInstanceId ?? "").trim() ||
+      (await resolveCurrentCwlRotationEventScope({
+        clanTag,
+        season,
+        operation: "preferred_display_day",
+      }))?.eventInstanceId;
+    if (!eventInstanceId) return null;
 
     const [currentRound, prepSnapshot] = await Promise.all([
-      cwlStateService.getCurrentRoundForClan({ clanTag, season }),
-      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
+      cwlStateService.getCurrentRoundForClan({ clanTag, season, eventInstanceId }),
+      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season, eventInstanceId }),
     ]);
     return prepSnapshot?.roundDay ?? currentRound?.roundDay ?? null;
   }
@@ -1341,9 +1421,18 @@ export class CwlRotationService {
       return { outcome: "not_tracked", season, clanTag };
     }
 
+    const eventScope = await resolveCurrentCwlRotationEventScope({
+      clanTag,
+      season,
+      operation: "create_plan",
+    });
+    if (!eventScope) {
+      return { outcome: "no_current_event", season, clanTag };
+    }
+
     const [currentRound, prepSnapshot] = await Promise.all([
-      cwlStateService.getCurrentRoundForClan({ clanTag, season }),
-      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season }),
+      cwlStateService.getCurrentRoundForClan({ clanTag, season, eventInstanceId: eventScope.eventInstanceId }),
+      cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag, season, eventInstanceId: eventScope.eventInstanceId }),
     ]);
     const currentRoundState = currentRound?.roundState.toLowerCase() ?? "";
     const hasOverlapPreparation =
@@ -1357,7 +1446,7 @@ export class CwlRotationService {
       return { outcome: "not_preparation", season, clanTag };
     }
 
-    const existingActivePlan = await loadActivePlan({ clanTag, season });
+    const existingActivePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (existingActivePlan && !input.overwrite) {
       return {
         outcome: "blocked_existing",
@@ -1378,7 +1467,7 @@ export class CwlRotationService {
     }
     const excludeTags = parsedExcludeTags.excludeTags;
     const seasonRoster = canonicalizeCwlSeasonRosterEntries(
-      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season, eventInstanceId: eventScope.eventInstanceId }),
     );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const invalidTags = excludeTags.filter((tag) => !seasonRosterByTag.has(tag));
@@ -1455,11 +1544,13 @@ export class CwlRotationService {
     const rosterRows = buildRosterRowsForMetadata(sourceOrderedRoster);
 
     const writeResult = await runCwlRotationPlanWriteWithRetry({
+      eventInstanceId: eventScope.eventInstanceId,
       clanTag,
       season,
       overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
+          eventInstanceId: eventScope.eventInstanceId,
           clanTag,
           season,
           version,
@@ -1535,7 +1626,20 @@ export class CwlRotationService {
       };
     }
 
-    const activePlan = await loadActivePlan({ clanTag, season });
+    const eventScope = await resolveCurrentCwlRotationEventScope({
+      clanTag,
+      season,
+      operation: "delete_active_plan",
+    });
+    if (!eventScope) {
+      return {
+        outcome: "no_current_event",
+        season,
+        clanTag,
+      };
+    }
+
+    const activePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (!activePlan) {
       return {
         outcome: "not_found",
@@ -1546,6 +1650,7 @@ export class CwlRotationService {
 
     await prisma.cwlRotationPlan.updateMany({
       where: {
+        eventInstanceId: eventScope.eventInstanceId,
         season,
         clanTag,
         isActive: true,
@@ -1615,6 +1720,15 @@ export class CwlRotationService {
       return { outcome: "not_tracked", season, clanTag, rosterId };
     }
 
+    const eventScope = await resolveCurrentCwlRotationEventScope({
+      clanTag,
+      season,
+      operation: "create_plan_from_roster",
+    });
+    if (!eventScope) {
+      return { outcome: "no_current_event", season, clanTag, rosterId };
+    }
+
     const rosterView = await rosterService.getRosterView(rosterId);
     if (!rosterView) {
       return { outcome: "roster_not_found", season, clanTag, rosterId };
@@ -1659,7 +1773,7 @@ export class CwlRotationService {
     }
 
     const seasonRoster = canonicalizeCwlSeasonRosterEntries(
-      await cwlStateService.listSeasonRosterForClan({ clanTag, season }),
+      await cwlStateService.listSeasonRosterForClan({ clanTag, season, eventInstanceId: eventScope.eventInstanceId }),
     );
     const seasonRosterByTag = new Map(seasonRoster.map((entry) => [entry.playerTag, entry]));
     const confirmedSignups = rosterView.signups.filter((signup) => signup.group?.key === "confirmed");
@@ -1808,7 +1922,7 @@ export class CwlRotationService {
         playerName: signup.playerName,
       })),
     ];
-    const existingActivePlan = await loadActivePlan({ clanTag, season });
+    const existingActivePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (existingActivePlan && !input.overwrite) {
       return {
         outcome: "blocked_existing",
@@ -1821,11 +1935,13 @@ export class CwlRotationService {
     }
 
     const writeResult = await runCwlRotationPlanWriteWithRetry({
+      eventInstanceId: eventScope.eventInstanceId,
       clanTag,
       season,
       overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
+          eventInstanceId: eventScope.eventInstanceId,
           clanTag,
           season,
           version,
@@ -1896,6 +2012,7 @@ export class CwlRotationService {
 
   /** Purpose: persist one confirmed imported CWL planner plan into the active-season planner tables. */
   async persistImportedPlan(input: {
+    eventInstanceId?: string | null;
     clanTag: string;
     clanName: string | null;
     sourceSheetId: string;
@@ -1953,7 +2070,33 @@ export class CwlRotationService {
       };
     }
 
-    const existingActivePlan = await loadActivePlan({ clanTag, season });
+    const eventScope = await resolveCurrentCwlRotationEventScope({
+      clanTag,
+      season,
+      operation: "persist_imported_plan",
+    });
+    const capturedEventInstanceId = String(input.eventInstanceId ?? "").trim();
+    if (!eventScope || (capturedEventInstanceId && eventScope.eventInstanceId !== capturedEventInstanceId)) {
+      console.warn(
+        [
+          "[cwl-rotation] event=stale_import_preview_rejected",
+          "operation=persist_imported_plan",
+          `season=${season}`,
+          `clan_tag=${clanTag}`,
+          `event_instance_id=${capturedEventInstanceId || "none"}`,
+          `current_event_instance_id=${eventScope?.eventInstanceId ?? "none"}`,
+        ].join(" "),
+      );
+      return {
+        outcome: "no_current_event",
+        season,
+        clanTag,
+        clanName: input.clanName,
+        sourceTabName: input.sourceTabName,
+      };
+    }
+
+    const existingActivePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (existingActivePlan && !input.overwrite) {
       return {
         outcome: "blocked_existing",
@@ -2000,11 +2143,13 @@ export class CwlRotationService {
     } as Prisma.InputJsonValue);
 
     const writeResult = await runCwlRotationPlanWriteWithRetry({
+      eventInstanceId: eventScope.eventInstanceId,
       clanTag,
       season,
       overwriteAuthorized: Boolean(input.overwrite),
       write: async (tx, version) =>
         persistRotationPlanVersion(tx, {
+          eventInstanceId: eventScope.eventInstanceId,
           clanTag,
           season,
           version,
@@ -2056,19 +2201,47 @@ export class CwlRotationService {
     if (activeClanTags.length <= 0) {
       return [];
     }
+    const currentEventsByClanTag = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+      clanTags: activeClanTags,
+    });
+    const eventScopePairs = activeClanTags
+      .map((clanTag) => {
+        const currentEvent = currentEventsByClanTag.get(clanTag);
+        if (!currentEvent || currentEvent.season !== season) {
+          console.info(
+            [
+              "[cwl-rotation] event=no_current_event",
+              "operation=list_active_plan_exports",
+              `season=${season}`,
+              `clan_tag=${clanTag}`,
+              `event_instance_id=${currentEvent?.id ?? "none"}`,
+            ].join(" "),
+          );
+          return null;
+        }
+        return { clanTag, eventInstanceId: currentEvent.id };
+      })
+      .filter((entry): entry is { clanTag: string; eventInstanceId: string } => Boolean(entry));
+    if (eventScopePairs.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
-        clanTag: { in: activeClanTags },
+        OR: eventScopePairs.map((scope) => ({
+          clanTag: scope.clanTag,
+          eventInstanceId: scope.eventInstanceId,
+        })),
       },
-      orderBy: [{ clanTag: "asc" }, { version: "desc" }],
+      orderBy: [{ clanTag: "asc" }, { eventInstanceId: "asc" }, { version: "desc" }],
     });
 
     const uniquePlans = new Map<string, (typeof activePlans)[number]>();
     for (const plan of activePlans) {
-      if (!uniquePlans.has(plan.clanTag)) {
-        uniquePlans.set(plan.clanTag, plan);
+      const key = `${plan.eventInstanceId}:${plan.clanTag}`;
+      if (!uniquePlans.has(key)) {
+        uniquePlans.set(key, plan);
       }
     }
 
@@ -2110,6 +2283,7 @@ export class CwlRotationService {
         null;
       const sourceLabel = sanitizeDisplayText(String(planMetadata?.source ?? "")) || null;
       exports.push({
+        eventInstanceId: plan.eventInstanceId,
         season: plan.season,
         clanTag: plan.clanTag,
         clanName,
@@ -2161,12 +2335,23 @@ export class CwlRotationService {
     clanTag: string;
     roundDay: number;
     season?: string;
+    eventInstanceId?: string | null;
   }): Promise<CwlRotationValidationResult | null> {
     const season = input.season ?? resolveCurrentCwlSeasonKey();
     const clanTag = normalizeClanTag(input.clanTag);
     if (!clanTag) return null;
 
-    const activePlan = await loadActivePlan({ clanTag, season });
+    const explicitEventInstanceId = String(input.eventInstanceId ?? "").trim();
+    const eventScope = explicitEventInstanceId
+      ? { eventInstanceId: explicitEventInstanceId, season, clanTag }
+      : await resolveCurrentCwlRotationEventScope({
+          clanTag,
+          season,
+          operation: "validate_plan_day",
+        });
+    if (!eventScope) return null;
+
+    const activePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (!activePlan) return null;
     const planDays = await loadPlanDaysWithMembers(activePlan.id);
     const planDay = planDays.find((day) => day.roundDay === input.roundDay);
@@ -2191,6 +2376,7 @@ export class CwlRotationService {
       clanTag,
       season,
       roundDay: input.roundDay,
+      eventInstanceId: eventScope.eventInstanceId,
     });
     const plannedPlayerTags = planDay.members.map((member) => member.playerTag);
     const plannedPlayerNames = planDay.members.map((member) => member.playerName);
@@ -2307,13 +2493,40 @@ export class CwlRotationService {
     if (trackedClanTags.length <= 0) {
       return [];
     }
+    const currentEventsByClanTag = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+      clanTags: trackedClanTags,
+    });
+    const eventScopePairs = trackedClanTags
+      .map((clanTag) => {
+        const currentEvent = currentEventsByClanTag.get(clanTag);
+        if (!currentEvent || currentEvent.season !== season) {
+          console.info(
+            [
+              "[cwl-rotation] event=no_current_event",
+              "operation=list_overview",
+              `season=${season}`,
+              `clan_tag=${clanTag}`,
+              `event_instance_id=${currentEvent?.id ?? "none"}`,
+            ].join(" "),
+          );
+          return null;
+        }
+        return { clanTag, eventInstanceId: currentEvent.id };
+      })
+      .filter((entry): entry is { clanTag: string; eventInstanceId: string } => Boolean(entry));
+    if (eventScopePairs.length <= 0) {
+      return [];
+    }
     const activePlans = await prisma.cwlRotationPlan.findMany({
       where: {
         season,
         isActive: true,
-        clanTag: { in: trackedClanTags },
+        OR: eventScopePairs.map((scope) => ({
+          clanTag: scope.clanTag,
+          eventInstanceId: scope.eventInstanceId,
+        })),
       },
-      orderBy: [{ clanTag: "asc" }, { version: "desc" }],
+      orderBy: [{ clanTag: "asc" }, { eventInstanceId: "asc" }, { version: "desc" }],
     });
     if (activePlans.length <= 0) {
       return [];
@@ -2321,8 +2534,9 @@ export class CwlRotationService {
     const clanTags = [...new Set(activePlans.map((plan) => plan.clanTag).filter(Boolean))];
     const uniquePlans = new Map<string, typeof activePlans[number]>();
     for (const plan of activePlans) {
-      if (!uniquePlans.has(plan.clanTag)) {
-        uniquePlans.set(plan.clanTag, plan);
+      const key = `${plan.eventInstanceId}:${plan.clanTag}`;
+      if (!uniquePlans.has(key)) {
+        uniquePlans.set(key, plan);
       }
     }
 
@@ -2344,10 +2558,12 @@ export class CwlRotationService {
         cwlStateService.getCurrentRoundForClan({
           clanTag: plan.clanTag,
           season,
+          eventInstanceId: plan.eventInstanceId,
         }),
         this.getPreferredDisplayDay({
           clanTag: plan.clanTag,
           season,
+          eventInstanceId: plan.eventInstanceId,
         }),
       ]);
       if (!currentRound) {
@@ -2371,11 +2587,13 @@ export class CwlRotationService {
           clanTag: plan.clanTag,
           season,
           roundDay: targetRoundDay,
+          eventInstanceId: plan.eventInstanceId,
         }),
         cwlStateService.getBattleDayStartForClanDay({
           clanTag: plan.clanTag,
           season,
           roundDay: targetRoundDay,
+          eventInstanceId: plan.eventInstanceId,
         }),
       ]);
       if (!validation || validation.plannedPlayerTags.length <= 0) {
@@ -2433,7 +2651,14 @@ export class CwlRotationService {
     const trackedClanTags = await loadTrackedClanTagsForSeason(season);
     if (!trackedClanTags.includes(clanTag)) return null;
 
-    const activePlan = await loadActivePlan({ clanTag, season });
+    const eventScope = await resolveCurrentCwlRotationEventScope({
+      clanTag,
+      season,
+      operation: "get_active_plan_view",
+    });
+    if (!eventScope) return null;
+
+    const activePlan = await loadActivePlan({ eventInstanceId: eventScope.eventInstanceId, clanTag });
     if (!activePlan) return null;
     const planDays = await loadPlanDaysWithMembers(activePlan.id);
     const days = [];
@@ -2442,6 +2667,7 @@ export class CwlRotationService {
         clanTag,
         season,
         roundDay: day.roundDay,
+        eventInstanceId: eventScope.eventInstanceId,
       });
       days.push({
         roundDay: day.roundDay,

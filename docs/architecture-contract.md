@@ -134,7 +134,7 @@ Each domain concept must have exactly one authoritative owner.
 | Ended CWL round member history | CwlRoundMemberHistory |
 | Derived current-season CWL roster summary | CwlPlayerClanSeason |
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
-| Current-season CWL planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
+| CWL event-owned planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
@@ -223,7 +223,10 @@ Rules:
 - `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot for one event instance when the next day is simultaneously in preparation.
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth for one event instance.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary for one event instance.
-- `CwlRotationPlan*` owns current-season planner artifacts only, and sheet import/export commands treat those rows as the active planner source once confirmed.
+- `CwlRotationPlan` is owned by one `CwlEventInstance` plus clan through `CwlEventClan`; `season` and `clanTag` are denormalized display/query metadata, not event identity.
+- Current `/cwl rotations` commands resolve the clan's authoritative event through `CwlEventClan.isCurrent` and only read or write plans for that exact event.
+- Historical CWL rotation plans remain stored on their original event instance and must not block, render in, overwrite, validate against, import into, or export from a newer same-month event.
+- `CwlRotationPlanDay` and `CwlRotationPlanMember` inherit event ownership through `planId`.
 - Guild and personal reminder schedulers select the clan owner appropriate to the reminder type and must not emit or inherit every clan identity present on one snapshot row. Guild reminder ownership lives in `Reminder`, `ReminderTimeOffset`, `ReminderTargetClan`, and `ReminderFireLog`.
 - Personal reminder ownership lives in `UserActivityReminderRule` and `UserActivityReminderDelivery`.
 - Do not rebuild broad multi-source player state synchronously in command handlers when a maintained snapshot already exists.

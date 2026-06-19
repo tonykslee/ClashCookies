@@ -11,6 +11,9 @@ const prismaMock = vi.hoisted(() => ({
   cwlPlayerClanSeason: {
     deleteMany: vi.fn(),
   },
+  cwlEventClan: {
+    findMany: vi.fn(),
+  },
   cwlRotationPlan: {
     updateMany: vi.fn(),
   },
@@ -75,6 +78,19 @@ describe("CwlRegistryService helpers", () => {
     prismaMock.cwlTrackedClan.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) => {
+      const clanTags = Array.isArray(args?.where?.clanTag?.in) ? args.where.clanTag.in : [];
+      return clanTags.map((clanTag: string) => ({
+        clanTag,
+        eventInstance: {
+          id: `event-${clanTag.replace(/[^A-Z0-9]/g, "").toLowerCase()}`,
+          season: "2026-03",
+          anchorWarTag: `#WAR${clanTag.slice(-2)}`,
+          firstObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      }));
+    });
     prismaMock.cwlRotationPlan.updateMany.mockResolvedValue({ count: 0 });
     txMock.cwlTrackedClan.findFirst.mockResolvedValue(null);
     txMock.cwlTrackedClan.deleteMany.mockResolvedValue({ count: 0 });
@@ -106,8 +122,11 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: { in: ["#PYLQ0289", "#QGRJ2222"] },
         isActive: true,
+        OR: [
+          { clanTag: "#PYLQ0289", eventInstanceId: "event-pylq0289" },
+          { clanTag: "#QGRJ2222", eventInstanceId: "event-qgrj2222" },
+        ],
       },
       data: {
         isActive: false,
@@ -138,8 +157,8 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: { in: ["#PYLQ0289"] },
         isActive: true,
+        OR: [{ clanTag: "#PYLQ0289", eventInstanceId: "event-pylq0289" }],
       },
       data: {
         isActive: false,
@@ -279,8 +298,11 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: { in: ["#PYLQ0289", "#QGRJ2222"] },
         isActive: true,
+        OR: [
+          { clanTag: "#PYLQ0289", eventInstanceId: "event-pylq0289" },
+          { clanTag: "#QGRJ2222", eventInstanceId: "event-qgrj2222" },
+        ],
       },
       data: {
         isActive: false,
@@ -351,8 +373,8 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: { in: ["#PYLQ0289"] },
         isActive: true,
+        OR: [{ clanTag: "#PYLQ0289", eventInstanceId: "event-pylq0289" }],
       },
       data: {
         isActive: false,
@@ -430,8 +452,8 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: "#2QG2C08UP",
         isActive: true,
+        OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-2qg2c08up" }],
       },
       data: {
         isActive: false,
@@ -462,8 +484,8 @@ describe("CwlRegistryService helpers", () => {
     expect(txMock.cwlRotationPlan.updateMany).toHaveBeenCalledWith({
       where: {
         season: "2026-03",
-        clanTag: "#2QG2C08UP",
         isActive: true,
+        OR: [{ clanTag: "#2QG2C08UP", eventInstanceId: "event-2qg2c08up" }],
       },
       data: {
         isActive: false,

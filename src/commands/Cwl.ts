@@ -2932,6 +2932,10 @@ async function handleRotationCreateSubcommand(interaction: ChatInputCommandInter
     await interaction.editReply(`No tracked CWL clan found for ${result.clanTag || clanTag}.`);
     return;
   }
+  if (result.outcome === "no_current_event") {
+    await interaction.editReply(`No current CWL event is selected for ${result.clanTag || clanTag}. Refresh CWL state before managing rotations.`);
+    return;
+  }
   if (result.outcome === "invalid_size") {
     await interaction.editReply(
       `CWL rotation lineup size must be ${formatCwlRotationSupportedExplicitLineupSizes()}.`,
@@ -3091,6 +3095,10 @@ async function handleRotationDeleteSubcommand(interaction: ChatInputCommandInter
   }
   if (result.outcome === "not_found") {
     await interaction.editReply(`No active CWL rotation exists for ${result.clanTag} in season ${result.season}.`);
+    return;
+  }
+  if (result.outcome === "no_current_event") {
+    await interaction.editReply(`No current CWL event is selected for ${result.clanTag}. Refresh CWL state before managing rotations.`);
     return;
   }
 
