@@ -14,7 +14,21 @@ const ROTATION_MIGRATION_PATH = fileURLToPath(
 const REPAIR_ROTATION_MIGRATION_PATH = fileURLToPath(
   new URL("../prisma/migrations/20260619130000_repair_current_cwl_rotation_event_scope/migration.sql", import.meta.url),
 );
-const POSTGRES_BIN_DIR = "C:\\Program Files\\PostgreSQL\\18\\bin";
+
+type PostgresToolName = "initdb" | "postgres" | "psql" | "pg_ctl" | "pg_config";
+
+type ResolvedPostgresTool = {
+  command: string;
+  source: string;
+};
+
+type PostgresToolchain = {
+  initdb: ResolvedPostgresTool;
+  postgres: ResolvedPostgresTool;
+  psql: ResolvedPostgresTool;
+  pgCtl: ResolvedPostgresTool;
+  sessionEnv: NodeJS.ProcessEnv;
+};
 
 type HistoricalEventFixture = {
   id: string;
@@ -115,11 +129,124 @@ function sqlText(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+// Format a JavaScript Date as a timezone-less PostgreSQL timestamp literal.
 function sqlTimestamp(value: Date): string {
   return `TIMESTAMP(3) ${sqlText(value.toISOString().slice(0, 23).replace("T", " "))}`;
 }
 
-async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Promise<T>): Promise<T> {
+// Pick a platform-appropriate PostgreSQL executable name.
+function postgresExecutableName(toolName: PostgresToolName): string {
+  return process.platform === "win32" ? `${toolName}.exe` : toolName;
+}
+
+// Build PostgreSQL tool candidates from the configured bin dir, pg_config bindir, and PATH.
+function buildPostgresToolCandidates(toolName: PostgresToolName, bindirCandidates: string[]): ResolvedPostgresTool[] {
+  const executableName = postgresExecutableName(toolName);
+  const candidates = bindirCandidates.map((bindir) => ({
+    command: join(bindir, executableName),
+    source: `bindir:${bindir}`,
+  }));
+  candidates.push({
+    command: executableName,
+    source: "PATH",
+  });
+  return candidates;
+}
+
+// Resolve a runnable PostgreSQL tool from the configured sources and record what worked.
+function resolvePostgresToolOrNull(
+  toolName: PostgresToolName,
+  bindirCandidates: string[],
+): ResolvedPostgresTool | null {
+  for (const candidate of buildPostgresToolCandidates(toolName, bindirCandidates)) {
+    try {
+      execFileSync(candidate.command, ["--version"], {
+        encoding: "utf8",
+      });
+      return candidate;
+    } catch {
+      // Try the next PostgreSQL source before failing the migration test preflight.
+    }
+  }
+  return null;
+}
+
+// Resolve pg_config bindir so the test can reuse the same server installation on any platform.
+function resolvePostgresBindirFromPgConfig(configuredBindir: string | null): string | null {
+  const pgConfig = resolvePostgresToolOrNull("pg_config", configuredBindir ? [configuredBindir] : []);
+  if (!pgConfig) {
+    return null;
+  }
+  try {
+    const bindir = execFileSync(pgConfig.command, ["--bindir"], {
+      encoding: "utf8",
+    }).trim();
+    return bindir || null;
+  } catch {
+    return null;
+  }
+}
+
+// Format an actionable error when the PostgreSQL server tools are unavailable.
+function formatPostgresToolchainResolutionError(
+  missingTools: string[],
+  configuredBindir: string | null,
+  pgConfigBindir: string | null,
+): string {
+  const bindirSummary = configuredBindir ? `POSTGRES_BIN_DIR=${configuredBindir}` : "POSTGRES_BIN_DIR=(unset)";
+  const pgConfigSummary = pgConfigBindir ? `pg_config --bindir=${pgConfigBindir}` : "pg_config --bindir=unavailable";
+  return [
+    `Unable to resolve PostgreSQL tools required by cwlEventInstance.migration.test.ts: ${missingTools.join(", ")}.`,
+    `Tried ${bindirSummary}, ${pgConfigSummary}, and PATH fallback command names.`,
+    "Install the PostgreSQL server tools, or set POSTGRES_BIN_DIR to a directory containing initdb, postgres, psql, and pg_ctl.",
+  ].join(" ");
+}
+
+// Resolve the PostgreSQL toolchain and fail fast when any required tool is missing.
+function resolvePostgresToolchainOrThrow(sessionTimezone?: string): PostgresToolchain {
+  const configuredBindir = process.env.POSTGRES_BIN_DIR?.trim() || null;
+  const pgConfigBindir = resolvePostgresBindirFromPgConfig(configuredBindir);
+  const bindirCandidates = [configuredBindir, pgConfigBindir].filter((value): value is string => Boolean(value));
+
+  const initdb = resolvePostgresToolOrNull("initdb", bindirCandidates);
+  const postgres = resolvePostgresToolOrNull("postgres", bindirCandidates);
+  const psql = resolvePostgresToolOrNull("psql", bindirCandidates);
+  const pgCtl = resolvePostgresToolOrNull("pg_ctl", bindirCandidates);
+  const missingTools = [
+    !initdb ? "initdb" : null,
+    !postgres ? "postgres" : null,
+    !psql ? "psql" : null,
+    !pgCtl ? "pg_ctl" : null,
+  ].filter((tool): tool is string => Boolean(tool));
+
+  if (missingTools.length > 0 || !initdb || !postgres || !psql || !pgCtl) {
+    throw new Error(formatPostgresToolchainResolutionError(missingTools, configuredBindir, pgConfigBindir));
+  }
+
+  return {
+    initdb,
+    postgres,
+    psql,
+    pgCtl,
+    sessionEnv: buildPostgresSessionEnv(sessionTimezone),
+  };
+}
+
+// Apply a per-session timezone to every psql invocation without mutating global process state.
+function buildPostgresSessionEnv(sessionTimezone?: string): NodeJS.ProcessEnv {
+  if (!sessionTimezone) {
+    return process.env;
+  }
+  return {
+    ...process.env,
+    PGTZ: sessionTimezone,
+  };
+}
+
+async function withTemporaryPostgres<T>(
+  callback: (cluster: TempPgCluster) => Promise<T>,
+  sessionTimezone?: string,
+): Promise<T> {
   const tempBaseDir = ".tmp-migration-pg";
   mkdirSync(tempBaseDir, { recursive: true });
   const dataDir = join(tempBaseDir, `cluster-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -127,15 +254,16 @@ async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Pr
   const tracePath = join(tempBaseDir, `trace-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
   const trace = (message: string) => appendFileSync(tracePath, `${message}\n`, "utf8");
   const port = await reserveFreePort();
+  const toolchain = resolvePostgresToolchainOrThrow(sessionTimezone);
   let postgresPid: number | null = null;
   try {
     trace(`initdb_start ${dataDir}`);
-    execFileSync(join(POSTGRES_BIN_DIR, "initdb.exe"), ["-D", dataDir, "--auth=trust", "--username=postgres"], {
+    execFileSync(toolchain.initdb.command, ["-D", dataDir, "--auth=trust", "--username=postgres"], {
       encoding: "utf8",
     });
     trace(`initdb_done ${dataDir}`);
     const postgresProcess = spawn(
-      join(POSTGRES_BIN_DIR, "postgres.exe"),
+      toolchain.postgres.command,
       ["-D", dataDir, "-h", "127.0.0.1", "-p", String(port)],
       {
         detached: true,
@@ -149,7 +277,7 @@ async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Pr
 
     const runPsql = (sql: string) =>
       execFileSync(
-        join(POSTGRES_BIN_DIR, "psql.exe"),
+        toolchain.psql.command,
         [
           "-h",
           "127.0.0.1",
@@ -170,13 +298,14 @@ async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Pr
         {
           encoding: "utf8",
           input: sql,
+          env: toolchain.sessionEnv,
         },
       ).trim();
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         execFileSync(
-          join(POSTGRES_BIN_DIR, "psql.exe"),
+          toolchain.psql.command,
           [
             "-h",
             "127.0.0.1",
@@ -198,6 +327,7 @@ async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Pr
           ],
           {
             encoding: "utf8",
+            env: toolchain.sessionEnv,
           },
         );
         trace(`postgres_ready ${port}`);
@@ -216,21 +346,57 @@ async function withTemporaryPostgres<T>(callback: (cluster: TempPgCluster) => Pr
   } finally {
     trace(`pg_ctl_stop ${port}`);
     try {
-      if (postgresPid !== null) {
-        execFileSync("taskkill", ["/PID", String(postgresPid), "/T", "/F"], {
-          encoding: "utf8",
-        });
-      } else {
-        execFileSync(join(POSTGRES_BIN_DIR, "pg_ctl.exe"), ["-D", dataDir, "-m", "fast", "stop"], {
-          encoding: "utf8",
-        });
-      }
+      execFileSync(toolchain.pgCtl.command, ["-D", dataDir, "-m", "fast", "stop"], {
+        encoding: "utf8",
+        env: toolchain.sessionEnv,
+      });
     } catch {
       // Best-effort cleanup after temporary migration verification.
+      if (postgresPid !== null) {
+        if (process.platform === "win32") {
+          try {
+            execFileSync("taskkill", ["/PID", String(postgresPid), "/T", "/F"], {
+              encoding: "utf8",
+            });
+          } catch {
+            // If Windows cleanup fails, fall through to the final directory cleanup retry.
+          }
+        } else {
+          try {
+            process.kill(postgresPid, "SIGTERM");
+          } catch {
+            // If the process is already gone, the retry loop below will confirm cleanup.
+          }
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            if (!isProcessAlive(postgresPid)) {
+              break;
+            }
+            if (attempt === 19) {
+              try {
+                process.kill(postgresPid, "SIGKILL");
+              } catch {
+                // Final best-effort escalation after the process ignored SIGTERM.
+              }
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+      }
     }
     await waitForDirectoryRelease(dataDir);
     trace(`cleanup ${port}`);
     rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+// Check whether a temporary PostgreSQL process is still alive after shutdown attempts.
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1001,7 +1167,6 @@ describe("CWL rotation event-scope migration", () => {
 
     await withTemporaryPostgres(async ({ runSql }) => {
       runSql(buildRepairMigrationSchemaSql());
-      runSql("SET TIME ZONE 'America/Los_Angeles';");
       runSql(buildRepairMigrationSeedSql(seed));
 
       runSql(migration);
@@ -1027,7 +1192,7 @@ describe("CWL rotation event-scope migration", () => {
       runSql(migration);
       const rerunRows = parseTabSeparatedRows(runSql(buildRepairMigrationPlanStateSql()));
       expect(rerunRows).toEqual(repairedRows);
-    });
+    }, "America/Los_Angeles");
   }, 60000);
 
   it("skips repair when a current-event active plan already exists", async () => {
