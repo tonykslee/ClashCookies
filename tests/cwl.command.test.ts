@@ -4052,6 +4052,7 @@ describe("/cwl command", () => {
   });
 
   it("surfaces a stale import preview warning when the CWL event changes before confirmation", async () => {
+    const capturedEventInstanceId = "event-a";
     const preview: CwlRotationSheetImportPreview = {
       sourceSheetId: "sheet-1",
       sourceSheetTitle: "Imported CWL Planner",
@@ -4068,6 +4069,7 @@ describe("/cwl command", () => {
           structuralRowCount: 0,
           reviewRequiredRowCount: 0,
           ignoredRowCount: 0,
+          eventInstanceId: capturedEventInstanceId,
           rosterRows: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
           days: [
             {
@@ -4164,6 +4166,12 @@ describe("/cwl command", () => {
     await handleCwlRotationImportButtonInteraction(confirmInteraction as any);
 
     expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledTimes(1);
+    expect(cwlRotationSheetService.confirmImport).toHaveBeenCalledWith({
+      preview,
+      overwrite: false,
+    });
+    const confirmImportInput = vi.mocked(cwlRotationSheetService.confirmImport).mock.calls[0]?.[0];
+    expect(confirmImportInput?.preview.matchedClans[0]?.eventInstanceId).toBe(capturedEventInstanceId);
     expect(getEditedDescription(confirmInteraction)).toContain(
       "CWL event changed since preview; rebuild the import preview.",
     );

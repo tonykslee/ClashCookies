@@ -416,9 +416,6 @@ describe("MirrorSyncService", () => {
       {
         id: "plan-day-1",
         planId: "plan-1",
-        eventInstanceId: "event-current",
-        clanTag: "#AAA111",
-        season: "2026-04",
         roundDay: 1,
         lineupSize: 15,
         locked: false,
@@ -432,9 +429,6 @@ describe("MirrorSyncService", () => {
         id: "plan-member-1",
         planId: "plan-1",
         planDayId: "plan-day-1",
-        eventInstanceId: "event-current",
-        clanTag: "#AAA111",
-        season: "2026-04",
         roundDay: 1,
         playerTag: "#P1",
         playerName: "Player 1",
@@ -487,8 +481,6 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CwlRotationPlanDay).toEqual(sourceStore.CwlRotationPlanDay);
     expect(targetStore.CwlRotationPlanMember).toEqual(sourceStore.CwlRotationPlanMember);
     expect(targetStore.CwlRotationPlan[0]?.eventInstanceId).toBe("event-current");
-    expect(targetStore.CwlRotationPlanDay[0]?.eventInstanceId).toBe("event-current");
-    expect(targetStore.CwlRotationPlanMember[0]?.eventInstanceId).toBe("event-current");
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
