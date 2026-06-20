@@ -38,13 +38,18 @@ import {
   type CwlRotationSheetImportPreview,
 } from "../src/services/CwlRotationSheetService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
+import {
+  cwlAllianceBaselineService,
+  CwlAllianceBaselineValidationError,
+} from "../src/services/CwlAllianceBaselineService";
 import { GoogleSheetsAuthError } from "../src/services/GoogleSheetsService";
 import { cwlStateService } from "../src/services/CwlStateService";
+import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 
 function makeInteraction(input: {
-  group?: "roster" | "rotations" | null;
+  group?: "baseline" | "roster" | "rotations" | null;
   subcommand:
     | "members"
     | "signup"
@@ -61,7 +66,8 @@ function makeInteraction(input: {
     | "create"
     | "import"
     | "export"
-    | "delete";
+    | "delete"
+    | "status";
   clan?: string | null;
   roster?: string | null;
   groupKey?: string | null;
@@ -73,6 +79,7 @@ function makeInteraction(input: {
   overwrite?: boolean | null;
   newExport?: boolean | null;
   size?: number | null;
+  season?: string | null;
 }) {
   return {
     user: { id: "111111111111111111" },
@@ -88,6 +95,7 @@ function makeInteraction(input: {
         if (name === "players") return input.players ?? null;
         if (name === "timezone") return input.timezone ?? null;
         if (name === "exclude") return input.exclude ?? null;
+        if (name === "season") return input.season ?? null;
         if (name === "visibility") return null;
         return null;
       }),
@@ -181,6 +189,11 @@ function makeRosterSelectionApplyingRows(confirmCustomId: string): ActionRowBuil
 function getDescription(interaction: any): string {
   const payload = (interaction.editReply?.mock.calls[0]?.[0] ?? interaction.update?.mock.calls[0]?.[0]) as any;
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+}
+
+function getFirstEmbedJson(interaction: any): any {
+  const payload = (interaction.editReply?.mock.calls.at(-1)?.[0] ?? interaction.update?.mock.calls.at(-1)?.[0]) as any;
+  return payload?.embeds?.[0]?.toJSON?.() ?? null;
 }
 
 function getAllEmbedDescriptions(interaction: any): string[] {
@@ -332,6 +345,53 @@ function makeRosterRefreshPayload(refreshDisabled: boolean, title: string) {
   };
 }
 
+function makeBaselineStatusSummary(
+  overrides: Partial<{
+    baselineId: string;
+    guildId: string;
+    season: string;
+    capturedAt: Date;
+    trackedClanCount: number;
+    capturedClanCount: number;
+    unavailableClanCount: number;
+    memberAccountCount: number;
+    linkedAccountCount: number;
+    currentWarSourceCount: number;
+    latestWarFallbackCount: number;
+    coverageSummaries: Array<{
+      clanTag: string;
+      clanName: string | null;
+      captureStatus: "CAPTURED" | "UNAVAILABLE";
+      sourceType: "CURRENT_FWA_WAR" | "LATEST_FWA_WAR" | null;
+      sourceWarId: number | null;
+      sourceWarStartTime: Date | null;
+      sourceWarEndTime: Date | null;
+      sourceOpponentTag: string | null;
+      sourceObservedAt: Date | null;
+      rosterSize: number;
+      failureReason: string | null;
+    }>;
+    reusedExistingBaseline: boolean;
+  }> = {},
+) {
+  return {
+    baselineId: "baseline-1",
+    guildId: "guild-1",
+    season: "2026-04",
+    capturedAt: new Date("2026-04-15T00:00:00.000Z"),
+    trackedClanCount: 0,
+    capturedClanCount: 0,
+    unavailableClanCount: 0,
+    memberAccountCount: 0,
+    linkedAccountCount: 0,
+    currentWarSourceCount: 0,
+    latestWarFallbackCount: 0,
+    coverageSummaries: [],
+    reusedExistingBaseline: false,
+    ...overrides,
+  };
+}
+
 describe("/cwl command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -360,6 +420,8 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
     vi.spyOn(rosterService, "findCwlRosterForClan").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "getRosterView").mockResolvedValue(null as any);
+    vi.spyOn(cwlAllianceBaselineService, "getAllianceSeasonBaselineStatus").mockResolvedValue(null as any);
+    vi.spyOn(cwlAllianceBaselineService, "captureAllianceSeasonBaseline").mockResolvedValue(null as any);
     vi.spyOn(cwlRotationService, "createPlanFromRoster");
     (rosterService.buildRosterSignupPayload as any).mockResolvedValue({
       embed: new EmbedBuilder().setTitle("Roster Signup"),
@@ -5440,5 +5502,173 @@ describe("/cwl command", () => {
       { name: "CWL Alpha Roster", value: "roster-1" },
       { name: "CWL Alpha Closed", value: "roster-2" },
     ]);
+  });
+
+  it("shows a concise no-baseline message and uses the canonical current season when omitted", async () => {
+    const interaction = makeInteraction({
+      group: "baseline",
+      subcommand: "status",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlAllianceBaselineService.getAllianceSeasonBaselineStatus).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      season: null,
+    });
+    expect(cwlAllianceBaselineService.captureAllianceSeasonBaseline).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      `No frozen alliance baseline exists for ${resolveCurrentCwlSeasonKey()}.`,
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Baseline capture is not available through Discord yet.",
+    );
+  });
+
+  it("renders stored baseline status in one compact embed", async () => {
+    const status = makeBaselineStatusSummary({
+      season: "2026-06",
+      trackedClanCount: 3,
+      capturedClanCount: 2,
+      unavailableClanCount: 1,
+      memberAccountCount: 102,
+      linkedAccountCount: 80,
+      currentWarSourceCount: 1,
+      latestWarFallbackCount: 1,
+      coverageSummaries: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha *Clan*",
+          captureStatus: "CAPTURED",
+          sourceType: "CURRENT_FWA_WAR",
+          sourceWarId: 1001,
+          sourceWarStartTime: new Date("2026-06-01T12:00:00.000Z"),
+          sourceWarEndTime: new Date("2026-06-02T12:00:00.000Z"),
+          sourceOpponentTag: "#OPP1",
+          sourceObservedAt: new Date("2026-06-02T11:45:00.000Z"),
+          rosterSize: 50,
+          failureReason: null,
+        },
+        {
+          clanTag: "#9GLGQCCU",
+          clanName: "Bravo @here",
+          captureStatus: "CAPTURED",
+          sourceType: "LATEST_FWA_WAR",
+          sourceWarId: 1002,
+          sourceWarStartTime: new Date("2026-06-01T12:00:00.000Z"),
+          sourceWarEndTime: new Date("2026-06-02T12:00:00.000Z"),
+          sourceOpponentTag: "#OPP2",
+          sourceObservedAt: new Date("2026-06-02T11:30:00.000Z"),
+          rosterSize: 49,
+          failureReason: null,
+        },
+        {
+          clanTag: "#CUV02898",
+          clanName: "Delta",
+          captureStatus: "UNAVAILABLE",
+          sourceType: null,
+          sourceWarId: null,
+          sourceWarStartTime: null,
+          sourceWarEndTime: null,
+          sourceOpponentTag: null,
+          sourceObservedAt: null,
+          rosterSize: 0,
+          failureReason: "no current FWA war was available",
+        },
+      ],
+    });
+    vi.mocked(cwlAllianceBaselineService.getAllianceSeasonBaselineStatus).mockResolvedValue(status as any);
+    const interaction = makeInteraction({
+      group: "baseline",
+      subcommand: "status",
+      season: "2026-06",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(cwlAllianceBaselineService.getAllianceSeasonBaselineStatus).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+    expect(cwlAllianceBaselineService.captureAllianceSeasonBaseline).not.toHaveBeenCalled();
+    expect(getFirstEmbedJson(interaction)?.title).toBe("CWL Alliance Baseline — 2026-06");
+    expect(getDescription(interaction)).toContain("Captured timestamp: <t:");
+    expect(getDescription(interaction)).toContain("Tracked clans: 3");
+    expect(getDescription(interaction)).toContain("Captured clans: 2");
+    expect(getDescription(interaction)).toContain("Unavailable clans: 1");
+    expect(getDescription(interaction)).toContain("Member accounts: 102");
+    expect(getDescription(interaction)).toContain("Linked accounts: 80");
+    expect(getDescription(interaction)).toContain("Current-war sources: 1");
+    expect(getDescription(interaction)).toContain("Latest-war fallback sources: 1");
+    expect(getDescription(interaction)).toContain("✅ Alpha \\*Clan\\* `#2QG2C08UP` — CURRENT_FWA_WAR, 50 members");
+    expect(getDescription(interaction)).toContain("✅ Bravo @\u200bhere `#9GLGQCCU` — LATEST_FWA_WAR, 49 members");
+    expect(getDescription(interaction)).toContain("❌ Delta `#CUV02898` — UNAVAILABLE: no current FWA war was available");
+    expect(getDescription(interaction)).toContain(
+      "This snapshot reflects the persisted FWA roster data available when it was captured; it is not a reconstruction of pre-CWL membership.",
+    );
+  });
+
+  it("surfaces a validation error for an invalid season without calling capture", async () => {
+    vi.mocked(cwlAllianceBaselineService.getAllianceSeasonBaselineStatus).mockRejectedValueOnce(
+      new CwlAllianceBaselineValidationError(
+        "season must use canonical CWL YYYY-MM format.",
+        { field: "season", season: "2026-6" },
+      ),
+    );
+    const interaction = makeInteraction({
+      group: "baseline",
+      subcommand: "status",
+      season: "2026-6",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "season must use canonical CWL YYYY-MM format.",
+    );
+    expect(cwlAllianceBaselineService.captureAllianceSeasonBaseline).not.toHaveBeenCalled();
+  });
+
+  it("truncates baseline coverage lines on whole-clan boundaries when needed", async () => {
+    const coverageSummaries = Array.from({ length: 60 }, (_, index) => ({
+      clanTag: `#T${String(index + 1).padStart(7, "0")}`,
+      clanName: `Clan ${index + 1} with a long baseline display name that keeps growing and growing and growing`,
+      captureStatus: "CAPTURED" as const,
+      sourceType: index % 2 === 0 ? ("CURRENT_FWA_WAR" as const) : ("LATEST_FWA_WAR" as const),
+      sourceWarId: 2000 + index,
+      sourceWarStartTime: new Date("2026-06-01T12:00:00.000Z"),
+      sourceWarEndTime: new Date("2026-06-02T12:00:00.000Z"),
+      sourceOpponentTag: "#OPP",
+      sourceObservedAt: new Date("2026-06-02T11:45:00.000Z"),
+      rosterSize: 50,
+      failureReason: null,
+    }));
+    vi.mocked(cwlAllianceBaselineService.getAllianceSeasonBaselineStatus).mockResolvedValue(
+      makeBaselineStatusSummary({
+        season: "2026-06",
+        trackedClanCount: coverageSummaries.length,
+        capturedClanCount: coverageSummaries.length,
+        unavailableClanCount: 0,
+        memberAccountCount: 800,
+        linkedAccountCount: 760,
+        currentWarSourceCount: 8,
+        latestWarFallbackCount: 8,
+        coverageSummaries,
+      }) as any,
+    );
+    const interaction = makeInteraction({
+      group: "baseline",
+      subcommand: "status",
+      season: "2026-06",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("...and");
+    expect(description).toMatch(/\.\.\.and \d+ more clans/);
+    expect(description).toContain(
+      "This snapshot reflects the persisted FWA roster data available when it was captured; it is not a reconstruction of pre-CWL membership.",
+    );
   });
 });

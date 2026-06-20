@@ -250,6 +250,14 @@ describe("command coverage", () => {
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 
+  it("documents the /cwl baseline status command in cwl help detail text", () => {
+    const cwlHelpText = helpEmbedText("cwl");
+    const normalized = cwlHelpText.toLowerCase();
+    expect(cwlHelpText).toContain("/cwl baseline status");
+    expect(cwlHelpText).toContain("/cwl baseline status season:2026-06");
+    expect(normalized).toContain("capture is not available through discord yet");
+  });
+
   it("documents the /sync readiness dashboard in sync help detail text", () => {
     const syncHelpText = helpEmbedText("sync");
     const normalized = syncHelpText.toLowerCase();
