@@ -212,6 +212,8 @@ model BanRecord {
   targetKind             BanTargetKind
   playerTag              String?        @db.VarChar(16)
   discordUserId          String?
+  targetDiscordUsername  String?
+  targetDiscordDisplayName String?
   clanTag                String?        @db.VarChar(16)
   clanName               String?
   reason                 String?

@@ -1,27 +1,30 @@
 import { BanRecord, BanTargetKind } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
-  listPlayerLinksForDiscordUser,
   normalizeClanTag,
   normalizeDiscordUserId,
+  normalizePersistedDiscordUsername,
+  normalizePersistedPlayerName,
   normalizePlayerTag,
 } from "./PlayerLinkService";
+import { type BanDisplayRecord } from "./BanDisplayService";
 
 export type BanMutationOutcome = "created" | "updated" | "invalid_target" | "invalid_clan";
 export type BanRemovalOutcome = "removed" | "not_found" | "invalid_target";
 
 export type BanMutationResult = {
   outcome: BanMutationOutcome;
-  record: BanRecord | null;
+  record: BanDisplayRecord | null;
 };
 
 export type BanRemovalResult = {
   outcome: BanRemovalOutcome;
-  record: BanRecord | null;
+  record: BanDisplayRecord | null;
 };
 
 export type BanListRecord = BanRecord & {
   linkedPlayerTags: string[];
+  targetPlayerName: string | null;
 };
 
 type BanTimestampInput = {
@@ -32,6 +35,8 @@ type BanTimestampInput = {
   now?: Date;
   clanTag?: string | null;
   clanName?: string | null;
+  targetDiscordUsername?: string | null;
+  targetDiscordDisplayName?: string | null;
 };
 
 function normalizeBanText(input: unknown): string | null {
@@ -112,6 +117,111 @@ async function resolveBanClanContext(input: {
   };
 }
 
+async function loadBanDisplayData(input: {
+  playerTags?: string[];
+  discordUserIds?: string[];
+}): Promise<{
+  targetPlayerNameByTag: Map<string, string | null>;
+  linkedPlayerTagsByUserId: Map<string, string[]>;
+}> {
+  const playerTags = [...new Set((input.playerTags ?? []).map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  const discordUserIds = [...new Set((input.discordUserIds ?? []).map((userId) => normalizeDiscordUserId(userId)).filter((value): value is string => value !== null))];
+
+  if (playerTags.length === 0 && discordUserIds.length === 0) {
+    return {
+      targetPlayerNameByTag: new Map(),
+      linkedPlayerTagsByUserId: new Map(),
+    };
+  }
+
+  const [playerCurrentRows, playerLinkRows] = await Promise.all([
+    playerTags.length > 0
+      ? prisma.playerCurrent.findMany({
+          where: { playerTag: { in: playerTags } },
+          select: { playerTag: true, playerName: true },
+        })
+      : Promise.resolve([]),
+    playerTags.length > 0 || discordUserIds.length > 0
+      ? prisma.playerLink.findMany({
+          where:
+            playerTags.length > 0 && discordUserIds.length > 0
+              ? {
+                  OR: [
+                    { playerTag: { in: playerTags } },
+                    { discordUserId: { in: discordUserIds } },
+                  ],
+                }
+              : playerTags.length > 0
+                ? { playerTag: { in: playerTags } }
+                : { discordUserId: { in: discordUserIds } },
+          orderBy: [{ createdAt: "asc" }, { playerTag: "asc" }],
+          select: { playerTag: true, discordUserId: true, playerName: true, createdAt: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const currentNameByTag = new Map<string, string | null>();
+  for (const row of playerCurrentRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!playerTag) continue;
+    currentNameByTag.set(playerTag, normalizePersistedPlayerName(row.playerName));
+  }
+
+  const fallbackNameByTag = new Map<string, string | null>();
+  const linkedPlayerTagsByUserId = new Map<string, string[]>();
+  for (const row of playerLinkRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (playerTag && playerTags.includes(playerTag) && !fallbackNameByTag.has(playerTag)) {
+      fallbackNameByTag.set(playerTag, normalizePersistedPlayerName(row.playerName));
+    }
+
+    const discordUserId = normalizeDiscordUserId(row.discordUserId);
+    if (!discordUserId || !discordUserIds.includes(discordUserId) || !playerTag) continue;
+    const tags = linkedPlayerTagsByUserId.get(discordUserId) ?? [];
+    tags.push(playerTag);
+    linkedPlayerTagsByUserId.set(discordUserId, tags);
+  }
+
+  const targetPlayerNameByTag = new Map<string, string | null>();
+  for (const playerTag of playerTags) {
+    targetPlayerNameByTag.set(playerTag, currentNameByTag.get(playerTag) ?? fallbackNameByTag.get(playerTag) ?? null);
+  }
+
+  return {
+    targetPlayerNameByTag,
+    linkedPlayerTagsByUserId,
+  };
+}
+
+async function enrichBanRecordForDisplay(record: BanRecord): Promise<BanDisplayRecord> {
+  if (record.targetKind !== BanTargetKind.PLAYER) {
+    return {
+      ...record,
+      linkedPlayerTags: [],
+      targetPlayerName: null,
+    };
+  }
+
+  const playerTag = normalizePlayerTag(record.playerTag ?? "");
+  if (!playerTag) {
+    return {
+      ...record,
+      linkedPlayerTags: [],
+      targetPlayerName: null,
+    };
+  }
+
+  const { targetPlayerNameByTag } = await loadBanDisplayData({
+    playerTags: [playerTag],
+  });
+
+  return {
+    ...record,
+    linkedPlayerTags: [],
+    targetPlayerName: targetPlayerNameByTag.get(playerTag) ?? null,
+  };
+}
+
 async function upsertActiveBanRecord(input: {
   guildId: string;
   targetKind: BanTargetKind;
@@ -123,6 +233,8 @@ async function upsertActiveBanRecord(input: {
   now?: Date;
   clanTag?: string | null;
   clanName?: string | null;
+  targetDiscordUsername?: string | null;
+  targetDiscordDisplayName?: string | null;
 }): Promise<BanMutationResult> {
   const now = input.now ?? new Date();
   const reason = normalizeBanReason(input.reason);
@@ -149,6 +261,14 @@ async function upsertActiveBanRecord(input: {
       data: {
         reason,
         expiresAt,
+        targetDiscordUsername:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordUsername)
+            : null,
+        targetDiscordDisplayName:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordDisplayName)
+            : null,
         clanTag: clanContext?.clanTag ?? null,
         clanName: clanContext?.clanName ?? null,
         bannedByDiscordUserId: input.bannedByDiscordUserId,
@@ -157,7 +277,10 @@ async function upsertActiveBanRecord(input: {
         removeReason: null,
       },
     });
-    return { outcome: "updated", record: updated };
+    return {
+      outcome: "updated",
+      record: await enrichBanRecordForDisplay(updated),
+    };
   }
 
   try {
@@ -167,6 +290,14 @@ async function upsertActiveBanRecord(input: {
         targetKind: input.targetKind,
         playerTag: input.playerTag ?? null,
         discordUserId: input.discordUserId ?? null,
+        targetDiscordUsername:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordUsername)
+            : null,
+        targetDiscordDisplayName:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordDisplayName)
+            : null,
         clanTag: clanContext?.clanTag ?? null,
         clanName: clanContext?.clanName ?? null,
         reason,
@@ -174,7 +305,10 @@ async function upsertActiveBanRecord(input: {
         expiresAt,
       },
     });
-    return { outcome: "created", record: created };
+    return {
+      outcome: "created",
+      record: await enrichBanRecordForDisplay(created),
+    };
   } catch (error) {
     const code = (error as { code?: string } | null | undefined)?.code ?? "";
     if (code !== "P2002") throw error;
@@ -195,6 +329,14 @@ async function upsertActiveBanRecord(input: {
       data: {
         reason,
         expiresAt,
+        targetDiscordUsername:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordUsername)
+            : null,
+        targetDiscordDisplayName:
+          input.targetKind === BanTargetKind.USER
+            ? normalizePersistedDiscordUsername(input.targetDiscordDisplayName)
+            : null,
         clanTag: clanContext?.clanTag ?? null,
         clanName: clanContext?.clanName ?? null,
         bannedByDiscordUserId: input.bannedByDiscordUserId,
@@ -203,7 +345,10 @@ async function upsertActiveBanRecord(input: {
         removeReason: null,
       },
     });
-    return { outcome: "updated", record: updated };
+    return {
+      outcome: "updated",
+      record: await enrichBanRecordForDisplay(updated),
+    };
   }
 }
 
@@ -237,7 +382,10 @@ async function removeActiveBanRecord(input: {
       removeReason: null,
     },
   });
-  return { outcome: "removed", record: removed };
+  return {
+    outcome: "removed",
+    record: await enrichBanRecordForDisplay(removed),
+  };
 }
 
 export class BanService {
@@ -257,6 +405,8 @@ export class BanService {
       now: input.now,
       clanTag: input.clanTag ?? null,
       clanName: input.clanName ?? null,
+      targetDiscordUsername: null,
+      targetDiscordDisplayName: null,
     });
   }
 
@@ -307,6 +457,8 @@ export class BanService {
       now: input.now,
       clanTag: input.clanTag ?? null,
       clanName: input.clanName ?? null,
+      targetDiscordUsername: input.targetDiscordUsername ?? null,
+      targetDiscordDisplayName: input.targetDiscordDisplayName ?? null,
     });
   }
 
@@ -361,7 +513,15 @@ export class BanService {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
 
-    const userBanUserIds = [
+    const playerTags = [
+      ...new Set(
+        rows
+          .filter((row) => row.targetKind === BanTargetKind.PLAYER)
+          .map((row) => normalizePlayerTag(row.playerTag ?? ""))
+          .filter((value): value is string => value !== null),
+      ),
+    ];
+    const discordUserIds = [
       ...new Set(
         rows
           .filter((row) => row.targetKind === BanTargetKind.USER)
@@ -370,22 +530,26 @@ export class BanService {
       ),
     ];
 
-    const linkedTagsByUserId = new Map<string, string[]>();
-    for (const discordUserId of userBanUserIds) {
-      const links = await listPlayerLinksForDiscordUser({ discordUserId });
-      linkedTagsByUserId.set(
-        discordUserId,
-        [...new Set(links.map((link) => normalizePlayerTag(link.playerTag)).filter(Boolean))],
-      );
-    }
+    const { targetPlayerNameByTag, linkedPlayerTagsByUserId } = await loadBanDisplayData({
+      playerTags,
+      discordUserIds,
+    });
 
-    return rows.map((row) => ({
-      ...row,
-      linkedPlayerTags:
-        row.targetKind === BanTargetKind.USER
-          ? linkedTagsByUserId.get(normalizeDiscordUserId(row.discordUserId) ?? "") ?? []
-          : [],
-    }));
+    return rows.map((row) => {
+      const playerTag = normalizePlayerTag(row.playerTag ?? "");
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      return {
+        ...row,
+        linkedPlayerTags:
+          row.targetKind === BanTargetKind.USER && discordUserId
+            ? linkedPlayerTagsByUserId.get(discordUserId) ?? []
+            : [],
+        targetPlayerName:
+          row.targetKind === BanTargetKind.PLAYER && playerTag
+            ? targetPlayerNameByTag.get(playerTag) ?? null
+            : null,
+      };
+    });
   }
 
   async isPlayerBanned(input: {

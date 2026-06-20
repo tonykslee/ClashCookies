@@ -20,6 +20,7 @@ import {
   CommandPermissionService,
 } from "../services/CommandPermissionService";
 import { BanService, type BanListRecord } from "../services/BanService";
+import { formatBanListRow } from "../services/BanDisplayService";
 import { banLogService } from "../services/BanLogService";
 import {
   normalizeClanTag,
@@ -29,7 +30,6 @@ import {
 
 const BAN_PAGINATION_TIMEOUT_MS = 5 * 60 * 1000;
 const BAN_LIST_PAGE_CHAR_LIMIT = 3500;
-const BAN_LIST_ROW_CHAR_LIMIT = 420;
 const BAN_LIST_EMBED_COLOR = 0x5865f2;
 
 type BanTarget =
@@ -43,12 +43,6 @@ export type BanDurationParseResult =
 function sanitizeOptionalText(input: string | null | undefined): string | null {
   const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
   return normalized.length > 0 ? normalized : null;
-}
-
-function truncateInlineText(input: string, maxLength: number): string {
-  if (input.length <= maxLength) return input;
-  if (maxLength <= 3) return input.slice(0, maxLength);
-  return `${input.slice(0, maxLength - 3)}...`;
 }
 
 function normalizeDisplayText(input: string | null | undefined): string | null {
@@ -168,46 +162,6 @@ function formatUnixTimestamp(value: Date | null | undefined): string {
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
 }
 
-function formatBanClanContext(record: BanListRecord): string | null {
-  const clanTag = normalizeClanTag(record.clanTag ?? "");
-  if (!clanTag) return null;
-  const clanName = normalizeDisplayText(record.clanName);
-  return clanName
-    ? `clan: ${truncateInlineText(`${clanName} (${clanTag})`, 120)}`
-    : `clan: ${clanTag}`;
-}
-
-function formatBanRow(record: BanListRecord): string {
-  const baseParts: string[] = [
-    record.targetKind,
-    record.targetKind === "PLAYER"
-      ? record.playerTag ?? "unknown"
-      : record.discordUserId
-        ? `<@${record.discordUserId}>`
-        : "unknown",
-  ];
-
-  const clanContext = formatBanClanContext(record);
-  if (clanContext) {
-    baseParts.push(clanContext);
-  }
-
-  if (record.targetKind === "USER") {
-    const linkedTags = record.linkedPlayerTags.length > 0 ? record.linkedPlayerTags.join(", ") : "none";
-    baseParts.push(`linked: ${truncateInlineText(linkedTags, 120)}`);
-  }
-
-  baseParts.push(`banned ${formatUnixTimestamp(record.createdAt)}`);
-  baseParts.push(`expires ${formatUnixTimestamp(record.expiresAt)}`);
-  baseParts.push(`by <@${record.bannedByDiscordUserId}>`);
-
-  if (record.reason) {
-    baseParts.push(`reason: ${truncateInlineText(record.reason, 180)}`);
-  }
-
-  return truncateInlineText(baseParts.join(" | "), BAN_LIST_ROW_CHAR_LIMIT);
-}
-
 async function autocompleteTrackedClanChoice(
   interaction: AutocompleteInteraction,
 ): Promise<Array<{ name: string; value: string }>> {
@@ -244,7 +198,7 @@ function buildBanListPages(rows: BanListRecord[]): string[] {
   let currentLength = 0;
 
   for (const row of rows) {
-    const line = formatBanRow(row);
+    const line = formatBanListRow(row);
     const additionalLength = currentLines.length > 0 ? line.length + 1 : line.length;
 
     if (currentLines.length > 0 && currentLength + additionalLength > BAN_LIST_PAGE_CHAR_LIMIT) {
@@ -305,6 +259,26 @@ function formatBanMutationMessage(input: {
     parts.push(input.expiresAt ? `expires <t:${Math.floor(input.expiresAt.getTime() / 1000)}:R>.` : "indefinite.");
   }
   return parts.join(" ");
+}
+
+function resolveUserSnapshot(
+  interaction: ChatInputCommandInteraction,
+  user: { id: string; username?: string | null },
+): {
+  targetDiscordUsername: string | null;
+  targetDiscordDisplayName: string | null;
+} {
+  const member = (interaction.options as { getMember?: (name: string, required?: boolean) => unknown | null })
+    .getMember?.("user", false);
+  const displayName =
+    member && typeof member === "object" && "displayName" in member
+      ? normalizeDisplayText(String((member as { displayName?: string | null }).displayName ?? ""))
+      : null;
+
+  return {
+    targetDiscordUsername: normalizeDisplayText(user.username ?? null),
+    targetDiscordDisplayName: displayName,
+  };
 }
 
 async function replyTargetValidationError(
@@ -507,6 +481,10 @@ export const Ban: Command = {
           : await banService.addUserBan({
               ...addInput,
               discordUserId: targetResult.target.discordUserId,
+              ...resolveUserSnapshot(
+                interaction,
+                interaction.options.getUser("user", false) ?? { id: targetResult.target.discordUserId },
+              ),
             });
 
       if (result.outcome === "invalid_target" || result.outcome === "invalid_clan") {
