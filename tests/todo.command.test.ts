@@ -142,9 +142,11 @@ function makeTodoInteraction(input: {
   type?: TodoType | null;
   visibility?: "private" | "public" | null;
   userId?: string;
+  guildId?: string | null;
 }) {
   return {
     user: { id: input.userId ?? "111111111111111111" },
+    guildId: input.guildId ?? null,
     options: {
       getString: vi.fn((name: string) => {
         if (name === "type") return input.type ?? null;
@@ -664,6 +666,156 @@ describe("/todo command", () => {
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueWar).not.toHaveBeenCalled();
+  });
+
+  it("uses the invoking guild's authoritative current-war row and keeps cache isolated across guild scopes", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+    ]);
+    prismaMock.currentWar.findMany.mockImplementation(async (args: any) => {
+      expect(args.where.clanTag.in).toEqual(["#PQL0289"]);
+      const guildId = String(args.where.guildId ?? "");
+      if (guildId === "guild-a") {
+        return [
+          {
+            clanTag: "#PQL0289",
+            clanName: "Clan One",
+            warId: 1001,
+            startTime: new Date("2026-03-25T12:00:00.000Z"),
+            matchType: "BL",
+            inferredMatchType: false,
+            outcome: null,
+            state: "inWar",
+            updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+        ];
+      }
+      if (guildId === "guild-b") {
+        return [
+          {
+            clanTag: "#PQL0289",
+            clanName: "Clan One",
+            warId: 1002,
+            startTime: new Date("2026-03-25T12:00:00.000Z"),
+            matchType: "MM",
+            inferredMatchType: true,
+            outcome: null,
+            state: "inWar",
+            updatedAt: new Date("2026-03-26T00:10:00.000Z"),
+          },
+        ];
+      }
+      throw new Error(`Unexpected guild scope: ${guildId || "<dm>"}`);
+    });
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+
+    const firstInteraction = makeTodoInteraction({ type: "WAR", guildId: "guild-a" });
+    await Todo.run({} as any, firstInteraction as any, makeCocServiceSpy() as any);
+    const firstDescription = getReplyDescription(firstInteraction);
+    expect(firstDescription).toContain(":black_circle:");
+    expect(firstDescription).not.toContain(":white_circle:");
+
+    const secondInteraction = makeTodoInteraction({ type: "WAR", guildId: "guild-b" });
+    await Todo.run({} as any, secondInteraction as any, makeCocServiceSpy() as any);
+    const secondDescription = getReplyDescription(secondInteraction);
+    expect(secondDescription).toContain(":white_circle:");
+    expect(secondDescription).not.toContain(":black_circle:");
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.currentWar.findMany.mock.calls[0]?.[0]?.where?.guildId).toBe("guild-a");
+    expect(prismaMock.currentWar.findMany.mock.calls[1]?.[0]?.where?.guildId).toBe("guild-b");
+  });
+
+  it("renders DM fallback rows deterministically and shows unresolved match state as :grey_question:", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "BL",
+        inferredMatchType: false,
+        outcome: null,
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warId: 1002,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "MM",
+        inferredMatchType: true,
+        outcome: null,
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+
+    const dmInteraction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, dmInteraction as any, makeCocServiceSpy() as any);
+
+    const dmDescription = getReplyDescription(dmInteraction);
+    expect(dmDescription).toContain(":black_circle:");
+    expect(dmDescription).not.toContain(":white_circle:");
+
+    resetTodoRenderCacheForTest();
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warId: 1003,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: null,
+        inferredMatchType: true,
+        outcome: null,
+        state: "inWar",
+        updatedAt: new Date("2026-03-26T00:20:00.000Z"),
+      },
+    ]);
+
+    const unresolvedInteraction = makeTodoInteraction({ type: "WAR", userId: "222222222222222222" });
+    await Todo.run({} as any, unresolvedInteraction as any, makeCocServiceSpy() as any);
+    const unresolvedDescription = getReplyDescription(unresolvedInteraction);
+    expect(unresolvedDescription).toContain(":grey_question:");
+    expect(unresolvedDescription).not.toContain(":white_circle:");
   });
 
   it("shows unknown freshness when the displayed source timestamps are unavailable", async () => {
