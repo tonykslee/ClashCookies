@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 
 type TestPlayerLinkRow = {
   playerTag: string;
@@ -94,6 +95,7 @@ type TestBaselineClanRow = {
   failureReason: string | null;
   createdAt: Date;
   updatedAt: Date;
+  members: TestBaselineMemberRow[];
 };
 
 type TestBaselineRow = {
@@ -130,7 +132,10 @@ function cloneRosters(rows: TestRosterRow[]): TestRosterRow[] {
 function cloneBaseline(row: TestBaselineRow): TestBaselineRow {
   return {
     ...row,
-    clans: row.clans.map((clan) => ({ ...clan })),
+    clans: row.clans.map((clan) => ({
+      ...clan,
+      members: clan.members.map((member) => ({ ...member })),
+    })),
     members: row.members.map((member) => ({ ...member })),
   };
 }
@@ -203,6 +208,7 @@ vi.mock("../src/prisma", () => ({
 
 import {
   CwlAllianceBaselineDuplicatePlayerTagError,
+  CwlAllianceBaselineValidationError,
   CwlAllianceBaselineService,
 } from "../src/services/CwlAllianceBaselineService";
 
@@ -438,6 +444,30 @@ function makeCompleteParticipationRows(
   });
 }
 
+function makeStoredBaseline(input: {
+  id: string;
+  guildId: string;
+  season: string;
+  capturedAt: Date;
+  clans: TestBaselineClanRow[];
+  members: TestBaselineMemberRow[];
+}): TestBaselineRow {
+  return {
+    id: input.id,
+    guildId: input.guildId,
+    season: input.season,
+    capturedAt: input.capturedAt,
+    capturedByUserId: "123456789012345678",
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    clans: input.clans.map((clan) => ({
+      ...clan,
+      members: clan.members ?? [],
+    })),
+    members: input.members,
+  };
+}
+
 describe("CwlAllianceBaselineService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -472,6 +502,7 @@ describe("CwlAllianceBaselineService", () => {
     expect(result.guildId).toBe("guild-1");
     expect(result.season).toBe("2026-06");
     expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(false);
     expect(result.capturedClanCount).toBe(1);
     expect(result.unavailableClanCount).toBe(0);
     expect(result.currentWarSourceCount).toBe(1);
@@ -715,6 +746,7 @@ describe("CwlAllianceBaselineService", () => {
     });
 
     expect(result.reusedExistingBaseline).toBe(true);
+    expect(result.replacedExistingBaseline).toBe(false);
     expect(result.baselineId).toBe("baseline-reuse");
     expect(txMock.cwlAllianceSeasonBaseline.upsert).not.toHaveBeenCalled();
     expect(state.baselines[0]?.members).toHaveLength(1);
@@ -783,6 +815,7 @@ describe("CwlAllianceBaselineService", () => {
     });
 
     expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(true);
     expect(result.capturedClanCount).toBe(1);
     expect(state.baselineClans.map((row) => row.clanTag)).toEqual(["#P229"]);
     expect(state.baselineMembers.map((row) => row.playerTag)).toEqual(["#Q289"]);
@@ -792,6 +825,34 @@ describe("CwlAllianceBaselineService", () => {
     expect(txMock.cwlAllianceSeasonBaselineMember.deleteMany).toHaveBeenCalledWith({
       where: { baselineId: "baseline-replace" },
     });
+  });
+
+  it("treats replaceExisting:true with no prior baseline as a new baseline", async () => {
+    state.trackedClans = [makeTrackedClan("#P300", "Fresh Clan")];
+    state.currentWars = [makeCurrentWar({ clanTag: "#P300", warId: 701 })];
+    state.rosters = [
+      makeRoster({
+        clanTag: "#P300",
+        members: [
+          { position: 1, playerTag: "#Q300", playerName: "Fresh Player", townHall: 16 },
+          { position: 2, playerTag: "#Q301", playerName: "Fresh Backup", townHall: 15 },
+        ],
+      }),
+    ];
+    state.playerLinks = [
+      { playerTag: "#Q300", discordUserId: "123456789012345678" },
+      { playerTag: "#Q301", discordUserId: "223456789012345678" },
+    ];
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+      replaceExisting: true,
+    });
+
+    expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(false);
+    expect(txMock.cwlAllianceSeasonBaseline.upsert).toHaveBeenCalledTimes(1);
   });
 
   it("rejects duplicate player tags across clans before mutating an existing baseline", async () => {
@@ -838,5 +899,343 @@ describe("CwlAllianceBaselineService", () => {
     expect(txMock.cwlAllianceSeasonBaseline.upsert).not.toHaveBeenCalled();
     expect(state.baselineMembers).toEqual([]);
     expect(state.baselineClans).toEqual([]);
+  });
+
+  it("returns null when no baseline exists", async () => {
+    const service = makeService();
+
+    const result = await service.getAllianceSeasonBaselineStatus({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result).toBeNull();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("returns the stored summary when a baseline exists", async () => {
+    const storedBaseline = makeStoredBaseline({
+      id: "baseline-status",
+      guildId: "guild-1",
+      season: "2026-06",
+      capturedAt: new Date("2026-06-14T00:00:00.000Z"),
+      clans: [
+        {
+          id: "baseline-clan-status",
+          baselineId: "baseline-status",
+          clanTag: "#P100",
+          clanName: "Stored Clan",
+          captureStatus: "CAPTURED",
+          sourceType: "CURRENT_FWA_WAR",
+          sourceWarId: 9001,
+          sourceWarStartTime: new Date("2026-06-13T00:00:00.000Z"),
+          sourceWarEndTime: new Date("2026-06-13T01:00:00.000Z"),
+          sourceOpponentTag: "#V100",
+          sourceObservedAt: new Date("2026-06-13T01:05:00.000Z"),
+          rosterSize: 2,
+          failureReason: null,
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+          updatedAt: new Date("2026-06-14T00:00:00.000Z"),
+          members: [
+            {
+              id: "baseline-clan-status-member",
+              baselineId: "baseline-status",
+              baselineClanId: "baseline-clan-status",
+              playerTag: "#Q100",
+              playerName: "Stored Player",
+              townHall: 16,
+              position: 1,
+              linkedDiscordUserId: "123456789012345678",
+              createdAt: new Date("2026-06-14T00:00:00.000Z"),
+            },
+          ],
+        },
+      ],
+      members: [
+        {
+          id: "baseline-member-status",
+          baselineId: "baseline-status",
+          baselineClanId: "baseline-clan-status",
+          playerTag: "#Q100",
+          playerName: "Stored Player",
+          townHall: 16,
+          position: 1,
+          linkedDiscordUserId: "123456789012345678",
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+        },
+      ],
+    });
+    state.baselines = [storedBaseline];
+    prismaMock.cwlAllianceSeasonBaseline.findUnique.mockImplementation(async () => storedBaseline);
+
+    const service = makeService();
+    const result = await service.getAllianceSeasonBaselineStatus({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result).toMatchObject({
+      baselineId: "baseline-status",
+      guildId: "guild-1",
+      season: "2026-06",
+      reusedExistingBaseline: true,
+      trackedClanCount: 1,
+      capturedClanCount: 1,
+      unavailableClanCount: 0,
+      memberAccountCount: 1,
+      linkedAccountCount: 1,
+      currentWarSourceCount: 1,
+      latestWarFallbackCount: 0,
+      replacedExistingBaseline: false,
+      coverageSummaries: [
+        expect.objectContaining({
+          clanTag: "#P100",
+          clanName: "Stored Clan",
+          captureStatus: "CAPTURED",
+          sourceType: "CURRENT_FWA_WAR",
+          sourceWarId: 9001,
+          rosterSize: 2,
+          failureReason: null,
+        }),
+      ],
+    });
+    expect(result?.capturedAt).toBe(storedBaseline.capturedAt);
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("defaults an omitted season using the canonical season helper", async () => {
+    const currentSeason = resolveCurrentCwlSeasonKey();
+    const storedBaseline = makeStoredBaseline({
+      id: "baseline-default-season",
+      guildId: "guild-1",
+      season: currentSeason,
+      capturedAt: new Date("2026-06-15T00:00:00.000Z"),
+      clans: [],
+      members: [],
+    });
+    state.baselines = [storedBaseline];
+    prismaMock.cwlAllianceSeasonBaseline.findUnique.mockImplementation(async () => storedBaseline);
+
+    const service = makeService();
+    const result = await service.getAllianceSeasonBaselineStatus({
+      guildId: "  guild-1  ",
+    });
+
+    expect(result?.season).toBe(currentSeason);
+    expect(result?.baselineId).toBe("baseline-default-season");
+    expect(prismaMock.cwlAllianceSeasonBaseline.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId_season: {
+            guildId: "guild-1",
+            season: currentSeason,
+          },
+        },
+      }),
+    );
+  });
+
+  it("accepts an explicit canonical season", async () => {
+    const storedBaseline = makeStoredBaseline({
+      id: "baseline-explicit-season",
+      guildId: "guild-1",
+      season: "2026-05",
+      capturedAt: new Date("2026-05-14T00:00:00.000Z"),
+      clans: [],
+      members: [],
+    });
+    state.baselines = [storedBaseline];
+    prismaMock.cwlAllianceSeasonBaseline.findUnique.mockImplementation(async () => storedBaseline);
+
+    const result = await makeService().getAllianceSeasonBaselineStatus({
+      guildId: "guild-1",
+      season: "2026-05",
+    });
+
+    expect(result?.season).toBe("2026-05");
+    expect(result?.baselineId).toBe("baseline-explicit-season");
+  });
+
+  it("rejects an invalid season consistently with capture", async () => {
+    const service = makeService();
+    const captureError = await service
+      .captureAllianceSeasonBaseline({
+        guildId: "guild-1",
+        season: "2026/06",
+      })
+      .then(
+        () => null,
+        (error) => error,
+      );
+    const statusError = await service
+      .getAllianceSeasonBaselineStatus({
+        guildId: "guild-1",
+        season: "2026/06",
+      })
+      .then(
+        () => null,
+        (error) => error,
+      );
+
+    expect(captureError).toBeInstanceOf(CwlAllianceBaselineValidationError);
+    expect(statusError).toBeInstanceOf(CwlAllianceBaselineValidationError);
+    expect(statusError?.message).toBe(captureError?.message);
+    expect(statusError?.code).toBe(captureError?.code);
+  });
+
+  it("rejects an empty guildId consistently with capture", async () => {
+    const service = makeService();
+    const captureError = await service
+      .captureAllianceSeasonBaseline({
+        guildId: "   ",
+        season: "2026-06",
+      })
+      .then(
+        () => null,
+        (error) => error,
+      );
+    const statusError = await service
+      .getAllianceSeasonBaselineStatus({
+        guildId: "   ",
+        season: "2026-06",
+      })
+      .then(
+        () => null,
+        (error) => error,
+      );
+
+    expect(captureError).toBeInstanceOf(CwlAllianceBaselineValidationError);
+    expect(statusError).toBeInstanceOf(CwlAllianceBaselineValidationError);
+    expect(statusError?.message).toBe(captureError?.message);
+    expect(statusError?.code).toBe(captureError?.code);
+  });
+
+  it("does not call prisma.$transaction for status reads", async () => {
+    const storedBaseline = makeStoredBaseline({
+      id: "baseline-no-transaction",
+      guildId: "guild-1",
+      season: "2026-06",
+      capturedAt: new Date("2026-06-14T00:00:00.000Z"),
+      clans: [],
+      members: [],
+    });
+    state.baselines = [storedBaseline];
+    prismaMock.cwlAllianceSeasonBaseline.findUnique.mockImplementation(async () => storedBaseline);
+
+    const result = await makeService().getAllianceSeasonBaselineStatus({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result?.baselineId).toBe("baseline-no-transaction");
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate stored baseline, clan, or member rows", async () => {
+    const storedBaseline = makeStoredBaseline({
+      id: "baseline-immutable",
+      guildId: "guild-1",
+      season: "2026-06",
+      capturedAt: new Date("2026-06-14T00:00:00.000Z"),
+      clans: [
+        {
+          id: "baseline-clan-b",
+          baselineId: "baseline-immutable",
+          clanTag: "#P200",
+          clanName: "Beta",
+          captureStatus: "UNAVAILABLE",
+          sourceType: null,
+          sourceWarId: null,
+          sourceWarStartTime: null,
+          sourceWarEndTime: null,
+          sourceOpponentTag: null,
+          sourceObservedAt: null,
+          rosterSize: 0,
+          failureReason: "NO_CURRENT_FWA_WAR",
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+          updatedAt: new Date("2026-06-14T00:00:00.000Z"),
+          members: [
+            {
+              id: "baseline-member-b",
+              baselineId: "baseline-immutable",
+              baselineClanId: "baseline-clan-b",
+              playerTag: "#Q200",
+              playerName: "Beta Player",
+              townHall: 15,
+              position: 2,
+              linkedDiscordUserId: null,
+              createdAt: new Date("2026-06-14T00:00:00.000Z"),
+            },
+          ],
+        },
+        {
+          id: "baseline-clan-a",
+          baselineId: "baseline-immutable",
+          clanTag: "#P100",
+          clanName: "Alpha",
+          captureStatus: "CAPTURED",
+          sourceType: "LATEST_FWA_WAR",
+          sourceWarId: 8001,
+          sourceWarStartTime: new Date("2026-06-12T00:00:00.000Z"),
+          sourceWarEndTime: new Date("2026-06-12T01:00:00.000Z"),
+          sourceOpponentTag: "#V100",
+          sourceObservedAt: new Date("2026-06-12T01:05:00.000Z"),
+          rosterSize: 1,
+          failureReason: null,
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+          updatedAt: new Date("2026-06-14T00:00:00.000Z"),
+          members: [
+            {
+              id: "baseline-member-a",
+              baselineId: "baseline-immutable",
+              baselineClanId: "baseline-clan-a",
+              playerTag: "#Q100",
+              playerName: "Alpha Player",
+              townHall: 16,
+              position: 1,
+              linkedDiscordUserId: "223456789012345678",
+              createdAt: new Date("2026-06-14T00:00:00.000Z"),
+            },
+          ],
+        },
+      ],
+      members: [
+        {
+          id: "baseline-member-b",
+          baselineId: "baseline-immutable",
+          baselineClanId: "baseline-clan-b",
+          playerTag: "#Q200",
+          playerName: "Beta Player",
+          townHall: 15,
+          position: 2,
+          linkedDiscordUserId: null,
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+        },
+        {
+          id: "baseline-member-a",
+          baselineId: "baseline-immutable",
+          baselineClanId: "baseline-clan-a",
+          playerTag: "#Q100",
+          playerName: "Alpha Player",
+          townHall: 16,
+          position: 1,
+          linkedDiscordUserId: "223456789012345678",
+          createdAt: new Date("2026-06-14T00:00:00.000Z"),
+        },
+      ],
+    });
+    const before = cloneBaseline(storedBaseline);
+    state.baselines = [storedBaseline];
+    prismaMock.cwlAllianceSeasonBaseline.findUnique.mockImplementation(async () => storedBaseline);
+
+    const result = await makeService().getAllianceSeasonBaselineStatus({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result?.coverageSummaries.map((row) => row.clanTag)).toEqual(["#P100", "#P200"]);
+    expect(storedBaseline).toEqual(before);
+    expect(storedBaseline.clans).toEqual(before.clans);
+    expect(storedBaseline.members).toEqual(before.members);
   });
 });

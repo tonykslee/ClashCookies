@@ -34,6 +34,11 @@ import {
   CWL_ROTATION_SUPPORTED_EXPLICIT_LINEUP_SIZES,
   formatCwlRotationSupportedExplicitLineupSizes,
 } from "../services/CwlRotationService";
+import {
+  cwlAllianceBaselineService,
+  CwlAllianceBaselineDuplicatePlayerTagError,
+  CwlAllianceBaselineValidationError,
+} from "../services/CwlAllianceBaselineService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   cwlRotationSheetService,
@@ -50,6 +55,15 @@ import type { CreateCwlRotationRosterPlanResult } from "../services/CwlRotationS
 const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const CWL_MEMBERS_SAFE_MESSAGE_CHAR_BUDGET = 5500;
+const CWL_BASELINE_STATUS_DESCRIPTION_LIMIT = 3800;
+const CWL_BASELINE_CAPTURE_UNAVAILABLE_WARNING =
+  "⚠️ Review unavailable clans before relying on this baseline as the complete alliance denominator.";
+const CWL_BASELINE_STATUS_NOTICE =
+  "This snapshot reflects the persisted FWA roster data available when it was captured; it is not a reconstruction of pre-CWL membership.";
+const CWL_BASELINE_CAPTURE_REUSED_LABEL =
+  "Existing frozen baseline reused; no data changed.";
+const CWL_BASELINE_CAPTURE_CREATED_LABEL = "New frozen baseline created.";
+const CWL_BASELINE_CAPTURE_REPLACED_LABEL = "Frozen baseline replaced.";
 const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
 const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
 const CWL_ROTATION_SHOW_SESSION_PREFIX = "cwl-rot-show";
@@ -274,6 +288,136 @@ function sanitizeDisplayText(input: unknown): string {
   return String(input ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function sanitizeCwlBaselineDisplayText(input: unknown): string {
+  return sanitizeDisplayText(input)
+    .replace(/\\/g, "\\\\")
+    .replace(/[`*_~|]/g, "\\$&")
+    .replace(/</g, "\\<")
+    .replace(/>/g, "\\>")
+    .replace(/@/g, "@\u200b");
+}
+
+function formatDiscordTimestamp(value: Date | null | undefined): string {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return "unknown";
+  }
+  return `<t:${Math.floor(value.getTime() / 1000)}:F>`;
+}
+
+function formatCwlBaselineCoverageSummaryLine(
+  summary: {
+    clanTag: string;
+    clanName: string | null;
+    captureStatus: "CAPTURED" | "UNAVAILABLE";
+    sourceType: "CURRENT_FWA_WAR" | "LATEST_FWA_WAR" | null;
+    rosterSize: number;
+    failureReason: string | null;
+  },
+): string {
+  const clanName = String(summary.clanName ?? "").trim();
+  const clanNamePrefix = clanName ? `${sanitizeCwlBaselineDisplayText(clanName)} ` : "";
+  const clanTag = `\`${sanitizeCwlBaselineDisplayText(summary.clanTag)}\``;
+  if (summary.captureStatus === "CAPTURED") {
+    const sourceType = summary.sourceType ?? "UNKNOWN";
+    const memberLabel = summary.rosterSize === 1 ? "1 member" : `${summary.rosterSize} members`;
+    return `✅ ${clanNamePrefix}${clanTag} — ${sourceType}, ${memberLabel}`;
+  }
+
+  const failureReason = sanitizeCwlBaselineDisplayText(summary.failureReason ?? "unknown");
+  return `❌ ${clanNamePrefix}${clanTag} — UNAVAILABLE: ${failureReason}`;
+}
+
+function buildCwlBaselineStatusDescription(summary: {
+  capturedAt: Date;
+  trackedClanCount: number;
+  capturedClanCount: number;
+  unavailableClanCount: number;
+  memberAccountCount: number;
+  linkedAccountCount: number;
+  currentWarSourceCount: number;
+  latestWarFallbackCount: number;
+  resultLabel?: string | null;
+  includeUnavailableWarning?: boolean;
+  coverageSummaries: Array<{
+    clanTag: string;
+    clanName: string | null;
+    captureStatus: "CAPTURED" | "UNAVAILABLE";
+    sourceType: "CURRENT_FWA_WAR" | "LATEST_FWA_WAR" | null;
+    rosterSize: number;
+    failureReason: string | null;
+  }>;
+}): string {
+  const introLines = [
+    ...(String(summary.resultLabel ?? "").trim() ? [String(summary.resultLabel).trim()] : []),
+    ...(summary.includeUnavailableWarning && summary.unavailableClanCount > 0
+      ? [CWL_BASELINE_CAPTURE_UNAVAILABLE_WARNING]
+      : []),
+  ];
+  const summaryLines = [
+    `Captured timestamp: ${formatDiscordTimestamp(summary.capturedAt)}`,
+    `Tracked clans: ${summary.trackedClanCount}`,
+    `Captured clans: ${summary.capturedClanCount}`,
+    `Unavailable clans: ${summary.unavailableClanCount}`,
+    `Member accounts: ${summary.memberAccountCount}`,
+    `Linked accounts: ${summary.linkedAccountCount}`,
+    `Current-war sources: ${summary.currentWarSourceCount}`,
+    `Latest-war fallback sources: ${summary.latestWarFallbackCount}`,
+  ];
+  const coverageLines = summary.coverageSummaries.map((clan) =>
+    formatCwlBaselineCoverageSummaryLine(clan),
+  );
+
+  const renderDescription = (includedCoverageCount: number): string => {
+    const lines = [...introLines];
+    if (introLines.length > 0) {
+      lines.push("");
+    }
+    lines.push(...summaryLines, "");
+    lines.push(...coverageLines.slice(0, includedCoverageCount));
+    if (includedCoverageCount < coverageLines.length) {
+      lines.push(`...and ${coverageLines.length - includedCoverageCount} more clans`);
+    }
+    lines.push("", CWL_BASELINE_STATUS_NOTICE);
+    return lines.join("\n");
+  };
+
+  for (let includedCoverageCount = coverageLines.length; includedCoverageCount >= 0; includedCoverageCount -= 1) {
+    const description = renderDescription(includedCoverageCount);
+    if (description.length <= CWL_BASELINE_STATUS_DESCRIPTION_LIMIT) {
+      return description;
+    }
+  }
+
+  return renderDescription(0);
+}
+
+function buildCwlBaselineStatusEmbed(summary: {
+  season: string;
+  capturedAt: Date;
+  trackedClanCount: number;
+  capturedClanCount: number;
+  unavailableClanCount: number;
+  memberAccountCount: number;
+  linkedAccountCount: number;
+  currentWarSourceCount: number;
+  latestWarFallbackCount: number;
+  resultLabel?: string | null;
+  includeUnavailableWarning?: boolean;
+  coverageSummaries: Array<{
+    clanTag: string;
+    clanName: string | null;
+    captureStatus: "CAPTURED" | "UNAVAILABLE";
+    sourceType: "CURRENT_FWA_WAR" | "LATEST_FWA_WAR" | null;
+    rosterSize: number;
+    failureReason: string | null;
+  }>;
+}) {
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle(`CWL Alliance Baseline — ${summary.season}`)
+    .setDescription(buildCwlBaselineStatusDescription(summary));
 }
 
 function buildCwlRotationOriginalRosterMembers(plan: CwlRotationPlanExport): Array<{
@@ -2906,6 +3050,105 @@ async function handleMembersSubcommand(interaction: ChatInputCommandInteraction)
   }
 }
 
+async function handleCwlBaselineStatusSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const requestedSeason = interaction.options.getString("season", false);
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  try {
+    const status = await cwlAllianceBaselineService.getAllianceSeasonBaselineStatus({
+      guildId: interaction.guildId,
+      season: requestedSeason ?? null,
+    });
+
+    if (!status) {
+      const displayedSeason =
+        String(requestedSeason ?? "").trim() || resolveCurrentCwlSeasonKey();
+      await interaction.editReply(`No frozen alliance baseline exists for ${displayedSeason}.`);
+      return;
+    }
+
+    await interaction.editReply({
+      embeds: [buildCwlBaselineStatusEmbed(status)],
+    });
+  } catch (err) {
+    if (err instanceof CwlAllianceBaselineValidationError) {
+      await interaction.editReply(err.message);
+      return;
+    }
+
+    const requestedSeasonLog =
+      String(requestedSeason ?? "").trim() || "default";
+    console.error(
+      `[cwl] command_failed path=/cwl baseline status guildId=${interaction.guildId} season=${requestedSeasonLog} error=${formatError(err)}`,
+    );
+    await interaction.editReply("Failed to load the CWL alliance baseline status.");
+  }
+}
+
+async function handleCwlBaselineCaptureSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const requestedSeason = interaction.options.getString("season", false);
+  const replaceExisting = interaction.options.getBoolean("replace", false) ?? false;
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  try {
+    const summary = await cwlAllianceBaselineService.captureAllianceSeasonBaseline({
+      guildId: interaction.guildId,
+      season: requestedSeason ?? null,
+      capturedByUserId: interaction.user.id,
+      replaceExisting,
+    });
+
+    const resultLabel = summary.reusedExistingBaseline
+      ? CWL_BASELINE_CAPTURE_REUSED_LABEL
+      : summary.replacedExistingBaseline
+        ? CWL_BASELINE_CAPTURE_REPLACED_LABEL
+        : CWL_BASELINE_CAPTURE_CREATED_LABEL;
+
+    await interaction.editReply({
+      embeds: [
+        buildCwlBaselineStatusEmbed({
+          ...summary,
+          resultLabel,
+          includeUnavailableWarning: summary.unavailableClanCount > 0,
+        }),
+      ],
+    });
+  } catch (err) {
+    if (err instanceof CwlAllianceBaselineDuplicatePlayerTagError) {
+      const duplicateTag = String(err.conflicts?.[0]?.playerTag ?? "").trim();
+      await interaction.editReply(
+        duplicateTag
+          ? `Player tag ${duplicateTag} appears in more than one captured clan. The baseline was not changed.`
+          : "A player tag appears in more than one captured clan. The baseline was not changed.",
+      );
+      return;
+    }
+
+    if (err instanceof CwlAllianceBaselineValidationError) {
+      await interaction.editReply(err.message);
+      return;
+    }
+
+    const requestedSeasonLog =
+      String(requestedSeason ?? "").trim() || "default";
+    const replaceExistingLog = replaceExisting ? "1" : "0";
+    console.error(
+      `[cwl] command_failed path=/cwl baseline capture guildId=${interaction.guildId} season=${requestedSeasonLog} replaceExisting=${replaceExistingLog} userId=${interaction.user.id} error=${formatError(err)}`,
+    );
+    await interaction.editReply("Failed to capture the CWL alliance baseline.");
+  }
+}
+
 async function handleRotationCreateSubcommand(interaction: ChatInputCommandInteraction) {
   const clanTag = interaction.options.getString("clan", true);
   const rosterId = interaction.options.getString("roster", false);
@@ -4232,6 +4475,45 @@ export const Cwl: Command = {
       ],
     },
     {
+      name: "baseline",
+      description: "Show or capture the frozen CWL alliance baseline",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "status",
+          description: "Read the frozen alliance baseline status for the current guild",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "season",
+              description: "CWL season in YYYY-MM format",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+          ],
+        },
+        {
+          name: "capture",
+          description: "Capture or replace the frozen alliance baseline for the current guild",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "season",
+              description: "CWL season in YYYY-MM format",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+            },
+            {
+              name: "replace",
+              description: "Replace the existing frozen baseline if one already exists",
+              type: ApplicationCommandOptionType.Boolean,
+              required: false,
+            },
+          ],
+        },
+      ],
+    },
+    {
       name: "rotations",
       description: "Show or create current-season CWL rotation plans",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -4366,6 +4648,14 @@ export const Cwl: Command = {
       }
       if (!group && subcommand === "signup") {
         await handleRosterSignupSubcommand(interaction, cocService);
+        return;
+      }
+      if (group === "baseline" && subcommand === "status") {
+        await handleCwlBaselineStatusSubcommand(interaction);
+        return;
+      }
+      if (group === "baseline" && subcommand === "capture") {
+        await handleCwlBaselineCaptureSubcommand(interaction);
         return;
       }
       if (group === "roster") {

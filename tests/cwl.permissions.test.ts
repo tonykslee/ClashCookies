@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { CommandPermissionService } from "../src/services/CommandPermissionService";
+import {
+  COMMAND_PERMISSION_TARGETS,
+  CommandPermissionService,
+} from "../src/services/CommandPermissionService";
 
 function buildInteraction(input?: { isAdmin?: boolean }) {
   return {
@@ -18,6 +21,38 @@ function buildInteraction(input?: { isAdmin?: boolean }) {
 }
 
 describe("cwl permission defaults", () => {
+  it("registers cwl baseline status permission targets", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:status");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:capture");
+  });
+
+  it("keeps cwl baseline targets admin-only by default", async () => {
+    const settings = {
+      get: vi.fn(async () => null),
+    };
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+  });
+
   it("keeps /cwl members public while /cwl rotations create stays admin-only by default", async () => {
     const settings = {
       get: vi.fn(async () => null),
