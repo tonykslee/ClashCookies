@@ -24,6 +24,7 @@ describe("cwl permission defaults", () => {
   it("registers cwl baseline status permission targets", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline");
     expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:status");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:capture");
   });
 
   it("keeps cwl baseline targets admin-only by default", async () => {
@@ -39,10 +40,16 @@ describe("cwl permission defaults", () => {
       service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
+      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
       service.canUseAnyTarget(["cwl:baseline"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
   });
 
