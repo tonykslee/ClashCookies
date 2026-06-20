@@ -115,6 +115,50 @@ function mockReadinessState(
   prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValueOnce([]);
 }
 
+const VALID_CLASH_TAG_CHARS = "PYLQGRJCUV0289";
+
+function makeValidClashPlayerTag(index: number): string {
+  const base = VALID_CLASH_TAG_CHARS.length;
+  let value = index;
+  let suffix = "";
+  do {
+    suffix = `${VALID_CLASH_TAG_CHARS[value % base] ?? "P"}${suffix}`;
+    value = Math.floor(value / base);
+  } while (value > 0);
+  return `#${suffix.padStart(8, "P")}`;
+}
+
+function makeCompleteReadinessRows(weight: number): Array<Record<string, unknown>> {
+  return Array.from({ length: 50 }, (_, index) => ({
+    clanTag: "#2QG2C08UP",
+    playerTag: makeValidClashPlayerTag(index + 1),
+    playerName: `Player ${index + 1}`,
+    townHall: 15,
+    weight,
+    sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
+  }));
+}
+
+function makeReadinessHeatMapRef(th15Count: number, th14Count: number) {
+  return [
+    {
+      weightMinInclusive: 7_400_000,
+      weightMaxInclusive: 7_600_000,
+      th18Count: 0,
+      th17Count: 0,
+      th16Count: 0,
+      th15Count,
+      th14Count,
+      th13Count: 0,
+      th12Count: 0,
+      th11Count: 0,
+      th10OrLowerCount: 0,
+      sourceVersion: "test",
+      refreshedAt: new Date("2026-06-10T00:00:00.000Z"),
+    },
+  ];
+}
+
 describe("SyncTimeFwaClanListViewService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -198,6 +242,56 @@ describe("SyncTimeFwaClanListViewService", () => {
 
     expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("⚠️ | AC |");
     expect(String(payload.embeds[0].toJSON().description ?? "")).not.toContain("✅ | AC |");
+  });
+
+  it("renders a healthy complete roster with a numeric deviation and a ready indicator", async () => {
+    mockReadinessState(
+      makeCompleteReadinessRows(150000),
+      makeReadinessHeatMapRef(48, 2),
+    );
+
+    const payload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: makeBaseMetadata(),
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("✅ | AC |");
+    expect(description).toContain("Dev 6");
+    expect(description).not.toContain("Dev n/a");
+  });
+
+  it("renders an unhealthy complete roster with a numeric deviation and a warning indicator", async () => {
+    mockReadinessState(
+      makeCompleteReadinessRows(150000),
+      makeReadinessHeatMapRef(44, 6),
+    );
+
+    const payload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: makeBaseMetadata(),
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("⚠️ | AC |");
+    expect(description).toContain("Dev 18");
+    expect(description).not.toContain("Dev n/a");
+  });
+
+  it("renders Dev n/a when no HeatMapRef is available", async () => {
+    mockReadinessState(makeCompleteReadinessRows(150000), []);
+
+    const payload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: makeBaseMetadata(),
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("Dev n/a");
+    expect(description).toContain("⚠️ | AC |");
   });
 
   it("rejects a fresh competing refresh lock claim when another process already holds the row", async () => {
