@@ -91,7 +91,7 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket["<=TH13"]).toBe(0);
   });
 
-  it("keeps Auto-Detect Band on the raw band when nothing is missing", () => {
+  it("calculates Auto-Detect Band deviation on a complete roster without filling", () => {
     const result = projectCompoActualStateView({
       view: "auto",
       base: {
@@ -108,17 +108,21 @@ describe("projectCompoActualStateView", () => {
         makeHeatMapRef({
           weightMinInclusive: 0,
           weightMaxInclusive: 500000,
-          th18Count: 1,
+          th18Count: 2,
           th14Count: 1,
           th12Count: 1,
         }),
       ],
     });
 
+    expect(result.view).toBe("auto");
     expect(result.totalWeight).toBe(435000);
+    expect(result.resolvedRosterWeight).toBe(435000);
     expect(result.missingWeights).toBe(0);
+    expect(result.nMissing).toBe(0);
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(0);
     expect(result.selectedHeatMapRef?.weightMaxInclusive).toBe(500000);
-    expect(result.deviationScore).toBeNull();
+    expect(result.deviationScore).toBe(5);
   });
 
   it("lets Auto-Detect Band shift upward when missing slots fill real deficits", () => {
