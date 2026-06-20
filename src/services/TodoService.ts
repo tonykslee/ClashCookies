@@ -23,6 +23,7 @@ import {
   type TodoTrackedCurrentWarRow,
   type TodoTrackedWarRosterRow,
 } from "./TodoTrackedWarStateService";
+import { resolveCurrentWarMatchTypeSignal } from "./MatchTypeResolutionService";
 
 export const TODO_TYPES = ["WAR", "CWL", "RAIDS", "GAMES"] as const;
 export type TodoType = (typeof TODO_TYPES)[number];
@@ -98,13 +99,17 @@ type WarAttacksRow = {
 
 type CurrentWarMatchContextRow = {
   clanTag: string;
+  clanName: string | null;
   warId: number | null;
   startTime: Date | null;
   matchType: string | null;
   outcome: string | null;
   state: string | null;
+  inferredMatchType: boolean | null;
   updatedAt: Date;
 };
+
+type CurrentWarRenderRow = CurrentWarMatchContextRow;
 
 type FwaClanMemberTownHallRow = {
   playerTag: string;
@@ -133,6 +138,7 @@ const TODO_GAMES_COMPLETE_POINTS = 4000;
 const TODO_GAMES_MAX_POINTS = 10_000;
 const TODO_WAR_NON_LINEUP_SECTION_LIMIT = 8;
 const TODO_LOCALE = "en-US";
+const TODO_GUILD_SCOPE_DM = "dm";
 const todoRenderCacheByKey = new Map<string, CachedTodoRender>();
 const todoRenderGenerationByUser = new Map<string, number>();
 
@@ -178,6 +184,7 @@ export function invalidateTodoRenderCacheForUser(discordUserId: string): void {
 export async function buildTodoPagesForUser(input: {
   discordUserId: string;
   cocService?: CoCService;
+  guildScopeId?: string | null;
   nowMs?: number;
 }): Promise<TodoPagesResult> {
   const links = await listPlayerLinksForDiscordUser({
@@ -205,8 +212,10 @@ export async function buildTodoPagesForUser(input: {
   const snapshotVersion = await todoSnapshotService.getSnapshotVersion({
     playerTags: linkedTags,
   });
+  const renderGuildScopeId = resolveTodoRenderScopeId(input.guildScopeId);
   const cacheKey = buildTodoRenderCacheKey({
     discordUserId: input.discordUserId,
+    guildScopeId: renderGuildScopeId,
     linkedTags,
     snapshotVersion,
   });
@@ -278,6 +287,7 @@ export async function buildTodoPagesForUser(input: {
     : new Map();
   const cwlEventIds = [...new Set([...cwlCurrentEvents.values()].map((event) => event.id))];
 
+  const currentWarGuildId = resolveTodoRenderScopeGuildId(renderGuildScopeId);
   const [
     trackedClanRows,
     raidTrackedClanRows,
@@ -304,7 +314,9 @@ export async function buildTodoPagesForUser(input: {
       : Promise.resolve([]),
     currentWarLookupTags.length > 0
       ? prisma.currentWar.findMany({
-          where: { clanTag: { in: currentWarLookupTags } },
+          where: currentWarGuildId
+            ? { guildId: currentWarGuildId, clanTag: { in: currentWarLookupTags } }
+            : { clanTag: { in: currentWarLookupTags } },
           select: {
             clanTag: true,
             clanName: true,
@@ -313,6 +325,7 @@ export async function buildTodoPagesForUser(input: {
             matchType: true,
             outcome: true,
             state: true,
+            inferredMatchType: true,
             updatedAt: true,
           },
         })
@@ -588,8 +601,7 @@ export async function buildTodoPagesForUser(input: {
     if (!clanTag) continue;
     raidTrackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
   }
-  const warMatchContextByClanTag =
-    pickLatestCurrentWarMatchContextByClanTag(currentWarRows);
+  const warMatchContextByClanTag = pickPreferredCurrentWarByClanTag(currentWarRows);
   const currentWarIdentityByClanTag = pickLatestCurrentWarIdentityByClanTag(currentWarRows);
   const activeTrackedCurrentWarByClanTag = new Map<string, TodoTrackedCurrentWarRow>();
   for (const [clanTag, currentWar] of currentWarIdentityByClanTag.entries()) {
@@ -942,9 +954,22 @@ function toTimestampMs(input: Date | null | undefined): number | null {
   return input instanceof Date ? input.getTime() : null;
 }
 
-/** Purpose: build one compact, user-scoped render cache key tied to linked tags + snapshot version. */
+/** Purpose: normalize a todo render scope token into a stable cache key fragment. */
+function resolveTodoRenderScopeId(input: string | null | undefined): string {
+  const normalized = String(input ?? "").trim();
+  return normalized.length > 0 ? normalized : TODO_GUILD_SCOPE_DM;
+}
+
+/** Purpose: convert a todo render scope token into a DB guild filter when applicable. */
+function resolveTodoRenderScopeGuildId(input: string | null | undefined): string | null {
+  const scopeId = resolveTodoRenderScopeId(input);
+  return scopeId === TODO_GUILD_SCOPE_DM ? null : scopeId;
+}
+
+/** Purpose: build one compact, user-scoped render cache key tied to scope, linked tags, and snapshot version. */
 function buildTodoRenderCacheKey(input: {
   discordUserId: string;
+  guildScopeId: string;
   linkedTags: string[];
   snapshotVersion: { snapshotCount: number; maxUpdatedAtMs: number };
 }): string {
@@ -953,6 +978,7 @@ function buildTodoRenderCacheKey(input: {
   return [
     discordUserId,
     String(generation),
+    resolveTodoRenderScopeId(input.guildScopeId),
     input.linkedTags.join(","),
     String(input.snapshotVersion.snapshotCount),
     String(input.snapshotVersion.maxUpdatedAtMs),
@@ -1787,10 +1813,15 @@ function formatWarStarTriplet(stars: number | null | undefined): string {
 
 /** Purpose: map clan match type/outcome into the same effective status-color semantics used by match views. */
 function resolveWarMatchStatusIndicator(
-  context: Pick<CurrentWarMatchContextRow, "matchType" | "outcome"> | null,
+  context: Pick<CurrentWarMatchContextRow, "matchType" | "outcome" | "inferredMatchType"> | null,
 ): string {
-  const matchType = sanitizeStatusText(context?.matchType).toUpperCase();
+  const resolution = resolveCurrentWarMatchTypeSignal({
+    matchType: context?.matchType,
+    inferredMatchType: context?.inferredMatchType ?? null,
+  });
+  const matchType = resolution.confirmed?.matchType ?? resolution.unconfirmed?.matchType ?? null;
   const outcome = sanitizeStatusText(context?.outcome).toUpperCase();
+  if (!matchType) return ":grey_question:";
   if (matchType === "BL") return ":black_circle:";
   if (matchType === "MM") return ":white_circle:";
   if (matchType === "SKIP") return ":yellow_circle:";
@@ -1798,81 +1829,138 @@ function resolveWarMatchStatusIndicator(
     if (outcome === "LOSE") return ":red_circle:";
     return ":green_circle:";
   }
-  return ":white_circle:";
+  return ":grey_question:";
 }
 
-/** Purpose: keep one latest current-war match context row per clan for header indicator rendering. */
-function pickLatestCurrentWarMatchContextByClanTag(
-  rows: CurrentWarMatchContextRow[],
-): Map<string, CurrentWarMatchContextRow> {
-  const latest = new Map<string, CurrentWarMatchContextRow>();
+/** Purpose: keep one preferred current-war row per clan for header indicator rendering. */
+function pickPreferredCurrentWarByClanTag(
+  rows: CurrentWarRenderRow[],
+): Map<string, CurrentWarRenderRow> {
+  const latest = new Map<string, CurrentWarRenderRow>();
   for (const row of rows) {
     const clanTag = normalizeClanTag(row.clanTag);
     if (!clanTag) continue;
     const existing = latest.get(clanTag);
-    if (!existing || row.updatedAt > existing.updatedAt) {
-      latest.set(clanTag, {
-        clanTag,
-        warId: toFiniteIntOrNull(row.warId),
-        startTime: row.startTime ?? null,
-        matchType: row.matchType,
-        outcome: row.outcome,
-        state: row.state,
-        updatedAt: row.updatedAt,
-      });
-    }
-  }
-  return latest;
-}
-
-/** Purpose: keep one latest current-war identity row per clan for tracked WarAttacks resolution. */
-function pickLatestCurrentWarIdentityByClanTag(
-  rows: Array<{
-    clanTag: string;
-    clanName: string | null;
-    warId: number | null;
-    startTime: Date | null;
-    state: string | null;
-    updatedAt: Date;
-  }>,
-): Map<
-  string,
-  {
-    clanTag: string;
-    clanName: string | null;
-    warId: number | null;
-    startTime: Date | null;
-    state: string | null;
-    updatedAt: Date;
-  }
-> {
-  const latest = new Map<
-    string,
-    {
-      clanTag: string;
-      clanName: string | null;
-      warId: number | null;
-      startTime: Date | null;
-      state: string | null;
-      updatedAt: Date;
-    }
-  >();
-  for (const row of rows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    if (!clanTag) continue;
-    const existing = latest.get(clanTag);
-    if (!existing || row.updatedAt > existing.updatedAt) {
+    if (!existing || compareCurrentWarRowsForTodo(row, existing) < 0) {
       latest.set(clanTag, {
         clanTag,
         clanName: sanitizeStatusText(row.clanName) || null,
         warId: toFiniteIntOrNull(row.warId),
         startTime: row.startTime ?? null,
-        state: row.state ?? null,
+        matchType: row.matchType,
+        outcome: row.outcome,
+        state: row.state,
+        inferredMatchType:
+          row.inferredMatchType === null || row.inferredMatchType === undefined
+            ? null
+            : Boolean(row.inferredMatchType),
         updatedAt: row.updatedAt,
       });
     }
   }
   return latest;
+}
+
+/** Purpose: keep one newest current-war identity row per clan for live war rendering. */
+function pickLatestCurrentWarIdentityByClanTag(
+  rows: CurrentWarRenderRow[],
+): Map<string, CurrentWarRenderRow> {
+  const latest = new Map<string, CurrentWarRenderRow>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    const existing = latest.get(clanTag);
+    if (!existing || compareCurrentWarRowsForIdentity(row, existing) < 0) {
+      latest.set(clanTag, {
+        clanTag,
+        clanName: sanitizeStatusText(row.clanName) || null,
+        warId: toFiniteIntOrNull(row.warId),
+        startTime: row.startTime ?? null,
+        matchType: row.matchType,
+        outcome: row.outcome,
+        state: row.state ?? null,
+        inferredMatchType:
+          row.inferredMatchType === null || row.inferredMatchType === undefined
+            ? null
+            : Boolean(row.inferredMatchType),
+        updatedAt: row.updatedAt,
+      });
+    }
+  }
+  return latest;
+}
+
+/** Purpose: compare two current-war rows for deterministic todo rendering. */
+function compareCurrentWarRowsForTodo(a: CurrentWarRenderRow, b: CurrentWarRenderRow): number {
+  const aConfirmed = a.inferredMatchType === false ? 1 : 0;
+  const bConfirmed = b.inferredMatchType === false ? 1 : 0;
+  if (aConfirmed !== bConfirmed) return bConfirmed - aConfirmed;
+
+  const updatedAtDiff = b.updatedAt.getTime() - a.updatedAt.getTime();
+  if (updatedAtDiff !== 0) return updatedAtDiff;
+
+  const startTimeDiff = (b.startTime?.getTime() ?? -1) - (a.startTime?.getTime() ?? -1);
+  if (startTimeDiff !== 0) return startTimeDiff;
+
+  const warIdDiff = (b.warId ?? -1) - (a.warId ?? -1);
+  if (warIdDiff !== 0) return warIdDiff;
+
+  return [
+    sanitizeStatusText(b.matchType),
+    sanitizeStatusText(b.outcome),
+    sanitizeStatusText(b.state),
+    sanitizeStatusText(b.clanName),
+    String(b.inferredMatchType ?? ""),
+    b.clanTag,
+  ].join("|").localeCompare(
+    [
+      sanitizeStatusText(a.matchType),
+      sanitizeStatusText(a.outcome),
+      sanitizeStatusText(a.state),
+      sanitizeStatusText(a.clanName),
+      String(a.inferredMatchType ?? ""),
+      a.clanTag,
+    ].join("|"),
+    undefined,
+    { sensitivity: "base" },
+  );
+}
+
+/** Purpose: compare two current-war rows for newest live-war identity selection. */
+function compareCurrentWarRowsForIdentity(
+  a: CurrentWarRenderRow,
+  b: CurrentWarRenderRow,
+): number {
+  const updatedAtDiff = b.updatedAt.getTime() - a.updatedAt.getTime();
+  if (updatedAtDiff !== 0) return updatedAtDiff;
+
+  const aStart = a.startTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const bStart = b.startTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const startTimeDiff = bStart - aStart;
+  if (startTimeDiff !== 0) return startTimeDiff;
+
+  const aWarId = a.warId ?? Number.NEGATIVE_INFINITY;
+  const bWarId = b.warId ?? Number.NEGATIVE_INFINITY;
+  const warIdDiff = bWarId - aWarId;
+  if (warIdDiff !== 0) return warIdDiff;
+
+  return [
+    sanitizeStatusText(b.clanName),
+    sanitizeStatusText(b.matchType),
+    sanitizeStatusText(b.outcome),
+    sanitizeStatusText(b.state),
+    b.clanTag,
+  ].join("|").localeCompare(
+    [
+      sanitizeStatusText(a.clanName),
+      sanitizeStatusText(a.matchType),
+      sanitizeStatusText(a.outcome),
+      sanitizeStatusText(a.state),
+      a.clanTag,
+    ].join("|"),
+    undefined,
+    { sensitivity: "base" },
+  );
 }
 
 /** Purpose: sort games rows by current-cycle points first, then champion total, then stable ties. */

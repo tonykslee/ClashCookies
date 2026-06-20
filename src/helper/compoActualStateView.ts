@@ -502,11 +502,23 @@ function buildAutoProjection(input: {
   heatMapRefs: readonly HeatMapRef[];
 }): CompoActualStateProjection {
   const rawProjection = buildRawProjection(input);
-  if (!rawProjection.selectedHeatMapRef || rawProjection.nMissing <= 0) {
+  if (!rawProjection.selectedHeatMapRef) {
     return {
       ...rawProjection,
       view: "auto",
       missingWeights: rawProjection.nMissing,
+    };
+  }
+
+  if (rawProjection.nMissing <= 0) {
+    return {
+      ...rawProjection,
+      view: "auto",
+      missingWeights: rawProjection.nMissing,
+      deviationScore: calculateCompoDeviationScore({
+        displayCounts: rawProjection.displayCounts,
+        heatMapRef: rawProjection.selectedHeatMapRef,
+      }),
     };
   }
 
