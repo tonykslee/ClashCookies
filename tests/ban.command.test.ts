@@ -17,7 +17,8 @@ vi.mock("../src/prisma", () => ({
 function createInteraction(input: {
   subcommand: "add" | "list" | "remove";
   player?: string | null;
-  user?: { id: string } | null;
+  user?: { id: string; username?: string | null } | null;
+  member?: { displayName?: string | null } | null;
   clan?: string | null;
   reason?: string | null;
   duration?: string | null;
@@ -45,6 +46,10 @@ function createInteraction(input: {
       }),
       getUser: vi.fn((name: string) => {
         if (name === "user") return input.user ?? null;
+        return null;
+      }),
+      getMember: vi.fn((name: string) => {
+        if (name === "user") return input.member ?? null;
         return null;
       }),
     },
@@ -245,6 +250,8 @@ describe("/ban command behavior", () => {
         targetKind: "USER",
         playerTag: null,
         discordUserId: "222222222222222222",
+        targetDiscordUsername: "someuser",
+        targetDiscordDisplayName: "Some Display Name",
         clanTag: null,
         clanName: null,
         reason: null,
@@ -259,7 +266,8 @@ describe("/ban command behavior", () => {
     } as any);
     const interaction = createInteraction({
       subcommand: "add",
-      user: { id: "222222222222222222" },
+      user: { id: "222222222222222222", username: "someuser" },
+      member: { displayName: "Some Display Name" },
     });
 
     await Ban.run({} as any, interaction as any, {} as any);
@@ -271,6 +279,8 @@ describe("/ban command behavior", () => {
         bannedByDiscordUserId: "111111111111111111",
         reason: null,
         expiresAt: null,
+        targetDiscordUsername: "someuser",
+        targetDiscordDisplayName: "Some Display Name",
       }),
     );
     expect(interaction.editReply).toHaveBeenCalledWith({
@@ -509,6 +519,8 @@ describe("/ban command behavior", () => {
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
         discordUserId: null,
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         reason: "spam",
@@ -520,6 +532,7 @@ describe("/ban command behavior", () => {
         removeReason: null,
         updatedAt: new Date("2026-06-08T12:00:00.000Z"),
         linkedPlayerTags: [],
+        targetPlayerName: "Alpha Player",
       } as any,
     ]);
     const withoutClan = buildBanListEmbeds([
@@ -529,6 +542,8 @@ describe("/ban command behavior", () => {
         targetKind: "USER",
         playerTag: null,
         discordUserId: "222222222222222222",
+        targetDiscordUsername: "someuser",
+        targetDiscordDisplayName: "Some Display Name",
         clanTag: null,
         clanName: null,
         reason: null,
@@ -540,10 +555,15 @@ describe("/ban command behavior", () => {
         removeReason: null,
         updatedAt: new Date("2026-06-08T12:00:00.000Z"),
         linkedPlayerTags: ["#PYLQ0289"],
+        targetPlayerName: null,
       } as any,
     ]);
 
-    expect(withClan[0]?.toJSON().description).toContain("clan: Alpha Clan (#2QG2C08UP)");
+    expect(withClan[0]?.toJSON().description).toContain("PLAYER | Alpha Player `#PYLQ0289`");
+    expect(withClan[0]?.toJSON().description).toContain("clan: Alpha Clan `#2QG2C08UP`");
+    expect(withoutClan[0]?.toJSON().description).toContain(
+      "USER | <@222222222222222222> | username: someuser | display: Some Display Name",
+    );
     expect(withoutClan[0]?.toJSON().description).not.toContain("clan:");
   });
 
@@ -574,6 +594,8 @@ describe("/ban command behavior", () => {
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
         discordUserId: null,
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: null,
         clanName: null,
         reason: null,
@@ -585,11 +607,12 @@ describe("/ban command behavior", () => {
         removeReason: null,
         updatedAt: new Date("2026-06-08T12:00:00.000Z"),
         linkedPlayerTags: [],
+        targetPlayerName: null,
       } as any,
     ]);
 
     const payload = embeds[0]?.toJSON() as any;
-    expect(payload.description).toContain("PLAYER | #PYLQ0289");
+    expect(payload.description).toContain("PLAYER | `#PYLQ0289`");
     expect(payload.description).not.toContain("reason:");
   });
 });

@@ -1,5 +1,5 @@
-import { BanRecord, BanTargetKind } from "@prisma/client";
 import { formatError } from "../helper/formatError";
+import { formatBanActionLogContent, type BanDisplayRecord } from "./BanDisplayService";
 import { botLogChannelService } from "./BotLogChannelService";
 
 type DiscordClientLike = {
@@ -8,16 +8,6 @@ type DiscordClientLike = {
     fetch: (id: string) => Promise<unknown>;
   };
 };
-
-function normalizeText(input: string | null | undefined, fallback: string): string {
-  const normalized = String(input ?? "").replace(/\s+/g, " ").trim();
-  return normalized || fallback;
-}
-
-function formatRelativeTimestamp(input: Date | null | undefined): string {
-  if (!input) return "Indefinite";
-  return `<t:${Math.floor(input.getTime() / 1000)}:R>`;
-}
 
 function normalizeChannelId(input: string | null | undefined): string | null {
   const trimmed = String(input ?? "").trim();
@@ -80,46 +70,13 @@ async function resolveSendableGuildChannel(input: {
   };
 }
 
-function buildBanActionLogContent(input: {
-  action: "created" | "updated" | "removed";
-  record: BanRecord;
-  actorDiscordUserId: string;
-}): string {
-  const targetLabel =
-    input.record.targetKind === BanTargetKind.PLAYER
-      ? input.record.playerTag ?? "unknown"
-      : input.record.discordUserId
-        ? `<@${input.record.discordUserId}>`
-        : "unknown";
-  const lines = [`Ban ${input.action}: ${input.record.targetKind} | ${targetLabel}`];
-  lines.push(
-    input.action === "removed"
-      ? `Removed by: <@${input.actorDiscordUserId}>`
-      : `Banned by: <@${input.actorDiscordUserId}>`,
-  );
-  lines.push(
-    input.action === "removed"
-      ? `Removed: ${formatRelativeTimestamp(input.record.removedAt)}`
-      : `Expires: ${formatRelativeTimestamp(input.record.expiresAt)}`,
-  );
-  lines.push(`Reason: ${normalizeText(input.record.reason, "No reason provided")}`);
-  if (input.record.clanTag) {
-    lines.push(
-      input.record.clanName
-        ? `Ban clan: ${normalizeText(input.record.clanName, "Unknown")} (${input.record.clanTag})`
-        : `Ban clan: ${input.record.clanTag}`,
-    );
-  }
-  return lines.join("\n");
-}
-
 export class BanLogService {
   /** Purpose: post a guild ban action log through the configured ban-log routing. */
   async postBanActionLog(input: {
     client: DiscordClientLike;
     guildId: string;
     action: "created" | "updated" | "removed";
-    record: BanRecord;
+    record: BanDisplayRecord;
     actorDiscordUserId: string;
   }): Promise<void> {
     const routingConfig = await botLogChannelService.getRoutingConfigForType(
@@ -153,7 +110,7 @@ export class BanLogService {
 
     try {
       await channel.send({
-        content: buildBanActionLogContent({
+        content: formatBanActionLogContent({
           action: input.action,
           record: input.record,
           actorDiscordUserId: input.actorDiscordUserId,

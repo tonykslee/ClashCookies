@@ -11,8 +11,12 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findUnique: vi.fn(),
   },
+  playerCurrent: {
+    findMany: vi.fn(),
+  },
   playerLink: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
 }));
 
@@ -39,6 +43,8 @@ function makeBanRecord(overrides: Partial<Record<string, any>> = {}) {
     targetKind: overrides.targetKind ?? "PLAYER",
     playerTag: overrides.playerTag ?? "#PYLQ0289",
     discordUserId: overrides.discordUserId ?? null,
+    targetDiscordUsername: overrides.targetDiscordUsername ?? null,
+    targetDiscordDisplayName: overrides.targetDiscordDisplayName ?? null,
     clanTag: overrides.clanTag ?? null,
     clanName: overrides.clanName ?? null,
     reason: overrides.reason ?? null,
@@ -49,6 +55,7 @@ function makeBanRecord(overrides: Partial<Record<string, any>> = {}) {
     removedByDiscordUserId: overrides.removedByDiscordUserId ?? null,
     removeReason: overrides.removeReason ?? null,
     updatedAt: overrides.updatedAt ?? new Date("2026-06-08T12:00:00.000Z"),
+    targetPlayerName: overrides.targetPlayerName ?? null,
   };
 }
 
@@ -118,7 +125,11 @@ describe("BanService", () => {
     prismaMock.banRecord.create.mockReset();
     prismaMock.banRecord.update.mockReset();
     prismaMock.trackedClan.findUnique.mockReset();
+    prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.playerLink.findUnique.mockReset();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
     listPlayerLinksForDiscordUserMock.mockReset();
   });
 
@@ -150,6 +161,8 @@ describe("BanService", () => {
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
         discordUserId: null,
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: null,
         clanName: null,
         reason: "spam abuse",
@@ -203,6 +216,8 @@ describe("BanService", () => {
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
         discordUserId: null,
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         reason: "spam abuse",
@@ -235,12 +250,16 @@ describe("BanService", () => {
     });
 
     expect(listPlayerLinksForDiscordUserMock).not.toHaveBeenCalled();
+    expect(prismaMock.playerCurrent.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.playerLink.findMany).not.toHaveBeenCalled();
     expect(prismaMock.banRecord.create).toHaveBeenCalledWith({
       data: {
         guildId: "guild-1",
         targetKind: "USER",
         playerTag: null,
         discordUserId: "222222222222222222",
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: null,
         clanName: null,
         reason: "Alt abuse",
@@ -250,6 +269,43 @@ describe("BanService", () => {
     });
     expect(result.outcome).toBe("created");
     expect(result.record?.discordUserId).toBe("222222222222222222");
+  });
+
+  it("persists the Discord username and guild display name snapshot when adding a user ban", async () => {
+    const service = new BanService();
+    prismaMock.banRecord.findFirst.mockResolvedValue(null);
+    prismaMock.banRecord.create.mockResolvedValue(
+      makeBanRecord({
+        targetKind: "USER",
+        playerTag: null,
+        discordUserId: "222222222222222222",
+        targetDiscordUsername: "someuser",
+        targetDiscordDisplayName: "Some Display Name",
+        bannedByDiscordUserId: "111111111111111111",
+      }),
+    );
+
+    const result = await service.addUserBan({
+      guildId: "guild-1",
+      discordUserId: "222222222222222222",
+      targetDiscordUsername: "someuser",
+      targetDiscordDisplayName: "Some Display Name",
+      reason: "Alt abuse",
+      bannedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.banRecord.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        guildId: "guild-1",
+        targetKind: "USER",
+        playerTag: null,
+        discordUserId: "222222222222222222",
+        targetDiscordUsername: "someuser",
+        targetDiscordDisplayName: "Some Display Name",
+      }),
+    });
+    expect(result.record?.targetDiscordUsername).toBe("someuser");
+    expect(result.record?.targetDiscordDisplayName).toBe("Some Display Name");
   });
 
   it("adds a user ban with clan context when a tracked clan is provided", async () => {
@@ -288,6 +344,8 @@ describe("BanService", () => {
         targetKind: "USER",
         playerTag: null,
         discordUserId: "222222222222222222",
+        targetDiscordUsername: null,
+        targetDiscordDisplayName: null,
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         reason: "Alt abuse",
@@ -412,9 +470,6 @@ describe("BanService", () => {
       updatedAt: new Date("2026-06-08T10:00:00.000Z"),
     });
     const store = createBanStore([activeUser]);
-    listPlayerLinksForDiscordUserMock.mockResolvedValue([
-      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
-    ]);
 
     const result = await service.addUserBan({
       guildId: "guild-1",
@@ -451,9 +506,19 @@ describe("BanService", () => {
       updatedAt: new Date("2026-06-08T09:00:00.000Z"),
     });
     const store = createBanStore([expiredUser]);
-    listPlayerLinksForDiscordUserMock.mockResolvedValue([
-      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
-      { playerTag: "#QGRJ0222", linkedAt: new Date("2026-06-02T00:00:00.000Z"), linkedName: null },
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "222222222222222222",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ0222",
+        discordUserId: "222222222222222222",
+        playerName: "Linked Bravo",
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
     ]);
 
     const result = await service.addUserBan({
@@ -543,9 +608,6 @@ describe("BanService", () => {
       updatedAt: new Date("2026-06-08T08:00:00.000Z"),
     });
     const store = createBanStore([expiredUser, activeUser]);
-    listPlayerLinksForDiscordUserMock.mockResolvedValue([
-      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
-    ]);
 
     const result = await service.addUserBan({
       guildId: "guild-1",
@@ -621,7 +683,7 @@ describe("BanService", () => {
     expect(result?.discordUserId).toBe("222222222222222222");
   });
 
-  it("lists active bans and resolves linked player tags for active user bans", async () => {
+  it("lists active bans and resolves player names in bulk with current-name and link fallbacks", async () => {
     const service = new BanService();
     const now = new Date("2026-06-08T12:00:00.000Z");
     const activePlayer = makeBanRecord({
@@ -629,27 +691,31 @@ describe("BanService", () => {
       targetKind: "PLAYER",
       playerTag: "#PYLQ0289",
       reason: null,
+      targetPlayerName: "Current Alpha",
       expiresAt: null,
       createdAt: new Date("2026-06-08T10:00:00.000Z"),
       updatedAt: new Date("2026-06-08T10:00:00.000Z"),
+    });
+    const fallbackPlayer = makeBanRecord({
+      id: "player-2",
+      targetKind: "PLAYER",
+      playerTag: "#QGRJ0222",
+      reason: null,
+      expiresAt: null,
+      createdAt: new Date("2026-06-08T09:30:00.000Z"),
+      updatedAt: new Date("2026-06-08T09:30:00.000Z"),
     });
     const activeUser = makeBanRecord({
       id: "user-1",
       targetKind: "USER",
       playerTag: null,
       discordUserId: "222222222222222222",
+      targetDiscordUsername: "someuser",
+      targetDiscordDisplayName: "Some Display Name",
       reason: "Alt abuse",
       expiresAt: new Date("2026-07-08T12:00:00.000Z"),
       createdAt: new Date("2026-06-08T09:00:00.000Z"),
       updatedAt: new Date("2026-06-08T09:00:00.000Z"),
-    });
-    const expiredPlayer = makeBanRecord({
-      id: "expired-1",
-      targetKind: "PLAYER",
-      playerTag: "#QGRJ0222",
-      expiresAt: new Date("2026-06-08T11:59:59.000Z"),
-      createdAt: new Date("2026-06-08T08:00:00.000Z"),
-      updatedAt: new Date("2026-06-08T08:00:00.000Z"),
     });
     const removedUser = makeBanRecord({
       id: "removed-1",
@@ -661,7 +727,7 @@ describe("BanService", () => {
       updatedAt: new Date("2026-06-08T11:00:00.000Z"),
     });
 
-    const dataset = [activePlayer, activeUser, expiredPlayer, removedUser];
+    const dataset = [activePlayer, fallbackPlayer, activeUser, removedUser];
     prismaMock.banRecord.findMany.mockImplementation(async ({ where }: any) => {
       expect(where.guildId).toBe("guild-1");
       return dataset.filter(
@@ -671,9 +737,22 @@ describe("BanService", () => {
           (row.expiresAt === null || row.expiresAt > now),
       );
     });
-    listPlayerLinksForDiscordUserMock.mockResolvedValue([
-      { playerTag: "#PYLQ0289", linkedAt: new Date("2026-06-01T00:00:00.000Z"), linkedName: null },
-      { playerTag: "#QGRJ0222", linkedAt: new Date("2026-06-02T00:00:00.000Z"), linkedName: null },
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "Current Alpha" },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "222222222222222222",
+        playerName: "Linked Alpha",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ0222",
+        discordUserId: "222222222222222222",
+        playerName: "Linked Bravo",
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
     ]);
 
     const rows = await service.listActiveBans({ guildId: "guild-1", now });
@@ -682,16 +761,32 @@ describe("BanService", () => {
       {
         ...activePlayer,
         linkedPlayerTags: [],
+        targetPlayerName: "Current Alpha",
+      },
+      {
+        ...fallbackPlayer,
+        linkedPlayerTags: [],
+        targetPlayerName: "Linked Bravo",
       },
       {
         ...activeUser,
         linkedPlayerTags: ["#PYLQ0289", "#QGRJ0222"],
+        targetPlayerName: null,
       },
     ]);
-    expect(listPlayerLinksForDiscordUserMock).toHaveBeenCalledWith({
-      discordUserId: "222222222222222222",
-    });
-    expect(rows.some((row) => row.playerTag === "#QGRJ0222" && row.targetKind === "PLAYER")).toBe(false);
+    expect(prismaMock.playerCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { playerTag: { in: ["#PYLQ0289", "#QGRJ0222"] } },
+            { discordUserId: { in: ["222222222222222222"] } },
+          ],
+        }),
+      }),
+    );
+    expect(rows.some((row) => row.playerTag === "#QGRJ0222" && row.targetKind === "PLAYER")).toBe(true);
     expect(rows.some((row) => row.discordUserId === "333333333333333333")).toBe(false);
   });
 
