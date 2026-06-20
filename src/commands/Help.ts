@@ -62,6 +62,8 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "permission:add",
   "permission:remove",
   "telemetry",
+  "cwl:baseline",
+  "cwl:baseline:status",
   "cwl:rotations:create",
   "cwl:rotations:delete",
   "cwl:rotations:import",
@@ -404,11 +406,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   cwl: {
-    summary: "Inspect persisted CWL roster, current round state, and planner output.",
+    summary: "Inspect persisted CWL roster, current round state, planner output, and frozen baseline status.",
     details: [
       "`/cwl members clan:<tag>` shows the observed current-season CWL roster for one tracked CWL clan using persisted round observations only, plus linked signup roster context when available.",
       "The roster context section shows the linked roster, the observed CWL member count, the signed-up + spun count, and a copy/paste exclusion string for players included in CWL but not signed up.",
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
+      "`/cwl baseline status [season:YYYY-MM]` shows the frozen CWL alliance baseline snapshot for the guild and season using the persisted service-backed read-only view. Capture is not available through Discord yet.",
       "Roster signup, lifecycle, and manager controls now live under `/roster` so `/cwl` can stay focused on persisted CWL observations and rotation tooling.",
       "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state. The clan autocomplete only lists tracked clans with an active current-season rotation.",
       "`/cwl rotations create` is admin-only by default and only works during persisted CWL preparation state for the tracked clan. The success message now includes the clan label, source/roster line, included-player count, and any excluded-player identities. Optional `size:11|15|30` selects the CWL lineup size. `exclude` accepts player tags separated by spaces or commas. When seeded from a roster, only players that are both confirmed on that roster and present in the clan's current CWL participation data are eligible, with persisted weight data used when available.",
@@ -420,6 +423,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/cwl members clan:#2QG2C08UP",
       "/cwl members clan:#2QG2C08UP inwar:true",
+      "/cwl baseline status",
+      "/cwl baseline status season:2026-06",
       "/cwl rotations show",
       "/cwl rotations show clan:#2QG2C08UP day:3",
       "/cwl rotations create clan:#2QG2C08UP size:30 exclude:#PYLQ0289 #QGRJ2222 overwrite:true",
