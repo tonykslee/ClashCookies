@@ -393,6 +393,7 @@ async function buildTodoRenderResult(input: {
 }): Promise<TodoRenderResult> {
   const pages = await buildTodoPagesForUser({
     discordUserId: input.scope.targetUserId,
+    guildScopeId: input.scope.guildScopeId,
     cocService: input.cocService,
   });
   if (pages.linkedPlayerCount <= 0) {
