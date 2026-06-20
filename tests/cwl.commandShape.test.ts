@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers members, baseline status, signup, roster manager controls, and rotations show/create/delete/import/export without drift", () => {
+  it("registers members, baseline status/capture, signup, roster manager controls, and rotations show/create/delete/import/export without drift", () => {
     const members = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -20,6 +20,7 @@ describe("/cwl command shape", () => {
         option.name === "rotations",
     );
     const status = baseline?.options?.find((option: any) => option.name === "status");
+    const capture = baseline?.options?.find((option: any) => option.name === "capture");
     const show = rotations?.options?.find((option: any) => option.name === "show");
     const create = rotations?.options?.find((option: any) => option.name === "create");
     const deleteOption = rotations?.options?.find((option: any) => option.name === "delete");
@@ -32,7 +33,8 @@ describe("/cwl command shape", () => {
     expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "roster")).toBeUndefined();
     expect(rotations).toBeTruthy();
     expect(status?.type).toBe(ApplicationCommandOptionType.Subcommand);
-    expect(baseline?.options?.length).toBe(1);
+    expect(capture?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(baseline?.options?.length).toBe(2);
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -51,6 +53,14 @@ describe("/cwl command shape", () => {
       ApplicationCommandOptionType.String,
     );
     expect(status?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
+    expect(capture?.options?.find((option: any) => option.name === "season")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(capture?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
+    expect(capture?.options?.find((option: any) => option.name === "replace")?.type).toBe(
+      ApplicationCommandOptionType.Boolean,
+    );
+    expect(capture?.options?.find((option: any) => option.name === "replace")?.required).toBe(false);
     const size = create?.options?.find((option: any) => option.name === "size");
     expect(size?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(size?.required).toBe(false);

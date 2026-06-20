@@ -53,6 +53,7 @@ export type CwlAllianceBaselineCaptureSummary = {
   latestWarFallbackCount: number;
   coverageSummaries: CwlAllianceBaselineCoverageSummary[];
   reusedExistingBaseline: boolean;
+  replacedExistingBaseline: boolean;
 };
 
 export class CwlAllianceBaselineValidationError extends Error {
@@ -641,6 +642,7 @@ function summarizeStoredBaseline(input: ExistingBaselineRow): CwlAllianceBaselin
     latestWarFallbackCount,
     coverageSummaries,
     reusedExistingBaseline: true,
+    replacedExistingBaseline: false,
   };
 }
 
@@ -653,6 +655,7 @@ function summarizeCandidateSnapshot(input: {
   };
   clans: CandidateClanRow[];
   members: CandidateMemberRow[];
+  replacedExistingBaseline: boolean;
 }): CwlAllianceBaselineCaptureSummary {
   const coverageSummaries = [...input.clans]
     .sort((left, right) => left.clanTag.localeCompare(right.clanTag))
@@ -685,6 +688,7 @@ function summarizeCandidateSnapshot(input: {
     latestWarFallbackCount,
     coverageSummaries,
     reusedExistingBaseline: false,
+    replacedExistingBaseline: input.replacedExistingBaseline,
   };
 }
 
@@ -841,6 +845,7 @@ export class CwlAllianceBaselineService {
       baseline: persisted,
       clans: candidate.clans,
       members: candidate.members,
+      replacedExistingBaseline: Boolean(existingBaseline && replaceExisting),
     });
     this.logger.info(
       `[cwl-alliance-baseline] event=capture_completed guildId=${guildId} season=${season} baselineId=${summary.baselineId} replaceExisting=${replaceExisting ? "1" : "0"} trackedClanCount=${summary.trackedClanCount} capturedClanCount=${summary.capturedClanCount} unavailableClanCount=${summary.unavailableClanCount} memberCount=${summary.memberAccountCount} linkedCount=${summary.linkedAccountCount} currentSourceCount=${summary.currentWarSourceCount} fallbackCount=${summary.latestWarFallbackCount} durationMs=${Date.now() - startedAt}`,

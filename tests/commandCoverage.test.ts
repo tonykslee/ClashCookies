@@ -255,7 +255,11 @@ describe("command coverage", () => {
     const normalized = cwlHelpText.toLowerCase();
     expect(cwlHelpText).toContain("/cwl baseline status");
     expect(cwlHelpText).toContain("/cwl baseline status season:2026-06");
-    expect(normalized).toContain("capture is not available through discord yet");
+    expect(cwlHelpText).toContain("/cwl baseline capture");
+    expect(cwlHelpText).toContain("/cwl baseline capture season:2026-06 replace:true");
+    expect(normalized).toContain("manually captures the frozen baseline");
+    expect(normalized).toContain("replace:true");
+    expect(normalized).toContain("rebuilds it atomically");
   });
 
   it("documents the /sync readiness dashboard in sync help detail text", () => {

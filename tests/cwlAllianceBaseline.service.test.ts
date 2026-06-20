@@ -502,6 +502,7 @@ describe("CwlAllianceBaselineService", () => {
     expect(result.guildId).toBe("guild-1");
     expect(result.season).toBe("2026-06");
     expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(false);
     expect(result.capturedClanCount).toBe(1);
     expect(result.unavailableClanCount).toBe(0);
     expect(result.currentWarSourceCount).toBe(1);
@@ -745,6 +746,7 @@ describe("CwlAllianceBaselineService", () => {
     });
 
     expect(result.reusedExistingBaseline).toBe(true);
+    expect(result.replacedExistingBaseline).toBe(false);
     expect(result.baselineId).toBe("baseline-reuse");
     expect(txMock.cwlAllianceSeasonBaseline.upsert).not.toHaveBeenCalled();
     expect(state.baselines[0]?.members).toHaveLength(1);
@@ -813,6 +815,7 @@ describe("CwlAllianceBaselineService", () => {
     });
 
     expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(true);
     expect(result.capturedClanCount).toBe(1);
     expect(state.baselineClans.map((row) => row.clanTag)).toEqual(["#P229"]);
     expect(state.baselineMembers.map((row) => row.playerTag)).toEqual(["#Q289"]);
@@ -822,6 +825,34 @@ describe("CwlAllianceBaselineService", () => {
     expect(txMock.cwlAllianceSeasonBaselineMember.deleteMany).toHaveBeenCalledWith({
       where: { baselineId: "baseline-replace" },
     });
+  });
+
+  it("treats replaceExisting:true with no prior baseline as a new baseline", async () => {
+    state.trackedClans = [makeTrackedClan("#P300", "Fresh Clan")];
+    state.currentWars = [makeCurrentWar({ clanTag: "#P300", warId: 701 })];
+    state.rosters = [
+      makeRoster({
+        clanTag: "#P300",
+        members: [
+          { position: 1, playerTag: "#Q300", playerName: "Fresh Player", townHall: 16 },
+          { position: 2, playerTag: "#Q301", playerName: "Fresh Backup", townHall: 15 },
+        ],
+      }),
+    ];
+    state.playerLinks = [
+      { playerTag: "#Q300", discordUserId: "123456789012345678" },
+      { playerTag: "#Q301", discordUserId: "223456789012345678" },
+    ];
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+      replaceExisting: true,
+    });
+
+    expect(result.reusedExistingBaseline).toBe(false);
+    expect(result.replacedExistingBaseline).toBe(false);
+    expect(txMock.cwlAllianceSeasonBaseline.upsert).toHaveBeenCalledTimes(1);
   });
 
   it("rejects duplicate player tags across clans before mutating an existing baseline", async () => {
@@ -955,6 +986,7 @@ describe("CwlAllianceBaselineService", () => {
       linkedAccountCount: 1,
       currentWarSourceCount: 1,
       latestWarFallbackCount: 0,
+      replacedExistingBaseline: false,
       coverageSummaries: [
         expect.objectContaining({
           clanTag: "#P100",
