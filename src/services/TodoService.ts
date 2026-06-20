@@ -601,29 +601,8 @@ export async function buildTodoPagesForUser(input: {
     if (!clanTag) continue;
     raidTrackedClanNameByTag.set(clanTag, sanitizeStatusText(row.name) || null);
   }
-  const currentWarByClanTag = pickPreferredCurrentWarByClanTag(currentWarRows);
-  const warMatchContextByClanTag = currentWarByClanTag;
-  const currentWarIdentityByClanTag = new Map<
-    string,
-    {
-      clanTag: string;
-      clanName: string | null;
-      warId: number | null;
-      startTime: Date | null;
-      state: string | null;
-      updatedAt: Date;
-    }
-  >();
-  for (const [clanTag, currentWar] of currentWarByClanTag.entries()) {
-    currentWarIdentityByClanTag.set(clanTag, {
-      clanTag,
-      clanName: currentWar.clanName,
-      warId: currentWar.warId,
-      startTime: currentWar.startTime,
-      state: currentWar.state,
-      updatedAt: currentWar.updatedAt,
-    });
-  }
+  const warMatchContextByClanTag = pickPreferredCurrentWarByClanTag(currentWarRows);
+  const currentWarIdentityByClanTag = pickLatestCurrentWarIdentityByClanTag(currentWarRows);
   const activeTrackedCurrentWarByClanTag = new Map<string, TodoTrackedCurrentWarRow>();
   for (const [clanTag, currentWar] of currentWarIdentityByClanTag.entries()) {
     if (!trackedClanTagSet.has(clanTag)) continue;
@@ -1882,6 +1861,35 @@ function pickPreferredCurrentWarByClanTag(
   return latest;
 }
 
+/** Purpose: keep one newest current-war identity row per clan for live war rendering. */
+function pickLatestCurrentWarIdentityByClanTag(
+  rows: CurrentWarRenderRow[],
+): Map<string, CurrentWarRenderRow> {
+  const latest = new Map<string, CurrentWarRenderRow>();
+  for (const row of rows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    const existing = latest.get(clanTag);
+    if (!existing || compareCurrentWarRowsForIdentity(row, existing) < 0) {
+      latest.set(clanTag, {
+        clanTag,
+        clanName: sanitizeStatusText(row.clanName) || null,
+        warId: toFiniteIntOrNull(row.warId),
+        startTime: row.startTime ?? null,
+        matchType: row.matchType,
+        outcome: row.outcome,
+        state: row.state ?? null,
+        inferredMatchType:
+          row.inferredMatchType === null || row.inferredMatchType === undefined
+            ? null
+            : Boolean(row.inferredMatchType),
+        updatedAt: row.updatedAt,
+      });
+    }
+  }
+  return latest;
+}
+
 /** Purpose: compare two current-war rows for deterministic todo rendering. */
 function compareCurrentWarRowsForTodo(a: CurrentWarRenderRow, b: CurrentWarRenderRow): number {
   const aConfirmed = a.inferredMatchType === false ? 1 : 0;
@@ -1911,6 +1919,43 @@ function compareCurrentWarRowsForTodo(a: CurrentWarRenderRow, b: CurrentWarRende
       sanitizeStatusText(a.state),
       sanitizeStatusText(a.clanName),
       String(a.inferredMatchType ?? ""),
+      a.clanTag,
+    ].join("|"),
+    undefined,
+    { sensitivity: "base" },
+  );
+}
+
+/** Purpose: compare two current-war rows for newest live-war identity selection. */
+function compareCurrentWarRowsForIdentity(
+  a: CurrentWarRenderRow,
+  b: CurrentWarRenderRow,
+): number {
+  const updatedAtDiff = b.updatedAt.getTime() - a.updatedAt.getTime();
+  if (updatedAtDiff !== 0) return updatedAtDiff;
+
+  const aStart = a.startTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const bStart = b.startTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const startTimeDiff = bStart - aStart;
+  if (startTimeDiff !== 0) return startTimeDiff;
+
+  const aWarId = a.warId ?? Number.NEGATIVE_INFINITY;
+  const bWarId = b.warId ?? Number.NEGATIVE_INFINITY;
+  const warIdDiff = bWarId - aWarId;
+  if (warIdDiff !== 0) return warIdDiff;
+
+  return [
+    sanitizeStatusText(b.clanName),
+    sanitizeStatusText(b.matchType),
+    sanitizeStatusText(b.outcome),
+    sanitizeStatusText(b.state),
+    b.clanTag,
+  ].join("|").localeCompare(
+    [
+      sanitizeStatusText(a.clanName),
+      sanitizeStatusText(a.matchType),
+      sanitizeStatusText(a.outcome),
+      sanitizeStatusText(a.state),
       a.clanTag,
     ].join("|"),
     undefined,

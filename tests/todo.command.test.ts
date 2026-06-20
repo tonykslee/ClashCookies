@@ -742,7 +742,7 @@ describe("/todo command", () => {
     expect(prismaMock.currentWar.findMany.mock.calls[1]?.[0]?.where?.guildId).toBe("guild-b");
   });
 
-  it("renders DM fallback rows deterministically and shows unresolved match state as :grey_question:", async () => {
+  it("renders DM fallback rows with confirmed header preference and newest live-war identity", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
@@ -757,11 +757,22 @@ describe("/todo command", () => {
         clanTag: "#PQL0289",
         clanName: "Clan One",
         warActive: true,
+        warAttacksUsed: 1,
+        warAttacksMax: 2,
         warPhase: "battle day",
       }),
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 3,
+        playerName: "Alpha",
+        townHall: 15,
+      },
     ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
@@ -787,16 +798,66 @@ describe("/todo command", () => {
         updatedAt: new Date("2026-03-26T00:10:00.000Z"),
       },
     ]);
-    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([
+      {
+        warId: 1001,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 8,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 9,
+        stars: 1,
+        attackSeenAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        warId: 1002,
+        clanTag: "#PQL0289",
+        warStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        playerTag: "#PYLQ0289",
+        playerPosition: 3,
+        attacksUsed: 1,
+        attackOrder: 1,
+        attackNumber: 1,
+        defenderPosition: 4,
+        stars: 3,
+        attackSeenAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
 
     const dmInteraction = makeTodoInteraction({ type: "WAR" });
     await Todo.run({} as any, dmInteraction as any, makeCocServiceSpy() as any);
 
     const dmDescription = getReplyDescription(dmInteraction);
-    expect(dmDescription).toContain(":black_circle:");
+    expect(dmDescription).toContain("**:rd: Clan One (#PQL0289) :black_circle: - battle day ends <t:");
+    expect(dmDescription).toContain("- #3 Alpha - `1 / 2` | :dagger: #4");
+    expect(dmDescription).not.toContain(":dagger: #9");
     expect(dmDescription).not.toContain(":white_circle:");
+  });
 
-    resetTodoRenderCacheForTest();
+  it("renders unresolved DM match state as :grey_question: instead of MM", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 1 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+    ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -810,12 +871,23 @@ describe("/todo command", () => {
         updatedAt: new Date("2026-03-26T00:20:00.000Z"),
       },
     ]);
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        position: 3,
+        playerName: "Alpha",
+        townHall: 15,
+      },
+    ]);
 
-    const unresolvedInteraction = makeTodoInteraction({ type: "WAR", userId: "222222222222222222" });
-    await Todo.run({} as any, unresolvedInteraction as any, makeCocServiceSpy() as any);
-    const unresolvedDescription = getReplyDescription(unresolvedInteraction);
-    expect(unresolvedDescription).toContain(":grey_question:");
-    expect(unresolvedDescription).not.toContain(":white_circle:");
+    const dmInteraction = makeTodoInteraction({ type: "WAR" });
+    await Todo.run({} as any, dmInteraction as any, makeCocServiceSpy() as any);
+
+    const dmDescription = getReplyDescription(dmInteraction);
+    expect(dmDescription).toContain(":grey_question:");
+    expect(dmDescription).not.toContain(":white_circle:");
   });
 
   it("shows unknown freshness when the displayed source timestamps are unavailable", async () => {
