@@ -50,6 +50,9 @@ describe("autorole permission defaults", () => {
       service.canUseAnyTarget(["autorole:config"], interaction),
     ).resolves.toBe(false);
     await expect(
+      service.canUseAnyTarget(["autorole:delayed-signup-role"], interaction),
+    ).resolves.toBe(false);
+    await expect(
       service.canUseAnyTarget(["autorole:rules"], interaction),
     ).resolves.toBe(false);
     await expect(
@@ -76,6 +79,9 @@ describe("autorole permission defaults", () => {
     ).resolves.toBe("Default: Administrator only.");
     await expect(
       service.getPolicySummary("autorole:config", "guild-1"),
+    ).resolves.toBe("Default: Administrator only.");
+    await expect(
+      service.getPolicySummary("autorole:delayed-signup-role", "guild-1"),
     ).resolves.toBe("Default: Administrator only.");
   });
 });
