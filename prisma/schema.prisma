@@ -8,10 +8,10 @@ datasource db {
 }
 
 model PlayerActivity {
-  guildId String
-  tag     String
-  name    String
-  clanTag String
+  guildId  String
+  tag      String
+  name     String
+  clanTag  String
   clanName String?
 
   lastDonationAt DateTime?
@@ -32,25 +32,25 @@ model PlayerActivity {
 }
 
 model TrackedClan {
-  id              Int       @id @default(autoincrement())
-  tag             String    @unique
-  name            String?
-  loseStyle       LoseStyle @default(TRIPLE_TOP_30)
-  mailChannelId   String?
-  logChannelId    String?
-  leaderChannelId String?
-  clanRoleId      String?
-  leadRoleId      String?
-  clanBadge       String?
-  shortName       String?
-  mailConfig      Json?
-  notifyChannelId String?
-  notifyRole      String?
-  notifyEnabled   Boolean   @default(false)
-  fwaPoliceDmEnabled  Boolean   @default(false)
-  fwaPoliceLogEnabled Boolean   @default(false)
-  createdAt       DateTime  @default(now())
-  repPlayerTags   TrackedClanRep[]
+  id                  Int              @id @default(autoincrement())
+  tag                 String           @unique
+  name                String?
+  loseStyle           LoseStyle        @default(TRIPLE_TOP_30)
+  mailChannelId       String?
+  logChannelId        String?
+  leaderChannelId     String?
+  clanRoleId          String?
+  leadRoleId          String?
+  clanBadge           String?
+  shortName           String?
+  mailConfig          Json?
+  notifyChannelId     String?
+  notifyRole          String?
+  notifyEnabled       Boolean          @default(false)
+  fwaPoliceDmEnabled  Boolean          @default(false)
+  fwaPoliceLogEnabled Boolean          @default(false)
+  createdAt           DateTime         @default(now())
+  repPlayerTags       TrackedClanRep[]
 }
 
 model TrackedClanRep {
@@ -64,13 +64,13 @@ model TrackedClanRep {
 }
 
 model RaidTrackedClan {
-  id         Int      @id @default(autoincrement())
-  clanTag    String   @unique @db.VarChar(16)
-  name       String?
-  upgrades   Int?
-  joinType   String?  @db.VarChar(16)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        Int      @id @default(autoincrement())
+  clanTag   String   @unique @db.VarChar(16)
+  name      String?
+  upgrades  Int?
+  joinType  String?  @db.VarChar(16)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([clanTag])
 }
@@ -96,17 +96,17 @@ enum RaidIntelLayoutGrade {
 }
 
 model RaidIntelDistrictLayoutMark {
-  id                   Int                  @id @default(autoincrement())
-  guildId              String
-  sourceClanTag        String               @db.VarChar(16)
+  id                    Int                  @id @default(autoincrement())
+  guildId               String
+  sourceClanTag         String               @db.VarChar(16)
   raidSeasonStartTime   DateTime
-  defenderTag          String               @db.VarChar(16)
-  districtName         String
-  districtHallLevel    Int?
-  layoutGrade          RaidIntelLayoutGrade
+  defenderTag           String               @db.VarChar(16)
+  districtName          String
+  districtHallLevel     Int?
+  layoutGrade           RaidIntelLayoutGrade
   markedByDiscordUserId String
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
   @@unique([guildId, sourceClanTag, raidSeasonStartTime, defenderTag, districtName])
   @@index([guildId, sourceClanTag, raidSeasonStartTime])
@@ -162,38 +162,38 @@ model BotSetting {
 }
 
 model BotPollJobStatus {
-  jobKey        String   @id
-  displayName   String
-  enabled       Boolean  @default(true)
-  status        String
-  intervalMs    Int?
-  lastStartedAt DateTime?
+  jobKey         String    @id
+  displayName    String
+  enabled        Boolean   @default(true)
+  status         String
+  intervalMs     Int?
+  lastStartedAt  DateTime?
   lastFinishedAt DateTime?
-  nextDueAt     DateTime?
-  lastSuccessAt DateTime?
-  lastErrorAt   DateTime?
-  lastError     String?
-  runCount      Int      @default(0)
-  failureCount  Int      @default(0)
-  metadata      Json?
-  updatedAt     DateTime @updatedAt
+  nextDueAt      DateTime?
+  lastSuccessAt  DateTime?
+  lastErrorAt    DateTime?
+  lastError      String?
+  runCount       Int       @default(0)
+  failureCount   Int       @default(0)
+  metadata       Json?
+  updatedAt      DateTime  @updatedAt
 }
 
 model PlayerLink {
-  playerTag                String                       @id
-  discordUserId            String?
-  discordUsername          String?
-  playerName               String?
-  linkSource               PlayerLinkSource             @default(LEGACY)
-  verificationStatus       PlayerLinkVerificationStatus @default(UNVERIFIED)
-  verificationMethod       PlayerLinkVerificationMethod?
-  verifiedAt               DateTime?
-  verifiedByDiscordUserId  String?
-  lastVerifiedAt           DateTime?
+  playerTag                 String                        @id
+  discordUserId             String?
+  discordUsername           String?
+  playerName                String?
+  linkSource                PlayerLinkSource              @default(LEGACY)
+  verificationStatus        PlayerLinkVerificationStatus  @default(UNVERIFIED)
+  verificationMethod        PlayerLinkVerificationMethod?
+  verifiedAt                DateTime?
+  verifiedByDiscordUserId   String?
+  lastVerifiedAt            DateTime?
   verificationFailureReason String?
-  importBatchKey           String?
-  createdAt                DateTime                     @default(now())
-  updatedAt                DateTime                     @updatedAt
+  importBatchKey            String?
+  createdAt                 DateTime                      @default(now())
+  updatedAt                 DateTime                      @updatedAt
 
   @@index([discordUserId])
   @@index([verificationStatus])
@@ -207,23 +207,23 @@ enum BanTargetKind {
 }
 
 model BanRecord {
-  id                     String         @id @default(cuid())
-  guildId                String
-  targetKind             BanTargetKind
-  playerTag              String?        @db.VarChar(16)
-  discordUserId          String?
-  targetDiscordUsername  String?
+  id                       String        @id @default(cuid())
+  guildId                  String
+  targetKind               BanTargetKind
+  playerTag                String?       @db.VarChar(16)
+  discordUserId            String?
+  targetDiscordUsername    String?
   targetDiscordDisplayName String?
-  clanTag                String?        @db.VarChar(16)
-  clanName               String?
-  reason                 String?
-  bannedByDiscordUserId  String
-  createdAt              DateTime       @default(now())
-  expiresAt              DateTime?
-  removedAt              DateTime?
-  removedByDiscordUserId String?
-  removeReason           String?
-  updatedAt              DateTime       @updatedAt
+  clanTag                  String?       @db.VarChar(16)
+  clanName                 String?
+  reason                   String?
+  bannedByDiscordUserId    String
+  createdAt                DateTime      @default(now())
+  expiresAt                DateTime?
+  removedAt                DateTime?
+  removedByDiscordUserId   String?
+  removeReason             String?
+  updatedAt                DateTime      @updatedAt
 
   @@index([guildId, targetKind])
   @@index([guildId, playerTag])
@@ -233,16 +233,16 @@ model BanRecord {
 }
 
 model BannedPlayerJoinAlert {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   guildId     String
-  playerTag   String   @db.VarChar(16)
-  clanTag     String   @db.VarChar(16)
+  playerTag   String    @db.VarChar(16)
+  clanTag     String    @db.VarChar(16)
   playerName  String
   clanName    String
   banRecordId String?
   alertedAt   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@unique([guildId, playerTag, clanTag])
   @@index([guildId, playerTag])
@@ -263,7 +263,7 @@ model FillerAccount {
 }
 
 model PlayerCurrent {
-  playerTag               String   @id
+  playerTag               String    @id
   playerName              String?
   townHall                Int?
   currentClanTag          String?
@@ -281,8 +281,8 @@ model PlayerCurrent {
   lastSeenAt              DateTime?
   lastFetchedAt           DateTime?
   lastSource              String?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@index([currentClanTag])
   @@index([updatedAt])
@@ -291,25 +291,25 @@ model PlayerCurrent {
 }
 
 model DumpLink {
-  guildId               String
-  slot                  Int      @default(1)
-  link                  String
+  guildId                String
+  slot                   Int       @default(1)
+  link                   String
   updatedByDiscordUserId String
-  clanInfoJson          Json?
-  clanInfoFetchedAt     DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  clanInfoJson           Json?
+  clanInfoFetchedAt      DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   @@id([guildId, slot])
   @@index([updatedAt])
 }
 
 model UnlinkedAlertConfig {
-  guildId      String   @id
-  routingMode   String   @default("CLAN_LOG")
-  channelId     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  guildId     String   @id
+  routingMode String   @default("CLAN_LOG")
+  channelId   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model UnlinkedPlayer {
@@ -319,8 +319,8 @@ model UnlinkedPlayer {
   clanTag    String
   clanName   String
   alertedAt  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@id([guildId, playerTag])
   @@index([guildId, clanTag])
@@ -328,45 +328,45 @@ model UnlinkedPlayer {
 }
 
 model TodoPlayerSnapshot {
-  playerTag       String   @id
-  playerName      String
-  townHall        Int?
-  clanTag         String?
-  clanName        String?
-  warClanTag      String?
-  warClanName     String?
-  warPosition     Int?
-  warSourceUpdatedAt DateTime?
+  playerTag                String    @id
+  playerName               String
+  townHall                 Int?
+  clanTag                  String?
+  clanName                 String?
+  warClanTag               String?
+  warClanName              String?
+  warPosition              Int?
+  warSourceUpdatedAt       DateTime?
   clanMembershipObservedAt DateTime?
-  raidClanTag     String?
-  raidClanName    String?
-  cwlClanTag      String?
-  cwlClanName     String?
-  warActive       Boolean  @default(false)
-  warAttacksUsed  Int      @default(0)
-  warAttacksMax   Int      @default(2)
-  warPhase        String?
-  warEndsAt       DateTime?
-  cwlActive       Boolean  @default(false)
-  cwlAttacksUsed  Int      @default(0)
-  cwlAttacksMax   Int      @default(1)
-  cwlPhase        String?
-  cwlEndsAt       DateTime?
-  raidActive      Boolean  @default(false)
-  raidAttacksUsed Int      @default(0)
-  raidAttacksMax  Int      @default(6)
-  raidEndsAt      DateTime?
-  raidSourceUpdatedAt DateTime?
-  gamesActive     Boolean  @default(false)
-  gamesPoints     Int?
-  gamesTarget     Int?
-  gamesChampionTotal Int?
-  gamesSeasonBaseline Int?
-  gamesCycleKey   String?
-  gamesEndsAt     DateTime?
-  lastUpdatedAt   DateTime @default(now())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  raidClanTag              String?
+  raidClanName             String?
+  cwlClanTag               String?
+  cwlClanName              String?
+  warActive                Boolean   @default(false)
+  warAttacksUsed           Int       @default(0)
+  warAttacksMax            Int       @default(2)
+  warPhase                 String?
+  warEndsAt                DateTime?
+  cwlActive                Boolean   @default(false)
+  cwlAttacksUsed           Int       @default(0)
+  cwlAttacksMax            Int       @default(1)
+  cwlPhase                 String?
+  cwlEndsAt                DateTime?
+  raidActive               Boolean   @default(false)
+  raidAttacksUsed          Int       @default(0)
+  raidAttacksMax           Int       @default(6)
+  raidEndsAt               DateTime?
+  raidSourceUpdatedAt      DateTime?
+  gamesActive              Boolean   @default(false)
+  gamesPoints              Int?
+  gamesTarget              Int?
+  gamesChampionTotal       Int?
+  gamesSeasonBaseline      Int?
+  gamesCycleKey            String?
+  gamesEndsAt              DateTime?
+  lastUpdatedAt            DateTime  @default(now())
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   @@index([clanTag])
   @@index([raidClanTag])
@@ -413,39 +413,39 @@ enum PlayerLinkVerificationMethod {
 }
 
 model AutoRoleGuildConfig {
-  id                     String   @id @default(cuid())
-  guildId                String   @unique
-  enabled                Boolean  @default(false)
-  killSwitchEnabled      Boolean  @default(false)
-  removeStaleManagedRoles Boolean @default(false)
-  applyNicknames         Boolean  @default(false)
-  nicknameTemplate       String?
-  trustedLinksAllowed    Boolean  @default(true)
-  verifiedOnlyMode       Boolean  @default(false)
-  syncEnabled            Boolean  @default(false)
-  syncIntervalMinutes    Int?
-  verifiedRoleId         String?
-  familyRoleId           String?
-  cwlClanRoleId          String?
-  nonMemberRoleId        String?
-  nonMemberEnabled       Boolean  @default(false)
+  id                          String   @id @default(cuid())
+  guildId                     String   @unique
+  enabled                     Boolean  @default(false)
+  killSwitchEnabled           Boolean  @default(false)
+  removeStaleManagedRoles     Boolean  @default(false)
+  applyNicknames              Boolean  @default(false)
+  nicknameTemplate            String?
+  trustedLinksAllowed         Boolean  @default(true)
+  verifiedOnlyMode            Boolean  @default(false)
+  syncEnabled                 Boolean  @default(false)
+  syncIntervalMinutes         Int?
+  verifiedRoleId              String?
+  familyRoleId                String?
+  cwlClanRoleId               String?
+  nonMemberRoleId             String?
+  nonMemberEnabled            Boolean  @default(false)
   clanRoleRemovalDelayMinutes Int?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 
   @@index([enabled, killSwitchEnabled])
 }
 
 model AutoRoleRule {
-  id            String          @id @default(cuid())
+  id            String           @id @default(cuid())
   guildId       String
   type          AutoRoleRuleType
   targetValue   String
   discordRoleId String
-  priority      Int             @default(1000)
-  enabled       Boolean         @default(true)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  priority      Int              @default(1000)
+  enabled       Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
   @@unique([guildId, type, targetValue, discordRoleId])
   @@index([guildId, enabled, priority])
@@ -453,39 +453,39 @@ model AutoRoleRule {
 }
 
 model AutoRoleUserExclusion {
-  id             String   @id @default(cuid())
-  guildId        String
-  discordUserId  String
-  reason         String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(cuid())
+  guildId       String
+  discordUserId String
+  reason        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([guildId, discordUserId])
   @@index([guildId, createdAt])
 }
 
 model AutoRoleRoleExclusion {
-  id             String   @id @default(cuid())
-  guildId        String
-  discordRoleId   String
-  reason         String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(cuid())
+  guildId       String
+  discordRoleId String
+  reason        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([guildId, discordRoleId])
   @@index([guildId, createdAt])
 }
 
 model AutoRoleMemberState {
-  id               String   @id @default(cuid())
-  guildId          String
-  discordUserId    String
-  lastEvaluatedAt   DateTime?
-  lastAppliedAt     DateTime?
-  lastResultHash    String?
-  lastError         String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String    @id @default(cuid())
+  guildId         String
+  discordUserId   String
+  lastEvaluatedAt DateTime?
+  lastAppliedAt   DateTime?
+  lastResultHash  String?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@unique([guildId, discordUserId])
   @@index([guildId, lastEvaluatedAt])
@@ -495,7 +495,7 @@ model AutoRolePendingRemoval {
   id             String   @id @default(cuid())
   guildId        String
   discordUserId  String
-  discordRoleId   String
+  discordRoleId  String
   ruleId         String
   reason         String
   firstMissingAt DateTime
@@ -509,18 +509,18 @@ model AutoRolePendingRemoval {
 }
 
 model AutoRoleSyncRun {
-  id              String   @id @default(cuid())
-  guildId         String
-  status          String   @default("RUNNING")
-  startedAt       DateTime @default(now())
-  finishedAt      DateTime?
-  evaluatedCount  Int?
-  appliedCount    Int?
-  removedCount    Int?
-  skippedCount    Int?
-  error           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String    @id @default(cuid())
+  guildId        String
+  status         String    @default("RUNNING")
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  evaluatedCount Int?
+  appliedCount   Int?
+  removedCount   Int?
+  skippedCount   Int?
+  error          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([guildId, startedAt])
   @@index([guildId, status, startedAt])
@@ -562,15 +562,15 @@ enum UserActivityReminderDeliveryStatus {
 }
 
 model Reminder {
-  id              String             @id @default(cuid())
+  id              String               @id @default(cuid())
   guildId         String
   type            ReminderType
   channelId       String
-  isEnabled       Boolean            @default(false)
+  isEnabled       Boolean              @default(false)
   createdByUserId String
   updatedByUserId String
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
   times           ReminderTimeOffset[]
   targetClans     ReminderTargetClan[]
   fireLogs        ReminderFireLog[]
@@ -607,21 +607,21 @@ model ReminderTargetClan {
 }
 
 model ReminderFireLog {
-  id             String               @id @default(cuid())
+  id             String                 @id @default(cuid())
   reminderId     String
   guildId        String
   clanTag        String
   reminderType   ReminderType
   offsetSeconds  Int
   eventIdentity  String
-  dedupeKey      String               @unique
+  dedupeKey      String                 @unique
   channelId      String
   dispatchStatus ReminderDispatchStatus @default(SENT)
   messageId      String?
   errorMessage   String?
-  dispatchedAt   DateTime             @default(now())
-  createdAt      DateTime             @default(now())
-  reminder       Reminder             @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  dispatchedAt   DateTime               @default(now())
+  createdAt      DateTime               @default(now())
+  reminder       Reminder               @relation(fields: [reminderId], references: [id], onDelete: Cascade)
 
   @@index([reminderId, dispatchedAt])
   @@index([guildId, dispatchedAt])
@@ -629,7 +629,7 @@ model ReminderFireLog {
 }
 
 model UserActivityReminderRule {
-  id               String                       @id @default(cuid())
+  id               String                         @id @default(cuid())
   discordUserId    String
   type             UserActivityReminderType
   playerTag        String
@@ -637,9 +637,9 @@ model UserActivityReminderRule {
   offsetMinutes    Int
   surfaceGuildId   String?
   surfaceChannelId String?
-  isActive         Boolean                      @default(true)
-  createdAt        DateTime                     @default(now())
-  updatedAt        DateTime                     @updatedAt
+  isActive         Boolean                        @default(true)
+  createdAt        DateTime                       @default(now())
+  updatedAt        DateTime                       @updatedAt
   deliveries       UserActivityReminderDelivery[]
 
   @@unique([discordUserId, type, playerTag, method, offsetMinutes])
@@ -648,16 +648,16 @@ model UserActivityReminderRule {
 }
 
 model UserActivityReminderDelivery {
-  id                String                             @id @default(cuid())
-  reminderRuleId    String
-  eventInstanceKey  String
-  scheduledAt       DateTime
-  sentAt            DateTime?
-  deliveryStatus    UserActivityReminderDeliveryStatus @default(SENT)
-  deliverySurface   String?
-  errorMessage      String?
-  createdAt         DateTime                           @default(now())
-  reminderRule      UserActivityReminderRule           @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
+  id               String                             @id @default(cuid())
+  reminderRuleId   String
+  eventInstanceKey String
+  scheduledAt      DateTime
+  sentAt           DateTime?
+  deliveryStatus   UserActivityReminderDeliveryStatus @default(SENT)
+  deliverySurface  String?
+  errorMessage     String?
+  createdAt        DateTime                           @default(now())
+  reminderRule     UserActivityReminderRule           @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
 
   @@unique([reminderRuleId, eventInstanceKey])
   @@index([deliveryStatus, createdAt])
@@ -665,7 +665,7 @@ model UserActivityReminderDelivery {
 }
 
 model FwaPoliceHandledViolation {
-  id                  String   @id @default(cuid())
+  id                  String    @id @default(cuid())
   clanTag             String
   warId               Int
   playerTag           String
@@ -673,61 +673,61 @@ model FwaPoliceHandledViolation {
   linkedDiscordUserId String?
   dmSentAt            DateTime?
   logSentAt           DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([clanTag, warId, playerTag, violationKey])
   @@index([clanTag, warId, createdAt])
 }
 
 model CwlEventInstance {
-  id             String   @id @default(cuid())
-  season         String
-  anchorWarTag   String
+  id              String                   @id @default(cuid())
+  season          String
+  anchorWarTag    String
   firstObservedAt DateTime
-  lastObservedAt DateTime
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  clans          CwlEventClan[]
-  warTags        CwlEventWarTag[]
-  rotationPlans  CwlRotationPlan[]
-  currentRounds  CurrentCwlRound[]
-  prepSnapshots  CurrentCwlPrepSnapshot[]
-  historyRounds  CwlRoundHistory[]
-  playerSeasons  CwlPlayerClanSeason[]
-  rosterStates   CwlSeasonRosterState[]
+  lastObservedAt  DateTime
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  clans           CwlEventClan[]
+  warTags         CwlEventWarTag[]
+  rotationPlans   CwlRotationPlan[]
+  currentRounds   CurrentCwlRound[]
+  prepSnapshots   CurrentCwlPrepSnapshot[]
+  historyRounds   CwlRoundHistory[]
+  playerSeasons   CwlPlayerClanSeason[]
+  rosterStates    CwlSeasonRosterState[]
 
   @@unique([anchorWarTag])
   @@index([season, lastObservedAt])
 }
 
 model CwlEventWarTag {
-  id                String   @id @default(cuid())
-  eventInstanceId   String
-  season            String
-  warTag            String   @unique
-  firstObservedAt    DateTime
-  lastObservedAt     DateTime
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  eventInstance     CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  id              String           @id @default(cuid())
+  eventInstanceId String
+  season          String
+  warTag          String           @unique
+  firstObservedAt DateTime
+  lastObservedAt  DateTime
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  eventInstance   CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@index([eventInstanceId])
   @@index([season, warTag])
 }
 
 model CwlEventClan {
-  id               String   @id @default(cuid())
-  eventInstanceId  String
-  season           String
-  clanTag          String
-  isCurrent        Boolean  @default(true)
-  firstObservedAt  DateTime
-  lastObservedAt   DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  eventInstance    CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
-  rotationPlans    CwlRotationPlan[]
+  id              String            @id @default(cuid())
+  eventInstanceId String
+  season          String
+  clanTag         String
+  isCurrent       Boolean           @default(true)
+  firstObservedAt DateTime
+  lastObservedAt  DateTime
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  eventInstance   CwlEventInstance  @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  rotationPlans   CwlRotationPlan[]
 
   @@unique([eventInstanceId, clanTag])
   @@index([clanTag, isCurrent])
@@ -735,30 +735,30 @@ model CwlEventClan {
 }
 
 model CwlTrackedClan {
-  id        Int      @id @default(autoincrement())
-  season    String
-  tag       String
-  name      String?
+  id          Int      @id @default(autoincrement())
+  season      String
+  tag         String
+  name        String?
   leagueLabel String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([season, tag])
   @@index([season, createdAt])
 }
 
 model CwlPlayerClanSeason {
-  id               Int      @id @default(autoincrement())
+  id               Int              @id @default(autoincrement())
   eventInstanceId  String
   season           String
   playerTag        String
   cwlClanTag       String
   playerName       String?
   townHall         Int?
-  daysParticipated Int      @default(0)
+  daysParticipated Int              @default(0)
   lastRoundDay     Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
   eventInstance    CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([eventInstanceId, playerTag])
@@ -778,15 +778,15 @@ enum CwlAllianceSeasonBaselineSourceType {
 }
 
 model CwlAllianceSeasonBaseline {
-  id              String   @id @default(cuid())
-  guildId         String
-  season          String
-  capturedAt      DateTime
+  id               String                            @id @default(cuid())
+  guildId          String
+  season           String
+  capturedAt       DateTime
   capturedByUserId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  clans           CwlAllianceSeasonBaselineClan[]
-  members         CwlAllianceSeasonBaselineMember[]
+  createdAt        DateTime                          @default(now())
+  updatedAt        DateTime                          @updatedAt
+  clans            CwlAllianceSeasonBaselineClan[]
+  members          CwlAllianceSeasonBaselineMember[]
 
   @@unique([guildId, season])
   @@index([season, capturedAt])
@@ -794,23 +794,23 @@ model CwlAllianceSeasonBaseline {
 }
 
 model CwlAllianceSeasonBaselineClan {
-  id               String   @id @default(cuid())
-  baselineId       String
-  clanTag          String   @db.VarChar(16)
-  clanName         String?
-  captureStatus    CwlAllianceSeasonBaselineCaptureStatus
-  sourceType       CwlAllianceSeasonBaselineSourceType?
-  sourceWarId      Int?
+  id                 String                                 @id @default(cuid())
+  baselineId         String
+  clanTag            String                                 @db.VarChar(16)
+  clanName           String?
+  captureStatus      CwlAllianceSeasonBaselineCaptureStatus
+  sourceType         CwlAllianceSeasonBaselineSourceType?
+  sourceWarId        Int?
   sourceWarStartTime DateTime?
-  sourceWarEndTime DateTime?
-  sourceOpponentTag String?  @db.VarChar(16)
-  sourceObservedAt DateTime?
-  rosterSize       Int
-  failureReason    String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  baseline         CwlAllianceSeasonBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
-  members          CwlAllianceSeasonBaselineMember[]
+  sourceWarEndTime   DateTime?
+  sourceOpponentTag  String?                                @db.VarChar(16)
+  sourceObservedAt   DateTime?
+  rosterSize         Int
+  failureReason      String?
+  createdAt          DateTime                               @default(now())
+  updatedAt          DateTime                               @updatedAt
+  baseline           CwlAllianceSeasonBaseline              @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  members            CwlAllianceSeasonBaselineMember[]
 
   @@unique([baselineId, clanTag])
   @@index([baselineId, captureStatus])
@@ -819,16 +819,16 @@ model CwlAllianceSeasonBaselineClan {
 }
 
 model CwlAllianceSeasonBaselineMember {
-  id                  String   @id @default(cuid())
+  id                  String                        @id @default(cuid())
   baselineId          String
   baselineClanId      String
-  playerTag           String   @db.VarChar(16)
+  playerTag           String                        @db.VarChar(16)
   playerName          String
   townHall            Int?
   position            Int?
-  linkedDiscordUserId  String?
-  createdAt           DateTime @default(now())
-  baseline            CwlAllianceSeasonBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  linkedDiscordUserId String?
+  createdAt           DateTime                      @default(now())
+  baseline            CwlAllianceSeasonBaseline     @relation(fields: [baselineId], references: [id], onDelete: Cascade)
   baselineClan        CwlAllianceSeasonBaselineClan @relation(fields: [baselineClanId], references: [id], onDelete: Cascade)
 
   @@unique([baselineId, playerTag])
@@ -844,8 +844,8 @@ model CwlSeasonRosterState {
   clanTag                  String
   authoritativeRosterCount Int
   reconciledAt             DateTime
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
   eventInstance            CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag])
@@ -864,15 +864,15 @@ model CurrentCwlRound {
   roundState           String
   leagueGroupState     String?
   teamSize             Int?
-  attacksPerMember     Int      @default(1)
+  attacksPerMember     Int                     @default(1)
   preparationStartTime DateTime?
   startTime            DateTime?
   endTime              DateTime?
   sourceUpdatedAt      DateTime
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
   members              CwlRoundMemberCurrent[]
-  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  eventInstance        CwlEventInstance        @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag])
   @@unique([eventInstanceId, clanTag, roundDay])
@@ -889,15 +889,15 @@ model CwlRoundMemberCurrent {
   playerName       String
   mapPosition      Int?
   townHall         Int?
-  attacksUsed      Int      @default(0)
-  attacksAvailable Int      @default(1)
-  stars            Int      @default(0)
-  destruction      Float    @default(0)
-  subbedIn         Boolean  @default(true)
-  subbedOut        Boolean  @default(false)
+  attacksUsed      Int             @default(0)
+  attacksAvailable Int             @default(1)
+  stars            Int             @default(0)
+  destruction      Float           @default(0)
+  subbedIn         Boolean         @default(true)
+  subbedOut        Boolean         @default(false)
   sourceRoundState String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
   currentRound     CurrentCwlRound @relation(fields: [eventInstanceId, clanTag], references: [eventInstanceId, clanTag], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag, playerTag])
@@ -921,8 +921,8 @@ model CurrentCwlPrepSnapshot {
   endTime              DateTime?
   lineupJson           Json
   sourceUpdatedAt      DateTime
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
   eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag])
@@ -942,15 +942,15 @@ model CwlRoundHistory {
   roundState           String
   leagueGroupState     String?
   teamSize             Int?
-  attacksPerMember     Int      @default(1)
+  attacksPerMember     Int                     @default(1)
   preparationStartTime DateTime?
   startTime            DateTime?
   endTime              DateTime?
   sourceUpdatedAt      DateTime
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
   members              CwlRoundMemberHistory[]
-  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  eventInstance        CwlEventInstance        @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag, roundDay])
   @@index([eventInstanceId, clanTag, endTime])
@@ -967,14 +967,14 @@ model CwlRoundMemberHistory {
   playerName       String
   mapPosition      Int?
   townHall         Int?
-  attacksUsed      Int      @default(0)
-  attacksAvailable Int      @default(1)
-  stars            Int      @default(0)
-  destruction      Float    @default(0)
-  subbedIn         Boolean  @default(true)
-  subbedOut        Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  attacksUsed      Int             @default(0)
+  attacksAvailable Int             @default(1)
+  stars            Int             @default(0)
+  destruction      Float           @default(0)
+  subbedIn         Boolean         @default(true)
+  subbedOut        Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
   round            CwlRoundHistory @relation(fields: [eventInstanceId, clanTag, roundDay], references: [eventInstanceId, clanTag, roundDay], onDelete: Cascade)
 
   @@id([eventInstanceId, clanTag, roundDay, playerTag])
@@ -983,22 +983,22 @@ model CwlRoundMemberHistory {
 }
 
 model CwlRotationPlan {
-  id                   String   @id @default(cuid())
-  eventInstanceId      String
-  clanTag              String
-  season               String
-  version              Int
-  isActive             Boolean  @default(true)
-  rosterSize           Int
+  id                    String               @id @default(cuid())
+  eventInstanceId       String
+  clanTag               String
+  season                String
+  version               Int
+  isActive              Boolean              @default(true)
+  rosterSize            Int
   generatedFromRoundDay Int?
-  excludedPlayerTags   String[]
-  warningSummary       String?
-  metadata             Json?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  eventInstance        CwlEventInstance @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
-  eventClan            CwlEventClan @relation(fields: [eventInstanceId, clanTag], references: [eventInstanceId, clanTag], onDelete: Cascade)
-  days                 CwlRotationPlanDay[]
+  excludedPlayerTags    String[]
+  warningSummary        String?
+  metadata              Json?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  eventInstance         CwlEventInstance     @relation(fields: [eventInstanceId], references: [id], onDelete: Cascade)
+  eventClan             CwlEventClan         @relation(fields: [eventInstanceId, clanTag], references: [eventInstanceId, clanTag], onDelete: Cascade)
+  days                  CwlRotationPlanDay[]
 
   @@unique([eventInstanceId, clanTag, version])
   @@index([eventInstanceId, clanTag, isActive])
@@ -1006,15 +1006,15 @@ model CwlRotationPlan {
 }
 
 model CwlRotationPlanDay {
-  id         Int      @id @default(autoincrement())
+  id         Int                     @id @default(autoincrement())
   planId     String
   roundDay   Int
   lineupSize Int
-  locked     Boolean  @default(false)
+  locked     Boolean                 @default(false)
   metadata   Json?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  plan       CwlRotationPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  createdAt  DateTime                @default(now())
+  updatedAt  DateTime                @updatedAt
+  plan       CwlRotationPlan         @relation(fields: [planId], references: [id], onDelete: Cascade)
   members    CwlRotationPlanMember[]
 
   @@unique([planId, roundDay])
@@ -1022,30 +1022,30 @@ model CwlRotationPlanDay {
 }
 
 model CwlRotationPlanMember {
-  id             Int      @id @default(autoincrement())
-  planDayId      Int
-  playerTag      String
-  playerName     String
+  id              Int                @id @default(autoincrement())
+  planDayId       Int
+  playerTag       String
+  playerName      String
   assignmentOrder Int
-  manualOverride Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  planDay        CwlRotationPlanDay @relation(fields: [planDayId], references: [id], onDelete: Cascade)
+  manualOverride  Boolean            @default(false)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  planDay         CwlRotationPlanDay @relation(fields: [planDayId], references: [id], onDelete: Cascade)
 
   @@unique([planDayId, playerTag])
   @@index([playerTag])
 }
 
 model CwlRotationExport {
-  id                   String   @id @default(cuid())
-  season               String
-  fingerprint          String
-  spreadsheetId        String
-  spreadsheetUrl       String
-  tabCount             Int
+  id                     String   @id @default(cuid())
+  season                 String
+  fingerprint            String
+  spreadsheetId          String
+  spreadsheetUrl         String
+  tabCount               Int
   createdByDiscordUserId String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   @@unique([season, fingerprint])
   @@index([season, createdAt])
@@ -1118,7 +1118,6 @@ enum FwaTrackedClanWarRosterEffectiveWeightStatus {
   UNRESOLVED_TRAILING_ZERO
 }
 
-
 enum TrackedMessageFeatureType {
   FWA_BASE_SWAP
   SYNC_TIME_POST
@@ -1148,8 +1147,6 @@ enum RepWorkActivityType {
   MAIL_SENT
 }
 
-
-
 model TrackedMessage {
   id          String                    @id @default(cuid())
   guildId     String
@@ -1176,26 +1173,26 @@ model TrackedMessage {
 }
 
 model ScheduledSyncPost {
-  id                  String                  @id @default(cuid())
-  guildId             String
-  channelId           String
-  createdByUserId     String
-  roleId              String
-  syncTime            DateTime
-  publishAt           DateTime
-  timezone            String?
-  status              ScheduledSyncPostStatus @default(PENDING)
-  claimToken          String?
-  claimedAt           DateTime?
-  publishedMessageId  String?
-  publishedAt         DateTime?
-  attemptCount        Int                     @default(0)
-  lastAttemptAt       DateTime?
-  nextAttemptAt       DateTime?
-  failureReason       String?
-  failureCode         String?
-  createdAt           DateTime                @default(now())
-  updatedAt           DateTime                @updatedAt
+  id                 String                  @id @default(cuid())
+  guildId            String
+  channelId          String
+  createdByUserId    String
+  roleId             String
+  syncTime           DateTime
+  publishAt          DateTime
+  timezone           String?
+  status             ScheduledSyncPostStatus @default(PENDING)
+  claimToken         String?
+  claimedAt          DateTime?
+  publishedMessageId String?
+  publishedAt        DateTime?
+  attemptCount       Int                     @default(0)
+  lastAttemptAt      DateTime?
+  nextAttemptAt      DateTime?
+  failureReason      String?
+  failureCode        String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
 
   @@unique([guildId, syncTime])
   @@index([guildId, status, publishAt])
@@ -1218,7 +1215,7 @@ model TrackedMessageClaim {
 }
 
 model RepWorkActivityEvent {
-  id                     String               @id @default(cuid())
+  id                     String              @id @default(cuid())
   guildId                String
   activityType           RepWorkActivityType
   discordUserId          String
@@ -1232,9 +1229,9 @@ model RepWorkActivityEvent {
   eventAt                DateTime
   prepTimeLeftSeconds    Int?
   metadata               Json?
-  dedupeKey              String               @unique
-  createdAt              DateTime             @default(now())
-  updatedAt              DateTime             @updatedAt
+  dedupeKey              String              @unique
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
   @@index([guildId, eventAt])
   @@index([guildId, discordUserId, eventAt])
@@ -1251,40 +1248,41 @@ enum RosterLifecycleState {
 }
 
 model Roster {
-  id                   String               @id @default(cuid())
-  guildId              String
-  rosterType           String
-  rosterCategory       String?
-  title                String
-  clanTag              String?
-  startsAt             DateTime?
-  endsAt               DateTime?
-  timezone             String
-  displayTimezone      String?
-  maxMembers           Int?
-  maxAccountsPerUser    Int?
-  minTownhall          Int?
-  maxTownhall          Int?
-  minimumWeight        Int?
-  requiredSignupRoleId String?
-  noRoleSignupLimit    Int                  @default(0)
-  rosterRoleId         String?
-  allowMultiSignup     Boolean              @default(true)
-  sortBy               String?
-  displayColumns       String?
-  importMembers        Boolean              @default(false)
-  postButtonMode       String               @default("standard")
-  lifecycleState       RosterLifecycleState @default(OPEN)
-  postedChannelId      String?
-  postedMessageId      String?              @unique
-  postedMessageUrl     String?
-  postedAt             DateTime?
+  id                     String               @id @default(cuid())
+  guildId                String
+  rosterType             String
+  rosterCategory         String?
+  title                  String
+  clanTag                String?
+  startsAt               DateTime?
+  endsAt                 DateTime?
+  visitorSignupOpensAt   DateTime?
+  timezone               String
+  displayTimezone        String?
+  maxMembers             Int?
+  maxAccountsPerUser     Int?
+  minTownhall            Int?
+  maxTownhall            Int?
+  minimumWeight          Int?
+  requiredSignupRoleId   String?
+  noRoleSignupLimit      Int                  @default(0)
+  rosterRoleId           String?
+  allowMultiSignup       Boolean              @default(true)
+  sortBy                 String?
+  displayColumns         String?
+  importMembers          Boolean              @default(false)
+  postButtonMode         String               @default("standard")
+  lifecycleState         RosterLifecycleState @default(OPEN)
+  postedChannelId        String?
+  postedMessageId        String?              @unique
+  postedMessageUrl       String?
+  postedAt               DateTime?
   createdByDiscordUserId String?
   updatedByDiscordUserId String?
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  groups               RosterGroup[]
-  signups              RosterSignup[]
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  groups                 RosterGroup[]
+  signups                RosterSignup[]
 
   @@index([guildId, rosterType, lifecycleState])
   @@index([guildId, clanTag])
@@ -1292,15 +1290,15 @@ model Roster {
 }
 
 model RosterGroup {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   rosterId    String
   key         String
   name        String
   description String?
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  roster      Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  sortOrder   Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  roster      Roster         @relation(fields: [rosterId], references: [id], onDelete: Cascade)
   signups     RosterSignup[]
 
   @@unique([rosterId, key])
@@ -1308,16 +1306,16 @@ model RosterGroup {
 }
 
 model RosterSignup {
-  id            String   @id @default(cuid())
+  id            String       @id @default(cuid())
   rosterId      String
   groupId       String?
   playerTag     String
   playerName    String?
   discordUserId String
-  signedUpAt    DateTime @default(now())
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  roster        Roster   @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  signedUpAt    DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  roster        Roster       @relation(fields: [rosterId], references: [id], onDelete: Cascade)
   group         RosterGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
 
   @@unique([rosterId, playerTag])
@@ -1380,32 +1378,32 @@ model RecruitmentCooldown {
 }
 
 model RecruitmentCountdownReminderPreference {
-  guildId         String
-  userId          String
+  guildId          String
+  userId           String
   remindersEnabled Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@id([guildId, userId])
 }
 
 model RecruitmentReminderRule {
-  id               String                    @id @default(cuid())
-  guildId          String
-  discordUserId    String
-  clanTag          String
-  platform         String
-  timezone         String
-  nextReminderAt   DateTime
-  isActive         Boolean                   @default(true)
-  lastSentAt       DateTime?
-  clanNameSnapshot String?
-  templateSubject  String?
-  templateBody     String
+  id                String                        @id @default(cuid())
+  guildId           String
+  discordUserId     String
+  clanTag           String
+  platform          String
+  timezone          String
+  nextReminderAt    DateTime
+  isActive          Boolean                       @default(true)
+  lastSentAt        DateTime?
+  clanNameSnapshot  String?
+  templateSubject   String?
+  templateBody      String
   templateImageUrls String[]
-  createdAt        DateTime                  @default(now())
-  updatedAt        DateTime                  @updatedAt
-  deliveries       RecruitmentReminderDelivery[]
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+  deliveries        RecruitmentReminderDelivery[]
 
   @@unique([guildId, discordUserId, clanTag, platform])
   @@index([guildId, discordUserId, isActive])
@@ -1414,14 +1412,14 @@ model RecruitmentReminderRule {
 }
 
 model RecruitmentReminderDelivery {
-  id               String                    @id @default(cuid())
-  reminderRuleId   String
-  scheduledFor     DateTime
-  sentAt           DateTime?
-  status           String
-  errorDetails     String?
-  createdAt        DateTime                  @default(now())
-  reminderRule     RecruitmentReminderRule   @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
+  id             String                  @id @default(cuid())
+  reminderRuleId String
+  scheduledFor   DateTime
+  sentAt         DateTime?
+  status         String
+  errorDetails   String?
+  createdAt      DateTime                @default(now())
+  reminderRule   RecruitmentReminderRule @relation(fields: [reminderRuleId], references: [id], onDelete: Cascade)
 
   @@unique([reminderRuleId, scheduledFor])
   @@index([status, createdAt])
@@ -1429,21 +1427,21 @@ model RecruitmentReminderDelivery {
 }
 
 model WeightInputDeferment {
-  id                    String   @id @default(cuid())
-  guildId               String
-  scopeKey              String
-  clanTag               String?
-  playerTag             String
-  deferredWeight        Int
-  status                String   @default("open")
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  resolvedAt            DateTime?
-  clearedAt             DateTime?
-  reminded48At          DateTime?
-  escalated5dAt         DateTime?
-  summarized7dAt        DateTime?
-  processingLockToken   String?
+  id                      String    @id @default(cuid())
+  guildId                 String
+  scopeKey                String
+  clanTag                 String?
+  playerTag               String
+  deferredWeight          Int
+  status                  String    @default("open")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  resolvedAt              DateTime?
+  clearedAt               DateTime?
+  reminded48At            DateTime?
+  escalated5dAt           DateTime?
+  summarized7dAt          DateTime?
+  processingLockToken     String?
   processingLockExpiresAt DateTime?
 
   @@unique([scopeKey, playerTag])
@@ -1488,7 +1486,7 @@ model CurrentWar {
   guildId           String
   clanTag           String
   warId             Int?
-  syncNum    Int?
+  syncNum           Int?
   channelId         String
   notify            Boolean       @default(true)
   pingRole          Boolean       @default(true)
@@ -1500,14 +1498,14 @@ model CurrentWar {
   matchType         WarMatchType?
   warStartFwaPoints Int?
   warEndFwaPoints   Int?
-  clanStars     Int?
-  opponentStars Int?
-  state         String?
+  clanStars         Int?
+  opponentStars     Int?
+  state             String?
   prepStartTime     DateTime?
   startTime         DateTime?
   endTime           DateTime?
-  opponentTag   String?
-  opponentName  String?
+  opponentTag       String?
+  opponentName      String?
   clanName          String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -1520,14 +1518,14 @@ model CurrentWar {
 }
 
 model ClanNotifyConfig {
-  clanTag     String
-  guildId     String
-  channelId   String
-  roleId      String?
-  pingEnabled Boolean @default(true)
-  embedEnabled Boolean @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  clanTag      String
+  guildId      String
+  channelId    String
+  roleId       String?
+  pingEnabled  Boolean  @default(true)
+  embedEnabled Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([guildId, clanTag])
   @@index([guildId])
@@ -1553,19 +1551,20 @@ model ClanWarHistory {
   opponentTag         String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
+
   @@unique([warStartTime, clanTag, opponentTag])
   @@index([clanTag, warEndTime])
 }
 
 model WarLookup {
-  warId       String   @id
+  warId       String    @id
   clanTag     String
   opponentTag String?
   startTime   DateTime
   endTime     DateTime?
   result      String?
   payload     Json
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([clanTag, startTime])
 }
@@ -1595,25 +1594,25 @@ model ClanPostedMessage {
   configHash String?
   createdAt  DateTime @default(now())
 
+  @@unique([guildId, clanTag, warId, type, event])
   @@index([guildId, clanTag])
   @@index([clanTag, warId])
-  @@unique([guildId, clanTag, warId, type, event])
 }
 
 model WarMailLifecycle {
-  id        String   @id @default(cuid())
-  guildId   String
-  clanTag   String
-  warId     Int?
+  id           String                 @id @default(cuid())
+  guildId      String
+  clanTag      String
+  warId        Int?
   warStartTime DateTime?
-  opponentTag String?
-  status    WarMailLifecycleStatus @default(NOT_POSTED)
-  messageId String?
-  channelId String?
-  postedAt  DateTime?
-  deletedAt DateTime?
-  createdAt DateTime              @default(now())
-  updatedAt DateTime              @updatedAt
+  opponentTag  String?
+  status       WarMailLifecycleStatus @default(NOT_POSTED)
+  messageId    String?
+  channelId    String?
+  postedAt     DateTime?
+  deletedAt    DateTime?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
 
   @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag, status])
@@ -1622,58 +1621,58 @@ model WarMailLifecycle {
 }
 
 model ClanPointsSync {
-  id             String   @id @default(cuid())
-  guildId        String
-  clanTag        String
-  warId          String?
-  warStartTime   DateTime
-  syncNum        Int
-  opponentTag    String
-  clanPoints     Int
-  opponentPoints Int
-  outcome        String?
-  isFwa          Boolean
-  syncFetchedAt  DateTime @default(now())
+  id                             String    @id @default(cuid())
+  guildId                        String
+  clanTag                        String
+  warId                          String?
+  warStartTime                   DateTime
+  syncNum                        Int
+  opponentTag                    String
+  clanPoints                     Int
+  opponentPoints                 Int
+  outcome                        String?
+  isFwa                          Boolean
+  syncFetchedAt                  DateTime  @default(now())
   lastSuccessfulPointsApiFetchAt DateTime?
   lastFetchReason                String?
-  confirmedByClanMail            Boolean  @default(false)
-  needsValidation                Boolean  @default(true)
+  confirmedByClanMail            Boolean   @default(false)
+  needsValidation                Boolean   @default(true)
   lastKnownPoints                Int?
   lastKnownMatchType             String?
   lastKnownOutcome               String?
   lastKnownSyncNumber            Int?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
 
+  @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag])
   @@index([clanTag, warStartTime])
   @@index([guildId, clanTag, warId])
   @@index([guildId, clanTag, warStartTime(sort: Desc)])
-  @@unique([guildId, clanTag, warStartTime])
 }
 
 model ClanWarParticipation {
-  id                String   @id @default(cuid())
-  guildId           String
-  warId             String
-  clanTag           String
-  opponentTag       String?
-  playerTag         String
-  playerName        String?
-  playerPosition    Int?
-  townHall          Int?
-  attacksUsed       Int
-  attacksMissed     Int
-  starsEarned       Int
-  trueStars         Int
-  missedBoth        Boolean
-  firstAttackAt     DateTime?
+  id                 String    @id @default(cuid())
+  guildId            String
+  warId              String
+  clanTag            String
+  opponentTag        String?
+  playerTag          String
+  playerName         String?
+  playerPosition     Int?
+  townHall           Int?
+  attacksUsed        Int
+  attacksMissed      Int
+  starsEarned        Int
+  trueStars          Int
+  missedBoth         Boolean
+  firstAttackAt      DateTime?
   attackDelayMinutes Int?
   attackWindowMissed Boolean?
-  matchType         String
-  warStartTime      DateTime
-  warEndTime        DateTime?
-  createdAt         DateTime @default(now())
+  matchType          String
+  warStartTime       DateTime
+  warEndTime         DateTime?
+  createdAt          DateTime  @default(now())
 
   @@unique([guildId, warId, playerTag])
   @@index([guildId, clanTag, warStartTime])
@@ -1683,18 +1682,18 @@ model ClanWarParticipation {
 }
 
 model ClanWarPlan {
-  id                          String      @id @default(cuid())
+  id                          String       @id @default(cuid())
   guildId                     String
   clanTag                     String
   scope                       WarPlanScope @default(CUSTOM)
   matchType                   WarMatchType
   outcome                     String
-  loseStyle                   String      @default("ANY")
+  loseStyle                   String       @default("ANY")
   planText                    String
   nonMirrorTripleMinClanStars Int?
   allBasesOpenHoursLeft       Int?
-  createdAt                   DateTime    @default(now())
-  updatedAt                   DateTime    @updatedAt
+  createdAt                   DateTime     @default(now())
+  updatedAt                   DateTime     @updatedAt
 
   @@unique([guildId, scope, clanTag, matchType, outcome, loseStyle])
   @@index([guildId, scope, clanTag, matchType])
@@ -1712,37 +1711,37 @@ model FwaLayouts {
 }
 
 model FwaClanCatalog {
-  clanTag           String   @id
-  name              String
-  level             Int?
-  points            Int?
-  type              String?
-  location          String?
-  requiredTrophies  Int?
-  warFrequency      String?
-  winStreak         Int?
-  wins              Int?
-  ties              Int?
-  losses            Int?
-  isWarLogPublic    Boolean?
-  imageUrl          String?
-  description       String?
-  th18Count         Int?
-  th17Count         Int?
-  th16Count         Int?
-  th15Count         Int?
-  th14Count         Int?
-  th13Count         Int?
-  th12Count         Int?
-  th11Count         Int?
-  th10Count         Int?
-  th9Count          Int?
-  th8Count          Int?
-  thLowCount        Int?
-  estimatedWeight   Int?
-  firstSeenAt       DateTime @default(now())
-  lastSeenAt        DateTime
-  lastSyncedAt      DateTime
+  clanTag          String   @id
+  name             String
+  level            Int?
+  points           Int?
+  type             String?
+  location         String?
+  requiredTrophies Int?
+  warFrequency     String?
+  winStreak        Int?
+  wins             Int?
+  ties             Int?
+  losses           Int?
+  isWarLogPublic   Boolean?
+  imageUrl         String?
+  description      String?
+  th18Count        Int?
+  th17Count        Int?
+  th16Count        Int?
+  th15Count        Int?
+  th14Count        Int?
+  th13Count        Int?
+  th12Count        Int?
+  th11Count        Int?
+  th10Count        Int?
+  th9Count         Int?
+  th8Count         Int?
+  thLowCount       Int?
+  estimatedWeight  Int?
+  firstSeenAt      DateTime @default(now())
+  lastSeenAt       DateTime
+  lastSyncedAt     DateTime
 
   @@index([lastSeenAt])
   @@index([lastSyncedAt])
@@ -1800,28 +1799,28 @@ model ExternalPlayerWeightCurrent {
 }
 
 model FwaWarMemberCurrent {
-  clanTag                 String
-  playerTag               String
-  playerName              String
-  position                Int?
-  townHall                Int?
-  weight                  Int?
-  opponentTag             String?
-  opponentName            String?
-  attacks                 Int?
-  defender1Tag            String?
-  defender1Name           String?
-  defender1TownHall       Int?
-  defender1Position       Int?
-  stars1                  Int?
-  destructionPercentage1  Float?
-  defender2Tag            String?
-  defender2Name           String?
-  defender2TownHall       Int?
-  defender2Position       Int?
-  stars2                  Int?
-  destructionPercentage2  Float?
-  sourceSyncedAt          DateTime
+  clanTag                String
+  playerTag              String
+  playerName             String
+  position               Int?
+  townHall               Int?
+  weight                 Int?
+  opponentTag            String?
+  opponentName           String?
+  attacks                Int?
+  defender1Tag           String?
+  defender1Name          String?
+  defender1TownHall      Int?
+  defender1Position      Int?
+  stars1                 Int?
+  destructionPercentage1 Float?
+  defender2Tag           String?
+  defender2Name          String?
+  defender2TownHall      Int?
+  defender2Position      Int?
+  stars2                 Int?
+  destructionPercentage2 Float?
+  sourceSyncedAt         DateTime
 
   @@id([clanTag, playerTag])
   @@index([clanTag])
@@ -1831,18 +1830,18 @@ model FwaWarMemberCurrent {
 }
 
 model FwaTrackedClanWarRosterCurrent {
-  clanTag              String   @id
+  clanTag              String                                 @id
   clanName             String?
   opponentTag          String?
   opponentName         String?
   rosterSize           Int
   totalRawWeight       Int?
   totalEffectiveWeight Int?
-  hasUnresolvedWeights Boolean  @default(false)
+  hasUnresolvedWeights Boolean                                @default(false)
   observedAt           DateTime
   sourceUpdatedAt      DateTime?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime                               @default(now())
+  updatedAt            DateTime                               @updatedAt
   members              FwaTrackedClanWarRosterMemberCurrent[]
 
   @@index([observedAt])
@@ -1850,19 +1849,19 @@ model FwaTrackedClanWarRosterCurrent {
 }
 
 model FwaTrackedClanWarRosterMemberCurrent {
-  clanTag                String
-  position               Int
-  playerTag              String
-  playerName             String
-  townHall               Int
-  rawWeight              Int
-  effectiveWeight        Int?
-  effectiveWeightStatus  FwaTrackedClanWarRosterEffectiveWeightStatus
-  opponentTag            String?
-  opponentName           String?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  roster                 FwaTrackedClanWarRosterCurrent @relation(fields: [clanTag], references: [clanTag], onDelete: Cascade)
+  clanTag               String
+  position              Int
+  playerTag             String
+  playerName            String
+  townHall              Int
+  rawWeight             Int
+  effectiveWeight       Int?
+  effectiveWeightStatus FwaTrackedClanWarRosterEffectiveWeightStatus
+  opponentTag           String?
+  opponentName          String?
+  createdAt             DateTime                                     @default(now())
+  updatedAt             DateTime                                     @updatedAt
+  roster                FwaTrackedClanWarRosterCurrent               @relation(fields: [clanTag], references: [clanTag], onDelete: Cascade)
 
   @@id([clanTag, playerTag])
   @@unique([clanTag, position])
@@ -1871,46 +1870,46 @@ model FwaTrackedClanWarRosterMemberCurrent {
 }
 
 model HeatMapRef {
-  weightMinInclusive Int
-  weightMaxInclusive Int
-  th18Count          Int
-  th17Count          Int
-  th16Count          Int
-  th15Count          Int
-  th14Count          Int
-  th13Count          Int
-  th12Count          Int
-  th11Count          Int
-  th10OrLowerCount   Int
-  contributingClanCount Int @default(0)
-  sourceVersion      String?
-  refreshedAt        DateTime
+  weightMinInclusive    Int
+  weightMaxInclusive    Int
+  th18Count             Int
+  th17Count             Int
+  th16Count             Int
+  th15Count             Int
+  th14Count             Int
+  th13Count             Int
+  th12Count             Int
+  th11Count             Int
+  th10OrLowerCount      Int
+  contributingClanCount Int      @default(0)
+  sourceVersion         String?
+  refreshedAt           DateTime
 
   @@id([weightMinInclusive, weightMaxInclusive])
 }
 
 model FwaClanWarLogCurrent {
-  id                          String   @id @default(cuid())
-  clanTag                     String
-  endTime                     DateTime
-  searchTime                  DateTime?
-  result                      String?
-  teamSize                    Int
-  clanName                    String?
-  clanLevel                   Int?
-  clanStars                   Int?
-  clanDestructionPercentage   Float?
-  clanAttacks                 Int?
-  clanExpEarned               Int?
-  opponentTag                 String
-  opponentName                String?
-  opponentLevel               Int?
-  opponentStars               Int?
+  id                            String    @id @default(cuid())
+  clanTag                       String
+  endTime                       DateTime
+  searchTime                    DateTime?
+  result                        String?
+  teamSize                      Int
+  clanName                      String?
+  clanLevel                     Int?
+  clanStars                     Int?
+  clanDestructionPercentage     Float?
+  clanAttacks                   Int?
+  clanExpEarned                 Int?
+  opponentTag                   String
+  opponentName                  String?
+  opponentLevel                 Int?
+  opponentStars                 Int?
   opponentDestructionPercentage Float?
-  opponentInfo                String?
-  synced                      Boolean?
-  matched                     Boolean?
-  sourceSyncedAt              DateTime
+  opponentInfo                  String?
+  synced                        Boolean?
+  matched                       Boolean?
+  sourceSyncedAt                DateTime
 
   @@unique([clanTag, endTime, opponentTag, teamSize])
   @@index([clanTag])
@@ -1920,15 +1919,15 @@ model FwaClanWarLogCurrent {
 }
 
 model FwaClanMatchStatsCurrent {
-  clanTag              String   @id
-  fwaWarCount          Int
-  blacklistedWarCount  Int
-  friendlyWarCount     Int
-  unknownWarCount      Int
-  successWarCount      Int
-  evaluatedWarCount    Int
-  matchRate            Float
-  lastComputedAt       DateTime
+  clanTag             String   @id
+  fwaWarCount         Int
+  blacklistedWarCount Int
+  friendlyWarCount    Int
+  unknownWarCount     Int
+  successWarCount     Int
+  evaluatedWarCount   Int
+  matchRate           Float
+  lastComputedAt      DateTime
 
   @@index([lastComputedAt])
 }
@@ -1968,8 +1967,8 @@ model BlacklistMatchSample {
   th11PlusCount         Int
   sampleQuality         String
   confidence            String
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@id([sourceClanTag, opponentBlacklistTag, warId])
   @@index([opponentBlacklistTag, warStartTime])
@@ -1978,40 +1977,40 @@ model BlacklistMatchSample {
 }
 
 model BlacklistHeatMapRef {
-  weightMinInclusive   Int
-  weightMaxInclusive   Int
-  th18Count            Int
-  th17Count            Int
-  th16Count            Int
-  th15Count            Int
-  th14Count            Int
-  th13Count            Int
-  th12Count            Int
-  th11PlusCount        Int
-  sampleCount          Int
-  uniqueSourceClanCount Int
-  uniqueOpponentCount  Int
+  weightMinInclusive      Int
+  weightMaxInclusive      Int
+  th18Count               Int
+  th17Count               Int
+  th16Count               Int
+  th15Count               Int
+  th14Count               Int
+  th13Count               Int
+  th12Count               Int
+  th11PlusCount           Int
+  sampleCount             Int
+  uniqueSourceClanCount   Int
+  uniqueOpponentCount     Int
   totalMissingWeightCount Int
-  confidenceLabel      String
-  confidenceScore      Int
-  generatedAt          DateTime
+  confidenceLabel         String
+  confidenceScore         Int
+  generatedAt             DateTime
 
   @@id([weightMinInclusive, weightMaxInclusive])
   @@index([generatedAt])
 }
 
 model MaintenanceWindowRuntimeState {
-  guildId           String   @id
-  active            Boolean  @default(false)
-  detectedAt        DateTime?
-  lastObservedAt    DateTime?
-  lastOverAt        DateTime?
-  detectedClanTag   String?
+  guildId            String    @id
+  active             Boolean   @default(false)
+  detectedAt         DateTime?
+  lastObservedAt     DateTime?
+  lastOverAt         DateTime?
+  detectedClanTag    String?
   detectedStatusCode Int?
-  lastChannelId     String?
-  lastChannelSource String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  lastChannelId      String?
+  lastChannelSource  String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 }
 
 model FwaFeedSyncState {
@@ -2038,35 +2037,35 @@ model FwaFeedSyncState {
 }
 
 model FwaClanWarsWatchState {
-  clanTag                String   @id
+  clanTag                 String    @id
   syncTimeSourceMessageId String?
-  nextSyncTimeAt         DateTime?
-  pollWindowStartAt      DateTime?
-  pollingActive          Boolean  @default(false)
-  lastDetectedWarEndAt   DateTime?
-  lastAcquiredUpdateAt   DateTime?
+  nextSyncTimeAt          DateTime?
+  pollWindowStartAt       DateTime?
+  pollingActive           Boolean   @default(false)
+  lastDetectedWarEndAt    DateTime?
+  lastAcquiredUpdateAt    DateTime?
   lastObservedContentHash String?
-  currentWarCycleKey     String?
-  stopReason             String?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  currentWarCycleKey      String?
+  stopReason              String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@index([pollingActive, pollWindowStartAt, nextSyncTimeAt])
   @@index([lastAcquiredUpdateAt])
 }
 
 model FwaFeedCursor {
-  feedType    FwaFeedType @id
+  feedType     FwaFeedType @id
   lastScopeKey String?
-  lastRunAt   DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  lastRunAt    DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 }
 
 model ApiUsage {
-  endpoint String   @id
-  lastCall DateTime
-  callCount Int     @default(0)
+  endpoint  String   @id
+  lastCall  DateTime
+  callCount Int      @default(0)
 }
 
 model TelemetryCommandAggregate {
@@ -2159,24 +2158,24 @@ model TelemetryStageAggregate {
 }
 
 model TelemetryReportSchedule {
-  id                   String   @id @default(cuid())
-  guildId              String   @unique
-  channelId            String
-  cadenceHours         Int      @default(24)
-  timezone             String   @default("UTC")
-  enabled              Boolean  @default(true)
+  id                    String    @id @default(cuid())
+  guildId               String    @unique
+  channelId             String
+  cadenceHours          Int       @default(24)
+  timezone              String    @default("UTC")
+  enabled               Boolean   @default(true)
   lastPostedWindowStart DateTime?
   lastPostedWindowEnd   DateTime?
-  lastPostedAt         DateTime?
-  lastMessageId        String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  lastPostedAt          DateTime?
+  lastMessageId         String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([enabled, updatedAt])
 }
 
 model TelemetryReportRun {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   guildId      String
   channelId    String
   windowStart  DateTime
@@ -2187,12 +2186,11 @@ model TelemetryReportRun {
   messageId    String?
   errorCode    String?
   errorMessage String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   postedAt     DateTime?
 
   @@unique([guildId, windowStart, windowEnd])
   @@index([guildId, status, createdAt])
   @@index([status, createdAt])
 }
-
