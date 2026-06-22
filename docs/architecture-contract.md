@@ -137,6 +137,7 @@ Each domain concept must have exactly one authoritative owner.
 | CWL event-owned planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Player-to-Discord links | PlayerLink |
+| Guild-scoped roster default columns | RosterGuildConfig |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
 | Ended-war player participation | ClanWarParticipation |

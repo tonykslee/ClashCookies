@@ -33,8 +33,12 @@ import { autocompleteSyncTimeZones, normalizeSyncTimeZone } from "../services/sy
 import {
   ROSTER_LIFECYCLE_STATE,
   ROSTER_DISPLAY_COLUMNS,
+  ROSTER_DISPLAY_COLUMN_ORDER,
+  ROSTER_DEFAULT_DISPLAY_COLUMNS,
   ROSTER_SORT_BY,
   parseRosterDateTimeInTimeZone,
+  parseRosterDisplayColumnsInput,
+  resolveRosterDisplayColumns,
   buildRosterPostSettingsMenuCustomId,
   isRosterPostSettingsMenuCustomId,
   parseRosterPostRefreshButtonCustomId,
@@ -252,6 +256,20 @@ function describeRosterDisplayColumns(columns: string[] | null | undefined): str
     })
     .filter((value) => value !== null) as string[];
   return labels.length > 0 ? labels.join(" > ") : "default";
+}
+
+function formatRosterDisplayColumnKeys(columns: readonly string[]): string {
+  return columns.map((column) => `\`${column}\``).join(", ");
+}
+
+function formatRosterDisplayColumnLayout(columns: readonly string[]): string {
+  return columns.map((column) => String(column ?? "").trim().toLowerCase()).join(" | ");
+}
+
+function formatRosterDisplayColumnSource(source: "server_override" | "built_in" | "roster_override"): string {
+  if (source === "server_override") return "Server override";
+  if (source === "roster_override") return "Roster override";
+  return "Built-in";
 }
 
 function normalizeRosterCustomizeSortByChoice(input: string | null | undefined): string | null {
@@ -1058,6 +1076,10 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
   if (!view) return null;
 
   const roster = view.roster;
+  const resolvedColumns = resolveRosterDisplayColumns({
+    rosterDisplayColumns: roster.displayColumns,
+    guildDisplayColumns: view.guildDisplayColumns ?? null,
+  });
   const lines = [
     `${roster.title}${roster.rosterCategory ? ` (${roster.rosterCategory})` : ""}`,
     `Clan: ${roster.clanTag ?? "-"}`,
@@ -1078,7 +1100,7 @@ async function buildRosterInfoText(rosterId: string): Promise<string | null> {
     }),
     `Roster role: ${roster.rosterRoleId ? `<@&${roster.rosterRoleId}>` : "-"}`,
     `Post buttons: ${roster.postButtonMode}`,
-    `Columns: ${describeRosterDisplayColumns(roster.displayColumns)}`,
+    `Columns: ${describeRosterDisplayColumns(resolvedColumns.columns)}`,
     `Sort: ${describeRosterSortByChoice(roster.sortBy)}`,
   ];
   return lines.join("\n");
@@ -1144,14 +1166,13 @@ function parseRosterPostCustomizeMenuCustomId(
   return rosterId ? { kind, rosterId } : null;
 }
 
-function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenuBuilder {
-  const selectedColumns =
-    normalizeRosterCustomizeColumns(roster.displayColumns) ?? [
-      ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
-      ROSTER_DISPLAY_COLUMNS.PLAYER_NAME,
-      ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
-      ROSTER_DISPLAY_COLUMNS.CLAN_NAME,
-    ];
+function buildRosterCustomizeColumnsMenu(
+  roster: RosterRecord,
+  selectedColumns: string[] | null | undefined,
+): StringSelectMenuBuilder {
+  const normalizedSelectedColumns =
+    normalizeRosterCustomizeColumns(selectedColumns) ??
+    [...ROSTER_DEFAULT_DISPLAY_COLUMNS];
   const options = [
     { label: "TH level", value: ROSTER_DISPLAY_COLUMNS.TH_LEVEL },
     { label: "Townhall Icons", value: ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS },
@@ -1177,7 +1198,7 @@ function buildRosterCustomizeColumnsMenu(roster: RosterRecord): StringSelectMenu
       options.map((option) => ({
         label: option.label,
         value: option.value,
-        default: selectedColumns.includes(option.value),
+        default: normalizedSelectedColumns.includes(option.value),
       })),
     );
 }
@@ -1216,7 +1237,11 @@ async function buildRosterCustomizePanel(rosterId: string): Promise<{
   const view = await rosterService.getRosterView(rosterId);
   if (!view) return null;
 
-  const columns = describeRosterDisplayColumns(view.roster.displayColumns);
+  const resolvedColumns = resolveRosterDisplayColumns({
+    rosterDisplayColumns: view.roster.displayColumns,
+    guildDisplayColumns: view.guildDisplayColumns ?? null,
+  });
+  const columns = describeRosterDisplayColumns(resolvedColumns.columns);
   const sortBy = describeRosterSortByChoice(view.roster.sortBy);
   return {
     embed: new EmbedBuilder()
@@ -1233,7 +1258,9 @@ async function buildRosterCustomizePanel(rosterId: string): Promise<{
         ].join("\n"),
       ),
     components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(buildRosterCustomizeColumnsMenu(view.roster)),
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        buildRosterCustomizeColumnsMenu(view.roster, resolvedColumns.columns),
+      ),
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(buildRosterCustomizeSortMenu(view.roster)),
     ],
   };
@@ -3710,6 +3737,74 @@ async function handleRosterListSubcommand(interaction: ChatInputCommandInteracti
   });
 }
 
+async function handleRosterShowSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const result = await rosterService.getRosterGuildDisplayColumns({
+    guildId: interaction.guildId,
+  });
+  const sourceLabel = formatRosterDisplayColumnSource(result.source);
+  await interaction.editReply({
+    content: [
+      `Source: ${sourceLabel}`,
+      `Current layout: \`${formatRosterDisplayColumnLayout(result.columns)}\``,
+      `Available keys: ${formatRosterDisplayColumnKeys(ROSTER_DISPLAY_COLUMN_ORDER)}`,
+      `Built-in layout: \`${formatRosterDisplayColumnLayout(ROSTER_DEFAULT_DISPLAY_COLUMNS)}\``,
+    ].join("\n"),
+  });
+}
+
+async function handleRosterSetSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const parsedColumns = parseRosterDisplayColumnsInput(interaction.options.getString("columns", true));
+  if (!parsedColumns.ok) {
+    await interaction.editReply(parsedColumns.error);
+    return;
+  }
+
+  const result = await rosterService.setRosterGuildDisplayColumns({
+    guildId: interaction.guildId,
+    displayColumns: parsedColumns.columns,
+    updatedByDiscordUserId: interaction.user.id,
+  });
+  console.info(
+    `[roster] guild_display_columns action=set guildId=${interaction.guildId} actorId=${interaction.user.id} columnCount=${result.columns.length}`,
+  );
+  await interaction.editReply({
+    content: [
+      `Saved layout: \`${formatRosterDisplayColumnLayout(result.columns)}\``,
+      `Source: ${formatRosterDisplayColumnSource(result.source)}`,
+    ].join("\n"),
+  });
+}
+
+async function handleRosterResetSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  const result = await rosterService.resetRosterGuildDisplayColumns({
+    guildId: interaction.guildId,
+  });
+  console.info(
+    `[roster] guild_display_columns action=reset guildId=${interaction.guildId} actorId=${interaction.user.id} columnCount=${result.columns.length}`,
+  );
+  await interaction.editReply({
+    content: [
+      `Reset to built-in layout: \`${formatRosterDisplayColumnLayout(result.columns)}\``,
+      `Source: ${formatRosterDisplayColumnSource(result.source)}`,
+    ].join("\n"),
+  });
+}
+
 async function handleRosterPostSubcommand(
   interaction: ChatInputCommandInteraction,
   cocService: CoCService,
@@ -4805,7 +4900,7 @@ async function autocompleteRosterManagePlayers(interaction: AutocompleteInteract
 
 export const Roster: Command = {
   name: "roster",
-  description: "Create, list, post, and manage persisted rosters",
+  description: "Create, list, post, configure, and manage persisted rosters",
   options: [
     {
       name: "create",
@@ -4966,6 +5061,29 @@ export const Roster: Command = {
           autocomplete: true,
         },
       ],
+    },
+    {
+      name: "show",
+      description: "Show the guild default roster columns",
+      type: ApplicationCommandOptionType.Subcommand,
+    },
+    {
+      name: "set",
+      description: "Set the guild default roster columns",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "columns",
+          description: "Comma-separated roster column keys",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+        },
+      ],
+    },
+    {
+      name: "reset",
+      description: "Reset the guild default roster columns",
+      type: ApplicationCommandOptionType.Subcommand,
     },
     {
       name: "post",
@@ -5285,6 +5403,18 @@ export const Roster: Command = {
       }
       if (subcommand === "list") {
         await handleRosterListSubcommand(interaction);
+        return;
+      }
+      if (subcommand === "show") {
+        await handleRosterShowSubcommand(interaction);
+        return;
+      }
+      if (subcommand === "set") {
+        await handleRosterSetSubcommand(interaction);
+        return;
+      }
+      if (subcommand === "reset") {
+        await handleRosterResetSubcommand(interaction);
         return;
       }
       if (subcommand === "post") {

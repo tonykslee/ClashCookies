@@ -55,6 +55,14 @@ describe("link permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:refresh");
   });
 
+  it("exposes delayed signup role management as explicit permission targets", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:delayed-signup-role");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:delayed-signup-role:add");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:delayed-signup-role:remove");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:delayed-signup-role:list");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("autorole:delayed-signup-role:clear");
+  });
+
   it("allows non-admin users for verify and status by default", async () => {
     const settings = {
       get: vi.fn().mockResolvedValue(null),

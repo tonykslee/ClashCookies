@@ -18,6 +18,11 @@ const prismaMock = vi.hoisted(() => ({
     update: vi.fn(),
     delete: vi.fn(),
   },
+  rosterGuildConfig: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   rosterGroup: {
     createMany: vi.fn(),
     findMany: vi.fn(),
@@ -246,6 +251,7 @@ function makeRosterRecord(overrides: Record<string, unknown> = {}): any {
     clanTag: "#2QG2C08UP",
     startsAt: new Date("2026-04-20T00:00:00.000Z"),
     endsAt: null,
+    visitorSignupOpensAt: null,
     timezone: "America/Los_Angeles",
     displayTimezone: "America/Los_Angeles",
     maxMembers: null,
@@ -341,11 +347,18 @@ vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", async () => {
 
 import {
   ROSTER_DEFAULT_GROUPS,
+  ROSTER_DEFAULT_DISPLAY_COLUMNS,
   buildRosterSignupRoleRequirementLines,
   buildRosterMoveResultSummary,
+  evaluateRosterDelayedSignupPolicy,
   formatRosterSignupEligibilityIssueBlock,
+  formatRosterVisitorSignupStatus,
+  parseRosterDisplayColumnsInput,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
+  resolveRosterDisplayColumns,
+  type RosterDelayedSignupPolicyInput,
+  type RosterDelayedSignupPolicyResult,
 } from "../src/services/RosterService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentService";
@@ -417,6 +430,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       startsAt: new Date("2026-04-20T00:00:00.000Z"),
       endsAt: null,
+      visitorSignupOpensAt: null,
       timezone: "America/Los_Angeles",
       displayTimezone: "America/Los_Angeles",
       lifecycleState: "OPEN",
@@ -438,6 +452,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       startsAt: new Date("2026-04-20T00:00:00.000Z"),
       endsAt: null,
+      visitorSignupOpensAt: null,
       timezone: "America/Los_Angeles",
       displayTimezone: "America/Los_Angeles",
       lifecycleState: "OPEN",
@@ -460,6 +475,7 @@ describe("RosterService", () => {
         clanTag: "#2QG2C08UP",
         startsAt: new Date("2026-04-20T00:00:00.000Z"),
         endsAt: null,
+        visitorSignupOpensAt: null,
         timezone: "America/Los_Angeles",
         displayTimezone: "America/Los_Angeles",
         lifecycleState: "OPEN",
@@ -613,6 +629,308 @@ describe("RosterService", () => {
         ),
       ),
     });
+  });
+
+  it("keeps the built-in roster display column default in the new order", () => {
+    expect(ROSTER_DEFAULT_DISPLAY_COLUMNS).toEqual([
+      "townhall_icons",
+      "discord_username",
+      "player_name",
+      "player_tag",
+    ]);
+  });
+
+  it("parses, stores, and resets guild roster display columns through the service", async () => {
+    const parsed = parseRosterDisplayColumnsInput(" townhall_icons, DISCORD_USERNAME, player_name, player_tag ");
+    expect(parsed).toEqual({
+      ok: true,
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+    });
+
+    const duplicate = parseRosterDisplayColumnsInput("player_name,player_name");
+    expect(duplicate).toEqual({
+      ok: false,
+      error: 'Duplicate roster column key "player_name". Use /roster show to view the valid column keys.',
+    });
+
+    const unknown = parseRosterDisplayColumnsInput("player_name,unknown_key");
+    expect(unknown).toEqual({
+      ok: false,
+      error: 'Unknown roster column key "unknown_key". Use /roster show to view the valid column keys.',
+    });
+
+    prismaMock.rosterGuildConfig.upsert.mockResolvedValueOnce({
+      guildId: "guild-1",
+      defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-06-22T13:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T13:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGuildConfig.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(
+      rosterService.setRosterGuildDisplayColumns({
+        guildId: "guild-1",
+        displayColumns: parsed.ok ? parsed.columns : [],
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "server_override",
+    });
+    expect(prismaMock.rosterGuildConfig.upsert).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+      create: {
+        guildId: "guild-1",
+        defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        updatedByDiscordUserId: "111111111111111111",
+      },
+      update: {
+        defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        updatedByDiscordUserId: "111111111111111111",
+      },
+    });
+
+    await expect(
+      rosterService.resetRosterGuildDisplayColumns({
+        guildId: "guild-1",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+    expect(prismaMock.rosterGuildConfig.deleteMany).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+    });
+  });
+
+  it("returns the built-in layout when resetting an already cleared guild override", async () => {
+    prismaMock.rosterGuildConfig.deleteMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      rosterService.resetRosterGuildDisplayColumns({
+        guildId: "guild-1",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+    expect(prismaMock.rosterGuildConfig.deleteMany).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+    });
+  });
+
+  it("resolves explicit roster overrides before guild defaults and built-in fallback", () => {
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["player_name", "discord_username", "player_tag"],
+        guildDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username", "player_tag"],
+      source: "roster_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "roster_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: null,
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username"],
+      source: "server_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["invalid" as any],
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username"],
+      source: "server_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: null,
+        guildDisplayColumns: ["invalid" as any],
+      }),
+    ).toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+  });
+
+  it("renders uncustomized rosters using the guild default display columns on post", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      visitorSignupOpensAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 50,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: null,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterGuildConfig.findUnique.mockResolvedValueOnce({
+      defaultDisplayColumns: ["player_name", "discord_username", "player_tag"],
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      makePlayerCurrentMap([["#PQL0289", 16]]),
+    );
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+    const description = String(payload?.embed.toJSON().description ?? "");
+    const headerLine = description.split("\n").find((line) => line.startsWith("`PLAYER")) ?? "";
+
+    expect(headerLine).toContain("PLAYER");
+    expect(headerLine).toContain("USERNAME");
+    expect(headerLine.indexOf("PLAYER")).toBeLessThan(headerLine.indexOf("USERNAME"));
+    expect(headerLine.indexOf("USERNAME")).toBeLessThan(headerLine.indexOf("Player tag"));
+  });
+
+  it("stores null for visitor signup opening when omitted during roster create", async () => {
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("stores the provided visitor signup opening instant unchanged during roster create", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      visitorSignupOpensAt,
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt,
+        }),
+      }),
+    );
+  });
+
+  it("stores null for visitor signup opening when explicitly cleared during roster create", async () => {
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      visitorSignupOpensAt: null,
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("rejects an invalid visitor signup opening instant during roster create", async () => {
+    await expect(
+      rosterService.createRoster({
+        guildId: "guild-1",
+        rosterType: "cwl",
+        title: "CWL Alpha Signup",
+        timezone: "PST",
+        visitorSignupOpensAt: new Date("invalid") as any,
+        createdByDiscordUserId: "111111111111111111",
+      }),
+    ).rejects.toThrow("visitorSignupOpensAt must be a valid Date.");
+    expect(prismaMock.roster.create).not.toHaveBeenCalled();
   });
 
   it("hydrates CWL tracked-clan metadata while creating a CWL roster", async () => {
@@ -2340,9 +2658,11 @@ describe("RosterService", () => {
     const description = payload?.embed.toJSON().description ?? "";
     const embedTitle = payload?.embed.toJSON().title ?? "";
     const lines = description.split("\n");
-    const headerLine = lines.find((line) => line.startsWith("`TH "));
-    const confirmedRow = lines.find((line) => line.startsWith("`16 Alpha"));
-    const substituteRow = lines.find((line) => line.startsWith("`15 Bravo"));
+    const headerLine = lines.find(
+      (line) => line.includes(":house:") && line.includes("USERNAME") && line.includes("PLAYER") && line.includes("Player tag"),
+    );
+    const confirmedRow = lines.find((line) => line.includes("TonyLee") && line.includes("Alpha"));
+    const substituteRow = lines.find((line) => line.includes("Bravo") && line.includes("#QGRJ2222"));
     expect(headerLine).toBeTruthy();
     expect(confirmedRow).toBeTruthy();
     expect(substituteRow).toBeTruthy();
@@ -2353,15 +2673,21 @@ describe("RosterService", () => {
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
     expect(description).toContain("TonyLee");
-    expect(description).toContain("Rising Dawn");
-    expect(description).toContain("Gabbar");
     expect(description).toContain("\nTotal 2/");
     expect(description).not.toContain("```");
     expect(description).not.toContain("<@");
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("PLAYER")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Alpha"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("TonyLee"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("CLAN")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Rising Dawn"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((substituteRow ?? "").replace(/`/g, "").indexOf("-"));
+    const normalizedHeader = (headerLine ?? "").replace(/`/g, "");
+    expect(normalizedHeader).toContain(":house:");
+    expect(normalizedHeader.indexOf("USERNAME")).toBeLessThan(normalizedHeader.indexOf("PLAYER"));
+    expect(normalizedHeader.indexOf("PLAYER")).toBeLessThan(normalizedHeader.indexOf("Player tag"));
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain(":th16:");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("TonyLee");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("Alpha");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("#PQL0289");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain(":th15:");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("-");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("Bravo");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("#QGRJ2222");
     expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -4019,7 +4345,8 @@ describe("RosterService", () => {
     expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocService, null);
     expect(payload).toBeTruthy();
     const description = String(payload?.embed.toJSON().description ?? "");
-    expect(description).toContain("`15 Player 298");
+    expect(description).toContain(":th15:");
+    expect(description).toContain("Player 298");
     expect(description).not.toContain("`- Player 298");
   });
 
@@ -4075,7 +4402,8 @@ describe("RosterService", () => {
     expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocService, null);
     expect(payload).toBeTruthy();
     const description = String(payload?.embed.toJSON().description ?? "");
-    expect(description).toContain("`15 Player 298");
+    expect(description).toContain(":th15:");
+    expect(description).toContain("Player 298");
     expect(description).not.toContain("`- Player 298");
   });
 
@@ -6725,6 +7053,59 @@ describe("RosterService", () => {
     });
   });
 
+  it("peeks roster selection session identity without consuming it", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+
+    const opened = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster selection panel to open.");
+    }
+
+    const ready = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(ready).toEqual({
+      outcome: "ready",
+      session: {
+        sessionId: opened.panel.sessionId,
+        mode: "signup",
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    });
+
+    const forbidden = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "222222222222222222",
+    });
+    expect(forbidden).toEqual({ outcome: "forbidden" });
+
+    const replay = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(replay).toEqual({
+      outcome: "ready",
+      session: {
+        sessionId: opened.panel.sessionId,
+        mode: "signup",
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    });
+  });
+
   it("lets users remove only their own signup entries", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       { playerTag: "#PQL0289" },
@@ -8080,6 +8461,619 @@ describe("RosterService", () => {
         }),
       }),
     );
+  });
+
+  it("returns visitor signup opening timestamps from roster views", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce(
+      makeRosterRecord({
+        visitorSignupOpensAt,
+      }),
+    );
+
+    const view = await rosterService.getRosterView("roster-1");
+
+    expect(view?.roster.visitorSignupOpensAt).toBe(visitorSignupOpensAt);
+  });
+
+  it("preserves visitor signup opening timestamps when omitted during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      title: "CWL Alpha Signup (Updated)",
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(Object.prototype.hasOwnProperty.call(updateCall.data, "visitorSignupOpensAt")).toBe(false);
+  });
+
+  it("replaces visitor signup opening timestamps during roster edit", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      visitorSignupOpensAt,
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(updateCall.data.visitorSignupOpensAt).toBe(visitorSignupOpensAt);
+  });
+
+  it("clears visitor signup opening timestamps during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      visitorSignupOpensAt: null,
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(updateCall.data.visitorSignupOpensAt).toBeNull();
+  });
+
+  it("rejects an invalid visitor signup opening instant during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await expect(
+      rosterService.updateRoster({
+        rosterId: "roster-1",
+        visitorSignupOpensAt: new Date("invalid") as any,
+        updatedByDiscordUserId: "999999999999999999",
+      }),
+    ).rejects.toThrow("visitorSignupOpensAt must be a valid Date.");
+    expect(prismaMock.roster.update).not.toHaveBeenCalled();
+  });
+
+  it("continues to allow signup flows when visitor signup opening timestamps are present", async () => {
+    const visitorSignupOpensAt = new Date("2030-01-01T00:00:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce(
+      makeRosterRecord({
+        visitorSignupOpensAt,
+      }),
+    );
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      playerTags: ["#PQL0289"],
+    });
+
+    expect(result.outcome).toBe("created");
+  });
+
+  describe("RosterService visitor signup status rendering", () => {
+    function makeVisitorSignupRoster(visitorSignupOpensAt: Date | null) {
+      return makeRosterRecord({
+        visitorSignupOpensAt,
+      });
+    }
+
+    function countExactLine(description: string, expectedLine: string): number {
+      return description.split("\n").filter((line) => line === expectedLine).length;
+    }
+
+    async function buildRosterDescription(visitorSignupOpensAt: Date | null, now?: Date): Promise<string> {
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(visitorSignupOpensAt));
+      const payload = await rosterService.buildRosterSignupPayload(
+        "roster-1",
+        null,
+        now ? { now } : undefined,
+      );
+      return String(payload?.embed.toJSON().description ?? "");
+    }
+
+    async function refreshRosterDescription(visitorSignupOpensAt: Date | null, now?: Date): Promise<string> {
+      const refreshBoardSourceDataSpy = vi.spyOn(rosterService, "refreshRosterBoardSourceData").mockResolvedValue(true);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(visitorSignupOpensAt));
+      try {
+        const payload = await rosterService.refreshRosterSignupPayload(
+          "roster-1",
+          null,
+          now ? { now } : undefined,
+        );
+        return String(payload?.embed.toJSON().description ?? "");
+      } finally {
+        refreshBoardSourceDataSpy.mockRestore();
+      }
+    }
+
+    it("returns no status line when visitor signup opening time is null", () => {
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt: null,
+          now: new Date("2026-01-01T00:00:00.000Z"),
+        }),
+      ).toBeNull();
+    });
+
+    it("formats the visitor signup opening timestamp using second precision before opening", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.987Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:29:59.999Z"),
+        }),
+      ).toBe(`Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`);
+    });
+
+    it("shows visitor signups as open at the exact opening boundary", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:30:00.000Z"),
+        }),
+      ).toBe("Visitor signups: Open");
+    });
+
+    it("shows visitor signups as open after the opening boundary", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:30:00.001Z"),
+        }),
+      ).toBe("Visitor signups: Open");
+    });
+
+    it("renders the timestamped status line exactly once before opening on the initial post payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+      const now = new Date("2026-05-01T10:15:00.000Z");
+      const description = await buildRosterDescription(visitorSignupOpensAt, now);
+      const expectedLine = `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`;
+
+      expect(countExactLine(description, expectedLine)).toBe(1);
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(0);
+    });
+
+    it("renders the open status exactly once after opening on the initial post payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+      const now = new Date("2026-05-02T10:15:00.001Z");
+      const description = await buildRosterDescription(visitorSignupOpensAt, now);
+
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(1);
+      expect(
+        countExactLine(
+          description,
+          `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(0);
+    });
+
+    it("renders the timestamped status line exactly once before opening on the refresh payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-06-10T12:00:00.000Z");
+      const now = new Date("2026-06-10T11:59:59.000Z");
+      const description = await refreshRosterDescription(visitorSignupOpensAt, now);
+      const expectedLine = `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`;
+
+      expect(countExactLine(description, expectedLine)).toBe(1);
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(0);
+    });
+
+    it("renders the open status exactly once after opening on the refresh payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-06-10T12:00:00.000Z");
+      const now = new Date("2026-06-10T12:00:00.001Z");
+      const description = await refreshRosterDescription(visitorSignupOpensAt, now);
+
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(1);
+      expect(
+        countExactLine(
+          description,
+          `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(0);
+    });
+
+    it("omits the visitor signup status line when opening time is null and keeps the roster payload intact", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const description = await buildRosterDescription(null, new Date("2026-05-01T10:15:00.000Z"));
+      warnSpy.mockRestore();
+
+      expect(description).toContain("**[CWL Alpha Signup]");
+      expect(description).toContain("Total 0/");
+      expect(description).not.toContain("Visitor signups:");
+    });
+
+    it("removes the status line when a configured opening is cleared on refresh", async () => {
+      const opening = new Date("2026-06-10T12:00:00.000Z");
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(opening));
+      const initialDescription = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-06-10T11:59:59.000Z"),
+      });
+      expect(
+        countExactLine(
+          String(initialDescription?.embed.toJSON().description ?? ""),
+          `Visitor signups: Opens <t:${Math.floor(opening.getTime() / 1000)}:F> (<t:${Math.floor(opening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(null));
+      const refreshedDescription = await refreshRosterDescription(null, new Date("2026-06-10T12:00:00.001Z"));
+
+      expect(refreshedDescription).not.toContain("Visitor signups:");
+    });
+
+    it("updates the timestamp when the configured opening changes on refresh", async () => {
+      const firstOpening = new Date("2026-06-10T12:00:00.000Z");
+      const secondOpening = new Date("2026-06-11T12:45:00.000Z");
+
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(firstOpening));
+      const initialPayload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-06-10T11:59:59.000Z"),
+      });
+
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(secondOpening));
+      const refreshedDescription = await refreshRosterDescription(secondOpening, new Date("2026-06-11T12:44:59.000Z"));
+
+      expect(
+        countExactLine(
+          String(initialPayload?.embed.toJSON().description ?? ""),
+          `Visitor signups: Opens <t:${Math.floor(firstOpening.getTime() / 1000)}:F> (<t:${Math.floor(firstOpening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+      expect(
+        countExactLine(
+          refreshedDescription,
+          `Visitor signups: Opens <t:${Math.floor(secondOpening.getTime() / 1000)}:F> (<t:${Math.floor(secondOpening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+    });
+
+    it("omits invalid opening timestamps without rendering NaN and still renders the roster payload", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const description = await buildRosterDescription(new Date("invalid") as any, new Date("2026-05-01T10:15:00.000Z"));
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("stage=visitor_signup_status_invalid"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("roster_id=roster-1"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("guild_id=guild-1"));
+      expect(description).toContain("CWL Alpha Signup");
+      expect(description).toContain("Total 0/");
+      expect(description).not.toContain("NaN");
+      warnSpy.mockRestore();
+    });
+
+    it("keeps existing roster groups, instructions, requirements, components, and buttons intact when the status line is present", async () => {
+      prismaMock.roster.findUnique.mockResolvedValueOnce(
+        makeRosterRecord({
+          visitorSignupOpensAt: new Date("2026-05-02T10:15:00.000Z"),
+          requiredSignupRoleId: "required-role",
+          noRoleSignupLimit: 2,
+        }),
+      );
+      prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+        {
+          id: "group-confirmed",
+          rosterId: "roster-1",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      ] as any);
+      prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-05-01T10:00:00.000Z"),
+          createdAt: new Date("2026-05-01T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any);
+      const payload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-05-01T10:15:00.000Z"),
+      });
+      const description = String(payload?.embed.toJSON().description ?? "");
+      const componentIds = payload?.components.flatMap((row) => {
+        const rowJson = row.toJSON() as any;
+        return Array.isArray(rowJson.components)
+          ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
+          : [];
+      }) ?? [];
+
+      expect(description).toContain("Visitor signups: Opens");
+      expect(description).toContain("**Confirmed - 1**");
+      expect(description).toContain("Alpha");
+      expect(description).toContain("Total 1/");
+      expect(componentIds).toEqual(
+        expect.arrayContaining([
+          "roster-post-action:refresh:roster-1",
+          "roster-post-action:signup:roster-1",
+          "roster-post-action:optout:roster-1",
+          "roster-post-action:settings:roster-1",
+        ]),
+      );
+      expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
+    });
+  });
+
+  describe("RosterService delayed-signup policy", () => {
+    function makePolicyInput(
+      overrides: Partial<RosterDelayedSignupPolicyInput> = {},
+    ): RosterDelayedSignupPolicyInput {
+      return {
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+        delayedSignupRoleIds: [" delayed-1 ", "delayed-2", "delayed-1"],
+        actorRoleIds: [],
+        allianceMemberRoleIds: [" alliance-1 ", "alliance-2", "alliance-1"],
+        hasManagerBypass: false,
+        now: new Date("2026-01-01T00:00:00.000Z"),
+        ...overrides,
+      };
+    }
+
+    function evaluatePolicy(
+      overrides: Partial<RosterDelayedSignupPolicyInput> = {},
+    ): RosterDelayedSignupPolicyResult {
+      return evaluateRosterDelayedSignupPolicy(makePolicyInput(overrides));
+    }
+
+    it("allows when no visitor signup opening exists", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: null,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_opening_time",
+      });
+    });
+
+    it("ignores invalid now when no visitor signup opening exists", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: null,
+          now: new Date("invalid") as any,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_opening_time",
+      });
+    });
+
+    it("rejects an invalid visitor signup opening instant", () => {
+      expect(() =>
+        evaluatePolicy({
+          visitorSignupOpensAt: new Date("invalid") as any,
+        }),
+      ).toThrow("visitorSignupOpensAt must be a valid Date.");
+    });
+
+    it("allows when the opening time is already in the past", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: new Date("2026-01-01T00:00:00.000Z"),
+          now: new Date("2026-01-02T00:00:00.000Z"),
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "opening_reached",
+      });
+    });
+
+    it("allows exactly at the opening boundary", () => {
+      const opening = new Date("2026-01-02T12:00:00.000Z");
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: opening,
+          now: new Date("2026-01-02T12:00:00.000Z"),
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "opening_reached",
+      });
+    });
+
+    it("allows when no delayed signup roles are configured", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_delayed_roles",
+      });
+    });
+
+    it("allows when the manager bypass is active", () => {
+      expect(
+        evaluatePolicy({
+          hasManagerBypass: true,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "manager_bypass",
+      });
+    });
+
+    it("allows when the actor holds a recognized alliance-member role", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" alliance-2 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("allows alliance members even when they also hold delayed signup roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" delayed-1 ", "alliance-1"],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("allows when the actor lacks delayed signup roles but has unrelated roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: ["unrelated-role"],
+          allianceMemberRoleIds: [" alliance-1 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "not_delayed_role",
+      });
+    });
+
+    it("allows when the actor has neither delayed nor alliance-member roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [],
+          allianceMemberRoleIds: [" alliance-1 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "not_delayed_role",
+      });
+    });
+
+    it("blocks when the actor holds any configured delayed signup role", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" delayed-1 "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("exposes the original opening Date when blocked", () => {
+      const opening = new Date("2030-01-01T00:00:00.000Z");
+      const result = evaluatePolicy({
+        visitorSignupOpensAt: opening,
+        actorRoleIds: ["delayed-2"],
+      });
+
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.reason).toBe("delayed_signup_not_open");
+        expect(result.visitorSignupOpensAt).toBe(opening);
+      }
+    });
+
+    it("uses any-match behavior for multiple delayed signup roles", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [" delayed-a ", "delayed-b"],
+          actorRoleIds: ["delayed-b"],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("uses any-match behavior for multiple alliance-member roles", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["delayed-a"],
+          actorRoleIds: ["alliance-b"],
+          allianceMemberRoleIds: [" alliance-a ", " alliance-b "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("ignores blank role IDs", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["", " ", "delayed-1"],
+          actorRoleIds: ["delayed-1"],
+          allianceMemberRoleIds: ["", " "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("deduplicates repeated role IDs without changing behavior", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["delayed-1", "delayed-1", "delayed-2", "delayed-2"],
+          actorRoleIds: ["delayed-2"],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("normalizes whitespace around role IDs", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [" delayed-1 "],
+          actorRoleIds: [" delayed-1 "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("rejects an invalid supplied now value", () => {
+      expect(() =>
+        evaluatePolicy({
+          now: new Date("invalid") as any,
+        }),
+      ).toThrow("now must be a valid Date.");
+    });
+
+    it("is deterministic for the same explicit now", () => {
+      const input = makePolicyInput({
+        delayedSignupRoleIds: ["delayed-1"],
+        actorRoleIds: ["member-1"],
+        allianceMemberRoleIds: ["member-1"],
+        now: new Date("2026-01-01T12:00:00.000Z"),
+      });
+      expect(evaluateRosterDelayedSignupPolicy(input)).toEqual(evaluateRosterDelayedSignupPolicy(input));
+    });
+
+    it("keeps manager bypass ahead of alliance-member precedence when both are present", () => {
+      expect(
+        evaluatePolicy({
+          hasManagerBypass: true,
+          actorRoleIds: ["alliance-1", "delayed-1"],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "manager_bypass",
+      });
+    });
   });
 
   it("lists guild rosters with roster metadata and posting state", async () => {

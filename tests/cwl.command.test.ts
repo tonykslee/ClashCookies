@@ -38,6 +38,8 @@ import {
   type CwlRotationSheetImportPreview,
 } from "../src/services/CwlRotationSheetService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
+import { autoRoleService } from "../src/services/AutoRoleService";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import {
   cwlAllianceBaselineService,
   CwlAllianceBaselineDuplicatePlayerTagError,
@@ -237,6 +239,137 @@ function getEditedDescription(interaction: any): string {
   return String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
 }
 
+function makeRosterSignupButtonInteraction(overrides: Record<string, unknown> = {}) {
+  return {
+    customId: "roster-post-action:signup:roster-1",
+    user: { id: "111111111111111111" },
+    guildId: "guild-1",
+    inGuild: () => true,
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+    memberPermissions: {
+      has: vi.fn().mockReturnValue(false),
+    },
+    ...overrides,
+  };
+}
+
+function makeRosterSelectionConfirmInteraction(overrides: Record<string, unknown> = {}) {
+  const customId = String(overrides.customId ?? "roster-selection:action:confirm:session-2");
+  const interaction: any = {
+    customId,
+    user: { id: "111111111111111111" },
+    guildId: "guild-1",
+    message: {
+      components: makeRosterSelectionApplyingRows(customId),
+      edit: vi.fn().mockResolvedValue(undefined),
+    },
+    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+    client: {
+      channels: {
+        fetch: vi.fn().mockResolvedValue(null),
+      },
+    },
+    replied: false,
+    deferred: false,
+  };
+  interaction.update = vi.fn().mockImplementation(async () => {
+    interaction.replied = true;
+    return undefined;
+  });
+  return Object.assign(interaction, overrides);
+}
+
+function makeSignupRoster(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "roster-1",
+    guildId: "guild-1",
+    visitorSignupOpensAt: null,
+    ...overrides,
+  } as any;
+}
+
+function mockReadySignupPanel(title = "Roster Signup") {
+  (rosterService.createRosterSignupSelectionPanel as any).mockResolvedValue({
+    outcome: "ready",
+    panel: {
+      sessionId: "session-1",
+      mode: "signup",
+      selectedTags: [],
+      embed: new EmbedBuilder().setTitle(title),
+      components: [
+        new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId("roster-selection:group:session-1")
+            .setMinValues(0)
+            .setMaxValues(2)
+            .addOptions([
+              { label: "Alpha", value: "#P1", description: "#P1 | available" },
+              { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
+            ]),
+        ),
+        new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId("roster-selection:account:session-1")
+            .setMinValues(0)
+            .setMaxValues(2)
+            .addOptions([
+              { label: "Alpha", value: "#P1", description: "#P1 | available" },
+              { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
+            ]),
+        ),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("roster-selection:action:confirm:session-1")
+            .setLabel("Confirm Signup")
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(true),
+          new ButtonBuilder()
+            .setCustomId("roster-selection:action:cancel:session-1")
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Secondary),
+        ),
+      ],
+    },
+  });
+}
+
+function makeSignupConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    guildId: "guild-1",
+    enabled: true,
+    killSwitchEnabled: false,
+    removeStaleManagedRoles: false,
+    applyNicknames: false,
+    nicknameTemplate: null,
+    trustedLinksAllowed: false,
+    verifiedOnlyMode: false,
+    syncEnabled: false,
+    syncIntervalMinutes: null,
+    verifiedRoleId: null,
+    familyRoleId: null,
+    cwlClanRoleId: null,
+    nonMemberRoleId: null,
+    delayedSignupRoleIds: [],
+    nonMemberEnabled: false,
+    clanRoleRemovalDelayMinutes: null,
+    createdAt: new Date("2026-04-15T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+    ...overrides,
+  } as any;
+}
+
+function makeSignupMember(roleIds: string[]): Record<string, unknown> {
+  return {
+    roles: {
+      cache: new Map(roleIds.map((roleId) => [roleId, {}] as const)),
+    },
+  };
+}
+
 function getComponentButtonCustomIds(interaction: any): string[] {
   const payload = (interaction.editReply?.mock.calls[0]?.[0] ?? interaction.update?.mock.calls[0]?.[0]) as any;
   const rows = Array.isArray(payload?.components) ? payload.components : [];
@@ -414,9 +547,25 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "refreshRosterSignupPayload");
     vi.spyOn(rosterService, "updateRosterLifecycleState");
     vi.spyOn(rosterService, "recordRosterPostedMessage");
+    vi.spyOn(rosterService, "findGuildRosterById").mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      visitorSignupOpensAt: null,
+    } as any);
     vi.spyOn(rosterService, "listCwlRostersForClan");
     vi.spyOn(rosterService, "getRosterRoleSyncTargets").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
+    vi.spyOn(rosterService, "peekRosterSelectionSession").mockResolvedValue({
+      outcome: "ready",
+      session: {
+        sessionId: "session-2",
+        mode: "signup",
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    } as any);
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "cancelRosterSelectionPanel");
     vi.spyOn(rosterService, "removeRosterSignups");
@@ -426,6 +575,29 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "buildRosterManagerReadinessText");
     vi.spyOn(rosterService, "findCwlRosterForClan").mockResolvedValue(null as any);
     vi.spyOn(rosterService, "getRosterView").mockResolvedValue(null as any);
+    vi.spyOn(autoRoleService, "getDelayedSignupRoleIds").mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getOrCreateGuildConfig").mockResolvedValue({
+      guildId: "guild-1",
+      enabled: true,
+      killSwitchEnabled: false,
+      removeStaleManagedRoles: false,
+      applyNicknames: false,
+      nicknameTemplate: null,
+      trustedLinksAllowed: false,
+      verifiedOnlyMode: false,
+      syncEnabled: false,
+      syncIntervalMinutes: null,
+      verifiedRoleId: null,
+      familyRoleId: null,
+      cwlClanRoleId: null,
+      nonMemberRoleId: null,
+      delayedSignupRoleIds: [],
+      nonMemberEnabled: false,
+      clanRoleRemovalDelayMinutes: null,
+      createdAt: new Date("2026-04-15T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-15T00:00:00.000Z"),
+    } as any);
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
     vi.spyOn(cwlAllianceBaselineService, "getAllianceSeasonBaselineStatus").mockResolvedValue(null as any);
     vi.spyOn(cwlAllianceBaselineService, "captureAllianceSeasonBaseline").mockResolvedValue(null as any);
     vi.spyOn(cwlRotationService, "createPlanFromRoster");
@@ -1085,56 +1257,11 @@ describe("/cwl command", () => {
   });
 
   it("opens an account selection panel when a roster group button is clicked", async () => {
-    (rosterService.createRosterSignupSelectionPanel as any).mockResolvedValue({
-      outcome: "ready",
-      panel: {
-        sessionId: "session-1",
-        mode: "signup",
-        selectedTags: [],
-        embed: new EmbedBuilder().setTitle("Choose accounts for Confirmed"),
-        components: [
-          new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId("roster-selection:group:session-1")
-              .setMinValues(0)
-              .setMaxValues(2)
-              .addOptions([
-                { label: "Alpha", value: "#P1", description: "#P1 | available" },
-                { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
-              ]),
-          ),
-          new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId("roster-selection:account:session-1")
-              .setMinValues(0)
-              .setMaxValues(2)
-              .addOptions([
-                { label: "Alpha", value: "#P1", description: "#P1 | available" },
-                { label: "Bravo", value: "#P2", description: "#P2 | already signed up" },
-              ]),
-          ),
-          new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId("roster-selection:action:confirm:session-1")
-              .setLabel("Confirm Signup")
-              .setStyle(ButtonStyle.Success)
-              .setDisabled(true),
-            new ButtonBuilder()
-              .setCustomId("roster-selection:action:cancel:session-1")
-              .setLabel("Cancel")
-              .setStyle(ButtonStyle.Secondary),
-          ),
-        ],
-      },
-    } as any);
+    (rosterService.findGuildRosterById as any).mockResolvedValue(makeSignupRoster());
+    mockReadySignupPanel("Choose accounts for Confirmed");
 
-    const interaction = {
-      customId: "roster-post-action:signup:roster-1",
-      user: { id: "111111111111111111" },
-      deferReply: vi.fn().mockResolvedValue(undefined),
-      editReply: vi.fn().mockResolvedValue(undefined),
-      reply: vi.fn().mockResolvedValue(undefined),
-    };
+    const interaction = makeRosterSignupButtonInteraction();
+    (interaction as any).client = {};
 
     await handleRosterSignupButtonInteraction(interaction as any);
 
@@ -1159,6 +1286,702 @@ describe("/cwl command", () => {
         "roster-selection:action:cancel:session-1",
       ]),
     );
+  });
+
+  describe("signup button delayed-signup gate", () => {
+    it("opens the signup panel when no delayed opening is configured", async () => {
+      (rosterService.findGuildRosterById as any).mockResolvedValue(makeSignupRoster());
+      mockReadySignupPanel("Choose accounts with no opening time");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+      expect(autoRoleService.getDelayedSignupRoleIds).not.toHaveBeenCalled();
+      expect(CommandPermissionService.prototype.canUseAnyTarget).not.toHaveBeenCalled();
+      expect(autoRoleService.getOrCreateGuildConfig).not.toHaveBeenCalled();
+    });
+
+    it("blocks delayed-role users before opening and does not create a signup session", async () => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: `Visitor signups open <t:${Math.floor(opening.getTime() / 1000)}:F> (<t:${Math.floor(opening.getTime() / 1000)}:R>).`,
+          embeds: [],
+          components: [],
+        }),
+      );
+    });
+
+    it("opens the signup panel exactly at the opening timestamp", async () => {
+      const opening = new Date("2026-04-15T00:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts at opening");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: [expect.any(EmbedBuilder)],
+        }),
+      );
+    });
+
+    it("opens the signup panel after the opening timestamp", async () => {
+      const opening = new Date("2026-04-14T23:59:59.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts after opening");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+    });
+
+    it("opens the signup panel for a user without any delayed role", async () => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts for Confirmed");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["other-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: [expect.any(EmbedBuilder)],
+        }),
+      );
+    });
+
+    it.each([
+      {
+        label: "verified role",
+        configKey: "verifiedRoleId" as const,
+        roleId: "verified-role",
+      },
+      {
+        label: "family role",
+        configKey: "familyRoleId" as const,
+        roleId: "family-role",
+      },
+    ])("opens the signup panel when the actor holds the %s even with a delayed role", async ({ configKey, roleId }) => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(
+        makeSignupConfig({
+          [configKey]: roleId,
+        }),
+      );
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts with alliance precedence");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role", roleId]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+    });
+
+    it.each([
+      {
+        label: "CWL clan role",
+        configKey: "cwlClanRoleId" as const,
+        roleId: "cwl-role",
+      },
+      {
+        label: "non-member role",
+        configKey: "nonMemberRoleId" as const,
+        roleId: "visitor-role",
+      },
+    ])("does not treat the %s as an alliance-member bypass when it is also delayed", async ({ configKey, roleId }) => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue([roleId]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(
+        makeSignupConfig({
+          [configKey]: roleId,
+        }),
+      );
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember([roleId]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: `Visitor signups open <t:${Math.floor(opening.getTime() / 1000)}:F> (<t:${Math.floor(opening.getTime() / 1000)}:R>).`,
+          embeds: [],
+          components: [],
+        }),
+      );
+    });
+
+    it("opens the signup panel for Discord Administrator bypass", async () => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(true);
+      mockReadySignupPanel("Choose accounts for admins");
+      const interaction = makeRosterSignupButtonInteraction({
+        memberPermissions: {
+          has: vi.fn().mockReturnValue(true),
+        },
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+    });
+
+    it("opens the signup panel for an existing roster-manager bypass", async () => {
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(true);
+      mockReadySignupPanel("Choose accounts for managers");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+    });
+
+    it("fails open when delayed-role config lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockRejectedValue(new Error("boom"));
+      mockReadySignupPanel("Choose accounts after delayed-role failure");
+      const interaction = makeRosterSignupButtonInteraction();
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=delayed_signup_roles error=boom",
+        ),
+      );
+    });
+
+    it("fails open when autorole guild config lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockRejectedValue(new Error("boom"));
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts after config failure");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=autorole_config error=boom",
+        ),
+      );
+    });
+
+    it("fails open when actor role resolution fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockReadySignupPanel("Choose accounts after role failure");
+      const interaction = makeRosterSignupButtonInteraction({
+        guild: {
+          members: {
+            fetch: vi.fn().mockRejectedValue(new Error("boom")),
+          },
+        },
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=actor_roles error=boom",
+        ),
+      );
+    });
+
+    it("fails open when manager bypass lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const opening = new Date("2026-04-16T12:00:00.000Z");
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockRejectedValue(new Error("boom"));
+      mockReadySignupPanel("Choose accounts after bypass failure");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=manager_bypass error=boom",
+        ),
+      );
+    });
+  });
+
+  describe("signup confirmation delayed-signup revalidation", () => {
+    const readySignupSession = {
+      outcome: "ready" as const,
+      session: {
+        sessionId: "session-2",
+        mode: "signup" as const,
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    };
+
+    function mockReadySignupConfirmationSession() {
+      (rosterService.peekRosterSelectionSession as any).mockResolvedValue(readySignupSession);
+      (rosterService.cancelRosterSelectionPanel as any).mockResolvedValue({
+        outcome: "updated",
+        panel: {
+          sessionId: "session-2",
+          mode: "signup",
+          selectedTags: [],
+          embed: new EmbedBuilder().setTitle("Roster selection"),
+          components: [],
+        },
+      });
+    }
+
+    function mockSuccessfulSignupConfirmationMutation() {
+      (rosterService.confirmRosterSelectionPanel as any).mockResolvedValue({
+        outcome: "signup",
+        result: {
+          outcome: "created",
+          rosterId: "roster-1",
+          groupKey: "confirmed",
+          groupName: "Confirmed",
+          requestedTags: ["#P1"],
+          linkedTags: ["#P1"],
+          createdTags: ["#P1"],
+          duplicateTags: [],
+          missingLinkedTags: [],
+        },
+      });
+    }
+
+    it.each([
+      {
+        label: "opening moved into the future",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "delayed role added after panel creation",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "verified bypass lost before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "family bypass lost before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "manager bypass revoked before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+    ])("blocks confirmation when current facts are ineligible: $label", async ({ opening, delayedRoles, config, memberRoles, managerBypass }) => {
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(delayedRoles);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(config);
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(managerBypass);
+      const interaction = makeRosterSelectionConfirmInteraction({
+        member: makeSignupMember(memberRoles),
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).not.toHaveBeenCalled();
+      expect(rosterService.findGuildRosterById).toHaveBeenCalledWith({
+        guildId: "guild-1",
+        rosterId: "roster-1",
+      });
+      expect(rosterService.cancelRosterSelectionPanel).toHaveBeenCalledWith({
+        sessionId: "session-2",
+        discordUserId: "111111111111111111",
+      });
+      expect(interaction.message.edit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "That roster selection is no longer available. Please start again.",
+          embeds: [],
+          components: [],
+        }),
+      );
+      expect(interaction.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("Visitor signups open <t:"),
+          ephemeral: true,
+        }),
+      );
+    });
+
+    it.each([
+      {
+        label: "exact opening timestamp",
+        opening: new Date("2026-04-15T00:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "opening already passed",
+        opening: new Date("2026-04-14T23:59:59.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+      {
+        label: "delayed role removed before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: [],
+        config: makeSignupConfig(),
+        memberRoles: ["other-role"],
+        managerBypass: false,
+      },
+      {
+        label: "verified role gained before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig({ verifiedRoleId: "verified-role" }),
+        memberRoles: ["delayed-role", "verified-role"],
+        managerBypass: false,
+      },
+      {
+        label: "family role gained before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig({ familyRoleId: "family-role" }),
+        memberRoles: ["delayed-role", "family-role"],
+        managerBypass: false,
+      },
+      {
+        label: "manager bypass gained before confirm",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: true,
+      },
+      {
+        label: "empty delayed-role config",
+        opening: new Date("2026-04-16T12:00:00.000Z"),
+        delayedRoles: [],
+        config: makeSignupConfig(),
+        memberRoles: ["other-role"],
+        managerBypass: false,
+      },
+      {
+        label: "null opening time",
+        opening: null,
+        delayedRoles: ["delayed-role"],
+        config: makeSignupConfig(),
+        memberRoles: ["delayed-role"],
+        managerBypass: false,
+      },
+    ])("allows confirmation when current facts permit signup: $label", async ({ opening, delayedRoles, config, memberRoles, managerBypass }) => {
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: opening }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(delayedRoles);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(config);
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(managerBypass);
+      mockSuccessfulSignupConfirmationMutation();
+      const interaction = makeRosterSelectionConfirmInteraction({
+        member: makeSignupMember(memberRoles),
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(rosterService.findGuildRosterById).toHaveBeenCalledWith({
+        guildId: "guild-1",
+        rosterId: "roster-1",
+      });
+      expect(interaction.update).toHaveBeenCalledTimes(1);
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("Signed up"),
+        }),
+      );
+    });
+
+    it("fails open when delayed-role config lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: new Date("2026-04-16T12:00:00.000Z") }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockRejectedValue(new Error("boom"));
+      mockSuccessfulSignupConfirmationMutation();
+      const interaction = makeRosterSelectionConfirmInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=delayed_signup_roles error=boom",
+        ),
+      );
+    });
+
+    it("fails open when autorole guild config lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: new Date("2026-04-16T12:00:00.000Z") }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockRejectedValue(new Error("boom"));
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockSuccessfulSignupConfirmationMutation();
+      const interaction = makeRosterSelectionConfirmInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=autorole_config error=boom",
+        ),
+      );
+    });
+
+    it("fails open when actor role resolution fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: new Date("2026-04-16T12:00:00.000Z") }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (autoRoleService.getOrCreateGuildConfig as any).mockResolvedValue(makeSignupConfig());
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockResolvedValue(false);
+      mockSuccessfulSignupConfirmationMutation();
+      const interaction = makeRosterSelectionConfirmInteraction({
+        guild: {
+          members: {
+            fetch: vi.fn().mockRejectedValue(new Error("boom")),
+          },
+        },
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=actor_roles error=boom",
+        ),
+      );
+    });
+
+    it("fails open when manager bypass lookup fails", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockReadySignupConfirmationSession();
+      (rosterService.findGuildRosterById as any).mockResolvedValue(
+        makeSignupRoster({ visitorSignupOpensAt: new Date("2026-04-16T12:00:00.000Z") }),
+      );
+      (autoRoleService.getDelayedSignupRoleIds as any).mockResolvedValue(["delayed-role"]);
+      (CommandPermissionService.prototype.canUseAnyTarget as any).mockRejectedValue(new Error("boom"));
+      mockSuccessfulSignupConfirmationMutation();
+      const interaction = makeRosterSelectionConfirmInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.confirmRosterSelectionPanel).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[cwl] roster_signup_policy_resolution_failed guildId=guild-1 rosterId=roster-1 userId=111111111111111111 stage=manager_bypass error=boom",
+        ),
+      );
+    });
+
+    it("keeps session ownership validation ahead of policy resolution", async () => {
+      (rosterService.peekRosterSelectionSession as any).mockResolvedValue({
+        outcome: "forbidden",
+      });
+      const interaction = makeRosterSelectionConfirmInteraction();
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.findGuildRosterById).not.toHaveBeenCalled();
+      expect(rosterService.confirmRosterSelectionPanel).not.toHaveBeenCalled();
+      expect(interaction.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "Only the original requester can use this roster selection.",
+          ephemeral: true,
+        }),
+      );
+    });
+
+    it("keeps expired-session behavior unchanged", async () => {
+      (rosterService.peekRosterSelectionSession as any).mockResolvedValue({
+        outcome: "session_not_found",
+      });
+      const interaction = makeRosterSelectionConfirmInteraction();
+
+      await handleRosterSelectionActionButtonInteraction(interaction as any);
+
+      expect(rosterService.findGuildRosterById).not.toHaveBeenCalled();
+      expect(rosterService.confirmRosterSelectionPanel).not.toHaveBeenCalled();
+      expect(interaction.reply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "That roster selection has expired. Please start again.",
+          ephemeral: true,
+        }),
+      );
+    });
   });
 
   it("supports multi-account roster selection and self-service removal panels", async () => {

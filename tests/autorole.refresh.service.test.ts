@@ -175,6 +175,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
     familyRoleId: null,
     cwlClanRoleId: null,
     nonMemberRoleId: null,
+    delayedSignupRoleIds: [],
     nonMemberEnabled: false,
     clanRoleRemovalDelayMinutes: null,
     createdAt: new Date("2026-04-01T00:00:00.000Z"),

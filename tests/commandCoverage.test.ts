@@ -365,7 +365,10 @@ describe("command coverage", () => {
   it("documents /autorole refresh in the autorole help detail text", () => {
     const autoroleHelpText = helpEmbedText("autorole");
     expect(autoroleHelpText).toContain("/autorole refresh");
+    expect(autoroleHelpText).toContain("/autorole delayed-signup-role add");
+    expect(autoroleHelpText).toContain("/autorole delayed-signup-role clear");
     expect(autoroleHelpText).toContain("manual refresh");
+    expect(autoroleHelpText).toContain("delayed-signup role IDs");
     expect(autoroleHelpText).toContain("non-member-role");
     expect(autoroleHelpText).toContain("non-member-enabled");
     expect(autoroleHelpText).toContain("visitor/non-member role");
