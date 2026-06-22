@@ -183,6 +183,7 @@ type RosterPostButtonMode = "standard" | "hidden" | "archived";
 type RosterSignupPayloadBuildOptions = RosterViewLoadOptions & {
   emojiClient?: Client | null;
   refreshButtonDisabled?: boolean;
+  now?: Date;
 };
 
 export type RosterSelectionOption = {
@@ -5090,6 +5091,44 @@ export function formatRosterTownhallIconsValue(townHall: number | null | undefin
   return String(normalized);
 }
 
+/** Purpose: format the public delayed visitor signup status line for a roster post. */
+export function formatRosterVisitorSignupStatus(input: {
+  visitorSignupOpensAt: Date | null;
+  now?: Date;
+}): string | null {
+  const visitorSignupOpensAt = input.visitorSignupOpensAt;
+  if (visitorSignupOpensAt === null) {
+    return null;
+  }
+
+  const openingMs = visitorSignupOpensAt.getTime();
+  if (Number.isNaN(openingMs)) {
+    return null;
+  }
+
+  const renderNow = input.now instanceof Date && !Number.isNaN(input.now.getTime()) ? input.now : new Date();
+  if (renderNow.getTime() < openingMs) {
+    const timestamp = Math.floor(openingMs / 1000);
+    return `Visitor signups: Opens <t:${timestamp}:F> (<t:${timestamp}:R>)`;
+  }
+
+  return "Visitor signups: Open";
+}
+
+function logInvalidRosterVisitorSignupStatus(input: {
+  rosterId: string;
+  guildId: string;
+  visitorSignupOpensAt: Date | null;
+}): void {
+  if (input.visitorSignupOpensAt === null || !Number.isNaN(input.visitorSignupOpensAt.getTime())) {
+    return;
+  }
+
+  console.warn(
+    `[roster] stage=visitor_signup_status_invalid roster_id=${input.rosterId} guild_id=${input.guildId} value=${String(input.visitorSignupOpensAt)}`,
+  );
+}
+
 function getRosterDisplayColumnValue(
   signup: RosterSignupViewRecord,
   column: RosterDisplayColumn,
@@ -5292,13 +5331,26 @@ async function buildRosterSignupPayloadFromView(
     requiredSignupRoleId: resolvedView.roster.requiredSignupRoleId,
     noRoleSignupLimit: resolvedView.roster.noRoleSignupLimit,
   });
-  const lines: string[] = [
-    rosterLabel,
-    "",
-    ...signupRoleLines,
-    ...(signupRoleLines.length > 0 ? [""] : []),
-    buildRosterBoardHeaderLine(columns, widths),
-  ];
+  const visitorSignupStatusLine = formatRosterVisitorSignupStatus({
+    visitorSignupOpensAt: resolvedView.roster.visitorSignupOpensAt,
+    now: options?.now,
+  });
+  logInvalidRosterVisitorSignupStatus({
+    rosterId: resolvedView.roster.id,
+    guildId: resolvedView.roster.guildId,
+    visitorSignupOpensAt: resolvedView.roster.visitorSignupOpensAt,
+  });
+  const lines: string[] = [rosterLabel, ""];
+  if (visitorSignupStatusLine) {
+    lines.push(visitorSignupStatusLine);
+  }
+  if (signupRoleLines.length > 0) {
+    lines.push(...signupRoleLines);
+  }
+  if (visitorSignupStatusLine || signupRoleLines.length > 0) {
+    lines.push("");
+  }
+  lines.push(buildRosterBoardHeaderLine(columns, widths));
 
   let rowIndex = 1;
   for (const group of groups) {
