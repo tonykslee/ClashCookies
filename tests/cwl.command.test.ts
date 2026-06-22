@@ -1250,6 +1250,26 @@ describe("/cwl command", () => {
   });
 
   describe("signup button delayed-signup gate", () => {
+    it("opens the signup panel when no delayed opening is configured", async () => {
+      (rosterService.findGuildRosterById as any).mockResolvedValue(makeSignupRoster());
+      mockReadySignupPanel("Choose accounts with no opening time");
+      const interaction = makeRosterSignupButtonInteraction({
+        member: makeSignupMember(["delayed-role"]),
+      });
+
+      await handleRosterSignupButtonInteraction(interaction as any);
+
+      expect(rosterService.createRosterSignupSelectionPanel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rosterId: "roster-1",
+          discordUserId: "111111111111111111",
+        }),
+      );
+      expect(autoRoleService.getDelayedSignupRoleIds).not.toHaveBeenCalled();
+      expect(CommandPermissionService.prototype.canUseAnyTarget).not.toHaveBeenCalled();
+      expect(autoRoleService.getOrCreateGuildConfig).not.toHaveBeenCalled();
+    });
+
     it("blocks delayed-role users before opening and does not create a signup session", async () => {
       const opening = new Date("2026-04-16T12:00:00.000Z");
       (rosterService.findGuildRosterById as any).mockResolvedValue(

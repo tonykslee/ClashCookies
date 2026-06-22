@@ -27,7 +27,8 @@ import {
   evaluateRosterDelayedSignupPolicy,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
-  type RosterDelayedSignupPolicyInput,
+  type RosterDelayedSignupPolicyReason,
+  type RosterDelayedSignupPolicyResult,
 } from "../services/RosterService";
 import { autoRoleService } from "../services/AutoRoleService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
@@ -366,47 +367,65 @@ function logRosterSignupPolicyResolutionFailure(input: {
   );
 }
 
+type SignupPolicyResolution =
+  | {
+      outcome: "allowed";
+      reason: Exclude<RosterDelayedSignupPolicyReason, "delayed_signup_not_open">;
+    }
+  | {
+      outcome: "blocked";
+      policy: Extract<RosterDelayedSignupPolicyResult, { allowed: false }>;
+    }
+  | {
+      outcome: "fail_open";
+    };
+
+function evaluateRosterSignupPolicyFromFacts(input: {
+  visitorSignupOpensAt: Date | null;
+  delayedSignupRoleIds: string[];
+  actorRoleIds: string[];
+  allianceMemberRoleIds: string[];
+  hasManagerBypass: boolean;
+  now: Date;
+}): SignupPolicyResolution {
+  const policy = evaluateRosterDelayedSignupPolicy(input);
+  if (policy.allowed) {
+    return {
+      outcome: "allowed",
+      reason: policy.reason,
+    };
+  }
+
+  return {
+    outcome: "blocked",
+    policy,
+  };
+}
+
 /** Purpose: resolve signup-policy facts for the public roster Signup button while failing open on lookup errors. */
 async function resolveRosterSignupPolicyInput(input: {
   interaction: ButtonInteraction;
   roster: { guildId: string; visitorSignupOpensAt: Date | null };
-}): Promise<
-  | { outcome: "allowed"; policy: RosterDelayedSignupPolicyInput }
-  | { outcome: "blocked"; policy: Extract<ReturnType<typeof evaluateRosterDelayedSignupPolicy>, { allowed: false }> }
-  | { outcome: "fail_open" }
-> {
+}): Promise<SignupPolicyResolution> {
   const now = new Date();
   const rosterId = parseRosterSignupButtonCustomId(input.interaction.customId)?.rosterId ?? "";
   const guildId = String(input.roster.guildId ?? "").trim();
   const userId = input.interaction.user.id;
   const openingTime = input.roster.visitorSignupOpensAt;
 
-  if (!openingTime) {
-    return {
-      outcome: "allowed",
-      policy: {
-        visitorSignupOpensAt: null,
-        delayedSignupRoleIds: [],
-        actorRoleIds: [],
-        allianceMemberRoleIds: [],
-        hasManagerBypass: false,
-        now,
-      },
-    };
-  }
-
-  if (now.getTime() >= openingTime.getTime()) {
-    return {
-      outcome: "allowed",
-      policy: {
-        visitorSignupOpensAt: openingTime,
-        delayedSignupRoleIds: [],
-        actorRoleIds: [],
-        allianceMemberRoleIds: [],
-        hasManagerBypass: false,
-        now,
-      },
-    };
+  const openingPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds: [],
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass: false,
+    now,
+  });
+  if (
+    openingPolicy.outcome === "allowed" &&
+    (openingPolicy.reason === "no_opening_time" || openingPolicy.reason === "opening_reached")
+  ) {
+    return openingPolicy;
   }
 
   let delayedSignupRoleIds: string[];
@@ -423,18 +442,16 @@ async function resolveRosterSignupPolicyInput(input: {
     return { outcome: "fail_open" };
   }
 
-  if (delayedSignupRoleIds.length <= 0) {
-    return {
-      outcome: "allowed",
-      policy: {
-        visitorSignupOpensAt: openingTime,
-        delayedSignupRoleIds,
-        actorRoleIds: [],
-        allianceMemberRoleIds: [],
-        hasManagerBypass: false,
-        now,
-      },
-    };
+  const delayedRolesPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds,
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass: false,
+    now,
+  });
+  if (delayedRolesPolicy.outcome === "allowed" && delayedRolesPolicy.reason === "no_delayed_roles") {
+    return delayedRolesPolicy;
   }
 
   let hasManagerBypass: boolean;
@@ -451,18 +468,16 @@ async function resolveRosterSignupPolicyInput(input: {
     return { outcome: "fail_open" };
   }
 
-  if (hasManagerBypass) {
-    return {
-      outcome: "allowed",
-      policy: {
-        visitorSignupOpensAt: openingTime,
-        delayedSignupRoleIds,
-        actorRoleIds: [],
-        allianceMemberRoleIds: [],
-        hasManagerBypass: true,
-        now,
-      },
-    };
+  const managerBypassPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds,
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass,
+    now,
+  });
+  if (managerBypassPolicy.outcome === "allowed" && managerBypassPolicy.reason === "manager_bypass") {
+    return managerBypassPolicy;
   }
 
   let autoroleConfig: Awaited<ReturnType<typeof autoRoleService.getOrCreateGuildConfig>>;
@@ -507,17 +522,7 @@ async function resolveRosterSignupPolicyInput(input: {
   if (policy.allowed) {
     return {
       outcome: "allowed",
-      policy: {
-        visitorSignupOpensAt: openingTime,
-        delayedSignupRoleIds,
-        actorRoleIds,
-        allianceMemberRoleIds: normalizeRosterSignupPolicyRoleIds([
-          autoroleConfig.verifiedRoleId,
-          autoroleConfig.familyRoleId,
-        ]),
-        hasManagerBypass,
-        now,
-      },
+      reason: policy.reason,
     };
   }
 
