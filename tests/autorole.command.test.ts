@@ -413,7 +413,7 @@ describe("/autorole command", () => {
 
     expect(interaction.editReply).toHaveBeenCalled();
     expect(getEditReplyPayload(interaction).content).toBe(
-      "Autorole command failed. Please try again.",
+      "Autorole command failed: Discord rate-limited member fetching. Try again in about 12 seconds.",
     );
   });
 
@@ -683,7 +683,7 @@ describe("/autorole command", () => {
         ),
       );
       expect(getEditReplyPayload(interaction).content).toBe(
-        "Autorole command failed. Please try again.",
+        "Autorole command failed: boom",
       );
     } finally {
       consoleErrorSpy.mockRestore();
@@ -832,7 +832,7 @@ describe("/autorole command", () => {
     await Autorole.run({} as any, interaction as any, {} as any);
 
     expect(getEditReplyPayload(interaction).content).toBe(
-      "Autorole command failed. Please try again.",
+      "Autorole command failed: non-member-enabled:true requires a saved role. Set non-member-role first.",
     );
   });
 

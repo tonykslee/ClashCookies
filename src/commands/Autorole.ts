@@ -1112,7 +1112,7 @@ export const Autorole: Command = {
         `autorole command failed guild=${guildId} user=${interaction.user.id} path=${commandPath} error=${formatError(error)}`,
       );
       await interaction.editReply({
-        content: "Autorole command failed. Please try again.",
+        content: `Autorole command failed: ${formatError(error)}`,
       });
     }
   },
