@@ -346,6 +346,7 @@ import {
   buildRosterMoveResultSummary,
   evaluateRosterDelayedSignupPolicy,
   formatRosterSignupEligibilityIssueBlock,
+  formatRosterVisitorSignupStatus,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
   type RosterDelayedSignupPolicyInput,
@@ -8300,6 +8301,263 @@ describe("RosterService", () => {
     });
 
     expect(result.outcome).toBe("created");
+  });
+
+  describe("RosterService visitor signup status rendering", () => {
+    function makeVisitorSignupRoster(visitorSignupOpensAt: Date | null) {
+      return makeRosterRecord({
+        visitorSignupOpensAt,
+      });
+    }
+
+    function countExactLine(description: string, expectedLine: string): number {
+      return description.split("\n").filter((line) => line === expectedLine).length;
+    }
+
+    async function buildRosterDescription(visitorSignupOpensAt: Date | null, now?: Date): Promise<string> {
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(visitorSignupOpensAt));
+      const payload = await rosterService.buildRosterSignupPayload(
+        "roster-1",
+        null,
+        now ? { now } : undefined,
+      );
+      return String(payload?.embed.toJSON().description ?? "");
+    }
+
+    async function refreshRosterDescription(visitorSignupOpensAt: Date | null, now?: Date): Promise<string> {
+      const refreshBoardSourceDataSpy = vi.spyOn(rosterService, "refreshRosterBoardSourceData").mockResolvedValue(true);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(visitorSignupOpensAt));
+      try {
+        const payload = await rosterService.refreshRosterSignupPayload(
+          "roster-1",
+          null,
+          now ? { now } : undefined,
+        );
+        return String(payload?.embed.toJSON().description ?? "");
+      } finally {
+        refreshBoardSourceDataSpy.mockRestore();
+      }
+    }
+
+    it("returns no status line when visitor signup opening time is null", () => {
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt: null,
+          now: new Date("2026-01-01T00:00:00.000Z"),
+        }),
+      ).toBeNull();
+    });
+
+    it("formats the visitor signup opening timestamp using second precision before opening", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.987Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:29:59.999Z"),
+        }),
+      ).toBe(`Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`);
+    });
+
+    it("shows visitor signups as open at the exact opening boundary", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:30:00.000Z"),
+        }),
+      ).toBe("Visitor signups: Open");
+    });
+
+    it("shows visitor signups as open after the opening boundary", () => {
+      const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+      expect(
+        formatRosterVisitorSignupStatus({
+          visitorSignupOpensAt,
+          now: new Date("2026-05-01T17:30:00.001Z"),
+        }),
+      ).toBe("Visitor signups: Open");
+    });
+
+    it("renders the timestamped status line exactly once before opening on the initial post payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+      const now = new Date("2026-05-01T10:15:00.000Z");
+      const description = await buildRosterDescription(visitorSignupOpensAt, now);
+      const expectedLine = `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`;
+
+      expect(countExactLine(description, expectedLine)).toBe(1);
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(0);
+    });
+
+    it("renders the open status exactly once after opening on the initial post payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+      const now = new Date("2026-05-02T10:15:00.001Z");
+      const description = await buildRosterDescription(visitorSignupOpensAt, now);
+
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(1);
+      expect(
+        countExactLine(
+          description,
+          `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(0);
+    });
+
+    it("renders the timestamped status line exactly once before opening on the refresh payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-06-10T12:00:00.000Z");
+      const now = new Date("2026-06-10T11:59:59.000Z");
+      const description = await refreshRosterDescription(visitorSignupOpensAt, now);
+      const expectedLine = `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`;
+
+      expect(countExactLine(description, expectedLine)).toBe(1);
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(0);
+    });
+
+    it("renders the open status exactly once after opening on the refresh payload", async () => {
+      const visitorSignupOpensAt = new Date("2026-06-10T12:00:00.000Z");
+      const now = new Date("2026-06-10T12:00:00.001Z");
+      const description = await refreshRosterDescription(visitorSignupOpensAt, now);
+
+      expect(countExactLine(description, "Visitor signups: Open")).toBe(1);
+      expect(
+        countExactLine(
+          description,
+          `Visitor signups: Opens <t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(visitorSignupOpensAt.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(0);
+    });
+
+    it("omits the visitor signup status line when opening time is null and keeps the roster payload intact", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const description = await buildRosterDescription(null, new Date("2026-05-01T10:15:00.000Z"));
+      warnSpy.mockRestore();
+
+      expect(description).toContain("**[CWL Alpha Signup]");
+      expect(description).toContain("Total 0/");
+      expect(description).not.toContain("Visitor signups:");
+    });
+
+    it("removes the status line when a configured opening is cleared on refresh", async () => {
+      const opening = new Date("2026-06-10T12:00:00.000Z");
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(opening));
+      const initialDescription = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-06-10T11:59:59.000Z"),
+      });
+      expect(
+        countExactLine(
+          String(initialDescription?.embed.toJSON().description ?? ""),
+          `Visitor signups: Opens <t:${Math.floor(opening.getTime() / 1000)}:F> (<t:${Math.floor(opening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(null));
+      const refreshedDescription = await refreshRosterDescription(null, new Date("2026-06-10T12:00:00.001Z"));
+
+      expect(refreshedDescription).not.toContain("Visitor signups:");
+    });
+
+    it("updates the timestamp when the configured opening changes on refresh", async () => {
+      const firstOpening = new Date("2026-06-10T12:00:00.000Z");
+      const secondOpening = new Date("2026-06-11T12:45:00.000Z");
+
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(firstOpening));
+      const initialPayload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-06-10T11:59:59.000Z"),
+      });
+
+      prismaMock.roster.findUnique.mockResolvedValueOnce(makeVisitorSignupRoster(secondOpening));
+      const refreshedDescription = await refreshRosterDescription(secondOpening, new Date("2026-06-11T12:44:59.000Z"));
+
+      expect(
+        countExactLine(
+          String(initialPayload?.embed.toJSON().description ?? ""),
+          `Visitor signups: Opens <t:${Math.floor(firstOpening.getTime() / 1000)}:F> (<t:${Math.floor(firstOpening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+      expect(
+        countExactLine(
+          refreshedDescription,
+          `Visitor signups: Opens <t:${Math.floor(secondOpening.getTime() / 1000)}:F> (<t:${Math.floor(secondOpening.getTime() / 1000)}:R>)`,
+        ),
+      ).toBe(1);
+    });
+
+    it("omits invalid opening timestamps without rendering NaN and still renders the roster payload", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const description = await buildRosterDescription(new Date("invalid") as any, new Date("2026-05-01T10:15:00.000Z"));
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("stage=visitor_signup_status_invalid"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("roster_id=roster-1"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("guild_id=guild-1"));
+      expect(description).toContain("CWL Alpha Signup");
+      expect(description).toContain("Total 0/");
+      expect(description).not.toContain("NaN");
+      warnSpy.mockRestore();
+    });
+
+    it("keeps existing roster groups, instructions, requirements, components, and buttons intact when the status line is present", async () => {
+      prismaMock.roster.findUnique.mockResolvedValueOnce(
+        makeRosterRecord({
+          visitorSignupOpensAt: new Date("2026-05-02T10:15:00.000Z"),
+          requiredSignupRoleId: "required-role",
+          noRoleSignupLimit: 2,
+        }),
+      );
+      prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+        {
+          id: "group-confirmed",
+          rosterId: "roster-1",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      ] as any);
+      prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+        {
+          id: "signup-1",
+          rosterId: "roster-1",
+          groupId: "group-confirmed",
+          playerTag: "#PQL0289",
+          playerName: "Alpha",
+          discordUserId: "111111111111111111",
+          signedUpAt: new Date("2026-05-01T10:00:00.000Z"),
+          createdAt: new Date("2026-05-01T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+          group: {
+            id: "group-confirmed",
+            key: "confirmed",
+            name: "Confirmed",
+            description: "Primary roster members",
+            sortOrder: 0,
+          },
+        },
+      ] as any);
+      const payload = await rosterService.buildRosterSignupPayload("roster-1", null, {
+        now: new Date("2026-05-01T10:15:00.000Z"),
+      });
+      const description = String(payload?.embed.toJSON().description ?? "");
+      const componentIds = payload?.components.flatMap((row) => {
+        const rowJson = row.toJSON() as any;
+        return Array.isArray(rowJson.components)
+          ? rowJson.components.map((component: any) => component.custom_id ?? component.customId ?? component.data?.custom_id ?? component.data?.customId)
+          : [];
+      }) ?? [];
+
+      expect(description).toContain("Visitor signups: Opens");
+      expect(description).toContain("**Confirmed - 1**");
+      expect(description).toContain("Alpha");
+      expect(description).toContain("Total 1/");
+      expect(componentIds).toEqual(
+        expect.arrayContaining([
+          "roster-post-action:refresh:roster-1",
+          "roster-post-action:signup:roster-1",
+          "roster-post-action:optout:roster-1",
+          "roster-post-action:settings:roster-1",
+        ]),
+      );
+      expect(String(payload?.embed.toJSON().title ?? "")).toBe("CWL Alpha");
+    });
   });
 
   describe("RosterService delayed-signup policy", () => {
