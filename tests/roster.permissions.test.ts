@@ -18,7 +18,7 @@ function buildInteraction(input?: { isAdmin?: boolean }) {
 }
 
 describe("roster permission defaults", () => {
-  it("keeps roster list public while create/post/manage/edit/delete stay admin-only by default", async () => {
+  it("keeps roster list and show public while create/set/reset/post/manage/edit/delete stay admin-only by default", async () => {
     const settings = {
       get: vi.fn(async () => null),
     };
@@ -28,7 +28,16 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:list"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(true);
     await expect(
+      service.canUseAnyTarget(["roster:show"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(true);
+    await expect(
       service.canUseAnyTarget(["roster:create"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["roster:set"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["roster:reset"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
       service.canUseAnyTarget(["roster:post"], buildInteraction({ isAdmin: false })),
@@ -52,7 +61,16 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:list"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
     await expect(
+      service.canUseAnyTarget(["roster:show"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
       service.canUseAnyTarget(["roster:create"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["roster:set"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["roster:reset"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:post"], buildInteraction({ isAdmin: true })),

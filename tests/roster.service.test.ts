@@ -18,6 +18,11 @@ const prismaMock = vi.hoisted(() => ({
     update: vi.fn(),
     delete: vi.fn(),
   },
+  rosterGuildConfig: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   rosterGroup: {
     createMany: vi.fn(),
     findMany: vi.fn(),
@@ -342,13 +347,16 @@ vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", async () => {
 
 import {
   ROSTER_DEFAULT_GROUPS,
+  ROSTER_DEFAULT_DISPLAY_COLUMNS,
   buildRosterSignupRoleRequirementLines,
   buildRosterMoveResultSummary,
   evaluateRosterDelayedSignupPolicy,
   formatRosterSignupEligibilityIssueBlock,
   formatRosterVisitorSignupStatus,
+  parseRosterDisplayColumnsInput,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
+  resolveRosterDisplayColumns,
   type RosterDelayedSignupPolicyInput,
   type RosterDelayedSignupPolicyResult,
 } from "../src/services/RosterService";
@@ -621,6 +629,220 @@ describe("RosterService", () => {
         ),
       ),
     });
+  });
+
+  it("keeps the built-in roster display column default in the new order", () => {
+    expect(ROSTER_DEFAULT_DISPLAY_COLUMNS).toEqual([
+      "townhall_icons",
+      "discord_username",
+      "player_name",
+      "player_tag",
+    ]);
+  });
+
+  it("parses, stores, and resets guild roster display columns through the service", async () => {
+    const parsed = parseRosterDisplayColumnsInput(" townhall_icons, DISCORD_USERNAME, player_name, player_tag ");
+    expect(parsed).toEqual({
+      ok: true,
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+    });
+
+    const duplicate = parseRosterDisplayColumnsInput("player_name,player_name");
+    expect(duplicate).toEqual({
+      ok: false,
+      error: 'Duplicate roster column key "player_name". Use /roster show to view the valid column keys.',
+    });
+
+    const unknown = parseRosterDisplayColumnsInput("player_name,unknown_key");
+    expect(unknown).toEqual({
+      ok: false,
+      error: 'Unknown roster column key "unknown_key". Use /roster show to view the valid column keys.',
+    });
+
+    prismaMock.rosterGuildConfig.upsert.mockResolvedValueOnce({
+      guildId: "guild-1",
+      defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-06-22T13:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T13:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGuildConfig.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(
+      rosterService.setRosterGuildDisplayColumns({
+        guildId: "guild-1",
+        displayColumns: parsed.ok ? parsed.columns : [],
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "server_override",
+    });
+    expect(prismaMock.rosterGuildConfig.upsert).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+      create: {
+        guildId: "guild-1",
+        defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        updatedByDiscordUserId: "111111111111111111",
+      },
+      update: {
+        defaultDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        updatedByDiscordUserId: "111111111111111111",
+      },
+    });
+
+    await expect(
+      rosterService.resetRosterGuildDisplayColumns({
+        guildId: "guild-1",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+    expect(prismaMock.rosterGuildConfig.deleteMany).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+    });
+  });
+
+  it("resolves explicit roster overrides before guild defaults and built-in fallback", () => {
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["player_name", "discord_username", "player_tag"],
+        guildDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username", "player_tag"],
+      source: "roster_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "roster_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: null,
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username"],
+      source: "server_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: ["invalid" as any],
+        guildDisplayColumns: ["player_name", "discord_username"],
+      }),
+    ).toEqual({
+      columns: ["player_name", "discord_username"],
+      source: "server_override",
+    });
+
+    expect(
+      resolveRosterDisplayColumns({
+        rosterDisplayColumns: null,
+        guildDisplayColumns: ["invalid" as any],
+      }),
+    ).toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+  });
+
+  it("renders uncustomized rosters using the guild default display columns on post", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "FWA",
+      rosterCategory: "signup",
+      title: "FWA Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      visitorSignupOpensAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      maxMembers: 50,
+      maxAccountsPerUser: null,
+      minTownhall: null,
+      maxTownhall: null,
+      minimumWeight: null,
+      requiredSignupRoleId: null,
+      noRoleSignupLimit: 0,
+      rosterRoleId: null,
+      allowMultiSignup: true,
+      sortBy: null,
+      displayColumns: null,
+      importMembers: false,
+      postButtonMode: "standard",
+      lifecycleState: "OPEN",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    } as any);
+    prismaMock.rosterGroup.findMany.mockResolvedValueOnce([
+      {
+        id: "group-confirmed",
+        rosterId: "roster-1",
+        key: "confirmed",
+        name: "Confirmed",
+        description: "Primary roster members",
+        sortOrder: 0,
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ] as any);
+    prismaMock.rosterGuildConfig.findUnique.mockResolvedValueOnce({
+      defaultDisplayColumns: ["player_name", "discord_username", "player_tag"],
+    } as any);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([
+      {
+        id: "signup-1",
+        rosterId: "roster-1",
+        groupId: "group-confirmed",
+        playerTag: "#PQL0289",
+        playerName: "Alpha",
+        discordUserId: "111111111111111111",
+        signedUpAt: new Date("2026-04-20T00:00:00.000Z"),
+        createdAt: new Date("2026-04-20T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+        group: {
+          id: "group-confirmed",
+          key: "confirmed",
+          name: "Confirmed",
+          description: "Primary roster members",
+          sortOrder: 0,
+        },
+      },
+    ] as any);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      makePlayerCurrentMap([["#PQL0289", 16]]),
+    );
+    todoSnapshotServiceMock.listSnapshotsByPlayerTags.mockResolvedValueOnce([] as any);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
+
+    const payload = await rosterService.buildRosterSignupPayload("roster-1");
+    const description = String(payload?.embed.toJSON().description ?? "");
+    const headerLine = description.split("\n").find((line) => line.startsWith("`PLAYER")) ?? "";
+
+    expect(headerLine).toContain("PLAYER");
+    expect(headerLine).toContain("USERNAME");
+    expect(headerLine.indexOf("PLAYER")).toBeLessThan(headerLine.indexOf("USERNAME"));
+    expect(headerLine.indexOf("USERNAME")).toBeLessThan(headerLine.indexOf("Player tag"));
   });
 
   it("stores null for visitor signup opening when omitted during roster create", async () => {
@@ -2420,9 +2642,11 @@ describe("RosterService", () => {
     const description = payload?.embed.toJSON().description ?? "";
     const embedTitle = payload?.embed.toJSON().title ?? "";
     const lines = description.split("\n");
-    const headerLine = lines.find((line) => line.startsWith("`TH "));
-    const confirmedRow = lines.find((line) => line.startsWith("`16 Alpha"));
-    const substituteRow = lines.find((line) => line.startsWith("`15 Bravo"));
+    const headerLine = lines.find(
+      (line) => line.includes(":house:") && line.includes("USERNAME") && line.includes("PLAYER") && line.includes("Player tag"),
+    );
+    const confirmedRow = lines.find((line) => line.includes("TonyLee") && line.includes("Alpha"));
+    const substituteRow = lines.find((line) => line.includes("Bravo") && line.includes("#QGRJ2222"));
     expect(headerLine).toBeTruthy();
     expect(confirmedRow).toBeTruthy();
     expect(substituteRow).toBeTruthy();
@@ -2433,15 +2657,21 @@ describe("RosterService", () => {
     expect(description).toContain("**Confirmed - 1**");
     expect(description).toContain("**Substitute - 1**");
     expect(description).toContain("TonyLee");
-    expect(description).toContain("Rising Dawn");
-    expect(description).toContain("Gabbar");
     expect(description).toContain("\nTotal 2/");
     expect(description).not.toContain("```");
     expect(description).not.toContain("<@");
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("PLAYER")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Alpha"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("TonyLee"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("CLAN")).toBe((confirmedRow ?? "").replace(/`/g, "").indexOf("Rising Dawn"));
-    expect((headerLine ?? "").replace(/`/g, "").indexOf("USERNAME")).toBe((substituteRow ?? "").replace(/`/g, "").indexOf("-"));
+    const normalizedHeader = (headerLine ?? "").replace(/`/g, "");
+    expect(normalizedHeader).toContain(":house:");
+    expect(normalizedHeader.indexOf("USERNAME")).toBeLessThan(normalizedHeader.indexOf("PLAYER"));
+    expect(normalizedHeader.indexOf("PLAYER")).toBeLessThan(normalizedHeader.indexOf("Player tag"));
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain(":th16:");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("TonyLee");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("Alpha");
+    expect((confirmedRow ?? "").replace(/`/g, "")).toContain("#PQL0289");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain(":th15:");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("-");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("Bravo");
+    expect((substituteRow ?? "").replace(/`/g, "")).toContain("#QGRJ2222");
     expect(cocServiceMock.getClan).not.toHaveBeenCalled();
     const componentIds = payload?.components.flatMap((row) => {
       const rowJson = row.toJSON() as any;
@@ -4099,7 +4329,8 @@ describe("RosterService", () => {
     expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocService, null);
     expect(payload).toBeTruthy();
     const description = String(payload?.embed.toJSON().description ?? "");
-    expect(description).toContain("`15 Player 298");
+    expect(description).toContain(":th15:");
+    expect(description).toContain("Player 298");
     expect(description).not.toContain("`- Player 298");
   });
 
@@ -4155,7 +4386,8 @@ describe("RosterService", () => {
     expect(refreshRosterBoardSourceDataSpy).toHaveBeenCalledWith("roster-1", cocService, null);
     expect(payload).toBeTruthy();
     const description = String(payload?.embed.toJSON().description ?? "");
-    expect(description).toContain("`15 Player 298");
+    expect(description).toContain(":th15:");
+    expect(description).toContain("Player 298");
     expect(description).not.toContain("`- Player 298");
   });
 

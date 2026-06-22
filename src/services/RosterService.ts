@@ -454,6 +454,7 @@ export type RosterPostChangeRosterCancelResult =
 
 export type RosterSignupView = {
   roster: RosterRecord;
+  guildDisplayColumns?: string[] | null;
   clanDisplayName: string | null;
   clanLeagueLabel: string | null;
   groups: Array<
@@ -1382,37 +1383,48 @@ export const ROSTER_DISPLAY_COLUMN_ORDER: readonly RosterDisplayColumn[] = [
   ROSTER_DISPLAY_COLUMNS.WEIGHT_AGE,
 ] as const;
 
-const ROSTER_DEFAULT_DISPLAY_COLUMNS: readonly RosterDisplayColumn[] = [
-  ROSTER_DISPLAY_COLUMNS.TH_LEVEL,
-  ROSTER_DISPLAY_COLUMNS.PLAYER_NAME,
+export const ROSTER_DEFAULT_DISPLAY_COLUMNS: readonly RosterDisplayColumn[] = [
+  ROSTER_DISPLAY_COLUMNS.TOWNHALL_ICONS,
   ROSTER_DISPLAY_COLUMNS.DISCORD_USERNAME,
-  ROSTER_DISPLAY_COLUMNS.CLAN_NAME,
+  ROSTER_DISPLAY_COLUMNS.PLAYER_NAME,
+  ROSTER_DISPLAY_COLUMNS.PLAYER_TAG,
 ];
+
+const ROSTER_DISPLAY_COLUMN_SET = new Set<string>(ROSTER_DISPLAY_COLUMN_ORDER);
+
+export type RosterDisplayColumnsResolutionSource =
+  | "roster_override"
+  | "server_override"
+  | "built_in";
+
+export type RosterDisplayColumnsResolution = {
+  columns: RosterDisplayColumn[];
+  source: RosterDisplayColumnsResolutionSource;
+};
 
 function normalizeRosterDisplayColumn(input: string | null | undefined): RosterDisplayColumn | null {
   const normalized = String(input ?? "")
     .trim()
     .toLowerCase();
   if (!normalized) return null;
-  const values = Object.values(ROSTER_DISPLAY_COLUMNS) as RosterDisplayColumn[];
-  return values.includes(normalized as RosterDisplayColumn) ? (normalized as RosterDisplayColumn) : null;
+  return ROSTER_DISPLAY_COLUMN_SET.has(normalized) ? (normalized as RosterDisplayColumn) : null;
 }
 
 function normalizeRosterDisplayColumns(input: string[] | null | undefined): RosterDisplayColumn[] | null {
-  const normalized = (Array.isArray(input) ? input : [])
-    .map((value) => normalizeRosterDisplayColumn(value))
-    .filter((value): value is RosterDisplayColumn => Boolean(value));
-  const uniqueOrdered = [...new Set(normalized)];
-  if (uniqueOrdered.length <= 0) {
+  const normalized: RosterDisplayColumn[] = [];
+  const seen = new Set<RosterDisplayColumn>();
+  for (const value of Array.isArray(input) ? input : []) {
+    const column = normalizeRosterDisplayColumn(value);
+    if (!column || seen.has(column)) {
+      return null;
+    }
+    seen.add(column);
+    normalized.push(column);
+  }
+  if (normalized.length <= 0) {
     return null;
   }
-  if (
-    uniqueOrdered.length === ROSTER_DEFAULT_DISPLAY_COLUMNS.length &&
-    uniqueOrdered.every((value, index) => value === ROSTER_DEFAULT_DISPLAY_COLUMNS[index])
-  ) {
-    return null;
-  }
-  return uniqueOrdered;
+  return normalized;
 }
 
 function parseRosterDisplayColumns(input: string | null | undefined): RosterDisplayColumn[] | null {
@@ -1430,6 +1442,85 @@ function parseRosterDisplayColumns(input: string | null | undefined): RosterDisp
 function serializeRosterDisplayColumns(input: string[] | null | undefined): string | null {
   const normalized = normalizeRosterDisplayColumns(input);
   return normalized ? JSON.stringify(normalized) : null;
+}
+
+export function parseRosterDisplayColumnsInput(
+  input: string | null | undefined,
+): { ok: true; columns: RosterDisplayColumn[] } | { ok: false; error: string } {
+  const raw = normalizeRosterText(input ?? null);
+  if (!raw) {
+    return {
+      ok: false,
+      error: "Columns cannot be empty. Use /roster show to view the valid column keys.",
+    };
+  }
+
+  const seen = new Set<RosterDisplayColumn>();
+  const columns: RosterDisplayColumn[] = [];
+  for (const token of raw.split(",")) {
+    const normalizedToken = String(token ?? "")
+      .trim()
+      .toLowerCase();
+    if (!normalizedToken) {
+      return {
+        ok: false,
+        error: "Columns cannot contain empty entries. Use /roster show to view the valid column keys.",
+      };
+    }
+    const column = normalizeRosterDisplayColumn(normalizedToken);
+    if (!column) {
+      return {
+        ok: false,
+        error: `Unknown roster column key "${normalizedToken}". Use /roster show to view the valid column keys.`,
+      };
+    }
+    if (seen.has(column)) {
+      return {
+        ok: false,
+        error: `Duplicate roster column key "${column}". Use /roster show to view the valid column keys.`,
+      };
+    }
+    seen.add(column);
+    columns.push(column);
+  }
+
+  if (columns.length <= 0) {
+    return {
+      ok: false,
+      error: "Columns cannot be empty. Use /roster show to view the valid column keys.",
+    };
+  }
+
+  return {
+    ok: true,
+    columns,
+  };
+}
+
+export function resolveRosterDisplayColumns(input: {
+  rosterDisplayColumns?: string[] | null;
+  guildDisplayColumns?: string[] | null;
+}): RosterDisplayColumnsResolution {
+  const rosterColumns = normalizeRosterDisplayColumns(input.rosterDisplayColumns ?? null);
+  if (rosterColumns) {
+    return {
+      columns: rosterColumns,
+      source: "roster_override",
+    };
+  }
+
+  const guildColumns = normalizeRosterDisplayColumns(input.guildDisplayColumns ?? null);
+  if (guildColumns) {
+    return {
+      columns: guildColumns,
+      source: "server_override",
+    };
+  }
+
+  return {
+    columns: [...ROSTER_DEFAULT_DISPLAY_COLUMNS],
+    source: "built_in",
+  };
 }
 
 function normalizeRosterRoleId(input: string | null | undefined): string | null {
@@ -5317,8 +5408,10 @@ async function buildRosterSignupPayloadFromView(
         } as RosterSignupView);
   const title = normalizeRosterText(resolvedView.clanDisplayName ?? null) ?? normalizeClanTag(resolvedView.roster.clanTag ?? "") ?? "Roster";
   const groups = buildRosterGroupsWithSignups(resolvedView);
-  const columns =
-    normalizeRosterDisplayColumns(resolvedView.roster.displayColumns) ?? [...ROSTER_DEFAULT_DISPLAY_COLUMNS];
+  const columns = resolveRosterDisplayColumns({
+    rosterDisplayColumns: resolvedView.roster.displayColumns,
+    guildDisplayColumns: resolvedView.guildDisplayColumns ?? null,
+  }).columns;
   const widths = measureRosterBoardColumnWidths(groups.flatMap((group) => group.signups), columns);
   const rosterLabel = `**${buildClanProfileMarkdownLink(resolvedView.roster.title || "Roster Signup", resolvedView.roster.clanTag)}** ${
     resolvedView.clanLeagueLabel ?? resolvedView.roster.rosterType
@@ -5563,40 +5656,48 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
   });
   if (!roster) return null;
 
-  const groups = await prisma.rosterGroup.findMany({
-    where: { rosterId: roster.id },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    select: {
-      id: true,
-      key: true,
-      name: true,
-      description: true,
-      sortOrder: true,
-    },
-  });
-  const signups = await prisma.rosterSignup.findMany({
-    where: { rosterId: roster.id },
-    select: {
-      id: true,
-      rosterId: true,
-      groupId: true,
-      playerTag: true,
-      playerName: true,
-      discordUserId: true,
-      signedUpAt: true,
-      createdAt: true,
-      updatedAt: true,
-      group: {
-        select: {
-          id: true,
-          key: true,
-          name: true,
-          description: true,
-          sortOrder: true,
+  const [groups, signups, guildConfig] = await Promise.all([
+    prisma.rosterGroup.findMany({
+      where: { rosterId: roster.id },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        key: true,
+        name: true,
+        description: true,
+        sortOrder: true,
+      },
+    }),
+    prisma.rosterSignup.findMany({
+      where: { rosterId: roster.id },
+      select: {
+        id: true,
+        rosterId: true,
+        groupId: true,
+        playerTag: true,
+        playerName: true,
+        discordUserId: true,
+        signedUpAt: true,
+        createdAt: true,
+        updatedAt: true,
+        group: {
+          select: {
+            id: true,
+            key: true,
+            name: true,
+            description: true,
+            sortOrder: true,
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.rosterGuildConfig.findUnique({
+      where: { guildId: roster.guildId },
+      select: {
+        defaultDisplayColumns: true,
+      },
+    }),
+  ]);
   const signupTags = signups.map((signup) => normalizePlayerTag(signup.playerTag)).filter(Boolean);
   const townHallByTag = await loadRosterDisplayTownHallMap({
     clanTag: roster.clanTag,
@@ -5683,6 +5784,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
 
   const payloadView = {
     roster: mappedRoster,
+    guildDisplayColumns: normalizeRosterDisplayColumns(guildConfig?.defaultDisplayColumns ?? null),
     clanDisplayName,
     clanLeagueLabel: normalizeRosterText(trackedClan?.leagueLabel ?? null) ?? null,
     groups: groups.map((group) => ({
@@ -6306,6 +6408,87 @@ export class RosterService {
     const hydrated = await this.refreshRosterBoardSourceData(rosterId, cocService ?? null, options?.emojiClient ?? null);
     if (!hydrated) return null;
     return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
+  }
+
+  async getRosterGuildDisplayColumns(input: {
+    guildId: string;
+  }): Promise<RosterDisplayColumnsResolution> {
+    const guildId = String(input.guildId ?? "").trim();
+    if (!guildId) {
+      return {
+        columns: [...ROSTER_DEFAULT_DISPLAY_COLUMNS],
+        source: "built_in",
+      };
+    }
+
+    const config = await prisma.rosterGuildConfig.findUnique({
+      where: { guildId },
+      select: {
+        defaultDisplayColumns: true,
+      },
+    });
+    const columns = normalizeRosterDisplayColumns(config?.defaultDisplayColumns ?? null);
+    if (columns) {
+      return {
+        columns,
+        source: "server_override",
+      };
+    }
+
+    return {
+      columns: [...ROSTER_DEFAULT_DISPLAY_COLUMNS],
+      source: "built_in",
+    };
+  }
+
+  async setRosterGuildDisplayColumns(input: {
+    guildId: string;
+    displayColumns: string[];
+    updatedByDiscordUserId?: string | null;
+  }): Promise<RosterDisplayColumnsResolution> {
+    const guildId = String(input.guildId ?? "").trim();
+    if (!guildId) {
+      throw new Error("guildId is required.");
+    }
+
+    const columns = normalizeRosterDisplayColumns(input.displayColumns);
+    if (!columns) {
+      throw new Error("displayColumns must contain at least one valid roster column.");
+    }
+
+    await prisma.rosterGuildConfig.upsert({
+      where: { guildId },
+      create: {
+        guildId,
+        defaultDisplayColumns: columns,
+        updatedByDiscordUserId: normalizeDiscordUserId(input.updatedByDiscordUserId),
+      },
+      update: {
+        defaultDisplayColumns: columns,
+        updatedByDiscordUserId: normalizeDiscordUserId(input.updatedByDiscordUserId),
+      },
+    });
+
+    return {
+      columns,
+      source: "server_override",
+    };
+  }
+
+  async resetRosterGuildDisplayColumns(input: {
+    guildId: string;
+  }): Promise<RosterDisplayColumnsResolution> {
+    const guildId = String(input.guildId ?? "").trim();
+    if (guildId) {
+      await prisma.rosterGuildConfig.deleteMany({
+        where: { guildId },
+      });
+    }
+
+    return {
+      columns: [...ROSTER_DEFAULT_DISPLAY_COLUMNS],
+      source: "built_in",
+    };
   }
 
   /** Purpose: refresh the live/persisted board owners for one roster before rerendering its post. */

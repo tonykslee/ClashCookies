@@ -81,6 +81,9 @@ import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 type RosterSubcommand =
   | "create"
   | "list"
+  | "show"
+  | "set"
+  | "reset"
   | "post"
   | "ping"
   | "manage"
@@ -103,6 +106,7 @@ function makeInteraction(input: {
   group?: string | null;
   targetRoster?: string | null;
   targetGroup?: string | null;
+  columns?: string | null;
   players?: string | null;
   pingOption?: string | null;
   userId?: string | null;
@@ -145,6 +149,7 @@ function makeInteraction(input: {
         if (name === "message") return input.message ?? null;
         if (name === "target_roster") return input.targetRoster ?? null;
         if (name === "target_group") return input.targetGroup ?? null;
+        if (name === "columns") return input.columns ?? null;
         if (name === "group") return input.group ?? null;
         if (name === "players") return input.players ?? null;
         if (name === "ping_option") return input.pingOption ?? null;
@@ -387,6 +392,9 @@ describe("/roster command", () => {
     vi.spyOn(rosterService, "createRosterManagerUserSelectionPanel");
     vi.spyOn(rosterService, "createRosterPingSelectionPanel");
     vi.spyOn(rosterService, "createRosterPostChangeRosterPanel");
+    vi.spyOn(rosterService, "getRosterGuildDisplayColumns");
+    vi.spyOn(rosterService, "setRosterGuildDisplayColumns");
+    vi.spyOn(rosterService, "resetRosterGuildDisplayColumns");
     vi.spyOn(rosterService, "updateRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterSelectionPanel");
     vi.spyOn(rosterService, "confirmRosterPingSelectionPanel");
@@ -524,6 +532,75 @@ describe("/roster command", () => {
         noRoleSignupLimit: 0,
       }),
     );
+  });
+
+  it("shows the guild default roster columns through /roster show", async () => {
+    (rosterService.getRosterGuildDisplayColumns as any).mockResolvedValue({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "server_override",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "show",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.getRosterGuildDisplayColumns).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Server override");
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Current layout: `townhall_icons | discord_username | player_name | player_tag`",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("`townhall_icons`");
+  });
+
+  it("saves guild default roster columns through /roster set", async () => {
+    (rosterService.setRosterGuildDisplayColumns as any).mockResolvedValue({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "server_override",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "set",
+      columns: "townhall_icons, discord_username, player_name, player_tag",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.setRosterGuildDisplayColumns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        displayColumns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Saved layout: `townhall_icons | discord_username | player_name | player_tag`",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Server override");
+  });
+
+  it("resets guild default roster columns through /roster reset", async () => {
+    (rosterService.resetRosterGuildDisplayColumns as any).mockResolvedValue({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "reset",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.resetRosterGuildDisplayColumns).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Reset to built-in layout: `townhall_icons | discord_username | player_name | player_tag`",
+    );
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Built-in");
   });
 
   it("can clear the signup role requirement while preserving the no-role allowance", async () => {
@@ -3731,6 +3808,78 @@ describe("/roster command", () => {
     const linkRow = payload.components[1]?.toJSON?.().components?.[0];
     expect(linkRow?.label ?? linkRow?.data?.label).toBe("Open Google Sheet");
     expect(linkRow?.url ?? linkRow?.data?.url).toBe("https://docs.google.com/spreadsheets/d/sheet-1/edit?usp=sharing");
+  });
+
+  it("shows the guild default columns as the selected roster customize values when no explicit override exists", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+      sortBy: null,
+      displayColumns: null,
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        title: "CWL Alpha Signup",
+        clanTag: "#2QG2C08UP",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+        postButtonMode: "standard",
+        minTownhall: 13,
+        maxTownhall: null,
+        rosterRoleId: null,
+        sortBy: null,
+        displayColumns: null,
+      },
+      guildDisplayColumns: ["townhall_icons", "player_name"],
+      clanDisplayName: "CWL Alpha",
+      clanLeagueLabel: "Champion League II",
+      groups: [],
+      signups: [],
+      totalSignupCount: 0,
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["customize"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      showModal: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    const payload = interaction.reply.mock.calls[0]?.[0] as any;
+    const columnMenu = payload.components[0]?.toJSON?.().components?.[0];
+    const selectedValues = (columnMenu?.options ?? [])
+      .filter((option: any) => option.default)
+      .map((option: any) => option.value);
+
+    expect(selectedValues).toEqual(["townhall_icons", "player_name"]);
+    expect(columnMenu?.options?.find((option: any) => option.value === "discord_username")?.default).toBe(false);
   });
 
   it("persists visible columns immediately from the select menu and rerenders the posted roster board", async () => {
