@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import { Roster } from "../src/commands/Roster";
 
 describe("/roster command shape", () => {
-  it("registers create, list, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
+  it("registers create, list, show, set, reset, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
         option.name === "create",
     );
     const list = Roster.options?.find((option) => option.name === "list");
+    const show = Roster.options?.find((option) => option.name === "show");
+    const set = Roster.options?.find((option) => option.name === "set");
+    const reset = Roster.options?.find((option) => option.name === "reset");
     const post = Roster.options?.find((option) => option.name === "post");
     const ping = Roster.options?.find((option) => option.name === "ping");
     const manage = Roster.options?.find((option) => option.name === "manage");
@@ -21,6 +24,9 @@ describe("/roster command shape", () => {
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(list?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(list?.options?.map((option: any) => option.name)).toEqual(["name", "user", "player", "clan"]);
+    expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(set?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(reset?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(post?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(ping?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(manage?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -65,6 +71,8 @@ describe("/roster command shape", () => {
     expect(create?.options?.find((option: any) => option.name === "import_members")?.type).toBe(
       ApplicationCommandOptionType.Boolean,
     );
+
+    expect(set?.options?.find((option: any) => option.name === "columns")?.required).toBe(true);
 
     expect(post?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);
     expect(ping?.options?.find((option: any) => option.name === "roster")?.required).toBe(true);

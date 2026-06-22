@@ -1293,6 +1293,14 @@ model Roster {
   @@index([guildId, startsAt])
 }
 
+model RosterGuildConfig {
+  guildId                String   @id
+  defaultDisplayColumns   String[]
+  updatedByDiscordUserId  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
 model RosterGroup {
   id          String   @id @default(cuid())
   rosterId    String
