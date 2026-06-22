@@ -114,6 +114,7 @@ function makeInteraction(input: {
   displayTimezone?: string | null;
   startTime?: string | null;
   endTime?: string | null;
+  visitorSignupOpenTime?: string | null;
   maxMembers?: number | null;
   maxAccountsPerUser?: number | null;
   minTownhall?: number | null;
@@ -122,6 +123,7 @@ function makeInteraction(input: {
   requiredRole?: string | null;
   noRoleSignupLimit?: number | null;
   clearRequiredRole?: boolean | null;
+  clearVisitorSignupOpenTime?: boolean | null;
   rosterRole?: string | null;
   allowMultiSignup?: boolean | null;
   sortBy?: string | null;
@@ -157,6 +159,7 @@ function makeInteraction(input: {
         if (name === "display-timezone") return input.displayTimezone ?? null;
         if (name === "start_time") return input.startTime ?? null;
         if (name === "end_time") return input.endTime ?? null;
+        if (name === "visitor_signup_open_time") return input.visitorSignupOpenTime ?? null;
         if (name === "roster_role") return input.rosterRole ?? null;
         if (name === "sort_by") return input.sortBy ?? null;
         if (name === "player") return input.player ?? null;
@@ -192,6 +195,7 @@ function makeInteraction(input: {
         if (name === "import_members") return input.importMembers ?? null;
         if (name === "delete_role") return input.deleteRole ?? null;
         if (name === "clear-required-role") return input.clearRequiredRole ?? null;
+        if (name === "clear_visitor_signup_open_time") return input.clearVisitorSignupOpenTime ?? null;
         return null;
       }),
     },
@@ -446,6 +450,7 @@ describe("/roster command", () => {
         clanTag: "#2QG2C08UP",
         timezone: "America/Los_Angeles",
         displayTimezone: "America/Los_Angeles",
+        visitorSignupOpensAt: null,
         name: expect.stringContaining("CWL Alpha"),
         startsAt: expect.any(Date),
       }),
@@ -478,6 +483,39 @@ describe("/roster command", () => {
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
       "Use /roster post roster:roster-2 to publish it.",
     );
+  });
+
+  it("parses visitor signup opening time in the selected roster timezone when creating a roster", async () => {
+    (rosterService.createRoster as any).mockResolvedValue({ id: "roster-4" });
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      timezone: "America/Los_Angeles",
+      visitorSignupOpenTime: "2026-07-01 12:00",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    const createPayload = rosterService.createRoster.mock.calls.at(-1)?.[0] as any;
+    expect(createPayload.visitorSignupOpensAt).toEqual(new Date("2026-07-01T19:00:00.000Z"));
+    expect(createPayload.timezone).toBe("America/Los_Angeles");
+  });
+
+  it("rejects an invalid visitor signup opening time during roster create", async () => {
+    const interaction = makeInteraction({
+      subcommand: "create",
+      clan: "#2QG2C08UP",
+      timezone: "America/Los_Angeles",
+      visitorSignupOpenTime: "not-a-date",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Invalid visitor_signup_open_time. Use YYYY-MM-DD HH:mm with a valid timezone.",
+    );
+    expect(rosterService.createRoster).not.toHaveBeenCalled();
   });
 
   it("hydrates CWL tracked metadata before deriving the default CWL roster name", async () => {
@@ -4817,6 +4855,7 @@ describe("/roster command", () => {
     expect(editUpdatePayload.displayTimezone).toBeUndefined();
     expect(editUpdatePayload.startsAt).toBeUndefined();
     expect(editUpdatePayload.endsAt).toBeUndefined();
+    expect(editUpdatePayload.visitorSignupOpensAt).toBeUndefined();
     expect(editUpdatePayload.maxMembers).toBeUndefined();
     expect(editUpdatePayload.maxAccountsPerUser).toBeUndefined();
     expect(editUpdatePayload.minTownhall).toBeUndefined();
@@ -4916,6 +4955,7 @@ describe("/roster command", () => {
       subcommand: "edit",
       roster: "roster-1",
       title: "CWL Alpha Signup (Alias)",
+      clearVisitorSignupOpenTime: false,
     }) as any;
     titleOnlyInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
 
@@ -4925,6 +4965,74 @@ describe("/roster command", () => {
       "Provide at least one roster field to edit.",
     );
     expect(rosterService.updateRoster.mock.calls.length).toBe(updateCallsBeforeTitle);
+
+    const editsBeforeVisitorTests = editedMessage.edit.mock.calls.length;
+    const visitorTimezoneInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      visitorSignupOpenTime: "2026-07-01 12:00",
+      displayTimezone: "America/New_York",
+    }) as any;
+    visitorTimezoneInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    await Roster.run({} as any, visitorTimezoneInteraction as any);
+    const visitorTimezonePayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(visitorTimezonePayload.visitorSignupOpensAt).toEqual(new Date("2026-07-01T19:00:00.000Z"));
+    expect(visitorTimezonePayload.timezone).toBeUndefined();
+    expect(visitorTimezonePayload.displayTimezone).toBe("America/New_York");
+    expect(editedMessage.edit.mock.calls.length).toBeGreaterThan(editsBeforeVisitorTests);
+
+    const editsBeforeVisitorTimezoneChange = editedMessage.edit.mock.calls.length;
+    const visitorTimezoneChangeInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      timezone: "America/New_York",
+      visitorSignupOpenTime: "2026-07-01 12:00",
+    }) as any;
+    visitorTimezoneChangeInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    await Roster.run({} as any, visitorTimezoneChangeInteraction as any);
+    const visitorTimezoneChangePayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(visitorTimezoneChangePayload.timezone).toBe("America/New_York");
+    expect(visitorTimezoneChangePayload.visitorSignupOpensAt).toEqual(new Date("2026-07-01T16:00:00.000Z"));
+    expect(editedMessage.edit.mock.calls.length).toBeGreaterThan(editsBeforeVisitorTimezoneChange);
+
+    const editsBeforeClearVisitor = editedMessage.edit.mock.calls.length;
+    const clearVisitorInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      clearVisitorSignupOpenTime: true,
+    }) as any;
+    clearVisitorInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    await Roster.run({} as any, clearVisitorInteraction as any);
+    const clearVisitorPayload = rosterService.updateRoster.mock.calls.at(-1)?.[0] as any;
+    expect(clearVisitorPayload.visitorSignupOpensAt).toBeNull();
+    expect(editedMessage.edit.mock.calls.length).toBeGreaterThan(editsBeforeClearVisitor);
+
+    const updateCallsBeforeInvalidVisitor = rosterService.updateRoster.mock.calls.length;
+    const invalidVisitorInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      visitorSignupOpenTime: "invalid",
+    }) as any;
+    invalidVisitorInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    await Roster.run({} as any, invalidVisitorInteraction as any);
+    expect(String(invalidVisitorInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Invalid visitor_signup_open_time. Use YYYY-MM-DD HH:mm with a valid timezone.",
+    );
+    expect(rosterService.updateRoster.mock.calls.length).toBe(updateCallsBeforeInvalidVisitor);
+
+    const updateCallsBeforeConflictVisitor = rosterService.updateRoster.mock.calls.length;
+    const conflictingVisitorInteraction = makeInteraction({
+      subcommand: "edit",
+      roster: "roster-1",
+      visitorSignupOpenTime: "2026-07-01 12:00",
+      clearVisitorSignupOpenTime: true,
+    }) as any;
+    conflictingVisitorInteraction.client.channels.fetch = vi.fn().mockResolvedValue(rosterChannel);
+    await Roster.run({} as any, conflictingVisitorInteraction as any);
+    expect(String(conflictingVisitorInteraction.editReply.mock.calls.at(-1)?.[0] ?? "")).toContain(
+      "Choose either visitor_signup_open_time or clear_visitor_signup_open_time, not both.",
+    );
+    expect(rosterService.updateRoster.mock.calls.length).toBe(updateCallsBeforeConflictVisitor);
 
     const refreshInteraction = makeInteraction({
       subcommand: "refresh",
