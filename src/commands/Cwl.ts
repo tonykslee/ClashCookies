@@ -24,9 +24,14 @@ import {
   parseRosterSelectionActionButtonCustomId,
   parseRosterSelectionMenuCustomId,
   parseRosterSelectionGroupMenuCustomId,
+  evaluateRosterDelayedSignupPolicy,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
+  type RosterDelayedSignupPolicyReason,
+  type RosterDelayedSignupPolicyResult,
 } from "../services/RosterService";
+import { autoRoleService } from "../services/AutoRoleService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
 import { showRosterMutationApplyingState } from "../services/RosterInteractionStateService";
 import { syncRosterRoleAssignments } from "../services/RosterRoleSyncService";
 import {
@@ -68,6 +73,7 @@ const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
 const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
 const CWL_ROTATION_SHOW_SESSION_PREFIX = "cwl-rot-show";
 const CWL_ROTATION_SHOW_OVERVIEW_MAX_OPTIONS = 25;
+const rosterPermissionService = new CommandPermissionService();
 const CWL_ROTATION_SHOW_DAY_CHOICES = [1, 2, 3, 4, 5, 6, 7].map((day) => ({
   name: `Day ${day}`,
   value: day,
@@ -304,6 +310,226 @@ function formatDiscordTimestamp(value: Date | null | undefined): string {
     return "unknown";
   }
   return `<t:${Math.floor(value.getTime() / 1000)}:F>`;
+}
+
+/** Purpose: normalize role ids for roster signup policy evaluation. */
+function normalizeRosterSignupPolicyRoleIds(input: Array<string | null | undefined>): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of input) {
+    const roleId = String(value ?? "").trim();
+    if (!roleId || seen.has(roleId)) {
+      continue;
+    }
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+  return normalized;
+}
+
+/** Purpose: resolve one member's current role ids without widening the lookup beyond that member. */
+async function resolveRosterSignupActorRoleIds(interaction: ButtonInteraction): Promise<string[]> {
+  const member = interaction.member as
+    | {
+        roles?: string[] | { cache?: Map<string, unknown> | null } | null;
+      }
+    | null
+    | undefined;
+
+  if (member && "roles" in member && member.roles) {
+    if (Array.isArray(member.roles)) {
+      return normalizeRosterSignupPolicyRoleIds(member.roles);
+    }
+    if ("cache" in member.roles && member.roles.cache) {
+      return normalizeRosterSignupPolicyRoleIds([...member.roles.cache.keys()]);
+    }
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    return [];
+  }
+
+  const fetchedMember = await guild.members.fetch(interaction.user.id);
+  return normalizeRosterSignupPolicyRoleIds([...fetchedMember.roles.cache.keys()]);
+}
+
+/** Purpose: log one bounded signup-policy resolution failure and keep the public panel flow open. */
+function logRosterSignupPolicyResolutionFailure(input: {
+  guildId: string;
+  rosterId: string;
+  userId: string;
+  stage: string;
+  error: unknown;
+}): void {
+  console.error(
+    `[cwl] roster_signup_policy_resolution_failed guildId=${input.guildId} rosterId=${input.rosterId} userId=${input.userId} stage=${input.stage} error=${formatError(input.error)}`,
+  );
+}
+
+type SignupPolicyResolution =
+  | {
+      outcome: "allowed";
+      reason: Exclude<RosterDelayedSignupPolicyReason, "delayed_signup_not_open">;
+    }
+  | {
+      outcome: "blocked";
+      policy: Extract<RosterDelayedSignupPolicyResult, { allowed: false }>;
+    }
+  | {
+      outcome: "fail_open";
+    };
+
+function evaluateRosterSignupPolicyFromFacts(input: {
+  visitorSignupOpensAt: Date | null;
+  delayedSignupRoleIds: string[];
+  actorRoleIds: string[];
+  allianceMemberRoleIds: string[];
+  hasManagerBypass: boolean;
+  now: Date;
+}): SignupPolicyResolution {
+  const policy = evaluateRosterDelayedSignupPolicy(input);
+  if (policy.allowed) {
+    return {
+      outcome: "allowed",
+      reason: policy.reason,
+    };
+  }
+
+  return {
+    outcome: "blocked",
+    policy,
+  };
+}
+
+/** Purpose: resolve signup-policy facts for the public roster Signup button while failing open on lookup errors. */
+async function resolveRosterSignupPolicyInput(input: {
+  interaction: ButtonInteraction;
+  roster: { guildId: string; visitorSignupOpensAt: Date | null };
+}): Promise<SignupPolicyResolution> {
+  const now = new Date();
+  const rosterId = parseRosterSignupButtonCustomId(input.interaction.customId)?.rosterId ?? "";
+  const guildId = String(input.roster.guildId ?? "").trim();
+  const userId = input.interaction.user.id;
+  const openingTime = input.roster.visitorSignupOpensAt;
+
+  const openingPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds: [],
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass: false,
+    now,
+  });
+  if (
+    openingPolicy.outcome === "allowed" &&
+    (openingPolicy.reason === "no_opening_time" || openingPolicy.reason === "opening_reached")
+  ) {
+    return openingPolicy;
+  }
+
+  let delayedSignupRoleIds: string[];
+  try {
+    delayedSignupRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
+  } catch (error) {
+    logRosterSignupPolicyResolutionFailure({
+      guildId,
+      rosterId,
+      userId,
+      stage: "delayed_signup_roles",
+      error,
+    });
+    return { outcome: "fail_open" };
+  }
+
+  const delayedRolesPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds,
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass: false,
+    now,
+  });
+  if (delayedRolesPolicy.outcome === "allowed" && delayedRolesPolicy.reason === "no_delayed_roles") {
+    return delayedRolesPolicy;
+  }
+
+  let hasManagerBypass: boolean;
+  try {
+    hasManagerBypass = await rosterPermissionService.canUseAnyTarget(["roster:manage"], input.interaction as any);
+  } catch (error) {
+    logRosterSignupPolicyResolutionFailure({
+      guildId,
+      rosterId,
+      userId,
+      stage: "manager_bypass",
+      error,
+    });
+    return { outcome: "fail_open" };
+  }
+
+  const managerBypassPolicy = evaluateRosterSignupPolicyFromFacts({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds,
+    actorRoleIds: [],
+    allianceMemberRoleIds: [],
+    hasManagerBypass,
+    now,
+  });
+  if (managerBypassPolicy.outcome === "allowed" && managerBypassPolicy.reason === "manager_bypass") {
+    return managerBypassPolicy;
+  }
+
+  let autoroleConfig: Awaited<ReturnType<typeof autoRoleService.getOrCreateGuildConfig>>;
+  try {
+    autoroleConfig = await autoRoleService.getOrCreateGuildConfig(guildId);
+  } catch (error) {
+    logRosterSignupPolicyResolutionFailure({
+      guildId,
+      rosterId,
+      userId,
+      stage: "autorole_config",
+      error,
+    });
+    return { outcome: "fail_open" };
+  }
+
+  let actorRoleIds: string[];
+  try {
+    actorRoleIds = await resolveRosterSignupActorRoleIds(input.interaction);
+  } catch (error) {
+    logRosterSignupPolicyResolutionFailure({
+      guildId,
+      rosterId,
+      userId,
+      stage: "actor_roles",
+      error,
+    });
+    return { outcome: "fail_open" };
+  }
+
+  const policy = evaluateRosterDelayedSignupPolicy({
+    visitorSignupOpensAt: openingTime,
+    delayedSignupRoleIds,
+    actorRoleIds,
+    allianceMemberRoleIds: normalizeRosterSignupPolicyRoleIds([
+      autoroleConfig.verifiedRoleId,
+      autoroleConfig.familyRoleId,
+    ]),
+    hasManagerBypass,
+    now,
+  });
+  if (policy.allowed) {
+    return {
+      outcome: "allowed",
+      reason: policy.reason,
+    };
+  }
+
+  return {
+    outcome: "blocked",
+    policy,
+  };
 }
 
 function formatCwlBaselineCoverageSummaryLine(
@@ -4222,6 +4448,32 @@ export async function handleRosterSignupButtonInteraction(
       })
       .catch(() => undefined);
   };
+
+  const roster = await rosterService.findGuildRosterById({
+    guildId: interaction.guildId ?? "",
+    rosterId: parsed.rosterId,
+  });
+  if (!roster) {
+    await sendSignupResponse({
+      content: "That roster is no longer available.",
+    });
+    return;
+  }
+
+  const policyResolution = await resolveRosterSignupPolicyInput({
+    interaction,
+    roster,
+  });
+  if (policyResolution.outcome === "blocked") {
+    const openingTimestamp = Math.floor(policyResolution.policy.visitorSignupOpensAt.getTime() / 1000);
+    await sendSignupResponse({
+      content: `Visitor signups open <t:${openingTimestamp}:F> (<t:${openingTimestamp}:R>).`,
+    });
+    return;
+  }
+  if (policyResolution.outcome === "fail_open") {
+    // Continue to the normal selection panel when Discord/config resolution fails.
+  }
 
   const result = await rosterService.createRosterSignupSelectionPanel({
     rosterId: parsed.rosterId,
