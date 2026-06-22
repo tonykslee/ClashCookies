@@ -372,6 +372,15 @@ export type RosterSelectionCommitResult =
   | { outcome: "session_not_found" }
   | { outcome: "forbidden" };
 
+export type RosterSelectionSessionSummary = {
+  sessionId: string;
+  mode: RosterSelectionMode;
+  rosterId: string;
+  ownerDiscordUserId: string;
+  selectedDiscordUserId: string | null;
+  selectedGroupKey: string | null;
+};
+
 export type RosterManageCommitResult =
   | {
       outcome: "completed";
@@ -9518,6 +9527,35 @@ export class RosterService {
       deleteRosterSelectionSession(session.sessionId);
       throw error;
     }
+  }
+
+  async peekRosterSelectionSession(input: {
+    sessionId: string;
+    discordUserId: string;
+  }): Promise<
+    | { outcome: "ready"; session: RosterSelectionSessionSummary }
+    | { outcome: "session_not_found" }
+    | { outcome: "forbidden" }
+  > {
+    const session = getRosterSelectionSession(input.sessionId);
+    if (!session) {
+      return { outcome: "session_not_found" };
+    }
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId) ?? input.discordUserId;
+    if (session.ownerDiscordUserId !== normalizedDiscordUserId) {
+      return { outcome: "forbidden" };
+    }
+    return {
+      outcome: "ready",
+      session: {
+        sessionId: session.sessionId,
+        mode: session.mode,
+        rosterId: session.rosterId,
+        ownerDiscordUserId: session.ownerDiscordUserId,
+        selectedDiscordUserId: session.selectedDiscordUserId,
+        selectedGroupKey: session.selectedGroupKey,
+      },
+    };
   }
 
   async cancelRosterSelectionPanel(input: {
