@@ -405,10 +405,12 @@ function evaluateRosterSignupPolicyFromFacts(input: {
 /** Purpose: resolve signup-policy facts for the public roster Signup button while failing open on lookup errors. */
 async function resolveRosterSignupPolicyInput(input: {
   interaction: ButtonInteraction;
-  roster: { guildId: string; visitorSignupOpensAt: Date | null };
+  roster: { id?: string | null; guildId: string; visitorSignupOpensAt: Date | null };
 }): Promise<SignupPolicyResolution> {
   const now = new Date();
-  const rosterId = parseRosterSignupButtonCustomId(input.interaction.customId)?.rosterId ?? "";
+  const rosterId =
+    String(input.roster.id ?? "").trim() ||
+    (parseRosterSignupButtonCustomId(input.interaction.customId)?.rosterId ?? "");
   const guildId = String(input.roster.guildId ?? "").trim();
   const userId = input.interaction.user.id;
   const openingTime = input.roster.visitorSignupOpensAt;
@@ -530,6 +532,19 @@ async function resolveRosterSignupPolicyInput(input: {
     outcome: "blocked",
     policy,
   };
+}
+
+async function clearRosterSelectionTerminalState(
+  interaction: ButtonInteraction,
+  content: string,
+): Promise<void> {
+  await (interaction.message as any)
+    .edit({
+      content,
+      embeds: [],
+      components: [],
+    })
+    .catch(() => undefined);
 }
 
 function formatCwlBaselineCoverageSummaryLine(
@@ -4648,6 +4663,54 @@ export async function handleRosterSelectionActionButtonInteraction(
       })
       .catch(() => undefined);
   };
+
+  const sessionLookup = await rosterService.peekRosterSelectionSession({
+    sessionId: parsed.sessionId,
+    discordUserId: interaction.user.id,
+  });
+  if (sessionLookup.outcome === "session_not_found") {
+    await sendSelectionResponse("That roster selection has expired. Please start again.");
+    return;
+  }
+  if (sessionLookup.outcome === "forbidden") {
+    await sendSelectionResponse("Only the original requester can use this roster selection.");
+    return;
+  }
+
+  if (sessionLookup.session.mode === "signup") {
+    const roster = await rosterService.findGuildRosterById({
+      guildId: interaction.guildId ?? "",
+      rosterId: sessionLookup.session.rosterId,
+    });
+    if (!roster) {
+      await sendSelectionResponse("That roster is no longer available.");
+      return;
+    }
+
+    const policyResolution = await resolveRosterSignupPolicyInput({
+      interaction,
+      roster,
+    });
+    if (policyResolution.outcome === "blocked") {
+      await rosterService
+        .cancelRosterSelectionPanel({
+          sessionId: parsed.sessionId,
+          discordUserId: interaction.user.id,
+        })
+        .catch(() => undefined);
+      await clearRosterSelectionTerminalState(
+        interaction,
+        "That roster selection is no longer available. Please start again.",
+      );
+      await interaction
+        .reply({
+          content: `Visitor signups open <t:${Math.floor(policyResolution.policy.visitorSignupOpensAt.getTime() / 1000)}:F> (<t:${Math.floor(policyResolution.policy.visitorSignupOpensAt.getTime() / 1000)}:R>).`,
+          ephemeral: true,
+        })
+        .catch(() => undefined);
+      return;
+    }
+  }
 
   await showRosterMutationApplyingState(interaction);
   const result = await rosterService.confirmRosterSelectionPanel({

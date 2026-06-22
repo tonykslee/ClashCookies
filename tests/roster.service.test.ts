@@ -6804,6 +6804,59 @@ describe("RosterService", () => {
     });
   });
 
+  it("peeks roster selection session identity without consuming it", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+
+    const opened = await rosterService.createRosterSignupSelectionPanel({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+    });
+    if (opened.outcome !== "ready") {
+      throw new Error("Expected roster selection panel to open.");
+    }
+
+    const ready = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(ready).toEqual({
+      outcome: "ready",
+      session: {
+        sessionId: opened.panel.sessionId,
+        mode: "signup",
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    });
+
+    const forbidden = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "222222222222222222",
+    });
+    expect(forbidden).toEqual({ outcome: "forbidden" });
+
+    const replay = await rosterService.peekRosterSelectionSession({
+      sessionId: opened.panel.sessionId,
+      discordUserId: "111111111111111111",
+    });
+    expect(replay).toEqual({
+      outcome: "ready",
+      session: {
+        sessionId: opened.panel.sessionId,
+        mode: "signup",
+        rosterId: "roster-1",
+        ownerDiscordUserId: "111111111111111111",
+        selectedDiscordUserId: null,
+        selectedGroupKey: "confirmed",
+      },
+    });
+  });
+
   it("lets users remove only their own signup entries", async () => {
     prismaMock.rosterSignup.findMany.mockResolvedValue([
       { playerTag: "#PQL0289" },
