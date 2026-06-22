@@ -1230,14 +1230,6 @@ function normalizeRosterPolicyDate(input: Date | null | undefined, fieldName: st
 export function evaluateRosterDelayedSignupPolicy(
   input: RosterDelayedSignupPolicyInput,
 ): RosterDelayedSignupPolicyResult {
-  const currentTime = normalizeRosterPolicyDate(
-    input.now ?? new Date(),
-    "now",
-  );
-  if (!currentTime) {
-    throw new Error("now must be a valid Date.");
-  }
-
   const openingTime = normalizeRosterPolicyDate(
     input.visitorSignupOpensAt,
     "visitorSignupOpensAt",
@@ -1247,6 +1239,14 @@ export function evaluateRosterDelayedSignupPolicy(
       allowed: true,
       reason: "no_opening_time",
     };
+  }
+
+  const currentTime = normalizeRosterPolicyDate(
+    input.now ?? new Date(),
+    "now",
+  );
+  if (!currentTime) {
+    throw new Error("now must be a valid Date.");
   }
 
   if (currentTime.getTime() >= openingTime.getTime()) {

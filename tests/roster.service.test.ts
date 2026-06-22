@@ -8281,6 +8281,18 @@ describe("RosterService", () => {
       });
     });
 
+    it("ignores invalid now when no visitor signup opening exists", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: null,
+          now: new Date("invalid") as any,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_opening_time",
+      });
+    });
+
     it("rejects an invalid visitor signup opening instant", () => {
       expect(() =>
         evaluatePolicy({
