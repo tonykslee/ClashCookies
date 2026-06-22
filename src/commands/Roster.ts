@@ -3545,6 +3545,7 @@ async function handleRosterCreateSubcommand(
     return;
   }
   const timezoneSeed = interaction.options.getString("timezone", false);
+  const visitorSignupOpenTimeSeed = interaction.options.getString("visitor_signup_open_time", false);
   const timezone = timezoneSeed ? normalizeSyncTimeZone(timezoneSeed) : "UTC";
   if (timezoneSeed && !timezone) {
     await interaction.editReply(
@@ -3633,6 +3634,14 @@ async function handleRosterCreateSubcommand(
     }
   }
 
+  const visitorSignupOpensAt = visitorSignupOpenTimeSeed
+    ? parseRosterDateTimeInTimeZone(visitorSignupOpenTimeSeed, targetTimezone)
+    : null;
+  if (visitorSignupOpenTimeSeed && !visitorSignupOpensAt) {
+    await interaction.editReply("Invalid visitor_signup_open_time. Use YYYY-MM-DD HH:mm with a valid timezone.");
+    return;
+  }
+
   const maxMembers = parseRosterIntegerOption(interaction.options.getInteger("max_members", false));
   const maxAccountsPerUser = parseRosterIntegerOption(interaction.options.getInteger("max_accounts_per_user", false));
   const minTownhall = parseRosterIntegerOption(interaction.options.getInteger("min_townhall", false));
@@ -3669,6 +3678,7 @@ async function handleRosterCreateSubcommand(
     endsAt,
     timezone,
     displayTimezone: timezone,
+    visitorSignupOpensAt: visitorSignupOpensAt ?? null,
     maxMembers,
     maxAccountsPerUser,
     minTownhall,
@@ -4307,6 +4317,8 @@ async function handleRosterEditSubcommand(
   const displayTimezoneSeed = interaction.options.getString("display-timezone", false);
   const startsAtSeed = interaction.options.getString("start_time", false);
   const endsAtSeed = interaction.options.getString("end_time", false);
+  const visitorSignupOpenTimeSeed = interaction.options.getString("visitor_signup_open_time", false);
+  const clearVisitorSignupOpenTime = interaction.options.getBoolean("clear_visitor_signup_open_time", false) ?? false;
   const requiredSignupRoleOption = interaction.options.getRole("required-role", false);
   const requiredSignupRoleId = requiredSignupRoleOption?.id ?? null;
   const clearRequiredSignupRole = interaction.options.getBoolean("clear-required-role", false) ?? false;
@@ -4340,6 +4352,12 @@ async function handleRosterEditSubcommand(
   }
   const importMembersRaw = interaction.options.getBoolean("import_members", false);
   const importMembers = importMembersRaw === null ? undefined : importMembersRaw;
+  if (visitorSignupOpenTimeSeed && clearVisitorSignupOpenTime) {
+    await interaction.editReply(
+      "Choose either visitor_signup_open_time or clear_visitor_signup_open_time, not both.",
+    );
+    return;
+  }
 
   if (
     !nameSeed &&
@@ -4349,6 +4367,8 @@ async function handleRosterEditSubcommand(
     !displayTimezoneSeed &&
     !startsAtSeed &&
     !endsAtSeed &&
+    !visitorSignupOpenTimeSeed &&
+    !clearVisitorSignupOpenTime &&
     !requiredSignupRoleId &&
     !clearRequiredSignupRole &&
     noRoleSignupLimit === null &&
@@ -4416,6 +4436,13 @@ async function handleRosterEditSubcommand(
     await interaction.editReply("Invalid end_time. Use YYYY-MM-DD HH:mm with a valid timezone.");
     return;
   }
+  const visitorSignupOpensAt = visitorSignupOpenTimeSeed
+    ? parseRosterDateTimeInTimeZone(visitorSignupOpenTimeSeed, targetTimezone)
+    : undefined;
+  if (visitorSignupOpenTimeSeed && !visitorSignupOpensAt) {
+    await interaction.editReply("Invalid visitor_signup_open_time. Use YYYY-MM-DD HH:mm with a valid timezone.");
+    return;
+  }
 
   if (deleteRole && rosterRoleSeed) {
     await interaction.editReply("Choose either roster_role or delete_role, not both.");
@@ -4479,6 +4506,7 @@ async function handleRosterEditSubcommand(
     displayTimezone: displayTimezone ?? undefined,
     startsAt: startsAt ?? undefined,
     endsAt: endsAt ?? undefined,
+    visitorSignupOpensAt: clearVisitorSignupOpenTime ? null : visitorSignupOpensAt ?? undefined,
     maxMembers,
     maxAccountsPerUser,
     minTownhall,
@@ -4956,6 +4984,12 @@ export const Roster: Command = {
           required: false,
         },
         {
+          name: "visitor_signup_open_time",
+          description: "Visitor signup opening time in YYYY-MM-DD HH:mm",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
           name: "max_members",
           description: "Maximum number of signups",
           type: ApplicationCommandOptionType.Integer,
@@ -5253,6 +5287,18 @@ export const Roster: Command = {
           name: "end_time",
           description: "Roster end time in YYYY-MM-DD HH:mm",
           type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "visitor_signup_open_time",
+          description: "Visitor signup opening time in YYYY-MM-DD HH:mm",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "clear_visitor_signup_open_time",
+          description: "Remove the delayed visitor signup opening time",
+          type: ApplicationCommandOptionType.Boolean,
           required: false,
         },
         {
