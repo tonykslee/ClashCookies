@@ -25,6 +25,32 @@ const commandPermissionServiceMock = vi.hoisted(() => ({
   canUseCommand: vi.fn(),
 }));
 
+function makeGuildConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "config-1",
+    guildId: "111111111111111111",
+    enabled: false,
+    killSwitchEnabled: false,
+    removeStaleManagedRoles: false,
+    applyNicknames: false,
+    nicknameTemplate: null,
+    trustedLinksAllowed: true,
+    verifiedOnlyMode: false,
+    syncEnabled: false,
+    syncIntervalMinutes: null,
+    verifiedRoleId: null,
+    familyRoleId: null,
+    cwlClanRoleId: null,
+    nonMemberRoleId: null,
+    delayedSignupRoleIds: [],
+    nonMemberEnabled: false,
+    clanRoleRemovalDelayMinutes: null,
+    createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 vi.mock("../src/services/AutoRoleService", () => ({
   autoRoleService: autoRoleServiceMock,
   formatAutoRoleRuleTarget: (rule: any) => String(rule.targetValue ?? ""),
@@ -110,48 +136,12 @@ describe("/autorole command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     commandPermissionServiceMock.canUseCommand.mockResolvedValue(true);
-    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValue({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: null,
-      nonMemberEnabled: false,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
-    autoRoleServiceMock.updateGuildConfig.mockResolvedValue({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: true,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: null,
-      nonMemberEnabled: false,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValue(makeGuildConfig());
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValue(
+      makeGuildConfig({
+        enabled: true,
+      }),
+    );
     autoRoleServiceMock.listRules.mockResolvedValue([]);
     autoRoleServiceMock.createRule.mockResolvedValue({
       id: "rule-1",
@@ -507,27 +497,12 @@ describe("/autorole command", () => {
   });
 
   it("shows a stale visitor role warning when the configured role is missing", async () => {
-    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: "777777777777777777",
-      nonMemberEnabled: true,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nonMemberRoleId: "777777777777777777",
+        nonMemberEnabled: true,
+      }),
+    );
     const interaction = createInteraction({ group: "config", subcommand: "show" });
     (interaction.guild?.roles?.fetch as any).mockResolvedValueOnce(null);
 
@@ -629,27 +604,11 @@ describe("/autorole command", () => {
       nonMemberRoleId: "666666666666666666",
     });
 
-    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: "666666666666666666",
-      nonMemberEnabled: false,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nonMemberRoleId: "666666666666666666",
+      }),
+    );
     const disableInteraction = createInteraction({
       group: "config",
       subcommand: "set",
@@ -662,27 +621,12 @@ describe("/autorole command", () => {
       nonMemberEnabled: false,
     });
 
-    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: "666666666666666666",
-      nonMemberEnabled: true,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nonMemberRoleId: "666666666666666666",
+        nonMemberEnabled: true,
+      }),
+    );
     const enableInteraction = createInteraction({
       group: "config",
       subcommand: "set",

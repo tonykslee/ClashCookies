@@ -46,6 +46,7 @@ Core subsystems:
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
 - Roster signup foundation: `RosterService -> Roster / RosterGroup / RosterSignup`, with `visitorSignupOpensAt` now persisted as nullable roster metadata for later signup-window enforcement and roster-post display work. It is not enforced or rendered yet.
+- Autorole delayed-signup config: `AutoRoleGuildConfig -> delayedSignupRoleIds`, with multiple Discord roles persisted for later delayed-signup policy use. It is not yet configurable through Discord commands or enforced by roster signup logic, and `nonMemberRoleId` remains the separate existing autorole control.
 - Persisted CWL state: `CwlEventInstance / CwlEventClan / CwlEventWarTag -> CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`, with event identity authoritative and `season` treated as display metadata.
 - CWL planner state: `CwlEventClan.isCurrent -> CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with each plan owned by one CWL event instance and clan. `season` is display metadata; historical same-month event plans are retained but ignored by current commands.
 - CWL measurement baseline: `TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink -> CwlAllianceBaselineService -> CwlAllianceSeasonBaseline / CwlAllianceSeasonBaselineClan / CwlAllianceSeasonBaselineMember`
@@ -88,6 +89,7 @@ Important owners:
 | Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render context) |
 | Guild reminders | Reminder* tables |
 | Personal reminders | UserActivityReminder* tables |
+| Autorole delayed-signup role IDs | AutoRoleGuildConfig.delayedSignupRoleIds |
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
 | CWL measurement baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
