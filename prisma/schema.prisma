@@ -1259,6 +1259,7 @@ model Roster {
   clanTag              String?
   startsAt             DateTime?
   endsAt               DateTime?
+  visitorSignupOpensAt DateTime?
   timezone             String
   displayTimezone      String?
   maxMembers           Int?

@@ -1,0 +1,2 @@
+ALTER TABLE "Roster"
+ADD COLUMN IF NOT EXISTS "visitorSignupOpensAt" TIMESTAMP(3);

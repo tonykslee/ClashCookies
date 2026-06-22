@@ -246,6 +246,7 @@ function makeRosterRecord(overrides: Record<string, unknown> = {}): any {
     clanTag: "#2QG2C08UP",
     startsAt: new Date("2026-04-20T00:00:00.000Z"),
     endsAt: null,
+    visitorSignupOpensAt: null,
     timezone: "America/Los_Angeles",
     displayTimezone: "America/Los_Angeles",
     maxMembers: null,
@@ -417,6 +418,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       startsAt: new Date("2026-04-20T00:00:00.000Z"),
       endsAt: null,
+      visitorSignupOpensAt: null,
       timezone: "America/Los_Angeles",
       displayTimezone: "America/Los_Angeles",
       lifecycleState: "OPEN",
@@ -438,6 +440,7 @@ describe("RosterService", () => {
       clanTag: "#2QG2C08UP",
       startsAt: new Date("2026-04-20T00:00:00.000Z"),
       endsAt: null,
+      visitorSignupOpensAt: null,
       timezone: "America/Los_Angeles",
       displayTimezone: "America/Los_Angeles",
       lifecycleState: "OPEN",
@@ -460,6 +463,7 @@ describe("RosterService", () => {
         clanTag: "#2QG2C08UP",
         startsAt: new Date("2026-04-20T00:00:00.000Z"),
         endsAt: null,
+        visitorSignupOpensAt: null,
         timezone: "America/Los_Angeles",
         displayTimezone: "America/Los_Angeles",
         lifecycleState: "OPEN",
@@ -613,6 +617,78 @@ describe("RosterService", () => {
         ),
       ),
     });
+  });
+
+  it("stores null for visitor signup opening when omitted during roster create", async () => {
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("stores the provided visitor signup opening instant unchanged during roster create", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      visitorSignupOpensAt,
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt,
+        }),
+      }),
+    );
+  });
+
+  it("stores null for visitor signup opening when explicitly cleared during roster create", async () => {
+    await rosterService.createRoster({
+      guildId: "guild-1",
+      rosterType: "cwl",
+      title: "CWL Alpha Signup",
+      timezone: "PST",
+      visitorSignupOpensAt: null,
+      createdByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.roster.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitorSignupOpensAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("rejects an invalid visitor signup opening instant during roster create", async () => {
+    await expect(
+      rosterService.createRoster({
+        guildId: "guild-1",
+        rosterType: "cwl",
+        title: "CWL Alpha Signup",
+        timezone: "PST",
+        visitorSignupOpensAt: new Date("invalid") as any,
+        createdByDiscordUserId: "111111111111111111",
+      }),
+    ).rejects.toThrow("visitorSignupOpensAt must be a valid Date.");
+    expect(prismaMock.roster.create).not.toHaveBeenCalled();
   });
 
   it("hydrates CWL tracked-clan metadata while creating a CWL roster", async () => {
@@ -8080,6 +8156,94 @@ describe("RosterService", () => {
         }),
       }),
     );
+  });
+
+  it("returns visitor signup opening timestamps from roster views", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-01T17:30:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce(
+      makeRosterRecord({
+        visitorSignupOpensAt,
+      }),
+    );
+
+    const view = await rosterService.getRosterView("roster-1");
+
+    expect(view?.roster.visitorSignupOpensAt).toBe(visitorSignupOpensAt);
+  });
+
+  it("preserves visitor signup opening timestamps when omitted during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      title: "CWL Alpha Signup (Updated)",
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(Object.prototype.hasOwnProperty.call(updateCall.data, "visitorSignupOpensAt")).toBe(false);
+  });
+
+  it("replaces visitor signup opening timestamps during roster edit", async () => {
+    const visitorSignupOpensAt = new Date("2026-05-02T10:15:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      visitorSignupOpensAt,
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(updateCall.data.visitorSignupOpensAt).toBe(visitorSignupOpensAt);
+  });
+
+  it("clears visitor signup opening timestamps during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await rosterService.updateRoster({
+      rosterId: "roster-1",
+      visitorSignupOpensAt: null,
+      updatedByDiscordUserId: "999999999999999999",
+    });
+
+    const updateCall = prismaMock.roster.update.mock.calls.at(-1)?.[0] as any;
+    expect(updateCall.data.visitorSignupOpensAt).toBeNull();
+  });
+
+  it("rejects an invalid visitor signup opening instant during roster edit", async () => {
+    prismaMock.roster.findUnique.mockResolvedValueOnce({ id: "roster-1" } as any);
+
+    await expect(
+      rosterService.updateRoster({
+        rosterId: "roster-1",
+        visitorSignupOpensAt: new Date("invalid") as any,
+        updatedByDiscordUserId: "999999999999999999",
+      }),
+    ).rejects.toThrow("visitorSignupOpensAt must be a valid Date.");
+    expect(prismaMock.roster.update).not.toHaveBeenCalled();
+  });
+
+  it("continues to allow signup flows when visitor signup opening timestamps are present", async () => {
+    const visitorSignupOpensAt = new Date("2030-01-01T00:00:00.000Z");
+    prismaMock.roster.findUnique.mockResolvedValueOnce(
+      makeRosterRecord({
+        visitorSignupOpensAt,
+      }),
+    );
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+    prismaMock.rosterSignup.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      playerTags: ["#PQL0289"],
+    });
+
+    expect(result.outcome).toBe("created");
   });
 
   it("lists guild rosters with roster metadata and posting state", async () => {

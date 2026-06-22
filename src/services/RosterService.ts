@@ -117,6 +117,7 @@ export type RosterRecord = {
   clanTag: string | null;
   startsAt: Date | null;
   endsAt: Date | null;
+  visitorSignupOpensAt: Date | null;
   timezone: string;
   displayTimezone: string | null;
   maxMembers: number | null;
@@ -463,6 +464,7 @@ const ROSTER_RECORD_SELECT = {
   clanTag: true,
   startsAt: true,
   endsAt: true,
+  visitorSignupOpensAt: true,
   timezone: true,
   displayTimezone: true,
   maxMembers: true,
@@ -498,6 +500,7 @@ export type CreateRosterInput = {
   rosterCategory?: string | null;
   startsAt?: Date | null;
   endsAt?: Date | null;
+  visitorSignupOpensAt?: Date | null;
   timezone?: string | null;
   displayTimezone?: string | null;
   maxMembers?: number | null;
@@ -1312,6 +1315,17 @@ function normalizeRosterNonNegativeInt(input: number | null | undefined): number
   return parsed;
 }
 
+/** Purpose: accept only valid roster timestamp values while preserving explicit null clears. */
+function normalizeRosterDate(input: Date | null | undefined, fieldName: string): Date | null {
+  if (input === null || input === undefined) {
+    return null;
+  }
+  if (!(input instanceof Date) || Number.isNaN(input.getTime())) {
+    throw new Error(`${fieldName} must be a valid Date.`);
+  }
+  return input;
+}
+
 export function buildRosterSignupRoleRequirementLines(input: {
   requiredSignupRoleId: string | null;
   noRoleSignupLimit: number | null | undefined;
@@ -1573,6 +1587,7 @@ type RosterRecordLike = {
   clanTag: string | null;
   startsAt: Date | null;
   endsAt: Date | null;
+  visitorSignupOpensAt: Date | null;
   timezone: string;
   displayTimezone: string | null;
   maxMembers: number | null;
@@ -1609,6 +1624,7 @@ function mapRosterRecord(row: RosterRecordLike): RosterRecord {
     clanTag: row.clanTag,
     startsAt: row.startsAt,
     endsAt: row.endsAt,
+    visitorSignupOpensAt: row.visitorSignupOpensAt ?? null,
     timezone: row.timezone,
     displayTimezone: row.displayTimezone,
     maxMembers: row.maxMembers,
@@ -5331,6 +5347,7 @@ async function loadRosterView(rosterId: string, options?: RosterViewLoadOptions)
       clanTag: true,
       startsAt: true,
       endsAt: true,
+      visitorSignupOpensAt: true,
       timezone: true,
       displayTimezone: true,
       maxMembers: true,
@@ -5979,6 +5996,7 @@ export class RosterService {
     const lifecycleState = input.lifecycleState ?? ROSTER_LIFECYCLE_STATE.OPEN;
     const startsAt = input.startsAt ?? new Date();
     const endsAt = input.endsAt ?? null;
+    const visitorSignupOpensAt = normalizeRosterDate(input.visitorSignupOpensAt, "visitorSignupOpensAt");
     const createdByDiscordUserId = normalizeDiscordUserId(input.createdByDiscordUserId);
     const updatedByDiscordUserId = normalizeDiscordUserId(input.updatedByDiscordUserId);
     const seedGroups = (Array.isArray(input.groups) && input.groups.length > 0
@@ -6003,6 +6021,7 @@ export class RosterService {
           clanTag,
           startsAt,
           endsAt,
+          visitorSignupOpensAt,
           timezone,
           displayTimezone,
           maxMembers,
@@ -6464,6 +6483,7 @@ export class RosterService {
     displayTimezone?: string | null;
     startsAt?: Date | null;
     endsAt?: Date | null;
+    visitorSignupOpensAt?: Date | null;
     maxMembers?: number | null;
     maxAccountsPerUser?: number | null;
     minTownhall?: number | null;
@@ -6521,6 +6541,9 @@ export class RosterService {
     }
     if (input.endsAt !== undefined) {
       data.endsAt = input.endsAt;
+    }
+    if (input.visitorSignupOpensAt !== undefined) {
+      data.visitorSignupOpensAt = normalizeRosterDate(input.visitorSignupOpensAt, "visitorSignupOpensAt");
     }
     if (input.maxMembers !== undefined) {
       data.maxMembers = normalizeRosterInt(input.maxMembers);
