@@ -556,6 +556,27 @@ describe("/roster command", () => {
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("`townhall_icons`");
   });
 
+  it("shows the built-in roster columns through /roster show when the guild has no override", async () => {
+    (rosterService.getRosterGuildDisplayColumns as any).mockResolvedValue({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+
+    const interaction = makeInteraction({
+      subcommand: "show",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.getRosterGuildDisplayColumns).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Built-in");
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Current layout: `townhall_icons | discord_username | player_name | player_tag`",
+    );
+  });
+
   it("saves guild default roster columns through /roster set", async () => {
     (rosterService.setRosterGuildDisplayColumns as any).mockResolvedValue({
       columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
@@ -580,6 +601,17 @@ describe("/roster command", () => {
       "Saved layout: `townhall_icons | discord_username | player_name | player_tag`",
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Server override");
+  });
+
+  it("rejects empty roster display columns before saving a guild override", async () => {
+    const interaction = makeInteraction({
+      subcommand: "set",
+      columns: "   ",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(rosterService.setRosterGuildDisplayColumns).not.toHaveBeenCalled();
   });
 
   it("resets guild default roster columns through /roster reset", async () => {

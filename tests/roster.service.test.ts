@@ -704,6 +704,22 @@ describe("RosterService", () => {
     });
   });
 
+  it("returns the built-in layout when resetting an already cleared guild override", async () => {
+    prismaMock.rosterGuildConfig.deleteMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      rosterService.resetRosterGuildDisplayColumns({
+        guildId: "guild-1",
+      }),
+    ).resolves.toEqual({
+      columns: ["townhall_icons", "discord_username", "player_name", "player_tag"],
+      source: "built_in",
+    });
+    expect(prismaMock.rosterGuildConfig.deleteMany).toHaveBeenCalledWith({
+      where: { guildId: "guild-1" },
+    });
+  });
+
   it("resolves explicit roster overrides before guild defaults and built-in fallback", () => {
     expect(
       resolveRosterDisplayColumns({
