@@ -344,9 +344,12 @@ import {
   ROSTER_DEFAULT_GROUPS,
   buildRosterSignupRoleRequirementLines,
   buildRosterMoveResultSummary,
+  evaluateRosterDelayedSignupPolicy,
   formatRosterSignupEligibilityIssueBlock,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
+  type RosterDelayedSignupPolicyInput,
+  type RosterDelayedSignupPolicyResult,
 } from "../src/services/RosterService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 import { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "../src/services/PlayerCurrentService";
@@ -8244,6 +8247,262 @@ describe("RosterService", () => {
     });
 
     expect(result.outcome).toBe("created");
+  });
+
+  describe("RosterService delayed-signup policy", () => {
+    function makePolicyInput(
+      overrides: Partial<RosterDelayedSignupPolicyInput> = {},
+    ): RosterDelayedSignupPolicyInput {
+      return {
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+        delayedSignupRoleIds: [" delayed-1 ", "delayed-2", "delayed-1"],
+        actorRoleIds: [],
+        allianceMemberRoleIds: [" alliance-1 ", "alliance-2", "alliance-1"],
+        hasManagerBypass: false,
+        now: new Date("2026-01-01T00:00:00.000Z"),
+        ...overrides,
+      };
+    }
+
+    function evaluatePolicy(
+      overrides: Partial<RosterDelayedSignupPolicyInput> = {},
+    ): RosterDelayedSignupPolicyResult {
+      return evaluateRosterDelayedSignupPolicy(makePolicyInput(overrides));
+    }
+
+    it("allows when no visitor signup opening exists", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: null,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_opening_time",
+      });
+    });
+
+    it("rejects an invalid visitor signup opening instant", () => {
+      expect(() =>
+        evaluatePolicy({
+          visitorSignupOpensAt: new Date("invalid") as any,
+        }),
+      ).toThrow("visitorSignupOpensAt must be a valid Date.");
+    });
+
+    it("allows when the opening time is already in the past", () => {
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: new Date("2026-01-01T00:00:00.000Z"),
+          now: new Date("2026-01-02T00:00:00.000Z"),
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "opening_reached",
+      });
+    });
+
+    it("allows exactly at the opening boundary", () => {
+      const opening = new Date("2026-01-02T12:00:00.000Z");
+      expect(
+        evaluatePolicy({
+          visitorSignupOpensAt: opening,
+          now: new Date("2026-01-02T12:00:00.000Z"),
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "opening_reached",
+      });
+    });
+
+    it("allows when no delayed signup roles are configured", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "no_delayed_roles",
+      });
+    });
+
+    it("allows when the manager bypass is active", () => {
+      expect(
+        evaluatePolicy({
+          hasManagerBypass: true,
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "manager_bypass",
+      });
+    });
+
+    it("allows when the actor holds a recognized alliance-member role", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" alliance-2 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("allows alliance members even when they also hold delayed signup roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" delayed-1 ", "alliance-1"],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("allows when the actor lacks delayed signup roles but has unrelated roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: ["unrelated-role"],
+          allianceMemberRoleIds: [" alliance-1 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "not_delayed_role",
+      });
+    });
+
+    it("allows when the actor has neither delayed nor alliance-member roles", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [],
+          allianceMemberRoleIds: [" alliance-1 "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "not_delayed_role",
+      });
+    });
+
+    it("blocks when the actor holds any configured delayed signup role", () => {
+      expect(
+        evaluatePolicy({
+          actorRoleIds: [" delayed-1 "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("exposes the original opening Date when blocked", () => {
+      const opening = new Date("2030-01-01T00:00:00.000Z");
+      const result = evaluatePolicy({
+        visitorSignupOpensAt: opening,
+        actorRoleIds: ["delayed-2"],
+      });
+
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.reason).toBe("delayed_signup_not_open");
+        expect(result.visitorSignupOpensAt).toBe(opening);
+      }
+    });
+
+    it("uses any-match behavior for multiple delayed signup roles", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [" delayed-a ", "delayed-b"],
+          actorRoleIds: ["delayed-b"],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("uses any-match behavior for multiple alliance-member roles", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["delayed-a"],
+          actorRoleIds: ["alliance-b"],
+          allianceMemberRoleIds: [" alliance-a ", " alliance-b "],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "alliance_member",
+      });
+    });
+
+    it("ignores blank role IDs", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["", " ", "delayed-1"],
+          actorRoleIds: ["delayed-1"],
+          allianceMemberRoleIds: ["", " "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("deduplicates repeated role IDs without changing behavior", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: ["delayed-1", "delayed-1", "delayed-2", "delayed-2"],
+          actorRoleIds: ["delayed-2"],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("normalizes whitespace around role IDs", () => {
+      expect(
+        evaluatePolicy({
+          delayedSignupRoleIds: [" delayed-1 "],
+          actorRoleIds: [" delayed-1 "],
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "delayed_signup_not_open",
+        visitorSignupOpensAt: new Date("2030-01-01T00:00:00.000Z"),
+      });
+    });
+
+    it("rejects an invalid supplied now value", () => {
+      expect(() =>
+        evaluatePolicy({
+          now: new Date("invalid") as any,
+        }),
+      ).toThrow("now must be a valid Date.");
+    });
+
+    it("is deterministic for the same explicit now", () => {
+      const input = makePolicyInput({
+        delayedSignupRoleIds: ["delayed-1"],
+        actorRoleIds: ["member-1"],
+        allianceMemberRoleIds: ["member-1"],
+        now: new Date("2026-01-01T12:00:00.000Z"),
+      });
+      expect(evaluateRosterDelayedSignupPolicy(input)).toEqual(evaluateRosterDelayedSignupPolicy(input));
+    });
+
+    it("keeps manager bypass ahead of alliance-member precedence when both are present", () => {
+      expect(
+        evaluatePolicy({
+          hasManagerBypass: true,
+          actorRoleIds: ["alliance-1", "delayed-1"],
+        }),
+      ).toEqual({
+        allowed: true,
+        reason: "manager_bypass",
+      });
+    });
   });
 
   it("lists guild rosters with roster metadata and posting state", async () => {
