@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AutoRoleService } from "../src/services/AutoRoleService";
 
 const prismaMock = vi.hoisted(() => ({
   autoRoleGuildConfig: {
+    findUnique: vi.fn(),
     upsert: vi.fn(),
   },
   autoRoleRule: {
@@ -45,33 +47,40 @@ function makeRule(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeGuildConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "config-1",
+    guildId: "111111111111111111",
+    enabled: false,
+    killSwitchEnabled: false,
+    removeStaleManagedRoles: false,
+    applyNicknames: false,
+    nicknameTemplate: null,
+    trustedLinksAllowed: true,
+    verifiedOnlyMode: false,
+    syncEnabled: false,
+    syncIntervalMinutes: null,
+    verifiedRoleId: null,
+    familyRoleId: null,
+    cwlClanRoleId: null,
+    nonMemberRoleId: null,
+    delayedSignupRoleIds: [],
+    nonMemberEnabled: false,
+    clanRoleRemovalDelayMinutes: null,
+    createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 describe("AutoRoleService", () => {
   const service = new AutoRoleService();
 
   beforeEach(() => {
     vi.clearAllMocks();
 
-    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValue({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: null,
-      nonMemberEnabled: false,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValue(null);
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValue(makeGuildConfig());
 
     prismaMock.autoRoleRule.findFirst.mockResolvedValue(null);
     prismaMock.autoRoleRule.create.mockImplementation(async (args: any) => ({
@@ -119,12 +128,13 @@ describe("AutoRoleService", () => {
   });
 
   it("creates, reads, and updates guild config", async () => {
-    await service.getOrCreateGuildConfig("111111111111111111");
+    const created = await service.getOrCreateGuildConfig("111111111111111111");
     expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenCalledWith({
       where: { guildId: "111111111111111111" },
       create: { guildId: "111111111111111111" },
       update: {},
     });
+    expect(created.delayedSignupRoleIds).toEqual([]);
 
     await service.updateGuildConfig("111111111111111111", {
       enabled: true,
@@ -133,6 +143,7 @@ describe("AutoRoleService", () => {
       verifiedRoleId: "222222222222222222",
       cwlClanRoleId: "333333333333333333",
       nonMemberRoleId: "444444444444444444",
+      delayedSignupRoleIds: ["555555555555555555", "666666666666666666"],
     });
     expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
       where: { guildId: "111111111111111111" },
@@ -144,6 +155,7 @@ describe("AutoRoleService", () => {
         verifiedRoleId: "222222222222222222",
         cwlClanRoleId: "333333333333333333",
         nonMemberRoleId: "444444444444444444",
+        delayedSignupRoleIds: ["555555555555555555", "666666666666666666"],
         nonMemberEnabled: true,
       },
       update: {
@@ -153,33 +165,187 @@ describe("AutoRoleService", () => {
         verifiedRoleId: "222222222222222222",
         cwlClanRoleId: "333333333333333333",
         nonMemberRoleId: "444444444444444444",
+        delayedSignupRoleIds: ["555555555555555555", "666666666666666666"],
         nonMemberEnabled: true,
       },
     });
   });
 
-  it("preserves a saved visitor role when disabled and re-enables it later", async () => {
-    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: "444444444444444444",
-      nonMemberEnabled: true,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+  it("returns normalized delayed signup role ids without creating a config row", async () => {
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({
+        delayedSignupRoleIds: [
+          " 222222222222222222 ",
+          "",
+          "222222222222222222",
+          "333333333333333333",
+        ],
+      }),
+    );
+
+    await expect(service.getDelayedSignupRoleIds("111111111111111111")).resolves.toEqual([
+      "222222222222222222",
+      "333333333333333333",
+    ]);
+
+    expect(prismaMock.autoRoleGuildConfig.findUnique).toHaveBeenCalledWith({
+      where: { guildId: "111111111111111111" },
+      select: {
+        delayedSignupRoleIds: true,
+      },
     });
+    expect(prismaMock.autoRoleGuildConfig.upsert).not.toHaveBeenCalled();
+
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(null);
+    await expect(service.getDelayedSignupRoleIds("111111111111111111")).resolves.toEqual([]);
+
+    const legacyRow = makeGuildConfig({
+      delayedSignupRoleIds: ["444444444444444444"],
+    });
+    delete (legacyRow as { delayedSignupRoleIds?: unknown }).delayedSignupRoleIds;
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(legacyRow);
+    await expect(service.getDelayedSignupRoleIds("111111111111111111")).resolves.toEqual([]);
+  });
+
+  it("adds delayed signup roles idempotently while preserving order", async () => {
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(null);
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222"] }),
+    );
+
+    await expect(
+      service.addDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "222222222222222222",
+      }),
+    ).resolves.toEqual(["222222222222222222"]);
+
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
+      where: { guildId: "111111111111111111" },
+      create: {
+        guildId: "111111111111111111",
+        delayedSignupRoleIds: ["222222222222222222"],
+      },
+      update: {
+        delayedSignupRoleIds: ["222222222222222222"],
+      },
+    });
+
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222"] }),
+    );
+    await expect(
+      service.addDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "222222222222222222",
+      }),
+    ).resolves.toEqual(["222222222222222222"]);
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenCalledTimes(1);
+
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222"] }),
+    );
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222", "333333333333333333"] }),
+    );
+    await expect(
+      service.addDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "333333333333333333",
+      }),
+    ).resolves.toEqual(["222222222222222222", "333333333333333333"]);
+  });
+
+  it("rejects invalid delayed signup role ids", async () => {
+    await expect(
+      service.addDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "   ",
+      }),
+    ).rejects.toThrow("Invalid Discord role id.");
+
+    await expect(
+      service.addDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "not-a-role",
+      }),
+    ).rejects.toThrow("Invalid Discord role id.");
+  });
+
+  it("removes and clears delayed signup roles idempotently", async () => {
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({
+        delayedSignupRoleIds: [
+          "222222222222222222",
+          "333333333333333333",
+          "444444444444444444",
+        ],
+      }),
+    );
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222", "444444444444444444"] }),
+    );
+
+    await expect(
+      service.removeDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "333333333333333333",
+      }),
+    ).resolves.toEqual(["222222222222222222", "444444444444444444"]);
+
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
+      where: { guildId: "111111111111111111" },
+      create: {
+        guildId: "111111111111111111",
+        delayedSignupRoleIds: ["222222222222222222", "444444444444444444"],
+      },
+      update: {
+        delayedSignupRoleIds: ["222222222222222222", "444444444444444444"],
+      },
+    });
+
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222"] }),
+    );
+    await expect(
+      service.removeDelayedSignupRole({
+        guildId: "111111111111111111",
+        discordRoleId: "333333333333333333",
+      }),
+    ).resolves.toEqual(["222222222222222222"]);
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenCalledTimes(1);
+
+    prismaMock.autoRoleGuildConfig.findUnique.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: ["222222222222222222"] }),
+    );
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({ delayedSignupRoleIds: [] }),
+    );
+    await expect(
+      service.clearDelayedSignupRoles({
+        guildId: "111111111111111111",
+      }),
+    ).resolves.toEqual([]);
+
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
+      where: { guildId: "111111111111111111" },
+      create: {
+        guildId: "111111111111111111",
+        delayedSignupRoleIds: [],
+      },
+      update: {
+        delayedSignupRoleIds: [],
+      },
+    });
+  });
+
+  it("preserves a saved visitor role when disabled and re-enables it later", async () => {
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({
+        nonMemberRoleId: "444444444444444444",
+        nonMemberEnabled: true,
+      }),
+    );
 
     await service.updateGuildConfig("111111111111111111", {
       nonMemberEnabled: false,
@@ -195,27 +361,12 @@ describe("AutoRoleService", () => {
       },
     });
 
-    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: "444444444444444444",
-      nonMemberEnabled: true,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({
+        nonMemberRoleId: "444444444444444444",
+        nonMemberEnabled: true,
+      }),
+    );
 
     await service.updateGuildConfig("111111111111111111", {
       nonMemberEnabled: true,
@@ -231,27 +382,7 @@ describe("AutoRoleService", () => {
   });
 
   it("rejects enabling visitor autorole without a saved role", async () => {
-    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce({
-      id: "config-1",
-      guildId: "111111111111111111",
-      enabled: false,
-      killSwitchEnabled: false,
-      removeStaleManagedRoles: false,
-      applyNicknames: false,
-      nicknameTemplate: null,
-      trustedLinksAllowed: true,
-      verifiedOnlyMode: false,
-      syncEnabled: false,
-      syncIntervalMinutes: null,
-      verifiedRoleId: null,
-      familyRoleId: null,
-      cwlClanRoleId: null,
-      nonMemberRoleId: null,
-      nonMemberEnabled: false,
-      clanRoleRemovalDelayMinutes: null,
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(makeGuildConfig());
 
     await expect(
       service.updateGuildConfig("111111111111111111", {

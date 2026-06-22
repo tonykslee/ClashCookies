@@ -65,6 +65,7 @@ export type AutoRoleGuildConfigUpdateInput = {
   familyRoleId?: string | null;
   cwlClanRoleId?: string | null;
   nonMemberRoleId?: string | null;
+  delayedSignupRoleIds?: string[] | null;
   nonMemberEnabled?: boolean;
   clanRoleRemovalDelayMinutes?: number | null;
 };
@@ -110,6 +111,10 @@ export type AutoRoleRuleNormalizedInput = {
   targetValue: string;
   priority: number;
   enabled: boolean;
+};
+
+type AutoRoleGuildConfigRowLike = Omit<AutoRoleGuildConfigRecord, "delayedSignupRoleIds"> & {
+  delayedSignupRoleIds?: unknown;
 };
 
 /** Purpose: normalize a guild snowflake or reject blank/invalid input. */
@@ -160,6 +165,44 @@ function normalizeOptionalSnowflakeId(
   return normalized;
 }
 
+/** Purpose: normalize a delayed-signup role list from persisted data. */
+function normalizeDelayedSignupRoleIds(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of input) {
+    const roleId = normalizeSnowflakeId(String(value ?? ""));
+    if (!roleId || seen.has(roleId)) continue;
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+
+  return normalized;
+}
+
+/** Purpose: normalize delayed-signup role ids for writes while rejecting invalid entries. */
+function normalizeDelayedSignupRoleIdsForWrite(
+  input: string[] | null | undefined,
+): string[] | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return [];
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of input) {
+    const roleId = normalizeSnowflakeId(String(value ?? ""));
+    if (!roleId) {
+      throw new Error("Selected Discord role is invalid.");
+    }
+    if (seen.has(roleId)) continue;
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+
+  return normalized;
+}
+
 function normalizeClanRoleRemovalDelayMinutes(
   input: number | null | undefined,
 ): number | null | undefined {
@@ -176,6 +219,14 @@ function normalizeClanRoleRemovalDelayMinutes(
     );
   }
   return value === 0 ? null : value;
+}
+
+/** Purpose: normalize a guild config row so delayed-signup roles are always an array. */
+function normalizeGuildConfigRecord(config: AutoRoleGuildConfigRowLike): AutoRoleGuildConfigRecord {
+  return {
+    ...config,
+    delayedSignupRoleIds: normalizeDelayedSignupRoleIds(config.delayedSignupRoleIds),
+  };
 }
 
 /** Purpose: normalize human-readable league text for persistence. */
@@ -423,6 +474,10 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
     data.nonMemberRoleId = normalizeOptionalSnowflakeId(input.nonMemberRoleId) ?? null;
   }
 
+  if (input.delayedSignupRoleIds !== undefined) {
+    data.delayedSignupRoleIds = normalizeDelayedSignupRoleIdsForWrite(input.delayedSignupRoleIds) ?? [];
+  }
+
   const nonMemberEnabled = toBooleanOrUndefined(input.nonMemberEnabled);
   if (nonMemberEnabled !== undefined) {
     data.nonMemberEnabled = nonMemberEnabled;
@@ -462,11 +517,12 @@ export class AutoRoleService {
   /** Purpose: get or create one guild config row. */
   async getOrCreateGuildConfig(guildId: string): Promise<AutoRoleGuildConfigRecord> {
     const normalizedGuildId = requireGuildId(guildId);
-    return prisma.autoRoleGuildConfig.upsert({
+    const config = await prisma.autoRoleGuildConfig.upsert({
       where: { guildId: normalizedGuildId },
       create: { guildId: normalizedGuildId },
       update: {},
     });
+    return normalizeGuildConfigRecord(config);
   }
 
   /** Purpose: update one guild config row with safe partial writes. */
@@ -495,11 +551,87 @@ export class AutoRoleService {
       return current;
     }
 
-    return prisma.autoRoleGuildConfig.upsert({
+    const config = await prisma.autoRoleGuildConfig.upsert({
       where: { guildId: normalizedGuildId },
       create: { guildId: normalizedGuildId, ...data },
       update: data,
     });
+    return normalizeGuildConfigRecord(config);
+  }
+
+  /** Purpose: read delayed-signup role ids without creating a config row. */
+  async getDelayedSignupRoleIds(guildId: string): Promise<string[]> {
+    const normalizedGuildId = requireGuildId(guildId);
+    const config = await prisma.autoRoleGuildConfig.findUnique({
+      where: { guildId: normalizedGuildId },
+      select: {
+        delayedSignupRoleIds: true,
+      },
+    });
+    return normalizeDelayedSignupRoleIds(config?.delayedSignupRoleIds);
+  }
+
+  /** Purpose: add one delayed-signup role id while preserving existing order. */
+  async addDelayedSignupRole(input: {
+    guildId: string;
+    discordRoleId: string;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<string[]> {
+    const normalizedGuildId = requireGuildId(input.guildId);
+    const normalizedRoleId = requireDiscordRoleId(input.discordRoleId);
+    const currentRoleIds = await this.getDelayedSignupRoleIds(normalizedGuildId);
+    if (currentRoleIds.includes(normalizedRoleId)) {
+      return currentRoleIds;
+    }
+
+    const nextRoleIds = [...currentRoleIds, normalizedRoleId];
+    await prisma.autoRoleGuildConfig.upsert({
+      where: { guildId: normalizedGuildId },
+      create: { guildId: normalizedGuildId, delayedSignupRoleIds: nextRoleIds },
+      update: { delayedSignupRoleIds: nextRoleIds },
+    });
+    return nextRoleIds;
+  }
+
+  /** Purpose: remove one delayed-signup role id while preserving remaining order. */
+  async removeDelayedSignupRole(input: {
+    guildId: string;
+    discordRoleId: string;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<string[]> {
+    const normalizedGuildId = requireGuildId(input.guildId);
+    const normalizedRoleId = requireDiscordRoleId(input.discordRoleId);
+    const currentRoleIds = await this.getDelayedSignupRoleIds(normalizedGuildId);
+    const nextRoleIds = currentRoleIds.filter((roleId) => roleId !== normalizedRoleId);
+    if (nextRoleIds.length === currentRoleIds.length) {
+      return currentRoleIds;
+    }
+
+    await prisma.autoRoleGuildConfig.upsert({
+      where: { guildId: normalizedGuildId },
+      create: { guildId: normalizedGuildId, delayedSignupRoleIds: nextRoleIds },
+      update: { delayedSignupRoleIds: nextRoleIds },
+    });
+    return nextRoleIds;
+  }
+
+  /** Purpose: clear all delayed-signup role ids for one guild. */
+  async clearDelayedSignupRoles(input: {
+    guildId: string;
+    updatedByDiscordUserId?: string | null;
+  }): Promise<string[]> {
+    const normalizedGuildId = requireGuildId(input.guildId);
+    const currentRoleIds = await this.getDelayedSignupRoleIds(normalizedGuildId);
+    if (currentRoleIds.length === 0) {
+      return currentRoleIds;
+    }
+
+    await prisma.autoRoleGuildConfig.upsert({
+      where: { guildId: normalizedGuildId },
+      create: { guildId: normalizedGuildId, delayedSignupRoleIds: [] },
+      update: { delayedSignupRoleIds: [] },
+    });
+    return [];
   }
 
   /** Purpose: load one guild's current autorole snapshot with the three persisted sources the refresh path needs. */

@@ -428,6 +428,7 @@ model AutoRoleGuildConfig {
   familyRoleId           String?
   cwlClanRoleId          String?
   nonMemberRoleId        String?
+  delayedSignupRoleIds   String[] @default([])
   nonMemberEnabled       Boolean  @default(false)
   clanRoleRemovalDelayMinutes Int?
   createdAt              DateTime @default(now())
