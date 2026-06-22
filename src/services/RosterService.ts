@@ -219,6 +219,35 @@ export type RosterSignupEligibilityIssue = {
   rosterTitle?: string | null;
 };
 
+export type RosterDelayedSignupPolicyReason =
+  | "no_opening_time"
+  | "opening_reached"
+  | "no_delayed_roles"
+  | "manager_bypass"
+  | "alliance_member"
+  | "not_delayed_role"
+  | "delayed_signup_not_open";
+
+export type RosterDelayedSignupPolicyInput = {
+  visitorSignupOpensAt: Date | null;
+  delayedSignupRoleIds: readonly string[];
+  actorRoleIds: readonly string[];
+  allianceMemberRoleIds: readonly string[];
+  hasManagerBypass: boolean;
+  now?: Date;
+};
+
+export type RosterDelayedSignupPolicyResult =
+  | {
+      allowed: true;
+      reason: Exclude<RosterDelayedSignupPolicyReason, "delayed_signup_not_open">;
+    }
+  | {
+      allowed: false;
+      reason: "delayed_signup_not_open";
+      visitorSignupOpensAt: Date;
+    };
+
 export type RosterSelectionPanel = {
   sessionId: string;
   mode: RosterSelectionMode;
@@ -1167,6 +1196,103 @@ function normalizeRosterInt(input: unknown): number | null {
   if (input === null || input === undefined || input === "") return null;
   const parsed = Math.trunc(Number(input));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Purpose: normalize a delayed-signup role id list while preserving stable order. */
+function normalizeRosterDelayedSignupRoleIds(input: readonly string[] | null | undefined): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of Array.isArray(input) ? input : []) {
+    const roleId = String(value ?? "").trim();
+    if (!roleId || seen.has(roleId)) {
+      continue;
+    }
+    seen.add(roleId);
+    normalized.push(roleId);
+  }
+
+  return normalized;
+}
+
+/** Purpose: validate a policy date and keep the original Date object for comparisons. */
+function normalizeRosterPolicyDate(input: Date | null | undefined, fieldName: string): Date | null {
+  if (input === null || input === undefined) {
+    return null;
+  }
+  if (!(input instanceof Date) || Number.isNaN(input.getTime())) {
+    throw new Error(`${fieldName} must be a valid Date.`);
+  }
+  return input;
+}
+
+/** Purpose: evaluate the delayed-signup eligibility policy from already-resolved facts. */
+export function evaluateRosterDelayedSignupPolicy(
+  input: RosterDelayedSignupPolicyInput,
+): RosterDelayedSignupPolicyResult {
+  const openingTime = normalizeRosterPolicyDate(
+    input.visitorSignupOpensAt,
+    "visitorSignupOpensAt",
+  );
+  if (!openingTime) {
+    return {
+      allowed: true,
+      reason: "no_opening_time",
+    };
+  }
+
+  const currentTime = normalizeRosterPolicyDate(
+    input.now ?? new Date(),
+    "now",
+  );
+  if (!currentTime) {
+    throw new Error("now must be a valid Date.");
+  }
+
+  if (currentTime.getTime() >= openingTime.getTime()) {
+    return {
+      allowed: true,
+      reason: "opening_reached",
+    };
+  }
+
+  const delayedSignupRoleIds = normalizeRosterDelayedSignupRoleIds(input.delayedSignupRoleIds);
+  const actorRoleIds = normalizeRosterDelayedSignupRoleIds(input.actorRoleIds);
+  const allianceMemberRoleIds = normalizeRosterDelayedSignupRoleIds(input.allianceMemberRoleIds);
+
+  if (delayedSignupRoleIds.length === 0) {
+    return {
+      allowed: true,
+      reason: "no_delayed_roles",
+    };
+  }
+
+  if (input.hasManagerBypass) {
+    return {
+      allowed: true,
+      reason: "manager_bypass",
+    };
+  }
+
+  if (allianceMemberRoleIds.some((roleId) => actorRoleIds.includes(roleId))) {
+    return {
+      allowed: true,
+      reason: "alliance_member",
+    };
+  }
+
+  if (!delayedSignupRoleIds.some((roleId) => actorRoleIds.includes(roleId))) {
+    return {
+      allowed: true,
+      reason: "not_delayed_role",
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: "delayed_signup_not_open",
+    visitorSignupOpensAt: openingTime,
+  };
 }
 
 function isRosterTownHallGated(roster: { minTownhall: number | null; maxTownhall: number | null }): boolean {
