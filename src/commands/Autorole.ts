@@ -456,10 +456,6 @@ function formatRoleMentions(roleIds: string[]): string {
   return roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
 }
 
-function formatDelayedSignupRoleContent(roleIds: string[]): string {
-  return `Delayed signup roles (${roleIds.length}): ${formatRoleMentions(roleIds)}.`;
-}
-
 function formatRefreshSummary(result: AutoRoleRefreshResult): string {
   const scopeLabel =
     result.scope.kind === "guild"
@@ -548,49 +544,6 @@ export const Autorole: Command = {
             { name: "clan_role_removal_delay_minutes", description: "Delay stale CLAN role removal in minutes", type: ApplicationCommandOptionType.Integer, required: false },
             { name: "clear_clan_role_removal_delay", description: "Clear the clan role removal delay", type: ApplicationCommandOptionType.Boolean, required: false },
           ],
-        },
-      ],
-    },
-    {
-      name: "delayed-signup-role",
-      description: "Manage delayed-signup role IDs",
-      type: ApplicationCommandOptionType.SubcommandGroup,
-      options: [
-        {
-          name: "add",
-          description: "Add one delayed-signup role",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "role",
-              description: "Discord role to add",
-              type: ApplicationCommandOptionType.Role,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "remove",
-          description: "Remove one delayed-signup role",
-          type: ApplicationCommandOptionType.Subcommand,
-          options: [
-            {
-              name: "role",
-              description: "Discord role to remove",
-              type: ApplicationCommandOptionType.Role,
-              required: true,
-            },
-          ],
-        },
-        {
-          name: "list",
-          description: "List delayed-signup roles",
-          type: ApplicationCommandOptionType.Subcommand,
-        },
-        {
-          name: "clear",
-          description: "Clear all delayed-signup roles",
-          type: ApplicationCommandOptionType.Subcommand,
         },
       ],
     },
@@ -877,80 +830,6 @@ export const Autorole: Command = {
           await interaction.editReply({
             content: buildSuccessContent("config updated"),
             embeds: [buildConfigEmbed(config, { visitorRolePresence })],
-          });
-          return;
-        }
-      }
-
-      if (group === "delayed-signup-role") {
-        if (subcommand === "list") {
-          const roleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
-          await interaction.editReply({
-            content:
-              roleIds.length === 0
-                ? "No delayed signup roles are configured."
-                : formatDelayedSignupRoleContent(roleIds),
-          });
-          return;
-        }
-
-        if (subcommand === "add") {
-          const role = interaction.options.getRole("role", true);
-          if (!role || !("id" in role)) {
-            await interaction.editReply({ content: "Invalid role selected." });
-            return;
-          }
-          const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
-          const alreadyConfigured = currentRoleIds.includes(role.id);
-          const nextRoleIds = await autoRoleService.addDelayedSignupRole({
-            guildId,
-            discordRoleId: role.id,
-            updatedByDiscordUserId: interaction.user.id,
-          });
-          await interaction.editReply({
-            content: `${
-              alreadyConfigured
-                ? `<@&${role.id}> is already configured as a delayed signup role.`
-                : `Added <@&${role.id}> to delayed signup roles.`
-            }\n${formatDelayedSignupRoleContent(nextRoleIds)}`,
-          });
-          return;
-        }
-
-        if (subcommand === "remove") {
-          const role = interaction.options.getRole("role", true);
-          if (!role || !("id" in role)) {
-            await interaction.editReply({ content: "Invalid role selected." });
-            return;
-          }
-          const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
-          const wasConfigured = currentRoleIds.includes(role.id);
-          const nextRoleIds = await autoRoleService.removeDelayedSignupRole({
-            guildId,
-            discordRoleId: role.id,
-            updatedByDiscordUserId: interaction.user.id,
-          });
-          await interaction.editReply({
-            content: `${
-              wasConfigured
-                ? `Removed <@&${role.id}> from delayed signup roles.`
-                : `<@&${role.id}> was not configured as a delayed signup role.`
-            }\n${formatDelayedSignupRoleContent(nextRoleIds)}`,
-          });
-          return;
-        }
-
-        if (subcommand === "clear") {
-          const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
-          await autoRoleService.clearDelayedSignupRoles({
-            guildId,
-            updatedByDiscordUserId: interaction.user.id,
-          });
-          await interaction.editReply({
-            content:
-              currentRoleIds.length === 0
-                ? "No delayed signup roles were configured."
-                : "Cleared all delayed signup roles.",
           });
           return;
         }

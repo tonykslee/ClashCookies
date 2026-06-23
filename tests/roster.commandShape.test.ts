@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Roster } from "../src/commands/Roster";
 
 describe("/roster command shape", () => {
-  it("registers create, list, show, set, reset, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
+  it("registers create, list, show, set, reset, delayed-signup-role, post, ping, manage, edit, delete, report, and refresh without flat manager drift", () => {
     const create = Roster.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -13,6 +13,7 @@ describe("/roster command shape", () => {
     const show = Roster.options?.find((option) => option.name === "show");
     const set = Roster.options?.find((option) => option.name === "set");
     const reset = Roster.options?.find((option) => option.name === "reset");
+    const delayedSignupRole = Roster.options?.find((option) => option.name === "delayed-signup-role");
     const post = Roster.options?.find((option) => option.name === "post");
     const ping = Roster.options?.find((option) => option.name === "ping");
     const manage = Roster.options?.find((option) => option.name === "manage");
@@ -27,6 +28,7 @@ describe("/roster command shape", () => {
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(set?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(reset?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(delayedSignupRole?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(post?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(ping?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(manage?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -40,6 +42,15 @@ describe("/roster command shape", () => {
     expect(Roster.options?.find((option) => option.name === "add")).toBeUndefined();
     expect(Roster.options?.find((option) => option.name === "move")).toBeUndefined();
     expect(Roster.options?.find((option) => option.name === "remove")).toBeUndefined();
+
+    expect(delayedSignupRole?.options?.map((option: any) => option.name)).toEqual([
+      "add",
+      "remove",
+      "list",
+      "clear",
+    ]);
+    expect(delayedSignupRole?.options?.find((option: any) => option.name === "add")?.options?.find((option: any) => option.name === "role")?.required).toBe(true);
+    expect(delayedSignupRole?.options?.find((option: any) => option.name === "remove")?.options?.find((option: any) => option.name === "role")?.required).toBe(true);
 
     expect(create?.options?.find((option: any) => option.name === "category")?.choices?.map((choice: any) => choice.value)).toEqual([
       "CWL",

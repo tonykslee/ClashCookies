@@ -19,6 +19,13 @@ const defermentServiceMock = vi.hoisted(() => ({
   listOpenDeferredWeightRowsByClanAndPlayerTags: vi.fn(),
 }));
 
+const autoRoleServiceMock = vi.hoisted(() => ({
+  getDelayedSignupRoleIds: vi.fn(),
+  addDelayedSignupRole: vi.fn(),
+  removeDelayedSignupRole: vi.fn(),
+  clearDelayedSignupRoles: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -31,6 +38,16 @@ vi.mock("../src/services/WeightInputDefermentService", async () => {
     ...actual,
     listOpenDeferredWeightRowsByClanAndPlayerTags:
       defermentServiceMock.listOpenDeferredWeightRowsByClanAndPlayerTags,
+  };
+});
+
+vi.mock("../src/services/AutoRoleService", async () => {
+  const actual = await vi.importActual<typeof import("../src/services/AutoRoleService")>(
+    "../src/services/AutoRoleService",
+  );
+  return {
+    ...actual,
+    autoRoleService: autoRoleServiceMock,
   };
 });
 
@@ -57,6 +74,7 @@ import {
   handleRosterPostSettingsMenuInteraction,
   paginateRosterSignupUserBlocks,
 } from "../src/commands/Roster";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { rosterService } from "../src/services/RosterService";
 import * as rosterServiceModule from "../src/services/RosterService";
 import {
@@ -96,6 +114,7 @@ const interactionClientFetchMock = vi.fn();
 
 function makeInteraction(input: {
   subcommand: RosterSubcommand;
+  subcommandGroup?: string | null;
   clan?: string | null;
   category?: string | null;
   name?: string | null;
@@ -125,6 +144,7 @@ function makeInteraction(input: {
   clearRequiredRole?: boolean | null;
   clearVisitorSignupOpenTime?: boolean | null;
   rosterRole?: string | null;
+  delayedSignupRole?: string | null;
   allowMultiSignup?: boolean | null;
   sortBy?: string | null;
   importMembers?: boolean | null;
@@ -141,6 +161,7 @@ function makeInteraction(input: {
     },
     options: {
       getSubcommand: vi.fn(() => input.subcommand),
+      getSubcommandGroup: vi.fn(() => input.subcommandGroup ?? null),
       getString: vi.fn((name: string) => {
         if (name === "clan") return input.clan ?? null;
         if (name === "category") return input.category ?? null;
@@ -186,6 +207,11 @@ function makeInteraction(input: {
         if (name === "required-role" && input.requiredRole) {
           return {
             id: input.requiredRole,
+          };
+        }
+        if (name === "role" && input.delayedSignupRole) {
+          return {
+            id: input.delayedSignupRole,
           };
         }
         return null;
@@ -251,6 +277,7 @@ function makeAutocompleteInteraction(input: {
     options: {
       getFocused: vi.fn(() => ({ name: input.focusedName, value: input.focusedValue ?? "" })),
       getSubcommand: vi.fn(() => input.subcommand),
+      getSubcommandGroup: vi.fn(() => input.subcommandGroup ?? null),
       getString: vi.fn((name: string) => {
         if (name === "roster") return input.roster ?? null;
         if (name === "action") return input.action ?? null;
@@ -382,6 +409,10 @@ describe("/roster command", () => {
     prismaMock.cwlTrackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
     defermentServiceMock.listOpenDeferredWeightRowsByClanAndPlayerTags.mockResolvedValue(new Map());
+    autoRoleServiceMock.getDelayedSignupRoleIds.mockReset();
+    autoRoleServiceMock.addDelayedSignupRole.mockReset();
+    autoRoleServiceMock.removeDelayedSignupRole.mockReset();
+    autoRoleServiceMock.clearDelayedSignupRoles.mockReset();
     vi.spyOn(rosterService, "createRoster");
     vi.spyOn(rosterService, "buildRosterSignupPayload");
     vi.spyOn(rosterService, "refreshRosterSignupPayload");
@@ -671,6 +702,126 @@ describe("/roster command", () => {
       "Reset to built-in layout: `townhall_icons | discord_username | player_name | player_tag`",
     );
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("Source: Built-in");
+  });
+
+  it("manages delayed signup roles through /roster delayed-signup-role", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    autoRoleServiceMock.getDelayedSignupRoleIds
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(["666666666666666666"])
+      .mockResolvedValueOnce(["777777777777777777", "888888888888888888"]);
+    autoRoleServiceMock.addDelayedSignupRole.mockResolvedValueOnce(["555555555555555555"]);
+    autoRoleServiceMock.removeDelayedSignupRole.mockResolvedValueOnce([]);
+    autoRoleServiceMock.clearDelayedSignupRoles.mockResolvedValueOnce([]);
+
+    const listInteraction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "list",
+    }) as any;
+    await Roster.run({} as any, listInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(1);
+    expect(permissionSpy).toHaveBeenNthCalledWith(1, ["roster:manage"], expect.anything());
+    expect(String(listInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+      "No delayed signup roles are configured.",
+    );
+
+    const addInteraction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "add",
+      delayedSignupRole: "555555555555555555",
+    }) as any;
+    await Roster.run({} as any, addInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(2);
+    expect(permissionSpy).toHaveBeenNthCalledWith(2, ["roster:manage"], expect.anything());
+    expect(autoRoleServiceMock.addDelayedSignupRole).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      discordRoleId: "555555555555555555",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Added <@&555555555555555555> to delayed signup roles.",
+    );
+    expect(String(addInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Delayed signup roles (1): <@&555555555555555555>.",
+    );
+
+    const removeInteraction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "remove",
+      delayedSignupRole: "666666666666666666",
+    }) as any;
+    await Roster.run({} as any, removeInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(3);
+    expect(permissionSpy).toHaveBeenNthCalledWith(3, ["roster:manage"], expect.anything());
+    expect(autoRoleServiceMock.removeDelayedSignupRole).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      discordRoleId: "666666666666666666",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(String(removeInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Removed <@&666666666666666666> from delayed signup roles.",
+    );
+    expect(String(removeInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
+      "Delayed signup roles (0): none.",
+    );
+
+    const clearInteraction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "clear",
+    }) as any;
+    await Roster.run({} as any, clearInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(4);
+    expect(permissionSpy).toHaveBeenNthCalledWith(4, ["roster:manage"], expect.anything());
+    expect(autoRoleServiceMock.clearDelayedSignupRoles).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+    expect(String(clearInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+      "Cleared all delayed signup roles.",
+    );
+  });
+
+  it("blocks delayed signup role management when roster:manage is denied", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    const interaction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "list",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(permissionSpy).toHaveBeenCalledWith(["roster:manage"], expect.anything());
+    expect(autoRoleServiceMock.getDelayedSignupRoleIds).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "You do not have permission to manage this roster.",
+    );
+  });
+
+  it("logs delayed signup failures and returns the roster command error message", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    autoRoleServiceMock.getDelayedSignupRoleIds.mockResolvedValueOnce([]);
+    autoRoleServiceMock.addDelayedSignupRole.mockRejectedValueOnce(new Error("boom"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "add",
+      delayedSignupRole: "999999999999999999",
+    }) as any;
+
+    try {
+      await Roster.run({} as any, interaction as any);
+
+      expect(permissionSpy).toHaveBeenCalledWith(["roster:manage"], expect.anything());
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[roster] command_failed guild=guild-1 user=111111111111111111 path=delayed-signup-role:add error=boom",
+        ),
+      );
+      expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe("Roster command failed: boom");
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("can clear the signup role requirement while preserving the no-role allowance", async () => {

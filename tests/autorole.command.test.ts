@@ -246,20 +246,18 @@ describe("/autorole command", () => {
     });
   });
 
-  it("registers config, delayed-signup-role, rules, and exclusions subcommand groups", () => {
+  it("registers config, rules, and exclusions subcommand groups", () => {
     const groups = Autorole.options?.map((option: any) => option.name);
-    expect(groups).toEqual(["refresh", "config", "delayed-signup-role", "rules", "exclusions"]);
+    expect(groups).toEqual(["refresh", "config", "rules", "exclusions"]);
 
     const refresh = Autorole.options?.find((option: any) => option.name === "refresh");
     expect(refresh?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(refresh?.options?.map((option: any) => option.name)).toEqual(["user", "role"]);
 
     const configGroup = Autorole.options?.find((option: any) => option.name === "config");
-    const delayedSignupGroup = Autorole.options?.find((option: any) => option.name === "delayed-signup-role");
     const rulesGroup = Autorole.options?.find((option: any) => option.name === "rules");
     const exclusionsGroup = Autorole.options?.find((option: any) => option.name === "exclusions");
     expect(configGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
-    expect(delayedSignupGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(rulesGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(exclusionsGroup?.type).toBe(ApplicationCommandOptionType.SubcommandGroup);
     expect(configGroup?.options?.map((option: any) => option.name)).toEqual(["show", "set"]);
@@ -274,24 +272,6 @@ describe("/autorole command", () => {
       "non-member-role",
       "non-member-enabled",
     ]));
-    expect(delayedSignupGroup?.options?.map((option: any) => option.name)).toEqual([
-      "add",
-      "remove",
-      "list",
-      "clear",
-    ]);
-    const delayedSignupAddOptions = delayedSignupGroup?.options
-      ?.find((option: any) => option.name === "add")
-      ?.options?.map((option: any) => ({ name: option.name, type: option.type }));
-    const delayedSignupRemoveOptions = delayedSignupGroup?.options
-      ?.find((option: any) => option.name === "remove")
-      ?.options?.map((option: any) => ({ name: option.name, type: option.type }));
-    expect(delayedSignupAddOptions).toEqual([
-      { name: "role", type: ApplicationCommandOptionType.Role },
-    ]);
-    expect(delayedSignupRemoveOptions).toEqual([
-      { name: "role", type: ApplicationCommandOptionType.Role },
-    ]);
     expect(rulesGroup?.options?.map((option: any) => option.name)).toEqual([
       "list",
       "add",
@@ -560,134 +540,6 @@ describe("/autorole command", () => {
       "Delayed signup roles: <@&888888888888888888>, <@&999999999999999999>",
     );
     expect(getDescription(interaction)).toContain("Visitor role: none");
-  });
-
-  it("reports duplicate delayed signup role adds truthfully", async () => {
-    autoRoleServiceMock.getDelayedSignupRoleIds.mockResolvedValueOnce([
-      "555555555555555555",
-    ]);
-    autoRoleServiceMock.addDelayedSignupRole.mockResolvedValueOnce([
-      "555555555555555555",
-    ]);
-    const interaction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "add",
-      roles: {
-        role: { id: "555555555555555555" },
-      },
-    });
-
-    await Autorole.run({} as any, interaction as any, {} as any);
-
-    expect(autoRoleServiceMock.getDelayedSignupRoleIds).toHaveBeenCalledWith(
-      "111111111111111111",
-    );
-    expect(autoRoleServiceMock.addDelayedSignupRole).toHaveBeenCalledWith({
-      guildId: "111111111111111111",
-      discordRoleId: "555555555555555555",
-      updatedByDiscordUserId: "user-1",
-    });
-    expect(getEditReplyPayload(interaction).content).toContain(
-      "is already configured as a delayed signup role",
-    );
-    expect(getEditReplyPayload(interaction).content).toContain(
-      "Delayed signup roles (1): <@&555555555555555555>.",
-    );
-  });
-
-  it("reports missing delayed signup role removals truthfully", async () => {
-    autoRoleServiceMock.getDelayedSignupRoleIds.mockResolvedValueOnce([]);
-    autoRoleServiceMock.removeDelayedSignupRole.mockResolvedValueOnce([]);
-    const interaction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "remove",
-      roles: {
-        role: { id: "666666666666666666" },
-      },
-    });
-
-    await Autorole.run({} as any, interaction as any, {} as any);
-
-    expect(autoRoleServiceMock.removeDelayedSignupRole).toHaveBeenCalledWith({
-      guildId: "111111111111111111",
-      discordRoleId: "666666666666666666",
-      updatedByDiscordUserId: "user-1",
-    });
-    expect(getEditReplyPayload(interaction).content).toContain(
-      "was not configured as a delayed signup role",
-    );
-    expect(getEditReplyPayload(interaction).content).toContain(
-      "Delayed signup roles (0): none.",
-    );
-  });
-
-  it("lists and clears delayed signup roles", async () => {
-    autoRoleServiceMock.getDelayedSignupRoleIds
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(["777777777777777777", "888888888888888888"]);
-    autoRoleServiceMock.clearDelayedSignupRoles
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-
-    const listInteraction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "list",
-    });
-    await Autorole.run({} as any, listInteraction as any, {} as any);
-    expect(getEditReplyPayload(listInteraction).content).toBe(
-      "No delayed signup roles are configured.",
-    );
-
-    const emptyClearInteraction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "clear",
-    });
-    await Autorole.run({} as any, emptyClearInteraction as any, {} as any);
-    expect(getEditReplyPayload(emptyClearInteraction).content).toBe(
-      "No delayed signup roles were configured.",
-    );
-
-    const clearInteraction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "clear",
-    });
-    await Autorole.run({} as any, clearInteraction as any, {} as any);
-    expect(autoRoleServiceMock.clearDelayedSignupRoles).toHaveBeenCalledWith({
-      guildId: "111111111111111111",
-      updatedByDiscordUserId: "user-1",
-    });
-    expect(getEditReplyPayload(clearInteraction).content).toBe(
-      "Cleared all delayed signup roles.",
-    );
-  });
-
-  it("logs context and returns a generic delayed signup failure message", async () => {
-    autoRoleServiceMock.getDelayedSignupRoleIds.mockResolvedValueOnce([]);
-    autoRoleServiceMock.addDelayedSignupRole.mockRejectedValueOnce(new Error("boom"));
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const interaction = createInteraction({
-      group: "delayed-signup-role",
-      subcommand: "add",
-      roles: {
-        role: { id: "999999999999999999" },
-      },
-    });
-
-    try {
-      await Autorole.run({} as any, interaction as any, {} as any);
-
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining(
-          "autorole command failed guild=111111111111111111 user=user-1 path=delayed-signup-role:add error=boom",
-        ),
-      );
-      expect(getEditReplyPayload(interaction).content).toBe(
-        "Autorole command failed: boom",
-      );
-    } finally {
-      consoleErrorSpy.mockRestore();
-    }
   });
 
   it("updates config fields from /autorole config set", async () => {
