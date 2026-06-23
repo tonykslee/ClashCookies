@@ -449,6 +449,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`config show` displays the current guild autorole policy snapshot, including the delayed-signup role IDs used later by roster/signup policy, nickname sync status, and template.",
       "`config set` updates guild config fields such as `enabled`, `kill_switch_enabled`, stale-role removal, link trust policy, sync policy, `apply_nicknames`, and `nickname_template`.",
       "`config set` can also set/clear the generic CWL clan role used for users with an eligible linked account in a tracked current-season CWL clan, configure the visitor/non-member role with `non-member-role` + `non-member-enabled`, and set a stale CLAN-role removal delay in minutes.",
+      "Tracked clan roles imply the family role, and either a clan role or the family role suppresses the visitor/non-member role.",
       "Enable nickname sync with `apply_nicknames:true` and set a template such as `{player} | {trackedClans}` for ClashPerk-style names like `Elrond ♣️ | RR | GB | RD`.",
       "Nickname template tokens: `{player}`, `{tag}`, `{th}`, `{clan}`, `{clanTag}`, `{clanShort}`, `{trackedClans}`, `{discord}`, `{username}`, and `{role}`.",
       "`{trackedClans}` lists distinct permanent FWA tracked-clan short names across the member's eligible linked accounts, de-dupes duplicate clans, puts the primary account clan first, and joins labels with ` | `.",

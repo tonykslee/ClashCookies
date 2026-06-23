@@ -119,7 +119,7 @@ Enable it with:
 
 Supported tokens are `{player}`, `{tag}`, `{th}`, `{clan}`, `{clanTag}`, `{clanShort}`, `{trackedClans}`, `{discord}`, `{username}`, and `{role}`. `{trackedClans}` includes distinct permanent FWA tracked-clan short names from eligible linked accounts, de-duped with the primary account clan first. Nicknames are cleaned up when tokens are missing and capped to Discord's 32-character nickname limit. Unicode emoji can render in nicknames; custom Discord emoji markup does not render in nicknames.
 
-The bot needs Discord **Manage Nicknames** and must be above the target member in role hierarchy to change nicknames. Role application still requires **Manage Roles** and role hierarchy above the managed roles.
+The bot needs Discord **Manage Nicknames** and must be above the target member in role hierarchy to change nicknames. Role application still requires **Manage Roles** and role hierarchy above the managed roles. Tracked clan roles imply the family role, and either a clan role or the family role suppresses the visitor/non-member role.
 
 ## Development
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and architecture documentation.
