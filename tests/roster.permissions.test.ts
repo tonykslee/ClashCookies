@@ -43,6 +43,9 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:post"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
+      service.canUseAnyTarget(["roster:delayed-signup-role"], buildInteraction({ isAdmin: false })),
+    ).resolves.toBe(false);
+    await expect(
       service.canUseAnyTarget(["roster:manage"], buildInteraction({ isAdmin: false })),
     ).resolves.toBe(false);
     await expect(
@@ -74,6 +77,9 @@ describe("roster permission defaults", () => {
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:post"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["roster:delayed-signup-role"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:manage"], buildInteraction({ isAdmin: true })),

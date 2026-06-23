@@ -74,6 +74,7 @@ import {
   type RosterSignupViewRecord,
   type RosterSummaryRecord,
 } from "../services/RosterService";
+import { autoRoleService } from "../services/AutoRoleService";
 import {
   parseRosterManageWeightInput,
   rosterWeightService,
@@ -118,6 +119,7 @@ type RosterPostSettingsAction =
   | "archive_mode"
   | "unregistered_members"
   | "missing_members";
+type RosterDelayedSignupRoleAction = "add" | "remove" | "list" | "clear";
 
 function parseRosterPlayerTags(input: string): string[] {
   return [
@@ -142,6 +144,15 @@ function formatRosterAccountIdentity(account: { playerTag: string; playerName: s
 
 function formatRosterAccountIdentityList(accounts: Array<{ playerTag: string; playerName: string | null }>): string {
   return accounts.map(formatRosterAccountIdentity).join(", ");
+}
+
+function formatRosterRoleMentions(roleIds: string[]): string {
+  if (roleIds.length === 0) return "none";
+  return roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
+}
+
+function formatRosterDelayedSignupRoleContent(roleIds: string[]): string {
+  return `Delayed signup roles (${roleIds.length}): ${formatRosterRoleMentions(roleIds)}.`;
 }
 
 function logRosterMutationTiming(input: {
@@ -852,6 +863,12 @@ async function canUseRosterPostTarget(
   target: "roster:manage" | "roster:refresh" | "roster:report",
 ): Promise<boolean> {
   return rosterPermissionService.canUseAnyTarget([target], interaction as any);
+}
+
+async function canUseRosterDelayedSignupRoleTarget(
+  interaction: ChatInputCommandInteraction,
+): Promise<boolean> {
+  return rosterPermissionService.canUseAnyTarget(["roster:delayed-signup-role"], interaction as any);
 }
 
 async function refreshExistingRosterPost(
@@ -3810,9 +3827,107 @@ async function handleRosterResetSubcommand(interaction: ChatInputCommandInteract
   await interaction.editReply({
     content: [
       `Reset to built-in layout: \`${formatRosterDisplayColumnLayout(result.columns)}\``,
-      `Source: ${formatRosterDisplayColumnSource(result.source)}`,
-    ].join("\n"),
+    `Source: ${formatRosterDisplayColumnSource(result.source)}`,
+  ].join("\n"),
   });
+}
+
+async function handleRosterDelayedSignupRoleSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+
+  if (!(await canUseRosterDelayedSignupRoleTarget(interaction))) {
+    await interaction.editReply("You do not have permission to manage this roster.");
+    return;
+  }
+
+  const guildId = interaction.guildId;
+  const subcommand = interaction.options.getSubcommand(true) as RosterDelayedSignupRoleAction;
+
+  try {
+    if (subcommand === "list") {
+      const roleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
+      await interaction.editReply({
+        content:
+          roleIds.length === 0
+            ? "No delayed signup roles are configured."
+            : formatRosterDelayedSignupRoleContent(roleIds),
+      });
+      return;
+    }
+
+    if (subcommand === "add") {
+      const role = interaction.options.getRole("role", true);
+      if (!role || !("id" in role)) {
+        await interaction.editReply({ content: "Invalid role selected." });
+        return;
+      }
+      const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
+      const alreadyConfigured = currentRoleIds.includes(role.id);
+      const nextRoleIds = await autoRoleService.addDelayedSignupRole({
+        guildId,
+        discordRoleId: role.id,
+        updatedByDiscordUserId: interaction.user.id,
+      });
+      await interaction.editReply({
+        content: `${
+          alreadyConfigured
+            ? `<@&${role.id}> is already configured as a delayed signup role.`
+            : `Added <@&${role.id}> to delayed signup roles.`
+        }\n${formatRosterDelayedSignupRoleContent(nextRoleIds)}`,
+      });
+      return;
+    }
+
+    if (subcommand === "remove") {
+      const role = interaction.options.getRole("role", true);
+      if (!role || !("id" in role)) {
+        await interaction.editReply({ content: "Invalid role selected." });
+        return;
+      }
+      const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
+      const wasConfigured = currentRoleIds.includes(role.id);
+      const nextRoleIds = await autoRoleService.removeDelayedSignupRole({
+        guildId,
+        discordRoleId: role.id,
+        updatedByDiscordUserId: interaction.user.id,
+      });
+      await interaction.editReply({
+        content: `${
+          wasConfigured
+            ? `Removed <@&${role.id}> from delayed signup roles.`
+            : `<@&${role.id}> was not configured as a delayed signup role.`
+        }\n${formatRosterDelayedSignupRoleContent(nextRoleIds)}`,
+      });
+      return;
+    }
+
+    if (subcommand === "clear") {
+      const currentRoleIds = await autoRoleService.getDelayedSignupRoleIds(guildId);
+      await autoRoleService.clearDelayedSignupRoles({
+        guildId,
+        updatedByDiscordUserId: interaction.user.id,
+      });
+      await interaction.editReply({
+        content:
+          currentRoleIds.length === 0
+            ? "No delayed signup roles were configured."
+            : "Cleared all delayed signup roles.",
+      });
+      return;
+    }
+
+    await interaction.editReply("Unsupported roster delayed-signup-role subcommand.");
+  } catch (error) {
+    console.error(
+      `[roster] command_failed guild=${interaction.guildId} user=${interaction.user.id} path=delayed-signup-role:${subcommand} error=${formatError(error)}`,
+    );
+    await interaction.editReply(`Roster command failed: ${formatError(error)}`);
+  }
 }
 
 async function handleRosterPostSubcommand(
@@ -5120,6 +5235,49 @@ export const Roster: Command = {
       type: ApplicationCommandOptionType.Subcommand,
     },
     {
+      name: "delayed-signup-role",
+      description: "Manage delayed-signup role IDs",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "add",
+          description: "Add one delayed-signup role",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "role",
+              description: "Discord role to add",
+              type: ApplicationCommandOptionType.Role,
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "remove",
+          description: "Remove one delayed-signup role",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "role",
+              description: "Discord role to remove",
+              type: ApplicationCommandOptionType.Role,
+              required: true,
+            },
+          ],
+        },
+        {
+          name: "list",
+          description: "List delayed-signup roles",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+        {
+          name: "clear",
+          description: "Clear all delayed-signup roles",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+    },
+    {
       name: "post",
       description: "Post or refresh the signup message for one roster",
       type: ApplicationCommandOptionType.Subcommand,
@@ -5443,8 +5601,13 @@ export const Roster: Command = {
 
     try {
       const subcommand = interaction.options.getSubcommand(true);
+      const subcommandGroup = interaction.options.getSubcommandGroup(false);
       if (subcommand === "create") {
         await handleRosterCreateSubcommand(interaction, cocService);
+        return;
+      }
+      if (subcommandGroup === "delayed-signup-role") {
+        await handleRosterDelayedSignupRoleSubcommand(interaction);
         return;
       }
       if (subcommand === "list") {
