@@ -1,4 +1,5 @@
 import { Guild } from "discord.js";
+import { AutoRoleRuleType } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
@@ -1425,6 +1426,32 @@ function buildManagedRoleIds(
   });
 }
 
+/** Purpose: collect clan-role ids once for the current refresh pass. */
+function collectClanRoleIds(
+  snapshot: AutoRoleGuildStateSnapshot,
+  trackedClans: AutoRoleTrackedClanLike[],
+): Set<string> {
+  const roleIds = new Set<string>();
+  const cwlClanRoleId = String(snapshot.config.cwlClanRoleId ?? "").trim();
+  if (cwlClanRoleId) {
+    roleIds.add(cwlClanRoleId);
+  }
+  for (const trackedClan of trackedClans) {
+    const clanRoleId = String(trackedClan.clanRoleId ?? "").trim();
+    if (clanRoleId) {
+      roleIds.add(clanRoleId);
+    }
+  }
+  for (const rule of snapshot.rules) {
+    if (!rule.enabled || rule.type !== AutoRoleRuleType.CLAN) continue;
+    const clanRoleId = String(rule.discordRoleId ?? "").trim();
+    if (clanRoleId) {
+      roleIds.add(clanRoleId);
+    }
+  }
+  return roleIds;
+}
+
 function resolveVisitorRoleAvailability(guild: Guild, visitorRoleId: string | null | undefined): boolean {
   const normalizedVisitorRoleId = String(visitorRoleId ?? "").trim();
   if (!normalizedVisitorRoleId) {
@@ -1705,6 +1732,7 @@ async function runRefreshPass(input: {
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
   const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
+  const clanRoleIds = collectClanRoleIds(input.snapshot, input.trackedClans);
   const suppressRemovalRoleIds = buildLeadRoleRemovalSuppression({
     scope: input.scope,
     configuredLeadRoleIds: collectConfiguredLeadRoleIds(input.trackedClans),
@@ -1806,6 +1834,7 @@ async function runRefreshPass(input: {
         linkedAccounts,
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
+        clanRoleIds,
         suppressRemovalRoleIds,
         trackedFwaMemberTags: input.trackedFwaMemberTags,
         visitorRoleAvailable: input.visitorRoleAvailable,
