@@ -16,6 +16,7 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
     removeStaleManagedRoles: true,
     applyNicknames: false,
     nicknameTemplate: null,
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     verifiedRoleId: null,

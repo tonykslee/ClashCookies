@@ -44,6 +44,7 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
     removeStaleManagedRoles: true,
     applyNicknames: true,
     nicknameTemplate: "{player}",
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     verifiedRoleId: null,
@@ -289,6 +290,142 @@ describe("AutoRoleApplyService", () => {
     });
 
     expect(member.setNickname).toHaveBeenCalledWith("Alpha");
+    expect(result.nicknameStatus).toBe("failed");
+    expect(result.failureReasons[0]).toContain("nickname update failed");
+    expect(result.status).toBe("failed");
+  });
+
+  it("still reconciles roles for nickname-excluded members while cleaning tracked-clan suffixes", async () => {
+    const exclusionRoleId = "777777777777777777";
+    const verifiedRoleId = "888888888888888888";
+    const rule = makeRule({
+      type: AutoRoleRuleType.VERIFIED,
+      discordRoleId: verifiedRoleId,
+      targetValue: "__verified__",
+    });
+    const member = makeMember("Tilonius / Staff | RR | ZG", [exclusionRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        nicknameTemplate: "   ",
+        nicknameExcludeRoleIds: [exclusionRoleId],
+      }),
+      managedRoleIds: new Set([verifiedRoleId]),
+      rules: [rule],
+      member: member as any,
+      evaluation: makeEvaluation({
+        desiredManagedRoleIds: [verifiedRoleId],
+        matchedRuleIds: [rule.id],
+      }),
+      linkedAccounts: [makeLinkedAccount("#2CGG9GGRV", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [
+        { tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "RR" },
+        { tag: "#8PJLYRC8P", name: "Red Dawn", shortName: "ZG" },
+      ],
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(verifiedRoleId);
+    expect(member.setNickname).toHaveBeenCalledWith("Tilonius / Staff");
+    expect(result.rolesAdded).toEqual([verifiedRoleId]);
+    expect(result.nicknameStatus).toBe("changed");
+    expect(result.nicknameReason).toBe(`nickname excluded by role ${exclusionRoleId}`);
+  });
+
+  it("clears an excluded nickname when it consists only of tracked-clan labels", async () => {
+    const exclusionRoleId = "777777777777777777";
+    const member = makeMember("RR | ZG", [exclusionRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        nicknameTemplate: "   ",
+        nicknameExcludeRoleIds: [exclusionRoleId],
+      }),
+      managedRoleIds: new Set(),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#2CGG9GGRV", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [
+        { tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "RR" },
+        { tag: "#8PJLYRC8P", name: "Red Dawn", shortName: "ZG" },
+      ],
+    });
+
+    expect(member.setNickname).toHaveBeenCalledWith(null);
+    expect(result.nicknameStatus).toBe("changed");
+    expect(result.nicknameReason).toBe(`nickname excluded by role ${exclusionRoleId}`);
+  });
+
+  it("does not remove unrelated manual nickname content for excluded members", async () => {
+    const exclusionRoleId = "777777777777777777";
+    const member = makeMember("Tilonius | Dad", [exclusionRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        nicknameTemplate: "   ",
+        nicknameExcludeRoleIds: [exclusionRoleId],
+      }),
+      managedRoleIds: new Set(),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#2CGG9GGRV", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [
+        { tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "RR" },
+        { tag: "#8PJLYRC8P", name: "Red Dawn", shortName: "ZG" },
+      ],
+    });
+
+    expect(member.setNickname).not.toHaveBeenCalled();
+    expect(result.nicknameStatus).toBe("skipped");
+    expect(result.nicknameReason).toBe(`nickname excluded by role ${exclusionRoleId}`);
+  });
+
+  it("reports nickname cleanup failures without losing successful role changes", async () => {
+    const exclusionRoleId = "777777777777777777";
+    const verifiedRoleId = "888888888888888888";
+    const rule = makeRule({
+      type: AutoRoleRuleType.VERIFIED,
+      discordRoleId: verifiedRoleId,
+      targetValue: "__verified__",
+    });
+    const member = makeMember("Tilonius | RR | ZG", [exclusionRoleId]);
+    member.setNickname.mockRejectedValueOnce(new Error("Missing Permissions"));
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        nicknameTemplate: "   ",
+        nicknameExcludeRoleIds: [exclusionRoleId],
+      }),
+      managedRoleIds: new Set([verifiedRoleId]),
+      rules: [rule],
+      member: member as any,
+      evaluation: makeEvaluation({
+        desiredManagedRoleIds: [verifiedRoleId],
+        matchedRuleIds: [rule.id],
+      }),
+      linkedAccounts: [makeLinkedAccount("#2CGG9GGRV", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [
+        { tag: "#2QG2C08UP", name: "Tracked Clan", shortName: "RR" },
+        { tag: "#8PJLYRC8P", name: "Red Dawn", shortName: "ZG" },
+      ],
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(verifiedRoleId);
+    expect(member.setNickname).toHaveBeenCalledWith("Tilonius");
+    expect(result.rolesAdded).toEqual([verifiedRoleId]);
     expect(result.nicknameStatus).toBe("failed");
     expect(result.failureReasons[0]).toContain("nickname update failed");
     expect(result.status).toBe("failed");

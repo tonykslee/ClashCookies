@@ -38,6 +38,7 @@ function makeGuildConfig(overrides: Record<string, unknown> = {}) {
     removeStaleManagedRoles: false,
     applyNicknames: false,
     nicknameTemplate: null,
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     syncEnabled: false,
@@ -269,6 +270,7 @@ describe("/autorole command", () => {
       "clear_clan_role_removal_delay",
       "cwl_clan_role",
       "clear_cwl_clan_role",
+      "nickname_exclude_role",
       "non-member-role",
       "non-member-enabled",
     ]));
@@ -542,6 +544,21 @@ describe("/autorole command", () => {
     expect(getDescription(interaction)).toContain("Visitor role: none");
   });
 
+  it("shows nickname excluded roles in config embeds", async () => {
+    autoRoleServiceMock.getOrCreateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: ["888888888888888888", "999999999999999999"],
+      }),
+    );
+    const interaction = createInteraction({ group: "config", subcommand: "show" });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(getDescription(interaction)).toContain(
+      "Nickname excluded roles: <@&888888888888888888>, <@&999999999999999999>",
+    );
+  });
+
   it("updates config fields from /autorole config set", async () => {
     const interaction = createInteraction({
       group: "config",
@@ -565,6 +582,206 @@ describe("/autorole command", () => {
       nicknameTemplate: "TH{th} {name}",
     });
     expect(getEditReplyPayload(interaction).content).toContain("Autorole config updated.");
+  });
+
+  it("parses mixed nickname exclusion roles, dedupes them, and replaces the prior list", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+      roles: {
+        cache: new Map<string, { id: string }>(),
+        fetch: vi.fn().mockResolvedValue(
+          new Map<string, { id: string }>([
+            ["888888888888888888", { id: "888888888888888888" }],
+            ["999999999999999999", { id: "999999999999999999" }],
+            ["777777777777777777", { id: "777777777777777777" }],
+          ]),
+        ),
+      },
+    } as any;
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: [
+          "888888888888888888",
+          "999999999999999999",
+          "777777777777777777",
+        ],
+      }),
+    );
+    const setInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      guild,
+      strings: {
+        nickname_exclude_role:
+          "<@&888888888888888888>, 999999999999999999 <@&888888888888888888> 777777777777777777",
+      },
+    });
+
+    await Autorole.run({} as any, setInteraction as any, {} as any);
+
+    expect(guild.roles.fetch).toHaveBeenCalledTimes(1);
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nicknameExcludeRoleIds: [
+        "888888888888888888",
+        "999999999999999999",
+        "777777777777777777",
+      ],
+    });
+    expect(getEditReplyPayload(setInteraction).content).toContain(
+      "Nickname cleanup will be applied on the next scheduled or manual /autorole refresh.",
+    );
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: ["777777777777777777"],
+      }),
+    );
+    const replaceInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      guild,
+      strings: {
+        nickname_exclude_role: "777777777777777777",
+      },
+    });
+
+    await Autorole.run({} as any, replaceInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nicknameExcludeRoleIds: ["777777777777777777"],
+    });
+  });
+
+  it("clears nickname exclusion roles with none or clear", async () => {
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: [],
+      }),
+    );
+    const noneInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      strings: {
+        nickname_exclude_role: "none",
+      },
+    });
+
+    await Autorole.run({} as any, noneInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nicknameExcludeRoleIds: [],
+    });
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: [],
+      }),
+    );
+    const clearInteraction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      strings: {
+        nickname_exclude_role: "clear",
+      },
+    });
+
+    await Autorole.run({} as any, clearInteraction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nicknameExcludeRoleIds: [],
+    });
+  });
+
+  it("rejects malformed nickname exclusion input without updating config", async () => {
+    const interaction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      strings: {
+        nickname_exclude_role: "not-a-role",
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(autoRoleServiceMock.updateGuildConfig).not.toHaveBeenCalled();
+    expect(getEditReplyPayload(interaction).content).toContain("nickname_exclude_role");
+  });
+
+  it("rejects missing nickname exclusion roles without a partial write", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+      roles: {
+        cache: new Map<string, { id: string }>(),
+        fetch: vi.fn().mockResolvedValue(new Map<string, { id: string }>()),
+      },
+    } as any;
+
+    const interaction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      guild,
+      strings: {
+        nickname_exclude_role: "888888888888888888",
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(guild.roles.fetch).toHaveBeenCalledTimes(1);
+    expect(autoRoleServiceMock.updateGuildConfig).not.toHaveBeenCalled();
+    expect(getEditReplyPayload(interaction).content).toContain("Nickname exclusion role not found");
+  });
+
+  it("resolves uncached nickname exclusion roles with one bulk fetch", async () => {
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+      roles: {
+        cache: new Map<string, { id: string }>(),
+        fetch: vi.fn().mockResolvedValue(
+          new Map<string, { id: string }>([
+            ["888888888888888888", { id: "888888888888888888" }],
+            ["999999999999999999", { id: "999999999999999999" }],
+            ["777777777777777777", { id: "777777777777777777" }],
+          ]),
+        ),
+      },
+    } as any;
+
+    autoRoleServiceMock.updateGuildConfig.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: [
+          "888888888888888888",
+          "999999999999999999",
+          "777777777777777777",
+        ],
+      }),
+    );
+    const interaction = createInteraction({
+      group: "config",
+      subcommand: "set",
+      guild,
+      strings: {
+        nickname_exclude_role: "888888888888888888, 999999999999999999 777777777777777777",
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(guild.roles.fetch).toHaveBeenCalledTimes(1);
+    expect(autoRoleServiceMock.updateGuildConfig).toHaveBeenCalledWith("111111111111111111", {
+      nicknameExcludeRoleIds: [
+        "888888888888888888",
+        "999999999999999999",
+        "777777777777777777",
+      ],
+    });
   });
 
   it("sets and clears the CWL clan role from /autorole config set", async () => {
@@ -606,6 +823,7 @@ describe("/autorole command", () => {
       removeStaleManagedRoles: false,
       applyNicknames: false,
       nicknameTemplate: null,
+      nicknameExcludeRoleIds: [],
       trustedLinksAllowed: true,
       verifiedOnlyMode: false,
       syncEnabled: false,
