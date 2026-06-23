@@ -43,10 +43,10 @@ import {
   listFwaTrackedClansForDisplay,
   loadFwaTrackedClanMinimalListState,
   listCwlTrackedClansForDetailedDisplay,
-  formatCwlLeagueAbbreviation,
+  formatCwlLeagueMinimalDisplayResolved,
+  formatCwlLeagueEmojiResolved,
   resolveCwlTrackedClanEmojiTokens,
   refreshCwlTrackedClanDetailedDisplayWithQueueContext,
-  formatCwlLeagueEmojiResolved,
   formatCwlSpinStatusEmojiResolved,
   type CwlTrackedClanEmojiTokens,
   type CwlTrackedClanDetailedDisplayRow,
@@ -164,11 +164,10 @@ function buildCwlTrackedClanMinimalLine(
 ): string {
   const title = buildClanProfileMarkdownLink(clan.name, clan.tag);
   const clanTag = normalizeClanTag(clan.tag);
-  const leagueEmoji = formatCwlLeagueEmojiResolved(clan.leagueLabel, emojiTokens) ?? "-";
-  const leagueAbbreviation = formatCwlLeagueAbbreviation(clan.leagueLabel);
+  const leagueDisplay = formatCwlLeagueMinimalDisplayResolved(clan.leagueLabel, emojiTokens);
   const spinEmoji = formatCwlSpinStatusEmojiResolved(clan.spinStatus, emojiTokens);
   const memberCountText = formatTrackedClanMemberCount(clan.currentClanMemberCount);
-  const prefix = `${leagueEmoji} ${leagueAbbreviation}`;
+  const prefix = leagueDisplay;
   return clan.name && clanTag
     ? `${prefix} | ${title} \`${clanTag}\` | ${spinEmoji} | ${memberCountText}`
     : `${prefix} | ${title} | ${spinEmoji} | ${memberCountText}`;
@@ -847,17 +846,9 @@ export const TrackedClan: Command = {
               season,
               guildId: interaction.guildId ?? null,
             });
-            const refreshTags = detailedRows.map((clan) => clan.tag);
-            let memberCountByTag = await listFwaClanMemberCountsForTags(refreshTags);
-            const renderCwlMinimal = (input: { memberCountByTag: Map<string, number>; refreshing: boolean }) => {
+            const renderCwlMinimal = (refreshing: boolean) => {
               const lines = detailedRows.map((clan) =>
-                buildCwlTrackedClanMinimalLine({
-                  ...clan,
-                  currentClanMemberCount:
-                    input.memberCountByTag.get(normalizeClanTag(clan.tag) || clan.tag) ??
-                    clan.currentClanMemberCount ??
-                    null,
-                }, cwlEmojiTokens),
+                buildCwlTrackedClanMinimalLine(clan, cwlEmojiTokens),
               );
               return {
                 embeds: [
@@ -867,10 +858,10 @@ export const TrackedClan: Command = {
                     buildCombinedTrackedClanListDescription([{ title: "CWL", lines }]),
                   ),
                 ],
-                components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, input.refreshing),
+                components: buildTrackedClanSummaryRefreshComponents(refreshPrefix, refreshing),
               };
             };
-            await interaction.editReply(renderCwlMinimal({ memberCountByTag, refreshing: false }));
+            await interaction.editReply(renderCwlMinimal(false));
 
             const message = await interaction.fetchReply();
             const collector = message.createMessageComponentCollector({
@@ -886,32 +877,49 @@ export const TrackedClan: Command = {
                 if (button.user.id !== interaction.user.id || button.customId !== `${refreshPrefix}:refresh`) {
                   return;
                 }
-                const refreshResult = await refreshTrackedClanSummaryView({
-                  button,
-                  interaction,
-                  cocService,
-                  viewName: "cwl-minimal",
-                  displayedClanTags: refreshTags,
-                  currentMemberCounts: memberCountByTag,
-                  render: ({ memberCountByTag: counts, refreshing }) =>
-                    renderCwlMinimal({ memberCountByTag: counts, refreshing }),
-                });
-                memberCountByTag = refreshResult.refreshedMemberCounts;
-                detailedRows = await listCwlTrackedClansForDetailedDisplay({
+                try {
+                  await button.update(renderCwlMinimal(true));
+                } catch (error) {
+                  console.error(
+                    `[tracked-clan] stage=cwl_minimal_refresh_update_failed season=${season} error=${formatError(error)}`,
+                  );
+                  if (!button.replied && !button.deferred) {
+                    try {
+                      await button.deferUpdate();
+                    } catch {
+                      // no-op
+                    }
+                  }
+                }
+
+                const refreshResult = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
                   season,
                   guildId: interaction.guildId ?? null,
+                  cocService,
                 });
+                detailedRows = refreshResult.rows;
+                await interaction.editReply(renderCwlMinimal(false));
+                if (refreshResult.failedClanCount > 0) {
+                  const failedMessage =
+                    refreshResult.failedClanCount >= detailedRows.length
+                      ? "Failed to refresh tracked clan CWL details for the displayed clans."
+                      : "Failed to refresh some tracked clan CWL details.";
+                  await button.followUp({
+                    ephemeral: true,
+                    content: failedMessage,
+                  });
+                }
               } catch (err) {
-                console.error(`tracked-clan CWL member-count refresh failed: ${formatError(err)}`);
+                console.error(`tracked-clan CWL detailed refresh failed: ${formatError(err)}`);
                 if (!button.replied && !button.deferred) {
                   await button.reply({
                     ephemeral: true,
-                    content: "Failed to refresh tracked clan member counts.",
+                    content: "Failed to refresh tracked clan CWL details.",
                   });
                 } else {
                   await button.followUp({
                     ephemeral: true,
-                    content: "Failed to refresh tracked clan member counts.",
+                    content: "Failed to refresh tracked clan CWL details.",
                   });
                 }
               }
@@ -920,7 +928,7 @@ export const TrackedClan: Command = {
             collector.on("end", async () => {
               try {
                 await interaction.editReply({
-                  embeds: renderCwlMinimal({ memberCountByTag, refreshing: false }).embeds,
+                  embeds: renderCwlMinimal(false).embeds,
                   components: [],
                 });
               } catch {
