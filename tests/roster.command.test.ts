@@ -74,6 +74,7 @@ import {
   handleRosterPostSettingsMenuInteraction,
   paginateRosterSignupUserBlocks,
 } from "../src/commands/Roster";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { rosterService } from "../src/services/RosterService";
 import * as rosterServiceModule from "../src/services/RosterService";
 import {
@@ -704,6 +705,7 @@ describe("/roster command", () => {
   });
 
   it("manages delayed signup roles through /roster delayed-signup-role", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
     autoRoleServiceMock.getDelayedSignupRoleIds
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -718,6 +720,8 @@ describe("/roster command", () => {
       subcommand: "list",
     }) as any;
     await Roster.run({} as any, listInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(1);
+    expect(permissionSpy).toHaveBeenNthCalledWith(1, ["roster:manage"], expect.anything());
     expect(String(listInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
       "No delayed signup roles are configured.",
     );
@@ -728,6 +732,8 @@ describe("/roster command", () => {
       delayedSignupRole: "555555555555555555",
     }) as any;
     await Roster.run({} as any, addInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(2);
+    expect(permissionSpy).toHaveBeenNthCalledWith(2, ["roster:manage"], expect.anything());
     expect(autoRoleServiceMock.addDelayedSignupRole).toHaveBeenCalledWith({
       guildId: "guild-1",
       discordRoleId: "555555555555555555",
@@ -746,6 +752,8 @@ describe("/roster command", () => {
       delayedSignupRole: "666666666666666666",
     }) as any;
     await Roster.run({} as any, removeInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(3);
+    expect(permissionSpy).toHaveBeenNthCalledWith(3, ["roster:manage"], expect.anything());
     expect(autoRoleServiceMock.removeDelayedSignupRole).toHaveBeenCalledWith({
       guildId: "guild-1",
       discordRoleId: "666666666666666666",
@@ -763,6 +771,8 @@ describe("/roster command", () => {
       subcommand: "clear",
     }) as any;
     await Roster.run({} as any, clearInteraction as any);
+    expect(permissionSpy).toHaveBeenCalledTimes(4);
+    expect(permissionSpy).toHaveBeenNthCalledWith(4, ["roster:manage"], expect.anything());
     expect(autoRoleServiceMock.clearDelayedSignupRoles).toHaveBeenCalledWith({
       guildId: "guild-1",
       updatedByDiscordUserId: "111111111111111111",
@@ -772,7 +782,24 @@ describe("/roster command", () => {
     );
   });
 
+  it("blocks delayed signup role management when roster:manage is denied", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    const interaction = makeInteraction({
+      subcommandGroup: "delayed-signup-role",
+      subcommand: "list",
+    }) as any;
+
+    await Roster.run({} as any, interaction as any);
+
+    expect(permissionSpy).toHaveBeenCalledWith(["roster:manage"], expect.anything());
+    expect(autoRoleServiceMock.getDelayedSignupRoleIds).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls.at(-1)?.[0] ?? "")).toBe(
+      "You do not have permission to manage this roster.",
+    );
+  });
+
   it("logs delayed signup failures and returns the roster command error message", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
     autoRoleServiceMock.getDelayedSignupRoleIds.mockResolvedValueOnce([]);
     autoRoleServiceMock.addDelayedSignupRole.mockRejectedValueOnce(new Error("boom"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -785,6 +812,7 @@ describe("/roster command", () => {
     try {
       await Roster.run({} as any, interaction as any);
 
+      expect(permissionSpy).toHaveBeenCalledWith(["roster:manage"], expect.anything());
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         expect.stringContaining(
           "[roster] command_failed guild=guild-1 user=111111111111111111 path=delayed-signup-role:add error=boom",

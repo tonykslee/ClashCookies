@@ -865,12 +865,6 @@ async function canUseRosterPostTarget(
   return rosterPermissionService.canUseAnyTarget([target], interaction as any);
 }
 
-async function canUseRosterDelayedSignupRoleTarget(
-  interaction: ChatInputCommandInteraction,
-): Promise<boolean> {
-  return rosterPermissionService.canUseAnyTarget(["roster:delayed-signup-role"], interaction as any);
-}
-
 async function refreshExistingRosterPost(
   interaction: {
     client: Client;
@@ -3840,7 +3834,7 @@ async function handleRosterDelayedSignupRoleSubcommand(
     return;
   }
 
-  if (!(await canUseRosterDelayedSignupRoleTarget(interaction))) {
+  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
     await interaction.editReply("You do not have permission to manage this roster.");
     return;
   }
