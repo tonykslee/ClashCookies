@@ -119,6 +119,8 @@ Enable it with:
 
 Supported tokens are `{player}`, `{tag}`, `{th}`, `{clan}`, `{clanTag}`, `{clanShort}`, `{trackedClans}`, `{discord}`, `{username}`, and `{role}`. `{trackedClans}` includes distinct permanent FWA tracked-clan short names from eligible linked accounts, de-duped with the primary account clan first. Nicknames are cleaned up when tokens are missing and capped to Discord's 32-character nickname limit. Unicode emoji can render in nicknames; custom Discord emoji markup does not render in nicknames.
 
+Nickname exclusion roles are configured with `/autorole config set nickname_exclude_role:"<@&123456789012345678>, 234567890123456789"`. The list is replaced each time, and `none` or `clear` as the sole value removes every saved exclusion role. Members with a nickname exclusion role keep normal autorole role reconciliation, but nickname template rendering is skipped; stale tracked-clan suffixes are cleaned on the next scheduled or manual `/autorole refresh`.
+
 The bot needs Discord **Manage Nicknames** and must be above the target member in role hierarchy to change nicknames. Role application still requires **Manage Roles** and role hierarchy above the managed roles. Tracked clan roles imply the family role, and either a clan role or the family role suppresses the visitor/non-member role.
 
 ## Development

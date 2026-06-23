@@ -2,6 +2,7 @@ import { AutoRoleRuleType, type AutoRoleRule } from "@prisma/client";
 import type { AutoRoleGuildConfigSnapshot, AutoRoleEvaluationMemberLike, AutoRoleMemberEvaluation } from "./AutoRoleEvaluationService";
 import {
   autoRoleNicknameService,
+  cleanupTrackedClanNickname,
   type AutoRoleNicknameTrackedClanLike,
   normalizeNicknameTemplate,
 } from "./AutoRoleNicknameService";
@@ -446,7 +447,26 @@ export class AutoRoleApplyService {
 
     let nicknameStatus: AutoRoleApplyNicknameStatus = "skipped";
     let nicknameReason: string | null = null;
-    if (!input.config.applyNicknames) {
+    const excludedNicknameRoleId =
+      input.config.nicknameExcludeRoleIds?.find((roleId) => effectiveRoleIds.has(roleId)) ?? null;
+    if (excludedNicknameRoleId) {
+      nicknameReason = `nickname excluded by role ${excludedNicknameRoleId}`;
+      const cleanup = cleanupTrackedClanNickname(input.member.nickname ?? null, input.trackedClans);
+      if (cleanup.removedSuffix) {
+        try {
+          if (typeof input.member.setNickname === "function") {
+            await input.member.setNickname(cleanup.cleanedNickname);
+            nicknameStatus = "changed";
+          } else {
+            nicknameStatus = "skipped";
+          }
+        } catch (error) {
+          nicknameStatus = "failed";
+          nicknameReason = formatNicknameFailureReason(error);
+          failureReasons.push(nicknameReason);
+        }
+      }
+    } else if (!input.config.applyNicknames) {
       nicknameReason = "nickname sync disabled";
     } else if (!normalizeNicknameTemplate(input.config.nicknameTemplate)) {
       nicknameReason = "nickname template not configured";
@@ -464,7 +484,9 @@ export class AutoRoleApplyService {
       if (!renderedNickname) {
         nicknameReason = "nickname template rendered empty";
       } else {
-        const currentDisplayNickname = normalizeText(input.member.displayName ?? input.member.nickname ?? null) ?? "";
+        const currentDisplayNickname = normalizeText(
+          input.member.displayName ?? input.member.nickname ?? null,
+        ) ?? "";
         if (currentDisplayNickname === renderedNickname) {
           nicknameStatus = "unchanged";
         } else {

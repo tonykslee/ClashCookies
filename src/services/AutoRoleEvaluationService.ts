@@ -26,6 +26,7 @@ export type AutoRoleGuildConfigSnapshot = Pick<
   | "removeStaleManagedRoles"
   | "applyNicknames"
   | "nicknameTemplate"
+  | "nicknameExcludeRoleIds"
   | "trustedLinksAllowed"
   | "verifiedOnlyMode"
   | "verifiedRoleId"

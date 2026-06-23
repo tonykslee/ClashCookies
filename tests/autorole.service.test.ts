@@ -56,6 +56,7 @@ function makeGuildConfig(overrides: Record<string, unknown> = {}) {
     removeStaleManagedRoles: false,
     applyNicknames: false,
     nicknameTemplate: null,
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     syncEnabled: false,
@@ -135,6 +136,7 @@ describe("AutoRoleService", () => {
       update: {},
     });
     expect(created.delayedSignupRoleIds).toEqual([]);
+    expect(created.nicknameExcludeRoleIds).toEqual([]);
 
     await service.updateGuildConfig("111111111111111111", {
       enabled: true,
@@ -169,6 +171,73 @@ describe("AutoRoleService", () => {
         nonMemberEnabled: true,
       },
     });
+  });
+
+  it("normalizes missing and duplicate nickname exclusion role ids in persisted config rows", async () => {
+    const missingFieldRow = makeGuildConfig();
+    delete (missingFieldRow as { nicknameExcludeRoleIds?: unknown }).nicknameExcludeRoleIds;
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(missingFieldRow);
+
+    await expect(service.getOrCreateGuildConfig("111111111111111111")).resolves.toMatchObject({
+      nicknameExcludeRoleIds: [],
+    });
+
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: [
+          " 222222222222222222 ",
+          "",
+          "222222222222222222",
+          "333333333333333333",
+        ],
+      }),
+    );
+
+    await expect(service.getOrCreateGuildConfig("111111111111111111")).resolves.toMatchObject({
+      nicknameExcludeRoleIds: ["222222222222222222", "333333333333333333"],
+    });
+  });
+
+  it("persists nickname exclusion role ids and rejects invalid snowflakes", async () => {
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(makeGuildConfig());
+    prismaMock.autoRoleGuildConfig.upsert.mockResolvedValueOnce(
+      makeGuildConfig({
+        nicknameExcludeRoleIds: ["444444444444444444", "555555555555555555"],
+      }),
+    );
+
+    await service.updateGuildConfig("111111111111111111", {
+      nicknameExcludeRoleIds: ["444444444444444444", "555555555555555555"],
+    });
+    expect(prismaMock.autoRoleGuildConfig.upsert).toHaveBeenLastCalledWith({
+      where: { guildId: "111111111111111111" },
+      create: {
+        guildId: "111111111111111111",
+        nicknameExcludeRoleIds: ["444444444444444444", "555555555555555555"],
+      },
+      update: {
+        nicknameExcludeRoleIds: ["444444444444444444", "555555555555555555"],
+      },
+    });
+
+    await expect(
+      service.updateGuildConfig("111111111111111111", {
+        nicknameExcludeRoleIds: ["444444444444444444", "not-a-role"],
+      }),
+    ).rejects.toThrow("Selected Discord role is invalid.");
+  });
+
+  it("covers the nickname exclusion array in schema and migration files", () => {
+    const schema = readFileSync("prisma/schema.prisma", "utf8");
+    expect(schema).toContain("nicknameExcludeRoleIds String[] @default([])");
+
+    const migration = readFileSync(
+      "prisma/migrations/20260623103000_add_autorole_nickname_exclude_role_ids/migration.sql",
+      "utf8",
+    );
+    expect(migration).toContain(
+      'ADD COLUMN "nicknameExcludeRoleIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];',
+    );
   });
 
   it("returns normalized delayed signup role ids without creating a config row", async () => {

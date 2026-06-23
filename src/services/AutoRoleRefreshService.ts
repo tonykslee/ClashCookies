@@ -2175,6 +2175,14 @@ export class AutoRoleRefreshService {
                 ],
               });
         const candidateUserIds = new Set<string>(visitorRoleAwareCandidateUserIds);
+        if (snapshot.config.nicknameExcludeRoleIds.length > 0) {
+          const nicknameExcludeRoleIds = new Set(snapshot.config.nicknameExcludeRoleIds);
+          for (const member of membersById.values()) {
+            if (memberHasAnyManagedRole(member, nicknameExcludeRoleIds)) {
+              candidateUserIds.add(member.id);
+            }
+          }
+        }
         const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
           guildMemberIds: [...candidateUserIds],
         });
@@ -2206,6 +2214,7 @@ export class AutoRoleRefreshService {
           trackedMembershipScope: trackedMembershipScopeForRefresh,
           runId: run.id,
           now: input.now,
+          candidateUserIdsOverride: candidateUserIds,
           suppressRemovalRoleIds,
           trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
           visitorRoleAvailable,

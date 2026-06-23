@@ -57,6 +57,7 @@ export type AutoRoleGuildConfigUpdateInput = {
   removeStaleManagedRoles?: boolean;
   applyNicknames?: boolean;
   nicknameTemplate?: string | null;
+  nicknameExcludeRoleIds?: string[] | null;
   trustedLinksAllowed?: boolean;
   verifiedOnlyMode?: boolean;
   syncEnabled?: boolean;
@@ -113,8 +114,12 @@ export type AutoRoleRuleNormalizedInput = {
   enabled: boolean;
 };
 
-type AutoRoleGuildConfigRowLike = Omit<AutoRoleGuildConfigRecord, "delayedSignupRoleIds"> & {
+type AutoRoleGuildConfigRowLike = Omit<
+  AutoRoleGuildConfigRecord,
+  "delayedSignupRoleIds" | "nicknameExcludeRoleIds"
+> & {
   delayedSignupRoleIds?: unknown;
+  nicknameExcludeRoleIds?: unknown;
 };
 
 /** Purpose: normalize a guild snowflake or reject blank/invalid input. */
@@ -165,8 +170,8 @@ function normalizeOptionalSnowflakeId(
   return normalized;
 }
 
-/** Purpose: normalize a delayed-signup role list from persisted data. */
-function normalizeDelayedSignupRoleIds(input: unknown): string[] {
+/** Purpose: normalize persisted Discord role ids from read or write paths. */
+function normalizeRoleIdList(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
 
   const normalized: string[] = [];
@@ -181,8 +186,8 @@ function normalizeDelayedSignupRoleIds(input: unknown): string[] {
   return normalized;
 }
 
-/** Purpose: normalize delayed-signup role ids for writes while rejecting invalid entries. */
-function normalizeDelayedSignupRoleIdsForWrite(
+/** Purpose: normalize persisted Discord role ids for writes while rejecting invalid entries. */
+function normalizeRoleIdListForWrite(
   input: string[] | null | undefined,
 ): string[] | undefined {
   if (input === undefined) return undefined;
@@ -201,6 +206,30 @@ function normalizeDelayedSignupRoleIdsForWrite(
   }
 
   return normalized;
+}
+
+/** Purpose: normalize delayed-signup role ids from persisted data. */
+function normalizeDelayedSignupRoleIds(input: unknown): string[] {
+  return normalizeRoleIdList(input);
+}
+
+/** Purpose: normalize delayed-signup role ids for writes while rejecting invalid entries. */
+function normalizeDelayedSignupRoleIdsForWrite(
+  input: string[] | null | undefined,
+): string[] | undefined {
+  return normalizeRoleIdListForWrite(input);
+}
+
+/** Purpose: normalize nickname-exclusion role ids from persisted data. */
+function normalizeNicknameExcludeRoleIds(input: unknown): string[] {
+  return normalizeRoleIdList(input);
+}
+
+/** Purpose: normalize nickname-exclusion role ids for writes while rejecting invalid entries. */
+function normalizeNicknameExcludeRoleIdsForWrite(
+  input: string[] | null | undefined,
+): string[] | undefined {
+  return normalizeRoleIdListForWrite(input);
 }
 
 function normalizeClanRoleRemovalDelayMinutes(
@@ -226,6 +255,7 @@ function normalizeGuildConfigRecord(config: AutoRoleGuildConfigRowLike): AutoRol
   return {
     ...config,
     delayedSignupRoleIds: normalizeDelayedSignupRoleIds(config.delayedSignupRoleIds),
+    nicknameExcludeRoleIds: normalizeNicknameExcludeRoleIds(config.nicknameExcludeRoleIds),
   };
 }
 
@@ -476,6 +506,11 @@ function normalizeGuildConfigUpdate(input: AutoRoleGuildConfigUpdateInput): Reco
 
   if (input.delayedSignupRoleIds !== undefined) {
     data.delayedSignupRoleIds = normalizeDelayedSignupRoleIdsForWrite(input.delayedSignupRoleIds) ?? [];
+  }
+
+  if (input.nicknameExcludeRoleIds !== undefined) {
+    data.nicknameExcludeRoleIds =
+      normalizeNicknameExcludeRoleIdsForWrite(input.nicknameExcludeRoleIds) ?? [];
   }
 
   const nonMemberEnabled = toBooleanOrUndefined(input.nonMemberEnabled);
