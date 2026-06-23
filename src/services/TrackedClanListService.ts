@@ -136,9 +136,11 @@ const CWL_LEAGUE_EMOJI_NAME_BY_LABEL = new Map<string, string>([
 
 const CWL_SEARCHING_EMOJI_NAME = "a_search_2";
 const CWL_SEARCHING_EMOJI_FALLBACK = "<a:a_search_2:1511522352356397179>";
+const CWL_UNRANKED_EMOJI_NAME = "unranked";
 
 export type CwlTrackedClanEmojiTokens = {
   leagueEmojiByLabel: Map<string, string>;
+  unrankedEmoji: string;
   searchingEmoji: string;
 };
 
@@ -204,14 +206,30 @@ export async function resolveCwlTrackedClanEmojiTokens(
     leagueEmojiByLabel.set(label, resolved?.rendered ?? CWL_LEAGUE_EMOJI_BY_LABEL.get(label) ?? "-");
   }
 
+  const unrankedResolved = await emojiResolverService.resolveByName(client, CWL_UNRANKED_EMOJI_NAME).catch(() => null);
   const searchingResolved = await emojiResolverService
     .resolveByName(client, CWL_SEARCHING_EMOJI_NAME)
     .catch(() => null);
 
   return {
     leagueEmojiByLabel,
+    unrankedEmoji: unrankedResolved?.rendered ?? "-",
     searchingEmoji: searchingResolved?.rendered ?? CWL_SEARCHING_EMOJI_FALLBACK,
   };
+}
+
+export function formatCwlLeagueMinimalDisplayResolved(
+  label: string | null,
+  emojiTokens?: CwlTrackedClanEmojiTokens | null,
+): string {
+  const abbreviation = formatCwlLeagueAbbreviation(label);
+  const fallbackEmoji = emojiTokens?.unrankedEmoji ?? "-";
+  if (abbreviation === "UNK") {
+    return fallbackEmoji;
+  }
+
+  const emoji = formatCwlLeagueEmojiResolved(label, emojiTokens) ?? fallbackEmoji;
+  return `${emoji} ${abbreviation}`;
 }
 
 export function formatCwlLeagueEmojiResolved(
