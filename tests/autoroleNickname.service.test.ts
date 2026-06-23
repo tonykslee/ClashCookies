@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { AutoRoleNicknameService, type AutoRoleNicknameRenderInput } from "../src/services/AutoRoleNicknameService";
+import {
+  AutoRoleNicknameService,
+  cleanupTrackedClanNickname,
+  type AutoRoleNicknameRenderInput,
+} from "../src/services/AutoRoleNicknameService";
 import type { AutoRoleGuildConfigSnapshot } from "../src/services/AutoRoleEvaluationService";
 import type { PlayerCurrentLike } from "../src/services/PlayerCurrentService";
 import type { PlayerLinkWithTrust } from "../src/services/PlayerLinkService";
@@ -11,6 +15,7 @@ function makeConfig(overrides: Partial<AutoRoleGuildConfigSnapshot> = {}): AutoR
     removeStaleManagedRoles: true,
     applyNicknames: true,
     nicknameTemplate: "{player}",
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     verifiedRoleId: null,
@@ -327,6 +332,61 @@ describe("AutoRoleNicknameService", () => {
 
     expect(result.trackedClans).toEqual(["EB", "AK"]);
     expect(result.renderedNickname).toBe("Tilonius | EB | AK");
+  });
+
+  it("cleans trailing tracked-clan labels from the current server nickname", () => {
+    const cleanup = cleanupTrackedClanNickname("Tilonius | RR | ZG", [
+      {
+        tag: "#2QG2C08UP",
+        name: "Zero Gravity",
+        shortName: "ZG",
+      },
+      {
+        tag: "#8PJLYRC8P",
+        name: "Red Dawn",
+        shortName: "RR",
+      },
+    ]);
+
+    expect(cleanup).toEqual({
+      cleanedNickname: "Tilonius",
+      removedSuffix: true,
+    });
+  });
+
+  it("returns null when the nickname consists only of tracked-clan labels", () => {
+    const cleanup = cleanupTrackedClanNickname("RR | ZG", [
+      {
+        tag: "#2QG2C08UP",
+        name: "Zero Gravity",
+        shortName: "ZG",
+      },
+      {
+        tag: "#8PJLYRC8P",
+        name: "Red Dawn",
+        shortName: "RR",
+      },
+    ]);
+
+    expect(cleanup).toEqual({
+      cleanedNickname: null,
+      removedSuffix: true,
+    });
+  });
+
+  it("leaves unrelated manual nickname text untouched", () => {
+    const cleanup = cleanupTrackedClanNickname("Tilonius | Dad", [
+      {
+        tag: "#2QG2C08UP",
+        name: "Zero Gravity",
+        shortName: "ZG",
+      },
+    ]);
+
+    expect(cleanup).toEqual({
+      cleanedNickname: "Tilonius | Dad",
+      removedSuffix: false,
+    });
   });
 
   it("does not strip tracked-clan labels from {discord} when {trackedClans} is not used", () => {

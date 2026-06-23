@@ -167,6 +167,7 @@ function makeConfig(overrides: Record<string, unknown> = {}) {
     removeStaleManagedRoles: false,
     applyNicknames: true,
     nicknameTemplate: "TH{th} {player}",
+    nicknameExcludeRoleIds: [],
     trustedLinksAllowed: true,
     verifiedOnlyMode: false,
     syncEnabled: true,
@@ -2203,6 +2204,47 @@ describe("AutoRoleRefreshService", () => {
     expect(botMember.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
     expect(result.addedCount).toBe(0);
     expect(result.removedCount).toBe(0);
+  });
+
+  it("includes nickname-excluded members in guild refreshes and cleans stale tracked-clan suffixes", async () => {
+    const nicknameExcludeRoleId = "444444444444444444";
+    const memberId = "111111111111111111";
+    const member = makeMember(memberId, [nicknameExcludeRoleId]);
+    member.nickname = "Tilonius | RR | ZG";
+    member.displayName = "Tilonius | RR | ZG";
+    const guild = makeGuild(new Map([[memberId, member]]), [nicknameExcludeRoleId]);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Zero Gravity", shortName: "ZG" },
+      { tag: "#8PJLYRC8P", name: "Red Dawn", shortName: "RR" },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: false,
+        nicknameExcludeRoleIds: [nicknameExcludeRoleId],
+      }),
+      rules: [],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const result = await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+    });
+
+    expect(member.setNickname).toHaveBeenCalledWith("Tilonius");
+    expect(member.roles.add).not.toHaveBeenCalled();
+    expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(result.evaluatedCount).toBe(1);
+    expect(result.memberResults[0]).toMatchObject({
+      nicknameStatus: "changed",
+      nicknameReason: `nickname excluded by role ${nicknameExcludeRoleId}`,
+    });
   });
 
   it("treats members in the refreshed FWA set as family for visitor role removal", async () => {

@@ -45,6 +45,9 @@ const AUTOROLE_RULE_TYPE_CHOICES = [
   { name: "Label", value: "LABEL" },
 ] as const;
 
+const AUTOROLE_NICKNAME_EXCLUDE_ROLE_TOKEN_RE = /^(?:<@&(\d{15,22})>|(\d{15,22}))$/;
+const AUTOROLE_NICKNAME_EXCLUDE_ROLE_CLEAR_VALUES = new Set(["none", "clear"]);
+
 function hasAdministratorPermission(interaction: ChatInputCommandInteraction): boolean {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
 }
@@ -66,7 +69,8 @@ async function resolveRolePresence(
   if (!guild?.roles) return null;
   const cached = guild.roles.cache?.get(normalizedRoleId) ?? null;
   if (cached) return "present";
-  const fetched = await guild.roles.fetch(normalizedRoleId).catch(() => null);
+  const fetchResult = guild.roles.fetch?.(normalizedRoleId);
+  const fetched = fetchResult ? await fetchResult.catch(() => null) : null;
   return fetched ? "present" : "missing";
 }
 
@@ -237,6 +241,7 @@ function buildConfigEmbed(
     `Remove stale managed roles: ${boolLabel(config.removeStaleManagedRoles)}`,
     `Apply nicknames: ${boolLabel(config.applyNicknames)}`,
     `Nickname template: ${maybeTextLabel(config.nicknameTemplate)}`,
+    `Nickname excluded roles: ${formatRoleMentions(config.nicknameExcludeRoleIds)}`,
     `Trusted links allowed: ${boolLabel(config.trustedLinksAllowed)}`,
     `Verified-only mode: ${boolLabel(config.verifiedOnlyMode)}`,
     `Sync enabled: ${boolLabel(config.syncEnabled)}`,
@@ -322,9 +327,9 @@ function getRoleOptionId(
   return role && "id" in role ? role.id : null;
 }
 
-function buildConfigUpdateInput(
+async function buildConfigUpdateInput(
   interaction: ChatInputCommandInteraction,
-): AutoRoleGuildConfigUpdateInput {
+): Promise<AutoRoleGuildConfigUpdateInput> {
   const update: AutoRoleGuildConfigUpdateInput = {};
 
   for (const [optionName, fieldName] of [
@@ -346,6 +351,14 @@ function buildConfigUpdateInput(
     update.nicknameTemplate = null;
   } else if (nicknameTemplate !== null) {
     update.nicknameTemplate = nicknameTemplate;
+  }
+
+  const nicknameExcludeRoleInput = getStringOption(interaction, "nickname_exclude_role");
+  if (nicknameExcludeRoleInput !== null) {
+    update.nicknameExcludeRoleIds = await resolveNicknameExcludeRoleIds(
+      interaction.guild,
+      nicknameExcludeRoleInput,
+    );
   }
 
   const syncIntervalMinutes = getIntegerOption(interaction, "sync_interval_minutes");
@@ -456,6 +469,95 @@ function formatRoleMentions(roleIds: string[]): string {
   return roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
 }
 
+function parseNicknameExcludeRoleIdsInput(input: string): { clear: boolean; roleIds: string[] } {
+  const normalized = String(input ?? "").trim();
+  if (!normalized) {
+    throw new Error(
+      "nickname_exclude_role accepts Discord role mentions or raw role IDs, separated by commas or whitespace.",
+    );
+  }
+
+  const tokens = normalized
+    .split(/[\s,]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error(
+      "nickname_exclude_role accepts Discord role mentions or raw role IDs, separated by commas or whitespace.",
+    );
+  }
+
+  const clearTokens = tokens.filter((token) => AUTOROLE_NICKNAME_EXCLUDE_ROLE_CLEAR_VALUES.has(token.toLowerCase()));
+  if (clearTokens.length > 0) {
+    if (tokens.length !== 1) {
+      throw new Error("none or clear must be the only value when clearing nickname_exclude_role.");
+    }
+    return { clear: true, roleIds: [] };
+  }
+
+  const roleIds: string[] = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    const match = AUTOROLE_NICKNAME_EXCLUDE_ROLE_TOKEN_RE.exec(token);
+    if (!match) {
+      throw new Error(
+        `nickname_exclude_role accepts Discord role mentions or raw role IDs, but received: ${token}`,
+      );
+    }
+
+    const roleId = match[1] ?? match[2] ?? "";
+    if (!seen.has(roleId)) {
+      seen.add(roleId);
+      roleIds.push(roleId);
+    }
+  }
+
+  return { clear: false, roleIds };
+}
+
+async function resolveNicknameExcludeRoleIds(
+  guild: ChatInputCommandInteraction["guild"] | null | undefined,
+  input: string,
+): Promise<string[]> {
+  const parsed = parseNicknameExcludeRoleIdsInput(input);
+  if (parsed.clear) {
+    return [];
+  }
+
+  const roleCache = guild?.roles?.cache ?? null;
+  if (!roleCache) {
+    throw new Error("Unable to resolve nickname_exclude_role roles from this server.");
+  }
+
+  type RoleCache = typeof roleCache extends null ? never : typeof roleCache;
+
+  const unresolvedRoleIds: string[] = [];
+  for (const roleId of parsed.roleIds) {
+    if (!roleCache.get(roleId)) {
+      unresolvedRoleIds.push(roleId);
+    }
+  }
+
+  let fetchedRoles: RoleCache | null = null;
+  if (unresolvedRoleIds.length > 0) {
+    fetchedRoles = (await guild?.roles?.fetch?.().catch(() => null)) ?? null;
+    if (!fetchedRoles) {
+      throw new Error("Unable to resolve nickname_exclude_role roles from this server.");
+    }
+  }
+
+  const resolvedRoleIds: string[] = [];
+  for (const roleId of parsed.roleIds) {
+    if (roleCache.get(roleId) || fetchedRoles?.get(roleId)) {
+      resolvedRoleIds.push(roleId);
+      continue;
+    }
+    throw new Error(`Nickname exclusion role not found: <@&${roleId}>`);
+  }
+
+  return resolvedRoleIds;
+}
+
 function formatRefreshSummary(result: AutoRoleRefreshResult): string {
   const scopeLabel =
     result.scope.kind === "guild"
@@ -527,6 +629,7 @@ export const Autorole: Command = {
             { name: "remove_stale_managed_roles", description: "Remove managed roles when they no longer qualify", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "apply_nicknames", description: "Enable nickname sync", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "nickname_template", description: "Nickname template text", type: ApplicationCommandOptionType.String, required: false },
+            { name: "nickname_exclude_role", description: "Replace nickname exclusion roles using role mentions or raw IDs", type: ApplicationCommandOptionType.String, required: false },
             { name: "clear_nickname_template", description: "Clear the nickname template", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "trusted_links_allowed", description: "Allow trusted links to drive autorole", type: ApplicationCommandOptionType.Boolean, required: false },
             { name: "verified_only_mode", description: "Require verified links for autorole", type: ApplicationCommandOptionType.Boolean, required: false },
@@ -822,13 +925,20 @@ export const Autorole: Command = {
         }
 
         if (subcommand === "set") {
+          const nicknameExcludeRoleInput = getStringOption(interaction, "nickname_exclude_role");
           const config = await autoRoleService.updateGuildConfig(
             guildId,
-            buildConfigUpdateInput(interaction),
+            await buildConfigUpdateInput(interaction),
           );
           const visitorRolePresence = await resolveRolePresence(interaction.guild, config.nonMemberRoleId);
+          const contentLines = [buildSuccessContent("config updated")];
+          if (nicknameExcludeRoleInput !== null) {
+            contentLines.push(
+              "Nickname cleanup will be applied on the next scheduled or manual /autorole refresh.",
+            );
+          }
           await interaction.editReply({
-            content: buildSuccessContent("config updated"),
+            content: contentLines.join("\n"),
             embeds: [buildConfigEmbed(config, { visitorRolePresence })],
           });
           return;

@@ -366,6 +366,8 @@ describe("command coverage", () => {
     expect(autoroleHelpText).not.toContain("/autorole delayed-signup-role");
     expect(autoroleHelpText).toContain("manual refresh");
     expect(autoroleHelpText).toContain("delayed-signup role IDs");
+    expect(autoroleHelpText).toContain("nickname_exclude_role");
+    expect(autoroleHelpText).toContain("nickname exclusion");
     expect(autoroleHelpText).toContain("non-member-role");
     expect(autoroleHelpText).toContain("non-member-enabled");
     expect(autoroleHelpText).toContain("visitor/non-member role");

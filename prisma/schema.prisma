@@ -420,6 +420,7 @@ model AutoRoleGuildConfig {
   removeStaleManagedRoles Boolean @default(false)
   applyNicknames         Boolean  @default(false)
   nicknameTemplate       String?
+  nicknameExcludeRoleIds String[] @default([])
   trustedLinksAllowed    Boolean  @default(true)
   verifiedOnlyMode       Boolean  @default(false)
   syncEnabled            Boolean  @default(false)

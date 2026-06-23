@@ -45,6 +45,11 @@ export type AutoRoleNicknameRenderResult = {
   trackedClans: string[];
 };
 
+export type AutoRoleNicknameCleanupResult = {
+  cleanedNickname: string | null;
+  removedSuffix: boolean;
+};
+
 type AutoRoleNicknameTokenName =
   | "player"
   | "tag"
@@ -224,6 +229,36 @@ function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string
   }
 
   return segments.slice(0, endIndex).join(" | ");
+}
+
+/** Purpose: strip only trailing tracked-clan labels from a current server nickname. */
+export function cleanupTrackedClanNickname(
+  nickname: string | null | undefined,
+  trackedClans: AutoRoleNicknameTrackedClanLike[],
+): AutoRoleNicknameCleanupResult {
+  const normalizedNickname = normalizeText(nickname ?? null);
+  if (!normalizedNickname) {
+    return {
+      cleanedNickname: null,
+      removedSuffix: false,
+    };
+  }
+
+  const strippedNickname = stripTrailingTrackedClanLabels(
+    normalizedNickname,
+    buildConfiguredTrackedClanStripLabels(trackedClans),
+  );
+  if (strippedNickname === normalizedNickname) {
+    return {
+      cleanedNickname: normalizedNickname,
+      removedSuffix: false,
+    };
+  }
+
+  return {
+    cleanedNickname: strippedNickname.length > 0 ? strippedNickname : null,
+    removedSuffix: true,
+  };
 }
 
 function isMeaningfulNicknameOutput(input: string): boolean {
