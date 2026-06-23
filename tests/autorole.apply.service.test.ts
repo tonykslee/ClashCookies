@@ -505,6 +505,48 @@ describe("AutoRoleApplyService", () => {
     expect(result.rolesRemoved).toEqual([visitorRoleId]);
   });
 
+  it("handles a direct family-role desire only in the family reconciliation block", async () => {
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha");
+    const familyRule = makeRule({
+      type: AutoRoleRuleType.FAMILY,
+      discordRoleId: familyRoleId,
+      targetValue: "member",
+    });
+    member.roles.add.mockImplementationOnce(async (roleId: string) => {
+      if (roleId === familyRoleId) {
+        throw new Error("boom");
+      }
+      return undefined;
+    });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([familyRoleId, visitorRoleId]),
+      rules: [familyRule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [familyRoleId], matchedRuleIds: [familyRule.id] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add.mock.calls.filter(([roleId]) => roleId === familyRoleId)).toHaveLength(1);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.add).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.failureReasons).toEqual([`add <@&${familyRoleId}> failed: boom`]);
+    expect(result.rolesAdded).toEqual([visitorRoleId]);
+    expect(result.rolesRemoved).toEqual([]);
+  });
+
   it("does not treat a failed clan-role add as present when no other clan role remains", async () => {
     const clanRoleId = "222222222222222222";
     const familyRoleId = "333333333333333333";

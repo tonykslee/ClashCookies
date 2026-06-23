@@ -178,11 +178,18 @@ export class AutoRoleApplyService {
   async applyMember(input: AutoRoleApplyInput): Promise<AutoRoleMemberApplyResult> {
     const desiredManagedRoleIds = normalizeRoleIds(
       input.evaluation.desiredManagedRoleIds.filter(
-        (roleId) => input.managedRoleIds.has(roleId) && roleId !== String(input.config.nonMemberRoleId ?? "").trim(),
+        (roleId) =>
+          input.managedRoleIds.has(roleId) &&
+          roleId !== String(input.config.nonMemberRoleId ?? "").trim() &&
+          roleId !== String(input.config.familyRoleId ?? "").trim(),
       ),
     );
     const suppressRemovalRoleIds = normalizeRoleIds(input.suppressRemovalRoleIds ?? new Set<string>());
     const memberRoleId = String(input.config.familyRoleId ?? "").trim();
+    const familyRoleDesiredDirectly =
+      Boolean(memberRoleId) &&
+      input.managedRoleIds.has(memberRoleId) &&
+      input.evaluation.desiredManagedRoleIds.includes(memberRoleId);
     const visitorRoleId = String(input.config.nonMemberRoleId ?? "").trim();
     const visitorRoleConfigured =
       Boolean(visitorRoleId) && input.config.nonMemberEnabled && input.managedRoleIds.has(visitorRoleId);
@@ -384,7 +391,8 @@ export class AutoRoleApplyService {
     const clanRolePresent = [...clanRoleIds].some((roleId) => effectiveRoleIds.has(roleId));
     const memberRoleManaged = Boolean(memberRoleId) && input.managedRoleIds.has(memberRoleId);
     const memberRolePresent = Boolean(memberRoleId) && effectiveRoleIds.has(memberRoleId);
-    const shouldHaveMemberRole = Boolean(memberRoleManaged) && (desiredManagedRoleIds.has(memberRoleId) || clanRolePresent);
+    const shouldHaveMemberRole =
+      Boolean(memberRoleManaged) && (familyRoleDesiredDirectly || clanRolePresent);
     if (memberRoleManaged) {
       if (shouldHaveMemberRole && !memberRolePresent) {
         try {
