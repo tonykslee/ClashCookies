@@ -365,13 +365,20 @@ describe("command coverage", () => {
   it("documents /autorole refresh in the autorole help detail text", () => {
     const autoroleHelpText = helpEmbedText("autorole");
     expect(autoroleHelpText).toContain("/autorole refresh");
-    expect(autoroleHelpText).toContain("/autorole delayed-signup-role add");
-    expect(autoroleHelpText).toContain("/autorole delayed-signup-role clear");
+    expect(autoroleHelpText).not.toContain("/autorole delayed-signup-role");
     expect(autoroleHelpText).toContain("manual refresh");
     expect(autoroleHelpText).toContain("delayed-signup role IDs");
     expect(autoroleHelpText).toContain("non-member-role");
     expect(autoroleHelpText).toContain("non-member-enabled");
     expect(autoroleHelpText).toContain("visitor/non-member role");
+  });
+
+  it("documents /roster delayed-signup-role in the roster help detail text", () => {
+    const rosterHelpText = helpEmbedText("roster");
+    expect(rosterHelpText).toContain("/roster delayed-signup-role add");
+    expect(rosterHelpText).toContain("/roster delayed-signup-role clear");
+    expect(rosterHelpText).toContain("guild-wide delayed-signup role IDs");
+    expect(rosterHelpText).toContain("visitor_signup_open_time");
   });
 
   it("moves and resets help detail navigation state", () => {

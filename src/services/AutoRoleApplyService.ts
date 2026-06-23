@@ -27,6 +27,7 @@ export type AutoRoleApplyInput = {
   guildId: string;
   config: AutoRoleGuildConfigSnapshot;
   managedRoleIds: Set<string>;
+  clanRoleIds?: Set<string>;
   suppressRemovalRoleIds?: Set<string>;
   trackedFwaMemberTags?: Set<string>;
   visitorRoleAvailable?: boolean;
@@ -37,6 +38,10 @@ export type AutoRoleApplyInput = {
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
   trackedClans: AutoRoleNicknameTrackedClanLike[];
   now?: Date;
+};
+
+type AutoRoleApplyTrackedClanLike = AutoRoleNicknameTrackedClanLike & {
+  clanRoleId?: string | null;
 };
 
 function normalizeRoleIds(roleIds: Iterable<string>): Set<string> {
@@ -79,6 +84,42 @@ function isLinkedAccountFamilyMember(input: {
     const playerTag = normalizePlayerTag(account.playerTag);
     return playerTag.length > 0 && input.trackedFwaMemberTags.has(playerTag);
   });
+}
+
+/** Purpose: collect clan-role ids that should force member/visitor reconciliation in the apply pass. */
+function collectClanRoleIds(input: {
+  config: AutoRoleGuildConfigSnapshot;
+  rules: AutoRoleRule[];
+  trackedClans: AutoRoleApplyTrackedClanLike[];
+  managedRoleIds: Set<string>;
+  clanRoleIds?: Set<string>;
+}): Set<string> {
+  if (input.clanRoleIds) {
+    return normalizeRoleIds([...input.clanRoleIds].filter((roleId) => input.managedRoleIds.has(roleId)));
+  }
+
+  const roleIds = new Set<string>();
+  const configuredClanRoleId = String(input.config.cwlClanRoleId ?? "").trim();
+  if (configuredClanRoleId && input.managedRoleIds.has(configuredClanRoleId)) {
+    roleIds.add(configuredClanRoleId);
+  }
+
+  for (const trackedClan of input.trackedClans) {
+    const clanRoleId = String(trackedClan.clanRoleId ?? "").trim();
+    if (clanRoleId && input.managedRoleIds.has(clanRoleId)) {
+      roleIds.add(clanRoleId);
+    }
+  }
+
+  for (const rule of input.rules) {
+    if (!rule.enabled || rule.type !== AutoRoleRuleType.CLAN) continue;
+    const clanRoleId = String(rule.discordRoleId ?? "").trim();
+    if (clanRoleId && input.managedRoleIds.has(clanRoleId)) {
+      roleIds.add(clanRoleId);
+    }
+  }
+
+  return roleIds;
 }
 
 const CLAN_STALE_PENDING_REMOVAL_REASON = "CLAN_STALE";
@@ -136,9 +177,19 @@ function pendingRemovalKey(roleId: string, ruleId: string): string {
 export class AutoRoleApplyService {
   async applyMember(input: AutoRoleApplyInput): Promise<AutoRoleMemberApplyResult> {
     const desiredManagedRoleIds = normalizeRoleIds(
-      input.evaluation.desiredManagedRoleIds.filter((roleId) => input.managedRoleIds.has(roleId)),
+      input.evaluation.desiredManagedRoleIds.filter(
+        (roleId) =>
+          input.managedRoleIds.has(roleId) &&
+          roleId !== String(input.config.nonMemberRoleId ?? "").trim() &&
+          roleId !== String(input.config.familyRoleId ?? "").trim(),
+      ),
     );
     const suppressRemovalRoleIds = normalizeRoleIds(input.suppressRemovalRoleIds ?? new Set<string>());
+    const memberRoleId = String(input.config.familyRoleId ?? "").trim();
+    const familyRoleDesiredDirectly =
+      Boolean(memberRoleId) &&
+      input.managedRoleIds.has(memberRoleId) &&
+      input.evaluation.desiredManagedRoleIds.includes(memberRoleId);
     const visitorRoleId = String(input.config.nonMemberRoleId ?? "").trim();
     const visitorRoleConfigured =
       Boolean(visitorRoleId) && input.config.nonMemberEnabled && input.managedRoleIds.has(visitorRoleId);
@@ -150,12 +201,18 @@ export class AutoRoleApplyService {
           trackedFwaMemberTags: input.trackedFwaMemberTags ?? new Set(),
         })
       : false;
-    const shouldHaveVisitorRole = visitorRoleConfigured && visitorRoleAvailable && !familyMember && !isBot;
-    const currentManagedRoleIds = new Set(
-      [...input.member.roles.cache.keys()]
-        .map((roleId) => String(roleId ?? "").trim())
-        .filter((roleId) => roleId.length > 0 && input.managedRoleIds.has(roleId)),
+    const currentRoleIds = new Set(
+      [...input.member.roles.cache.keys()].map((roleId) => String(roleId ?? "").trim()).filter(Boolean),
     );
+    const effectiveRoleIds = new Set(currentRoleIds);
+    const currentManagedRoleIds = new Set([...currentRoleIds].filter((roleId) => input.managedRoleIds.has(roleId)));
+    const clanRoleIds = collectClanRoleIds({
+      config: input.config,
+      rules: input.rules,
+      trackedClans: input.trackedClans as AutoRoleApplyTrackedClanLike[],
+      managedRoleIds: input.managedRoleIds,
+      clanRoleIds: input.clanRoleIds,
+    });
 
     if (input.evaluation.skipReason) {
       return {
@@ -185,10 +242,6 @@ export class AutoRoleApplyService {
       };
     }
 
-    if (shouldHaveVisitorRole) {
-      desiredManagedRoleIds.add(visitorRoleId);
-    }
-
     const now = input.now ?? new Date();
     const rulesByRoleId = getEnabledRulesByRoleId(input.rules);
     const clanRulesByRoleId = getClanRulesByRoleId(input.rules);
@@ -214,6 +267,7 @@ export class AutoRoleApplyService {
     for (const roleId of rolesToAdd) {
       try {
         await input.member.roles.add(roleId);
+        effectiveRoleIds.add(roleId);
         rolesAdded.push(roleId);
       } catch (error) {
         failureReasons.push(formatFailureReason("add", roleId, error));
@@ -224,6 +278,7 @@ export class AutoRoleApplyService {
       const staleManagedRoleIds = [...currentManagedRoleIds].filter(
         (roleId) =>
           roleId !== visitorRoleId &&
+          roleId !== memberRoleId &&
           !desiredManagedRoleIds.has(roleId) &&
           !suppressRemovalRoleIds.has(roleId),
       );
@@ -307,6 +362,7 @@ export class AutoRoleApplyService {
       for (const roleId of immediateRemovalRoleIds) {
         try {
           await input.member.roles.remove(roleId);
+          effectiveRoleIds.delete(roleId);
           rolesRemoved.push(roleId);
         } catch (error) {
           failureReasons.push(formatFailureReason("remove", roleId, error));
@@ -332,12 +388,59 @@ export class AutoRoleApplyService {
       });
     }
 
-    if (visitorRoleConfigured && visitorRoleAvailable && !isBot && !shouldHaveVisitorRole && currentManagedRoleIds.has(visitorRoleId)) {
-      try {
-        await input.member.roles.remove(visitorRoleId);
-        rolesRemoved.push(visitorRoleId);
-      } catch (error) {
-        failureReasons.push(formatFailureReason("remove", visitorRoleId, error));
+    const clanRolePresent = [...clanRoleIds].some((roleId) => effectiveRoleIds.has(roleId));
+    const memberRoleManaged = Boolean(memberRoleId) && input.managedRoleIds.has(memberRoleId);
+    const memberRolePresent = Boolean(memberRoleId) && effectiveRoleIds.has(memberRoleId);
+    const shouldHaveMemberRole =
+      Boolean(memberRoleManaged) && (familyRoleDesiredDirectly || clanRolePresent);
+    if (memberRoleManaged) {
+      if (shouldHaveMemberRole && !memberRolePresent) {
+        try {
+          await input.member.roles.add(memberRoleId);
+          effectiveRoleIds.add(memberRoleId);
+          rolesAdded.push(memberRoleId);
+        } catch (error) {
+          failureReasons.push(formatFailureReason("add", memberRoleId, error));
+        }
+      } else if (
+        input.config.removeStaleManagedRoles &&
+        memberRolePresent &&
+        !shouldHaveMemberRole &&
+        !suppressRemovalRoleIds.has(memberRoleId)
+      ) {
+        try {
+          await input.member.roles.remove(memberRoleId);
+          effectiveRoleIds.delete(memberRoleId);
+          rolesRemoved.push(memberRoleId);
+        } catch (error) {
+          failureReasons.push(formatFailureReason("remove", memberRoleId, error));
+        }
+      }
+    }
+
+    const effectiveClanRolePresent = [...clanRoleIds].some((roleId) => effectiveRoleIds.has(roleId));
+    const effectiveClanOrMemberRolePresent =
+      effectiveClanRolePresent || (Boolean(memberRoleId) && effectiveRoleIds.has(memberRoleId));
+    const shouldHaveVisitorRole =
+      visitorRoleConfigured && visitorRoleAvailable && !familyMember && !isBot && !effectiveClanOrMemberRolePresent;
+    if (visitorRoleConfigured && visitorRoleAvailable && !isBot) {
+      const visitorRolePresent = effectiveRoleIds.has(visitorRoleId);
+      if (shouldHaveVisitorRole && !visitorRolePresent) {
+        try {
+          await input.member.roles.add(visitorRoleId);
+          effectiveRoleIds.add(visitorRoleId);
+          rolesAdded.push(visitorRoleId);
+        } catch (error) {
+          failureReasons.push(formatFailureReason("add", visitorRoleId, error));
+        }
+      } else if (!shouldHaveVisitorRole && visitorRolePresent) {
+        try {
+          await input.member.roles.remove(visitorRoleId);
+          effectiveRoleIds.delete(visitorRoleId);
+          rolesRemoved.push(visitorRoleId);
+        } catch (error) {
+          failureReasons.push(formatFailureReason("remove", visitorRoleId, error));
+        }
       }
     }
 

@@ -412,6 +412,316 @@ describe("AutoRoleApplyService", () => {
     expect(result.rolesRemoved).toEqual([]);
   });
 
+  it("adds the family role for an existing clan role and keeps the visitor role out", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [clanRoleId]);
+    const clanRule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [clanRule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [clanRoleId], matchedRuleIds: [clanRule.id] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([familyRoleId]);
+    expect(result.rolesRemoved).toEqual([]);
+  });
+
+  it("removes the visitor role when a clan role and visitor role are both present", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [clanRoleId, visitorRoleId]);
+    const clanRule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [clanRule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [clanRoleId], matchedRuleIds: [clanRule.id] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([familyRoleId]);
+    expect(result.rolesRemoved).toEqual([visitorRoleId]);
+  });
+
+  it("removes the visitor role when the family role is already present", async () => {
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [familyRoleId, visitorRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+        removeStaleManagedRoles: false,
+      }),
+      managedRoleIds: new Set([familyRoleId, visitorRoleId]),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#2QG2C08UP", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(["#2QG2C08UP"]),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([]);
+    expect(result.rolesRemoved).toEqual([visitorRoleId]);
+  });
+
+  it("handles a direct family-role desire only in the family reconciliation block", async () => {
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha");
+    const familyRule = makeRule({
+      type: AutoRoleRuleType.FAMILY,
+      discordRoleId: familyRoleId,
+      targetValue: "member",
+    });
+    member.roles.add.mockImplementationOnce(async (roleId: string) => {
+      if (roleId === familyRoleId) {
+        throw new Error("boom");
+      }
+      return undefined;
+    });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([familyRoleId, visitorRoleId]),
+      rules: [familyRule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [familyRoleId], matchedRuleIds: [familyRule.id] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add.mock.calls.filter(([roleId]) => roleId === familyRoleId)).toHaveLength(1);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.add).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.failureReasons).toEqual([`add <@&${familyRoleId}> failed: boom`]);
+    expect(result.rolesAdded).toEqual([visitorRoleId]);
+    expect(result.rolesRemoved).toEqual([]);
+  });
+
+  it("does not treat a failed clan-role add as present when no other clan role remains", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha");
+    member.roles.add.mockImplementationOnce(async (roleId: string) => {
+      if (roleId === clanRoleId) {
+        throw new Error("boom");
+      }
+      return undefined;
+    });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [clanRoleId], matchedRuleIds: ["rule-222222222222222222"] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(clanRoleId);
+    expect(member.roles.add).toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.remove).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.failureReasons).toContain(`add <@&${clanRoleId}> failed: boom`);
+    expect(result.rolesAdded).toEqual([visitorRoleId]);
+    expect(result.rolesRemoved).toEqual([]);
+  });
+
+  it("removes the visitor role even when adding the family role fails while a clan role remains", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [clanRoleId, visitorRoleId]);
+    const clanRule = makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" });
+    member.roles.add.mockImplementationOnce(async (roleId: string) => {
+      if (roleId === familyRoleId) {
+        throw new Error("boom");
+      }
+      return undefined;
+    });
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [clanRule],
+      member: member as any,
+      evaluation: makeEvaluation({ desiredManagedRoleIds: [clanRoleId], matchedRuleIds: [clanRule.id] }),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.failureReasons).toContain(`add <@&${familyRoleId}> failed: boom`);
+    expect(result.rolesRemoved).toEqual([visitorRoleId]);
+  });
+
+  it("keeps a delayed stale clan role long enough to add family and remove visitor", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [clanRoleId, visitorRoleId]);
+    const now = new Date("2026-04-01T01:00:00.000Z");
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+        removeStaleManagedRoles: true,
+        clanRoleRemovalDelayMinutes: 60,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+      now,
+    });
+
+    expect(member.roles.add).toHaveBeenCalledWith(familyRoleId);
+    expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([familyRoleId]);
+    expect(result.rolesRemoved).toEqual([visitorRoleId]);
+    expect(prismaMock.autoRolePendingRemoval.upsert).toHaveBeenCalled();
+  });
+
+  it("treats an immediately removed stale clan role as absent before visitor reconciliation", async () => {
+    const clanRoleId = "222222222222222222";
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [clanRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+        removeStaleManagedRoles: true,
+        clanRoleRemovalDelayMinutes: null,
+      }),
+      managedRoleIds: new Set([clanRoleId, familyRoleId, visitorRoleId]),
+      rules: [makeRule({ type: AutoRoleRuleType.CLAN, discordRoleId: clanRoleId, targetValue: "#2CGG9GGRV" })],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#PYLQ0289", "Beta")],
+      playerCurrentByTag: new Map([["#2CGG9GGRV", makePlayerCurrent({ playerTag: "#2CGG9GGRV", currentClanTag: "#OTHER" })]]),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(),
+      now: new Date("2026-04-01T01:00:00.000Z"),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(clanRoleId);
+    expect(member.roles.add).toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(familyRoleId);
+    expect(result.rolesAdded).toEqual([visitorRoleId]);
+    expect(result.rolesRemoved).toEqual([clanRoleId]);
+  });
+
+  it("removes the visitor role even when stale managed-role removal is disabled", async () => {
+    const familyRoleId = "333333333333333333";
+    const visitorRoleId = "555555555555555555";
+    const member = makeMember("Alpha", [familyRoleId, visitorRoleId]);
+
+    const result = await autoRoleApplyService.applyMember({
+      guildId: "111111111111111111",
+      config: makeConfig({
+        applyNicknames: false,
+        familyRoleId,
+        nonMemberEnabled: true,
+        nonMemberRoleId: visitorRoleId,
+        removeStaleManagedRoles: false,
+      }),
+      managedRoleIds: new Set([familyRoleId, visitorRoleId]),
+      rules: [],
+      member: member as any,
+      evaluation: makeEvaluation(),
+      linkedAccounts: [makeLinkedAccount("#2QG2C08UP", "Alpha")],
+      playerCurrentByTag: new Map(),
+      trackedClans: [],
+      trackedFwaMemberTags: new Set(["#2QG2C08UP"]),
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(visitorRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(visitorRoleId);
+    expect(result.rolesAdded).toEqual([]);
+    expect(result.rolesRemoved).toEqual([visitorRoleId]);
+  });
+
   it("removes stale CLAN roles immediately when no delay is configured", async () => {
     const roleId = "222222222222222222";
     const member = makeMember("Alpha", [roleId]);
