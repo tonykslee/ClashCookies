@@ -911,6 +911,13 @@ export const TrackedClan: Command = {
                 }
               } catch (err) {
                 console.error(`tracked-clan CWL detailed refresh failed: ${formatError(err)}`);
+                try {
+                  await interaction.editReply(renderCwlMinimal(false));
+                } catch (restoreErr) {
+                  console.error(
+                    `[tracked-clan] stage=cwl_minimal_refresh_restore_failed season=${season} displayed_count=${detailedRows.length} error=${formatError(restoreErr)}`,
+                  );
+                }
                 if (!button.replied && !button.deferred) {
                   await button.reply({
                     ephemeral: true,

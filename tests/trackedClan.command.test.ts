@@ -862,6 +862,89 @@ describe("/clan command behavior", () => {
     expect(finalDescription).not.toContain("UNK");
   });
 
+  it("restores the CWL minimal refresh button after a failed detailed refresh", async () => {
+    const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
+    resolveByNameMock.mockImplementation(async (_client, name) => {
+      if (String(name ?? "") === "unranked") {
+        return { rendered: "<resolved:unranked>" } as any;
+      }
+      return null;
+    });
+
+    const listRows = [
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Unranked",
+        spinStatus: "searching",
+        observedCwlRosterCount: 31,
+        currentClanMemberCount: 49,
+        rosterTitle: "Old Roster",
+        rosterPostedMessageUrl: null,
+      },
+    ] as const;
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay").mockResolvedValue([...listRows]);
+    const refreshHelperMock = vi
+      .spyOn(trackedClanListService, "refreshCwlTrackedClanDetailedDisplayWithQueueContext")
+      .mockRejectedValueOnce(new Error("boom"));
+
+    const client = { application: { fetch: vi.fn().mockResolvedValue(undefined) } } as any;
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+
+    await TrackedClan.run(client, interaction as any, cocService as any);
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    expect(collectHandler).toBeTypeOf("function");
+    const refreshButton = {
+      ...makeButtonInteraction(`tracked-clan-list:cwl-summary:${interaction.id}:refresh`),
+      user: interaction.user,
+      replied: true,
+    };
+
+    await collectHandler?.(refreshButton);
+
+    expect(refreshButton.update).toHaveBeenCalledTimes(1);
+    const refreshingDescription = String(
+      refreshButton.update.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON?.().description ?? "",
+    );
+    expect(refreshingDescription).toContain("<resolved:unranked> | [CWL Alpha]");
+    expect(refreshingDescription).toContain("| 49 👥");
+
+    expect(refreshHelperMock).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledTimes(2);
+
+    const restoredPayload = interaction.editReply.mock.calls[1]?.[0] as any;
+    const restoredDescription = String(restoredPayload?.embeds?.[0]?.toJSON?.().description ?? "");
+    const restoredComponents = JSON.stringify(restoredPayload?.components ?? []);
+    expect(restoredDescription).toContain("<resolved:unranked> | [CWL Alpha]");
+    expect(restoredDescription).not.toContain("M1");
+    expect(restoredComponents).toContain('"Refresh"');
+    expect(restoredComponents).not.toContain('"disabled":true');
+    expect(refreshButton.followUp).toHaveBeenCalledTimes(1);
+    expect(String(refreshButton.followUp.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Failed to refresh tracked clan CWL details.",
+    );
+  });
+
   it("renders detailed CWL rows with league labels, spin status, counts, roster links, and sorted order", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
       {
