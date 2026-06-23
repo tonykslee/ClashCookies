@@ -334,8 +334,8 @@ describe("AutoRoleNicknameService", () => {
     expect(result.renderedNickname).toBe("Tilonius | EB | AK");
   });
 
-  it("cleans trailing tracked-clan labels from the current server nickname", () => {
-    const cleanup = cleanupTrackedClanNickname("Tilonius | RR | ZG", [
+  it("preserves the retained nickname prefix when stripping a tracked-clan suffix", () => {
+    const cleanup = cleanupTrackedClanNickname("Tilonius / Staff | RR | ZG", [
       {
         tag: "#2QG2C08UP",
         name: "Zero Gravity",
@@ -349,7 +349,37 @@ describe("AutoRoleNicknameService", () => {
     ]);
 
     expect(cleanup).toEqual({
-      cleanedNickname: "Tilonius",
+      cleanedNickname: "Tilonius / Staff",
+      removedSuffix: true,
+    });
+  });
+
+  it("preserves hyphenated manual nickname content before a tracked-clan suffix", () => {
+    const cleanup = cleanupTrackedClanNickname("Tilonius - Admin | RR", [
+      {
+        tag: "#8PJLYRC8P",
+        name: "Red Dawn",
+        shortName: "RR",
+      },
+    ]);
+
+    expect(cleanup).toEqual({
+      cleanedNickname: "Tilonius - Admin",
+      removedSuffix: true,
+    });
+  });
+
+  it("preserves internal whitespace in the retained nickname prefix", () => {
+    const cleanup = cleanupTrackedClanNickname("Tony  Lee | RR", [
+      {
+        tag: "#8PJLYRC8P",
+        name: "Red Dawn",
+        shortName: "RR",
+      },
+    ]);
+
+    expect(cleanup).toEqual({
+      cleanedNickname: "Tony  Lee",
       removedSuffix: true,
     });
   });

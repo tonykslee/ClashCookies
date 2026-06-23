@@ -303,7 +303,7 @@ describe("AutoRoleApplyService", () => {
       discordRoleId: verifiedRoleId,
       targetValue: "__verified__",
     });
-    const member = makeMember("Tilonius | RR | ZG", [exclusionRoleId]);
+    const member = makeMember("Tilonius / Staff | RR | ZG", [exclusionRoleId]);
 
     const result = await autoRoleApplyService.applyMember({
       guildId: "111111111111111111",
@@ -328,7 +328,7 @@ describe("AutoRoleApplyService", () => {
     });
 
     expect(member.roles.add).toHaveBeenCalledWith(verifiedRoleId);
-    expect(member.setNickname).toHaveBeenCalledWith("Tilonius");
+    expect(member.setNickname).toHaveBeenCalledWith("Tilonius / Staff");
     expect(result.rolesAdded).toEqual([verifiedRoleId]);
     expect(result.nicknameStatus).toBe("changed");
     expect(result.nicknameReason).toBe(`nickname excluded by role ${exclusionRoleId}`);

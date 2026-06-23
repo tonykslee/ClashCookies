@@ -171,6 +171,8 @@ function normalizeTrackedClanLabel(input: string): string {
   return normalizeText(input)?.toLowerCase() ?? "";
 }
 
+const AUTOROLE_TRACKED_CLAN_SEPARATOR_RE = /\s+[|/-]\s+/g;
+
 function buildConfiguredTrackedClanStripLabels(trackedClans: AutoRoleNicknameTrackedClanLike[]): string[] {
   const labels: string[] = [];
   for (const clan of trackedClans) {
@@ -193,42 +195,97 @@ function buildConfiguredTrackedClanStripLabels(trackedClans: AutoRoleNicknameTra
   return [...new Set(labels.map((label) => normalizeText(label) ?? "").filter(Boolean))];
 }
 
-function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string[]): string {
-  const normalized = normalizeText(input) ?? "";
-  if (!normalized || trackedClanLabels.length === 0) {
-    return normalized;
+type TrackedClanSuffixRange = {
+  start: number;
+  end: number;
+};
+
+function findTrailingTrackedClanSuffixRange(
+  input: string,
+  trackedClanLabels: string[],
+): TrackedClanSuffixRange | null {
+  const normalizedInput = String(input ?? "");
+  if (normalizedInput.trim().length === 0 || trackedClanLabels.length === 0) {
+    return null;
   }
 
   const trackedLabelSet = new Set(
     trackedClanLabels.map((label) => normalizeTrackedClanLabel(label)).filter(Boolean),
   );
   if (trackedLabelSet.size === 0) {
-    return normalized;
+    return null;
   }
 
-  const segments = normalized
-    .split(/\s+[|/-]\s+/)
-    .map((segment) => normalizeText(segment))
-    .filter((segment): segment is string => Boolean(segment));
+  const segments: Array<{ start: number; end: number; text: string }> = [];
+  const separatorRanges: Array<{ start: number; end: number }> = [];
+  let segmentStart = 0;
 
-  if (segments.length === 0) {
-    return normalized;
+  AUTOROLE_TRACKED_CLAN_SEPARATOR_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AUTOROLE_TRACKED_CLAN_SEPARATOR_RE.exec(normalizedInput)) !== null) {
+    const separatorStart = match.index ?? 0;
+    segments.push({
+      start: segmentStart,
+      end: separatorStart,
+      text: normalizedInput.slice(segmentStart, separatorStart),
+    });
+    separatorRanges.push({
+      start: separatorStart,
+      end: separatorStart + match[0].length,
+    });
+    segmentStart = separatorStart + match[0].length;
   }
+  AUTOROLE_TRACKED_CLAN_SEPARATOR_RE.lastIndex = 0;
 
-  let endIndex = segments.length;
-  while (endIndex > 0) {
-    const trailingLabel = normalizeTrackedClanLabel(segments[endIndex - 1]);
+  segments.push({
+    start: segmentStart,
+    end: normalizedInput.length,
+    text: normalizedInput.slice(segmentStart),
+  });
+
+  let suffixStartIndex = segments.length;
+  while (suffixStartIndex > 0) {
+    const trailingLabel = normalizeTrackedClanLabel(segments[suffixStartIndex - 1].text);
     if (!trackedLabelSet.has(trailingLabel)) {
       break;
     }
-    endIndex -= 1;
+    suffixStartIndex -= 1;
   }
 
-  if (endIndex === segments.length) {
+  if (suffixStartIndex === segments.length) {
+    return null;
+  }
+
+  if (suffixStartIndex === 0) {
+    return {
+      start: 0,
+      end: normalizedInput.length,
+    };
+  }
+
+  const separatorRange = separatorRanges[suffixStartIndex - 1] ?? null;
+  if (!separatorRange) {
+    return null;
+  }
+
+  return {
+    start: separatorRange.start,
+    end: normalizedInput.length,
+  };
+}
+
+function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string[]): string {
+  const normalized = normalizeText(input) ?? "";
+  if (!normalized || trackedClanLabels.length === 0) {
     return normalized;
   }
 
-  return segments.slice(0, endIndex).join(" | ");
+  const suffixRange = findTrailingTrackedClanSuffixRange(normalized, trackedClanLabels);
+  if (!suffixRange) {
+    return normalized;
+  }
+
+  return normalized.slice(0, suffixRange.start).trimEnd();
 }
 
 /** Purpose: strip only trailing tracked-clan labels from a current server nickname. */
@@ -236,25 +293,26 @@ export function cleanupTrackedClanNickname(
   nickname: string | null | undefined,
   trackedClans: AutoRoleNicknameTrackedClanLike[],
 ): AutoRoleNicknameCleanupResult {
-  const normalizedNickname = normalizeText(nickname ?? null);
-  if (!normalizedNickname) {
+  const trimmedNickname = String(nickname ?? "").trim();
+  if (!trimmedNickname) {
     return {
       cleanedNickname: null,
       removedSuffix: false,
     };
   }
 
-  const strippedNickname = stripTrailingTrackedClanLabels(
-    normalizedNickname,
+  const suffixRange = findTrailingTrackedClanSuffixRange(
+    trimmedNickname,
     buildConfiguredTrackedClanStripLabels(trackedClans),
   );
-  if (strippedNickname === normalizedNickname) {
+  if (!suffixRange) {
     return {
-      cleanedNickname: normalizedNickname,
+      cleanedNickname: trimmedNickname,
       removedSuffix: false,
     };
   }
 
+  const strippedNickname = trimmedNickname.slice(0, suffixRange.start).trimEnd();
   return {
     cleanedNickname: strippedNickname.length > 0 ? strippedNickname : null,
     removedSuffix: true,
