@@ -285,7 +285,24 @@ function stripTrailingTrackedClanLabels(input: string, trackedClanLabels: string
     return normalized;
   }
 
-  return normalized.slice(0, suffixRange.start).trimEnd();
+  return canonicalizeTrackedClanPrefix(normalized.slice(0, suffixRange.start));
+}
+
+function canonicalizeTrackedClanPrefix(input: string): string {
+  const normalized = normalizeText(input) ?? "";
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized
+    .split(AUTOROLE_TRACKED_CLAN_SEPARATOR_RE)
+    .map((segment) => normalizeText(segment))
+    .filter((segment): segment is string => Boolean(segment));
+  if (segments.length === 0) {
+    return normalized;
+  }
+
+  return segments.join(" | ");
 }
 
 /** Purpose: strip only trailing tracked-clan labels from a current server nickname. */
