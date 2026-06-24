@@ -337,6 +337,9 @@ model TodoPlayerSnapshot {
   warClanName     String?
   warPosition     Int?
   warSourceUpdatedAt DateTime?
+  warOwnerSource  TodoWarOwnerSource @default(NONE)
+  warOwnerWarId    Int?
+  warOwnerVerifiedAt DateTime?
   clanMembershipObservedAt DateTime?
   raidClanTag     String?
   raidClanName    String?
@@ -379,6 +382,12 @@ model TodoUserUsage {
   discordUserId String   @id
   activatedAt   DateTime @default(now())
   lastUsedAt    DateTime @updatedAt
+}
+
+enum TodoWarOwnerSource {
+  LIVE_VERIFIED
+  PERSISTED_FALLBACK
+  NONE
 }
 
 enum AutoRoleRuleType {

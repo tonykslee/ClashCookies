@@ -8,6 +8,7 @@ let cwlSeasonMappingRows: Array<{
 }> = [];
 
 const txMock = vi.hoisted(() => ({
+  $executeRaw: vi.fn(),
   cwlEventInstance: {
     create: vi.fn(),
     update: vi.fn(),
@@ -24,6 +25,7 @@ const txMock = vi.hoisted(() => ({
     upsert: vi.fn(),
   },
   todoPlayerSnapshot: {
+    findUnique: vi.fn(),
     upsert: vi.fn(),
   },
   cwlPlayerClanSeason: {
@@ -38,6 +40,7 @@ const prismaMock = vi.hoisted(() => ({
   todoPlayerSnapshot: {
     findMany: vi.fn(),
     aggregate: vi.fn(),
+    findUnique: vi.fn(),
     upsert: vi.fn(),
   },
   fwaPlayerCatalog: {
@@ -134,6 +137,9 @@ function buildSnapshotRow(
     warClanName: null,
     warPosition: null,
     warSourceUpdatedAt: null,
+    warOwnerSource: "NONE",
+    warOwnerWarId: null,
+    warOwnerVerifiedAt: null,
     clanMembershipObservedAt: null,
     raidClanTag: null,
     raidClanName: null,
@@ -309,6 +315,32 @@ function mockTrackedClanFindManyByWhere(rows: Array<{ tag: string; name: string 
   });
 }
 
+function installMutableTodoSnapshotStore(rows: Record<string, unknown>[]): void {
+  prismaMock.todoPlayerSnapshot.findMany.mockImplementation(async () =>
+    rows.map((row) => ({ ...row })),
+  );
+  txMock.todoPlayerSnapshot.findUnique.mockImplementation(async (args: any) => {
+    const playerTag = String(args?.where?.playerTag ?? "");
+    const row = rows.find((candidate) => candidate.playerTag === playerTag);
+    return row ? { ...row } : null;
+  });
+  txMock.todoPlayerSnapshot.upsert.mockImplementation(async (args: any) => {
+    const playerTag = String(args?.where?.playerTag ?? "");
+    const nextRow = {
+      ...(rows.find((candidate) => candidate.playerTag === playerTag) ?? {}),
+      ...(args?.create ?? {}),
+      ...(args?.update ?? {}),
+    };
+    const index = rows.findIndex((candidate) => candidate.playerTag === playerTag);
+    if (index >= 0) {
+      rows[index] = nextRow;
+    } else {
+      rows.push(nextRow);
+    }
+    return nextRow;
+  });
+}
+
 describe("TodoSnapshotService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -317,7 +349,11 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlEventClan.findMany.mockResolvedValue([]);
 
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.todoPlayerSnapshot.findUnique.mockResolvedValue(null);
     prismaMock.todoPlayerSnapshot.upsert.mockResolvedValue(undefined);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(null);
+    txMock.todoPlayerSnapshot.upsert = prismaMock.todoPlayerSnapshot.upsert;
+    txMock.$executeRaw.mockResolvedValue(1);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
@@ -2939,6 +2975,1276 @@ describe("TodoSnapshotService", () => {
       expect.objectContaining({
         update: expect.objectContaining({
           warClanTag: rockyRoadClanTag,
+        }),
+      }),
+    );
+  });
+
+  it("keeps a verified TWC WAR owner when a stale Rocky Road refresh completes out of order", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+    const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1002,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: verifiedAt,
+        clanMembershipObservedAt: new Date("2026-03-20T08:30:00.000Z"),
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1002,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: verifiedAt,
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        warId: 1002,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        attacksPerMember: 2,
+        startTime: "20260325T120000.000Z",
+        endTime: "20260326T120000.000Z",
+        clan: {
+          tag: twcClanTag,
+          name: "TheWiseCowboys",
+          members: [],
+        },
+        opponent: {
+          tag: "#OPP",
+          name: "Opponent",
+          members: [],
+        },
+      }),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          rockyRoadClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: rockyRoadClanTag,
+              name: "Rocky Road",
+              members: [
+                {
+                  tag: playerTag,
+                  name: "Party Blizzard",
+                  townhallLevel: 15,
+                  mapPosition: 18,
+                  attacks: [{ order: 1 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(cocService.getCurrentWar).toHaveBeenCalled();
+    expect(txMock.$executeRaw).toHaveBeenCalled();
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          clanTag: twcClanTag,
+          clanName: "TheWiseCowboys",
+          warClanTag: twcClanTag,
+          warClanName: "TheWiseCowboys",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1002,
+          warOwnerVerifiedAt: verifiedAt,
+          warActive: true,
+          warPosition: 8,
+          warAttacksUsed: 2,
+        }),
+      }),
+    );
+    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+          warOwnerSource: "PERSISTED_FALLBACK",
+        }),
+      }),
+    );
+  });
+
+  it("authoritatively clears a verified Rocky Road WAR owner when the live lineup excludes the player", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const playerTag = "#PYLQ0289";
+    const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: rockyRoadClanTag,
+        clanName: "Rocky Road",
+        warActive: true,
+        warClanTag: rockyRoadClanTag,
+        warClanName: "Rocky Road",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1001,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 18,
+        warAttacksUsed: 1,
+        warSourceUpdatedAt: verifiedAt,
+        clanMembershipObservedAt: new Date("2026-03-20T08:30:00.000Z"),
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: rockyRoadClanTag,
+        clanName: "Rocky Road",
+        warActive: true,
+        warClanTag: rockyRoadClanTag,
+        warClanName: "Rocky Road",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1001,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 18,
+        warAttacksUsed: 1,
+        warSourceUpdatedAt: verifiedAt,
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: rockyRoadClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1001,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          rockyRoadClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: rockyRoadClanTag,
+              name: "Rocky Road",
+              members: [
+                {
+                  tag: "#QGRJ2222",
+                  name: "Other Player",
+                  townhallLevel: 15,
+                  mapPosition: 1,
+                  attacks: [],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 4, 0, 0),
+    });
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: null,
+          warClanName: null,
+          warPosition: null,
+          warSourceUpdatedAt: null,
+          warOwnerSource: "NONE",
+          warOwnerWarId: null,
+          warOwnerVerifiedAt: null,
+          warActive: false,
+          warAttacksUsed: 0,
+          warPhase: null,
+          warEndsAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("keeps the newer TWC live-verified owner when an older Rocky Road live refresh completes afterward", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+    const newerVerifiedAt = new Date("2026-03-26T00:02:00.000Z");
+    const twcCurrentWar = {
+      clanTag: twcClanTag,
+      warId: 1002,
+      state: "inWar",
+      startTime: new Date("2026-03-25T12:00:00.000Z"),
+      endTime: new Date("2026-03-26T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T00:02:00.000Z"),
+    };
+    const rockyRoadCurrentWar = {
+      clanTag: rockyRoadClanTag,
+      warId: 1001,
+      state: "inWar",
+      startTime: new Date("2026-03-25T12:00:00.000Z"),
+      endTime: new Date("2026-03-26T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+    };
+    const snapshotRows: Record<string, unknown>[] = [];
+    installMutableTodoSnapshotStore(snapshotRows);
+    let currentWarRows = [twcCurrentWar];
+    let trackedWarRosterRows = [
+      {
+        clanTag: twcClanTag,
+        playerTag,
+        position: 8,
+        playerName: "Party Blizzard",
+        townHall: 15,
+      },
+    ];
+    prismaMock.currentWar.findMany.mockImplementation(async () => currentWarRows.map((row) => ({ ...row })));
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockImplementation(async () =>
+      trackedWarRosterRows.map((row) => ({ ...row })),
+    );
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: rockyRoadClanTag },
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          twcClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: twcClanTag,
+              name: "TheWiseCowboys",
+              members: [
+                {
+                  tag: playerTag,
+                  name: "Party Blizzard",
+                  townhallLevel: 15,
+                  mapPosition: 8,
+                  attacks: [{ order: 1 }, { order: 2 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 2, 0, 0),
+    });
+
+    currentWarRows = [rockyRoadCurrentWar];
+    trackedWarRosterRows = [
+      {
+        clanTag: rockyRoadClanTag,
+        playerTag,
+        position: 18,
+        playerName: "Party Blizzard",
+        townHall: 15,
+      },
+    ];
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          rockyRoadClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: rockyRoadClanTag,
+              name: "Rocky Road",
+              members: [
+                {
+                  tag: playerTag,
+                  name: "Party Blizzard",
+                  townhallLevel: 15,
+                  mapPosition: 18,
+                  attacks: [{ order: 1 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(snapshotRows).toHaveLength(1);
+    expect(snapshotRows[0]).toMatchObject({
+      playerTag,
+      warClanTag: twcClanTag,
+      warOwnerSource: "LIVE_VERIFIED",
+      warOwnerWarId: 1002,
+      warOwnerVerifiedAt: newerVerifiedAt,
+      warActive: true,
+    });
+    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    {
+      label: "older",
+      existingVerifiedAt: new Date("2026-03-26T00:02:00.000Z"),
+      clearObservationAt: new Date("2026-03-26T00:00:00.000Z"),
+      shouldClear: false,
+    },
+    {
+      label: "newer",
+      existingVerifiedAt: new Date("2026-03-26T00:00:00.000Z"),
+      clearObservationAt: new Date("2026-03-26T00:02:00.000Z"),
+      shouldClear: true,
+    },
+  ])(
+    "handles $label authoritative clear against a verified TWC owner",
+    async ({ existingVerifiedAt, clearObservationAt, shouldClear }) => {
+      const twcClanTag = "#29PCQGUV0";
+      const playerTag = "#PYLQ0289";
+
+      prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+        buildSnapshotRow({
+          playerTag,
+          playerName: "Party Blizzard",
+          clanTag: twcClanTag,
+          clanName: "TheWiseCowboys",
+          warActive: true,
+          warClanTag: twcClanTag,
+          warClanName: "TheWiseCowboys",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1002,
+          warOwnerVerifiedAt: existingVerifiedAt,
+          warPosition: 8,
+          warAttacksUsed: 2,
+          warSourceUpdatedAt: existingVerifiedAt,
+        }),
+      ]);
+      txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+        buildSnapshotRow({
+          playerTag,
+          playerName: "Party Blizzard",
+          clanTag: twcClanTag,
+          clanName: "TheWiseCowboys",
+          warActive: true,
+          warClanTag: twcClanTag,
+          warClanName: "TheWiseCowboys",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1002,
+          warOwnerVerifiedAt: existingVerifiedAt,
+          warPosition: 8,
+          warAttacksUsed: 2,
+          warSourceUpdatedAt: existingVerifiedAt,
+        }),
+      );
+      prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+        { clanTag: twcClanTag },
+      ]);
+      prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.currentWar.findMany.mockResolvedValue([
+        {
+          clanTag: twcClanTag,
+          warId: 1002,
+          state: "inWar",
+          startTime: new Date("2026-03-25T12:00:00.000Z"),
+          endTime: new Date("2026-03-26T12:00:00.000Z"),
+          updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+        },
+      ]);
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: twcClanTag, name: "TheWiseCowboys" },
+      ]);
+      prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+      prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+      prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+      prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+      prismaMock.botSetting.findMany.mockResolvedValue([]);
+      const cocService = {
+        getPlayerRaw: vi.fn().mockResolvedValue(null),
+        getCurrentWar: vi.fn().mockResolvedValue(null),
+      };
+
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: [playerTag],
+        cocService: cocService as any,
+        preloadedCurrentWarSnapshotsByClanTag: new Map([
+          [
+            twcClanTag,
+            {
+              state: "inWar",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: twcClanTag,
+                name: "TheWiseCowboys",
+                members: [
+                  {
+                    tag: "#QGRJ2222",
+                    name: "Other Player",
+                    townhallLevel: 15,
+                    mapPosition: 1,
+                    attacks: [],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+        ]),
+        nowMs: clearObservationAt.getTime(),
+      });
+
+      if (shouldClear) {
+        expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            update: expect.objectContaining({
+              warClanTag: null,
+              warClanName: null,
+              warPosition: null,
+              warSourceUpdatedAt: null,
+              warOwnerSource: "NONE",
+              warOwnerWarId: null,
+              warOwnerVerifiedAt: null,
+              warActive: false,
+              warAttacksUsed: 0,
+              warPhase: null,
+              warEndsAt: null,
+            }),
+          }),
+        );
+      } else {
+        expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            update: expect.objectContaining({
+              warClanTag: twcClanTag,
+              warClanName: "TheWiseCowboys",
+              warOwnerSource: "LIVE_VERIFIED",
+              warOwnerWarId: 1002,
+              warOwnerVerifiedAt: existingVerifiedAt,
+              warActive: true,
+              warPosition: 8,
+              warAttacksUsed: 2,
+            }),
+          }),
+        );
+      }
+    },
+  );
+
+  it("keeps newer live-verified TWC attacks and position when an older same-owner refresh arrives stale", async () => {
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+    const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1002,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: verifiedAt,
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "LIVE_VERIFIED",
+        warOwnerWarId: 1002,
+        warOwnerVerifiedAt: verifiedAt,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: verifiedAt,
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        playerTag,
+        position: 18,
+        playerName: "Party Blizzard",
+        townHall: 15,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        warId: 1002,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          twcClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: twcClanTag,
+              name: "TheWiseCowboys",
+              members: [
+                {
+                  tag: playerTag,
+                  name: "Party Blizzard",
+                  townhallLevel: 15,
+                  mapPosition: 18,
+                  attacks: [{ order: 1 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: twcClanTag,
+          warClanName: "TheWiseCowboys",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1002,
+          warOwnerVerifiedAt: verifiedAt,
+          warPosition: 8,
+          warAttacksUsed: 2,
+        }),
+      }),
+    );
+    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warPosition: 18,
+          warAttacksUsed: 1,
+        }),
+      }),
+    );
+  });
+
+  it("keeps an active bootstrap TWC snapshot stable while the current war remains active", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+    const rows: Record<string, unknown>[] = [
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+        clanMembershipObservedAt: new Date("2026-03-20T08:30:00.000Z"),
+      }),
+    ];
+    installMutableTodoSnapshotStore(rows);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag,
+        clanTag: rockyRoadClanTag,
+        playerName: "Party Blizzard",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: rockyRoadClanTag },
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        warId: 1002,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      playerTag,
+      warClanTag: twcClanTag,
+      warOwnerSource: "PERSISTED_FALLBACK",
+      warOwnerWarId: null,
+      warOwnerVerifiedAt: null,
+      warActive: true,
+    });
+    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+        }),
+      }),
+    );
+  });
+
+  it("clears an expired bootstrap TWC snapshot when the clan no longer has an active war", async () => {
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 6, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: null,
+          warClanName: null,
+          warPosition: null,
+          warSourceUpdatedAt: null,
+          warOwnerSource: "NONE",
+          warOwnerWarId: null,
+          warOwnerVerifiedAt: null,
+          warActive: false,
+          warAttacksUsed: 0,
+          warPhase: null,
+          warEndsAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("authoritatively clears an active bootstrap TWC snapshot when the live lineup excludes the player", async () => {
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        warId: 1002,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          twcClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: twcClanTag,
+              name: "TheWiseCowboys",
+              members: [
+                {
+                  tag: "#QGRJ2222",
+                  name: "Other Player",
+                  townhallLevel: 15,
+                  mapPosition: 1,
+                  attacks: [],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 4, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: null,
+          warClanName: null,
+          warPosition: null,
+          warSourceUpdatedAt: null,
+          warOwnerSource: "NONE",
+          warOwnerWarId: null,
+          warOwnerVerifiedAt: null,
+          warActive: false,
+          warAttacksUsed: 0,
+          warPhase: null,
+          warEndsAt: null,
+        }),
+      }),
+    );
+  });
+
+  it("upgrades an active bootstrap TWC snapshot to live verification when the live lineup contains the player", async () => {
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+    const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        playerTag,
+        position: 8,
+        playerName: "Party Blizzard",
+        townHall: 15,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: twcClanTag,
+        warId: 1002,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          twcClanTag,
+          {
+            state: "inWar",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: twcClanTag,
+              name: "TheWiseCowboys",
+              members: [
+                {
+                  tag: playerTag,
+                  name: "Party Blizzard",
+                  townhallLevel: 15,
+                  mapPosition: 8,
+                  attacks: [{ order: 1 }, { order: 2 }],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: verifiedAt.getTime(),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: twcClanTag,
+          warClanName: "TheWiseCowboys",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1002,
+          warOwnerVerifiedAt: verifiedAt,
+          warActive: true,
+        }),
+      }),
+    );
+  });
+
+  it("lets an expired bootstrap TWC snapshot yield to Rocky Road fallback resolution", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#PYLQ0289";
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    ]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Party Blizzard",
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        warActive: true,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 8,
+        warAttacksUsed: 2,
+        warSourceUpdatedAt: null,
+      }),
+    );
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag,
+        clanTag: rockyRoadClanTag,
+        playerName: "Party Blizzard",
+        sourceSyncedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: rockyRoadClanTag },
+      { clanTag: twcClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        playerTag,
+        position: 18,
+        playerName: "Party Blizzard",
+        townHall: 15,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1001,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: twcClanTag, name: "TheWiseCowboys" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTag],
+      cocService: cocService as any,
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+          warClanName: "Rocky Road",
+          warOwnerSource: "PERSISTED_FALLBACK",
+          warActive: true,
+        }),
+      }),
+    );
+    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: twcClanTag,
         }),
       }),
     );
