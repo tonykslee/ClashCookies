@@ -273,6 +273,17 @@ type WarOwnerCandidateEntry = {
   currentWarWarId: number | null;
 };
 
+type WarOwnerCandidateVerificationStatus =
+  | "verified_present"
+  | "verified_absent"
+  | "unavailable";
+
+type WarOwnerResolutionSource =
+  | "live_verified"
+  | "persisted_fallback"
+  | "authoritative_clear"
+  | "unresolved";
+
 type TodoGamesDerivedValues = {
   points: number | null;
   target: number | null;
@@ -1323,13 +1334,18 @@ export class TodoSnapshotService {
       }
     }
     const warOwnerVerificationClanTags = new Set<string>();
+    const preloadedCurrentWarSnapshotsByClanTag =
+      input.preloadedCurrentWarSnapshotsByClanTag ?? new Map();
     for (const candidateEntriesByClanTag of warOwnerCandidateEntriesByPlayerTag.values()) {
       const candidateEntries = [...candidateEntriesByClanTag.values()];
       if (candidateEntries.length <= 0) continue;
-      const hasTrackedEvidence = candidateEntries.some((entry) =>
-        [...entry.sources].some(
-          (source) => source === "derived_roster" || source === "raw_war_member",
-        ),
+      for (const entry of candidateEntries) {
+        if (preloadedCurrentWarSnapshotsByClanTag.has(entry.clanTag)) {
+          warOwnerVerificationClanTags.add(entry.clanTag);
+        }
+      }
+      const hasTrackedEvidence = candidateEntries.some(
+        (entry) => entry.sources.has("derived_roster") || entry.sources.has("raw_war_member"),
       );
       const shouldVerifyLive =
         candidateEntries.length > 1 ||
@@ -1487,6 +1503,7 @@ export class TodoSnapshotService {
     let warOwnerResolutionLiveConfirmedCount = 0;
     let warOwnerResolutionStaleCorrectionCount = 0;
     let warOwnerResolutionDegradedFallbackCount = 0;
+    let warOwnerResolutionAuthoritativeClearCount = 0;
     let warOwnerResolutionAmbiguousLiveCount = 0;
     let warOwnerResolutionUnresolvedCount = 0;
     const warOwnerResolutionAmbiguousSamples: string[] = [];
@@ -1609,6 +1626,8 @@ export class TodoSnapshotService {
         warOwnerResolutionLiveConfirmedCount += 1;
       } else if (warOwnerResolution.resolvedSource === "persisted_fallback") {
         warOwnerResolutionDegradedFallbackCount += 1;
+      } else if (warOwnerResolution.resolvedSource === "authoritative_clear") {
+        warOwnerResolutionAuthoritativeClearCount += 1;
       } else {
         warOwnerResolutionUnresolvedCount += 1;
       }
@@ -1633,7 +1652,11 @@ export class TodoSnapshotService {
       const liveCurrentWarFallbackContext = warOwnerResolution.liveCurrentWarFallbackContext;
       const liveCurrentWarFallbackMember = warOwnerResolution.liveCurrentWarFallbackMember;
       const warClanTag = warOwnerResolution.resolvedClanTag;
-      const warOwnerCandidate = warOwnerResolution.selectedCandidate;
+      const warOwnerCandidate =
+        warOwnerResolution.resolvedSource === "live_verified" ||
+        warOwnerResolution.resolvedSource === "persisted_fallback"
+          ? warOwnerResolution.selectedCandidate
+          : null;
       const warOwnerSources = warOwnerCandidate?.sources ?? new Set<WarOwnerCandidateSource>();
       const currentWar = warClanTag
         ? currentWarByClanTag.get(warClanTag) ?? null
@@ -1741,12 +1764,11 @@ export class TodoSnapshotService {
         : currentWar
           ? resolveCurrentWarPhaseEnd(currentWar)
           : null;
-      const warOwnerHasStrongPersistedEvidence = warOwnerSources.has("derived_roster") || warOwnerSources.has("raw_war_member") || warOwnerSources.has("snapshot_hint");
       const warActive =
         warStateActive &&
         Boolean(warClanTag) &&
         (warOwnerResolution.resolvedSource === "live_verified" ||
-          warOwnerHasStrongPersistedEvidence);
+          warOwnerResolution.resolvedSource === "persisted_fallback");
       const warPhase = warActive
         ? normalizeWarPhaseLabel(warState)
         : null;
@@ -1757,11 +1779,11 @@ export class TodoSnapshotService {
           ? 0
           : trackedWarMember
             ? clampInt(trackedWarMember.attacksUsed, 0, 2)
-            : rawWarMember
+              : rawWarMember
               ? clampInt(rawWarMember.attacks, 0, 2)
               : liveCurrentWarFallbackMember
                 ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
-                : warOwnerResolution.persistedFallbackCandidate?.sources.has("snapshot_hint")
+                : warOwnerCandidate?.sources.has("snapshot_hint")
                   ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
                 : 0;
       const resolvedPlayerName =
@@ -1831,7 +1853,7 @@ export class TodoSnapshotService {
               ? toFiniteIntOrNull(rawWarMember.position)
               : liveCurrentWarFallbackMember
                 ? toFiniteIntOrNull(liveCurrentWarFallbackMember.mapPosition ?? null)
-                : warOwnerResolution.persistedFallbackCandidate?.sources.has("snapshot_hint")
+                : warOwnerCandidate?.sources.has("snapshot_hint")
                   ? toFiniteIntOrNull(existing?.warPosition ?? null)
                 : null,
         warSourceUpdatedAt:
@@ -1839,7 +1861,7 @@ export class TodoSnapshotService {
             ? currentWar.updatedAt
             : rawWarMember?.sourceSyncedAt ??
               liveCurrentWarFallbackContext?.sourceUpdatedAt ??
-              (warOwnerResolution.persistedFallbackCandidate?.sources.has("snapshot_hint")
+              (warOwnerCandidate?.sources.has("snapshot_hint")
                 ? existing?.warSourceUpdatedAt ?? null
                 : null) ??
               null,
@@ -1916,7 +1938,7 @@ export class TodoSnapshotService {
       );
     }
     console.info(
-      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount}`,
+      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} authoritative_clear_count=${warOwnerResolutionAuthoritativeClearCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount}`,
     );
     if (warOwnerResolutionAmbiguousSamples.length > 0) {
       console.warn(
@@ -2343,6 +2365,15 @@ function getWarOwnerCandidateSourceRank(source: WarOwnerCandidateSource): number
   }
 }
 
+/** Purpose: identify persisted WAR ownership evidence that can survive a live verification miss. */
+function hasStrongWarOwnerPersistedEvidence(entry: WarOwnerCandidateEntry): boolean {
+  return (
+    entry.sources.has("derived_roster") ||
+    entry.sources.has("raw_war_member") ||
+    entry.sources.has("snapshot_hint")
+  );
+}
+
 /** Purpose: collect one war-owner candidate entry without collapsing different clans together. */
 function addWarOwnerCandidateEntry(input: {
   byPlayerTag: Map<string, Map<string, WarOwnerCandidateEntry>>;
@@ -2410,7 +2441,7 @@ function resolveWarOwnerForPlayer(input: {
   liveCurrentWarFallbackByClanTag: Map<string, LiveCurrentWarFallbackContext>;
 }): {
   resolvedClanTag: string | null;
-  resolvedSource: "live_verified" | "persisted_fallback" | "unresolved";
+  resolvedSource: WarOwnerResolutionSource;
   selectedCandidate: WarOwnerCandidateEntry | null;
   liveCurrentWarFallbackContext: LiveCurrentWarFallbackContext | null;
   liveCurrentWarFallbackMember:
@@ -2428,6 +2459,9 @@ function resolveWarOwnerForPlayer(input: {
   ambiguousLiveMatchCount: number;
   candidateCount: number;
   persistedCandidateCount: number;
+  strongCandidateCount: number;
+  verifiedAbsentStrongCandidateCount: number;
+  unavailableStrongCandidateCount: number;
 } {
   const candidateEntries = [...input.candidateEntriesByClanTag.values()];
   if (candidateEntries.length <= 0) {
@@ -2442,12 +2476,25 @@ function resolveWarOwnerForPlayer(input: {
       ambiguousLiveMatchCount: 0,
       candidateCount: 0,
       persistedCandidateCount: 0,
+      strongCandidateCount: 0,
+      verifiedAbsentStrongCandidateCount: 0,
+      unavailableStrongCandidateCount: 0,
     };
   }
 
-  const verifiedCandidates = candidateEntries.filter((entry) => {
+  const candidateRecords = candidateEntries.map((entry) => {
     const context = input.liveCurrentWarFallbackByClanTag.get(entry.clanTag) ?? null;
-    return Boolean(context?.membersByPlayerTag.has(input.playerTag));
+    const status: WarOwnerCandidateVerificationStatus = context
+      ? context.membersByPlayerTag.has(input.playerTag)
+        ? "verified_present"
+        : "verified_absent"
+      : "unavailable";
+    return {
+      entry,
+      context,
+      status,
+      strongEvidence: hasStrongWarOwnerPersistedEvidence(entry),
+    };
   });
   const compareByLiveIdentity = (
     a: WarOwnerCandidateEntry,
@@ -2506,46 +2553,98 @@ function resolveWarOwnerForPlayer(input: {
     return a.clanTag.localeCompare(b.clanTag);
   };
 
-  if (verifiedCandidates.length > 0) {
-    const selectedCandidate = [...verifiedCandidates].sort(compareByLiveIdentity)[0] ?? null;
+  const verifiedPresentCandidates = candidateRecords
+    .filter((record) => record.status === "verified_present")
+    .map((record) => record.entry);
+  const unavailableStrongCandidates = candidateRecords
+    .filter((record) => record.status === "unavailable" && record.strongEvidence)
+    .map((record) => record.entry);
+  const verifiedAbsentStrongCandidates = candidateRecords
+    .filter((record) => record.status === "verified_absent" && record.strongEvidence)
+    .map((record) => record.entry);
+  const strongPersistedCandidates = candidateRecords
+    .filter((record) => record.strongEvidence)
+    .map((record) => record.entry);
+
+  const bestStrongPersistedCandidate =
+    [...strongPersistedCandidates].sort(compareByPersistedFallback)[0] ?? null;
+
+  if (verifiedPresentCandidates.length > 0) {
+    const selectedCandidate = [...verifiedPresentCandidates].sort(compareByLiveIdentity)[0] ?? null;
     const liveCurrentWarFallbackContext = selectedCandidate
       ? input.liveCurrentWarFallbackByClanTag.get(selectedCandidate.clanTag) ?? null
       : null;
     const liveCurrentWarFallbackMember =
       liveCurrentWarFallbackContext?.membersByPlayerTag.get(input.playerTag) ?? null;
-    const persistedFallbackCandidate =
-      [...candidateEntries].sort(compareByPersistedFallback)[0] ?? null;
     return {
       resolvedClanTag: selectedCandidate?.clanTag ?? null,
       resolvedSource: "live_verified",
       selectedCandidate,
       liveCurrentWarFallbackContext,
       liveCurrentWarFallbackMember,
-      persistedFallbackCandidate,
-      verifiedCandidateCount: verifiedCandidates.length,
-      ambiguousLiveMatchCount: Math.max(0, verifiedCandidates.length - 1),
+      persistedFallbackCandidate: bestStrongPersistedCandidate,
+      verifiedCandidateCount: verifiedPresentCandidates.length,
+      ambiguousLiveMatchCount: Math.max(0, verifiedPresentCandidates.length - 1),
       candidateCount: candidateEntries.length,
       persistedCandidateCount: candidateEntries.length,
+      strongCandidateCount: strongPersistedCandidates.length,
+      verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
+      unavailableStrongCandidateCount: unavailableStrongCandidates.length,
     };
   }
 
-  const selectedCandidate = [...candidateEntries].sort(compareByPersistedFallback)[0] ?? null;
-  const liveCurrentWarFallbackContext = selectedCandidate
-    ? input.liveCurrentWarFallbackByClanTag.get(selectedCandidate.clanTag) ?? null
-    : null;
-  const liveCurrentWarFallbackMember =
-    liveCurrentWarFallbackContext?.membersByPlayerTag.get(input.playerTag) ?? null;
-  return {
+  if (unavailableStrongCandidates.length > 0) {
+    const selectedCandidate =
+      [...unavailableStrongCandidates].sort(compareByPersistedFallback)[0] ?? null;
+    return {
       resolvedClanTag: selectedCandidate?.clanTag ?? null,
       resolvedSource: selectedCandidate ? "persisted_fallback" : "unresolved",
       selectedCandidate,
-      liveCurrentWarFallbackContext,
-      liveCurrentWarFallbackMember,
+      liveCurrentWarFallbackContext: null,
+      liveCurrentWarFallbackMember: null,
       persistedFallbackCandidate: selectedCandidate,
       verifiedCandidateCount: 0,
       ambiguousLiveMatchCount: 0,
       candidateCount: candidateEntries.length,
       persistedCandidateCount: candidateEntries.length,
+      strongCandidateCount: strongPersistedCandidates.length,
+      verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
+      unavailableStrongCandidateCount: unavailableStrongCandidates.length,
+    };
+  }
+
+  if (verifiedAbsentStrongCandidates.length > 0) {
+    return {
+      resolvedClanTag: null,
+      resolvedSource: "authoritative_clear",
+      selectedCandidate: null,
+      liveCurrentWarFallbackContext: null,
+      liveCurrentWarFallbackMember: null,
+      persistedFallbackCandidate: bestStrongPersistedCandidate,
+      verifiedCandidateCount: 0,
+      ambiguousLiveMatchCount: 0,
+      candidateCount: candidateEntries.length,
+      persistedCandidateCount: candidateEntries.length,
+      strongCandidateCount: strongPersistedCandidates.length,
+      verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
+      unavailableStrongCandidateCount: unavailableStrongCandidates.length,
+    };
+  }
+
+  return {
+    resolvedClanTag: null,
+    resolvedSource: "unresolved",
+    selectedCandidate: null,
+    liveCurrentWarFallbackContext: null,
+    liveCurrentWarFallbackMember: null,
+    persistedFallbackCandidate: null,
+    verifiedCandidateCount: 0,
+    ambiguousLiveMatchCount: 0,
+    candidateCount: candidateEntries.length,
+    persistedCandidateCount: candidateEntries.length,
+    strongCandidateCount: strongPersistedCandidates.length,
+    verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
+    unavailableStrongCandidateCount: unavailableStrongCandidates.length,
   };
 }
 
