@@ -2041,19 +2041,43 @@ export class TodoSnapshotService {
       );
     }
 
-    console.info(
-      `[todo-snapshot] event=raid_snapshot_refresh now_ms=${nowMs} raid_start_ms=${raidWindow.startMs} raid_end_ms=${raidWindow.endMs} raid_active=${raidWindow.active} player_count=${normalizedTags.length} raid_active_rows=${raidActiveTrueCount} raid_inactive_rows=${raidActiveFalseCount} raid_observed_count=${raidObservedCount} raid_preserved_unavailable_count=${raidPreservedUnavailableCount} raid_preserved_failed_count=${raidPreservedFailedCount} raid_authoritative_clear_count=${raidAuthoritativeClearCount} raid_expired_context_clear_count=${raidExpiredContextClearCount} raid_clan_fetch_failure_count=${liveRaidContextLookup.clanFetchFailureCount}`,
-    );
-
     try {
       await runChunkedWrites(
         snapshotUpserts,
         TODO_SNAPSHOT_WRITE_CHUNK_SIZE,
         async (write) => {
-          await persistTodoSnapshotWrite({
+          const writeDecision = await persistTodoSnapshotWrite({
             write,
             currentWarByClanTag,
           });
+          if (writeDecision.preservationMode === "preserved_existing_verified") {
+            if (writeDecision.existingConfidence === "LIVE_VERIFIED") {
+              verifiedContinuityPreservedCount += 1;
+              if (writeDecision.suppressionReason === "stale") {
+                staleWriteSuppressedCount += 1;
+              } else {
+                lowerConfidenceWriteSuppressedCount += 1;
+              }
+            } else {
+              lowerConfidenceWriteSuppressedCount += 1;
+            }
+          } else if (writeDecision.preservationMode === "preserved_existing_bootstrap") {
+            lowerConfidenceWriteSuppressedCount += 1;
+          } else if (
+            writeDecision.existingConfidence === "LIVE_VERIFIED" &&
+            writeDecision.attemptedConfidence === "LIVE_VERIFIED" &&
+            writeDecision.existingWarIdentity &&
+            (writeDecision.existingWarIdentity.clanTag !== writeDecision.attemptedWarIdentity.clanTag ||
+              writeDecision.existingWarIdentity.warId !== writeDecision.attemptedWarIdentity.warId)
+          ) {
+            verifiedOwnerReplacedCount += 1;
+          } else if (
+            writeDecision.existingConfidence === "LIVE_VERIFIED" &&
+            writeDecision.attemptedConfidence === "NONE" &&
+            write.warDecisionInput.resolutionSource === "authoritative_clear"
+          ) {
+            verifiedOwnerClearedCount += 1;
+          }
         },
       );
     } catch (err) {
@@ -2062,6 +2086,10 @@ export class TodoSnapshotService {
       );
       throw err;
     }
+
+    console.info(
+      `[todo-snapshot] event=raid_snapshot_refresh now_ms=${nowMs} raid_start_ms=${raidWindow.startMs} raid_end_ms=${raidWindow.endMs} raid_active=${raidWindow.active} player_count=${normalizedTags.length} raid_active_rows=${raidActiveTrueCount} raid_inactive_rows=${raidActiveFalseCount} raid_observed_count=${raidObservedCount} raid_preserved_unavailable_count=${raidPreservedUnavailableCount} raid_preserved_failed_count=${raidPreservedFailedCount} raid_authoritative_clear_count=${raidAuthoritativeClearCount} raid_expired_context_clear_count=${raidExpiredContextClearCount} raid_clan_fetch_failure_count=${liveRaidContextLookup.clanFetchFailureCount}`,
+    );
 
     return {
       playerCount: normalizedTags.length,
@@ -2549,7 +2577,10 @@ type TodoWarOwnerSnapshotState = {
 
 type TodoWarOwnerWriteDecision = {
   finalState: TodoWarOwnerSnapshotState;
-  preservationMode: "attempted" | "preserved_existing_verified";
+  preservationMode:
+    | "attempted"
+    | "preserved_existing_verified"
+    | "preserved_existing_bootstrap";
   suppressionReason: "lower_confidence" | "stale" | null;
   existingConfidence: TodoWarOwnerSource;
   attemptedConfidence: TodoWarOwnerSource;
@@ -2620,11 +2651,25 @@ function applyTodoWarOwnerStateToSnapshotData(
   };
 }
 
+function getTodoWarOwnerFreshnessMs(input: {
+  warOwnerVerifiedAt: Date | null | undefined;
+  lastUpdatedAt: Date | null | undefined;
+} | null): number | null {
+  if (!input) return null;
+  if (input.warOwnerVerifiedAt instanceof Date) {
+    return input.warOwnerVerifiedAt.getTime();
+  }
+  if (input.lastUpdatedAt instanceof Date) {
+    return input.lastUpdatedAt.getTime();
+  }
+  return null;
+}
+
 async function persistTodoSnapshotWrite(input: {
   write: TodoSnapshotWriteOperation;
   currentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
-}): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+}): Promise<TodoWarOwnerWriteDecision> {
+  return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${input.write.where.playerTag}, 0))`;
     const currentSnapshot = await tx.todoPlayerSnapshot.findUnique({
       where: input.write.where,
@@ -2650,6 +2695,7 @@ async function persistTodoSnapshotWrite(input: {
       update: guardedUpdate as any,
       create: guardedCreate as any,
     } as any);
+    return guardedWarDecision;
   });
 }
 
@@ -2676,6 +2722,8 @@ function buildTodoWarOwnerDecision(input: {
         verifiedAt: existing.warOwnerVerifiedAt ?? null,
       })
     : null;
+  const existingFreshnessMs = getTodoWarOwnerFreshnessMs(existing);
+  const attemptedFreshnessMs = input.attemptedObservationAt.getTime();
 
   const existingWarClanTag = normalizeClanTag(existing?.warClanTag ?? "");
   const existingCurrentWar = existingWarClanTag
@@ -2692,11 +2740,99 @@ function buildTodoWarOwnerDecision(input: {
     existingIdentity.warId !== null &&
     toFiniteIntOrNull(existingCurrentWar?.warId) === existingIdentity.warId;
 
-  const preserveExistingVerified =
-    existingVerifiedContinuity &&
-    attemptedConfidence !== "LIVE_VERIFIED";
+  const existingBootstrapProtectedFallback =
+    Boolean(existing) &&
+    existingConfidence === "PERSISTED_FALLBACK" &&
+    Boolean(existing?.warActive) &&
+    existing?.warOwnerWarId === null &&
+    existing?.warOwnerVerifiedAt === null;
 
-  if (preserveExistingVerified && existing) {
+  if (existing && input.resolutionSource === "authoritative_clear") {
+    if (existingFreshnessMs !== null && attemptedFreshnessMs < existingFreshnessMs) {
+      return {
+        finalState: {
+          warClanTag: existing.warClanTag ?? null,
+          warClanName: existing.warClanName ?? null,
+          warPosition: existing.warPosition ?? null,
+          warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
+          warOwnerSource: existingConfidence,
+          warOwnerWarId: existingIdentity?.warId ?? null,
+          warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
+          warActive: Boolean(existing.warActive),
+          warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
+          warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
+          warPhase: existing.warPhase ?? null,
+          warEndsAt: existing.warEndsAt ?? null,
+        },
+        preservationMode: "preserved_existing_verified",
+        suppressionReason: "stale",
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      };
+    }
+
+    return {
+      finalState: {
+        warClanTag: null,
+        warClanName: null,
+        warPosition: null,
+        warSourceUpdatedAt: null,
+        warOwnerSource: "NONE",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warActive: false,
+        warAttacksUsed: 0,
+        warAttacksMax: 2,
+        warPhase: null,
+        warEndsAt: null,
+      },
+      preservationMode: "attempted",
+      suppressionReason: null,
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (
+    existingConfidence === "LIVE_VERIFIED" &&
+    attemptedConfidence === "LIVE_VERIFIED" &&
+    existingFreshnessMs !== null &&
+    attemptedFreshnessMs < existingFreshnessMs &&
+    existing
+  ) {
+    return {
+      finalState: {
+        warClanTag: existing.warClanTag ?? null,
+        warClanName: existing.warClanName ?? null,
+        warPosition: existing.warPosition ?? null,
+        warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
+        warOwnerSource: existingConfidence,
+        warOwnerWarId: existingIdentity?.warId ?? null,
+        warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
+        warActive: Boolean(existing.warActive),
+        warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
+        warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
+        warPhase: existing.warPhase ?? null,
+        warEndsAt: existing.warEndsAt ?? null,
+      },
+      preservationMode: "preserved_existing_verified",
+      suppressionReason: "stale",
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (
+    existingVerifiedContinuity &&
+    attemptedConfidence !== "LIVE_VERIFIED" &&
+    existing
+  ) {
     const suppressionReason =
       existing.lastUpdatedAt.getTime() > input.attemptedObservationAt.getTime()
         ? "stale"
@@ -2718,6 +2854,31 @@ function buildTodoWarOwnerDecision(input: {
       },
       preservationMode: "preserved_existing_verified",
       suppressionReason,
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (existingBootstrapProtectedFallback && attemptedConfidence !== "LIVE_VERIFIED" && existing) {
+    return {
+      finalState: {
+        warClanTag: existing.warClanTag ?? null,
+        warClanName: existing.warClanName ?? null,
+        warPosition: existing.warPosition ?? null,
+        warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
+        warOwnerSource: existingConfidence,
+        warOwnerWarId: existingIdentity?.warId ?? null,
+        warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
+        warActive: Boolean(existing.warActive),
+        warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
+        warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
+        warPhase: existing.warPhase ?? null,
+        warEndsAt: existing.warEndsAt ?? null,
+      },
+      preservationMode: "preserved_existing_bootstrap",
+      suppressionReason: "lower_confidence",
       existingConfidence,
       attemptedConfidence,
       existingWarIdentity: existingIdentity,
