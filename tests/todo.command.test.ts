@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const txMock = vi.hoisted(() => ({
+  $executeRaw: vi.fn(),
+  todoPlayerSnapshot: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
+  cwlPlayerClanSeason: {
+    upsert: vi.fn(),
+  },
+}));
+
 const prismaMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
@@ -74,14 +85,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   $transaction: vi.fn(async (arg: any) => {
     if (typeof arg === "function") {
-      return arg({
-        todoPlayerSnapshot: {
-          upsert: vi.fn().mockResolvedValue(undefined),
-        },
-        cwlPlayerClanSeason: {
-          upsert: vi.fn().mockResolvedValue(undefined),
-        },
-      });
+      return arg(txMock);
     }
     if (Array.isArray(arg)) return Promise.all(arg);
     return arg;
@@ -382,6 +386,10 @@ describe("/todo command", () => {
     prismaMock.todoPlayerSnapshot.aggregate.mockReset();
     prismaMock.todoPlayerSnapshot.findMany.mockReset();
     prismaMock.todoPlayerSnapshot.upsert.mockReset();
+    txMock.$executeRaw.mockReset();
+    txMock.todoPlayerSnapshot.findUnique.mockReset();
+    txMock.todoPlayerSnapshot.upsert.mockReset();
+    txMock.cwlPlayerClanSeason.upsert.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaWarMemberCurrent.findMany.mockReset();
@@ -409,6 +417,8 @@ describe("/todo command", () => {
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     mockCurrentCwlEventsForRequestedTags();
     prismaMock.$transaction.mockClear();
+    txMock.$executeRaw.mockResolvedValue(1);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue(null);
 
     prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
       _count: { _all: 0 },
@@ -5080,7 +5090,7 @@ describe("/todo refresh button", () => {
     prismaMock.todoPlayerSnapshot.findMany.mockImplementation(async () =>
       snapshotRows.map((row) => ({ ...row })),
     );
-    prismaMock.todoPlayerSnapshot.upsert.mockImplementation(async (args: any) => {
+    txMock.todoPlayerSnapshot.upsert.mockImplementation(async (args: any) => {
       const playerTag = String(args?.where?.playerTag ?? "");
       const nextRow = {
         ...(snapshotRows.find((row) => row.playerTag === playerTag) ?? {}),
@@ -5170,7 +5180,7 @@ describe("/todo refresh button", () => {
     });
     expect(cocService.getCurrentWar).toHaveBeenCalledTimes(1);
     expect(cocService.getCurrentWar).toHaveBeenCalledWith("#2QVGPQP0U");
-    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+    expect(txMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { playerTag: "#PYLQ0289" },
         update: expect.objectContaining({
