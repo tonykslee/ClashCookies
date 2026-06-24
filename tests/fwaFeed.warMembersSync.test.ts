@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { FwaTrackedClanWarRosterSyncService } from "../src/services/fwa-feeds/FwaTrackedClanWarRosterSyncService";
 import { FwaWarMembersSyncService } from "../src/services/fwa-feeds/FwaWarMembersSyncService";
 import { computeFeedContentHash } from "../src/services/fwa-feeds/hash";
 
@@ -20,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaFeedSyncState: {
     findUnique: vi.fn(),
     upsert: vi.fn(),
+  },
+  trackedClan: {
+    findUnique: vi.fn(),
   },
   $transaction: vi.fn(async (callback: (tx: typeof txMock) => Promise<unknown>) => callback(txMock)),
 }));
@@ -73,12 +77,28 @@ describe("FwaWarMembersSyncService", () => {
       ]),
     } as any;
     prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ tag: "#AAA111" });
     txMock.fwaWarMemberCurrent.deleteMany.mockResolvedValue({ count: 1 });
     txMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#P1", playerName: null },
       { playerTag: "#P2", playerName: "Two" },
     ]);
     txMock.playerLink.updateMany.mockResolvedValue({ count: 1 });
+    const trackedRosterSyncSpy = vi
+      .spyOn(FwaTrackedClanWarRosterSyncService.prototype, "syncClan")
+      .mockResolvedValue({
+        clanTag: "#AAA111",
+        rowCount: 2,
+        memberRowCount: 2,
+        hasSnapshot: true,
+        hasUnresolvedWeights: false,
+        totalEffectiveWeight: 240000,
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T00:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-26T01:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      });
 
     const service = new FwaWarMembersSyncService(client);
     const result = await service.syncClan("#aaa111", { force: true });
@@ -95,6 +115,8 @@ describe("FwaWarMembersSyncService", () => {
       where: { playerTag: "#P1" },
       data: { playerName: "One" },
     });
+    expect(trackedRosterSyncSpy).toHaveBeenCalledTimes(1);
+    expect(trackedRosterSyncSpy).toHaveBeenCalledWith("#AAA111", { now: expect.any(Date) });
     expect(result.status).toBe("SUCCESS");
     expect(result.rowCount).toBe(2);
     expect(result.changedRowCount).toBe(3);
@@ -113,9 +135,23 @@ describe("FwaWarMembersSyncService", () => {
       ]),
     } as any;
     prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ tag: "#AAA111" });
     txMock.fwaWarMemberCurrent.deleteMany.mockResolvedValue({ count: 0 });
     txMock.playerLink.findMany.mockResolvedValue([{ playerTag: "#P1", playerName: "One" }]);
     txMock.playerLink.updateMany.mockResolvedValue({ count: 1 });
+    vi.spyOn(FwaTrackedClanWarRosterSyncService.prototype, "syncClan").mockResolvedValue({
+      clanTag: "#AAA111",
+      rowCount: 1,
+      memberRowCount: 1,
+      hasSnapshot: true,
+      hasUnresolvedWeights: false,
+      totalEffectiveWeight: 120000,
+      sourceWarId: 1001,
+      sourceWarStartTime: new Date("2026-03-26T00:00:00.000Z"),
+      sourceWarEndTime: new Date("2026-03-26T01:00:00.000Z"),
+      sourceWarState: "inWar",
+      sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+    });
 
     const service = new FwaWarMembersSyncService(client);
     const result = await service.syncClan("#AAA111", { force: true });
@@ -135,6 +171,22 @@ describe("FwaWarMembersSyncService", () => {
       fetchWarMembers: vi.fn().mockResolvedValue(rows),
     } as any;
     prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({ lastContentHash: hash });
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ tag: "#AAA111" });
+    const trackedRosterSyncSpy = vi
+      .spyOn(FwaTrackedClanWarRosterSyncService.prototype, "syncClan")
+      .mockResolvedValue({
+        clanTag: "#AAA111",
+        rowCount: 1,
+        memberRowCount: 1,
+        hasSnapshot: true,
+        hasUnresolvedWeights: false,
+        totalEffectiveWeight: 120000,
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T00:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-26T01:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      });
 
     const service = new FwaWarMembersSyncService(client);
     const result = await service.syncClan("#AAA111", { force: true });
@@ -142,5 +194,6 @@ describe("FwaWarMembersSyncService", () => {
     expect(result.status).toBe("NOOP");
     expect(result.changedRowCount).toBe(0);
     expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(trackedRosterSyncSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -98,17 +98,7 @@ describe("FwaClanWarsWatchService", () => {
         status: "SUCCESS",
       }),
     } as any;
-    const trackedRosterSync = {
-      syncClan: vi.fn().mockResolvedValue({
-        clanTag: "#AAA111",
-        rowCount: 50,
-        memberRowCount: 50,
-        hasSnapshot: true,
-        hasUnresolvedWeights: false,
-        totalEffectiveWeight: 7700000,
-      }),
-    } as any;
-    const service = new FwaClanWarsWatchService(clanWarsSync, warMembersSync, trackedRosterSync);
+    const service = new FwaClanWarsWatchService(clanWarsSync, warMembersSync);
 
     const result = await service.runWatchTick({ now, concurrency: 2 });
 
@@ -116,8 +106,6 @@ describe("FwaClanWarsWatchService", () => {
     expect(clanWarsSync.syncClan).toHaveBeenCalledWith("#AAA111", expect.any(Object));
     expect(warMembersSync.syncClan).toHaveBeenCalledTimes(1);
     expect(warMembersSync.syncClan).toHaveBeenCalledWith("#AAA111", expect.any(Object));
-    expect(trackedRosterSync.syncClan).toHaveBeenCalledTimes(1);
-    expect(trackedRosterSync.syncClan).toHaveBeenCalledWith("#AAA111", { now });
     expect(result.trackedClanCount).toBe(2);
     expect(result.activeClanCount).toBe(1);
     expect(result.polledClanCount).toBe(1);
@@ -165,26 +153,15 @@ describe("FwaClanWarsWatchService", () => {
         status: "NOOP",
       }),
     } as any;
-    const trackedRosterSync = {
-      syncClan: vi.fn().mockResolvedValue({
-        clanTag: "#AAA111",
-        rowCount: 50,
-        memberRowCount: 50,
-        hasSnapshot: true,
-        hasUnresolvedWeights: false,
-        totalEffectiveWeight: 7600000,
-      }),
-    } as any;
     const rebuildSpy = vi
       .spyOn(FwaClanMatchStatsCurrentSyncService.prototype, "rebuildCurrentStats")
       .mockResolvedValue({ clanCount: 1, sourceRowCount: 1, evaluatedWarCount: 1 } as any);
-    const service = new FwaClanWarsWatchService(clanWarsSync, warMembersSync, trackedRosterSync);
+    const service = new FwaClanWarsWatchService(clanWarsSync, warMembersSync);
 
     const result = await service.runWatchTick({ now, concurrency: 1 });
 
     expect(result.updateAcquiredCount).toBe(1);
     expect(warMembersSync.syncClan).toHaveBeenCalledWith("#AAA111", expect.any(Object));
-    expect(trackedRosterSync.syncClan).toHaveBeenCalledWith("#AAA111", { now });
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
     expect(rebuildSpy).toHaveBeenCalledWith({ now });
     expect(prismaMock.fwaClanWarsWatchState.update).toHaveBeenCalledWith(

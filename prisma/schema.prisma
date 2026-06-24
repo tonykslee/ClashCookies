@@ -1851,22 +1851,29 @@ model FwaWarMemberCurrent {
 }
 
 model FwaTrackedClanWarRosterCurrent {
-  clanTag              String   @id
-  clanName             String?
-  opponentTag          String?
-  opponentName         String?
-  rosterSize           Int
-  totalRawWeight       Int?
-  totalEffectiveWeight Int?
-  hasUnresolvedWeights Boolean  @default(false)
-  observedAt           DateTime
-  sourceUpdatedAt      DateTime?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  members              FwaTrackedClanWarRosterMemberCurrent[]
+  clanTag                  String   @id
+  clanName                 String?
+  opponentTag              String?
+  opponentName             String?
+  rosterSize               Int
+  totalRawWeight           Int?
+  totalEffectiveWeight     Int?
+  hasUnresolvedWeights     Boolean  @default(false)
+  observedAt               DateTime
+  sourceUpdatedAt          DateTime?
+  sourceWarId              Int?
+  sourceWarStartTime       DateTime?
+  sourceWarEndTime         DateTime?
+  sourceWarState           String?
+  sourceCurrentWarUpdatedAt DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  members                  FwaTrackedClanWarRosterMemberCurrent[]
 
   @@index([observedAt])
   @@index([sourceUpdatedAt])
+  @@index([sourceWarId])
+  @@index([sourceWarStartTime])
 }
 
 model FwaTrackedClanWarRosterMemberCurrent {

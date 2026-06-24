@@ -136,6 +136,15 @@ type LiveClanTagEntry = {
 
 type CurrentWarSnapshot = Awaited<ReturnType<CoCService["getCurrentWar"]>>;
 
+type TodoTrackedWarRosterCurrentRow = {
+  clanTag: string;
+  sourceWarId: number | null;
+  sourceWarStartTime: Date | null;
+  sourceWarEndTime: Date | null;
+  sourceWarState: string | null;
+  sourceCurrentWarUpdatedAt: Date | null;
+};
+
 type TodoWindow = {
   active: boolean;
   startMs: number;
@@ -309,6 +318,35 @@ function normalizeRosterInt(input: unknown): number | null {
   if (!Number.isFinite(value)) return null;
   const normalized = Math.trunc(value);
   return normalized >= 0 ? normalized : null;
+}
+
+/** Purpose: require tracked-roster snapshots to match the exact active war identity before they can drive /todo WAR. */
+function matchesTrackedWarRosterCurrentIdentity(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+}): boolean {
+  const currentWar = input.currentWar;
+  if (!currentWar || !isTodoWarStateActive(currentWar.state)) {
+    return false;
+  }
+
+  const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
+  const currentWarId = toFiniteIntOrNull(currentWar.warId);
+  if (rosterWarId !== null && currentWarId !== null) {
+    return rosterWarId === currentWarId;
+  }
+
+  const rosterStartMs =
+    input.roster.sourceWarStartTime instanceof Date
+      ? input.roster.sourceWarStartTime.getTime()
+      : null;
+  const currentStartMs =
+    currentWar.startTime instanceof Date ? currentWar.startTime.getTime() : null;
+  if (rosterStartMs !== null && currentStartMs !== null) {
+    return rosterStartMs === currentStartMs;
+  }
+
+  return rosterWarId === null && rosterStartMs === null;
 }
 
 /** Purpose: keep all Todo snapshot reads/writes in one service boundary. */
@@ -1197,22 +1235,40 @@ export class TodoSnapshotService {
       });
     }
     const activeTrackedClanTags = [...activeTrackedCurrentWarByClanTag.keys()];
-    const rosterCurrentRows: Array<{ clanTag: string }> =
+    const rosterCurrentRows: TodoTrackedWarRosterCurrentRow[] =
       activeTrackedClanTags.length > 0
         ? await prisma.fwaTrackedClanWarRosterCurrent.findMany({
             where: { clanTag: { in: activeTrackedClanTags } },
-            select: { clanTag: true },
+            select: {
+              clanTag: true,
+              sourceWarId: true,
+              sourceWarStartTime: true,
+              sourceWarEndTime: true,
+              sourceWarState: true,
+              sourceCurrentWarUpdatedAt: true,
+            },
           })
         : [];
     const rosterCurrentClanTagSet = new Set(
       rosterCurrentRows.map((row) => normalizeClanTag(row.clanTag)).filter(Boolean),
+    );
+    const activeTrackedWarRosterCurrentRows = rosterCurrentRows.filter((row) =>
+      matchesTrackedWarRosterCurrentIdentity({
+        roster: row,
+        currentWar: activeTrackedCurrentWarByClanTag.get(normalizeClanTag(row.clanTag)) ?? null,
+      }),
+    );
+    const activeTrackedWarRosterClanTagSet = new Set(
+      activeTrackedWarRosterCurrentRows
+        .map((row) => normalizeClanTag(row.clanTag))
+        .filter(Boolean),
     );
     const activeTrackedWarRosterRows = trackedWarRosterRows.filter((row) => {
       const clanTag = normalizeClanTag(row.clanTag);
       return Boolean(
         clanTag &&
           activeTrackedCurrentWarByClanTag.has(clanTag) &&
-          rosterCurrentClanTagSet.has(clanTag),
+          activeTrackedWarRosterClanTagSet.has(clanTag),
       );
     });
     const activeTrackedWarRosterByClanAndPlayer = new Map(
