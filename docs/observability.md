@@ -71,6 +71,7 @@ Queue observability now includes:
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 - maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 - CWL event-resolution and persistence logs such as `event=event_resolution_unresolved`, `event=event_resolution_collision`, `event=event_war_tags_attached`, `event=clan_current_event_changed`, `event=tracked_cwl_persist`, and `event=tracked_cwl_season_roster_reconcile`
+- todo snapshot WAR owner resolution logs such as `event=todo_war_owner_resolution_summary` and `event=todo_war_owner_resolution_ambiguous`, which summarize live-verification outcomes and surface ambiguous multi-clan matches when stale roster state needs correction
 
 CWL measurement baseline logs should stay structured and compact. The baseline capture service should emit:
 
