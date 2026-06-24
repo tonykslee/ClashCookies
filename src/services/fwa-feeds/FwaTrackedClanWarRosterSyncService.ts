@@ -53,12 +53,32 @@ type DerivedTrackedClanWarRosterSnapshot = {
 };
 
 type SourceCurrentWarRow = {
+  guildId: string;
   warId: number | null;
   startTime: Date | null;
   endTime: Date | null;
   state: string | null;
   updatedAt: Date | null;
 };
+
+/** Purpose: choose one freshest CurrentWar row when a clan has multiple guild-scoped snapshots. */
+function pickLatestCurrentWarRow(rows: readonly SourceCurrentWarRow[]): SourceCurrentWarRow | null {
+  const sorted = [...rows].sort((a, b) => {
+    const updatedAtDelta = (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0);
+    if (updatedAtDelta !== 0) return updatedAtDelta;
+
+    const aStartMs = a.startTime?.getTime() ?? null;
+    const bStartMs = b.startTime?.getTime() ?? null;
+    if (aStartMs !== bStartMs) {
+      if (aStartMs === null) return 1;
+      if (bStartMs === null) return -1;
+      return bStartMs - aStartMs;
+    }
+
+    return a.guildId.localeCompare(b.guildId);
+  });
+  return sorted[0] ?? null;
+}
 
 function toSafeNonNegativeInt(input: number | null | undefined): number {
   if (!Number.isFinite(input)) return 0;
@@ -226,7 +246,7 @@ export class FwaTrackedClanWarRosterSyncService {
     }
 
     const now = options?.now ?? new Date();
-    const [rows, clanCatalogRow, currentWar] = await Promise.all([
+  const [rows, clanCatalogRow, currentWarRows] = await Promise.all([
       prisma.fwaWarMemberCurrent.findMany({
         where: { clanTag: normalizedClanTag },
         orderBy: [{ position: "asc" }, { playerTag: "asc" }],
@@ -245,10 +265,10 @@ export class FwaTrackedClanWarRosterSyncService {
         where: { clanTag: normalizedClanTag },
         select: { name: true },
       }),
-      prisma.currentWar.findFirst({
+      prisma.currentWar.findMany({
         where: { clanTag: normalizedClanTag },
-        orderBy: [{ updatedAt: "desc" }, { startTime: "desc" }],
         select: {
+          guildId: true,
           warId: true,
           startTime: true,
           endTime: true,
@@ -257,6 +277,7 @@ export class FwaTrackedClanWarRosterSyncService {
         },
       }),
     ]);
+    const currentWar = pickLatestCurrentWarRow(currentWarRows);
 
     const snapshot = deriveTrackedClanWarRosterSnapshot({
       clanTag: normalizedClanTag,
@@ -356,3 +377,4 @@ export class FwaTrackedClanWarRosterSyncService {
 export const normalizeTrackedClanWarRosterRowsForTest = normalizeTrackedClanWarRosterRows;
 export const applyEffectiveWeightRulesForTest = applyEffectiveWeightRules;
 export const deriveTrackedClanWarRosterSnapshotForTest = deriveTrackedClanWarRosterSnapshot;
+export const pickLatestCurrentWarRowForTest = pickLatestCurrentWarRow;

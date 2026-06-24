@@ -19,7 +19,7 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
   },
   currentWar: {
-    findFirst: vi.fn(),
+    findMany: vi.fn(),
   },
   $transaction: vi.fn(async (callback: (tx: typeof txMock) => Promise<unknown>) => callback(txMock)),
 }));
@@ -32,6 +32,7 @@ import {
   applyEffectiveWeightRulesForTest,
   deriveTrackedClanWarRosterSnapshotForTest,
   FwaTrackedClanWarRosterSyncService,
+  pickLatestCurrentWarRowForTest,
 } from "../src/services/fwa-feeds/FwaTrackedClanWarRosterSyncService";
 
 function makeSourceRow(input: {
@@ -59,6 +60,48 @@ function makeSourceRow(input: {
 describe("FwaTrackedClanWarRosterSyncService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("picks the freshest current-war row by updatedAt, then startTime, then guildId", () => {
+    const selected = pickLatestCurrentWarRowForTest([
+      {
+        guildId: "guild-c",
+        warId: 3,
+        startTime: new Date("2026-04-10T11:00:00.000Z"),
+        endTime: null,
+        state: "inWar",
+        updatedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        guildId: "guild-a",
+        warId: 1,
+        startTime: new Date("2026-04-10T13:00:00.000Z"),
+        endTime: null,
+        state: "inWar",
+        updatedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        guildId: "guild-b",
+        warId: 2,
+        startTime: new Date("2026-04-10T13:00:00.000Z"),
+        endTime: null,
+        state: "inWar",
+        updatedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        guildId: "guild-d",
+        warId: 4,
+        startTime: new Date("2026-04-10T14:00:00.000Z"),
+        endTime: null,
+        state: "inWar",
+        updatedAt: new Date("2026-04-10T11:59:00.000Z"),
+      },
+    ]);
+
+    expect(selected).toMatchObject({
+      guildId: "guild-a",
+      warId: 1,
+    });
   });
 
   it("fills contiguous zero blocks from the next lower non-zero raw weight", () => {
@@ -196,13 +239,24 @@ describe("FwaTrackedClanWarRosterSyncService", () => {
       makeSourceRow({ playerTag: "#P3", playerName: "Three", position: 3, weight: 150000 }),
     ]);
     prismaMock.fwaClanCatalog.findUnique.mockResolvedValue({ name: "Tracked Clan" });
-    prismaMock.currentWar.findFirst.mockResolvedValue({
-      warId: 1001,
-      startTime: new Date("2026-04-10T12:00:00.000Z"),
-      endTime: new Date("2026-04-10T13:00:00.000Z"),
-      state: "inWar",
-      updatedAt: now,
-    });
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "z-guild",
+        warId: 9999,
+        startTime: new Date("2026-04-10T10:00:00.000Z"),
+        endTime: new Date("2026-04-10T11:00:00.000Z"),
+        state: "inWar",
+        updatedAt: new Date("2026-04-10T15:00:00.000Z"),
+      },
+      {
+        guildId: "a-guild",
+        warId: 1001,
+        startTime: new Date("2026-04-10T12:00:00.000Z"),
+        endTime: new Date("2026-04-10T13:00:00.000Z"),
+        state: "inWar",
+        updatedAt: now,
+      },
+    ]);
 
     const service = new FwaTrackedClanWarRosterSyncService();
     const result = await service.syncClan("#aaa111", { now });
@@ -270,7 +324,7 @@ describe("FwaTrackedClanWarRosterSyncService", () => {
   it("clears current-state rows when no eligible source rows exist", async () => {
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findUnique.mockResolvedValue(null);
-    prismaMock.currentWar.findFirst.mockResolvedValue(null);
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
 
     const service = new FwaTrackedClanWarRosterSyncService();
     const result = await service.syncClan("#AAA111");
