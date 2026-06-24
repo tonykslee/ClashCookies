@@ -1771,28 +1771,6 @@ export class TodoSnapshotService {
         : currentWar
           ? resolveCurrentWarPhaseEnd(currentWar)
           : null;
-      const warActive =
-        warStateActive &&
-        Boolean(warClanTag) &&
-        (warOwnerResolution.resolvedSource === "live_verified" ||
-          warOwnerResolution.resolvedSource === "persisted_fallback");
-      const warPhase = warActive
-        ? normalizeWarPhaseLabel(warState)
-        : null;
-      const warEndsAt = warActive ? warStateSourceEndsAt : null;
-      const warAttacksUsed = !warActive
-        ? 0
-        : warStatePreparation
-          ? 0
-          : trackedWarMember
-            ? clampInt(trackedWarMember.attacksUsed, 0, 2)
-              : rawWarMember
-              ? clampInt(rawWarMember.attacks, 0, 2)
-              : liveCurrentWarFallbackMember
-                ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
-                : warOwnerCandidate?.sources.has("snapshot_hint")
-                  ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
-                : 0;
       const resolvedPlayerName =
         sanitizeDisplayText(trackedWarMember?.playerName ?? "") ||
         sanitizeDisplayText(rawWarMember?.playerName ?? "") ||
@@ -1836,6 +1814,32 @@ export class TodoSnapshotService {
           : warOwnerResolution.resolvedSource === "persisted_fallback"
             ? "PERSISTED_FALLBACK"
             : "NONE";
+      const hasWarClanTag = warClanTag !== null;
+      const warOwnerLooksActive =
+        warStateActive &&
+        hasWarClanTag &&
+        (attemptedWarOwnerSource === "LIVE_VERIFIED" ||
+          attemptedWarOwnerSource === "PERSISTED_FALLBACK");
+      const warAttacksUsed = !warStateActive || !hasWarClanTag
+        ? 0
+        : warStatePreparation
+          ? 0
+          : trackedWarMember
+            ? clampInt(trackedWarMember.attacksUsed, 0, 2)
+            : rawWarMember
+              ? clampInt(rawWarMember.attacks, 0, 2)
+              : liveCurrentWarFallbackMember
+                ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
+                : warOwnerResolution.selectedCandidate?.sources.has("snapshot_hint")
+                  ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
+                  : 0;
+      const warPhase =
+        warStateActive && hasWarClanTag && warOwnerLooksActive
+          ? normalizeWarPhaseLabel(warState)
+          : null;
+      const warEndsAt =
+        warStateActive && hasWarClanTag && warOwnerLooksActive ? warStateSourceEndsAt : null;
+      const warActive = warOwnerLooksActive;
       const attemptedWarState: TodoWarOwnerSnapshotState = {
         warClanTag,
         warClanName:
@@ -1862,39 +1866,11 @@ export class TodoSnapshotService {
         warOwnerWarId: currentWar ? toFiniteIntOrNull(currentWar.warId) : null,
         warOwnerVerifiedAt:
           attemptedWarOwnerSource === "LIVE_VERIFIED" ? now : null,
-        warActive:
-          warStateActive &&
-          Boolean(warClanTag) &&
-          (attemptedWarOwnerSource === "LIVE_VERIFIED" ||
-            attemptedWarOwnerSource === "PERSISTED_FALLBACK"),
-        warAttacksUsed: !warStateActive || !Boolean(warClanTag)
-          ? 0
-          : warStatePreparation
-            ? 0
-            : trackedWarMember
-              ? clampInt(trackedWarMember.attacksUsed, 0, 2)
-                : rawWarMember
-                ? clampInt(rawWarMember.attacks, 0, 2)
-                : liveCurrentWarFallbackMember
-                  ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
-                  : warOwnerResolution.selectedCandidate?.sources.has("snapshot_hint")
-                    ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
-                    : 0,
         warAttacksMax: 2,
-        warPhase:
-          warStateActive &&
-          Boolean(warClanTag) &&
-          (attemptedWarOwnerSource === "LIVE_VERIFIED" ||
-            attemptedWarOwnerSource === "PERSISTED_FALLBACK")
-            ? normalizeWarPhaseLabel(warState)
-            : null,
-        warEndsAt:
-          warStateActive &&
-          Boolean(warClanTag) &&
-          (attemptedWarOwnerSource === "LIVE_VERIFIED" ||
-            attemptedWarOwnerSource === "PERSISTED_FALLBACK")
-            ? warStateSourceEndsAt
-            : null,
+        warActive,
+        warAttacksUsed,
+        warPhase,
+        warEndsAt,
       };
       const warDecision = buildTodoWarOwnerDecision({
         existing: existing ?? null,
@@ -2729,23 +2705,29 @@ function buildTodoWarOwnerDecision(input: {
   const existingCurrentWar = existingWarClanTag
     ? input.currentWarByClanTag.get(existingWarClanTag) ?? null
     : null;
+  const existingCurrentWarActive =
+    existingCurrentWar !== null && isTodoWarStateActive(existingCurrentWar.state);
   const existingVerifiedContinuity =
-    Boolean(existing) &&
+    existing !== null &&
     existingConfidence === "LIVE_VERIFIED" &&
-    Boolean(existing?.warActive) &&
-    Boolean(existingWarClanTag) &&
-    Boolean(existingCurrentWar && isTodoWarStateActive(existingCurrentWar.state)) &&
+    existing.warActive === true &&
+    existingWarClanTag !== "" &&
+    existingCurrentWarActive &&
     existingIdentity !== null &&
     existingIdentity.clanTag === existingWarClanTag &&
     existingIdentity.warId !== null &&
     toFiniteIntOrNull(existingCurrentWar?.warId) === existingIdentity.warId;
 
   const existingBootstrapProtectedFallback =
-    Boolean(existing) &&
+    existing !== null &&
     existingConfidence === "PERSISTED_FALLBACK" &&
-    Boolean(existing?.warActive) &&
+    existing.warActive === true &&
+    existingWarClanTag !== "" &&
     existing?.warOwnerWarId === null &&
-    existing?.warOwnerVerifiedAt === null;
+    existing?.warOwnerVerifiedAt === null &&
+    existingCurrentWarActive &&
+    attemptedConfidence !== "LIVE_VERIFIED" &&
+    input.resolutionSource !== "authoritative_clear";
 
   if (existing && input.resolutionSource === "authoritative_clear") {
     if (existingFreshnessMs !== null && attemptedFreshnessMs < existingFreshnessMs) {
@@ -2861,7 +2843,7 @@ function buildTodoWarOwnerDecision(input: {
     };
   }
 
-  if (existingBootstrapProtectedFallback && attemptedConfidence !== "LIVE_VERIFIED" && existing) {
+  if (existingBootstrapProtectedFallback) {
     return {
       finalState: {
         warClanTag: existing.warClanTag ?? null,
