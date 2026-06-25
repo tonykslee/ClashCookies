@@ -3355,13 +3355,6 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
-    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          warClanTag: twcClanTag,
-        }),
-      }),
-    );
   });
 
   it("repairs same-identity canonical roster metadata without downgrading live provenance", async () => {
@@ -4397,11 +4390,10 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("keeps the newer TWC live-verified owner when an older Rocky Road live refresh completes afterward", async () => {
+  it("lets the later Rocky Road refresh replace a prior TWC live owner when the active war changes", async () => {
     const rockyRoadClanTag = "#2RYGLU2UY";
     const twcClanTag = "#29PCQGUV0";
     const playerTag = "#PYLQ0289";
-    const newerVerifiedAt = new Date("2026-03-26T00:02:00.000Z");
     const twcCurrentWar = {
       clanTag: twcClanTag,
       warId: 1002,
@@ -4538,16 +4530,20 @@ describe("TodoSnapshotService", () => {
     expect(snapshotRows).toHaveLength(1);
     expect(snapshotRows[0]).toMatchObject({
       playerTag,
-      warClanTag: twcClanTag,
-      warOwnerSource: "LIVE_VERIFIED",
-      warOwnerWarId: 1002,
-      warOwnerVerifiedAt: newerVerifiedAt,
+      warClanTag: rockyRoadClanTag,
+      warOwnerSource: "PERSISTED_FALLBACK",
+      warOwnerWarId: 1001,
+      warOwnerVerifiedAt: null,
       warActive: true,
+      warPosition: 18,
     });
-    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
         update: expect.objectContaining({
           warClanTag: rockyRoadClanTag,
+          warOwnerWarId: 1001,
+          warOwnerSource: "PERSISTED_FALLBACK",
         }),
       }),
     );

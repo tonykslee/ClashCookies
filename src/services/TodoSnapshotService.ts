@@ -3917,8 +3917,7 @@ function buildTodoWarOwnerDecision(input: {
     existingFreshnessMs !== null &&
     attemptedFreshnessMs < existingFreshnessMs;
   const existingVerifiedStaleLowerConfidence =
-    existing !== null &&
-    existingConfidence === "LIVE_VERIFIED" &&
+    existingVerifiedContinuity &&
     existingFreshnessMs !== null &&
     attemptedFreshnessMs < existingFreshnessMs &&
     attemptedConfidence !== "LIVE_VERIFIED" &&
