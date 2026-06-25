@@ -2545,56 +2545,6 @@ export class TodoSnapshotService {
             : warOwnerResolution.resolvedSource,
       });
       const finalWarState = warDecision.finalState;
-      if (warDecision.preservationMode === "preserved_existing_verified") {
-        verifiedContinuityPreservedCount += 1;
-        if (warDecision.suppressionReason === "stale") {
-          staleWriteSuppressedCount += 1;
-          if (warOwnerResolution.resolvedSource === "canonical_tracked_roster") {
-            trackedRosterCanonicalWriteSuppressedStaleCount += 1;
-            if (trackedRosterCanonicalWriteSuppressedSamples.length < 5) {
-              trackedRosterCanonicalWriteSuppressedSamples.push(
-                [
-                  `player_tag=${playerTag}`,
-                  `existing_owner=${warDecision.existingWarIdentity?.clanTag ?? "none"}`,
-                  `attempted_owner=${warDecision.attemptedWarIdentity.clanTag ?? "none"}`,
-                  `roster_war_id=${warDecision.attemptedWarIdentity.warId ?? "none"}`,
-                  `existing_verification_at=${
-                    warDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"
-                  }`,
-                  `attempted_observation_at=${now.toISOString()}`,
-                  `suppression_reason=${warDecision.suppressionReason}`,
-                ].join(" "),
-              );
-            }
-          }
-        } else if (warDecision.suppressionReason === "lower_confidence") {
-          lowerConfidenceWriteSuppressedCount += 1;
-        }
-        if (warDecision.existingConfidence === "LIVE_VERIFIED") {
-          console.warn(
-            `[todo-snapshot] event=todo_war_owner_write_suppressed player_tag=${playerTag} existing_owner=${warDecision.existingWarIdentity?.clanTag ?? "none"} attempted_owner=${warDecision.attemptedWarIdentity.clanTag ?? "none"} existing_confidence=${warDecision.existingConfidence} attempted_confidence=${warDecision.attemptedConfidence} existing_war_id=${warDecision.existingWarIdentity?.warId ?? "none"} attempted_war_id=${warDecision.attemptedWarIdentity.warId ?? "none"} existing_verified_at=${warDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"} attempted_observation_at=${now.toISOString()} reason=${warDecision.suppressionReason ?? "lower_confidence"}`,
-          );
-        }
-      } else if (
-        warOwnerResolution.resolvedSource === "canonical_tracked_roster" &&
-        resolvedCanonicalRosterSelectedCandidate
-      ) {
-        trackedRosterCanonicalWriteCount += 1;
-      } else if (
-        warDecision.existingConfidence === "LIVE_VERIFIED" &&
-        warDecision.attemptedConfidence === "LIVE_VERIFIED" &&
-        warDecision.existingWarIdentity &&
-        (warDecision.existingWarIdentity.clanTag !== warDecision.attemptedWarIdentity.clanTag ||
-          warDecision.existingWarIdentity.warId !== warDecision.attemptedWarIdentity.warId)
-      ) {
-        verifiedOwnerReplacedCount += 1;
-      } else if (
-        warDecision.existingConfidence === "LIVE_VERIFIED" &&
-        warDecision.attemptedConfidence === "NONE" &&
-        warOwnerResolution.resolvedSource === "authoritative_clear"
-      ) {
-        verifiedOwnerClearedCount += 1;
-      }
 
       const derivedGames = deriveTodoGamesValues({
         gamesWindowActive: gamesWindow.active,
@@ -2698,19 +2648,6 @@ export class TodoSnapshotService {
         `[todo-snapshot] event=tracked_war_roster_member_fallback_used reason=missing_derived_roster_member clan_count=${fallbackWarMemberUsedClanTags.size} player_count=${fallbackWarMemberUsedPlayerTags.size}`,
       );
     }
-    console.info(
-      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} verified_continuity_preserved_count=${verifiedContinuityPreservedCount} lower_confidence_write_suppressed_count=${lowerConfidenceWriteSuppressedCount} stale_write_suppressed_count=${staleWriteSuppressedCount} verified_owner_replaced_count=${verifiedOwnerReplacedCount} verified_owner_cleared_count=${verifiedOwnerClearedCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} authoritative_clear_count=${warOwnerResolutionAuthoritativeClearCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount} tracked_authoritative_count=${trackedRosterAuthoritativeCount} tracked_legacy_fallback_count=${trackedRosterLegacyFallbackCount} tracked_stale_identity_rejected_count=${trackedRosterStaleIdentityRejectedCount} tracked_roster_inactive_rejected_count=${trackedRosterInactiveRejectedCount} tracked_ambiguous_count=${trackedRosterAmbiguousCount} tracked_owner_corrected_count=${trackedRosterOwnerCorrectedCount} tracked_retained_ended_count=${trackedRosterRetainedEndedCount} tracked_roster_canonical_write_count=${trackedRosterCanonicalWriteCount} tracked_roster_canonical_write_suppressed_stale_count=${trackedRosterCanonicalWriteSuppressedStaleCount} tracked_roster_preloaded_live_confirmed_count=${trackedRosterPreloadedLiveConfirmedCount} tracked_roster_preloaded_live_rejected_count=${trackedRosterPreloadedLiveRejectedCount}`,
-    );
-    if (warOwnerResolutionAmbiguousSamples.length > 0) {
-      console.warn(
-        `[todo-snapshot] event=todo_war_owner_resolution_ambiguous sample_count=${warOwnerResolutionAmbiguousSamples.length} sample_matches=${warOwnerResolutionAmbiguousSamples.join("|")}`,
-      );
-    }
-    if (trackedRosterCanonicalWriteSuppressedSamples.length > 0) {
-      console.warn(
-        `[todo-snapshot] event=tracked_roster_canonical_write_suppressed sample_count=${trackedRosterCanonicalWriteSuppressedSamples.length} sample_matches=${trackedRosterCanonicalWriteSuppressedSamples.join("|")}`,
-      );
-    }
 
     try {
       await runChunkedWrites(
@@ -2726,14 +2663,48 @@ export class TodoSnapshotService {
               verifiedContinuityPreservedCount += 1;
               if (writeDecision.suppressionReason === "stale") {
                 staleWriteSuppressedCount += 1;
+                if (write.warDecisionInput.resolutionSource === "canonical_tracked_roster") {
+                  trackedRosterCanonicalWriteSuppressedStaleCount += 1;
+                  if (trackedRosterCanonicalWriteSuppressedSamples.length < 5) {
+                    trackedRosterCanonicalWriteSuppressedSamples.push(
+                      [
+                        `player_tag=${write.where.playerTag}`,
+                        `existing_owner=${writeDecision.existingWarIdentity?.clanTag ?? "none"}`,
+                        `attempted_owner=${writeDecision.attemptedWarIdentity.clanTag ?? "none"}`,
+                        `roster_war_id=${writeDecision.attemptedWarIdentity.warId ?? "none"}`,
+                        `existing_verification_at=${
+                          writeDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"
+                        }`,
+                        `attempted_observation_at=${write.warDecisionInput.attemptedObservationAt.toISOString()}`,
+                        `suppression_reason=${writeDecision.suppressionReason}`,
+                      ].join(" "),
+                    );
+                  }
+                }
               } else {
                 lowerConfidenceWriteSuppressedCount += 1;
               }
+              console.warn(
+                `[todo-snapshot] event=todo_war_owner_write_suppressed player_tag=${write.where.playerTag} existing_owner=${writeDecision.existingWarIdentity?.clanTag ?? "none"} attempted_owner=${writeDecision.attemptedWarIdentity.clanTag ?? "none"} existing_confidence=${writeDecision.existingConfidence} attempted_confidence=${writeDecision.attemptedConfidence} existing_war_id=${writeDecision.existingWarIdentity?.warId ?? "none"} attempted_war_id=${writeDecision.attemptedWarIdentity.warId ?? "none"} existing_verified_at=${writeDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"} attempted_observation_at=${write.warDecisionInput.attemptedObservationAt.toISOString()} reason=${writeDecision.suppressionReason ?? "lower_confidence"}`,
+              );
             } else {
               lowerConfidenceWriteSuppressedCount += 1;
             }
           } else if (writeDecision.preservationMode === "preserved_existing_bootstrap") {
             lowerConfidenceWriteSuppressedCount += 1;
+          } else if (
+            write.warDecisionInput.resolutionSource === "canonical_tracked_roster"
+          ) {
+            trackedRosterCanonicalWriteCount += 1;
+            if (
+              writeDecision.existingConfidence === "LIVE_VERIFIED" &&
+              writeDecision.attemptedConfidence === "LIVE_VERIFIED" &&
+              writeDecision.existingWarIdentity &&
+              (writeDecision.existingWarIdentity.clanTag !== writeDecision.attemptedWarIdentity.clanTag ||
+                writeDecision.existingWarIdentity.warId !== writeDecision.attemptedWarIdentity.warId)
+            ) {
+              verifiedOwnerReplacedCount += 1;
+            }
           } else if (
             writeDecision.existingConfidence === "LIVE_VERIFIED" &&
             writeDecision.attemptedConfidence === "LIVE_VERIFIED" &&
@@ -2756,6 +2727,20 @@ export class TodoSnapshotService {
         `[todo-snapshot] persist_failed players=${normalizedTags.length} snapshots=${snapshotUpserts.length} error=${formatError(err)}`,
       );
       throw err;
+    }
+
+    console.info(
+      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} verified_continuity_preserved_count=${verifiedContinuityPreservedCount} lower_confidence_write_suppressed_count=${lowerConfidenceWriteSuppressedCount} stale_write_suppressed_count=${staleWriteSuppressedCount} verified_owner_replaced_count=${verifiedOwnerReplacedCount} verified_owner_cleared_count=${verifiedOwnerClearedCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} authoritative_clear_count=${warOwnerResolutionAuthoritativeClearCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount} tracked_authoritative_count=${trackedRosterAuthoritativeCount} tracked_legacy_fallback_count=${trackedRosterLegacyFallbackCount} tracked_stale_identity_rejected_count=${trackedRosterStaleIdentityRejectedCount} tracked_roster_inactive_rejected_count=${trackedRosterInactiveRejectedCount} tracked_ambiguous_count=${trackedRosterAmbiguousCount} tracked_owner_corrected_count=${trackedRosterOwnerCorrectedCount} tracked_retained_ended_count=${trackedRosterRetainedEndedCount} tracked_roster_canonical_write_count=${trackedRosterCanonicalWriteCount} tracked_roster_canonical_write_suppressed_stale_count=${trackedRosterCanonicalWriteSuppressedStaleCount} tracked_roster_preloaded_live_confirmed_count=${trackedRosterPreloadedLiveConfirmedCount} tracked_roster_preloaded_live_rejected_count=${trackedRosterPreloadedLiveRejectedCount}`,
+    );
+    if (warOwnerResolutionAmbiguousSamples.length > 0) {
+      console.warn(
+        `[todo-snapshot] event=todo_war_owner_resolution_ambiguous sample_count=${warOwnerResolutionAmbiguousSamples.length} sample_matches=${warOwnerResolutionAmbiguousSamples.join("|")}`,
+      );
+    }
+    if (trackedRosterCanonicalWriteSuppressedSamples.length > 0) {
+      console.warn(
+        `[todo-snapshot] event=tracked_roster_canonical_write_suppressed sample_count=${trackedRosterCanonicalWriteSuppressedSamples.length} sample_matches=${trackedRosterCanonicalWriteSuppressedSamples.join("|")}`,
+      );
     }
 
     console.info(
