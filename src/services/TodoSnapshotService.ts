@@ -2661,34 +2661,34 @@ export class TodoSnapshotService {
           if (writeDecision.preservationMode === "preserved_existing_verified") {
             if (writeDecision.existingConfidence === "LIVE_VERIFIED") {
               verifiedContinuityPreservedCount += 1;
-              if (writeDecision.suppressionReason === "stale") {
-                staleWriteSuppressedCount += 1;
-                if (write.warDecisionInput.resolutionSource === "canonical_tracked_roster") {
-                  trackedRosterCanonicalWriteSuppressedStaleCount += 1;
-                  if (trackedRosterCanonicalWriteSuppressedSamples.length < 5) {
-                    trackedRosterCanonicalWriteSuppressedSamples.push(
-                      [
-                        `player_tag=${write.where.playerTag}`,
-                        `existing_owner=${writeDecision.existingWarIdentity?.clanTag ?? "none"}`,
-                        `attempted_owner=${writeDecision.attemptedWarIdentity.clanTag ?? "none"}`,
-                        `roster_war_id=${writeDecision.attemptedWarIdentity.warId ?? "none"}`,
-                        `existing_verification_at=${
-                          writeDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"
-                        }`,
-                        `attempted_observation_at=${write.warDecisionInput.attemptedObservationAt.toISOString()}`,
-                        `suppression_reason=${writeDecision.suppressionReason}`,
-                      ].join(" "),
-                    );
-                  }
+            }
+            if (writeDecision.suppressionReason === "stale") {
+              staleWriteSuppressedCount += 1;
+              if (write.warDecisionInput.resolutionSource === "canonical_tracked_roster") {
+                trackedRosterCanonicalWriteSuppressedStaleCount += 1;
+                if (trackedRosterCanonicalWriteSuppressedSamples.length < 5) {
+                  trackedRosterCanonicalWriteSuppressedSamples.push(
+                    [
+                      `player_tag=${write.where.playerTag}`,
+                      `existing_owner=${writeDecision.existingWarIdentity?.clanTag ?? "none"}`,
+                      `attempted_owner=${writeDecision.attemptedWarIdentity.clanTag ?? "none"}`,
+                      `roster_war_id=${writeDecision.attemptedWarIdentity.warId ?? "none"}`,
+                      `existing_verification_at=${
+                        writeDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"
+                      }`,
+                      `attempted_observation_at=${write.warDecisionInput.attemptedObservationAt.toISOString()}`,
+                      `suppression_reason=${writeDecision.suppressionReason}`,
+                    ].join(" "),
+                  );
                 }
-              } else {
-                lowerConfidenceWriteSuppressedCount += 1;
               }
+            } else {
+              lowerConfidenceWriteSuppressedCount += 1;
+            }
+            if (writeDecision.existingConfidence === "LIVE_VERIFIED") {
               console.warn(
                 `[todo-snapshot] event=todo_war_owner_write_suppressed player_tag=${write.where.playerTag} existing_owner=${writeDecision.existingWarIdentity?.clanTag ?? "none"} attempted_owner=${writeDecision.attemptedWarIdentity.clanTag ?? "none"} existing_confidence=${writeDecision.existingConfidence} attempted_confidence=${writeDecision.attemptedConfidence} existing_war_id=${writeDecision.existingWarIdentity?.warId ?? "none"} attempted_war_id=${writeDecision.attemptedWarIdentity.warId ?? "none"} existing_verified_at=${writeDecision.existingWarIdentity?.verifiedAt?.toISOString() ?? "none"} attempted_observation_at=${write.warDecisionInput.attemptedObservationAt.toISOString()} reason=${writeDecision.suppressionReason ?? "lower_confidence"}`,
               );
-            } else {
-              lowerConfidenceWriteSuppressedCount += 1;
             }
           } else if (writeDecision.preservationMode === "preserved_existing_bootstrap") {
             lowerConfidenceWriteSuppressedCount += 1;

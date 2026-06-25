@@ -196,6 +196,19 @@ function getTodoSnapshotUpsertUpdateForPlayer(playerTag: string): Record<string,
   return ((call[0] as { update?: Record<string, unknown> }).update ?? {}) as Record<string, unknown>;
 }
 
+function getConsoleMessages(spy: { mock: { calls: Array<[unknown, ...unknown[]]> } }): string[] {
+  return spy.mock.calls.map(([message]) => String(message));
+}
+
+function getSingleConsoleMessage(
+  spy: { mock: { calls: Array<[unknown, ...unknown[]]> } },
+  predicate: (message: string) => boolean,
+): string {
+  const messages = getConsoleMessages(spy).filter(predicate);
+  expect(messages).toHaveLength(1);
+  return messages[0] ?? "";
+}
+
 function buildTrackedWarRows(input: {
   clanTag: string;
   count: number;
@@ -3925,11 +3938,20 @@ describe("TodoSnapshotService", () => {
           warActive: true,
         }),
       );
-      expect(
-        consoleWarnSpy.mock.calls.some(
-          ([message]) => String(message).includes("event=todo_war_owner_write_suppressed"),
-        ),
-      ).toBe(true);
+      const summaryMessage = getSingleConsoleMessage(consoleInfoSpy, (message) =>
+        message.includes("event=todo_war_owner_resolution_summary"),
+      );
+      expect(summaryMessage).toContain("tracked_roster_canonical_write_count=0");
+      expect(summaryMessage).toContain("tracked_roster_canonical_write_suppressed_stale_count=1");
+      expect(summaryMessage).toContain("stale_write_suppressed_count=1");
+      expect(summaryMessage).toContain("lower_confidence_write_suppressed_count=0");
+      expect(summaryMessage).toContain("verified_continuity_preserved_count=1");
+      const suppressedWarnings = getConsoleMessages(consoleWarnSpy).filter(
+        (message) =>
+          message.includes("event=todo_war_owner_write_suppressed") &&
+          message.includes(`player_tag=${playerTag}`),
+      );
+      expect(suppressedWarnings).toHaveLength(1);
     } finally {
       consoleInfoSpy.mockRestore();
       consoleWarnSpy.mockRestore();
@@ -4071,11 +4093,151 @@ describe("TodoSnapshotService", () => {
           warEndsAt,
         }),
       );
-      expect(
-        consoleWarnSpy.mock.calls.some(
-          ([message]) => String(message).includes("event=todo_war_owner_write_suppressed"),
-        ),
-      ).toBe(false);
+      const summaryMessage = getSingleConsoleMessage(consoleInfoSpy, (message) =>
+        message.includes("event=todo_war_owner_resolution_summary"),
+      );
+      expect(summaryMessage).toContain("tracked_roster_canonical_write_count=1");
+      expect(summaryMessage).toContain("tracked_roster_canonical_write_suppressed_stale_count=0");
+      expect(summaryMessage).toContain("stale_write_suppressed_count=0");
+      expect(summaryMessage).toContain("verified_continuity_preserved_count=0");
+      const suppressedWarnings = getConsoleMessages(consoleWarnSpy).filter((message) =>
+        message.includes("event=todo_war_owner_write_suppressed"),
+      );
+      expect(suppressedWarnings).toHaveLength(0);
+    } finally {
+      consoleInfoSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("counts a stale authoritative clear without treating a fallback row as verified continuity", async () => {
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const playerTag = "#G89J8LCVU";
+    const attemptedAt = new Date("2026-03-26T00:02:00.000Z");
+    const existingUpdatedAt = new Date("2026-03-26T00:03:00.000Z");
+    const warEndsAt = new Date("2026-03-26T12:00:00.000Z");
+    const existingRow = buildSnapshotRow({
+      playerTag,
+      playerName: "Party Blizzard",
+      clanTag: rockyRoadClanTag,
+      clanName: "Rocky Road",
+      warActive: true,
+      warClanTag: rockyRoadClanTag,
+      warClanName: "Rocky Road",
+      warOwnerSource: "PERSISTED_FALLBACK",
+      warOwnerWarId: null,
+      warOwnerVerifiedAt: null,
+      warPosition: 17,
+      warAttacksUsed: 1,
+      warAttacksMax: 2,
+      warPhase: "battle day",
+      warEndsAt,
+      warSourceUpdatedAt: existingUpdatedAt,
+      clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+      lastUpdatedAt: existingUpdatedAt,
+      updatedAt: existingUpdatedAt,
+    });
+    const transactionRows: Record<string, unknown>[] = [existingRow];
+    installMutableTodoSnapshotStore(transactionRows);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([existingRow]);
+    txMock.todoPlayerSnapshot.findUnique.mockResolvedValue({
+      ...existingRow,
+    });
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      { clanTag: rockyRoadClanTag },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1001,
+        state: "inWar",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: warEndsAt,
+        updatedAt: existingUpdatedAt,
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    try {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: [playerTag],
+        cocService: cocService as any,
+        preloadedCurrentWarSnapshotsByClanTag: new Map([
+          [
+            rockyRoadClanTag,
+            {
+              state: "inWar",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: rockyRoadClanTag,
+                name: "Rocky Road",
+                members: [
+                  {
+                    tag: "#OTHER",
+                    name: "Other Player",
+                    townhallLevel: 15,
+                    mapPosition: 1,
+                    attacks: [],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+        ]),
+        nowMs: attemptedAt.getTime(),
+      });
+
+      expect(getTodoSnapshotUpsertUpdateForPlayer(playerTag)).toEqual(
+        expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+          warClanName: "Rocky Road",
+          warPosition: 17,
+          warSourceUpdatedAt: existingUpdatedAt,
+          warOwnerSource: "PERSISTED_FALLBACK",
+          warOwnerWarId: null,
+          warOwnerVerifiedAt: null,
+          warActive: true,
+          warPhase: "battle day",
+          warEndsAt,
+        }),
+      );
+      const summaryMessage = getSingleConsoleMessage(consoleInfoSpy, (message) =>
+        message.includes("event=todo_war_owner_resolution_summary"),
+      );
+      expect(summaryMessage).toContain("stale_write_suppressed_count=1");
+      expect(summaryMessage).toContain("lower_confidence_write_suppressed_count=0");
+      expect(summaryMessage).toContain("verified_continuity_preserved_count=0");
+      expect(summaryMessage).toContain("verified_owner_cleared_count=0");
+      const suppressedWarnings = getConsoleMessages(consoleWarnSpy).filter((message) =>
+        message.includes("event=todo_war_owner_write_suppressed"),
+      );
+      expect(suppressedWarnings).toHaveLength(0);
     } finally {
       consoleInfoSpy.mockRestore();
       consoleWarnSpy.mockRestore();
