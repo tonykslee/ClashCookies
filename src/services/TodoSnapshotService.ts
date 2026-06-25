@@ -3749,6 +3749,59 @@ function applyTodoWarOwnerStateToSnapshotData(
   };
 }
 
+/** Purpose: preserve the full existing WAR state when the write guard suppresses a newer attempt. */
+function buildTodoWarOwnerPreservedState(input: {
+  existing: TodoSnapshotRecord;
+  existingConfidence: TodoWarOwnerSource;
+  existingIdentity: {
+    clanTag: string | null;
+    warId: number | null;
+    verifiedAt: Date | null;
+  } | null;
+}): TodoWarOwnerSnapshotState {
+  return {
+    warClanTag: input.existing.warClanTag ?? null,
+    warClanName: input.existing.warClanName ?? null,
+    warPosition: input.existing.warPosition ?? null,
+    warSourceUpdatedAt: input.existing.warSourceUpdatedAt ?? null,
+    warOwnerSource: input.existingConfidence,
+    warOwnerWarId: input.existingIdentity?.warId ?? null,
+    warOwnerVerifiedAt: input.existingIdentity?.verifiedAt ?? null,
+    warActive: Boolean(input.existing.warActive),
+    warAttacksUsed: clampInt(input.existing.warAttacksUsed ?? 0, 0, 2),
+    warAttacksMax: clampInt(input.existing.warAttacksMax ?? 2, 0, 2) || 2,
+    warPhase: input.existing.warPhase ?? null,
+    warEndsAt: input.existing.warEndsAt ?? null,
+  };
+}
+
+/** Purpose: merge canonical roster metadata into an already-live verified WAR owner without downgrading provenance. */
+function buildTodoWarOwnerCanonicalMergeState(input: {
+  existing: TodoSnapshotRecord;
+  attemptedState: TodoWarOwnerSnapshotState;
+  existingConfidence: TodoWarOwnerSource;
+  existingIdentity: {
+    clanTag: string | null;
+    warId: number | null;
+    verifiedAt: Date | null;
+  } | null;
+}): TodoWarOwnerSnapshotState {
+  return {
+    warClanTag: input.attemptedState.warClanTag,
+    warClanName: input.attemptedState.warClanName,
+    warPosition: input.attemptedState.warPosition,
+    warSourceUpdatedAt: input.attemptedState.warSourceUpdatedAt,
+    warOwnerSource: input.existingConfidence,
+    warOwnerWarId: input.attemptedState.warOwnerWarId,
+    warOwnerVerifiedAt: input.existingIdentity?.verifiedAt ?? null,
+    warActive: Boolean(input.existing.warActive),
+    warAttacksUsed: clampInt(input.existing.warAttacksUsed ?? 0, 0, 2),
+    warAttacksMax: clampInt(input.existing.warAttacksMax ?? 2, 0, 2) || 2,
+    warPhase: input.existing.warPhase ?? null,
+    warEndsAt: input.existing.warEndsAt ?? null,
+  };
+}
+
 function getTodoWarOwnerFreshnessMs(input: {
   warOwnerVerifiedAt: Date | null | undefined;
   lastUpdatedAt: Date | null | undefined;
@@ -3829,6 +3882,7 @@ function buildTodoWarOwnerDecision(input: {
     : null;
   const existingCurrentWarActive =
     existingCurrentWar !== null && isTodoWarStateActive(existingCurrentWar.state);
+  const existingCurrentWarId = toFiniteIntOrNull(existingCurrentWar?.warId);
   const existingVerifiedContinuity =
     existing !== null &&
     existingConfidence === "LIVE_VERIFIED" &&
@@ -3836,17 +3890,39 @@ function buildTodoWarOwnerDecision(input: {
     existingWarClanTag !== "" &&
     existingIdentity !== null &&
     existingIdentity.clanTag === existingWarClanTag &&
-    existingIdentity.warId !== null;
+    existingIdentity.warId !== null &&
+    existingCurrentWar !== null &&
+    existingCurrentWarActive &&
+    existingCurrentWarId !== null &&
+    existingCurrentWarId === existingIdentity.warId;
 
-  const canonicalTrackedRosterCanReplaceVerifiedContinuity =
-    existingVerifiedContinuity &&
-    attemptedConfidence !== "LIVE_VERIFIED" &&
-    input.resolutionSource === "canonical_tracked_roster" &&
+  const canonicalAttemptIsLiveTrackedRoster = input.resolutionSource === "canonical_tracked_roster";
+  const canonicalAttemptIsSameIdentity =
+    canonicalAttemptIsLiveTrackedRoster &&
+    existingConfidence === "LIVE_VERIFIED" &&
     existingIdentity !== null &&
-    existingIdentity.verifiedAt instanceof Date &&
-    attemptedFreshnessMs >= existingIdentity.verifiedAt.getTime() &&
+    existingIdentity.clanTag === attemptedIdentity.clanTag &&
+    existingIdentity.warId !== null &&
+    attemptedIdentity.warId !== null &&
+    existingIdentity.warId === attemptedIdentity.warId;
+  const canonicalAttemptIsDifferentIdentity =
+    canonicalAttemptIsLiveTrackedRoster &&
+    existingConfidence === "LIVE_VERIFIED" &&
+    existingIdentity !== null &&
     (existingIdentity.clanTag !== attemptedIdentity.clanTag ||
       existingIdentity.warId !== attemptedIdentity.warId);
+  const canonicalAttemptIsStale =
+    canonicalAttemptIsLiveTrackedRoster &&
+    existingConfidence === "LIVE_VERIFIED" &&
+    existingFreshnessMs !== null &&
+    attemptedFreshnessMs < existingFreshnessMs;
+  const existingVerifiedStaleLowerConfidence =
+    existing !== null &&
+    existingConfidence === "LIVE_VERIFIED" &&
+    existingFreshnessMs !== null &&
+    attemptedFreshnessMs < existingFreshnessMs &&
+    attemptedConfidence !== "LIVE_VERIFIED" &&
+    input.resolutionSource !== "authoritative_clear";
 
   const existingBootstrapProtectedFallback =
     existing !== null &&
@@ -3859,35 +3935,14 @@ function buildTodoWarOwnerDecision(input: {
     attemptedConfidence !== "LIVE_VERIFIED" &&
     input.resolutionSource !== "authoritative_clear";
 
-  if (canonicalTrackedRosterCanReplaceVerifiedContinuity && existing) {
-    return {
-      finalState: attemptedState,
-      preservationMode: "attempted",
-      suppressionReason: null,
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
-  }
-
   if (input.resolutionSource === "authoritative_clear") {
     if (existing && existingFreshnessMs !== null && attemptedFreshnessMs < existingFreshnessMs) {
       return {
-        finalState: {
-          warClanTag: existing.warClanTag ?? null,
-          warClanName: existing.warClanName ?? null,
-          warPosition: existing.warPosition ?? null,
-          warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
-          warOwnerSource: existingConfidence,
-          warOwnerWarId: existingIdentity?.warId ?? null,
-          warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
-          warActive: Boolean(existing.warActive),
-          warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
-          warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
-          warPhase: existing.warPhase ?? null,
-          warEndsAt: existing.warEndsAt ?? null,
-        },
+        finalState: buildTodoWarOwnerPreservedState({
+          existing,
+          existingConfidence,
+          existingIdentity,
+        }),
         preservationMode: "preserved_existing_verified",
         suppressionReason: "stale",
         existingConfidence,
@@ -3928,20 +3983,11 @@ function buildTodoWarOwnerDecision(input: {
     existing
   ) {
     return {
-      finalState: {
-        warClanTag: existing.warClanTag ?? null,
-        warClanName: existing.warClanName ?? null,
-        warPosition: existing.warPosition ?? null,
-        warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
-        warOwnerSource: existingConfidence,
-        warOwnerWarId: existingIdentity?.warId ?? null,
-        warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
-        warActive: Boolean(existing.warActive),
-        warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
-        warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
-        warPhase: existing.warPhase ?? null,
-        warEndsAt: existing.warEndsAt ?? null,
-      },
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
       preservationMode: "preserved_existing_verified",
       suppressionReason: "stale",
       existingConfidence,
@@ -3951,30 +3997,82 @@ function buildTodoWarOwnerDecision(input: {
     };
   }
 
-  if (
-    existingVerifiedContinuity &&
-    attemptedConfidence !== "LIVE_VERIFIED" &&
-    existing
-  ) {
+  if (canonicalAttemptIsStale && existing) {
+    return {
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
+      preservationMode: "preserved_existing_verified",
+      suppressionReason: "stale",
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (canonicalAttemptIsSameIdentity && existing) {
+    return {
+      finalState: buildTodoWarOwnerCanonicalMergeState({
+        existing,
+        attemptedState,
+        existingConfidence,
+        existingIdentity,
+      }),
+      preservationMode: "attempted",
+      suppressionReason: null,
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (canonicalAttemptIsDifferentIdentity && existing) {
+    return {
+      finalState: {
+        ...attemptedState,
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerVerifiedAt: null,
+      },
+      preservationMode: "attempted",
+      suppressionReason: null,
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (existingVerifiedStaleLowerConfidence && existing) {
+    return {
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
+      preservationMode: "preserved_existing_verified",
+      suppressionReason: "stale",
+      existingConfidence,
+      attemptedConfidence,
+      existingWarIdentity: existingIdentity,
+      attemptedWarIdentity: attemptedIdentity,
+    };
+  }
+
+  if (existingVerifiedContinuity && attemptedConfidence !== "LIVE_VERIFIED" && existing) {
     const suppressionReason =
       existing.lastUpdatedAt.getTime() > input.attemptedObservationAt.getTime()
         ? "stale"
         : "lower_confidence";
     return {
-      finalState: {
-        warClanTag: existing.warClanTag ?? null,
-        warClanName: existing.warClanName ?? null,
-        warPosition: existing.warPosition ?? null,
-        warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
-        warOwnerSource: existingConfidence,
-        warOwnerWarId: existingIdentity?.warId ?? null,
-        warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
-        warActive: Boolean(existing.warActive),
-        warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
-        warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
-        warPhase: existing.warPhase ?? null,
-        warEndsAt: existing.warEndsAt ?? null,
-      },
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
       preservationMode: "preserved_existing_verified",
       suppressionReason,
       existingConfidence,
@@ -3986,20 +4084,11 @@ function buildTodoWarOwnerDecision(input: {
 
   if (existingBootstrapProtectedFallback) {
     return {
-      finalState: {
-        warClanTag: existing.warClanTag ?? null,
-        warClanName: existing.warClanName ?? null,
-        warPosition: existing.warPosition ?? null,
-        warSourceUpdatedAt: existing.warSourceUpdatedAt ?? null,
-        warOwnerSource: existingConfidence,
-        warOwnerWarId: existingIdentity?.warId ?? null,
-        warOwnerVerifiedAt: existingIdentity?.verifiedAt ?? null,
-        warActive: Boolean(existing.warActive),
-        warAttacksUsed: clampInt(existing.warAttacksUsed ?? 0, 0, 2),
-        warAttacksMax: clampInt(existing.warAttacksMax ?? 2, 0, 2) || 2,
-        warPhase: existing.warPhase ?? null,
-        warEndsAt: existing.warEndsAt ?? null,
-      },
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
       preservationMode: "preserved_existing_bootstrap",
       suppressionReason: "lower_confidence",
       existingConfidence,
