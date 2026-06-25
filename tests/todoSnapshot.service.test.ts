@@ -5084,7 +5084,7 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("does not fall back to a verified-absent Rocky Road candidate when TWC cannot be verified", async () => {
+  it("clears an expired bootstrap TWC snapshot instead of falling back to a verified-absent Rocky Road candidate", async () => {
     const rockyRoadClanTag = "#2RYGLU2UY";
     const twcClanTag = "#29PCQGUV0";
     const playerTag = "#PYLQ0289";
@@ -5097,9 +5097,9 @@ describe("TodoSnapshotService", () => {
         clanTag: twcClanTag,
         clanName: "TheWiseCowboys",
         warActive: true,
-        warClanTag: rockyRoadClanTag,
-        warClanName: "Rocky Road",
-        warPosition: 18,
+        warClanTag: twcClanTag,
+        warClanName: "TheWiseCowboys",
+        warPosition: 8,
         warAttacksUsed: 1,
         warSourceUpdatedAt: new Date("2026-03-25T12:00:00.000Z"),
         clanMembershipObservedAt: new Date("2026-03-20T08:30:00.000Z"),
@@ -5136,14 +5136,6 @@ describe("TodoSnapshotService", () => {
         startTime: currentWarStartTime,
         endTime: new Date("2026-03-26T12:00:00.000Z"),
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
-      },
-      {
-        clanTag: twcClanTag,
-        warId: 1002,
-        state: "inWar",
-        startTime: currentWarStartTime,
-        endTime: new Date("2026-03-26T12:00:00.000Z"),
-        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
       },
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
@@ -5200,16 +5192,17 @@ describe("TodoSnapshotService", () => {
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
-          warClanTag: twcClanTag,
-          warClanName: "TheWiseCowboys",
-          warPosition: 8,
-        }),
-      }),
-    );
-    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          warClanTag: rockyRoadClanTag,
+          warClanTag: null,
+          warClanName: null,
+          warPosition: null,
+          warSourceUpdatedAt: null,
+          warOwnerSource: "NONE",
+          warOwnerWarId: null,
+          warOwnerVerifiedAt: null,
+          warActive: false,
+          warAttacksUsed: 0,
+          warPhase: null,
+          warEndsAt: null,
         }),
       }),
     );
