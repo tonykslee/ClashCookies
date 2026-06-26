@@ -810,6 +810,7 @@ type ParsedFwaBaseSwapBaseErrorGroup = {
   note: string | null;
 };
 
+/** Purpose: parse comma-delimited base-error groups into leading positions plus an optional note. */
 function parseFwaBaseSwapBaseErrorGroups(input: string | null | undefined): {
   ok: true;
   groups: ParsedFwaBaseSwapBaseErrorGroup[];
@@ -832,12 +833,20 @@ function parseFwaBaseSwapBaseErrorGroups(input: string | null | undefined): {
     let noteStarted = false;
 
     for (const token of tokens) {
-      const parsed = Number.parseInt(token, 10);
+      const parsed = Number(token);
       const isPositiveInteger =
         /^\d+$/.test(token) && Number.isFinite(parsed) && parsed > 0;
       if (!noteStarted && isPositiveInteger) {
         positions.push(parsed);
         continue;
+      }
+
+      if (!noteStarted && Number.isFinite(parsed)) {
+        return {
+          ok: false,
+          error:
+            `Invalid \`base-errors\` position token \`${token}\` in \`${group}\`: use unsigned positive roster positions before any explanation text.`,
+        };
       }
 
       noteStarted = true;
@@ -13883,7 +13892,7 @@ export const Fwa: Command = {
         {
           name: "base-errors",
           description:
-            "Grouped base-error positions with optional notes, e.g. 15 builder...",
+            "Grouped base-error positions with optional notes; commas separate groups",
           type: ApplicationCommandOptionType.String,
           required: false,
         },

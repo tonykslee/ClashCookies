@@ -725,6 +725,61 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
+  it("rejects malformed numeric base-error tokens before note text starts", () => {
+    for (const [raw, token] of [
+      ["1 0", "0"],
+      ["1 -2", "-2"],
+      ["1 2.5", "2.5"],
+      ["1 +2", "+2"],
+      ["1 1e3", "1e3"],
+    ] as const) {
+      const result = parseFwaBaseSwapPositionSelectionsForTest({
+        selections: [
+          {
+            label: "base-errors",
+            section: "base_errors",
+            raw,
+          },
+        ],
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error:
+          `Invalid \`base-errors\` position token \`${token}\` in \`${raw}\`: use unsigned positive roster positions before any explanation text.`,
+      });
+    }
+  });
+
+  it("keeps a single note-bearing base-error group valid and preserves its text", () => {
+    const result = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "15 builder not separated by 6 spaces",
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [15],
+          baseErrorNotes: [
+            {
+              position: 15,
+              note: "builder not separated by 6 spaces",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("rejects text-only base-error groups, note overflows, and text in the numeric args", () => {
     const textOnly = parseFwaBaseSwapPositionSelectionsForTest({
       selections: [
@@ -1788,9 +1843,9 @@ describe("FWA base-swap split-post prompt actions", () => {
       clanName: "Test Clan",
       commandText: buildFwaBaseSwapCommandTextForTest({
         clanTag: "2QG2C08UP",
-        warBases: "1",
+        warBases: null,
         fwaBases: null,
-        baseErrors: null,
+        baseErrors: "1 builder not separated by 6 spaces",
         swapReminder: null,
       }),
       entries: [
@@ -1798,9 +1853,10 @@ describe("FWA base-swap split-post prompt actions", () => {
           position: 1,
           playerTag: "#AAA111",
           playerName: "Alpha",
-          section: "war_bases",
+          section: "base_errors",
           discordUserId: "user-1",
           townhallLevel: 18,
+          baseErrorNote: "builder not separated by 6 spaces",
         }),
       ],
       layoutLinks: [],
@@ -1925,6 +1981,20 @@ describe("FWA base-swap split-post prompt actions", () => {
     );
     expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(2);
+    for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
+      expect(call[0].create.metadata.entries).toEqual([
+        expect.objectContaining({
+          section: "base_errors",
+          baseErrorNote: "builder not separated by 6 spaces",
+        }),
+      ]);
+      expect(call[0].update.metadata.entries).toEqual([
+        expect.objectContaining({
+          section: "base_errors",
+          baseErrorNote: "builder not separated by 6 spaces",
+        }),
+      ]);
+    }
     expect(interaction.update).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining(postedA.url),
@@ -2005,7 +2075,7 @@ describe("FWA base-swap mail-channel routing", () => {
   it("posts a single base-swap announcement to the clan mail channel", async () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
-      warBases: "1",
+      baseErrors: "1 builder not separated by 6 spaces",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: "mail-1",
@@ -2022,8 +2092,9 @@ describe("FWA base-swap mail-channel routing", () => {
             position: 1,
             playerTag: "#AAA111",
             playerName: "Alpha",
-            townhallLevel: null,
+            townhallLevel: 16,
             discordUserId: "111",
+            section: "base_errors",
           },
         ],
         phaseTiming: null,
@@ -2035,6 +2106,13 @@ describe("FWA base-swap mail-channel routing", () => {
         name: "Test Clan",
         mailChannelId: "mail-1",
         clanRoleId: null,
+      },
+    ]);
+    prismaMock.fwaLayouts.findMany.mockResolvedValue([
+      {
+        Townhall: 16,
+        LayoutLink:
+          "https://link.clashofclans.com/en?action=OpenLayout&id=TH16%3AWB%3AAAAAAQAAAAM9F6wQbYh_86ZfK2idfKk8",
       },
     ]);
     vi.mocked(
@@ -2075,6 +2153,21 @@ describe("FWA base-swap mail-channel routing", () => {
     const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
     expect(upsertCall.create.channelId).toBe("mail-1");
     expect(upsertCall.update.channelId).toBe("mail-1");
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "builder not separated by 6 spaces",
+    );
+    expect(upsertCall.create.metadata.entries).toEqual([
+      expect.objectContaining({
+        section: "base_errors",
+        baseErrorNote: "builder not separated by 6 spaces",
+      }),
+    ]);
+    expect(upsertCall.update.metadata.entries).toEqual([
+      expect.objectContaining({
+        section: "base_errors",
+        baseErrorNote: "builder not separated by 6 spaces",
+      }),
+    ]);
     expect(upsertCall.create.metadata.syncMessageId).toBe("sync-message-1");
     expect(upsertCall.update.metadata.syncMessageId).toBe("sync-message-1");
     expect(recordBasesChecked).toHaveBeenCalledTimes(1);
