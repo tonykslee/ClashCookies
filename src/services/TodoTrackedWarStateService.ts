@@ -7,7 +7,10 @@ export type TodoTrackedCurrentWarRow = {
   startTime: Date | null;
   state: string | null;
   updatedAt: Date | null;
+  renderState?: TodoTrackedWarRenderState;
 };
+
+export type TodoTrackedWarRenderState = "ACTIVE" | "RETAINED_ENDED";
 
 export type TodoTrackedWarAttackRow = {
   warId: number;
@@ -41,6 +44,7 @@ export type TodoTrackedWarMemberState = {
   playerName: string | null;
   townHall: number | null;
   attacksUsed: number;
+  hasExactAttackState?: boolean;
   attackDetails: TodoTrackedWarAttackDetail[];
 };
 
@@ -51,6 +55,7 @@ type MutableTrackedWarMemberState = {
   playerName: string | null;
   townHall: number | null;
   attacksUsed: number;
+  hasExactAttackState: boolean;
   attackDetails: Array<{
     order: number;
     attackNumber: number;
@@ -80,7 +85,8 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
     if (!clanTag || !playerTag) continue;
 
     const currentWar = input.currentWarByClanTag.get(clanTag);
-    if (!currentWar || !isTodoWarStateActive(currentWar.state)) continue;
+    const contextState = getTrackedWarContextState(currentWar);
+    if (!currentWar || !contextState) continue;
 
     const key = `${clanTag}:${playerTag}`;
     const existing =
@@ -92,6 +98,7 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
         playerName: normalizeDisplayName(row.playerName) || null,
         townHall: toFiniteIntOrNull(row.townHall),
         attacksUsed: 0,
+        hasExactAttackState: false,
         attackDetails: [],
       } satisfies MutableTrackedWarMemberState);
     if (!mapped.has(key)) {
@@ -120,13 +127,15 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
     if (!clanTag || !playerTag) continue;
 
     const currentWar = input.currentWarByClanTag.get(clanTag);
-    if (!currentWar || !isTodoWarStateActive(currentWar.state)) continue;
+    const contextState = getTrackedWarContextState(currentWar);
+    if (!currentWar || !contextState) continue;
     if (!matchesCurrentWarIdentity(currentWar, row)) continue;
 
     const key = `${clanTag}:${playerTag}`;
     const existing = mapped.get(key);
     if (!existing) continue;
 
+    existing.hasExactAttackState = true;
     const candidatePosition = toFiniteIntOrNull(row.playerPosition);
     if (
       existing.position === null &&
@@ -179,6 +188,7 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
       playerName: value.playerName,
       townHall: value.townHall,
       attacksUsed,
+      hasExactAttackState: value.hasExactAttackState,
       attackDetails: orderedAttackDetails,
     });
   }
@@ -214,6 +224,15 @@ export function buildTrackedWarMemberStateByPlayerTag(
     }
     if (nextAttacks < existingAttacks) continue;
 
+    const existingExact = existing.hasExactAttackState === true;
+    const nextExact = row.hasExactAttackState === true;
+    if (existingExact !== nextExact) {
+      if (nextExact) {
+        byPlayerTag.set(row.playerTag, row);
+      }
+      continue;
+    }
+
     const existingKey = `${existing.clanTag}:${existing.playerTag}`;
     const nextKey = `${row.clanTag}:${row.playerTag}`;
     if (nextKey.localeCompare(existingKey) < 0) {
@@ -242,6 +261,17 @@ function matchesCurrentWarIdentity(
     return false;
   }
   return currentStartMs === attackStartMs;
+}
+
+/** Purpose: keep tracked-war attack state eligible only for explicit active or retained-ended render contexts. */
+function getTrackedWarContextState(
+  currentWar: TodoTrackedCurrentWarRow | null | undefined,
+): TodoTrackedWarRenderState | null {
+  if (!currentWar) return null;
+  if (currentWar.renderState === "ACTIVE" || currentWar.renderState === "RETAINED_ENDED") {
+    return currentWar.renderState;
+  }
+  return isTodoWarStateActive(currentWar.state) ? "ACTIVE" : null;
 }
 
 /** Purpose: normalize unknown numeric values into one bounded integer range. */
