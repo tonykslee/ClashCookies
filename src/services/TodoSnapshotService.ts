@@ -1387,6 +1387,9 @@ export class TodoSnapshotService {
         currentWar,
       });
       if (identityMatch === "STALE_OR_MISMATCHED") continue;
+      const exactIdentity =
+        identityMatch === "EXACT_WAR_ID" || identityMatch === "EXACT_START_TIME";
+      if (!exactIdentity) continue;
 
       const existingSnapshot = existingByTag.get(playerTag) ?? null;
       const renderState = resolveTrackedWarRosterRenderState({
@@ -2509,11 +2512,6 @@ export class TodoSnapshotService {
           : null;
       const trackedWarMemberExactAttackState =
         trackedWarMember?.hasExactAttackState === true ? trackedWarMember : null;
-      const trackedWarAttackRowsForPlayerAndClan = trackedWarAttackRows.some(
-        (row) =>
-          normalizePlayerTag(row.playerTag) === playerTag &&
-          normalizeClanTag(row.clanTag) === resolvedWarClanTag,
-      );
       const warAttacksUsed = resolvedCanonicalRosterSelectedCandidate
         ? canonicalRosterRetainedEnded
           ? canonicalRosterExactAttackState
@@ -2523,13 +2521,13 @@ export class TodoSnapshotService {
             ? 0
             : canonicalRosterExactAttackState
               ? clampInt(canonicalRosterExactAttackState.attacksUsed, 0, 2)
-              : trackedWarAttackRowsForPlayerAndClan
-                ? 0
-              : rawWarMember
-                ? clampInt(rawWarMember.attacks, 0, 2)
-                : liveCurrentWarFallbackMember
-                  ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
-                  : genericWarOwnerResolution?.selectedCandidate?.sources.has("snapshot_hint")
+              : trackedWarMemberExactAttackState
+                ? clampInt(trackedWarMemberExactAttackState.attacksUsed, 0, 2)
+                : rawWarMember
+                  ? clampInt(rawWarMember.attacks, 0, 2)
+                  : liveCurrentWarFallbackMember
+                    ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
+                    : genericWarOwnerResolution?.selectedCandidate?.sources.has("snapshot_hint")
                     ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
                     : 0
         : !warStateActive || !hasWarClanTag
@@ -2538,8 +2536,6 @@ export class TodoSnapshotService {
             ? 0
             : trackedWarMemberExactAttackState
               ? clampInt(trackedWarMemberExactAttackState.attacksUsed, 0, 2)
-              : trackedWarAttackRowsForPlayerAndClan
-                ? 0
               : rawWarMember
                 ? clampInt(rawWarMember.attacks, 0, 2)
                 : liveCurrentWarFallbackMember
