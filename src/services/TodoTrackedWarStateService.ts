@@ -117,12 +117,11 @@ export function classifyTrackedWarRosterCurrentIdentity(input: {
   }
 
   const currentWarId = toFiniteIntOrNull(currentWar.warId);
-  if (rosterWarId !== null && currentWarId !== null) {
-    return rosterWarId === currentWarId ? "EXACT_WAR_ID" : "STALE_OR_MISMATCHED";
-  }
-
   const currentStartMs =
     currentWar.startTime instanceof Date ? currentWar.startTime.getTime() : null;
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return "EXACT_WAR_ID";
+  }
   if (rosterStartMs !== null && currentStartMs !== null) {
     return rosterStartMs === currentStartMs ? "EXACT_START_TIME" : "STALE_OR_MISMATCHED";
   }
@@ -140,8 +139,8 @@ export function matchesRetainedTrackedWarRosterIdentity(input: {
   if (!input.currentWar) return false;
   const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
   const currentWarId = toFiniteIntOrNull(input.currentWar.warId);
-  if (rosterWarId !== null && currentWarId !== null) {
-    return rosterWarId === currentWarId;
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return true;
   }
   const rosterStartMs =
     input.roster.sourceWarStartTime instanceof Date
@@ -149,7 +148,7 @@ export function matchesRetainedTrackedWarRosterIdentity(input: {
       : null;
   const currentStartMs =
     input.currentWar.startTime instanceof Date ? input.currentWar.startTime.getTime() : null;
-  return rosterWarId === null && rosterStartMs !== null && currentStartMs !== null
+  return rosterStartMs !== null && currentStartMs !== null
     ? rosterStartMs === currentStartMs
     : false;
 }

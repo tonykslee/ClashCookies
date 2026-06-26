@@ -23,7 +23,6 @@ import {
   buildTrackedWarMemberStateByClanAndPlayer,
   classifyTrackedWarRosterCurrentIdentity,
   isTodoWarStateActive,
-  matchesRetainedTrackedWarRosterIdentity,
   resolveTrackedWarRosterRenderState,
   type TodoTrackedCurrentWarRow,
   type TodoTrackedWarRosterCurrentRow,
