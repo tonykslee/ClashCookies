@@ -9465,10 +9465,10 @@ describe("TodoSnapshotService", () => {
         playerTag: "#PYLQ0289",
         playerPosition: 8,
         attacksUsed: 0,
-        attackOrder: 1,
-        attackNumber: 1,
-        defenderPosition: 7,
-        stars: 3,
+        attackOrder: 0,
+        attackNumber: 0,
+        defenderPosition: null,
+        stars: 0,
         attackSeenAt: new Date("2026-03-26T00:10:00.000Z"),
       },
     ]);
@@ -9482,10 +9482,13 @@ describe("TodoSnapshotService", () => {
 
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: expect.objectContaining({
+        create: expect.objectContaining({
           warActive: true,
           warPhase: "battle day",
           warAttacksUsed: 0,
+          warOwnerWarId: 1001,
+          warClanTag: "#PQL0289",
+          warPosition: 8,
         }),
       }),
     );
@@ -10569,7 +10572,14 @@ describe("TodoSnapshotService", () => {
       },
     ]);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
-      { clanTag: "#PQL0289" },
+      {
+        clanTag: "#PQL0289",
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-27T12:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
       {
@@ -10578,8 +10588,6 @@ describe("TodoSnapshotService", () => {
         position: 8,
         playerName: "Derived Alpha",
         townHall: 14,
-        sourceWarId: 1001,
-        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
@@ -10600,7 +10608,7 @@ describe("TodoSnapshotService", () => {
         warStartTime: new Date("2026-03-26T12:00:00.000Z"),
         playerTag: "#PYLQ0289",
         playerPosition: 8,
-        attacksUsed: 2,
+        attacksUsed: 1,
         attackOrder: 1,
         attackNumber: 1,
         defenderPosition: 7,
@@ -10632,7 +10640,7 @@ describe("TodoSnapshotService", () => {
           warOwnerSource: "PERSISTED_FALLBACK",
           warOwnerWarId: 1001,
           warActive: true,
-          warAttacksUsed: 2,
+          warAttacksUsed: 1,
           warPhase: "battle day",
         }),
       }),
@@ -10935,7 +10943,14 @@ describe("TodoSnapshotService", () => {
 
   it("keeps the derived tracked-war roster member row ahead of newer raw FwaWarMemberCurrent fallback data", async () => {
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
-      { clanTag: "#PQL0289" },
+      {
+        clanTag: "#PQL0289",
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-27T12:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
     ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
       {
@@ -10944,8 +10959,6 @@ describe("TodoSnapshotService", () => {
         position: 8,
         playerName: "Derived Alpha",
         townHall: 14,
-        sourceWarId: 1001,
-        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
@@ -10976,7 +10989,7 @@ describe("TodoSnapshotService", () => {
         warStartTime: new Date("2026-03-26T12:00:00.000Z"),
         playerTag: "#PYLQ0289",
         playerPosition: 8,
-        attacksUsed: 2,
+        attacksUsed: 1,
         attackOrder: 1,
         attackNumber: 1,
         defenderPosition: 7,
@@ -10999,7 +11012,7 @@ describe("TodoSnapshotService", () => {
           playerName: "Derived Alpha",
           townHall: 14,
           warActive: true,
-          warAttacksUsed: 2,
+          warAttacksUsed: 1,
         }),
       }),
     );
