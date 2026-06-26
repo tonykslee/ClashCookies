@@ -6,6 +6,7 @@ export type TodoTrackedCurrentWarRow = {
   warId: number | null;
   startTime: Date | null;
   state: string | null;
+  updatedAt: Date | null;
 };
 
 export type TodoTrackedWarAttackRow = {

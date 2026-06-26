@@ -7,7 +7,6 @@ import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaClanWarsWatchService } from "./FwaClanWarsWatchService";
 import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
 import { FwaFeedSchedulerService } from "./FwaFeedSchedulerService";
-import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 
 /** Purpose: expose manual status/run/watch operations for fwa-feed ingestion without command-surface expansion. */
 export class FwaFeedOpsService {
@@ -16,11 +15,9 @@ export class FwaFeedOpsService {
   private readonly warMembersSync = new FwaWarMembersSyncService();
   private readonly clanWarsSync = new FwaClanWarsSyncService();
   private readonly matchStatsSync = new FwaClanMatchStatsCurrentSyncService();
-  private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService();
   private readonly watchService = new FwaClanWarsWatchService(
     this.clanWarsSync,
     this.warMembersSync,
-    this.trackedRosterSync,
   );
   private readonly scheduler = new FwaFeedSchedulerService();
 
@@ -55,12 +52,7 @@ export class FwaFeedOpsService {
       return this.clanMembersSync.syncTrackedClan(normalized, { force: true });
     }
     if (feed === "war-roster") {
-      const warMembersResult = await this.warMembersSync.syncClan(normalized, { force: true });
-      const rosterResult = await this.trackedRosterSync.syncClan(normalized);
-      return {
-        warMembersResult,
-        rosterResult,
-      };
+      return this.warMembersSync.syncClan(normalized, { force: true });
     }
     const result = await this.clanWarsSync.syncClan(normalized, { force: true });
     if (result.changedRowCount > 0) {

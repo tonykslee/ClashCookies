@@ -44,8 +44,41 @@ type DerivedTrackedClanWarRosterSnapshot = {
   hasUnresolvedWeights: boolean;
   observedAt: Date;
   sourceUpdatedAt: Date | null;
+  sourceWarId: number | null;
+  sourceWarStartTime: Date | null;
+  sourceWarEndTime: Date | null;
+  sourceWarState: string | null;
+  sourceCurrentWarUpdatedAt: Date | null;
   members: DerivedRosterMemberRow[];
 };
+
+type SourceCurrentWarRow = {
+  guildId: string;
+  warId: number | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  state: string | null;
+  updatedAt: Date | null;
+};
+
+/** Purpose: choose one freshest CurrentWar row when a clan has multiple guild-scoped snapshots. */
+function pickLatestCurrentWarRow(rows: readonly SourceCurrentWarRow[]): SourceCurrentWarRow | null {
+  const sorted = [...rows].sort((a, b) => {
+    const updatedAtDelta = (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0);
+    if (updatedAtDelta !== 0) return updatedAtDelta;
+
+    const aStartMs = a.startTime?.getTime() ?? null;
+    const bStartMs = b.startTime?.getTime() ?? null;
+    if (aStartMs !== bStartMs) {
+      if (aStartMs === null) return 1;
+      if (bStartMs === null) return -1;
+      return bStartMs - aStartMs;
+    }
+
+    return a.guildId.localeCompare(b.guildId);
+  });
+  return sorted[0] ?? null;
+}
 
 function toSafeNonNegativeInt(input: number | null | undefined): number {
   if (!Number.isFinite(input)) return 0;
@@ -137,6 +170,7 @@ function deriveTrackedClanWarRosterSnapshot(input: {
   clanTag: string;
   clanName?: string | null;
   observedAt: Date;
+  currentWar?: SourceCurrentWarRow | null;
   rows: readonly SourceRosterRow[];
 }): DerivedTrackedClanWarRosterSnapshot | null {
   const normalized = normalizeTrackedClanWarRosterRows(input.rows);
@@ -169,6 +203,11 @@ function deriveTrackedClanWarRosterSnapshot(input: {
     hasUnresolvedWeights,
     observedAt: input.observedAt,
     sourceUpdatedAt,
+    sourceWarId: input.currentWar?.warId ?? null,
+    sourceWarStartTime: input.currentWar?.startTime ?? null,
+    sourceWarEndTime: input.currentWar?.endTime ?? null,
+    sourceWarState: input.currentWar?.state ?? null,
+    sourceCurrentWarUpdatedAt: input.currentWar?.updatedAt ?? null,
     members,
   };
 }
@@ -183,6 +222,11 @@ export class FwaTrackedClanWarRosterSyncService {
     hasSnapshot: boolean;
     hasUnresolvedWeights: boolean;
     totalEffectiveWeight: number | null;
+    sourceWarId: number | null;
+    sourceWarStartTime: Date | null;
+    sourceWarEndTime: Date | null;
+    sourceWarState: string | null;
+    sourceCurrentWarUpdatedAt: Date | null;
   }> {
     const normalizedClanTag = normalizeFwaTag(clanTag);
     if (!normalizedClanTag) {
@@ -193,11 +237,16 @@ export class FwaTrackedClanWarRosterSyncService {
         hasSnapshot: false,
         hasUnresolvedWeights: false,
         totalEffectiveWeight: null,
+        sourceWarId: null,
+        sourceWarStartTime: null,
+        sourceWarEndTime: null,
+        sourceWarState: null,
+        sourceCurrentWarUpdatedAt: null,
       };
     }
 
     const now = options?.now ?? new Date();
-    const [rows, clanCatalogRow] = await Promise.all([
+  const [rows, clanCatalogRow, currentWarRows] = await Promise.all([
       prisma.fwaWarMemberCurrent.findMany({
         where: { clanTag: normalizedClanTag },
         orderBy: [{ position: "asc" }, { playerTag: "asc" }],
@@ -216,12 +265,25 @@ export class FwaTrackedClanWarRosterSyncService {
         where: { clanTag: normalizedClanTag },
         select: { name: true },
       }),
+      prisma.currentWar.findMany({
+        where: { clanTag: normalizedClanTag },
+        select: {
+          guildId: true,
+          warId: true,
+          startTime: true,
+          endTime: true,
+          state: true,
+          updatedAt: true,
+        },
+      }),
     ]);
+    const currentWar = pickLatestCurrentWarRow(currentWarRows);
 
     const snapshot = deriveTrackedClanWarRosterSnapshot({
       clanTag: normalizedClanTag,
       clanName: clanCatalogRow?.name ?? null,
       observedAt: now,
+      currentWar,
       rows,
     });
 
@@ -249,6 +311,11 @@ export class FwaTrackedClanWarRosterSyncService {
           hasUnresolvedWeights: snapshot.hasUnresolvedWeights,
           observedAt: snapshot.observedAt,
           sourceUpdatedAt: snapshot.sourceUpdatedAt,
+          sourceWarId: snapshot.sourceWarId,
+          sourceWarStartTime: snapshot.sourceWarStartTime,
+          sourceWarEndTime: snapshot.sourceWarEndTime,
+          sourceWarState: snapshot.sourceWarState,
+          sourceCurrentWarUpdatedAt: snapshot.sourceCurrentWarUpdatedAt,
         },
         create: {
           clanTag: normalizedClanTag,
@@ -261,6 +328,11 @@ export class FwaTrackedClanWarRosterSyncService {
           hasUnresolvedWeights: snapshot.hasUnresolvedWeights,
           observedAt: snapshot.observedAt,
           sourceUpdatedAt: snapshot.sourceUpdatedAt,
+          sourceWarId: snapshot.sourceWarId,
+          sourceWarStartTime: snapshot.sourceWarStartTime,
+          sourceWarEndTime: snapshot.sourceWarEndTime,
+          sourceWarState: snapshot.sourceWarState,
+          sourceCurrentWarUpdatedAt: snapshot.sourceCurrentWarUpdatedAt,
         },
       });
 
@@ -282,6 +354,10 @@ export class FwaTrackedClanWarRosterSyncService {
       }
     });
 
+    console.info(
+      `[fwa-feed] event=tracked_war_roster_sync clan=${normalizedClanTag} rows=${rows.length} members=${snapshot?.members.length ?? 0} source_war_id=${snapshot?.sourceWarId ?? "none"} source_war_start=${snapshot?.sourceWarStartTime?.toISOString() ?? "none"} source_war_state=${snapshot?.sourceWarState ?? "none"} source_current_war_updated_at=${snapshot?.sourceCurrentWarUpdatedAt?.toISOString() ?? "none"} has_snapshot=${Boolean(snapshot)}`,
+    );
+
     return {
       clanTag: normalizedClanTag,
       rowCount: rows.length,
@@ -289,6 +365,11 @@ export class FwaTrackedClanWarRosterSyncService {
       hasSnapshot: Boolean(snapshot),
       hasUnresolvedWeights: snapshot?.hasUnresolvedWeights ?? false,
       totalEffectiveWeight: snapshot?.totalEffectiveWeight ?? null,
+      sourceWarId: snapshot?.sourceWarId ?? null,
+      sourceWarStartTime: snapshot?.sourceWarStartTime ?? null,
+      sourceWarEndTime: snapshot?.sourceWarEndTime ?? null,
+      sourceWarState: snapshot?.sourceWarState ?? null,
+      sourceCurrentWarUpdatedAt: snapshot?.sourceCurrentWarUpdatedAt ?? null,
     };
   }
 }
@@ -296,3 +377,4 @@ export class FwaTrackedClanWarRosterSyncService {
 export const normalizeTrackedClanWarRosterRowsForTest = normalizeTrackedClanWarRosterRows;
 export const applyEffectiveWeightRulesForTest = applyEffectiveWeightRules;
 export const deriveTrackedClanWarRosterSnapshotForTest = deriveTrackedClanWarRosterSnapshot;
+export const pickLatestCurrentWarRowForTest = pickLatestCurrentWarRow;

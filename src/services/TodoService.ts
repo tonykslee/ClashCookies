@@ -612,6 +612,7 @@ export async function buildTodoPagesForUser(input: {
       warId: toFiniteIntOrNull(currentWar.warId),
       startTime: currentWar.startTime ?? null,
       state: currentWar.state ?? null,
+      updatedAt: currentWar.updatedAt ?? null,
     });
   }
   const activeTrackedClanTags = [...activeTrackedCurrentWarByClanTag.keys()];

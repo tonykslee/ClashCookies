@@ -7,7 +7,6 @@ import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaClanWarsWatchService } from "./FwaClanWarsWatchService";
 import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
-import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 
 type SchedulerConfig = {
   clansEnabled: boolean;
@@ -92,11 +91,9 @@ export class FwaFeedSchedulerService {
   private readonly membersSync = new FwaClanMembersSyncService();
   private readonly warMembersSync = new FwaWarMembersSyncService();
   private readonly clanWarsSync = new FwaClanWarsSyncService();
-  private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService();
   private readonly watchService = new FwaClanWarsWatchService(
     this.clanWarsSync,
     this.warMembersSync,
-    this.trackedRosterSync,
   );
 
   private clansInProgress = false;

@@ -9,6 +9,7 @@ import { mapWithConcurrency } from "./concurrency";
 import { selectDistributedSweepChunk } from "./sweep";
 import type { FwaSyncResult } from "./types";
 import { normalizePersistedPlayerName } from "../PlayerLinkService";
+import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 
 type SyncOptions = {
   force?: boolean;
@@ -21,12 +22,16 @@ export class FwaWarMembersSyncService {
   private static readonly FEED_TYPE: FwaFeedType = "WAR_MEMBERS";
   private readonly syncState = new FwaFeedSyncStateService();
   private readonly cursor = new FwaFeedCursorService();
+  private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService();
 
   /** Purpose: initialize war-members sync dependencies. */
   constructor(private readonly client = new FwaStatsClient()) {}
 
   /** Purpose: sync one clan war-members scope with stale-row cleanup and player-catalog updates. */
-  async syncClan(clanTag: string, options?: SyncOptions): Promise<FwaSyncResult> {
+  async syncClan(
+    clanTag: string,
+    options?: SyncOptions,
+  ): Promise<FwaSyncResult & { trackedRosterResult?: Awaited<ReturnType<FwaTrackedClanWarRosterSyncService["syncClan"]>> | null }> {
     const normalizedClanTag = normalizeFwaTag(clanTag);
     if (!normalizedClanTag) {
       return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
@@ -53,18 +58,14 @@ export class FwaWarMembersSyncService {
       const sortedRows = [...rows].sort((a, b) => a.playerTag.localeCompare(b.playerTag));
       const contentHash = computeFeedContentHash(sortedRows);
       const previousState = await this.syncState.getState(scope);
-      if (previousState?.lastContentHash === contentHash) {
-        const result: FwaSyncResult = {
-          rowCount: rows.length,
-          changedRowCount: 0,
-          contentHash,
-          status: "NOOP",
-        };
-        await this.syncState.recordSuccess({ ...scope, ...result, nextEligibleAt }, now);
-        return result;
-      }
+      const hasTrackedClan = await prisma.trackedClan.findUnique({
+        where: { tag: normalizedClanTag },
+        select: { tag: true },
+      });
 
-      const changedRowCount = await prisma.$transaction(async (tx) => {
+      const changedRowCount = previousState?.lastContentHash === contentHash
+        ? 0
+        : await prisma.$transaction(async (tx) => {
         const playerTags = rows.map((row) => row.playerTag);
         const linkedPlayerRows =
           playerTags.length > 0
@@ -177,16 +178,29 @@ export class FwaWarMembersSyncService {
           }
         }
         return staleDelete.count + rows.length;
-      });
+        });
+
+      let trackedRosterResult: Awaited<ReturnType<FwaTrackedClanWarRosterSyncService["syncClan"]>> | null =
+        null;
+      if (hasTrackedClan) {
+        trackedRosterResult = await this.trackedRosterSync.syncClan(normalizedClanTag, { now });
+        console.info(
+          `[fwa-feed] event=war_members_tracked_roster_refresh clan=${normalizedClanTag} raw_status=${previousState?.lastContentHash === contentHash ? "NOOP" : "SUCCESS"} raw_rows=${rows.length} raw_changed_rows=${changedRowCount} roster_has_snapshot=${trackedRosterResult.hasSnapshot} roster_member_rows=${trackedRosterResult.memberRowCount} roster_source_war_id=${trackedRosterResult.sourceWarId ?? "none"} roster_source_war_state=${trackedRosterResult.sourceWarState ?? "none"}`,
+        );
+      }
 
       const result: FwaSyncResult = {
         rowCount: rows.length,
         changedRowCount,
         contentHash,
-        status: "SUCCESS",
+        status: previousState?.lastContentHash === contentHash ? "NOOP" : "SUCCESS",
+      };
+      const output = {
+        ...result,
+        trackedRosterResult,
       };
       await this.syncState.recordSuccess({ ...scope, ...result, nextEligibleAt }, now);
-      return result;
+      return output;
     } catch (error) {
       const errorSummary = String((error as { message?: string })?.message ?? "unknown error").slice(
         0,
