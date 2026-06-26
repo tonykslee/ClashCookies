@@ -48,6 +48,7 @@ export type FwaBaseSwapTrackedMetadata = {
     townhallLevel: number | null;
     section: "war_bases" | "base_errors" | "fwa_bases";
     acknowledged: boolean;
+    baseErrorNote?: string | null;
   }>;
   layoutLinks?: Array<{
     townhall: number;
@@ -896,12 +897,13 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
             : null,
         section,
         acknowledged: Boolean(entry.acknowledged),
+        baseErrorNote:
+          String(entry.baseErrorNote ?? "").trim() || null,
       };
     })
-    .filter(
-      (entry): entry is FwaBaseSwapTrackedMetadata["entries"][number] =>
-        Boolean(entry && entry.position > 0 && entry.playerTag && entry.playerName)
-    );
+    .filter((entry) =>
+      Boolean(entry && entry.position > 0 && entry.playerTag && entry.playerName),
+    ) as FwaBaseSwapTrackedMetadata["entries"];
   if (entries.length === 0) return null;
   const layoutLinks = Array.isArray(value.layoutLinks)
     ? value.layoutLinks

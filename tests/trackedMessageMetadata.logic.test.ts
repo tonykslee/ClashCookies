@@ -58,6 +58,7 @@ describe("tracked message metadata parsing", () => {
           townhallLevel: "18",
           section: "base_errors",
           acknowledged: 1,
+          baseErrorNote: " builder not separated by 6 spaces ",
         },
         {
           position: "2",
@@ -110,6 +111,7 @@ describe("tracked message metadata parsing", () => {
           townhallLevel: 18,
           section: "base_errors",
           acknowledged: true,
+          baseErrorNote: "builder not separated by 6 spaces",
         },
         {
           position: 2,
@@ -119,6 +121,7 @@ describe("tracked message metadata parsing", () => {
           townhallLevel: 17,
           section: "fwa_bases",
           acknowledged: false,
+          baseErrorNote: null,
         },
       ],
       layoutLinks: [
@@ -305,6 +308,7 @@ describe("tracked message metadata parsing", () => {
           townhallLevel: null,
           section: "war_bases",
           acknowledged: false,
+          baseErrorNote: null,
         },
       ],
       layoutLinks: undefined,

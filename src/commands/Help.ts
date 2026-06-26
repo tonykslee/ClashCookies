@@ -691,7 +691,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "`/fwa points` returns point balances (single clan tag or all tracked if tag omitted).",
       "`/fwa match` auto-resolves current war opponent from CoC API and evaluates win/lose/tiebreak using cached points + persisted sync state; `copy_paste:true` opens the compact copy/paste view directly.",
-      "`/fwa base-swap` posts a tracked acknowledgment message for war-base, FWA-base, and base-error positions, includes deduped TH-specific `RISINGDAWN` layout links for listed players, and DMs the invoker copy/paste in-game ping lines (active-war, blacklist-war swap, and TH-grouped base errors). FWA tracked clans resolve positions from the active war roster source, while current-season CWL tracked clans resolve positions from the persisted CWL lineup source and publish in the invocation channel with best-effort auto-pinning. Position lists accept comma-separated, space-separated, or mixed-separated values. Optional `swap-reminder:true|false` adds a swap-back reminder section for CWL `fwa-bases` posts, and `ping_role` can be used to ping a role in that CWL reminder without requiring the tracked clan role. Non-blocking audit-log routing is configured persistently with `/bot-logs type:base-swap enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false> [channel:<channel-or-thread>]`; when unset, legacy typed base-swap routing falls back to the generic `/bot-logs` channel. If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
+      "`/fwa base-swap` posts tracked war/FWA/CWL base-swap acknowledgements with TH layout links, reminder support, and DM ping lines. Position lists accept comma-separated, space-separated, or mixed-separated values, and `base-errors` can add optional notes after grouped positions; commas separate groups, so notes cannot include commas. Non-blocking audit-log routing is configured persistently with `/bot-logs type:base-swap enable:<clan-log channel|clan-lead channel|bot-log channel|custom|false> [channel:<channel-or-thread>]`; when unset, legacy typed base-swap routing falls back to the generic `/bot-logs` channel. If the full post exceeds one Discord message, it prompts the requester to publish exactly 2 linked posts instead of truncating required lines.",
       "`/fwa compliance` runs war-plan compliance checks on demand for a tracked clan (defaults to current active war; use `war-id:current` or numeric `war-id` for historical checks).",
       "`/fwa police configure` controls automatic DM/log enforcement toggles for a tracked clan.",
       "`/fwa police send` test-delivers one rendered sample police message to your DM or the police log destination (`TrackedClan.logChannelId` first, then `/bot-logs`).",
@@ -751,7 +751,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/fwa blacklist-samples rebuild",
       "/fwa blacklist-profile rebuild",
       "/fwa match tag:2QG2C08UP copy_paste:true",
-      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 swap-reminder:false base-errors:2,3",
+      "/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5 6 base-errors:15 builder not separated by 6 spaces, 19 revenge tower not in corner, 23 26, 32 firespitters facing wrong direction, 43",
       "/fwa base-swap clan:2QG2C08UP fwa-bases:1,2 swap-reminder:true ping_role:@Leaders",
       "/fwa compliance tag:2QG2C08UP",
       "/fwa compliance tag:2QG2C08UP war-id:current",

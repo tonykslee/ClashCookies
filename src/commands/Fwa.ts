@@ -299,6 +299,10 @@ type ParsedFwaBaseSwapPositionSelection = {
   label: FwaBaseSwapPositionSelectionLabel;
   section: FwaBaseSwapSection;
   positions: number[];
+  baseErrorNotes?: Array<{
+    position: number;
+    note: string;
+  }>;
 };
 
 type FwaBaseSwapRosterMember = BaseSwapRosterMember;
@@ -311,6 +315,7 @@ type FwaBaseSwapAnnouncementEntry = {
   townhallLevel: number | null;
   section: FwaBaseSwapSection;
   acknowledged: boolean;
+  baseErrorNote?: string | null;
 };
 
 type FwaBaseSwapLayoutLink = {
@@ -800,6 +805,92 @@ function parseBaseSwapPositionList(input: string | null | undefined): {
   };
 }
 
+type ParsedFwaBaseSwapBaseErrorGroup = {
+  positions: number[];
+  note: string | null;
+};
+
+function parseFwaBaseSwapBaseErrorGroups(input: string | null | undefined): {
+  ok: true;
+  groups: ParsedFwaBaseSwapBaseErrorGroup[];
+} | {
+  ok: false;
+  error: string;
+} {
+  if (!input) {
+    return { ok: true, groups: [] };
+  }
+
+  const groups: ParsedFwaBaseSwapBaseErrorGroup[] = [];
+  for (const rawGroup of String(input).split(",")) {
+    const group = rawGroup.trim();
+    if (!group) continue;
+
+    const tokens = group.split(/\s+/).map((value) => value.trim()).filter(Boolean);
+    const positions: number[] = [];
+    const noteTokens: string[] = [];
+    let noteStarted = false;
+
+    for (const token of tokens) {
+      const parsed = Number.parseInt(token, 10);
+      const isPositiveInteger =
+        /^\d+$/.test(token) && Number.isFinite(parsed) && parsed > 0;
+      if (!noteStarted && isPositiveInteger) {
+        positions.push(parsed);
+        continue;
+      }
+
+      noteStarted = true;
+      noteTokens.push(token);
+    }
+
+    if (positions.length === 0) {
+      return {
+        ok: false,
+        error:
+          `Invalid \`base-errors\` group \`${group}\`: each group must begin with one or more positive roster positions.`,
+      };
+    }
+
+    const note =
+      noteTokens.length > 0
+        ? noteTokens.join(" ").replace(/\s+/g, " ").trim()
+        : null;
+    if (note && note.length > 160) {
+      return {
+        ok: false,
+        error:
+          `Base-error explanation for \`${group}\` is too long. Keep each note to 160 characters or fewer.`,
+      };
+    }
+
+    groups.push({
+      positions,
+      note,
+    });
+  }
+
+  const duplicatePositions: number[] = [];
+  const seenPositions = new Set<number>();
+  for (const group of groups) {
+    for (const position of group.positions) {
+      if (seenPositions.has(position)) {
+        duplicatePositions.push(position);
+        continue;
+      }
+      seenPositions.add(position);
+    }
+  }
+  if (duplicatePositions.length > 0) {
+    return {
+      ok: false,
+      error: `Duplicate positions in \`base-errors\`: ${formatBaseSwapPositionList([...new Set(duplicatePositions)])}.`,
+    };
+  }
+
+  return { ok: true, groups };
+}
+
 function formatBaseSwapPositionList(values: readonly number[]): string {
   return values.map((value) => `#${value}`).join(", ");
 }
@@ -815,8 +906,21 @@ function buildBaseSwapPositionSelectionErrorMessage(input: {
   result: ReturnType<typeof parseBaseSwapPositionList>;
 }): string | null {
   if (input.result.invalidTokens.length > 0) {
+    const hasTextTokens = input.result.invalidTokens.some((token) => !/^\d+$/.test(token));
+    if (input.label === "base-errors") {
+      return [
+        `Invalid positions in \`${input.label}\`: ${input.result.invalidTokens.join(", ")}.`,
+        "Use comma-separated or space-separated positive roster positions like `1, 4, 7`.",
+      ].join(" ");
+    }
+    if (!hasTextTokens) {
+      return [
+        `Invalid positions in \`${input.label}\`: ${input.result.invalidTokens.join(", ")}.`,
+        "Use comma-separated or space-separated positive roster positions like `1, 4, 7`.",
+      ].join(" ");
+    }
     return [
-      `Invalid positions in \`${input.label}\`: ${input.result.invalidTokens.join(", ")}.`,
+      `Explanations are supported only in \`base-errors\`; \`${input.label}\` accepts positions only.`,
       "Use comma-separated or space-separated positive roster positions like `1, 4, 7`.",
     ].join(" ");
   }
@@ -854,6 +958,35 @@ function parseFwaBaseSwapPositionSelections(input: {
   | { ok: true; selections: ParsedFwaBaseSwapPositionSelection[] }
   | { ok: false; error: string } {
   const parsedSelections = input.selections.map((selection) => {
+    if (selection.section === "base_errors") {
+      const result = parseFwaBaseSwapBaseErrorGroups(selection.raw);
+      if (!result.ok) {
+        return {
+          label: selection.label,
+          section: selection.section,
+          positions: [],
+          error: result.error,
+        };
+      }
+
+      const positions = result.groups.flatMap((group) => group.positions);
+      const baseErrorNotes = result.groups.flatMap((group) =>
+        group.note
+          ? group.positions.map((position) => ({
+              position,
+              note: group.note as string,
+            }))
+          : [],
+      );
+
+      return {
+        label: selection.label,
+        section: selection.section,
+        positions,
+        baseErrorNotes: baseErrorNotes.length > 0 ? baseErrorNotes : undefined,
+      };
+    }
+
     const result = parseBaseSwapPositionList(selection.raw);
     return {
       label: selection.label,
@@ -865,12 +998,24 @@ function parseFwaBaseSwapPositionSelections(input: {
   });
 
   for (const parsed of parsedSelections) {
+    if ("error" in parsed) {
+      return { ok: false, error: String(parsed.error ?? "Invalid base-swap positions.") };
+    }
+    if (parsed.section === "base_errors") {
+      continue;
+    }
+    const numericParsed = parsed as {
+      label: FwaBaseSwapPositionSelectionLabel;
+      positions: number[];
+      invalidTokens: string[];
+      duplicatePositions: number[];
+    };
     const error = buildBaseSwapPositionSelectionErrorMessage({
-      label: parsed.label,
+      label: numericParsed.label,
       result: {
-        positions: parsed.positions,
-        invalidTokens: parsed.invalidTokens,
-        duplicatePositions: parsed.duplicatePositions,
+        positions: numericParsed.positions,
+        invalidTokens: numericParsed.invalidTokens,
+        duplicatePositions: numericParsed.duplicatePositions,
       },
     });
     if (error) {
@@ -909,6 +1054,9 @@ function parseFwaBaseSwapPositionSelections(input: {
       label: selection.label,
       section: selection.section,
       positions: selection.positions,
+      ...("baseErrorNotes" in selection && selection.baseErrorNotes
+        ? { baseErrorNotes: selection.baseErrorNotes }
+        : {}),
     })),
   };
 }
@@ -956,6 +1104,9 @@ function buildBaseSwapAnnouncementEntries(input: {
 
   const entries: FwaBaseSwapAnnouncementEntry[] = [];
   for (const selection of input.selections) {
+    const baseErrorNoteByPosition = new Map(
+      (selection.baseErrorNotes ?? []).map((entry) => [entry.position, entry.note]),
+    );
     for (const position of selection.positions) {
       const member = memberByPosition.get(position);
       if (!member) continue;
@@ -967,6 +1118,10 @@ function buildBaseSwapAnnouncementEntries(input: {
         townhallLevel: member.townhallLevel,
         section: selection.section,
         acknowledged: false,
+        baseErrorNote:
+          selection.section === "base_errors"
+            ? baseErrorNoteByPosition.get(position) ?? null
+            : null,
       });
     }
   }
@@ -1065,7 +1220,13 @@ function renderBaseSwapLine(entry: FwaBaseSwapAnnouncementEntry): string {
     ? `<@${entry.discordUserId}>`
     : "*(unlinked)*";
   const mark = entry.acknowledged ? "✅" : ":x:";
-  return `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
+  const note =
+    entry.section === "base_errors"
+      ? String(entry.baseErrorNote ?? "").trim()
+      : "";
+  return note
+    ? `#${entry.position} - ${mention} - ${entry.playerName} - ${mark} — ${note}`
+    : `#${entry.position} - ${mention} - ${entry.playerName} - ${mark}`;
 }
 
 function getFwaBaseSwapEntriesBySection(
@@ -13721,7 +13882,8 @@ export const Fwa: Command = {
         },
         {
           name: "base-errors",
-          description: "Comma-separated base-error positions, e.g. 2,3,9",
+          description:
+            "Grouped base-error positions with optional notes, e.g. 15 builder...",
           type: ApplicationCommandOptionType.String,
           required: false,
         },

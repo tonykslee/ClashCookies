@@ -148,6 +148,7 @@ function buildEntry(input: {
   discordUserId?: string | null;
   townhallLevel?: number | null;
   acknowledged?: boolean;
+  baseErrorNote?: string | null;
 }): FwaBaseSwapTrackedMetadata["entries"][number] {
   return {
     position: input.position,
@@ -157,6 +158,7 @@ function buildEntry(input: {
     townhallLevel: input.townhallLevel ?? null,
     section: input.section,
     acknowledged: input.acknowledged ?? false,
+    ...(input.baseErrorNote !== undefined ? { baseErrorNote: input.baseErrorNote } : {}),
   };
 }
 
@@ -670,19 +672,96 @@ describe("FWA base-swap layout links", () => {
     }
   });
 
-  it("rejects invalid tokens and duplicate inputs for all base-swap args", () => {
-    const cases = [
-      { label: "war-bases", section: "war_bases" as const },
-      { label: "base-errors", section: "base_errors" as const },
-      { label: "fwa-bases", section: "fwa_bases" as const },
-    ];
+  it("parses grouped base-error explanations and preserves shared notes", () => {
+    const mixed = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "1 4 5 12, 15 builder not separated by 6 spaces, 19 revenge tower not in corner, 23 26, 32 firespitters facing wrong direction, 43",
+        },
+      ],
+    });
 
-    for (const { label, section } of cases) {
+    expect(mixed).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [1, 4, 5, 12, 15, 19, 23, 26, 32, 43],
+          baseErrorNotes: [
+            { position: 15, note: "builder not separated by 6 spaces" },
+            { position: 19, note: "revenge tower not in corner" },
+            { position: 32, note: "firespitters facing wrong direction" },
+          ],
+        },
+      ],
+    });
+
+    const shared = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "23 26 firespitters facing wrong direction",
+        },
+      ],
+    });
+
+    expect(shared).toEqual({
+      ok: true,
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [23, 26],
+          baseErrorNotes: [
+            { position: 23, note: "firespitters facing wrong direction" },
+            { position: 26, note: "firespitters facing wrong direction" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("rejects text-only base-error groups, note overflows, and text in the numeric args", () => {
+    const textOnly = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "builder not separated by 6 spaces",
+        },
+      ],
+    });
+    expect(textOnly).toEqual({
+      ok: false,
+      error:
+        "Invalid `base-errors` group `builder not separated by 6 spaces`: each group must begin with one or more positive roster positions.",
+    });
+
+    const tooLong = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: `1 ${"a".repeat(161)}`,
+        },
+      ],
+    });
+    expect(tooLong).toEqual({
+      ok: false,
+      error:
+        `Base-error explanation for \`1 ${"a".repeat(161)}\` is too long. Keep each note to 160 characters or fewer.`,
+    });
+
+    for (const label of ["war-bases", "fwa-bases"] as const) {
       const invalid = parseFwaBaseSwapPositionSelectionsForTest({
         selections: [
           {
             label,
-            section,
+            section: label === "war-bases" ? "war_bases" : "fwa_bases",
             raw: "1,abc",
           },
         ],
@@ -690,23 +769,26 @@ describe("FWA base-swap layout links", () => {
       expect(invalid).toEqual({
         ok: false,
         error:
-          `Invalid positions in \`${label}\`: abc. Use comma-separated or space-separated positive roster positions like \`1, 4, 7\`.`,
-      });
-
-      const duplicate = parseFwaBaseSwapPositionSelectionsForTest({
-        selections: [
-          {
-            label,
-            section,
-            raw: "1,1",
-          },
-        ],
-      });
-      expect(duplicate).toEqual({
-        ok: false,
-        error: `Duplicate positions in \`${label}\`: #1.`,
+          `Explanations are supported only in \`base-errors\`; \`${label}\` accepts positions only. Use comma-separated or space-separated positive roster positions like \`1, 4, 7\`.`,
       });
     }
+  });
+
+  it("rejects duplicate positions across separate base-error groups", () => {
+    const duplicate = parseFwaBaseSwapPositionSelectionsForTest({
+      selections: [
+        {
+          label: "base-errors",
+          section: "base_errors",
+          raw: "1, 1 builder not separated by 6 spaces",
+        },
+      ],
+    });
+
+    expect(duplicate).toEqual({
+      ok: false,
+      error: "Duplicate positions in `base-errors`: #1.",
+    });
   });
 
   it("allows war-bases and base-errors to share a position", () => {
@@ -768,6 +850,120 @@ describe("FWA base-swap layout links", () => {
     expect(content).toContain("YOU HAVE AN ACTIVE WAR BASE");
     expect(content).toContain("YOU HAVE BASE ERRORS");
     expect((content.match(/#1 - <@100> - Alpha - :x:/g) ?? []).length).toBe(2);
+  });
+
+  it("renders base-error notes inline and preserves them across acknowledgement rerenders", () => {
+    const note = "builder not separated by 6 spaces";
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 15,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          discordUserId: "100",
+          townhallLevel: 18,
+          baseErrorNote: note,
+        }),
+        buildEntry({
+          position: 16,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "war_bases",
+          discordUserId: "101",
+          townhallLevel: 17,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(content).toContain(
+      `#15 - <@100> - Alpha - :x: — ${note}`,
+    );
+    expect(content).toContain("#16 - <@101> - Bravo - :x:");
+    expect(content).not.toContain(
+      "#16 - <@101> - Bravo - :x: —",
+    );
+
+    const acknowledged = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        buildEntry({
+          position: 15,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "base_errors",
+          discordUserId: "100",
+          townhallLevel: 18,
+          acknowledged: true,
+          baseErrorNote: note,
+        }),
+      ],
+      layoutLinks: [],
+    });
+
+    expect(acknowledged).toContain(
+      `#15 - <@100> - Alpha - ${FWA_BASE_SWAP_ACK_EMOJI} — ${note}`,
+    );
+    expect(acknowledged).toContain(note);
+    expect(acknowledged).not.toContain(":x: —");
+  });
+
+  it("attaches base-error notes only to base-errors entries during announcement construction", () => {
+    const result = buildBaseSwapAnnouncementEntriesForTest({
+      clanKind: "FWA",
+      clanTag: "2QG2C08UP",
+      roster: [
+        buildRosterMember({
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          section: "war_bases",
+          discordUserId: "100",
+          townhallLevel: 18,
+        }),
+      ],
+      selections: [
+        {
+          label: "war-bases",
+          section: "war_bases",
+          positions: [1],
+        },
+        {
+          label: "base-errors",
+          section: "base_errors",
+          positions: [1],
+          baseErrorNotes: [
+            { position: 1, note: "builder not separated by 6 spaces" },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      entries: [
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          discordUserId: "100",
+          townhallLevel: 18,
+          section: "war_bases",
+          acknowledged: false,
+          baseErrorNote: null,
+        },
+        {
+          position: 1,
+          playerTag: "#AAA111",
+          playerName: "Alpha",
+          discordUserId: "100",
+          townhallLevel: 18,
+          section: "base_errors",
+          acknowledged: false,
+          baseErrorNote: "builder not separated by 6 spaces",
+        },
+      ],
+    });
   });
 
   it("rejects fwa-bases overlap with war-bases and base-errors", () => {
@@ -971,7 +1167,8 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
-  it("updates fwa-bases rows from :x: to the acknowledged mark on reaction", async () => {
+  it("updates base-error rows from :x: to the acknowledged mark on reaction", async () => {
+    const note = "builder not separated by 6 spaces";
     const metadata: FwaBaseSwapTrackedMetadata = {
       clanName: "Test Clan",
       createdByUserId: "admin-1",
@@ -982,9 +1179,10 @@ describe("FWA base-swap layout links", () => {
           position: 1,
           playerTag: "#AAA111",
           playerName: "Alpha",
-          section: "fwa_bases",
+          section: "base_errors",
           discordUserId: "reactor-1",
           acknowledged: false,
+          baseErrorNote: note,
         }),
       ],
       layoutLinks: [],
@@ -1016,9 +1214,26 @@ describe("FWA base-swap layout links", () => {
     expect(changed).toBe(true);
     expect(message.edit).toHaveBeenCalledTimes(1);
     const editPayload = message.edit.mock.calls[0]?.[0];
-    expect(String(editPayload.content)).toContain("#1 - <@reactor-1> - Alpha -");
+    expect(String(editPayload.content)).toContain(
+      `#1 - <@reactor-1> - Alpha -`,
+    );
     expect(String(editPayload.content)).toContain(FWA_BASE_SWAP_ACK_EMOJI);
+    expect(String(editPayload.content)).toContain(`— ${note}`);
     expect(String(editPayload.content)).not.toContain(":x:");
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            entries: [
+              expect.objectContaining({
+                acknowledged: true,
+                baseErrorNote: note,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
   });
 
   it("preserves TH links during tracked-message reaction re-renders", async () => {
@@ -1232,7 +1447,7 @@ describe("FWA base-swap layout links", () => {
     expect(plan.singleContent).toContain("React with ✅ once your base is fixed.");
   });
 
-  it("builds deterministic two-part split plans without truncating required lines", () => {
+  it("builds deterministic two-part split plans without truncating note-bearing required lines", () => {
     const oversizedEntries = Array.from({ length: 70 }, (_, index) =>
       buildEntry({
         position: index + 1,
@@ -1241,6 +1456,8 @@ describe("FWA base-swap layout links", () => {
         section: index % 2 === 0 ? "war_bases" : "base_errors",
         discordUserId: `${100000 + index}`,
         townhallLevel: index % 2 === 0 ? 18 : 16,
+        baseErrorNote:
+          index === 1 ? "builder not separated by 6 spaces" : undefined,
       }),
     );
 
@@ -1269,6 +1486,11 @@ describe("FWA base-swap layout links", () => {
     expect(split[0]).not.toContain("...truncated");
     expect(split[1]).not.toContain("...truncated");
     expect(split[1]).toContain("React with ✅ once your base is fixed.");
+    expect(plan.singleContent).toContain("builder not separated by 6 spaces");
+    expect(
+      split[0].includes("builder not separated by 6 spaces") ||
+        split[1].includes("builder not separated by 6 spaces"),
+    ).toBe(true);
     const lineSet = new Set(plan.singleContent.split("\n"));
     for (const line of split[0].split("\n")) {
       expect(lineSet.has(line)).toBe(true);
@@ -1296,9 +1518,10 @@ describe("FWA base-swap split-post reaction tracking", () => {
           position: 1,
           playerTag: "#AAA111",
           playerName: "Alpha",
-          section: "war_bases",
+          section: "base_errors",
           discordUserId: "reactor-1",
           acknowledged: false,
+          baseErrorNote: "builder not separated by 6 spaces",
         }),
       ],
       layoutLinks: [],
@@ -1370,7 +1593,12 @@ describe("FWA base-swap split-post reaction tracking", () => {
         where: { messageId: "message-1" },
         data: expect.objectContaining({
           metadata: expect.objectContaining({
-            entries: [expect.objectContaining({ acknowledged: true })],
+            entries: [
+              expect.objectContaining({
+                acknowledged: true,
+                baseErrorNote: "builder not separated by 6 spaces",
+              }),
+            ],
           }),
         }),
       }),
@@ -1381,7 +1609,12 @@ describe("FWA base-swap split-post reaction tracking", () => {
         where: { messageId: "message-2" },
         data: expect.objectContaining({
           metadata: expect.objectContaining({
-            entries: [expect.objectContaining({ acknowledged: true })],
+            entries: [
+              expect.objectContaining({
+                acknowledged: true,
+                baseErrorNote: "builder not separated by 6 spaces",
+              }),
+            ],
           }),
         }),
       }),
@@ -3023,6 +3256,23 @@ describe("FWA base-swap DM copy helpers", () => {
     );
   });
 
+  it("keeps base-error notes out of the generated in-game DM copy lines", () => {
+    const content = buildFwaBaseSwapDmContentForTest([
+      buildEntry({
+        position: 2,
+        playerTag: "#B1",
+        playerName: "Two",
+        section: "base_errors",
+        townhallLevel: 16,
+        baseErrorNote: "builder not separated by 6 spaces",
+      }),
+    ]);
+
+    expect(content).toContain("Base error messages:");
+    expect(content).toContain("`TH16 update FWA layout: !th16 @Two`");
+    expect(content).not.toContain("builder not separated by 6 spaces");
+  });
+
   it("includes a separate blacklist-war swap DM section for fwa-bases entries", () => {
     const lines = buildFwaBaseSwapFwaBaseDmLinesForTest([
       buildEntry({
@@ -3512,7 +3762,8 @@ describe("FWA base-swap bot-log audit", () => {
         clanTag: "2QG2C08UP",
         warBases: "1,4",
         fwaBases: "5,6",
-        baseErrors: "2,3",
+        baseErrors:
+          "15 builder not separated by 6 spaces, 19 revenge tower not in corner, 23 26, 32 firespitters facing wrong direction, 43",
         swapReminder: true,
       }),
       messageUrls: [
@@ -3529,7 +3780,7 @@ describe("FWA base-swap bot-log audit", () => {
       "https://discord.com/channels/guild-1/channel-1/msg-1",
     );
     expect(content).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:2,3 swap-reminder:true`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1,4 fwa-bases:5,6 base-errors:15 builder not separated by 6 spaces, 19 revenge tower not in corner, 23 26, 32 firespitters facing wrong direction, 43 swap-reminder:true`",
     );
     expect(content).not.toContain("Source channel:");
     expect(content).not.toContain("```text");
