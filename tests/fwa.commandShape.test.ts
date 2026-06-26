@@ -22,6 +22,8 @@ describe("/fwa base-swap command shape", () => {
     );
     expect(baseErrors?.type).toBe(ApplicationCommandOptionType.String);
     expect(baseErrors?.required).toBe(false);
+    expect(baseErrors?.description).toContain("optional notes");
+    expect(baseErrors?.description?.length).toBeLessThanOrEqual(100);
 
     const fwaBases = baseSwap?.options?.find(
       (option: { name: string }) => option.name === "fwa-bases",
