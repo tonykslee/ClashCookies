@@ -8921,6 +8921,8 @@ describe("TodoSnapshotService", () => {
         position: 8,
         playerName: "Alpha",
         townHall: 15,
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
@@ -10576,6 +10578,8 @@ describe("TodoSnapshotService", () => {
         position: 8,
         playerName: "Derived Alpha",
         townHall: 14,
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
@@ -10940,6 +10944,8 @@ describe("TodoSnapshotService", () => {
         position: 8,
         playerName: "Derived Alpha",
         townHall: 14,
+        sourceWarId: 1001,
+        sourceWarStartTime: new Date("2026-03-26T12:00:00.000Z"),
       },
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
