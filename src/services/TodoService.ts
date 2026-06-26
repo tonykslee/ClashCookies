@@ -19,9 +19,13 @@ import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { cwlRotationService } from "./CwlRotationService";
 import {
   buildTrackedWarMemberStateByClanAndPlayer,
+  classifyTrackedWarRosterCurrentIdentity,
   isTodoWarStateActive,
+  resolveTrackedWarRosterRenderState,
   type TodoTrackedCurrentWarRow,
-  type TodoTrackedWarRosterRow,
+  type TodoTrackedWarRosterCurrentRow,
+  type TrackedWarRosterIdentityMatch,
+  type TrackedWarRosterRenderState,
 } from "./TodoTrackedWarStateService";
 import { resolveCurrentWarMatchTypeSignal } from "./MatchTypeResolutionService";
 
@@ -81,20 +85,6 @@ type TodoEventGroup = {
 type CachedTodoRender = {
   expiresAtMs: number;
   pages: TodoPagesResult;
-};
-
-type WarAttacksRow = {
-  warId: number;
-  clanTag: string;
-  warStartTime: Date;
-  playerTag: string;
-  playerPosition: number | null;
-  attacksUsed: number;
-  attackOrder: number;
-  attackNumber: number;
-  defenderPosition: number | null;
-  stars: number;
-  attackSeenAt: Date;
 };
 
 type CurrentWarMatchContextRow = {
@@ -292,6 +282,7 @@ export async function buildTodoPagesForUser(input: {
     trackedClanRows,
     raidTrackedClanRows,
     currentWarRows,
+    trackedWarRosterParentRows,
     clanMemberTownHallRows,
     playerCatalogTownHallRows,
     playerSignalStateRows,
@@ -327,6 +318,22 @@ export async function buildTodoPagesForUser(input: {
             state: true,
             inferredMatchType: true,
             updatedAt: true,
+          },
+        })
+      : Promise.resolve([]),
+    activeWarOwnerClanTags.length > 0
+      ? prisma.fwaTrackedClanWarRosterCurrent.findMany({
+          where: { clanTag: { in: activeWarOwnerClanTags } },
+          select: {
+            clanTag: true,
+            clanName: true,
+            sourceWarId: true,
+            sourceWarStartTime: true,
+            sourceWarEndTime: true,
+            sourceWarState: true,
+            sourceCurrentWarUpdatedAt: true,
+            sourceUpdatedAt: true,
+            observedAt: true,
           },
         })
       : Promise.resolve([]),
@@ -615,14 +622,90 @@ export async function buildTodoPagesForUser(input: {
       updatedAt: currentWar.updatedAt ?? null,
     });
   }
-  const activeTrackedClanTags = [...activeTrackedCurrentWarByClanTag.keys()];
-  const trackedWarAttackRows: WarAttacksRow[] =
-    activeTrackedClanTags.length > 0
-      ? await prisma.warAttacks.findMany({
-          where: {
-            clanTag: { in: activeTrackedClanTags },
+  const trackedWarSnapshotsByClanTag = new Map<string, TodoSnapshotRecord[]>();
+  for (const snapshot of snapshotRows) {
+    const clanTag = normalizeClanTag(snapshot.warClanTag ?? snapshot.clanTag ?? "");
+    if (!clanTag) continue;
+    const existingSnapshots = trackedWarSnapshotsByClanTag.get(clanTag);
+    if (existingSnapshots) {
+      existingSnapshots.push(snapshot);
+      continue;
+    }
+    trackedWarSnapshotsByClanTag.set(clanTag, [snapshot]);
+  }
+  const trackedWarRosterParentRowList = Array.isArray(trackedWarRosterParentRows)
+    ? (trackedWarRosterParentRows as TodoTrackedWarRosterCurrentRow[])
+    : [];
+  const trackedWarRosterParentByClanTag = new Map<string, TodoTrackedWarRosterCurrentRow>(
+    trackedWarRosterParentRowList.map((row) => [
+      normalizeClanTag(row.clanTag),
+      row,
+    ] as const).filter((entry): entry is [string, TodoTrackedWarRosterCurrentRow] => Boolean(entry[0])),
+  );
+  const exactTrackedWarContextByClanTag = new Map<string, TodoTrackedCurrentWarRow>();
+  for (const [clanTag, parent] of trackedWarRosterParentByClanTag.entries()) {
+    if (!trackedClanTagSet.has(clanTag)) continue;
+    const currentWar = currentWarIdentityByClanTag.get(clanTag) ?? null;
+    if (!currentWar) continue;
+    const identityMatch: TrackedWarRosterIdentityMatch = classifyTrackedWarRosterCurrentIdentity({
+      roster: parent,
+      currentWar,
+    });
+    if (identityMatch !== "EXACT_WAR_ID" && identityMatch !== "EXACT_START_TIME") continue;
+    const existingSnapshots = trackedWarSnapshotsByClanTag.get(clanTag) ?? [];
+    let renderState: TrackedWarRosterRenderState | null = null;
+    for (const existingSnapshot of existingSnapshots) {
+      renderState = resolveTrackedWarRosterRenderState({
+        roster: parent,
+        currentWar,
+        existingSnapshot,
+        identityMatch,
+      });
+      if (renderState === "ACTIVE" || renderState === "RETAINED_ENDED") {
+        break;
+      }
+    }
+    if (renderState !== "ACTIVE" && renderState !== "RETAINED_ENDED") continue;
+
+    exactTrackedWarContextByClanTag.set(clanTag, {
+      clanTag,
+      warId: toFiniteIntOrNull(currentWar.warId),
+      startTime: currentWar.startTime ?? null,
+      state: currentWar.state ?? null,
+      updatedAt: currentWar.updatedAt ?? null,
+      renderState,
+    });
+  }
+  const trackedWarAttackWhereClauses = [...exactTrackedWarContextByClanTag.values()]
+    .map((context) =>
+      context.warId !== null
+        ? {
+            clanTag: context.clanTag,
+            warId: context.warId,
             playerTag: { in: linkedTags },
-          },
+          }
+        : context.startTime instanceof Date
+          ? {
+              clanTag: context.clanTag,
+              warStartTime: context.startTime,
+              playerTag: { in: linkedTags },
+            }
+          : null,
+    )
+    .filter(
+      (
+        value,
+      ): value is
+        | { clanTag: string; warId: number; playerTag: { in: string[] } }
+        | { clanTag: string; warStartTime: Date; playerTag: { in: string[] } } => value !== null,
+    );
+  const [trackedWarAttackRows, trackedWarRosterRows] = await Promise.all([
+    trackedWarAttackWhereClauses.length > 0
+      ? prisma.warAttacks.findMany({
+          where:
+            trackedWarAttackWhereClauses.length === 1
+              ? trackedWarAttackWhereClauses[0]
+              : { OR: trackedWarAttackWhereClauses },
           select: {
             warId: true,
             clanTag: true,
@@ -637,12 +720,11 @@ export async function buildTodoPagesForUser(input: {
             attackSeenAt: true,
           },
         })
-      : [];
-  const trackedWarRosterRows: TodoTrackedWarRosterRow[] =
-    activeTrackedClanTags.length > 0
-      ? await prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
+      : Promise.resolve([]),
+    trackedWarAttackWhereClauses.length > 0
+      ? prisma.fwaTrackedClanWarRosterMemberCurrent.findMany({
           where: {
-            clanTag: { in: activeTrackedClanTags },
+            clanTag: { in: [...exactTrackedWarContextByClanTag.keys()] },
             playerTag: { in: linkedTags },
           },
           select: {
@@ -653,9 +735,10 @@ export async function buildTodoPagesForUser(input: {
             townHall: true,
           },
         })
-      : [];
+      : Promise.resolve([]),
+  ]);
   const trackedWarMemberByClanAndPlayer = buildTrackedWarMemberStateByClanAndPlayer({
-    currentWarByClanTag: activeTrackedCurrentWarByClanTag,
+    currentWarByClanTag: exactTrackedWarContextByClanTag,
     rosterRows: trackedWarRosterRows,
     warAttackRows: trackedWarAttackRows,
   });
@@ -710,6 +793,24 @@ export async function buildTodoPagesForUser(input: {
     const trackedWarMember = warMemberKey
       ? trackedWarMemberByClanAndPlayer.get(warMemberKey) ?? null
       : null;
+    const exactTrackedWarContext = resolvedWarClanTag
+      ? exactTrackedWarContextByClanTag.get(resolvedWarClanTag) ?? null
+      : null;
+    const snapshotWarOwnerWarId = snapshot
+      ? toFiniteIntOrNull(
+          (snapshot as TodoSnapshotRecord & { warOwnerWarId?: number | null }).warOwnerWarId,
+        )
+      : null;
+    const snapshotWarIdentityMatches =
+      snapshotWarOwnerWarId === null ||
+      exactTrackedWarContext?.warId === null ||
+      snapshotWarOwnerWarId === exactTrackedWarContext?.warId;
+    const warAttackDetailsRenderable = Boolean(
+      snapshot?.warActive === true &&
+        exactTrackedWarContext &&
+        trackedWarMember?.hasExactAttackState === true &&
+        snapshotWarIdentityMatches,
+    );
     const currentTrackedWarClanActive = Boolean(
       resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
     );
@@ -717,7 +818,7 @@ export async function buildTodoPagesForUser(input: {
     const resolvedWarPosition = snapshot?.warActive
       ? toFiniteIntOrNull(trackedWarMember?.position ?? snapshotWarPosition)
       : null;
-    const resolvedWarAttackDetails = warTrackedClanActive
+    const resolvedWarAttackDetails = warAttackDetailsRenderable
       ? (trackedWarMember?.attackDetails ?? [])
       : [];
     const resolvedTownHall = (() => {
@@ -2281,6 +2382,8 @@ function clampInt(input: unknown, min: number, max: number): number {
 
 /** Purpose: convert unknown numeric input to finite integer or null for nullable status fields. */
 function toFiniteIntOrNull(input: unknown): number | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input === "string" && input.trim().length <= 0) return null;
   const parsed = Number(input);
   if (!Number.isFinite(parsed)) return null;
   return Math.trunc(parsed);

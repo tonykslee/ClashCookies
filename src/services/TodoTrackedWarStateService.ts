@@ -12,6 +12,33 @@ export type TodoTrackedCurrentWarRow = {
 
 export type TodoTrackedWarRenderState = "ACTIVE" | "RETAINED_ENDED";
 
+export type TodoTrackedWarRosterCurrentRow = {
+  clanTag: string;
+  clanName: string | null;
+  sourceWarId: number | null;
+  sourceWarStartTime: Date | null;
+  sourceWarEndTime: Date | null;
+  sourceWarState: string | null;
+  sourceCurrentWarUpdatedAt: Date | null;
+  sourceUpdatedAt: Date | null;
+  observedAt: Date | null;
+};
+
+export type TrackedWarRosterIdentityMatch =
+  | "EXACT_WAR_ID"
+  | "EXACT_START_TIME"
+  | "LEGACY_UNSCOPED"
+  | "STALE_OR_MISMATCHED";
+
+export type TrackedWarRosterRenderState = "ACTIVE" | "RETAINED_ENDED" | "INACTIVE";
+
+export type TodoTrackedWarSnapshotLike = {
+  warClanTag?: string | null;
+  clanTag?: string | null;
+  warActive?: boolean | null;
+  warOwnerWarId?: number | null;
+};
+
 export type TodoTrackedWarAttackRow = {
   warId: number;
   clanTag: string;
@@ -69,6 +96,95 @@ type MutableTrackedWarMemberState = {
 export function isTodoWarStateActive(state: unknown): boolean {
   const normalized = String(state ?? "").toLowerCase();
   return normalized.includes("preparation") || normalized.includes("inwar");
+}
+
+/** Purpose: classify tracked-roster identity without mixing identity matching with lifecycle state. */
+export function classifyTrackedWarRosterCurrentIdentity(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+}): TrackedWarRosterIdentityMatch {
+  const currentWar = input.currentWar;
+  const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
+  const rosterStartMs =
+    input.roster.sourceWarStartTime instanceof Date
+      ? input.roster.sourceWarStartTime.getTime()
+      : null;
+
+  if (!currentWar) {
+    return rosterWarId === null && rosterStartMs === null
+      ? "LEGACY_UNSCOPED"
+      : "STALE_OR_MISMATCHED";
+  }
+
+  const currentWarId = toFiniteIntOrNull(currentWar.warId);
+  const currentStartMs =
+    currentWar.startTime instanceof Date ? currentWar.startTime.getTime() : null;
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return "EXACT_WAR_ID";
+  }
+  if (rosterStartMs !== null && currentStartMs !== null) {
+    return rosterStartMs === currentStartMs ? "EXACT_START_TIME" : "STALE_OR_MISMATCHED";
+  }
+
+  return rosterWarId === null && rosterStartMs === null
+    ? "LEGACY_UNSCOPED"
+    : "STALE_OR_MISMATCHED";
+}
+
+/** Purpose: identify retained-ended tracked-war continuity by exact identity only. */
+export function matchesRetainedTrackedWarRosterIdentity(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+}): boolean {
+  if (!input.currentWar) return false;
+  const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
+  const currentWarId = toFiniteIntOrNull(input.currentWar.warId);
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return true;
+  }
+  const rosterStartMs =
+    input.roster.sourceWarStartTime instanceof Date
+      ? input.roster.sourceWarStartTime.getTime()
+      : null;
+  const currentStartMs =
+    input.currentWar.startTime instanceof Date ? input.currentWar.startTime.getTime() : null;
+  return rosterStartMs !== null && currentStartMs !== null
+    ? rosterStartMs === currentStartMs
+    : false;
+}
+
+/** Purpose: resolve whether a tracked-war roster row remains eligible to render exact details. */
+export function resolveTrackedWarRosterRenderState(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+  existingSnapshot: TodoTrackedWarSnapshotLike | null;
+  identityMatch: TrackedWarRosterIdentityMatch;
+}): TrackedWarRosterRenderState {
+  if (input.identityMatch === "STALE_OR_MISMATCHED") {
+    return "INACTIVE";
+  }
+  if (input.currentWar && isTodoWarStateActive(input.currentWar.state)) {
+    return "ACTIVE";
+  }
+
+  const existingWarClanTag = normalizeClanTag(
+    input.existingSnapshot?.warClanTag ?? input.existingSnapshot?.clanTag ?? "",
+  );
+  const rosterClanTag = normalizeClanTag(input.roster.clanTag);
+  if (
+    input.existingSnapshot?.warActive === true &&
+    existingWarClanTag &&
+    rosterClanTag &&
+    existingWarClanTag === rosterClanTag &&
+    matchesRetainedTrackedWarRosterIdentity({
+      roster: input.roster,
+      currentWar: input.currentWar,
+    })
+  ) {
+    return "RETAINED_ENDED";
+  }
+
+  return "INACTIVE";
 }
 
 /** Purpose: build tracked-war member state from CurrentWar identity + roster rows + WarAttacks rows. */
