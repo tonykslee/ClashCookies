@@ -622,11 +622,16 @@ export async function buildTodoPagesForUser(input: {
       updatedAt: currentWar.updatedAt ?? null,
     });
   }
-  const trackedWarSnapshotByClanTag = new Map<string, TodoSnapshotRecord>();
+  const trackedWarSnapshotsByClanTag = new Map<string, TodoSnapshotRecord[]>();
   for (const snapshot of snapshotRows) {
     const clanTag = normalizeClanTag(snapshot.warClanTag ?? snapshot.clanTag ?? "");
-    if (!clanTag || trackedWarSnapshotByClanTag.has(clanTag)) continue;
-    trackedWarSnapshotByClanTag.set(clanTag, snapshot);
+    if (!clanTag) continue;
+    const existingSnapshots = trackedWarSnapshotsByClanTag.get(clanTag);
+    if (existingSnapshots) {
+      existingSnapshots.push(snapshot);
+      continue;
+    }
+    trackedWarSnapshotsByClanTag.set(clanTag, [snapshot]);
   }
   const trackedWarRosterParentRowList = Array.isArray(trackedWarRosterParentRows)
     ? (trackedWarRosterParentRows as TodoTrackedWarRosterCurrentRow[])
@@ -647,13 +652,19 @@ export async function buildTodoPagesForUser(input: {
       currentWar,
     });
     if (identityMatch !== "EXACT_WAR_ID" && identityMatch !== "EXACT_START_TIME") continue;
-    const existingSnapshot = trackedWarSnapshotByClanTag.get(clanTag) ?? null;
-    const renderState: TrackedWarRosterRenderState = resolveTrackedWarRosterRenderState({
-      roster: parent,
-      currentWar,
-      existingSnapshot,
-      identityMatch,
-    });
+    const existingSnapshots = trackedWarSnapshotsByClanTag.get(clanTag) ?? [];
+    let renderState: TrackedWarRosterRenderState | null = null;
+    for (const existingSnapshot of existingSnapshots) {
+      renderState = resolveTrackedWarRosterRenderState({
+        roster: parent,
+        currentWar,
+        existingSnapshot,
+        identityMatch,
+      });
+      if (renderState === "ACTIVE" || renderState === "RETAINED_ENDED") {
+        break;
+      }
+    }
     if (renderState !== "ACTIVE" && renderState !== "RETAINED_ENDED") continue;
 
     exactTrackedWarContextByClanTag.set(clanTag, {
@@ -790,12 +801,15 @@ export async function buildTodoPagesForUser(input: {
           (snapshot as TodoSnapshotRecord & { warOwnerWarId?: number | null }).warOwnerWarId,
         )
       : null;
+    const snapshotWarIdentityMatches =
+      snapshotWarOwnerWarId === null ||
+      exactTrackedWarContext?.warId === null ||
+      snapshotWarOwnerWarId === exactTrackedWarContext?.warId;
     const warAttackDetailsRenderable = Boolean(
-      exactTrackedWarContext &&
-        snapshot?.warActive &&
-        snapshotWarOwnerWarId !== null &&
-        exactTrackedWarContext.warId !== null &&
-        snapshotWarOwnerWarId === exactTrackedWarContext.warId,
+      snapshot?.warActive === true &&
+        exactTrackedWarContext &&
+        trackedWarMember?.hasExactAttackState === true &&
+        snapshotWarIdentityMatches,
     );
     const currentTrackedWarClanActive = Boolean(
       resolvedClanTag && activeTrackedCurrentWarByClanTag.has(resolvedClanTag),
@@ -2368,6 +2382,8 @@ function clampInt(input: unknown, min: number, max: number): number {
 
 /** Purpose: convert unknown numeric input to finite integer or null for nullable status fields. */
 function toFiniteIntOrNull(input: unknown): number | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input === "string" && input.trim().length <= 0) return null;
   const parsed = Number(input);
   if (!Number.isFinite(parsed)) return null;
   return Math.trunc(parsed);
