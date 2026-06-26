@@ -1371,13 +1371,84 @@ export class TodoSnapshotService {
         row,
       ] as const),
     );
-    const trackedWarAttackRows: WarAttacksRow[] =
-      activeTrackedClanTags.length > 0
-        ? await prisma.warAttacks.findMany({
-            where: {
-              clanTag: { in: activeTrackedClanTags },
+    const exactTrackedWarAttackContextByClanTag = new Map<string, TodoTrackedCurrentWarRow>();
+    for (const row of trackedWarRosterRows) {
+      const clanTag = normalizeClanTag(row.clanTag);
+      const playerTag = normalizePlayerTag(row.playerTag);
+      if (!clanTag || !playerTag) continue;
+      if (!trackedClanTagSet.has(clanTag)) continue;
+
+      const parent = trackedWarRosterParentByClanTag.get(clanTag) ?? null;
+      if (!parent) continue;
+      const currentWar = currentWarByClanTag.get(clanTag) ?? null;
+      if (!currentWar) continue;
+      const identityMatch = classifyTrackedWarRosterCurrentIdentity({
+        roster: parent,
+        currentWar,
+      });
+      if (identityMatch === "STALE_OR_MISMATCHED") continue;
+      const exactIdentity =
+        identityMatch === "EXACT_WAR_ID" || identityMatch === "EXACT_START_TIME";
+      if (!exactIdentity) continue;
+
+      const existingSnapshot = existingByTag.get(playerTag) ?? null;
+      const renderState = resolveTrackedWarRosterRenderState({
+        roster: parent,
+        currentWar,
+        existingSnapshot,
+        identityMatch,
+      });
+      if (renderState !== "ACTIVE" && renderState !== "RETAINED_ENDED") continue;
+
+      if (!exactTrackedWarAttackContextByClanTag.has(clanTag)) {
+        exactTrackedWarAttackContextByClanTag.set(clanTag, {
+          clanTag,
+          warId: toFiniteIntOrNull(currentWar.warId),
+          startTime: currentWar.startTime ?? null,
+          state: currentWar.state ?? null,
+          updatedAt: currentWar.updatedAt ?? null,
+          renderState,
+        });
+      }
+    }
+    const trackedWarAttackWhereClauses = [...exactTrackedWarAttackContextByClanTag.values()]
+      .map((context) =>
+        context.warId !== null
+          ? {
+              clanTag: context.clanTag,
+              warId: context.warId,
               playerTag: { in: normalizedTags },
-            },
+            }
+          : context.startTime instanceof Date
+            ? {
+                clanTag: context.clanTag,
+                warStartTime: context.startTime,
+                playerTag: { in: normalizedTags },
+              }
+            : null,
+      )
+      .filter(
+        (
+          value,
+        ): value is
+          | {
+              clanTag: string;
+              warId: number;
+              playerTag: { in: string[] };
+            }
+          | {
+              clanTag: string;
+              warStartTime: Date;
+              playerTag: { in: string[] };
+            } => value !== null,
+      );
+    const trackedWarAttackRows: WarAttacksRow[] =
+      trackedWarAttackWhereClauses.length > 0
+        ? await prisma.warAttacks.findMany({
+            where:
+              trackedWarAttackWhereClauses.length === 1
+                ? trackedWarAttackWhereClauses[0]
+                : { OR: trackedWarAttackWhereClauses },
             select: {
               warId: true,
               clanTag: true,
@@ -1396,6 +1467,11 @@ export class TodoSnapshotService {
     const activeTrackedWarMemberByClanAndTag = buildTrackedWarMemberStateByClanAndPlayer({
       currentWarByClanTag: activeTrackedCurrentWarByClanTag,
       rosterRows: activeTrackedWarRosterRows,
+      warAttackRows: trackedWarAttackRows,
+    });
+    const exactTrackedWarMemberByClanAndTag = buildTrackedWarMemberStateByClanAndPlayer({
+      currentWarByClanTag: exactTrackedWarAttackContextByClanTag,
+      rosterRows: trackedWarRosterRows,
       warAttackRows: trackedWarAttackRows,
     });
     const trackedWarRosterDriftDiagnostics = buildTrackedWarRosterDriftDiagnostics({
@@ -2217,10 +2293,6 @@ export class TodoSnapshotService {
       const canonicalRosterMemberKey = canonicalRosterSelectedCandidate
         ? `${canonicalRosterSelectedCandidate.clanTag}:${playerTag}`
         : "";
-      const canonicalRosterMember =
-        canonicalRosterSelectedCandidate && canonicalRosterSelectedRenderState === "ACTIVE"
-          ? activeTrackedWarMemberByClanAndTag.get(canonicalRosterMemberKey) ?? null
-          : null;
       const bootstrapExistingWarClanTag = normalizeClanTag(
         existing?.warClanTag ?? existing?.clanTag ?? "",
       );
@@ -2256,7 +2328,7 @@ export class TodoSnapshotService {
           : resolvedWarClanTag
             ? activeTrackedWarMemberByClanAndTag.get(`${resolvedWarClanTag}:${playerTag}`) ?? null
             : canonicalRosterSelectedCandidate
-            ? canonicalRosterMember
+            ? activeTrackedWarMemberByClanAndTag.get(canonicalRosterMemberKey) ?? null
             : warMemberKey
               ? activeTrackedWarMemberByClanAndTag.get(warMemberKey) ?? null
               : null;
@@ -2430,18 +2502,40 @@ export class TodoSnapshotService {
           : warStateActive &&
             hasWarClanTag &&
             Boolean(trackedWarMember || rawWarMember || liveCurrentWarFallbackMember);
+      const canonicalRosterExactAttackMember =
+        resolvedCanonicalRosterSelectedCandidate
+          ? exactTrackedWarMemberByClanAndTag.get(canonicalRosterMemberKey) ?? null
+          : null;
+      const canonicalRosterExactAttackState =
+        canonicalRosterExactAttackMember?.hasExactAttackState === true
+          ? canonicalRosterExactAttackMember
+          : null;
+      const trackedWarMemberExactAttackState =
+        trackedWarMember?.hasExactAttackState === true ? trackedWarMember : null;
       const warAttacksUsed = resolvedCanonicalRosterSelectedCandidate
         ? canonicalRosterRetainedEnded
-          ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
-          : canonicalRosterMember
-            ? clampInt(canonicalRosterMember.attacksUsed, 0, 2)
-            : 0
+          ? canonicalRosterExactAttackState
+            ? clampInt(canonicalRosterExactAttackState.attacksUsed, 0, 2)
+            : clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
+          : warStatePreparation
+            ? 0
+            : canonicalRosterExactAttackState
+              ? clampInt(canonicalRosterExactAttackState.attacksUsed, 0, 2)
+              : trackedWarMemberExactAttackState
+                ? clampInt(trackedWarMemberExactAttackState.attacksUsed, 0, 2)
+                : rawWarMember
+                  ? clampInt(rawWarMember.attacks, 0, 2)
+                  : liveCurrentWarFallbackMember
+                    ? clampInt(liveCurrentWarFallbackMember.attacksUsed, 0, 2)
+                    : genericWarOwnerResolution?.selectedCandidate?.sources.has("snapshot_hint")
+                    ? clampInt(existing?.warAttacksUsed ?? 0, 0, 2)
+                    : 0
         : !warStateActive || !hasWarClanTag
           ? 0
           : warStatePreparation
             ? 0
-            : trackedWarMember
-              ? clampInt(trackedWarMember.attacksUsed, 0, 2)
+            : trackedWarMemberExactAttackState
+              ? clampInt(trackedWarMemberExactAttackState.attacksUsed, 0, 2)
               : rawWarMember
                 ? clampInt(rawWarMember.attacks, 0, 2)
                 : liveCurrentWarFallbackMember
