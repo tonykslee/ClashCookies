@@ -8,7 +8,6 @@ import { normalizeFwaTag } from "./normalize";
 import { FwaClanWarsSyncService } from "./FwaClanWarsSyncService";
 import { FwaWarMembersSyncService } from "./FwaWarMembersSyncService";
 import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
-import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
 import { mapWithConcurrency } from "./concurrency";
 
 type SyncSchedule = {
@@ -42,7 +41,6 @@ export class FwaClanWarsWatchService {
   constructor(
     private readonly clanWarsSync = new FwaClanWarsSyncService(),
     private readonly warMembersSync = new FwaWarMembersSyncService(),
-    private readonly trackedRosterSync = new FwaTrackedClanWarRosterSyncService(),
     private readonly matchStatsSync = new FwaClanMatchStatsCurrentSyncService(),
   ) {}
 
@@ -156,7 +154,6 @@ export class FwaClanWarsWatchService {
         minimumIntervalMs: 0,
         now,
       });
-      await this.trackedRosterSync.syncClan(state.clanTag, { now });
       const previousHash = state.lastObservedContentHash ?? null;
       const nextHash = syncResult.contentHash ?? null;
       const updateAcquired = Boolean(previousHash && nextHash && previousHash !== nextHash);

@@ -148,8 +148,9 @@ Each domain concept must have exactly one authoritative owner.
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Notify overrides | ClanNotifyConfig |
+| Tracked FWA war-roster current identity | FwaTrackedClanWarRosterCurrent.sourceWarId, FwaTrackedClanWarRosterCurrent.sourceWarStartTime, FwaTrackedClanWarRosterCurrent.sourceWarEndTime, FwaTrackedClanWarRosterCurrent.sourceWarState, FwaTrackedClanWarRosterCurrent.sourceCurrentWarUpdatedAt |
 | Current membership snapshot context | TodoPlayerSnapshot.clanTag, TodoPlayerSnapshot.clanName, TodoPlayerSnapshot.clanMembershipObservedAt |
-| WAR snapshot context | TodoPlayerSnapshot.warClanTag, TodoPlayerSnapshot.warClanName, TodoPlayerSnapshot.warPosition, TodoPlayerSnapshot.warSourceUpdatedAt, TodoPlayerSnapshot.warActive, TodoPlayerSnapshot.warPhase, TodoPlayerSnapshot.warAttacksUsed, TodoPlayerSnapshot.warAttacksMax, TodoPlayerSnapshot.warEndsAt |
+| WAR snapshot context | TodoPlayerSnapshot.warClanTag, TodoPlayerSnapshot.warClanName, TodoPlayerSnapshot.warPosition, TodoPlayerSnapshot.warSourceUpdatedAt, TodoPlayerSnapshot.warOwnerSource, TodoPlayerSnapshot.warOwnerWarId, TodoPlayerSnapshot.warOwnerVerifiedAt, TodoPlayerSnapshot.warActive, TodoPlayerSnapshot.warPhase, TodoPlayerSnapshot.warAttacksUsed, TodoPlayerSnapshot.warAttacksMax, TodoPlayerSnapshot.warEndsAt |
 | RAID snapshot context | TodoPlayerSnapshot.raidClanTag, TodoPlayerSnapshot.raidClanName, TodoPlayerSnapshot.raidSourceUpdatedAt, TodoPlayerSnapshot.raidActive, TodoPlayerSnapshot.raidAttacksUsed, TodoPlayerSnapshot.raidAttacksMax, TodoPlayerSnapshot.raidEndsAt |
 | CWL snapshot context | TodoPlayerSnapshot.cwlClanTag, TodoPlayerSnapshot.cwlClanName, TodoPlayerSnapshot.cwlActive, TodoPlayerSnapshot.cwlPhase, TodoPlayerSnapshot.cwlAttacksUsed, TodoPlayerSnapshot.cwlAttacksMax, TodoPlayerSnapshot.cwlEndsAt |
 | Clan Games snapshot context | TodoPlayerSnapshot.gamesActive, TodoPlayerSnapshot.gamesCycleKey, TodoPlayerSnapshot.gamesPoints, TodoPlayerSnapshot.gamesTarget, TodoPlayerSnapshot.gamesChampionTotal, TodoPlayerSnapshot.gamesSeasonBaseline, TodoPlayerSnapshot.gamesEndsAt |
@@ -211,7 +212,8 @@ Rules:
 
 - `TodoPlayerSnapshot` is the authoritative render source for `/todo`.
 - Current membership is owned by `clanTag`, `clanName`, and `clanMembershipObservedAt`.
-- WAR is owned by `warClanTag`, `warClanName`, `warPosition`, `warSourceUpdatedAt`, `warActive`, `warPhase`, `warAttacksUsed`, `warAttacksMax`, and `warEndsAt`. `clanTag`/`clanName` are legacy WAR identity fallbacks only while `warActive=true` and dedicated `warClanTag` is absent.
+- WAR is owned by `warClanTag`, `warClanName`, `warPosition`, `warSourceUpdatedAt`, `warOwnerSource`, `warOwnerWarId`, `warOwnerVerifiedAt`, `warActive`, `warPhase`, `warAttacksUsed`, `warAttacksMax`, and `warEndsAt`. `clanTag`/`clanName` are legacy WAR identity fallbacks only while `warActive=true` and dedicated `warClanTag` is absent.
+- WAR ownership from tracked roster data must match the current war identity for that clan before it can influence `/todo`; `FwaTrackedClanWarRosterCurrent` carries the tracked-war identity anchor.
 - RAID is owned by `raidClanTag`, `raidClanName`, `raidSourceUpdatedAt`, `raidActive`, `raidAttacksUsed`, `raidAttacksMax`, and `raidEndsAt`. `clanTag`/`clanName` are legacy RAID identity fallbacks only while `raidActive=true` and dedicated `raidClanTag` is absent.
 - CWL is owned by `cwlClanTag`, `cwlClanName`, `cwlActive`, `cwlPhase`, `cwlAttacksUsed`, `cwlAttacksMax`, and `cwlEndsAt`.
 - Clan Games lifecycle and progress are owned by the dedicated `gamesActive`, `gamesCycleKey`, stored baseline/point totals, and `gamesEndsAt` fields, while clan ownership for GAMES intentionally remains current membership through `clanTag`/`clanName`.

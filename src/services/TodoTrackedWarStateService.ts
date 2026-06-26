@@ -6,6 +6,37 @@ export type TodoTrackedCurrentWarRow = {
   warId: number | null;
   startTime: Date | null;
   state: string | null;
+  updatedAt: Date | null;
+  renderState?: TodoTrackedWarRenderState;
+};
+
+export type TodoTrackedWarRenderState = "ACTIVE" | "RETAINED_ENDED";
+
+export type TodoTrackedWarRosterCurrentRow = {
+  clanTag: string;
+  clanName: string | null;
+  sourceWarId: number | null;
+  sourceWarStartTime: Date | null;
+  sourceWarEndTime: Date | null;
+  sourceWarState: string | null;
+  sourceCurrentWarUpdatedAt: Date | null;
+  sourceUpdatedAt: Date | null;
+  observedAt: Date | null;
+};
+
+export type TrackedWarRosterIdentityMatch =
+  | "EXACT_WAR_ID"
+  | "EXACT_START_TIME"
+  | "LEGACY_UNSCOPED"
+  | "STALE_OR_MISMATCHED";
+
+export type TrackedWarRosterRenderState = "ACTIVE" | "RETAINED_ENDED" | "INACTIVE";
+
+export type TodoTrackedWarSnapshotLike = {
+  warClanTag?: string | null;
+  clanTag?: string | null;
+  warActive?: boolean | null;
+  warOwnerWarId?: number | null;
 };
 
 export type TodoTrackedWarAttackRow = {
@@ -40,6 +71,7 @@ export type TodoTrackedWarMemberState = {
   playerName: string | null;
   townHall: number | null;
   attacksUsed: number;
+  hasExactAttackState?: boolean;
   attackDetails: TodoTrackedWarAttackDetail[];
 };
 
@@ -50,6 +82,7 @@ type MutableTrackedWarMemberState = {
   playerName: string | null;
   townHall: number | null;
   attacksUsed: number;
+  hasExactAttackState: boolean;
   attackDetails: Array<{
     order: number;
     attackNumber: number;
@@ -63,6 +96,95 @@ type MutableTrackedWarMemberState = {
 export function isTodoWarStateActive(state: unknown): boolean {
   const normalized = String(state ?? "").toLowerCase();
   return normalized.includes("preparation") || normalized.includes("inwar");
+}
+
+/** Purpose: classify tracked-roster identity without mixing identity matching with lifecycle state. */
+export function classifyTrackedWarRosterCurrentIdentity(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+}): TrackedWarRosterIdentityMatch {
+  const currentWar = input.currentWar;
+  const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
+  const rosterStartMs =
+    input.roster.sourceWarStartTime instanceof Date
+      ? input.roster.sourceWarStartTime.getTime()
+      : null;
+
+  if (!currentWar) {
+    return rosterWarId === null && rosterStartMs === null
+      ? "LEGACY_UNSCOPED"
+      : "STALE_OR_MISMATCHED";
+  }
+
+  const currentWarId = toFiniteIntOrNull(currentWar.warId);
+  const currentStartMs =
+    currentWar.startTime instanceof Date ? currentWar.startTime.getTime() : null;
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return "EXACT_WAR_ID";
+  }
+  if (rosterStartMs !== null && currentStartMs !== null) {
+    return rosterStartMs === currentStartMs ? "EXACT_START_TIME" : "STALE_OR_MISMATCHED";
+  }
+
+  return rosterWarId === null && rosterStartMs === null
+    ? "LEGACY_UNSCOPED"
+    : "STALE_OR_MISMATCHED";
+}
+
+/** Purpose: identify retained-ended tracked-war continuity by exact identity only. */
+export function matchesRetainedTrackedWarRosterIdentity(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+}): boolean {
+  if (!input.currentWar) return false;
+  const rosterWarId = toFiniteIntOrNull(input.roster.sourceWarId);
+  const currentWarId = toFiniteIntOrNull(input.currentWar.warId);
+  if (rosterWarId !== null && currentWarId !== null && rosterWarId === currentWarId) {
+    return true;
+  }
+  const rosterStartMs =
+    input.roster.sourceWarStartTime instanceof Date
+      ? input.roster.sourceWarStartTime.getTime()
+      : null;
+  const currentStartMs =
+    input.currentWar.startTime instanceof Date ? input.currentWar.startTime.getTime() : null;
+  return rosterStartMs !== null && currentStartMs !== null
+    ? rosterStartMs === currentStartMs
+    : false;
+}
+
+/** Purpose: resolve whether a tracked-war roster row remains eligible to render exact details. */
+export function resolveTrackedWarRosterRenderState(input: {
+  roster: TodoTrackedWarRosterCurrentRow;
+  currentWar: TodoTrackedCurrentWarRow | null;
+  existingSnapshot: TodoTrackedWarSnapshotLike | null;
+  identityMatch: TrackedWarRosterIdentityMatch;
+}): TrackedWarRosterRenderState {
+  if (input.identityMatch === "STALE_OR_MISMATCHED") {
+    return "INACTIVE";
+  }
+  if (input.currentWar && isTodoWarStateActive(input.currentWar.state)) {
+    return "ACTIVE";
+  }
+
+  const existingWarClanTag = normalizeClanTag(
+    input.existingSnapshot?.warClanTag ?? input.existingSnapshot?.clanTag ?? "",
+  );
+  const rosterClanTag = normalizeClanTag(input.roster.clanTag);
+  if (
+    input.existingSnapshot?.warActive === true &&
+    existingWarClanTag &&
+    rosterClanTag &&
+    existingWarClanTag === rosterClanTag &&
+    matchesRetainedTrackedWarRosterIdentity({
+      roster: input.roster,
+      currentWar: input.currentWar,
+    })
+  ) {
+    return "RETAINED_ENDED";
+  }
+
+  return "INACTIVE";
 }
 
 /** Purpose: build tracked-war member state from CurrentWar identity + roster rows + WarAttacks rows. */
@@ -79,7 +201,8 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
     if (!clanTag || !playerTag) continue;
 
     const currentWar = input.currentWarByClanTag.get(clanTag);
-    if (!currentWar || !isTodoWarStateActive(currentWar.state)) continue;
+    const contextState = getTrackedWarContextState(currentWar);
+    if (!currentWar || !contextState) continue;
 
     const key = `${clanTag}:${playerTag}`;
     const existing =
@@ -91,6 +214,7 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
         playerName: normalizeDisplayName(row.playerName) || null,
         townHall: toFiniteIntOrNull(row.townHall),
         attacksUsed: 0,
+        hasExactAttackState: false,
         attackDetails: [],
       } satisfies MutableTrackedWarMemberState);
     if (!mapped.has(key)) {
@@ -119,13 +243,15 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
     if (!clanTag || !playerTag) continue;
 
     const currentWar = input.currentWarByClanTag.get(clanTag);
-    if (!currentWar || !isTodoWarStateActive(currentWar.state)) continue;
+    const contextState = getTrackedWarContextState(currentWar);
+    if (!currentWar || !contextState) continue;
     if (!matchesCurrentWarIdentity(currentWar, row)) continue;
 
     const key = `${clanTag}:${playerTag}`;
     const existing = mapped.get(key);
     if (!existing) continue;
 
+    existing.hasExactAttackState = true;
     const candidatePosition = toFiniteIntOrNull(row.playerPosition);
     if (
       existing.position === null &&
@@ -178,6 +304,7 @@ export function buildTrackedWarMemberStateByClanAndPlayer(input: {
       playerName: value.playerName,
       townHall: value.townHall,
       attacksUsed,
+      hasExactAttackState: value.hasExactAttackState,
       attackDetails: orderedAttackDetails,
     });
   }
@@ -213,6 +340,15 @@ export function buildTrackedWarMemberStateByPlayerTag(
     }
     if (nextAttacks < existingAttacks) continue;
 
+    const existingExact = existing.hasExactAttackState === true;
+    const nextExact = row.hasExactAttackState === true;
+    if (existingExact !== nextExact) {
+      if (nextExact) {
+        byPlayerTag.set(row.playerTag, row);
+      }
+      continue;
+    }
+
     const existingKey = `${existing.clanTag}:${existing.playerTag}`;
     const nextKey = `${row.clanTag}:${row.playerTag}`;
     if (nextKey.localeCompare(existingKey) < 0) {
@@ -241,6 +377,17 @@ function matchesCurrentWarIdentity(
     return false;
   }
   return currentStartMs === attackStartMs;
+}
+
+/** Purpose: keep tracked-war attack state eligible only for explicit active or retained-ended render contexts. */
+function getTrackedWarContextState(
+  currentWar: TodoTrackedCurrentWarRow | null | undefined,
+): TodoTrackedWarRenderState | null {
+  if (!currentWar) return null;
+  if (currentWar.renderState === "ACTIVE" || currentWar.renderState === "RETAINED_ENDED") {
+    return currentWar.renderState;
+  }
+  return isTodoWarStateActive(currentWar.state) ? "ACTIVE" : null;
 }
 
 /** Purpose: normalize unknown numeric values into one bounded integer range. */
