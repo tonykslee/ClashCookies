@@ -117,6 +117,7 @@ vi.mock("../src/services/CoCRequestQueueService", () => ({
 }));
 
 import {
+  buildPreloadedLiveCurrentWarRosterIndexByPlayerTag,
   resolveClanGamesWindowForTest,
   resolveRaidWeekendWindowForTest,
   resolveWarEventLinkedPlayerRefreshPlanForTest,
@@ -2728,7 +2729,26 @@ describe("TodoSnapshotService", () => {
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag,
+        playerName: "Ambiguous Player",
+        clanTag: rockyRoadClanTag,
+        townHall: 16,
+        position: 5,
+        attacks: 1,
+        sourceSyncedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+      {
+        playerTag,
+        playerName: "Ambiguous Player",
+        clanTag: zeroGravityClanTag,
+        townHall: 16,
+        position: 9,
+        attacks: 1,
+        sourceSyncedAt: new Date("2026-03-26T00:11:00.000Z"),
+      },
+    ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: rockyRoadClanTag,
@@ -2837,10 +2857,58 @@ describe("TodoSnapshotService", () => {
         warSourceUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
       }),
     ]);
-    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: playerTagA,
+        playerName: "attk for me",
+        currentClanTag: "#YLJV2R0R",
+        currentClanName: "Elsewhere",
+        lastSeenAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastFetchedAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastSource: "manual",
+        updatedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+      {
+        playerTag: playerTagB,
+        playerName: "Tarnus Max",
+        currentClanTag: "#YLJV2R0R",
+        currentClanName: "Elsewhere",
+        lastSeenAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastFetchedAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastSource: "manual",
+        updatedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: playerTagA,
+        clanTag: "#YLJV2R0R",
+        playerName: "attk for me",
+        sourceSyncedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+      {
+        playerTag: playerTagB,
+        clanTag: "#YLJV2R0R",
+        playerName: "Tarnus Max",
+        sourceSyncedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        clanName: "Rocky Road",
+        rosterSize: 2,
+        observedAt: new Date("2026-03-26T00:01:00.000Z"),
+        sourceUpdatedAt: new Date("2026-03-26T00:01:00.000Z"),
+        sourceWarId: 1000538,
+        sourceWarStartTime: new Date("2026-03-25T12:00:00.000Z"),
+        sourceWarEndTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:01:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
@@ -2942,6 +3010,397 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
+  });
+
+  it("tracks ambiguous live current-war players for tracked refresh without choosing a generic owner", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const zeroGravityClanTag = "#LQQ99UV8";
+    const playerTag = "#QGRJ2222";
+    const currentWarStartTime = new Date("2026-03-25T12:00:00.000Z");
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 1, updatedCount: 1 } as any);
+    const preloadedCurrentWarSnapshotsByClanTag = new Map([
+      [
+        rockyRoadClanTag,
+        {
+          state: "preparation",
+          attacksPerMember: 2,
+          startTime: "20260325T120000.000Z",
+          endTime: "20260326T120000.000Z",
+          clan: {
+            tag: rockyRoadClanTag,
+            name: "Rocky Road",
+            members: [
+              {
+                tag: playerTag,
+                name: "Ambiguous Player",
+                townhallLevel: 16,
+                mapPosition: 5,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#OPP",
+            name: "Opponent",
+            members: [],
+          },
+        } as any,
+      ],
+      [
+        zeroGravityClanTag,
+        {
+          state: "preparation",
+          attacksPerMember: 2,
+          startTime: "20260325T120000.000Z",
+          endTime: "20260326T120000.000Z",
+          clan: {
+            tag: zeroGravityClanTag,
+            name: "ZERO GRAVITY",
+            members: [
+              {
+                tag: playerTag,
+                name: "Ambiguous Player",
+                townhallLevel: 16,
+                mapPosition: 9,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#OPP",
+            name: "Opponent",
+            members: [],
+          },
+        } as any,
+      ],
+    ]);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "143827744717799425", playerTag },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "143827744717799425" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1000548,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: zeroGravityClanTag,
+        warId: 1000552,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: zeroGravityClanTag, name: "ZERO GRAVITY" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    try {
+      const rosterIndex = buildPreloadedLiveCurrentWarRosterIndexByPlayerTag({
+        clanTags: [rockyRoadClanTag, zeroGravityClanTag],
+        preloadedCurrentWarSnapshotsByClanTag,
+      });
+      expect(rosterIndex.byPlayerTag.has(playerTag)).toBe(false);
+      expect(rosterIndex.ambiguousPlayerTags.has(playerTag)).toBe(true);
+
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+        preloadedCurrentWarSnapshotsByClanTag,
+      });
+
+      expect(result.selectedPlayerCount).toBe(1);
+      expect(result.trackedPlayerCount).toBe(1);
+      expect(result.nonTrackedPlayerCount).toBe(0);
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      expect(refreshSpy.mock.calls[0]?.[0]?.playerTags).toEqual([playerTag]);
+    } finally {
+      refreshSpy.mockRestore();
+    }
+  });
+
+  it("keeps an ambiguous live WAR player unresolved instead of selecting Rocky Road or ZERO GRAVITY", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const zeroGravityClanTag = "#LQQ99UV8";
+    const playerTag = "#QGRJ2222";
+    const currentWarStartTime = new Date("2026-03-25T12:00:00.000Z");
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag,
+        playerName: "Ambiguous Player",
+        clanTag: zeroGravityClanTag,
+        clanName: "ZERO GRAVITY",
+        warActive: true,
+        warClanTag: zeroGravityClanTag,
+        warClanName: "ZERO GRAVITY",
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warPosition: 9,
+        warSourceUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      {
+        playerTag,
+        playerName: "Ambiguous Player",
+        currentClanTag: "#YLJV2R0R",
+        currentClanName: "Elsewhere",
+        lastSeenAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastFetchedAt: new Date("2026-03-26T00:10:00.000Z"),
+        lastSource: "manual",
+        updatedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag,
+        clanTag: "#YLJV2R0R",
+        playerName: "Ambiguous Player",
+        sourceSyncedAt: new Date("2026-03-26T00:10:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1000548,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: zeroGravityClanTag,
+        warId: 1000552,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+      { tag: zeroGravityClanTag, name: "ZERO GRAVITY" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    try {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: [playerTag],
+        cocService: cocService as any,
+        preloadedCurrentWarSnapshotsByClanTag: new Map([
+          [
+            rockyRoadClanTag,
+            {
+              state: "preparation",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: rockyRoadClanTag,
+                name: "Rocky Road",
+                members: [
+                  {
+                    tag: playerTag,
+                    name: "Ambiguous Player",
+                    townhallLevel: 16,
+                    mapPosition: 5,
+                    attacks: [],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+          [
+            zeroGravityClanTag,
+            {
+              state: "preparation",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: zeroGravityClanTag,
+                name: "ZERO GRAVITY",
+                members: [
+                  {
+                    tag: playerTag,
+                    name: "Ambiguous Player",
+                    townhallLevel: 16,
+                    mapPosition: 9,
+                    attacks: [],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+        ]),
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
+
+      const warUpdate = getTodoSnapshotUpsertUpdateForPlayer(playerTag);
+      expect(warUpdate.warClanTag).not.toBe(rockyRoadClanTag);
+      expect(warUpdate.warOwnerSource).not.toBe("LIVE_VERIFIED");
+      expect(warUpdate.warOwnerWarId).toBeNull();
+      expect(warUpdate.warOwnerVerifiedAt).toBeNull();
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("unresolved_count=1");
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("ambiguous_live_match_count=1");
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
+  });
+
+  it("keeps a third live-clan observation ambiguous without reintroducing the player into byPlayerTag", () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const zeroGravityClanTag = "#LQQ99UV8";
+    const twcClanTag = "#29PCQGUV0";
+    const playerTag = "#QGRJ2222";
+    const preloadedCurrentWarSnapshotsByClanTag = new Map([
+      [
+        rockyRoadClanTag,
+        {
+          state: "preparation",
+          attacksPerMember: 2,
+          startTime: "20260325T120000.000Z",
+          endTime: "20260326T120000.000Z",
+          clan: {
+            tag: rockyRoadClanTag,
+            name: "Rocky Road",
+            members: [
+              {
+                tag: playerTag,
+                name: "Ambiguous Player",
+                townhallLevel: 16,
+                mapPosition: 5,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#OPP",
+            name: "Opponent",
+            members: [],
+          },
+        } as any,
+      ],
+      [
+        zeroGravityClanTag,
+        {
+          state: "preparation",
+          attacksPerMember: 2,
+          startTime: "20260325T120000.000Z",
+          endTime: "20260326T120000.000Z",
+          clan: {
+            tag: zeroGravityClanTag,
+            name: "ZERO GRAVITY",
+            members: [
+              {
+                tag: playerTag,
+                name: "Ambiguous Player",
+                townhallLevel: 16,
+                mapPosition: 9,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#OPP",
+            name: "Opponent",
+            members: [],
+          },
+        } as any,
+      ],
+      [
+        twcClanTag,
+        {
+          state: "preparation",
+          attacksPerMember: 2,
+          startTime: "20260325T120000.000Z",
+          endTime: "20260326T120000.000Z",
+          clan: {
+            tag: twcClanTag,
+            name: "TheWiseCowboys",
+            members: [
+              {
+                tag: playerTag,
+                name: "Ambiguous Player",
+                townhallLevel: 16,
+                mapPosition: 11,
+                attacks: [],
+              },
+            ],
+          },
+          opponent: {
+            tag: "#OPP",
+            name: "Opponent",
+            members: [],
+          },
+        } as any,
+      ],
+    ]);
+
+    const rosterIndex = buildPreloadedLiveCurrentWarRosterIndexByPlayerTag({
+      clanTags: [rockyRoadClanTag, zeroGravityClanTag, twcClanTag],
+      preloadedCurrentWarSnapshotsByClanTag,
+    });
+
+    expect(rosterIndex.byPlayerTag.has(playerTag)).toBe(false);
+    expect(rosterIndex.ambiguousPlayerTags.has(playerTag)).toBe(true);
+    expect(rosterIndex.indexedMemberCount).toBe(3);
   });
 
   it("preserves a legacy active-war clan hint when warClanTag is missing and the player has moved elsewhere", async () => {

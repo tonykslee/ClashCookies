@@ -684,6 +684,7 @@ export class TodoSnapshotService {
     const memberTrackedPlayerTagSet = new Set<string>();
     const warMemberTrackedPlayerTagSet = new Set<string>();
     const rosterTrackedPlayerTagSet = new Set<string>();
+    const ambiguousLiveCurrentWarRosterTrackedPlayerTagSet = new Set<string>();
     for (const playerTag of activatedPlayerTags) {
       const snapshotClanTag = snapshotClanTagByPlayerTag.get(playerTag) ?? null;
       const snapshotRow = snapshotByPlayerTag.get(playerTag) ?? null;
@@ -744,6 +745,11 @@ export class TodoSnapshotService {
         trackedPlayerTags.push(playerTag);
         continue;
       }
+      if (activatedLiveCurrentWarRosterIndexByPlayerTag.ambiguousPlayerTags.has(playerTag)) {
+        ambiguousLiveCurrentWarRosterTrackedPlayerTagSet.add(playerTag);
+        trackedPlayerTags.push(playerTag);
+        continue;
+      }
       if (snapshotCwlClanTag && cwlTrackedClanTagSet.has(snapshotCwlClanTag)) {
         trackedPlayerTags.push(playerTag);
       } else {
@@ -794,7 +800,7 @@ export class TodoSnapshotService {
       totalLinkedUserIds.length - activatedUserCount,
     );
     console.info(
-      `[todo-snapshot] event=todo_live_current_war_roster_index_summary active_tracked_clan_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.activeTrackedClanCount} indexed_member_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.indexedMemberCount} ambiguous_player_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.ambiguousPlayerTags.size} activated_linked_player_count=${activatedLiveCurrentWarRosterTrackedPlayerTagSet.size}`,
+      `[todo-snapshot] event=todo_live_current_war_roster_index_summary active_tracked_clan_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.activeTrackedClanCount} indexed_member_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.indexedMemberCount} ambiguous_player_count=${activatedLiveCurrentWarRosterIndexByPlayerTag.ambiguousPlayerTags.size} activated_linked_player_count=${activatedLiveCurrentWarRosterTrackedPlayerTagSet.size} activated_ambiguous_linked_player_count=${ambiguousLiveCurrentWarRosterTrackedPlayerTagSet.size}`,
     );
     console.info(
       `[todo-snapshot] event=todo_refresh_population_sources cadence=${input.cadence} cwl_season=${currentCwlSeason} activated_player_count=${activatedPlayerTags.length} snapshot_tracked_count=${snapshotTrackedPlayerTagSet.size} snapshot_war_context_count=${snapshotWarContextPlayerTagSet.size} snapshot_raid_context_count=${snapshotRaidContextPlayerTagSet.size} member_tracked_count=${memberTrackedPlayerTagSet.size} war_member_tracked_count=${warMemberTrackedPlayerTagSet.size} roster_tracked_count=${rosterTrackedPlayerTagSet.size} live_current_war_roster_tracked_count=${activatedLiveCurrentWarRosterTrackedPlayerTagSet.size} selected_player_count=${selectedPlayerCount}`,
@@ -4416,6 +4422,20 @@ function resolveWarOwnerForPlayer(input: {
     .map((record) => record.entry);
   const bestStrongPersistedCandidate =
     [...strongPersistedCandidates].sort(compareByPersistedFallback)[0] ?? null;
+  if (input.ambiguousLiveRosterPlayerTags?.has(input.playerTag)) {
+    return buildUnresolvedWarOwnerResolution({
+      candidateCount: candidateEntries.length,
+      persistedFallbackCandidate: bestStrongPersistedCandidate,
+      liveCurrentWarFallbackContext: null,
+      liveCurrentWarFallbackMember: null,
+      verifiedCandidateCount: verifiedPresentCandidates.length,
+      ambiguousLiveMatchCount: Math.max(1, verifiedPresentCandidates.length),
+      persistedCandidateCount: candidateEntries.length,
+      strongCandidateCount: strongPersistedCandidates.length,
+      verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
+      unavailableStrongCandidateCount: unavailableStrongCandidates.length,
+    });
+  }
 
   if (verifiedPresentCandidates.length > 0) {
     const verifiedPresentClanTags = [...new Set(verifiedPresentCandidates.map((entry) => entry.clanTag))];
