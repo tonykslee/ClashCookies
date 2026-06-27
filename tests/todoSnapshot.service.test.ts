@@ -2695,6 +2695,255 @@ describe("TodoSnapshotService", () => {
     expect(warUpdate.warSourceUpdatedAt).toEqual(expect.any(Date));
   });
 
+  it("selects linked Rocky Road players from the live current-war roster after they leave the clan", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const playerTagA = "#Q22JU0GCV";
+    const playerTagB = "#LJ8PLP8GP";
+    const refreshSpy = vi
+      .spyOn(todoSnapshotService as any, "refreshSnapshotsForPlayerTagsInternal")
+      .mockResolvedValue({ playerCount: 2, updatedCount: 2 } as any);
+
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { discordUserId: "143827744717799425", playerTag: playerTagA },
+      { discordUserId: "143827744717799425", playerTag: playerTagB },
+    ]);
+    prismaMock.todoUserUsage.findMany.mockResolvedValue([
+      { discordUserId: "143827744717799425" },
+    ]);
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: playerTagA,
+        playerName: "attk for me",
+        clanTag: "#OTHER",
+        clanName: "Other Clan",
+        warActive: false,
+      }),
+      buildSnapshotRow({
+        playerTag: playerTagB,
+        playerName: "Tarnus Max",
+        clanTag: "#OTHER",
+        clanName: "Other Clan",
+        warActive: false,
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1000548,
+        state: "preparation",
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+
+    try {
+      const result = await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
+        cadence: "tracked",
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+        preloadedCurrentWarSnapshotsByClanTag: new Map([
+          [
+            rockyRoadClanTag,
+            {
+              state: "preparation",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: rockyRoadClanTag,
+                name: "Rocky Road",
+                members: [
+                  {
+                    tag: playerTagA,
+                    name: "attk for me",
+                    townhallLevel: 16,
+                    mapPosition: 12,
+                    attacks: [],
+                  },
+                  {
+                    tag: playerTagB,
+                    name: "Tarnus Max",
+                    townhallLevel: 16,
+                    mapPosition: 13,
+                    attacks: [],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+        ]),
+      });
+
+      expect(result.activatedUserCount).toBe(1);
+      expect(result.selectedPlayerCount).toBe(2);
+      expect(result.trackedPlayerCount).toBe(2);
+      expect(result.nonTrackedPlayerCount).toBe(0);
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      const refreshArgs = refreshSpy.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(refreshArgs?.playerTags).toEqual(expect.arrayContaining([playerTagA, playerTagB]));
+      expect(refreshArgs?.playerTags).toHaveLength(2);
+    } finally {
+      refreshSpy.mockRestore();
+    }
+  });
+
+  it("keeps exact Rocky Road WAR owners authoritative for the linked players after they leave the clan", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const playerTagA = "#Q22JU0GCV";
+    const playerTagB = "#LJ8PLP8GP";
+    const currentWarStartTime = new Date("2026-03-25T12:00:00.000Z");
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      buildSnapshotRow({
+        playerTag: playerTagA,
+        playerName: "attk for me",
+        clanTag: "#LQQ99UV8",
+        clanName: "ZERO GRAVITY",
+        warActive: true,
+        warClanTag: "#LQQ99UV8",
+        warClanName: "ZERO GRAVITY",
+        warPosition: 6,
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: 1000552,
+        warOwnerVerifiedAt: null,
+        warSourceUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+      buildSnapshotRow({
+        playerTag: playerTagB,
+        playerName: "Tarnus Max",
+        clanTag: "#LQQ99UV8",
+        clanName: "ZERO GRAVITY",
+        warActive: true,
+        warClanTag: "#LQQ99UV8",
+        warClanName: "ZERO GRAVITY",
+        warPosition: 7,
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerWarId: 1000552,
+        warOwnerVerifiedAt: null,
+        warSourceUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      }),
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1000548,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await todoSnapshotService.refreshSnapshotsForPlayerTags({
+      playerTags: [playerTagA, playerTagB],
+      cocService: cocService as any,
+      preloadedCurrentWarSnapshotsByClanTag: new Map([
+        [
+          rockyRoadClanTag,
+          {
+            state: "preparation",
+            attacksPerMember: 2,
+            startTime: "20260325T120000.000Z",
+            endTime: "20260326T120000.000Z",
+            clan: {
+              tag: rockyRoadClanTag,
+              name: "Rocky Road",
+              members: [
+                {
+                  tag: playerTagA,
+                  name: "attk for me",
+                  townhallLevel: 16,
+                  mapPosition: 12,
+                  attacks: [],
+                },
+                {
+                  tag: playerTagB,
+                  name: "Tarnus Max",
+                  townhallLevel: 16,
+                  mapPosition: 13,
+                  attacks: [],
+                },
+              ],
+            },
+            opponent: {
+              tag: "#OPP",
+              name: "Opponent",
+              members: [],
+            },
+          } as any,
+        ],
+      ]),
+      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+    });
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+          warClanName: "Rocky Road",
+          warPosition: 12,
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1000548,
+          warOwnerVerifiedAt: expect.any(Date),
+          warActive: true,
+          warPhase: "preparation",
+          warAttacksUsed: 0,
+          warAttacksMax: 2,
+        }),
+      }),
+    );
+    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          warClanTag: rockyRoadClanTag,
+          warClanName: "Rocky Road",
+          warPosition: 13,
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerWarId: 1000548,
+          warOwnerVerifiedAt: expect.any(Date),
+          warActive: true,
+          warPhase: "preparation",
+          warAttacksUsed: 0,
+          warAttacksMax: 2,
+        }),
+      }),
+    );
+  });
+
   it("preserves a legacy active-war clan hint when warClanTag is missing and the player has moved elsewhere", async () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
@@ -5449,9 +5698,9 @@ describe("TodoSnapshotService", () => {
     expect(snapshotRows[0]).toMatchObject({
       playerTag,
       warClanTag: rockyRoadClanTag,
-      warOwnerSource: "PERSISTED_FALLBACK",
+      warOwnerSource: "LIVE_VERIFIED",
       warOwnerWarId: 1001,
-      warOwnerVerifiedAt: null,
+      warOwnerVerifiedAt: new Date("2026-03-26T00:00:00.000Z"),
       warActive: true,
       warPosition: 18,
     });
@@ -5461,7 +5710,8 @@ describe("TodoSnapshotService", () => {
         update: expect.objectContaining({
           warClanTag: rockyRoadClanTag,
           warOwnerWarId: 1001,
-          warOwnerSource: "PERSISTED_FALLBACK",
+          warOwnerSource: "LIVE_VERIFIED",
+          warOwnerVerifiedAt: new Date("2026-03-26T00:00:00.000Z"),
         }),
       }),
     );
