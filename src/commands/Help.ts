@@ -15,6 +15,7 @@ import {
 import { Command } from "../Command";
 import { Commands } from "../Commands";
 import { formatError } from "../helper/formatError";
+import { buildNonNotifyingPostToChannelPayload } from "../helper/nonNotifyingPostToChannel";
 
 const OVERVIEW_PAGE_SIZE = 4;
 const HELP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -125,7 +126,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     details: [
       "Use pages for a quick command overview.",
       "Select any command to drill into syntax and example flows.",
-      "Set `visibility:public` to post the help response directly in channel.",
+      "Set `visibility:public` to post the help response directly in channel; the Post to Channel button keeps mention tokens visible without sending notifications.",
     ],
     examples: ["/help", "/help command:sheet", "/help visibility:public"],
   },
@@ -1752,7 +1753,13 @@ export const Help: Command = {
                 allowPostToChannel,
               );
               const postChannel = interaction.channel as
-                | { send?: (input: { embeds: EmbedBuilder[] }) => Promise<unknown> }
+                | {
+                    send?: (
+                      input: ReturnType<
+                        typeof buildNonNotifyingPostToChannelPayload
+                      >,
+                    ) => Promise<unknown>;
+                  }
                 | null;
               if (!postChannel || typeof postChannel.send !== "function") {
                 await component.reply({
@@ -1761,9 +1768,11 @@ export const Help: Command = {
                 });
                 return;
               }
-              await postChannel.send({
-                embeds: payload.embeds,
-              });
+              await postChannel.send(
+                buildNonNotifyingPostToChannelPayload({
+                  embeds: payload.embeds,
+                }),
+              );
               await component.reply({
                 ephemeral: true,
                 content: "Posted to channel.",
