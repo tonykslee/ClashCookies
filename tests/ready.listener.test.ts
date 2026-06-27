@@ -472,11 +472,15 @@ describe("ready listener startup", () => {
       }),
     );
     const cwlStateCall = (cwlStateService.refreshTrackedCwlState as any).mock.calls[0]?.[0];
+    const warEventPollCall = (warEventPollMock as any).mock.calls[0]?.[0];
     const todoSnapshotCall = (
       todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots as any
     ).mock.calls[0]?.[0];
     expect(cwlStateCall?.cwlFetchCycleCache).toBeDefined();
     expect(cwlStateCall?.cwlFetchCycleCache).toBe(todoSnapshotCall?.cwlFetchCycleCache);
+    expect(todoSnapshotCall?.preloadedCurrentWarSnapshotsByClanTag).toBe(
+      warEventPollCall?.currentWarSnapshotCycleContext?.currentWarSnapshotByClanTag,
+    );
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
