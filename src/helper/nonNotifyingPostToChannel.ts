@@ -5,7 +5,7 @@ type PostToChannelEmbed = APIEmbed | EmbedBuilder;
 type NonNotifyingPostToChannelPayload = {
   content?: string;
   embeds?: PostToChannelEmbed[];
-  allowedMentions: { parse: [] };
+  allowedMentions: { parse: []; repliedUser: false };
 };
 
 /** Build a post-to-channel payload that preserves visible mentions without notifying anyone. */
@@ -14,7 +14,7 @@ export function buildNonNotifyingPostToChannelPayload(input: {
   embeds?: PostToChannelEmbed[];
 }): NonNotifyingPostToChannelPayload {
   const payload: NonNotifyingPostToChannelPayload = {
-    allowedMentions: { parse: [] },
+    allowedMentions: { parse: [], repliedUser: false },
   };
 
   if (input.content !== undefined) {

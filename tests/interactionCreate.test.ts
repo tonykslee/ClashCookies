@@ -437,7 +437,7 @@ describe("interactionCreate global post-to-channel behavior", () => {
           description: "Embed body",
         },
       ],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: [], repliedUser: false },
     });
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,

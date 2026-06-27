@@ -87,7 +87,10 @@ describe("/help Post to Channel behavior", () => {
 
     expect(sentPayloads).toHaveLength(1);
     const sentPayload = sentPayloads[0] as any;
-    expect(sentPayload.allowedMentions).toEqual({ parse: [] });
+    expect(sentPayload.allowedMentions).toEqual({
+      parse: [],
+      repliedUser: false,
+    });
     expect(sentPayload.embeds?.map((embed: any) => embed.toJSON?.() ?? embed)).toEqual(
       initialReply.embeds.map((embed: any) => embed.toJSON?.() ?? embed),
     );
