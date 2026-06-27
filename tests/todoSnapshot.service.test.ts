@@ -2729,26 +2729,7 @@ describe("TodoSnapshotService", () => {
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
-    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
-      {
-        playerTag,
-        playerName: "Ambiguous Player",
-        clanTag: rockyRoadClanTag,
-        townHall: 16,
-        position: 5,
-        attacks: 1,
-        sourceSyncedAt: new Date("2026-03-26T00:10:00.000Z"),
-      },
-      {
-        playerTag,
-        playerName: "Ambiguous Player",
-        clanTag: zeroGravityClanTag,
-        townHall: 16,
-        position: 9,
-        attacks: 1,
-        sourceSyncedAt: new Date("2026-03-26T00:11:00.000Z"),
-      },
-    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
         clanTag: rockyRoadClanTag,
