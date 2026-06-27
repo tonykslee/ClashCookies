@@ -325,6 +325,7 @@ type WarOwnerResolutionSource =
   | "live_verified"
   | "persisted_fallback"
   | "canonical_tracked_roster"
+  | "ambiguous_live"
   | "authoritative_clear"
   | "unresolved";
 
@@ -2274,7 +2275,10 @@ export class TodoSnapshotService {
               genericWarOwnerResolution.resolvedSource === "authoritative_clear") &&
             canonicalResolvedClanTag !== "" &&
             genericResolvedClanTag !== "" &&
-            canonicalResolvedClanTag !== genericResolvedClanTag));
+            canonicalResolvedClanTag !== genericResolvedClanTag) ||
+          (genericWarOwnerResolution.resolvedSource === "ambiguous_live" &&
+            canonicalRosterResolution.applicableExactCandidateCount === 0 &&
+            canonicalWarOwnerResolution.resolvedSource !== "live_verified"));
       const warOwnerResolution: WarOwnerResolution =
         preferGenericWarOwnerResolution
           ? genericWarOwnerResolution ?? unresolvedWarOwnerResolution
@@ -2325,11 +2329,15 @@ export class TodoSnapshotService {
         // Counted separately when the write is allowed through the transaction guard.
       } else if (guardedWarOwnerResolution.resolvedSource === "authoritative_clear") {
         warOwnerResolutionAuthoritativeClearCount += 1;
+      } else if (guardedWarOwnerResolution.resolvedSource === "ambiguous_live") {
+        warOwnerResolutionAmbiguousLiveCount += 1;
       } else {
         warOwnerResolutionUnresolvedCount += 1;
       }
-      if (guardedWarOwnerResolution.ambiguousLiveMatchCount > 0) {
-        warOwnerResolutionAmbiguousLiveCount += 1;
+      if (
+        guardedWarOwnerResolution.resolvedSource === "ambiguous_live" &&
+        guardedWarOwnerResolution.ambiguousLiveMatchCount > 0
+      ) {
         const sampleClanTags = [...warOwnerCandidateEntriesByClanTag.values()]
           .map((entry) => entry.clanTag)
           .sort((a, b) => a.localeCompare(b))
@@ -2403,26 +2411,30 @@ export class TodoSnapshotService {
       const warStateActive = isTodoWarStateActive(warState);
       const warStatePreparation = isWarStatePreparation(warState);
       const warMemberKey = warClanTag ? `${warClanTag}:${playerTag}` : "";
+      const canonicalRosterCanContribute =
+        canonicalRosterSelectedCandidate &&
+        (guardedWarOwnerResolution.resolvedSource !== "ambiguous_live" ||
+          canonicalRosterResolution.applicableExactCandidateCount > 0);
       const trackedWarMember =
         bootstrapLiveCleared
           ? null
           : resolvedWarClanTag
             ? activeTrackedWarMemberByClanAndTag.get(`${resolvedWarClanTag}:${playerTag}`) ?? null
-            : canonicalRosterSelectedCandidate
-            ? activeTrackedWarMemberByClanAndTag.get(canonicalRosterMemberKey) ?? null
-            : warMemberKey
-              ? activeTrackedWarMemberByClanAndTag.get(warMemberKey) ?? null
-              : null;
+            : canonicalRosterCanContribute
+              ? activeTrackedWarMemberByClanAndTag.get(canonicalRosterMemberKey) ?? null
+              : warMemberKey
+                ? activeTrackedWarMemberByClanAndTag.get(warMemberKey) ?? null
+                : null;
       const rawWarMember =
         bootstrapLiveCleared
           ? null
           : resolvedWarClanTag
             ? fwaWarMemberFallbackByClanAndPlayer.get(`${resolvedWarClanTag}:${playerTag}`) ?? null
-            : canonicalRosterSelectedCandidate
-            ? null
-            : warMemberKey
-              ? fwaWarMemberFallbackByClanAndPlayer.get(warMemberKey) ?? null
-              : null;
+            : canonicalRosterCanContribute
+              ? null
+              : warMemberKey
+                ? fwaWarMemberFallbackByClanAndPlayer.get(warMemberKey) ?? null
+                : null;
       if (rawWarMember) {
         fallbackWarMemberUsedClanTags.add(rawWarMember.clanTag);
         fallbackWarMemberUsedPlayerTags.add(playerTag);
@@ -4112,7 +4124,8 @@ function buildTodoWarOwnerDecision(input: {
     existing?.warOwnerVerifiedAt === null &&
     existingCurrentWarActive &&
     attemptedConfidence !== "LIVE_VERIFIED" &&
-    input.resolutionSource !== "authoritative_clear";
+    input.resolutionSource !== "authoritative_clear" &&
+    input.resolutionSource !== "ambiguous_live";
 
   if (input.resolutionSource === "authoritative_clear") {
     if (existing && existingFreshnessMs !== null && attemptedFreshnessMs < existingFreshnessMs) {
@@ -4348,6 +4361,33 @@ function buildUnresolvedWarOwnerResolution(input: {
   };
 }
 
+/** Purpose: represent ambiguous live WAR ownership without selecting any clan. */
+function buildAmbiguousLiveWarOwnerResolution(input: {
+  candidateCount: number;
+  verifiedCandidateCount?: number;
+  ambiguousLiveMatchCount?: number;
+  persistedCandidateCount?: number;
+  strongCandidateCount?: number;
+  verifiedAbsentStrongCandidateCount?: number;
+  unavailableStrongCandidateCount?: number;
+}): WarOwnerResolution {
+  return {
+    resolvedClanTag: null,
+    resolvedSource: "ambiguous_live",
+    selectedCandidate: null,
+    liveCurrentWarFallbackContext: null,
+    liveCurrentWarFallbackMember: null,
+    persistedFallbackCandidate: null,
+    verifiedCandidateCount: input.verifiedCandidateCount ?? 0,
+    ambiguousLiveMatchCount: input.ambiguousLiveMatchCount ?? 0,
+    candidateCount: input.candidateCount,
+    persistedCandidateCount: input.persistedCandidateCount ?? input.candidateCount,
+    strongCandidateCount: input.strongCandidateCount ?? 0,
+    verifiedAbsentStrongCandidateCount: input.verifiedAbsentStrongCandidateCount ?? 0,
+    unavailableStrongCandidateCount: input.unavailableStrongCandidateCount ?? 0,
+  };
+}
+
 /** Purpose: resolve one player’s WAR owner from verified live evidence or deterministic persisted fallback. */
 function resolveWarOwnerForPlayer(input: {
   playerTag: string;
@@ -4411,6 +4451,7 @@ function resolveWarOwnerForPlayer(input: {
   const verifiedPresentCandidates = candidateRecords
     .filter((record) => record.status === "verified_present")
     .map((record) => record.entry);
+  const verifiedPresentClanTags = [...new Set(verifiedPresentCandidates.map((entry) => entry.clanTag))];
   const unavailableStrongCandidates = candidateRecords
     .filter((record) => record.status === "unavailable" && record.strongEvidence)
     .map((record) => record.entry);
@@ -4420,16 +4461,11 @@ function resolveWarOwnerForPlayer(input: {
   const strongPersistedCandidates = candidateRecords
     .filter((record) => record.strongEvidence)
     .map((record) => record.entry);
-  const bestStrongPersistedCandidate =
-    [...strongPersistedCandidates].sort(compareByPersistedFallback)[0] ?? null;
   if (input.ambiguousLiveRosterPlayerTags?.has(input.playerTag)) {
-    return buildUnresolvedWarOwnerResolution({
+    return buildAmbiguousLiveWarOwnerResolution({
       candidateCount: candidateEntries.length,
-      persistedFallbackCandidate: bestStrongPersistedCandidate,
-      liveCurrentWarFallbackContext: null,
-      liveCurrentWarFallbackMember: null,
       verifiedCandidateCount: verifiedPresentCandidates.length,
-      ambiguousLiveMatchCount: Math.max(1, verifiedPresentCandidates.length),
+      ambiguousLiveMatchCount: Math.max(1, verifiedPresentClanTags.length, verifiedPresentCandidates.length),
       persistedCandidateCount: candidateEntries.length,
       strongCandidateCount: strongPersistedCandidates.length,
       verifiedAbsentStrongCandidateCount: verifiedAbsentStrongCandidates.length,
@@ -4438,13 +4474,9 @@ function resolveWarOwnerForPlayer(input: {
   }
 
   if (verifiedPresentCandidates.length > 0) {
-    const verifiedPresentClanTags = [...new Set(verifiedPresentCandidates.map((entry) => entry.clanTag))];
     if (verifiedPresentClanTags.length > 1) {
-      return buildUnresolvedWarOwnerResolution({
+      return buildAmbiguousLiveWarOwnerResolution({
         candidateCount: candidateEntries.length,
-        persistedFallbackCandidate: bestStrongPersistedCandidate,
-        liveCurrentWarFallbackContext: null,
-        liveCurrentWarFallbackMember: null,
         verifiedCandidateCount: verifiedPresentCandidates.length,
         ambiguousLiveMatchCount: verifiedPresentClanTags.length,
         persistedCandidateCount: candidateEntries.length,
@@ -4465,7 +4497,8 @@ function resolveWarOwnerForPlayer(input: {
       selectedCandidate,
       liveCurrentWarFallbackContext,
       liveCurrentWarFallbackMember,
-      persistedFallbackCandidate: bestStrongPersistedCandidate,
+      persistedFallbackCandidate:
+        [...strongPersistedCandidates].sort(compareByPersistedFallback)[0] ?? null,
       verifiedCandidateCount: verifiedPresentCandidates.length,
       ambiguousLiveMatchCount: Math.max(0, verifiedPresentCandidates.length - 1),
       candidateCount: candidateEntries.length,
@@ -4503,7 +4536,8 @@ function resolveWarOwnerForPlayer(input: {
       selectedCandidate: null,
       liveCurrentWarFallbackContext: null,
       liveCurrentWarFallbackMember: null,
-      persistedFallbackCandidate: bestStrongPersistedCandidate,
+      persistedFallbackCandidate:
+        [...strongPersistedCandidates].sort(compareByPersistedFallback)[0] ?? null,
       verifiedCandidateCount: 0,
       ambiguousLiveMatchCount: 0,
       candidateCount: candidateEntries.length,

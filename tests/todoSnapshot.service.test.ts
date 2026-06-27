@@ -3264,22 +3264,127 @@ describe("TodoSnapshotService", () => {
       });
 
       const warUpdate = getTodoSnapshotUpsertUpdateForPlayer(playerTag);
-      expect(warUpdate.warClanTag).not.toBe(rockyRoadClanTag);
-      expect(warUpdate.warOwnerSource).not.toBe("LIVE_VERIFIED");
+      expect(warUpdate.warClanTag).toBeNull();
+      expect(warUpdate.warClanName).toBeNull();
+      expect(warUpdate.warPosition).toBeNull();
+      expect(warUpdate.warOwnerSource).toBe("NONE");
       expect(warUpdate.warOwnerWarId).toBeNull();
       expect(warUpdate.warOwnerVerifiedAt).toBeNull();
-      expect(
-        getSingleConsoleMessage(
-          consoleInfoSpy,
-          (message) => message.includes("event=todo_war_owner_resolution_summary"),
-        ),
-      ).toContain("unresolved_count=1");
+      expect(warUpdate.warActive).toBe(false);
+      expect(warUpdate.warAttacksUsed).toBe(0);
+      expect(warUpdate.warAttacksMax).toBe(2);
+      expect(warUpdate.warPhase).toBeNull();
+      expect(warUpdate.warEndsAt).toBeNull();
       expect(
         getSingleConsoleMessage(
           consoleInfoSpy,
           (message) => message.includes("event=todo_war_owner_resolution_summary"),
         ),
       ).toContain("ambiguous_live_match_count=1");
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("unresolved_count=0");
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
+  });
+
+  it("falls back to unresolved canonical ownership when exact candidates tie without a selected candidate", async () => {
+    const rockyRoadClanTag = "#2RYGLU2UY";
+    const playerTag = "#QGRJ2222";
+    const currentWarStartTime = new Date("2026-03-25T12:00:00.000Z");
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        clanName: "Rocky Road",
+        rosterSize: 1,
+        observedAt: new Date("2026-03-26T00:01:00.000Z"),
+        sourceUpdatedAt: new Date("2026-03-26T00:01:00.000Z"),
+        sourceWarId: 1000548,
+        sourceWarStartTime: currentWarStartTime,
+        sourceWarEndTime: new Date("2026-03-26T12:00:00.000Z"),
+        sourceWarState: "inWar",
+        sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:01:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:01:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        playerTag,
+        position: 12,
+        playerName: "Ambiguous Player",
+        townHall: 16,
+      },
+      {
+        clanTag: rockyRoadClanTag,
+        playerTag,
+        position: 12,
+        playerName: "Ambiguous Player",
+        townHall: 16,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: rockyRoadClanTag,
+        warId: 1000548,
+        state: "preparation",
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: rockyRoadClanTag, name: "Rocky Road" },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(null),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    try {
+      await expect(
+        todoSnapshotService.refreshSnapshotsForPlayerTags({
+          playerTags: [playerTag],
+          cocService: cocService as any,
+          nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+        }),
+      ).resolves.toEqual({ playerCount: 1, updatedCount: 1 });
+
+      const warUpdate = getTodoSnapshotUpsertUpdateForPlayer(playerTag);
+      expect(warUpdate.warClanTag).toBeNull();
+      expect(warUpdate.warClanName).toBeNull();
+      expect(warUpdate.warPosition).toBeNull();
+      expect(warUpdate.warOwnerSource).toBe("NONE");
+      expect(warUpdate.warOwnerWarId).toBeNull();
+      expect(warUpdate.warOwnerVerifiedAt).toBeNull();
+      expect(warUpdate.warActive).toBe(false);
+      expect(warUpdate.warAttacksUsed).toBe(0);
+      expect(warUpdate.warAttacksMax).toBe(2);
+      expect(warUpdate.warPhase).toBeNull();
+      expect(warUpdate.warEndsAt).toBeNull();
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("unresolved_canonical_count=1");
     } finally {
       consoleInfoSpy.mockRestore();
     }
@@ -3513,6 +3618,7 @@ describe("TodoSnapshotService", () => {
     const twcClanTag = "#29PCQGUV0";
     const playerTag = "#PYLQ0289";
     const currentWarStartTime = new Date("2026-03-25T12:00:00.000Z");
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
       buildSnapshotRow({
@@ -3595,91 +3701,110 @@ describe("TodoSnapshotService", () => {
       getCurrentWar: vi.fn().mockResolvedValue(null),
     };
 
-    await todoSnapshotService.refreshSnapshotsForPlayerTags({
-      playerTags: [playerTag],
-      cocService: cocService as any,
-      preloadedCurrentWarSnapshotsByClanTag: new Map([
-        [
-          rockyRoadClanTag,
-          {
-            state: "inWar",
-            attacksPerMember: 2,
-            startTime: "20260325T120000.000Z",
-            endTime: "20260326T120000.000Z",
-            clan: {
-              tag: rockyRoadClanTag,
-              name: "Rocky Road",
-              members: [
-                {
-                  tag: playerTag,
-                  name: "Party Blizzard",
-                  townhallLevel: 15,
-                  mapPosition: 18,
-                  attacks: [{ order: 1 }],
-                },
-              ],
-            },
-            opponent: {
-              tag: "#OPP",
-              name: "Opponent",
-              members: [],
-            },
-          } as any,
-        ],
-        [
-          twcClanTag,
-          {
-            state: "inWar",
-            attacksPerMember: 2,
-            startTime: "20260325T120000.000Z",
-            endTime: "20260326T120000.000Z",
-            clan: {
-              tag: twcClanTag,
-              name: "TheWiseCowboys",
-              members: [
-                {
-                  tag: playerTag,
-                  name: "Party Blizzard",
-                  townhallLevel: 15,
-                  mapPosition: 8,
-                  attacks: [{ order: 1 }, { order: 2 }],
-                },
-              ],
-            },
-            opponent: {
-              tag: "#OPP",
-              name: "Opponent",
-              members: [],
-            },
-          } as any,
-        ],
-      ]),
-      nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
-    });
+    try {
+      await todoSnapshotService.refreshSnapshotsForPlayerTags({
+        playerTags: [playerTag],
+        cocService: cocService as any,
+        preloadedCurrentWarSnapshotsByClanTag: new Map([
+          [
+            rockyRoadClanTag,
+            {
+              state: "inWar",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: rockyRoadClanTag,
+                name: "Rocky Road",
+                members: [
+                  {
+                    tag: playerTag,
+                    name: "Party Blizzard",
+                    townhallLevel: 15,
+                    mapPosition: 18,
+                    attacks: [{ order: 1 }],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+          [
+            twcClanTag,
+            {
+              state: "inWar",
+              attacksPerMember: 2,
+              startTime: "20260325T120000.000Z",
+              endTime: "20260326T120000.000Z",
+              clan: {
+                tag: twcClanTag,
+                name: "TheWiseCowboys",
+                members: [
+                  {
+                    tag: playerTag,
+                    name: "Party Blizzard",
+                    townhallLevel: 15,
+                    mapPosition: 8,
+                    attacks: [{ order: 1 }, { order: 2 }],
+                  },
+                ],
+              },
+              opponent: {
+                tag: "#OPP",
+                name: "Opponent",
+                members: [],
+              },
+            } as any,
+          ],
+        ]),
+        nowMs: Date.UTC(2026, 2, 26, 0, 0, 0, 0),
+      });
 
-    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
-    expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          clanTag: twcClanTag,
-          clanName: "TheWiseCowboys",
-          clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
-          warClanTag: twcClanTag,
-          warClanName: "TheWiseCowboys",
-          warActive: true,
-          warPosition: 8,
-          warAttacksUsed: 2,
-          warSourceUpdatedAt: expect.any(Date),
-        }),
-      }),
-    );
-    expect(prismaMock.todoPlayerSnapshot.upsert).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          warClanTag: rockyRoadClanTag,
-        }),
-      }),
-    );
+      expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+      const upsertCall = prismaMock.todoPlayerSnapshot.upsert.mock.calls[0]?.[0] as
+        | {
+            create?: Record<string, unknown>;
+            update?: Record<string, unknown>;
+          }
+        | undefined;
+      expect(upsertCall).toBeTruthy();
+      const persistedWar = (upsertCall?.update ?? upsertCall?.create) as Record<string, unknown>;
+      expect(persistedWar).toMatchObject({
+        clanTag: twcClanTag,
+        clanName: "TheWiseCowboys",
+        clanMembershipObservedAt: new Date("2026-03-26T00:00:00.000Z"),
+        warClanTag: null,
+        warClanName: null,
+        warPosition: null,
+        warSourceUpdatedAt: null,
+        warOwnerSource: "NONE",
+        warOwnerWarId: null,
+        warOwnerVerifiedAt: null,
+        warActive: false,
+        warAttacksUsed: 0,
+        warAttacksMax: 2,
+        warPhase: null,
+        warEndsAt: null,
+      });
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("ambiguous_live_match_count=1");
+      expect(
+        getSingleConsoleMessage(
+          consoleInfoSpy,
+          (message) => message.includes("event=todo_war_owner_resolution_summary"),
+        ),
+      ).toContain("unresolved_count=0");
+    } finally {
+      consoleInfoSpy.mockRestore();
+    }
   });
 
   it("keeps a verified TWC WAR owner when a stale Rocky Road refresh completes out of order", async () => {
