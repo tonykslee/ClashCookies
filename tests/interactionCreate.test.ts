@@ -375,3 +375,73 @@ describe("interactionCreate /sync time FWA clan list refresh routing", () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
   }, 30000);
 });
+
+describe("interactionCreate global post-to-channel behavior", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("republishes visible mentions without notifying anyone", async () => {
+    const { handler } = await loadInteractionHandler(
+      vi.fn().mockResolvedValue(undefined),
+    );
+    const sentPayloads: any[] = [];
+    const interaction = {
+      customId: "post-channel:user-1",
+      user: { id: "user-1" },
+      guildId: "guild-1",
+      isAutocomplete: () => false,
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      isUserSelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => false,
+      deferred: false,
+      replied: false,
+      channel: {
+        isTextBased: () => true,
+        send: vi.fn(async (payload: any) => {
+          sentPayloads.push(payload);
+        }),
+      },
+      message: {
+        content: "Copied mention <@USER_ID> <@&ROLE_ID> @everyone",
+        embeds: [
+          {
+            toJSON: () => ({
+              title: "Copied payload",
+              description: "Embed body",
+            }),
+          },
+        ],
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handler(interaction as any);
+
+    expect(sentPayloads).toHaveLength(1);
+    expect(sentPayloads[0]).toEqual({
+      content: "Copied mention <@USER_ID> <@&ROLE_ID> @everyone",
+      embeds: [
+        {
+          title: "Copied payload",
+          description: "Embed body",
+        },
+      ],
+      allowedMentions: { parse: [], repliedUser: false },
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Posted to channel.",
+    });
+  }, 30000);
+});
