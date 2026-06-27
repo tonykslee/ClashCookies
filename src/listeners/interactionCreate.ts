@@ -12,6 +12,7 @@ import {
 import { Commands } from "../Commands";
 import { truncateDiscordContent } from "../helper/discordContent";
 import { formatError } from "../helper/formatError";
+import { buildNonNotifyingPostToChannelPayload } from "../helper/nonNotifyingPostToChannel";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { CoCService } from "../services/CoCService";
 import {
@@ -1453,10 +1454,12 @@ const handleButtonInteraction = async (
     }
 
     try {
-      await channel.send({
-        content: truncateDiscordContent(interaction.message.content || ""),
-        embeds: interaction.message.embeds.map((embed) => embed.toJSON()),
-      });
+      await channel.send(
+        buildNonNotifyingPostToChannelPayload({
+          content: truncateDiscordContent(interaction.message.content || ""),
+          embeds: interaction.message.embeds.map((embed) => embed.toJSON()),
+        }),
+      );
       await interaction.reply({
         ephemeral: true,
         content: "Posted to channel.",
