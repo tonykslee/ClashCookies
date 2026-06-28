@@ -7,6 +7,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaLayouts: {
     findMany: vi.fn(),
   },
+  currentWar: {
+    findMany: vi.fn(),
+  },
   $queryRaw: vi.fn(),
   trackedMessage: {
     findUnique: vi.fn(),
@@ -101,6 +104,7 @@ beforeEach(() => {
   prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.$queryRaw.mockReset();
   prismaMock.fwaLayouts.findMany.mockReset();
+  prismaMock.currentWar.findMany.mockReset();
   prismaMock.trackedMessage.findUnique.mockReset();
   prismaMock.trackedMessage.findMany.mockReset();
   prismaMock.trackedMessage.update.mockReset();
@@ -193,7 +197,6 @@ function makeBaseSwapCommandInteraction(input: {
   baseErrors?: string | null;
   fwaBases?: string | null;
   swapReminder?: boolean | null;
-  pingRoleId?: string | null;
   guildId?: string;
   invokeChannelId?: string;
   mailChannelId?: string | null;
@@ -277,9 +280,6 @@ function makeBaseSwapCommandInteraction(input: {
         return null;
       }),
       getRole: vi.fn((name: string) => {
-        if (name === "ping_role" && input.pingRoleId) {
-          return { id: input.pingRoleId } as any;
-        }
         return null;
       }),
       getChannel: vi.fn(() => null),
@@ -1063,50 +1063,47 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
-  it("allows swap-reminder when any base-swap section is present", () => {
+  it("validates swap-reminder against the resolved clan kind", () => {
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: "1",
-        baseErrorsRaw: null,
+        clanKind: "FWA",
         fwaBasesRaw: null,
         swapReminderRaw: true,
       }),
-    ).toBeNull();
+    ).toBe(
+      "`swap-reminder` can only be used when `fwa-bases` is provided for a tracked FWA clan.",
+    );
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: "2",
-        fwaBasesRaw: null,
-        swapReminderRaw: false,
-      }),
-    ).toBeNull();
-    expect(
-      validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
+        clanKind: "FWA",
         fwaBasesRaw: "1,2",
         swapReminderRaw: null,
       }),
     ).toBeNull();
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
-        fwaBasesRaw: null,
+        clanKind: "FWA",
+        fwaBasesRaw: "1,2",
+        swapReminderRaw: false,
+      }),
+    ).toBeNull();
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        clanKind: "CWL",
+        fwaBasesRaw: "1,2",
         swapReminderRaw: true,
       }),
     ).toBe(
-      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+      "`swap-reminder` is supported only for tracked FWA `fwa-bases` posts.",
     );
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
-        fwaBasesRaw: null,
+        clanKind: "CWL",
+        fwaBasesRaw: "1,2",
         swapReminderRaw: false,
       }),
     ).toBe(
-      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+      "`swap-reminder` is supported only for tracked FWA `fwa-bases` posts.",
     );
   });
 
@@ -1166,6 +1163,7 @@ describe("FWA base-swap layout links", () => {
     });
 
     expect(mainContent).not.toContain("# Swap to WAR Bases");
+    expect(mainContent).not.toContain("# Swap Back to CWL Bases");
     expect(mainContent).not.toContain("<@&123456789012345678>");
   });
 
@@ -1776,6 +1774,54 @@ describe("FWA base-swap reminder selection", () => {
     expect(candidate?.metadata.entries.some((entry) => entry.section === "fwa_bases")).toBe(true);
   });
 
+  it("rejects CWL reminder candidates even when fwa-bases and swap-reminder are present", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "row-cwl",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-cwl",
+        referenceId: "fwa-base-swap:cwl-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanKind: "CWL",
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:10:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 2,
+              playerTag: "#BBB222",
+              playerName: "Bravo",
+              section: "fwa_bases",
+              discordUserId: "user-2",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        startTime: new Date("2026-05-27T12:00:00.000Z"),
+        state: "preparation",
+        matchType: "BL",
+      },
+    ]);
+
+    const service = new TrackedMessageService();
+    const candidate = await service.findLatestActiveFwaBaseSwapReminderCandidate({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+    });
+
+    expect(candidate).toBeNull();
+  });
+
   it("claims a reminder once per reference id across split rows", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
@@ -2319,7 +2365,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(clanLogSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
     );
     expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2400,7 +2446,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.client.channels.fetch).toHaveBeenCalledWith("223456789012345678");
     expect(clanLeadSend).toHaveBeenCalledTimes(1);
     expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
     );
     expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2484,7 +2530,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
     expect(botLogSend).toHaveBeenCalledTimes(1);
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
     );
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2565,7 +2611,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.customLogChannelSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
     );
     expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -3537,11 +3583,10 @@ describe("CWL base-swap labels", () => {
     expect(dmContent).toContain("TH16 update CWL layout: !th16");
   });
 
-  it("renders a competitive CWL swap-back reminder block with an optional role ping", () => {
+  it("keeps the competitive CWL announcement free of swap-back reminder content", () => {
     const reminderContent = renderFwaBaseSwapAnnouncementForTest({
       clanKind: "CWL",
       swapReminder: true,
-      pingRoleId: "123456789012345678",
       entries: [
         buildEntry({
           position: 1,
@@ -3558,11 +3603,8 @@ describe("CWL base-swap labels", () => {
       fwaAlertEmoji: "<a:alert_blue:10003>",
     });
 
-    expect(reminderContent).toContain("# Swap Back to CWL Bases");
-    expect(reminderContent).toContain(
-      "Thanks for keeping active war bases up for competitive CWL. Please swap back to your CWL base for the next competitive CWL war.",
-    );
-    expect(reminderContent).toContain("<@&123456789012345678>");
+    expect(reminderContent).not.toContain("# Swap Back to CWL Bases");
+    expect(reminderContent).not.toContain("<@&123456789012345678>");
     expect(reminderContent).toContain("React with");
     expect(reminderContent).toContain("YOU HAVE AN ACTIVE FWA BASE IN CWL");
   });
@@ -3574,8 +3616,6 @@ describe("CWL base-swap labels", () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       fwaBases: "1",
-      swapReminder: true,
-      pingRoleId: "123456789012345678",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: null,
@@ -3624,19 +3664,21 @@ describe("CWL base-swap labels", () => {
     expect(run.mailChannelSend).not.toHaveBeenCalled();
     expect(run.interactionChannelSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("# Swap Back to CWL Bases"),
+        content: expect.any(String),
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
+    );
+    expect(String(run.interactionChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "# Swap Back to CWL Bases",
+    );
+    expect(String(run.interactionChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
     );
     expect(posted.pin).toHaveBeenCalledTimes(1);
     const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
     expect(upsertCall.create.channelId).toBe("invoke-1");
-    expect(upsertCall.create.metadata.pingRoleId).toBe(
-      "123456789012345678",
-    );
     expect(upsertCall.create.metadata.clanRoleId).toBeNull();
     expect(String(run.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
       posted.url,
@@ -3655,7 +3697,6 @@ describe("CWL base-swap labels", () => {
       channelId: "invoke-1",
       mailChannelId: "invoke-1",
       clanRoleId: null,
-      pingRoleId: "123456789012345678",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       clanKind: "CWL",
@@ -3665,7 +3706,6 @@ describe("CWL base-swap labels", () => {
         fwaBases: "1",
         baseErrors: null,
         swapReminder: true,
-        pingRoleId: "123456789012345678",
       }),
       entries: [
         buildEntry({
@@ -3741,7 +3781,6 @@ describe("CWL base-swap labels", () => {
         content: "Part 1 content",
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
     );
@@ -3751,7 +3790,6 @@ describe("CWL base-swap labels", () => {
         content: "Part 2 content",
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
     );
@@ -3761,9 +3799,6 @@ describe("CWL base-swap labels", () => {
     for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
       expect(call[0].create.channelId).toBe("invoke-1");
       expect(call[0].create.metadata.clanKind).toBe("CWL");
-      expect(call[0].create.metadata.pingRoleId).toBe(
-        "123456789012345678",
-      );
       expect(call[0].create.metadata.clanRoleId).toBeNull();
     }
   });

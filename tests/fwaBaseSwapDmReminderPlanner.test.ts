@@ -179,7 +179,7 @@ describe("base-swap DM reminder eligibility matrix", () => {
       label: "CWL swapReminder false",
       clanKind: "CWL" as const,
       swapReminder: false,
-      expectedCount: 0,
+      expectedCount: 1,
     },
     {
       label: "CWL swapReminder true",
