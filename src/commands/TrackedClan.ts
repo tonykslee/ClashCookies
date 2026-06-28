@@ -115,7 +115,7 @@ function buildTrackedClanBlock(clan: {
   const clanBadge = clan.clanBadge ?? "not set";
   const shortName = clan.shortName ?? "not set";
   const repPlayerTags = clan.repPlayerTags ?? [];
-  const reps = repPlayerTags.length > 0 ? repPlayerTags.join(", ") : "not set";
+  const reps = repPlayerTags.length > 0 ? `\`${repPlayerTags.join(", ")}\`` : "not set";
   return [
     label,
     `shortName: ${shortName}`,
