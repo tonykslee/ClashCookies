@@ -326,11 +326,13 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
     expect(linkHelpText).toContain("unless a reliable shared days source is available");
+    expect(linkHelpText).toContain("The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without #.");
     expect(linkHelpText).toContain("one or more local PlayerLink mappings");
     expect(linkHelpText).toContain("comma-separated, space-separated, or mixed-separated tags with or without #");
     expect(linkHelpText).toContain("reports deleted / not linked / invalid / unauthorized buckets");
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
     expect(linkHelpText).toContain("/link delete player-tag:#ABC123 #DEF456");
+    expect(linkHelpText).toContain("/link create player-tag:#ABC123 #DEF456");
   });
 
   it("documents consecutive filtering in the /inactive help detail text", () => {

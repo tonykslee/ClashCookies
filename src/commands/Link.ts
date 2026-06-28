@@ -210,30 +210,8 @@ type LinkCreateTagInput = {
   normalized: string;
 };
 
-function splitLinkCreateTags(rawInput: string): {
-  entries: LinkCreateTagInput[];
-  hadComma: boolean;
-} {
-  const parts = String(rawInput ?? "").split(",");
-  return {
-    hadComma: parts.length > 1,
-    entries: parts.map((part) => {
-      const raw = part.trim();
-      return {
-        raw,
-        normalized: normalizePlayerTag(raw),
-      };
-    }),
-  };
-}
-
-type LinkDeleteTagInput = {
-  raw: string;
-  normalized: string | null;
-};
-
-/** Purpose: split a free-form delete request into normalized unique player-tag candidates. */
-function splitLinkDeleteTags(rawInput: string): LinkDeleteTagInput[] {
+/** Purpose: split free-form player-tag input into normalized tag candidates. */
+function parseFreeFormPlayerTags(rawInput: string): LinkCreateTagInput[] {
   return String(rawInput ?? "")
     .split(/[\s,]+/g)
     .map((part) => part.trim())
@@ -242,6 +220,28 @@ function splitLinkDeleteTags(rawInput: string): LinkDeleteTagInput[] {
       raw,
       normalized: normalizePlayerTag(raw),
     }));
+}
+
+function getUniqueValidPlayerTags(entries: LinkCreateTagInput[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    if (!entry.normalized || seen.has(entry.normalized)) continue;
+    seen.add(entry.normalized);
+    result.push(entry.normalized);
+  }
+  return result;
+}
+
+function getUniqueInvalidPlayerTags(entries: LinkCreateTagInput[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    if (entry.normalized || seen.has(entry.raw)) continue;
+    seen.add(entry.raw);
+    result.push(entry.raw);
+  }
+  return result;
 }
 
 function buildLinkDeleteSummaryLines(input: {
@@ -1993,7 +1993,8 @@ export const Link: Command = {
       options: [
         {
           name: "player-tag",
-          description: "Player tag(s), comma-separated, with or without #",
+          description:
+            "Player tag(s), comma-separated, space-separated, or mixed-separated; with or without #",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
@@ -2180,9 +2181,10 @@ export const Link: Command = {
 
     if (subcommand === "create") {
       const rawTag = interaction.options.getString("player-tag", true);
-      const parsedTags = splitLinkCreateTags(rawTag);
-      const firstValidTag = parsedTags.entries.find((entry) => entry.normalized);
-      if (!parsedTags.hadComma && !firstValidTag?.normalized) {
+      const parsedTags = parseFreeFormPlayerTags(rawTag);
+      const validTags = getUniqueValidPlayerTags(parsedTags);
+      const invalidTags = getUniqueInvalidPlayerTags(parsedTags);
+      if (validTags.length === 0) {
         await interaction.editReply(
           "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
@@ -2202,9 +2204,9 @@ export const Link: Command = {
         }
       }
 
-      if (!parsedTags.hadComma && firstValidTag?.normalized) {
+      if (validTags.length === 1 && invalidTags.length === 0) {
         const result = await createPlayerLink({
-          playerTag: firstValidTag.normalized,
+          playerTag: validTags[0],
           targetDiscordUserId,
           selfService: isSelfCreate,
         });
@@ -2222,18 +2224,9 @@ export const Link: Command = {
       }
 
       const resultLines: string[] = [];
-      for (const entry of parsedTags.entries) {
-        if (!entry.normalized) {
-          resultLines.push(
-            entry.raw
-              ? `invalid_tag: ${entry.raw} is not a valid Clash tag.`
-              : "invalid_tag: empty entry.",
-          );
-          continue;
-        }
-
+      for (const playerTag of validTags) {
         const result = await createPlayerLink({
-          playerTag: entry.normalized,
+          playerTag,
           targetDiscordUserId,
           selfService: isSelfCreate,
         });
@@ -2247,6 +2240,9 @@ export const Link: Command = {
           }),
         );
       }
+      for (const invalidTag of invalidTags) {
+        resultLines.push(`invalid_tag: ${invalidTag} is not a valid Clash tag.`);
+      }
 
       await interaction.editReply(resultLines.join("\n"));
       return;
@@ -2254,21 +2250,9 @@ export const Link: Command = {
 
     if (subcommand === "delete") {
       const rawTag = interaction.options.getString("player-tag", true);
-      const parsedTags = splitLinkDeleteTags(rawTag);
-      const validTags = [
-        ...new Set(
-          parsedTags
-            .map((entry) => entry.normalized)
-            .filter((tag): tag is string => Boolean(tag)),
-        ),
-      ];
-      const invalidTags = [
-        ...new Set(
-          parsedTags
-            .filter((entry) => !entry.normalized)
-            .map((entry) => entry.raw),
-        ),
-      ];
+      const parsedTags = parseFreeFormPlayerTags(rawTag);
+      const validTags = getUniqueValidPlayerTags(parsedTags);
+      const invalidTags = getUniqueInvalidPlayerTags(parsedTags);
       if (validTags.length === 0 && invalidTags.length === 0) {
         await interaction.editReply(
           "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",

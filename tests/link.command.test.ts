@@ -42,11 +42,15 @@ describe("/link command shape", () => {
     expect(embed).toBeTruthy();
     expect(syncClashperk).toBeTruthy();
 
+    expect(create?.description).toContain("Create a local player-tag link");
     expect(del?.description).toContain("Delete one or more local player-tag links");
 
     expect(create?.options?.find((o: any) => o.name === "player-tag")?.required).toBe(true);
     expect(create?.options?.find((o: any) => o.name === "player-tag")?.type).toBe(
       ApplicationCommandOptionType.String
+    );
+    expect(create?.options?.find((o: any) => o.name === "player-tag")?.description).toContain(
+      "comma-separated, space-separated, or mixed-separated",
     );
     expect(create?.options?.find((o: any) => o.name === "user")?.required).toBe(false);
     expect(create?.options?.find((o: any) => o.name === "user")?.type).toBe(

@@ -662,7 +662,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   link: {
     summary: "Manage local Discord-player links using PlayerLink.",
     details: [
-      "`create` links one or more player tags to your Discord account when the tags are currently unlinked.",
+      "`create` links one or more player tags to your Discord account when the tags are currently unlinked. The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without #.",
       "`create` with `user` uses the Discord user picker and can create a link for another Discord user when unlinked for admins and FWA Leaders.",
       "Existing links are never implicitly reassigned; delete-first is required before relinking to another user.",
       "`delete` removes one or more local PlayerLink mappings when run by the linked user or an admin override target. The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without # and reports deleted / not linked / invalid / unauthorized buckets without blocking valid deletes.",
@@ -676,6 +676,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`sync-clashperk` is admin-gated and imports missing local PlayerLink rows from a public Google Sheet with ClashPerk-style columns.",
     ],
     examples: [
+      "/link create player-tag:#ABC123 #DEF456",
       "/link create player-tag:#ABC123,#DEF456",
       "/link create player-tag:#ABC123 user:@SomeUser",
       "/link delete player-tag:#ABC123",
