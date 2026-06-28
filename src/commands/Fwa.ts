@@ -2357,8 +2357,13 @@ function buildFwaBaseSwapAnnouncementLines(state: {
 
   if (lines.length > 0) {
     lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
-    if (layoutLinkLines.length > 0) lines.push(...layoutLinkLines);
-    if (state.phaseTimingLine) lines.push(state.phaseTimingLine);
+    if (clanKind === "CWL") {
+      if (layoutLinkLines.length > 0) lines.push(...layoutLinkLines);
+      if (state.phaseTimingLine) lines.push(state.phaseTimingLine);
+    } else {
+      if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
+      if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
+    }
     lines.push("", FWA_BASE_SWAP_REACT_LINE);
   }
 

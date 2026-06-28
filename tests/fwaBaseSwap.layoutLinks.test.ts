@@ -173,6 +173,21 @@ function buildLayoutLink(input: { townhall: number; layoutLink: string }) {
   };
 }
 
+function expectAnnouncementSpacingTail(
+  content: string,
+  expectedTail: string[],
+) {
+  const lines = String(content).split("\n");
+  const separatorIndex = lines.lastIndexOf("──────────────────────────────────");
+  expect(separatorIndex).toBeGreaterThan(0);
+  expect(lines.slice(separatorIndex - 1)).toEqual([
+    "",
+    "──────────────────────────────────",
+    ...expectedTail,
+  ]);
+  return lines;
+}
+
 function buildRosterMember(input: {
   position: number;
   playerTag: string;
@@ -1107,11 +1122,19 @@ describe("FWA base-swap layout links", () => {
     );
   });
 
-  it("renders the fwa-bases section and keeps the preparation and react prompt lines", () => {
+  it("renders the fwa-bases section and preserves the FWA spacing around links, timing, and react prompt", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
         buildEntry({
           position: 1,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "war_bases",
+          discordUserId: "101",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
           playerTag: "#AAA111",
           playerName: "Alpha",
           section: "fwa_bases",
@@ -1138,11 +1161,18 @@ describe("FWA base-swap layout links", () => {
     expect(content).toContain(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
-    expect(content).not.toContain("TH18:");
-    expect(content).toContain("Preparation Day ends <t:1740000000:F>");
-    expect(content).toContain(
-      `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
-    );
+    expect(content).not.toContain("# Swap to WAR Bases");
+    expect(content).not.toContain("# Swap Back to CWL Bases");
+    expect(content).not.toContain("<@&");
+    expect(content).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(content, [
+      "",
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      "",
+      "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      "",
+      `${String.fromCodePoint(0x1f447)} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
   });
 
   it("keeps the main announcement free of swap-back reminder content when swap-reminder is enabled", () => {
@@ -1315,6 +1345,8 @@ describe("FWA base-swap layout links", () => {
             "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
         }),
       ],
+      phaseTimingLine:
+        "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
     };
 
     prismaMock.trackedMessage.findUnique.mockResolvedValue({
@@ -1347,9 +1379,18 @@ describe("FWA base-swap layout links", () => {
       "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
     );
     expect(String(editPayload.content)).not.toContain("## <a:arrow_arrow:10002> TH18:");
-    expect(String(editPayload.content)).toContain(
-      `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
-    );
+    expect(String(editPayload.content)).not.toContain("# Swap to WAR Bases");
+    expect(String(editPayload.content)).not.toContain("# Swap Back to CWL Bases");
+    expect(String(editPayload.content)).not.toContain("<@&");
+    expect(String(editPayload.content)).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(String(editPayload.content), [
+      "",
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
+      "",
+      "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      "",
+      `\u{1F447} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
     expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -3747,7 +3788,13 @@ describe("CWL base-swap labels", () => {
           townhallLevel: 16,
         }),
       ],
-      layoutLinks: [],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
       phaseTimingLine:
         "## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
       alertEmoji: "<a:alert:10001>",
@@ -3795,6 +3842,16 @@ describe("CWL base-swap labels", () => {
     expect(announcementContent).not.toContain(
       "\n\n## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
     );
+    expect(announcementContent).not.toContain("# Swap to WAR Bases");
+    expect(announcementContent).not.toContain("# Swap Back to CWL Bases");
+    expect(announcementContent).not.toContain("<@&");
+    expect(announcementContent).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(announcementContent, [
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      "## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
+      "",
+      `${String.fromCodePoint(0x1f447)} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
     expect(dmContent).toContain("CWL lineup swap messages:");
     expect(dmContent).toContain("CWL base error messages:");
     expect(dmContent).toContain("ACTIVE CWL LINEUP: swap to WAR BASE now");
