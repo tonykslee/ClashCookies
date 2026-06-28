@@ -17,6 +17,7 @@ import {
   buildFwaBaseSwapDmReminderContent,
   claimFwaBaseSwapDmReminderCandidate,
   findPendingFwaBaseSwapDmReminderCandidates,
+  isBaseSwapAffectedPlayerDmReminderEnabled,
   type FwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderEntry,
 } from "./baseSwapDmReminderService";
@@ -246,7 +247,7 @@ async function stillPendingForCandidate(input: {
   for (const row of trackedRows) {
     const metadata = parseFwaBaseSwapMetadata(row.metadata);
     if (!metadata) continue;
-    if (!metadata.swapReminder) continue;
+    if (!isBaseSwapAffectedPlayerDmReminderEnabled(metadata)) continue;
     const matched = metadata.entries.some(
       (entry) =>
         String(entry.discordUserId ?? "").trim() === discordUserId &&
