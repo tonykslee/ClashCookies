@@ -269,6 +269,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
       return {
         released: true,
         deletedCount: deleted ? 1 : 0,
+        alreadyAbsent: !deleted,
       };
     });
   });
@@ -599,6 +600,9 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     });
     expect(plannerMocks.release).toHaveBeenCalledTimes(1);
     expect(leaderChannelSend).toHaveBeenCalledTimes(2);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Transient failure \u2014 retry scheduled",
+    );
   });
 
   it("releases a claim after a retryable DM-send failure and succeeds on the next cycle", async () => {
@@ -633,6 +637,9 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     });
     expect(plannerMocks.release).toHaveBeenCalledTimes(1);
     expect(leaderChannelSend).toHaveBeenCalledTimes(2);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Transient failure \u2014 retry scheduled",
+    );
   });
 
   it("retains a closed-DM claim and dedupes the same offset on the next cycle", async () => {
@@ -642,7 +649,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     const sendFailures: Record<string, Error> = {
       "111": Object.assign(new Error("Cannot send messages to this user"), { code: 50007 }),
     };
-    const { client, resolveLeaderChannel } = makeClient({
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
       userSendFailures: sendFailures,
     });
     const scheduler = await createScheduler(client, resolveLeaderChannel);
@@ -666,15 +673,110 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     });
     expect(plannerMocks.release).not.toHaveBeenCalled();
     expect(client.users.fetch).toHaveBeenCalledTimes(1);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Terminal failure for this offset",
+    );
   });
 
   it("completes the cycle when claim release fails after a retryable delivery error", async () => {
     const candidate = makeCandidate({ discordUserId: "111" });
     plannerMocks.findPending.mockResolvedValue([candidate]);
     setPendingUserIds(["111"]);
+    plannerMocks.release.mockResolvedValueOnce(null as any);
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Transient failure \u2014 claim release failed; retry not scheduled",
+    );
+    expect(dozzleLogMock.warn).toHaveBeenCalled();
+  });
+
+  it("marks a false release result as release_failed without retrying", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    plannerMocks.release.mockResolvedValueOnce({
+      released: false,
+      reason: "claim_still_present",
+      deletedCount: 0,
+    } as any);
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Transient failure \u2014 claim release failed; retry not scheduled",
+    );
+  });
+
+  it("marks a thrown release error as release_failed", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
     plannerMocks.release.mockRejectedValueOnce(new Error("release boom"));
     const sendFailures: Record<string, Error> = {
       "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Transient failure \u2014 claim release failed; retry not scheduled",
+    );
+    expect(dozzleLogMock.warn).toHaveBeenCalled();
+  });
+
+  it("does not retry when a permanent Discord code is paired with a retryable status", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("Cannot send messages to this user"), {
+        code: 50007,
+        status: 500,
+      }),
     };
     const { client, resolveLeaderChannel } = makeClient({
       userSendFailures: sendFailures,
@@ -690,15 +792,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
       failed: 1,
       logFailed: 0,
     });
-    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
-    expect(
-      dozzleLogMock.error.mock.calls.some(
-        ([message]) =>
-          String(message).includes("claim_release_failed") &&
-          String(message).includes("claim_action=release_failed") &&
-          String(message).includes("stage=dm_send"),
-      ),
-    ).toBe(true);
+    expect(plannerMocks.release).not.toHaveBeenCalled();
   });
 
   it("keeps evaluating later candidates after an earlier retryable failure", async () => {

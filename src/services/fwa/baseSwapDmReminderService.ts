@@ -98,6 +98,11 @@ type FwaBaseSwapDmReminderClaimTarget = FwaBaseSwapDmReminderClaimScope & {
   trackedRows: Pick<TrackedMessageRow, "id">[];
 };
 
+type ResolveFwaBaseSwapDmReminderTrackedRowsOptions = {
+  requireActiveStatus: boolean;
+  requireUnexpired: boolean;
+};
+
 /** Purpose: keep base-swap DM reminder planning pure and DB-first without sending anything. */
 export function buildFwaBaseSwapDmReminderClaimKey(input: {
   trackedMessageId: string;
@@ -116,8 +121,35 @@ export function buildFwaBaseSwapDmReminderClaimKey(input: {
   ].join(":");
 }
 
+function buildFwaBaseSwapDmReminderTrackedMessageScopeClauses(input: {
+  trackedMessageId: string;
+  referenceId: string | null;
+  messageId: string;
+}): Array<Record<string, unknown>> {
+  const clauses: Array<Record<string, unknown>> = [
+    { id: input.trackedMessageId },
+    { messageId: input.messageId },
+  ];
+  if (input.referenceId) {
+    clauses.push({ referenceId: input.referenceId });
+  }
+  return clauses;
+}
+
+function buildFwaBaseSwapDmReminderClanTagClauses(clanTag: string): Array<Record<string, unknown>> {
+  const normalizedClanTag = normalizeClanTag(clanTag);
+  const clanTagBare = normalizedClanTag.replace(/^#/, "");
+  const clauses: Array<Record<string, unknown>> = [
+    { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+  ];
+  if (clanTagBare && clanTagBare !== normalizedClanTag) {
+    clauses.push({ clanTag: { equals: clanTagBare, mode: "insensitive" } });
+  }
+  return clauses;
+}
+
 /** Purpose: resolve the exact canonical tracked-message scope used for claim and release. */
-async function resolveFwaBaseSwapDmReminderClaimTarget(input: {
+async function resolveFwaBaseSwapDmReminderTrackedRows(input: {
   candidate: Pick<
     FwaBaseSwapDmReminderCandidate,
     | "guildId"
@@ -128,6 +160,7 @@ async function resolveFwaBaseSwapDmReminderClaimTarget(input: {
     | "discordUserId"
     | "dueOffsetHours"
   >;
+  options: ResolveFwaBaseSwapDmReminderTrackedRowsOptions;
 }): Promise<FwaBaseSwapDmReminderClaimTarget | null> {
   const guildId = String(input.candidate.guildId ?? "").trim();
   const clanTag = normalizeClanTag(input.candidate.clanTag);
@@ -151,12 +184,19 @@ async function resolveFwaBaseSwapDmReminderClaimTarget(input: {
     where: {
       guildId,
       featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
-      status: TRACKED_MESSAGE_STATUS.ACTIVE,
-      expiresAt: { gt: new Date() },
-      OR: [
-        { id: trackedMessageId },
-        ...(referenceId ? [{ referenceId }] : []),
-        { messageId },
+      AND: [
+        { OR: buildFwaBaseSwapDmReminderClanTagClauses(clanTag) },
+        {
+          OR: buildFwaBaseSwapDmReminderTrackedMessageScopeClauses({
+            trackedMessageId,
+            referenceId,
+            messageId,
+          }),
+        },
+        ...(input.options.requireActiveStatus
+          ? [{ status: TRACKED_MESSAGE_STATUS.ACTIVE }]
+          : []),
+        ...(input.options.requireUnexpired ? [{ expiresAt: { gt: new Date() } }] : []),
       ],
     },
     orderBy: [{ createdAt: "desc" }],
@@ -512,7 +552,13 @@ export async function claimFwaBaseSwapDmReminderCandidate(input: {
     | "dueOffsetHours"
   >;
 }): Promise<boolean> {
-  const target = await resolveFwaBaseSwapDmReminderClaimTarget({ candidate: input.candidate });
+  const target = await resolveFwaBaseSwapDmReminderTrackedRows({
+    candidate: input.candidate,
+    options: {
+      requireActiveStatus: true,
+      requireUnexpired: true,
+    },
+  });
   if (!target) return false;
 
   const existingClaim = await prisma.trackedMessageClaim.findFirst({
@@ -541,6 +587,11 @@ export async function claimFwaBaseSwapDmReminderCandidate(input: {
 export type FwaBaseSwapDmReminderReleaseResult = {
   released: true;
   deletedCount: number;
+  alreadyAbsent: boolean;
+} | {
+  released: false;
+  reason: "target_not_found" | "claim_still_present" | "release_unconfirmed";
+  deletedCount: number;
 };
 
 /** Purpose: release a previously claimed base-swap reminder scope without touching other offsets. */
@@ -555,20 +606,58 @@ export async function releaseFwaBaseSwapDmReminderCandidate(input: {
     | "discordUserId"
     | "dueOffsetHours"
   >;
-}): Promise<FwaBaseSwapDmReminderReleaseResult | null> {
-  const target = await resolveFwaBaseSwapDmReminderClaimTarget({ candidate: input.candidate });
-  if (!target) return null;
+}): Promise<FwaBaseSwapDmReminderReleaseResult> {
+  const target = await resolveFwaBaseSwapDmReminderTrackedRows({
+    candidate: input.candidate,
+    options: {
+      requireActiveStatus: false,
+      requireUnexpired: false,
+    },
+  });
+  if (!target) {
+    return {
+      released: false,
+      reason: "target_not_found",
+      deletedCount: 0,
+    };
+  }
 
+  const trackedMessageIds = target.trackedRows.map((row) => row.id);
   const deleted = await prisma.trackedMessageClaim.deleteMany({
     where: {
-      trackedMessageId: target.trackedRows[0].id,
+      trackedMessageId: { in: trackedMessageIds },
       userId: target.claimKey,
       clanTag: target.claimKey,
     },
   });
+  if (deleted.count > 0) {
+    return {
+      released: true,
+      deletedCount: deleted.count,
+      alreadyAbsent: false,
+    };
+  }
+
+  const remainingClaim = await prisma.trackedMessageClaim.findFirst({
+    where: {
+      trackedMessageId: { in: trackedMessageIds },
+      userId: target.claimKey,
+      clanTag: target.claimKey,
+    },
+    select: { id: true },
+  });
+  if (!remainingClaim) {
+    return {
+      released: true,
+      deletedCount: 0,
+      alreadyAbsent: true,
+    };
+  }
+
   return {
-    released: true,
-    deletedCount: deleted.count,
+    released: false,
+    reason: "claim_still_present",
+    deletedCount: 0,
   };
 }
 

@@ -722,17 +722,17 @@ describe("base-swap DM reminder planner", () => {
       },
     });
 
-    expect(result).toEqual({ released: true, deletedCount: 1 });
+    expect(result).toEqual({ released: true, deletedCount: 1, alreadyAbsent: false });
     expect(prismaMock.trackedMessageClaim.deleteMany).toHaveBeenCalledWith({
       where: {
-        trackedMessageId: "tracked-new",
+        trackedMessageId: { in: ["tracked-new", "tracked-old"] },
         userId: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
         clanTag: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
       },
     });
   });
 
-  it("treats a missing release target as an idempotent success", async () => {
+  it("treats a zero-delete tracked scope as already absent", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([
       {
         id: "tracked-new",
@@ -746,6 +746,7 @@ describe("base-swap DM reminder planner", () => {
       },
     ]);
     prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.trackedMessageClaim.findFirst.mockResolvedValueOnce(null);
 
     const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
       candidate: {
@@ -759,7 +760,66 @@ describe("base-swap DM reminder planner", () => {
       },
     });
 
-    expect(result).toEqual({ released: true, deletedCount: 0 });
+    expect(result).toEqual({ released: true, deletedCount: 0, alreadyAbsent: true });
+  });
+
+  it("returns target_not_found when the exact tracked scope no longer exists", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({
+      released: false,
+      reason: "target_not_found",
+      deletedCount: 0,
+    });
+  });
+
+  it("returns claim_still_present when the delete pass finds an unchanged claim", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.trackedMessageClaim.findFirst.mockResolvedValueOnce({
+      id: "claim-1",
+    });
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({
+      released: false,
+      reason: "claim_still_present",
+      deletedCount: 0,
+    });
   });
 
   it("excludes acknowledged and unlinked entries from planner candidates across all sections", async () => {

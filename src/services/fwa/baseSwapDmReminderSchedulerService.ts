@@ -21,6 +21,7 @@ import {
   releaseFwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderEntry,
+  type FwaBaseSwapDmReminderReleaseResult,
 } from "./baseSwapDmReminderService";
 
 export const DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS = 60 * 1000;
@@ -78,6 +79,9 @@ type CandidateDeliveryFailure = {
   code: string | null;
   status: number | null;
   error: string;
+  deletedCount: number | null;
+  alreadyAbsent: boolean | null;
+  releaseReason: string | null;
   releaseError: string | null;
 };
 
@@ -175,6 +179,19 @@ function classifyDiscordDeliveryRetryability(error: unknown): {
     .trim();
   const message = `${normalizedMessage} ${causeMessage}`.trim();
 
+  if (
+    normalizedCode === "50007" ||
+    normalizedCode === "10007" ||
+    normalizedCode === "10013" ||
+    normalizedCode === "50001" ||
+    normalizedCode === "50013" ||
+    normalizedCode === "50035" ||
+    normalizedCode === "10003" ||
+    normalizedCode === "10008"
+  ) {
+    return { retryable: false, code, status };
+  }
+
   if (status === 429 || status === 408 || status === 425) {
     return { retryable: true, code, status };
   }
@@ -203,19 +220,6 @@ function classifyDiscordDeliveryRetryability(error: unknown): {
     return { retryable: true, code, status };
   }
 
-  if (
-    normalizedCode === "50007" ||
-    normalizedCode === "10007" ||
-    normalizedCode === "10013" ||
-    normalizedCode === "50001" ||
-    normalizedCode === "50013" ||
-    normalizedCode === "50035" ||
-    normalizedCode === "10003" ||
-    normalizedCode === "10008"
-  ) {
-    return { retryable: false, code, status };
-  }
-
   if (typeof status === "number" && status >= 400 && status < 500) {
     return { retryable: false, code, status };
   }
@@ -230,11 +234,24 @@ function formatDeliveryFailureSummary(input: CandidateDeliveryFailure): string {
     `retryable=${input.retryable ? "true" : "false"}`,
     `claim_action=${input.claimAction}`,
   ];
+  if (input.releaseReason) parts.push(`release_reason=${input.releaseReason}`);
+  if (input.deletedCount !== null) parts.push(`deleted=${input.deletedCount}`);
+  if (input.alreadyAbsent !== null) parts.push(`already_absent=${input.alreadyAbsent ? 1 : 0}`);
   if (input.code) parts.push(`code=${input.code}`);
   if (input.status !== null) parts.push(`status=${input.status}`);
   if (input.releaseError) parts.push(`claim_release_error=${truncateDiscordContent(input.releaseError, 120)}`);
   parts.push(`error=${truncateDiscordContent(input.error, 180)}`);
   return parts.join(" ");
+}
+
+function describeDeliveryFailureHeadline(input: CandidateDeliveryFailure): string {
+  if (!input.retryable) {
+    return "Terminal failure for this offset";
+  }
+  if (input.claimAction === "released") {
+    return "Transient failure \u2014 retry scheduled";
+  }
+  return "Transient failure \u2014 claim release failed; retry not scheduled";
 }
 
 /** Purpose: build the scheduler's retained failure record after classifying delivery and release outcomes. */
@@ -253,37 +270,73 @@ async function handleDeliveryFailure(input: {
     code: classification.code,
     status: classification.status,
     error: formatError(input.error),
+    deletedCount: null,
+    alreadyAbsent: null,
+    releaseReason: null,
     releaseError: null,
   };
 
   if (!classification.retryable) {
     dozzleLog.warn(
-      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} ${formatDeliveryFailureSummary(baseFailure)}`,
+      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="${describeDeliveryFailureHeadline(baseFailure)}" ${formatDeliveryFailureSummary(baseFailure)}`,
     );
     return baseFailure;
   }
 
   try {
     const releaseResult = await input.releaseCandidate({ candidate: input.candidate });
+    const releaseSucceeded = releaseResult?.released === true;
+    const successfulReleaseResult = releaseSucceeded
+      ? (releaseResult as Extract<FwaBaseSwapDmReminderReleaseResult, { released: true }>)
+      : null;
+    const failedReleaseResult = !releaseSucceeded
+      ? (releaseResult as Extract<FwaBaseSwapDmReminderReleaseResult, { released: false }> | null)
+      : null;
+    const deletedCount = typeof releaseResult?.deletedCount === "number" ? releaseResult.deletedCount : 0;
+    const alreadyAbsent = releaseSucceeded ? Boolean(successfulReleaseResult?.alreadyAbsent) : null;
+    const releaseReason = releaseSucceeded ? null : String(failedReleaseResult?.reason ?? "release_unconfirmed");
     dozzleLog.warn(
-      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} ${formatDeliveryFailureSummary({
+      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="${describeDeliveryFailureHeadline({
         ...baseFailure,
-        claimAction: "released",
+        claimAction: releaseSucceeded ? "released" : "release_failed",
+        deletedCount,
+        alreadyAbsent,
+        releaseReason,
         releaseError: null,
-      })} claim_released=${releaseResult?.released ? 1 : 0} deleted=${releaseResult?.deletedCount ?? 0}`,
+      })}" ${formatDeliveryFailureSummary({
+        ...baseFailure,
+        claimAction: releaseSucceeded ? "released" : "release_failed",
+        deletedCount,
+        alreadyAbsent,
+        releaseReason,
+        releaseError: null,
+      })} claim_released=${releaseSucceeded ? 1 : 0} deleted=${deletedCount} already_absent=${alreadyAbsent ? 1 : 0}`,
     );
     return {
       ...baseFailure,
-      claimAction: "released",
+      claimAction: releaseSucceeded ? "released" : "release_failed",
+      deletedCount,
+      alreadyAbsent,
+      releaseReason,
     };
   } catch (releaseError) {
     const releaseErrorText = formatError(releaseError);
-    dozzleLog.error(
-      `[fwa base-swap dm-reminder] claim_release_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} stage=${input.stage} retryable=true claim_action=release_failed code=${classification.code ?? "none"} error=${baseFailure.error} release_error=${releaseErrorText}`,
+    dozzleLog.warn(
+      `[fwa base-swap dm-reminder] claim_release_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="Transient failure \u2014 claim release failed; retry not scheduled" ${formatDeliveryFailureSummary({
+        ...baseFailure,
+        claimAction: "release_failed",
+        releaseError: releaseErrorText,
+        deletedCount: 0,
+        alreadyAbsent: null,
+        releaseReason: "release_unconfirmed",
+      })}`,
     );
     return {
       ...baseFailure,
       claimAction: "release_failed",
+      deletedCount: 0,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
       releaseError: releaseErrorText,
     };
   }
@@ -297,7 +350,10 @@ function buildLeaderChannelLogContent(input: CandidateGroupState): string {
     .map(([discordUserId, entries]) => `- <@${discordUserId}>: ${formatReminderEntryList(entries)}`);
   const failedLines = [...input.failedByUserId.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([discordUserId, failure]) => `- <@${discordUserId}>: ${formatDeliveryFailureSummary(failure)}`);
+    .map(
+      ([discordUserId, failure]) =>
+        `- <@${discordUserId}>: ${describeDeliveryFailureHeadline(failure)}; ${formatDeliveryFailureSummary(failure)}`,
+    );
 
   const lines: string[] = [
     "Base-swap DM reminders",
