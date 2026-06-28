@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessageClaim: {
     findFirst: vi.fn(),
     createMany: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -23,6 +24,7 @@ import {
   buildFwaBaseSwapReminderPostUrl,
   claimFwaBaseSwapDmReminderCandidateForTest,
   findPendingFwaBaseSwapDmReminderCandidatesForTest,
+  releaseFwaBaseSwapDmReminderCandidateForTest,
   resolveDueFwaBaseSwapDmReminderSlots,
   resolveRemainingFwaBaseSwapDmReminderSlots,
 } from "../src/services/fwa/baseSwapDmReminderService";
@@ -33,6 +35,7 @@ beforeEach(() => {
   prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.trackedMessageClaim.findFirst.mockResolvedValue(null);
   prismaMock.trackedMessageClaim.createMany.mockResolvedValue({ count: 1 });
+  prismaMock.trackedMessageClaim.deleteMany.mockResolvedValue({ count: 1 });
 });
 
 function buildEntry(input: {
@@ -680,6 +683,83 @@ describe("base-swap DM reminder planner", () => {
       discordUserId: "111",
       offsetHours: 3,
     })).toBe("fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3");
+  });
+
+  it("releases the canonical split-row claim for a reference-scoped reminder", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+      {
+        id: "tracked-old",
+        guildId: "guild-1",
+        channelId: "mail-2",
+        messageId: "msg-old",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T09:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({ released: true, deletedCount: 1 });
+    expect(prismaMock.trackedMessageClaim.deleteMany).toHaveBeenCalledWith({
+      where: {
+        trackedMessageId: "tracked-new",
+        userId: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
+        clanTag: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
+      },
+    });
+  });
+
+  it("treats a missing release target as an idempotent success", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({ released: true, deletedCount: 0 });
   });
 
   it("excludes acknowledged and unlinked entries from planner candidates across all sections", async () => {

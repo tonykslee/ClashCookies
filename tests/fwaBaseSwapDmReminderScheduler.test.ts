@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { FwaBaseSwapDmReminderCandidate } from "../src/services/fwa/baseSwapDmReminderService";
+import {
+  buildFwaBaseSwapDmReminderClaimKey,
+  type FwaBaseSwapDmReminderCandidate,
+} from "../src/services/fwa/baseSwapDmReminderService";
 
 const plannerMocks = vi.hoisted(() => ({
   findPending: vi.fn(),
   claim: vi.fn(),
+  release: vi.fn(),
   buildContent: vi.fn(() => "DM CONTENT"),
 }));
 
@@ -41,6 +45,20 @@ const prismaMock = vi.hoisted(() => {
     trackedClanFindFirst: vi.fn(() => Promise.resolve(state.trackedClanRow)),
   };
 });
+
+const claimedClaimKeys = new Set<string>();
+
+function getClaimKey(candidate: Pick<
+  FwaBaseSwapDmReminderCandidate,
+  "trackedMessageId" | "referenceId" | "discordUserId" | "dueOffsetHours"
+>): string {
+  return buildFwaBaseSwapDmReminderClaimKey({
+    trackedMessageId: candidate.trackedMessageId,
+    referenceId: candidate.referenceId,
+    discordUserId: candidate.discordUserId,
+    offsetHours: candidate.dueOffsetHours,
+  });
+}
 
 vi.mock("../src/prisma", () => ({
   prisma: {
@@ -97,6 +115,43 @@ function makeCandidate(overrides: Partial<FwaBaseSwapDmReminderCandidate> & { di
   };
 }
 
+function makePendingTrackedRow(input: {
+  candidate: FwaBaseSwapDmReminderCandidate;
+  clanKind: "FWA" | "CWL";
+  swapReminder: boolean;
+  entries: Array<{
+    position: number;
+    playerTag: string;
+    playerName: string;
+    section: "war_bases" | "base_errors" | "fwa_bases";
+    discordUserId: string;
+    acknowledged: boolean;
+  }>;
+  trackedMessageId?: string;
+  referenceId?: string | null;
+  createdAt?: string;
+  expiresAt?: string;
+}) {
+  return {
+    id: input.trackedMessageId ?? input.candidate.trackedMessageId,
+    guildId: input.candidate.guildId,
+    channelId: input.candidate.channelId,
+    messageId: input.candidate.messageId,
+    referenceId: input.referenceId ?? input.candidate.referenceId,
+    clanTag: input.candidate.clanTag,
+    createdAt: new Date(input.createdAt ?? "2026-06-27T16:00:58.000Z"),
+    expiresAt: new Date(input.expiresAt ?? "2026-06-27T19:00:58.000Z"),
+    metadata: {
+      clanKind: input.clanKind,
+      clanName: input.candidate.clanName,
+      createdByUserId: "321",
+      createdAtIso: input.createdAt ?? "2026-06-27T16:00:58.000Z",
+      swapReminder: input.swapReminder,
+      entries: input.entries,
+    },
+  };
+}
+
 const pendingUserIds = new Set<string>();
 
 function setPendingUserIds(userIds: string[]): void {
@@ -107,6 +162,7 @@ function setPendingUserIds(userIds: string[]): void {
 }
 
 function makeClient(input?: {
+  userFetchFailures?: Record<string, Error>;
   userSendFailures?: Record<string, Error>;
   leaderChannelId?: string | null;
 }): {
@@ -132,6 +188,8 @@ function makeClient(input?: {
   const client: ClientLike = {
     users: {
       fetch: vi.fn(async (discordUserId: string) => {
+        const failure = input?.userFetchFailures?.[discordUserId] ?? null;
+        if (failure) throw failure;
         const send = vi.fn(async () => {
           const failure = input?.userSendFailures?.[discordUserId] ?? null;
           if (failure) throw failure;
@@ -172,6 +230,7 @@ async function createScheduler(
   return new FwaBaseSwapDmReminderSchedulerService(client as any, intervalMs, {
     findPendingCandidates: plannerMocks.findPending,
     claimCandidate: plannerMocks.claim,
+    releaseCandidate: plannerMocks.release,
     buildDmContent: plannerMocks.buildContent,
     ...(options?.useActualStillPending
       ? {}
@@ -191,12 +250,27 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
       leaderChannelId: "leader-channel-1",
     };
     pendingUserIds.clear();
+    claimedClaimKeys.clear();
     plannerMocks.findPending.mockReset();
     plannerMocks.claim.mockReset();
+    plannerMocks.release.mockReset();
     plannerMocks.buildContent.mockReset();
     plannerMocks.buildContent.mockReturnValue("DM CONTENT");
     plannerMocks.findPending.mockResolvedValue([]);
-    plannerMocks.claim.mockResolvedValue(true);
+    plannerMocks.claim.mockImplementation(async ({ candidate }: { candidate: FwaBaseSwapDmReminderCandidate }) => {
+      const key = getClaimKey(candidate);
+      if (claimedClaimKeys.has(key)) return false;
+      claimedClaimKeys.add(key);
+      return true;
+    });
+    plannerMocks.release.mockImplementation(async ({ candidate }: { candidate: FwaBaseSwapDmReminderCandidate }) => {
+      const key = getClaimKey(candidate);
+      const deleted = claimedClaimKeys.delete(key);
+      return {
+        released: true,
+        deletedCount: deleted ? 1 : 0,
+      };
+    });
   });
 
   it("sends the incident-shaped FWA reminder when swapReminder is false", async () => {
@@ -269,6 +343,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
       logFailed: 0,
     });
     expect(plannerMocks.claim).toHaveBeenCalledTimes(1);
+    expect(plannerMocks.release).not.toHaveBeenCalled();
     expect(client.users.fetch).toHaveBeenCalledWith("143827744717799425");
     expect(userSendSpies.get("143827744717799425")).toHaveBeenCalledTimes(1);
     expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
@@ -279,7 +354,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     );
   });
 
-  it("sends a CWL reminder when the real pending check sees swapReminder false", async () => {
+  it("skips an acknowledged CWL reminder when the real pending check rejects it", async () => {
     const candidate = makeCandidate({
       discordUserId: "143827744717799425",
       clanTag: "#2QVGPQP0U",
@@ -328,13 +403,13 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
               discordUserId: "143827744717799425",
               townhallLevel: null,
               section: "war_bases",
-              acknowledged: false,
+              acknowledged: true,
             },
           ],
         },
       },
     ];
-    const { client, userSendSpies, resolveLeaderChannel } = makeClient();
+    const { client, resolveLeaderChannel } = makeClient();
     const scheduler = await createScheduler(client, resolveLeaderChannel, 60_000, {
       useActualStillPending: true,
     });
@@ -343,20 +418,42 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
 
     expect(counts).toEqual({
       evaluated: 1,
-      sent: 1,
-      deduped: 0,
+      sent: 0,
+      deduped: 1,
       failed: 0,
       logFailed: 0,
     });
-    expect(plannerMocks.claim).toHaveBeenCalledTimes(1);
-    expect(client.users.fetch).toHaveBeenCalledWith("143827744717799425");
-    expect(userSendSpies.get("143827744717799425")).toHaveBeenCalledTimes(1);
-    expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
+    expect(client.users.fetch).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(plannerMocks.claim).not.toHaveBeenCalled();
+    expect(plannerMocks.release).not.toHaveBeenCalled();
     expect(prismaMock.trackedMessageFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         select: expect.objectContaining({ metadata: true }),
       }),
     );
+  });
+
+  it("does not claim or deliver when stillPending is false", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    const { client, resolveLeaderChannel } = makeClient();
+    setPendingUserIds([]);
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.claim).not.toHaveBeenCalled();
+    expect(plannerMocks.release).not.toHaveBeenCalled();
+    expect(client.users.fetch).not.toHaveBeenCalled();
+    expect(dozzleLogMock.debug.mock.calls.some(([message]) => String(message).includes("reason=no_longer_pending"))).toBe(true);
   });
 
   it("sends a CWL reminder when the real pending check sees swapReminder true", async () => {
@@ -432,6 +529,213 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     expect(client.users.fetch).toHaveBeenCalledWith("143827744717799425");
     expect(userSendSpies.get("143827744717799425")).toHaveBeenCalledTimes(1);
     expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessageFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ metadata: true }),
+      }),
+    );
+  });
+
+  it("retains the claim after successful delivery so a later cycle dedupes it", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const { client, userSendSpies, leaderChannelSend, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const firstCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+    const secondCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).not.toHaveBeenCalled();
+    expect(plannerMocks.claim).toHaveBeenCalledTimes(2);
+    expect(client.users.fetch).toHaveBeenCalledTimes(1);
+    expect(userSendSpies.get("111")).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a claim after a retryable user-fetch failure and succeeds on the next cycle", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const fetchFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userFetchFailures: fetchFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const firstCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+    delete fetchFailures["111"];
+    const secondCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a claim after a retryable DM-send failure and succeeds on the next cycle", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const firstCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+    delete sendFailures["111"];
+    const secondCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a closed-DM claim and dedupes the same offset on the next cycle", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("Cannot send messages to this user"), { code: 50007 }),
+    };
+    const { client, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const firstCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+    const secondCounts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(firstCounts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(secondCounts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).not.toHaveBeenCalled();
+    expect(client.users.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes the cycle when claim release fails after a retryable delivery error", async () => {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    plannerMocks.release.mockRejectedValueOnce(new Error("release boom"));
+    const sendFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, resolveLeaderChannel } = makeClient({
+      userSendFailures: sendFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(
+      dozzleLogMock.error.mock.calls.some(
+        ([message]) =>
+          String(message).includes("claim_release_failed") &&
+          String(message).includes("claim_action=release_failed") &&
+          String(message).includes("stage=dm_send"),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps evaluating later candidates after an earlier retryable failure", async () => {
+    const candidateOne = makeCandidate({ discordUserId: "111" });
+    const candidateTwo = makeCandidate({
+      discordUserId: "222",
+      entries: [
+        {
+          position: 19,
+          playerTag: "#P2",
+          playerName: "Player Two",
+          section: "fwa_bases",
+        },
+      ],
+    });
+    plannerMocks.findPending.mockResolvedValue([candidateOne, candidateTwo]);
+    setPendingUserIds(["111", "222"]);
+    const fetchFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userFetchFailures: fetchFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 2,
+      sent: 1,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(leaderChannelSend).toHaveBeenCalledTimes(1);
+    expect(client.users.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("sends a DM and posts a grouped leader log for a due candidate", async () => {

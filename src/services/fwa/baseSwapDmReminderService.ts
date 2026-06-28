@@ -83,6 +83,21 @@ type ReminderEntry = {
   discordUserId: string;
 };
 
+type FwaBaseSwapDmReminderClaimScope = {
+  guildId: string;
+  clanTag: string;
+  trackedMessageId: string;
+  referenceId: string | null;
+  messageId: string;
+  discordUserId: string;
+  dueOffsetHours: number;
+  claimKey: string;
+};
+
+type FwaBaseSwapDmReminderClaimTarget = FwaBaseSwapDmReminderClaimScope & {
+  trackedRows: Pick<TrackedMessageRow, "id">[];
+};
+
 /** Purpose: keep base-swap DM reminder planning pure and DB-first without sending anything. */
 export function buildFwaBaseSwapDmReminderClaimKey(input: {
   trackedMessageId: string;
@@ -99,6 +114,67 @@ export function buildFwaBaseSwapDmReminderClaimKey(input: {
     discordUserId,
     `offset=${offsetHours}`,
   ].join(":");
+}
+
+/** Purpose: resolve the exact canonical tracked-message scope used for claim and release. */
+async function resolveFwaBaseSwapDmReminderClaimTarget(input: {
+  candidate: Pick<
+    FwaBaseSwapDmReminderCandidate,
+    | "guildId"
+    | "clanTag"
+    | "trackedMessageId"
+    | "referenceId"
+    | "messageId"
+    | "discordUserId"
+    | "dueOffsetHours"
+  >;
+}): Promise<FwaBaseSwapDmReminderClaimTarget | null> {
+  const guildId = String(input.candidate.guildId ?? "").trim();
+  const clanTag = normalizeClanTag(input.candidate.clanTag);
+  const trackedMessageId = String(input.candidate.trackedMessageId ?? "").trim();
+  const referenceId = String(input.candidate.referenceId ?? "").trim() || null;
+  const messageId = String(input.candidate.messageId ?? "").trim();
+  const discordUserId = String(input.candidate.discordUserId ?? "").trim();
+  const dueOffsetHours = normalizeOffsetHours(input.candidate.dueOffsetHours);
+  if (!guildId || !clanTag || !trackedMessageId || !discordUserId || dueOffsetHours <= 0 || !messageId) {
+    return null;
+  }
+
+  const claimKey = buildFwaBaseSwapDmReminderClaimKey({
+    trackedMessageId,
+    referenceId,
+    discordUserId,
+    offsetHours: dueOffsetHours,
+  });
+
+  const trackedRows = await prisma.trackedMessage.findMany({
+    where: {
+      guildId,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      expiresAt: { gt: new Date() },
+      OR: [
+        { id: trackedMessageId },
+        ...(referenceId ? [{ referenceId }] : []),
+        { messageId },
+      ],
+    },
+    orderBy: [{ createdAt: "desc" }],
+    select: { id: true },
+  });
+  if (trackedRows.length === 0) return null;
+
+  return {
+    guildId,
+    clanTag,
+    trackedMessageId,
+    referenceId,
+    messageId,
+    discordUserId,
+    dueOffsetHours,
+    claimKey,
+    trackedRows,
+  };
 }
 
 /** Purpose: build the Discord post URL for a tracked base-swap message without fetching Discord state. */
@@ -436,43 +512,14 @@ export async function claimFwaBaseSwapDmReminderCandidate(input: {
     | "dueOffsetHours"
   >;
 }): Promise<boolean> {
-  const guildId = String(input.candidate.guildId ?? "").trim();
-  const clanTag = normalizeClanTag(input.candidate.clanTag);
-  const trackedMessageId = String(input.candidate.trackedMessageId ?? "").trim();
-  const referenceId = String(input.candidate.referenceId ?? "").trim() || null;
-  const discordUserId = String(input.candidate.discordUserId ?? "").trim();
-  const dueOffsetHours = normalizeOffsetHours(input.candidate.dueOffsetHours);
-  if (!guildId || !clanTag || !trackedMessageId || !discordUserId || dueOffsetHours <= 0) return false;
-
-  const claimKey = buildFwaBaseSwapDmReminderClaimKey({
-    trackedMessageId,
-    referenceId,
-    discordUserId,
-    offsetHours: dueOffsetHours,
-  });
-
-  const rows = await prisma.trackedMessage.findMany({
-    where: {
-      guildId,
-      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
-      status: TRACKED_MESSAGE_STATUS.ACTIVE,
-      expiresAt: { gt: new Date() },
-      OR: [
-        { id: trackedMessageId },
-        ...(referenceId ? [{ referenceId }] : []),
-        { messageId: String(input.candidate.messageId ?? "").trim() },
-      ],
-    },
-    orderBy: [{ createdAt: "desc" }],
-    select: { id: true },
-  });
-  if (rows.length === 0) return false;
+  const target = await resolveFwaBaseSwapDmReminderClaimTarget({ candidate: input.candidate });
+  if (!target) return false;
 
   const existingClaim = await prisma.trackedMessageClaim.findFirst({
     where: {
-      trackedMessageId: { in: rows.map((row) => row.id) },
-      userId: claimKey,
-      clanTag: claimKey,
+      trackedMessageId: { in: target.trackedRows.map((row) => row.id) },
+      userId: target.claimKey,
+      clanTag: target.claimKey,
     },
     select: { id: true },
   });
@@ -481,14 +528,48 @@ export async function claimFwaBaseSwapDmReminderCandidate(input: {
   const claimed = await prisma.trackedMessageClaim.createMany({
     data: [
       {
-        trackedMessageId: rows[0].id,
-        userId: claimKey,
-        clanTag: claimKey,
+        trackedMessageId: target.trackedRows[0].id,
+        userId: target.claimKey,
+        clanTag: target.claimKey,
       },
     ],
     skipDuplicates: true,
   });
   return claimed.count > 0;
+}
+
+export type FwaBaseSwapDmReminderReleaseResult = {
+  released: true;
+  deletedCount: number;
+};
+
+/** Purpose: release a previously claimed base-swap reminder scope without touching other offsets. */
+export async function releaseFwaBaseSwapDmReminderCandidate(input: {
+  candidate: Pick<
+    FwaBaseSwapDmReminderCandidate,
+    | "guildId"
+    | "clanTag"
+    | "trackedMessageId"
+    | "referenceId"
+    | "messageId"
+    | "discordUserId"
+    | "dueOffsetHours"
+  >;
+}): Promise<FwaBaseSwapDmReminderReleaseResult | null> {
+  const target = await resolveFwaBaseSwapDmReminderClaimTarget({ candidate: input.candidate });
+  if (!target) return null;
+
+  const deleted = await prisma.trackedMessageClaim.deleteMany({
+    where: {
+      trackedMessageId: target.trackedRows[0].id,
+      userId: target.claimKey,
+      clanTag: target.claimKey,
+    },
+  });
+  return {
+    released: true,
+    deletedCount: deleted.count,
+  };
 }
 
 /** Purpose: expose the candidate planner for tests and future schedulers without wiring delivery yet. */
@@ -498,6 +579,10 @@ export const findPendingFwaBaseSwapDmReminderCandidatesForTest =
 /** Purpose: expose the claim helper for tests and future schedulers without wiring delivery yet. */
 export const claimFwaBaseSwapDmReminderCandidateForTest =
   claimFwaBaseSwapDmReminderCandidate;
+
+/** Purpose: expose the release helper for tests and future schedulers without wiring delivery yet. */
+export const releaseFwaBaseSwapDmReminderCandidateForTest =
+  releaseFwaBaseSwapDmReminderCandidate;
 
 function dedupeReminderEntries(entries: readonly ReminderEntry[]): ReminderEntry[] {
   const deduped = new Map<string, ReminderEntry>();
