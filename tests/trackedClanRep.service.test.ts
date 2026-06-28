@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  listTrackedClanRepBadgesForPlayerTags,
   listTrackedClanRepTagsForClanTags,
   parseTrackedClanRepTagsInput,
   replaceTrackedClanRepsForClan,
@@ -87,6 +88,97 @@ describe("TrackedClanRepService", () => {
       where: { clanTag: { in: ["#2QG2C08UP", "#PYLQ0289"] } },
       orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
       select: { clanTag: true, playerTag: true },
+    });
+  });
+
+  it("bulk-loads rendered rep badges by player tag with deterministic clan ordering and dedupe", async () => {
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "#BETA001",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#BETA001",
+          clanBadge: " <:badge-b:2> ",
+          createdAt: new Date("2026-03-02T00:00:00.000Z"),
+          mailConfig: { displayOrder: 2 },
+        },
+      },
+      {
+        clanTag: "#ALPHA001",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#ALPHA001",
+          clanBadge: "<:badge-a:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+      {
+        clanTag: "#ALPHA001",
+        playerTag: "#QGRJ2222",
+        clan: {
+          tag: "#ALPHA001",
+          clanBadge: "<:badge-a:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+      {
+        clanTag: "#GAMMA001",
+        playerTag: "#QGRJ2222",
+        clan: {
+          tag: "#GAMMA001",
+          clanBadge: " ",
+          createdAt: new Date("2026-03-03T00:00:00.000Z"),
+          mailConfig: null,
+        },
+      },
+      {
+        clanTag: "#DELTA001",
+        playerTag: "#QGRJ2222",
+        clan: {
+          tag: "#DELTA001",
+          clanBadge: "<:badge-d:4>",
+          createdAt: new Date("2026-02-28T00:00:00.000Z"),
+          mailConfig: null,
+        },
+      },
+      {
+        clanTag: "#BETA001",
+        playerTag: "#QGRJ2222",
+        clan: {
+          tag: "#BETA001",
+          clanBadge: "<:badge-b:2>",
+          createdAt: new Date("2026-03-02T00:00:00.000Z"),
+          mailConfig: { displayOrder: 2 },
+        },
+      },
+    ]);
+
+    const badges = await listTrackedClanRepBadgesForPlayerTags([
+      "#qgrj2222",
+      "#pylq0289",
+      "#pylq0289",
+      "bad-tag",
+    ]);
+
+    expect(badges.get("#PYLQ0289")).toEqual(["<:badge-a:1>", "<:badge-b:2>"]);
+    expect(badges.get("#QGRJ2222")).toEqual(["<:badge-a:1>", "<:badge-b:2>", "<:badge-d:4>"]);
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledWith({
+      where: { playerTag: { in: ["#QGRJ2222", "#PYLQ0289"] } },
+      select: {
+        clanTag: true,
+        playerTag: true,
+        clan: {
+          select: {
+            tag: true,
+            clanBadge: true,
+            createdAt: true,
+            mailConfig: true,
+          },
+        },
+      },
     });
   });
 });
