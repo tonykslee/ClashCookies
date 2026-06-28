@@ -13906,7 +13906,7 @@ export const Fwa: Command = {
         {
           name: "swap-reminder",
           description:
-            "Optional swap-back reminder for fwa-bases and CWL fwa-bases flows (defaults to true)",
+            "Optional CWL swap-back reminder; FWA affected-player DMs stay automatic",
           type: ApplicationCommandOptionType.Boolean,
           required: false,
         },

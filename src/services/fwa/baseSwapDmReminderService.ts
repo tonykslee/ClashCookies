@@ -26,6 +26,18 @@ export type FwaBaseSwapDmReminderEntry = {
   section: FwaBaseSwapDmReminderSection;
 };
 
+/** Purpose: decide whether a tracked base-swap post should produce affected-player DM reminders. */
+export function isBaseSwapAffectedPlayerDmReminderEnabled(
+  metadata: Pick<FwaBaseSwapTrackedMetadata, "clanKind" | "swapReminder"> | null | undefined,
+): boolean {
+  if (!metadata) return false;
+  const clanKind = String(metadata.clanKind ?? "").trim().toUpperCase();
+  if (clanKind === "CWL") {
+    return metadata.swapReminder === true;
+  }
+  return true;
+}
+
 export type FwaBaseSwapDmReminderCandidate = {
   guildId: string;
   clanTag: string;
@@ -229,7 +241,7 @@ export async function findPendingFwaBaseSwapDmReminderCandidates(input: {
     .map((row) => {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) return null;
-      if (!metadata.swapReminder) return null;
+      if (!isBaseSwapAffectedPlayerDmReminderEnabled(metadata)) return null;
       const clanTag = normalizeClanTag(String(row.clanTag ?? ""));
       if (!clanTag) return null;
       const qualifiedEntries = dedupeReminderEntries(

@@ -157,6 +157,9 @@ async function createScheduler(
   client: ClientLike,
   resolveLeaderChannel?: ReturnType<typeof vi.fn>,
   intervalMs = 60_000,
+  options?: {
+    useActualStillPending?: boolean;
+  },
 ) {
   vi.resetModules();
   const { FwaBaseSwapDmReminderSchedulerService } = await import(
@@ -166,7 +169,9 @@ async function createScheduler(
     findPendingCandidates: plannerMocks.findPending,
     claimCandidate: plannerMocks.claim,
     buildDmContent: plannerMocks.buildContent,
-    stillPending: async ({ candidate }) => pendingUserIds.has(candidate.discordUserId),
+    ...(options?.useActualStillPending
+      ? {}
+      : { stillPending: async ({ candidate }) => pendingUserIds.has(candidate.discordUserId) }),
     ...(resolveLeaderChannel ? { resolveLeaderChannel } : {}),
   });
 }
@@ -187,6 +192,50 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     plannerMocks.buildContent.mockReturnValue("DM CONTENT");
     plannerMocks.findPending.mockResolvedValue([]);
     plannerMocks.claim.mockResolvedValue(true);
+  });
+
+  it("sends the incident-shaped FWA reminder when swapReminder is false", async () => {
+    const candidate = makeCandidate({
+      discordUserId: "143827744717799425",
+      clanTag: "#2QVGPQP0U",
+      clanName: "Eternal Blaze",
+      matchType: "FWA",
+      trackedMessageId: "cmqvu48i615324b9ylndebena",
+      referenceId: null,
+      channelId: "1496618317048184833",
+      messageId: "1520278283806052393",
+      postUrl:
+        "https://discord.com/channels/1324040917602013261/1496618317048184833/1520278283806052393",
+      battleDayStart: new Date("2026-06-27T20:00:58.000Z"),
+      dueOffsetHours: 3,
+      remainingOffsetHours: [1],
+      entries: [
+        {
+          position: 11,
+          playerTag: "#8QURGQ8UV",
+          playerName: "Bluey!",
+          section: "war_bases",
+        },
+      ],
+    });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["143827744717799425"]);
+    const { client, userSendSpies, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 1,
+      deduped: 0,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(plannerMocks.claim).toHaveBeenCalledTimes(1);
+    expect(client.users.fetch).toHaveBeenCalledWith("143827744717799425");
+    expect(userSendSpies.get("143827744717799425")).toHaveBeenCalledTimes(1);
+    expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
   });
 
   it("sends a DM and posts a grouped leader log for a due candidate", async () => {
