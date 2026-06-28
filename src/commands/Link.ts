@@ -227,6 +227,48 @@ function splitLinkCreateTags(rawInput: string): {
   };
 }
 
+type LinkDeleteTagInput = {
+  raw: string;
+  normalized: string | null;
+};
+
+/** Purpose: split a free-form delete request into normalized unique player-tag candidates. */
+function splitLinkDeleteTags(rawInput: string): LinkDeleteTagInput[] {
+  return String(rawInput ?? "")
+    .split(/[\s,]+/g)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((raw) => ({
+      raw,
+      normalized: normalizePlayerTag(raw),
+    }));
+}
+
+function buildLinkDeleteSummaryLines(input: {
+  deleted: string[];
+  notLinked: string[];
+  invalid: string[];
+  unauthorized: string[];
+}): string[] {
+  const lines: string[] = [];
+  if (input.deleted.length > 0) {
+    lines.push(`deleted: ${input.deleted.join(", ")}.`);
+  }
+  if (input.notLinked.length > 0) {
+    lines.push(`not linked: ${input.notLinked.join(", ")}.`);
+  }
+  if (input.invalid.length > 0) {
+    lines.push(`invalid: ${input.invalid.join(", ")}.`);
+  }
+  if (input.unauthorized.length > 0) {
+    lines.push(`unauthorized: ${input.unauthorized.join(", ")}.`);
+  }
+  if (lines.length === 0) {
+    lines.push("invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.");
+  }
+  return lines;
+}
+
 function formatLinkCreateResultMessage(input: {
   outcome: PlayerLinkCreateResult["outcome"];
   playerTag: string;
@@ -1965,12 +2007,12 @@ export const Link: Command = {
     },
     {
       name: "delete",
-      description: "Delete a local player-tag link",
+      description: "Delete one or more local player-tag links",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
           name: "player-tag",
-          description: "Player tag (with or without #)",
+          description: "Player tag(s), comma-separated, space-separated, or mixed-separated; with or without #",
           type: ApplicationCommandOptionType.String,
           required: true,
         },
@@ -2212,8 +2254,22 @@ export const Link: Command = {
 
     if (subcommand === "delete") {
       const rawTag = interaction.options.getString("player-tag", true);
-      const normalizedTag = normalizePlayerTag(rawTag);
-      if (!normalizedTag) {
+      const parsedTags = splitLinkDeleteTags(rawTag);
+      const validTags = [
+        ...new Set(
+          parsedTags
+            .map((entry) => entry.normalized)
+            .filter((tag): tag is string => Boolean(tag)),
+        ),
+      ];
+      const invalidTags = [
+        ...new Set(
+          parsedTags
+            .filter((entry) => !entry.normalized)
+            .map((entry) => entry.raw),
+        ),
+      ];
+      if (validTags.length === 0 && invalidTags.length === 0) {
         await interaction.editReply(
           "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
         );
@@ -2221,30 +2277,39 @@ export const Link: Command = {
       }
 
       const canDeleteAny = await canUseAdminDeleteOverride(interaction);
-      const result = await deletePlayerLink({
-        playerTag: normalizedTag,
-        requestingDiscordUserId: interaction.user.id,
-        allowAdminDelete: canDeleteAny,
-      });
+      const deleted: string[] = [];
+      const notLinked: string[] = [];
+      const unauthorized: string[] = [];
 
-      if (result.outcome === "deleted") {
-        await interaction.editReply(`deleted: ${result.playerTag}.`);
-        return;
+      for (const playerTag of validTags) {
+        const result = await deletePlayerLink({
+          playerTag,
+          requestingDiscordUserId: interaction.user.id,
+          allowAdminDelete: canDeleteAny,
+        });
+
+        if (result.outcome === "deleted") {
+          deleted.push(result.playerTag);
+          continue;
+        }
+        if (result.outcome === "not_found") {
+          notLinked.push(result.playerTag);
+          continue;
+        }
+        if (result.outcome === "not_owner") {
+          unauthorized.push(result.playerTag);
+          continue;
+        }
+        invalidTags.push(result.playerTag);
       }
-      if (result.outcome === "not_found") {
-        await interaction.editReply(
-          `not_found: no active link for ${result.playerTag}.`,
-        );
-        return;
-      }
-      if (result.outcome === "not_owner") {
-        await interaction.editReply(
-          `not_owner: ${result.playerTag} is linked to another Discord user.`,
-        );
-        return;
-      }
+
       await interaction.editReply(
-        "invalid_tag: use Clash tags with characters `PYLQGRJCUV0289`.",
+        buildLinkDeleteSummaryLines({
+          deleted,
+          notLinked,
+          invalid: invalidTags,
+          unauthorized,
+        }).join("\n"),
       );
       return;
     }

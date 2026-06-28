@@ -720,6 +720,10 @@ describe("/link run", () => {
   });
 
   it("deletes link when invoked by owner", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
     prismaMock.playerLink.findUnique.mockResolvedValue({
       discordUserId: "111111111111111111",
     });
@@ -728,7 +732,7 @@ describe("/link run", () => {
       subcommand: "delete",
       playerTag: "#pyl0289",
       userId: "111111111111111111",
-      isAdmin: true,
+      isAdmin: false,
     });
 
     await Link.run({} as any, interaction as any, {} as any);
@@ -737,6 +741,47 @@ describe("/link run", () => {
       where: { playerTag: "#PYL0289" },
     });
     expect(interaction.editReply).toHaveBeenCalledWith("deleted: #PYL0289.");
+  });
+
+  it("deletes multiple links and reports invalid, not linked, and unauthorized buckets", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
+    prismaMock.playerLink.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where.playerTag === "#PYL0289") {
+        return { discordUserId: "111111111111111111" };
+      }
+      if (where.playerTag === "#QGRJ2222") {
+        return { discordUserId: "222222222222222222" };
+      }
+      if (where.playerTag === "#LCUV0289") {
+        return null;
+      }
+      return null;
+    });
+    prismaMock.playerLink.delete.mockResolvedValue({});
+    const interaction = makeInteraction({
+      subcommand: "delete",
+      playerTag: "#pyl0289 qgrj2222 badtag, lcuv0289 #pyl0289",
+      userId: "111111111111111111",
+      isAdmin: false,
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.delete).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.delete).toHaveBeenCalledWith({
+      where: { playerTag: "#PYL0289" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "deleted: #PYL0289.",
+        "not linked: #LCUV0289.",
+        "invalid: badtag.",
+        "unauthorized: #QGRJ2222.",
+      ].join("\n"),
+    );
   });
 
   it("renders /link list with layered fallback weights and inline padded rows", async () => {
