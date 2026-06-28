@@ -274,6 +274,33 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     });
   });
 
+  async function runRetryableFailureWithReleaseResult(input: {
+    releaseResult?: unknown;
+    rejectRelease?: boolean;
+  }): Promise<{ counts: { evaluated: number; sent: number; deduped: number; failed: number; logFailed: number }; leaderContent: string }> {
+    const candidate = makeCandidate({ discordUserId: "111" });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    setPendingUserIds(["111"]);
+    claimedClaimKeys.clear();
+    if (input.rejectRelease) {
+      plannerMocks.release.mockRejectedValueOnce(input.releaseResult ?? new Error("release boom"));
+    } else {
+      plannerMocks.release.mockResolvedValueOnce(input.releaseResult as any);
+    }
+    const fetchFailures: Record<string, Error> = {
+      "111": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    };
+    const { client, leaderChannelSend, resolveLeaderChannel } = makeClient({
+      userFetchFailures: fetchFailures,
+    });
+    const scheduler = await createScheduler(client, resolveLeaderChannel);
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+    return {
+      counts,
+      leaderContent: String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? ""),
+    };
+  }
+
   it("sends the incident-shaped FWA reminder when swapReminder is false", async () => {
     const candidate = makeCandidate({
       discordUserId: "143827744717799425",
@@ -765,6 +792,110 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     expect(String(leaderChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
       "Transient failure \u2014 claim release failed; retry not scheduled",
     );
+    expect(dozzleLogMock.warn).toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "{ released:true } is release_failed",
+      releaseResult: { released: true },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "{ released:true, deletedCount:0, alreadyAbsent:false } is release_failed",
+      releaseResult: { released: true, deletedCount: 0, alreadyAbsent: false },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "{ released:true, deletedCount:1, alreadyAbsent:true } is release_failed",
+      releaseResult: { released: true, deletedCount: 1, alreadyAbsent: true },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "negative deletedCount is release_failed",
+      releaseResult: { released: true, deletedCount: -1, alreadyAbsent: false },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "fractional deletedCount is release_failed",
+      releaseResult: { released: true, deletedCount: 1.5, alreadyAbsent: false },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "nonfinite deletedCount is release_failed",
+      releaseResult: { released: true, deletedCount: Number.POSITIVE_INFINITY, alreadyAbsent: false },
+      expectedLeaderFragment: "Transient failure \u2014 claim release failed; retry not scheduled",
+    },
+    {
+      label: "{ released:true, deletedCount:1, alreadyAbsent:false } schedules retry",
+      releaseResult: { released: true, deletedCount: 1, alreadyAbsent: false },
+      expectedLeaderFragment: "Transient failure \u2014 retry scheduled",
+    },
+    {
+      label: "{ released:true, deletedCount:0, alreadyAbsent:true } schedules retry",
+      releaseResult: { released: true, deletedCount: 0, alreadyAbsent: true },
+      expectedLeaderFragment: "Transient failure \u2014 retry scheduled",
+    },
+  ])("$label", async ({ releaseResult, expectedLeaderFragment }) => {
+    const { counts, leaderContent } = await runRetryableFailureWithReleaseResult({
+      releaseResult,
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(leaderContent).toContain(expectedLeaderFragment);
+  });
+
+  it("keeps valid released-false results release_failed with their reason", async () => {
+    const { counts, leaderContent } = await runRetryableFailureWithReleaseResult({
+      releaseResult: {
+        released: false,
+        reason: "claim_still_present",
+        deletedCount: 0,
+      },
+    });
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(plannerMocks.release).toHaveBeenCalledTimes(1);
+    expect(leaderContent).toContain("Transient failure \u2014 claim release failed; retry not scheduled");
+    expect(leaderContent).toContain("release_reason=claim_still_present");
+  });
+
+  it("keeps null and thrown release results release_failed", async () => {
+    const nullOutcome = await runRetryableFailureWithReleaseResult({ releaseResult: null });
+    expect(nullOutcome.counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(nullOutcome.leaderContent).toContain("Transient failure \u2014 claim release failed; retry not scheduled");
+
+    const thrownOutcome = await runRetryableFailureWithReleaseResult({
+      rejectRelease: true,
+      releaseResult: new Error("release boom"),
+    });
+    expect(thrownOutcome.counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      failed: 1,
+      logFailed: 0,
+    });
+    expect(thrownOutcome.leaderContent).toContain("Transient failure \u2014 claim release failed; retry not scheduled");
     expect(dozzleLogMock.warn).toHaveBeenCalled();
   });
 

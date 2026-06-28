@@ -21,7 +21,6 @@ import {
   releaseFwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderEntry,
-  type FwaBaseSwapDmReminderReleaseResult,
 } from "./baseSwapDmReminderService";
 
 export const DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS = 60 * 1000;
@@ -83,6 +82,13 @@ type CandidateDeliveryFailure = {
   alreadyAbsent: boolean | null;
   releaseReason: string | null;
   releaseError: string | null;
+};
+
+type ParsedFwaBaseSwapDmReminderReleaseResult = {
+  claimAction: "released" | "release_failed";
+  deletedCount: number | null;
+  alreadyAbsent: boolean | null;
+  releaseReason: string | null;
 };
 
 export type FwaBaseSwapDmReminderSchedulerDeps = {
@@ -254,6 +260,84 @@ function describeDeliveryFailureHeadline(input: CandidateDeliveryFailure): strin
   return "Transient failure \u2014 claim release failed; retry not scheduled";
 }
 
+function parseFwaBaseSwapDmReminderReleaseResult(input: unknown): ParsedFwaBaseSwapDmReminderReleaseResult {
+  if (!input || typeof input !== "object") {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const released = (input as { released?: unknown }).released;
+  if (released === false) {
+    const reason = (input as { reason?: unknown }).reason;
+    const deletedCount = (input as { deletedCount?: unknown }).deletedCount;
+    const normalizedDeletedCount =
+      typeof deletedCount === "number" && Number.isFinite(deletedCount) && Number.isInteger(deletedCount) && deletedCount >= 0
+        ? deletedCount
+        : null;
+    const recognizedReason =
+      reason === "target_not_found" ||
+      reason === "claim_still_present" ||
+      reason === "release_unconfirmed"
+        ? reason
+        : "release_unconfirmed";
+    return {
+      claimAction: "release_failed",
+      deletedCount: normalizedDeletedCount,
+      alreadyAbsent: null,
+      releaseReason: recognizedReason,
+    };
+  }
+
+  if (released !== true) {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const deletedCount = (input as { deletedCount?: unknown }).deletedCount;
+  const alreadyAbsent = (input as { alreadyAbsent?: unknown }).alreadyAbsent;
+  if (
+    typeof deletedCount !== "number" ||
+    !Number.isFinite(deletedCount) ||
+    !Number.isInteger(deletedCount) ||
+    deletedCount < 0 ||
+    typeof alreadyAbsent !== "boolean"
+  ) {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const validSuccess =
+    (deletedCount > 0 && alreadyAbsent === false) ||
+    (deletedCount === 0 && alreadyAbsent === true);
+  if (!validSuccess) {
+    return {
+      claimAction: "release_failed",
+      deletedCount,
+      alreadyAbsent,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  return {
+    claimAction: "released",
+    deletedCount,
+    alreadyAbsent,
+    releaseReason: null,
+  };
+}
+
 /** Purpose: build the scheduler's retained failure record after classifying delivery and release outcomes. */
 async function handleDeliveryFailure(input: {
   candidate: FwaBaseSwapDmReminderCandidate;
@@ -266,7 +350,7 @@ async function handleDeliveryFailure(input: {
   const baseFailure: CandidateDeliveryFailure = {
     stage: input.stage,
     retryable: classification.retryable,
-    claimAction: classification.retryable ? "released" : "retained",
+    claimAction: classification.retryable ? "release_failed" : "retained",
     code: classification.code,
     status: classification.status,
     error: formatError(input.error),
@@ -285,27 +369,22 @@ async function handleDeliveryFailure(input: {
 
   try {
     const releaseResult = await input.releaseCandidate({ candidate: input.candidate });
-    const releaseSucceeded = releaseResult?.released === true;
-    const successfulReleaseResult = releaseSucceeded
-      ? (releaseResult as Extract<FwaBaseSwapDmReminderReleaseResult, { released: true }>)
-      : null;
-    const failedReleaseResult = !releaseSucceeded
-      ? (releaseResult as Extract<FwaBaseSwapDmReminderReleaseResult, { released: false }> | null)
-      : null;
-    const deletedCount = typeof releaseResult?.deletedCount === "number" ? releaseResult.deletedCount : 0;
-    const alreadyAbsent = releaseSucceeded ? Boolean(successfulReleaseResult?.alreadyAbsent) : null;
-    const releaseReason = releaseSucceeded ? null : String(failedReleaseResult?.reason ?? "release_unconfirmed");
+    const parsedReleaseResult = parseFwaBaseSwapDmReminderReleaseResult(releaseResult);
+    const releaseSucceeded = parsedReleaseResult.claimAction === "released";
+    const deletedCount = parsedReleaseResult.deletedCount ?? 0;
+    const alreadyAbsent = parsedReleaseResult.alreadyAbsent;
+    const releaseReason = parsedReleaseResult.releaseReason;
     dozzleLog.warn(
       `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="${describeDeliveryFailureHeadline({
         ...baseFailure,
-        claimAction: releaseSucceeded ? "released" : "release_failed",
+        claimAction: parsedReleaseResult.claimAction,
         deletedCount,
         alreadyAbsent,
         releaseReason,
         releaseError: null,
       })}" ${formatDeliveryFailureSummary({
         ...baseFailure,
-        claimAction: releaseSucceeded ? "released" : "release_failed",
+        claimAction: parsedReleaseResult.claimAction,
         deletedCount,
         alreadyAbsent,
         releaseReason,
@@ -314,7 +393,7 @@ async function handleDeliveryFailure(input: {
     );
     return {
       ...baseFailure,
-      claimAction: releaseSucceeded ? "released" : "release_failed",
+      claimAction: parsedReleaseResult.claimAction,
       deletedCount,
       alreadyAbsent,
       releaseReason,
