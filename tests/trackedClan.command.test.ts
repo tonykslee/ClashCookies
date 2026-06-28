@@ -591,7 +591,7 @@ describe("/clan command behavior", () => {
     expect(description).toContain("shortName: AC");
     expect(description).toContain("leaderChannel: <#leader-channel-1>");
     expect(description).toContain("leadRole: <@&lead-role-1>");
-    expect(description).toContain("reps: #2RVGJYLC0, #PYLQ0289");
+    expect(description).toContain("reps: `#2RVGJYLC0, #PYLQ0289`");
     expect(interaction.editReply.mock.calls[0]?.[0]?.components).toEqual([]);
     expect(prismaMock.cwlTrackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();

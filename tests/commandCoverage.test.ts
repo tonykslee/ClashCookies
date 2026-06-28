@@ -243,7 +243,7 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status");
     expect(clanHelpText).toContain("use the bot application's `unranked` emoji");
     expect(clanHelpText).toContain(
-      "detailed FWA still shows `leadRole` and configured reps",
+      "detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
     );
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
