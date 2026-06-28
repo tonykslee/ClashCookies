@@ -1077,18 +1077,13 @@ describe("WarEventLogService battle-day refresh content", () => {
 });
 
 describe("WarEventLogService FWA battle-day reminder", () => {
-  it("builds reminder content with an optional clan role mention", () => {
+  it("builds reminder content with the tracked clan role mention", () => {
     expect(
       buildFwaBaseSwapBattleDayReminderContentForTest({
         clanRoleId: "123456789",
       }),
     ).toBe(
       "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.\n<@&123456789>",
-    );
-    expect(
-      buildFwaBaseSwapBattleDayReminderContentForTest({ clanRoleId: null }),
-    ).toBe(
-      "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
     );
   });
 
@@ -1154,7 +1149,7 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     );
   });
 
-  it("sends the clan-wide reminder without a role ping when no clan role is configured", async () => {
+  it("returns false and logs a clan_role_missing failure when no clan role is configured", async () => {
     prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: mailChannelId }]);
     const reminderSend = vi.fn().mockResolvedValue({
       id: "reminder-2",
@@ -1162,6 +1157,10 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     });
     const botLogSend = vi.fn().mockResolvedValue(undefined);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const claimSpy = vi.spyOn(
+      trackedMessageService,
+      "claimFwaBaseSwapBattleDayReminder",
+    ).mockResolvedValue(true);
 
     vi.spyOn(
       trackedMessageService,
@@ -1187,10 +1186,6 @@ describe("WarEventLogService FWA battle-day reminder", () => {
         layoutLinks: [],
       },
     }));
-    vi.spyOn(
-      trackedMessageService,
-      "claimFwaBaseSwapBattleDayReminder",
-    ).mockResolvedValue(true);
     vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
       botLogChannelId,
     );
@@ -1215,28 +1210,26 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       },
     });
 
-    expect(sent).toBe(true);
-    expect(reminderSend).toHaveBeenCalledTimes(1);
-    expect(reminderSend).toHaveBeenCalledWith({
-      content:
-        "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.",
-      allowedMentions: { parse: [] },
-    });
+    expect(sent).toBe(false);
+    expect(reminderSend).not.toHaveBeenCalled();
+    expect(claimSpy).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("battle-day reminder role missing"),
+      expect.stringContaining("reason=clan_role_missing"),
     );
     expect(botLogSend).toHaveBeenCalledTimes(1);
     expect(
       String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
-    ).toBe(
-      buildFwaBaseSwapBattleDayReminderLogContentForTest({
-        clanName: "Test Clan",
-        clanTag: testClanTag,
-        targetChannelId: mailChannelId,
-        reminderMessageUrl: `https://discord.com/channels/${testGuildId}/${mailChannelId}/reminder-2`,
-        referenceId: "base-message-1",
-        clanRoleMentionIncluded: false,
-      }),
+    ).toContain("FWA base-swap battle-day reminder failed");
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toContain("Failure reason: clan_role_missing");
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toContain(`/fwa base-swap reminder tied to Test Clan (#${testClanTag})`);
+    expect(
+      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
+    ).toContain(
+      `Target channel: <#${mailChannelId}>`,
     );
   });
 

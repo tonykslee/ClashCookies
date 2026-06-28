@@ -334,7 +334,6 @@ type FwaBaseSwapAnnouncementState = {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
-  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -371,14 +370,10 @@ const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE {emoji}";
 const FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE =
   "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!";
-const FWA_BASE_SWAP_SWAP_TO_WAR_HEADER = "# Swap to WAR Bases";
 const CWL_BASE_SWAP_ANNOUNCEMENT_HEADING =
   "# {emoji} YOU HAVE AN ACTIVE FWA BASE IN CWL {emoji}";
 const CWL_BASE_SWAP_ANNOUNCEMENT_NOTE =
   "These players currently have an active base in competitive CWL. Please swap to an active war base.";
-const CWL_BASE_SWAP_SWAP_BACK_HEADER = "# Swap Back to CWL Bases";
-const CWL_BASE_SWAP_SWAP_BACK_NOTE =
-  "Thanks for keeping active war bases up for competitive CWL. Please swap back to your CWL base for the next competitive CWL war.";
 const FWA_BASE_SWAP_AUDIT_LOG_LIMIT = 1800;
 type FwaBaseSwapRenderVariant = "single" | "split_part_1" | "split_part_2";
 type FwaBaseSwapAuditLogMode =
@@ -405,7 +400,6 @@ type FwaBaseSwapSplitPostPayload = {
   clanTag: string;
   clanName: string;
   clanRoleId: string | null;
-  pingRoleId?: string | null;
   commandText: string;
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
@@ -599,15 +593,9 @@ export async function handleFwaBaseSwapSplitPostButton(
 
   try {
     const clanKind = payload.clanKind ?? "FWA";
-    const allowedMentions =
-      clanKind === "CWL" &&
-      Boolean(payload.swapReminder) &&
-      payload.pingRoleId
-        ? { users: payload.mentionUserIds, roles: [payload.pingRoleId] }
-        : { users: payload.mentionUserIds };
     const postedA = await publishChannel.send({
       content: payload.splitContents[0],
-      allowedMentions,
+      allowedMentions: { users: payload.mentionUserIds },
     });
     await bestEffortPinFwaBaseSwapMessage({
       guildId: payload.guildId,
@@ -620,7 +608,7 @@ export async function handleFwaBaseSwapSplitPostButton(
     });
     const postedB = await publishChannel.send({
       content: payload.splitContents[1],
-      allowedMentions,
+      allowedMentions: { users: payload.mentionUserIds },
     });
     await bestEffortPinFwaBaseSwapMessage({
       guildId: payload.guildId,
@@ -655,7 +643,6 @@ export async function handleFwaBaseSwapSplitPostButton(
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
             clanRoleId: clanKind === "CWL" ? null : payload.clanRoleId,
-            pingRoleId: payload.pingRoleId ?? null,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_1",
           },
@@ -675,7 +662,6 @@ export async function handleFwaBaseSwapSplitPostButton(
             alertEmoji: payload.alertEmoji,
             layoutBulletEmoji: payload.layoutBulletEmoji,
             clanRoleId: clanKind === "CWL" ? null : payload.clanRoleId,
-            pingRoleId: payload.pingRoleId ?? null,
             swapReminder: payload.swapReminder,
             renderVariant: "split_part_2",
           },
@@ -2061,7 +2047,6 @@ function buildFwaBaseSwapCommandText(input: {
   fwaBases: string | null;
   baseErrors: string | null;
   swapReminder: boolean | null;
-  pingRoleId?: string | null;
 }): string {
   const parts = [`/fwa base-swap clan:${input.clanTag}`];
   const appendOption = (name: string, value: string | null) => {
@@ -2074,10 +2059,6 @@ function buildFwaBaseSwapCommandText(input: {
   appendOption("base-errors", input.baseErrors);
   if (input.swapReminder !== null) {
     parts.push(`swap-reminder:${input.swapReminder ? "true" : "false"}`);
-  }
-  const pingRoleId = normalizeDiscordRoleId(input.pingRoleId ?? null);
-  if (pingRoleId) {
-    parts.push(`ping_role:${pingRoleId}`);
   }
   return parts.join(" ");
 }
@@ -2099,17 +2080,18 @@ function resolveFwaBaseSwapDisplayName(
 }
 
 function validateFwaBaseSwapSwapReminderOption(input: {
-  warBasesRaw: string | null;
-  baseErrorsRaw: string | null;
+  clanKind: FwaBaseSwapClanKind;
   fwaBasesRaw: string | null;
   swapReminderRaw: boolean | null;
 }): string | null {
-  const hasAnyBaseSwapSelection =
-    input.warBasesRaw !== null ||
-    input.baseErrorsRaw !== null ||
-    input.fwaBasesRaw !== null;
-  if (input.swapReminderRaw !== null && !hasAnyBaseSwapSelection) {
-    return "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.";
+  if (input.swapReminderRaw === null) {
+    return null;
+  }
+  if (input.clanKind === "CWL") {
+    return "`swap-reminder` is supported only for tracked FWA `fwa-bases` posts.";
+  }
+  if (input.fwaBasesRaw === null) {
+    return "`swap-reminder` can only be used when `fwa-bases` is provided for a tracked FWA clan.";
   }
   return null;
 }
@@ -2305,7 +2287,6 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
-  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -2375,19 +2356,11 @@ function buildFwaBaseSwapAnnouncementLines(state: {
   }
 
   if (lines.length > 0) {
+    lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
     if (clanKind === "CWL") {
-      lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
       if (layoutLinkLines.length > 0) lines.push(...layoutLinkLines);
       if (state.phaseTimingLine) lines.push(state.phaseTimingLine);
-      if (state.swapReminder) {
-        const reminderLines = buildFwaBaseSwapReminderLines({
-          clanKind,
-          roleId: state.pingRoleId ?? null,
-        });
-        if (reminderLines.length > 0) lines.push("", ...reminderLines);
-      }
     } else {
-      lines.push("", FWA_BASE_SWAP_SECTION_SEPARATOR);
       if (layoutLinkLines.length > 0) lines.push("", ...layoutLinkLines);
       if (state.phaseTimingLine) lines.push("", state.phaseTimingLine);
     }
@@ -2396,38 +2369,6 @@ function buildFwaBaseSwapAnnouncementLines(state: {
 
   return lines;
 }
-
-function buildFwaBaseSwapReminderLines(input: {
-  clanKind: FwaBaseSwapClanKind;
-  roleId?: string | null;
-}): string[] {
-  const normalizedRoleId = normalizeDiscordRoleId(input.roleId ?? null);
-  if (input.clanKind === "CWL") {
-    return normalizedRoleId
-      ? [
-          CWL_BASE_SWAP_SWAP_BACK_HEADER,
-          CWL_BASE_SWAP_SWAP_BACK_NOTE,
-          `<@&${normalizedRoleId}>`,
-        ]
-      : [
-          CWL_BASE_SWAP_SWAP_BACK_HEADER,
-          CWL_BASE_SWAP_SWAP_BACK_NOTE,
-        ];
-  }
-
-  return normalizedRoleId
-    ? [
-        FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
-        FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
-        `<@&${normalizedRoleId}>`,
-      ]
-    : [
-        FWA_BASE_SWAP_SWAP_TO_WAR_HEADER,
-        FWA_BASE_SWAP_FWA_ANNOUNCEMENT_NOTE,
-      ];
-}
-
-export const buildFwaBaseSwapReminderLinesForTest = buildFwaBaseSwapReminderLines;
 
 /** Purpose: score split boundaries to prefer separators/section starts while keeping output balanced and deterministic. */
 function scoreFwaBaseSwapSplitBoundary(input: {
@@ -2480,7 +2421,6 @@ function buildFwaBaseSwapRenderPlan(state: {
   entries: FwaBaseSwapAnnouncementEntry[];
   layoutLinks?: FwaBaseSwapLayoutLink[];
   clanRoleId?: string | null;
-  pingRoleId?: string | null;
   swapReminder?: boolean;
   phaseTimingLine?: string | null;
   alertEmoji?: string | null;
@@ -2509,7 +2449,6 @@ function renderFwaBaseSwapAnnouncement(
     entries: FwaBaseSwapAnnouncementEntry[];
     layoutLinks?: FwaBaseSwapLayoutLink[];
     clanRoleId?: string | null;
-    pingRoleId?: string | null;
     swapReminder?: boolean;
     phaseTimingLine?: string | null;
     alertEmoji?: string | null;
@@ -13906,15 +13845,8 @@ export const Fwa: Command = {
         {
           name: "swap-reminder",
           description:
-            "Optional CWL swap-back reminder; FWA affected-player DMs stay automatic",
+            "Optional FWA battle-day reminder; defaults true for FWA fwa-bases",
           type: ApplicationCommandOptionType.Boolean,
-          required: false,
-        },
-        {
-          name: "ping_role",
-          description:
-            "Optional role to ping for CWL swap-back reminders",
-          type: ApplicationCommandOptionType.Role,
           required: false,
         },
       ],
@@ -14562,24 +14494,6 @@ export const Fwa: Command = {
         "swap-reminder",
         false,
       );
-      const pingRoleOption = interaction.options.getRole("ping_role", false);
-      const pingRoleId = pingRoleOption ? String(pingRoleOption.id ?? "").trim() : null;
-      const swapReminderError = validateFwaBaseSwapSwapReminderOption({
-        warBasesRaw,
-        baseErrorsRaw,
-        fwaBasesRaw,
-        swapReminderRaw,
-      });
-      if (swapReminderError) {
-        await editReplySafe(swapReminderError);
-        return;
-      }
-      const swapReminder =
-        swapReminderRaw === null
-          ? fwaBasesRaw !== null
-            ? true
-            : null
-          : swapReminderRaw;
       const parsedSelectionsResult = parseFwaBaseSwapPositionSelections({
         selections: [
           {
@@ -14627,13 +14541,27 @@ export const Fwa: Command = {
       const { clanKind, clanTag, clanName, rosterMembers, phaseTiming } =
         resolvedRosterResult.roster;
       const trackedConfig = await getTrackedClanBaseSwapRoutingConfig(clanTag);
-      const reminderRoleId =
-        clanKind === "CWL"
-          ? pingRoleId
-          : String(trackedConfig?.clanRoleId ?? "").trim() || null;
+      const swapReminderError = validateFwaBaseSwapSwapReminderOption({
+        clanKind,
+        fwaBasesRaw,
+        swapReminderRaw,
+      });
+      if (swapReminderError) {
+        await editReplySafe(swapReminderError);
+        return;
+      }
+      const effectiveSwapReminder =
+        swapReminderRaw === null
+          ? clanKind === "FWA" && fwaBasesRaw !== null
+          : swapReminderRaw;
+      const commandTextSwapReminder =
+        swapReminderRaw === null
+          ? clanKind === "FWA" && fwaBasesRaw !== null
+            ? true
+            : null
+          : swapReminderRaw;
       if (
-        swapReminder &&
-        clanKind !== "CWL" &&
+        effectiveSwapReminder &&
         !String(trackedConfig?.clanRoleId ?? "").trim()
       ) {
         await editReplySafe(
@@ -14646,8 +14574,7 @@ export const Fwa: Command = {
         warBases: warBasesRaw,
         fwaBases: fwaBasesRaw,
         baseErrors: baseErrorsRaw,
-        swapReminder,
-        pingRoleId,
+        swapReminder: commandTextSwapReminder,
       });
       const baseSwapPhaseTimingLine = phaseTiming
         ? buildFwaBaseSwapPhaseTimingLine({
@@ -14713,18 +14640,14 @@ export const Fwa: Command = {
         entries,
         layoutLinks,
         clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
-        pingRoleId: reminderRoleId,
-        swapReminder: Boolean(swapReminder),
+        swapReminder: effectiveSwapReminder,
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
         fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
         layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
       });
       const mentionUserIds = buildFwaBaseSwapMentionUserIds(entries);
-      const allowedMentions =
-        clanKind === "CWL" && Boolean(swapReminder) && reminderRoleId
-          ? { users: mentionUserIds, roles: [reminderRoleId] }
-          : { users: mentionUserIds };
+      const allowedMentions = { users: mentionUserIds };
       const unlinked = entries.filter((entry) => !entry.discordUserId);
 
       if (!renderPlan.fitsSingleMessage) {
@@ -14754,7 +14677,6 @@ export const Fwa: Command = {
           channelId: interaction.channelId,
           mailChannelId: publishChannelId,
           clanRoleId: trackedConfig?.clanRoleId ?? null,
-          pingRoleId: reminderRoleId,
           clanTag,
           clanName,
           clanKind,
@@ -14766,7 +14688,7 @@ export const Fwa: Command = {
           fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
           layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
           mentionUserIds,
-          swapReminder: Boolean(swapReminder),
+          swapReminder: effectiveSwapReminder,
           createdAtIso,
           syncMessageId,
           warStartTime: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
@@ -14843,9 +14765,8 @@ export const Fwa: Command = {
               layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
               clanKind,
               clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
-              pingRoleId: reminderRoleId,
               renderVariant: "single",
-              swapReminder: Boolean(swapReminder),
+              swapReminder: effectiveSwapReminder,
             },
           },
         ],

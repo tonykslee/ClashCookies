@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Fwa } from "../src/commands/Fwa";
 
 describe("/fwa base-swap command shape", () => {
-  it("registers war-bases, base-errors, fwa-bases, swap-reminder, and ping_role without per-invocation log-routing options", () => {
+  it("registers war-bases, base-errors, and fwa-bases with a FWA battle-day swap-reminder option", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -37,12 +37,7 @@ describe("/fwa base-swap command shape", () => {
     );
     expect(swapReminder?.type).toBe(ApplicationCommandOptionType.Boolean);
     expect(swapReminder?.required).toBe(false);
-
-    const pingRole = baseSwap?.options?.find(
-      (option: { name: string }) => option.name === "ping_role",
-    );
-    expect(pingRole?.type).toBe(ApplicationCommandOptionType.Role);
-    expect(pingRole?.required).toBe(false);
+    expect(swapReminder?.description).toContain("battle-day");
 
     const logEnable = baseSwap?.options?.find(
       (option: { name: string }) => option.name === "log-enable",

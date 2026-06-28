@@ -30,12 +30,7 @@ export type FwaBaseSwapDmReminderEntry = {
 export function isBaseSwapAffectedPlayerDmReminderEnabled(
   metadata: Pick<FwaBaseSwapTrackedMetadata, "clanKind" | "swapReminder"> | null | undefined,
 ): boolean {
-  if (!metadata) return false;
-  const clanKind = String(metadata.clanKind ?? "").trim().toUpperCase();
-  if (clanKind === "CWL") {
-    return metadata.swapReminder === true;
-  }
-  return true;
+  return Boolean(metadata);
 }
 
 export type FwaBaseSwapDmReminderCandidate = {
