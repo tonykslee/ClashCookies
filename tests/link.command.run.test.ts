@@ -392,7 +392,7 @@ describe("/link run", () => {
     );
   });
 
-  it("links multiple tags while trimming whitespace and reporting invalid entries individually", async () => {
+  it("links space-separated tags while trimming whitespace and reporting invalid entries individually", async () => {
     prismaMock.playerLink.findUnique
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
@@ -400,7 +400,7 @@ describe("/link run", () => {
 
     const interaction = makeInteraction({
       subcommand: "create",
-      playerTag: "  pyl0289 , not-a-tag , ,  #qgrj2222  ",
+      playerTag: "  pyl0289 not-a-tag   #qgrj2222  ",
       userId: "111111111111111111",
     });
 
@@ -437,9 +437,60 @@ describe("/link run", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       [
         "created: #PYL0289 linked to you.",
-        "invalid_tag: not-a-tag is not a valid Clash tag.",
-        "invalid_tag: empty entry.",
         "created: #QGRJ2222 linked to you.",
+        "invalid_tag: not-a-tag is not a valid Clash tag.",
+      ].join("\n"),
+    );
+  });
+
+  it("links mixed-separated tags once per unique tag and keeps the first-seen order", async () => {
+    prismaMock.playerLink.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    prismaMock.playerLink.create.mockResolvedValue({});
+
+    const interaction = makeInteraction({
+      subcommand: "create",
+      playerTag: "#pyl0289, not-a-tag #qgrj2222 #pyl0289",
+      userId: "111111111111111111",
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(1, {
+      data: {
+        playerTag: "#PYL0289",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
+    });
+    expect(prismaMock.playerLink.create).toHaveBeenNthCalledWith(2, {
+      data: {
+        playerTag: "#QGRJ2222",
+        discordUserId: "111111111111111111",
+        linkSource: "SELF_SERVICE",
+        verificationStatus: "UNVERIFIED",
+        verificationMethod: null,
+        verifiedAt: null,
+        verifiedByDiscordUserId: null,
+        lastVerifiedAt: null,
+        verificationFailureReason: null,
+        importBatchKey: null,
+      },
+    });
+    expect(prismaMock.playerLink.create).toHaveBeenCalledTimes(2);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "created: #PYL0289 linked to you.",
+        "created: #QGRJ2222 linked to you.",
+        "invalid_tag: not-a-tag is not a valid Clash tag.",
       ].join("\n"),
     );
   });
@@ -720,6 +771,10 @@ describe("/link run", () => {
   });
 
   it("deletes link when invoked by owner", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
     prismaMock.playerLink.findUnique.mockResolvedValue({
       discordUserId: "111111111111111111",
     });
@@ -728,7 +783,7 @@ describe("/link run", () => {
       subcommand: "delete",
       playerTag: "#pyl0289",
       userId: "111111111111111111",
-      isAdmin: true,
+      isAdmin: false,
     });
 
     await Link.run({} as any, interaction as any, {} as any);
@@ -737,6 +792,47 @@ describe("/link run", () => {
       where: { playerTag: "#PYL0289" },
     });
     expect(interaction.editReply).toHaveBeenCalledWith("deleted: #PYL0289.");
+  });
+
+  it("deletes multiple links and reports invalid, not linked, and unauthorized buckets", async () => {
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "canUseAnyTarget",
+    ).mockResolvedValue(false);
+    prismaMock.playerLink.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where.playerTag === "#PYL0289") {
+        return { discordUserId: "111111111111111111" };
+      }
+      if (where.playerTag === "#QGRJ2222") {
+        return { discordUserId: "222222222222222222" };
+      }
+      if (where.playerTag === "#LCUV0289") {
+        return null;
+      }
+      return null;
+    });
+    prismaMock.playerLink.delete.mockResolvedValue({});
+    const interaction = makeInteraction({
+      subcommand: "delete",
+      playerTag: "#pyl0289 qgrj2222 badtag, lcuv0289 #pyl0289",
+      userId: "111111111111111111",
+      isAdmin: false,
+    });
+
+    await Link.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.playerLink.delete).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.delete).toHaveBeenCalledWith({
+      where: { playerTag: "#PYL0289" },
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      [
+        "deleted: #PYL0289.",
+        "not linked: #LCUV0289.",
+        "invalid: badtag.",
+        "unauthorized: #QGRJ2222.",
+      ].join("\n"),
+    );
   });
 
   it("renders /link list with layered fallback weights and inline padded rows", async () => {

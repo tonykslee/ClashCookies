@@ -1556,6 +1556,13 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
+      const clanKind = String(metadata.clanKind ?? "").trim().toUpperCase();
+      if (clanKind === "CWL") {
+        console.log(
+          `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=clanKind_cwl`,
+        );
+        continue;
+      }
       if (!metadata.swapReminder) {
         console.log(
           `${logPrefix} message=${row.messageId} reference=${row.referenceId ?? row.messageId} skipped=swapReminder_false`,

@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessageClaim: {
     findFirst: vi.fn(),
     createMany: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -23,6 +24,7 @@ import {
   buildFwaBaseSwapReminderPostUrl,
   claimFwaBaseSwapDmReminderCandidateForTest,
   findPendingFwaBaseSwapDmReminderCandidatesForTest,
+  releaseFwaBaseSwapDmReminderCandidateForTest,
   resolveDueFwaBaseSwapDmReminderSlots,
   resolveRemainingFwaBaseSwapDmReminderSlots,
 } from "../src/services/fwa/baseSwapDmReminderService";
@@ -33,6 +35,7 @@ beforeEach(() => {
   prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.trackedMessageClaim.findFirst.mockResolvedValue(null);
   prismaMock.trackedMessageClaim.createMany.mockResolvedValue({ count: 1 });
+  prismaMock.trackedMessageClaim.deleteMany.mockResolvedValue({ count: 1 });
 });
 
 function buildEntry(input: {
@@ -50,6 +53,42 @@ function buildEntry(input: {
     discordUserId: input.discordUserId ?? null,
     section: input.section,
     acknowledged: input.acknowledged ?? false,
+  };
+}
+
+function buildTrackedMessageRow(input: {
+  id: string;
+  entries: ReturnType<typeof buildEntry>[];
+  clanKind?: "FWA" | "CWL" | null;
+  swapReminder?: boolean;
+  referenceId?: string | null;
+  renderVariant?: "single" | "split_part_1" | "split_part_2";
+  status?: "ACTIVE" | "COMPLETED" | "EXPIRED" | "REPLACED" | "DELETED";
+  createdAt?: string;
+  expiresAt?: string;
+  clanTag?: string;
+  clanName?: string;
+}) {
+  return {
+    id: input.id,
+    guildId: "guild-1",
+    channelId: "mail-1",
+    messageId: `${input.id}-message`,
+    referenceId: input.referenceId ?? null,
+    clanTag: input.clanTag ?? "#2QG2C08UP",
+    status: input.status ?? "ACTIVE",
+    createdAt: new Date(input.createdAt ?? "2026-05-26T10:00:00.000Z"),
+    expiresAt: new Date(input.expiresAt ?? "2026-05-28T00:00:00.000Z"),
+    metadata: {
+      clanName: input.clanName ?? "Test Clan",
+      createdByUserId: "user-1",
+      createdAtIso: "2026-05-26T09:55:00.000Z",
+      ...(input.clanKind != null ? { clanKind: input.clanKind } : {}),
+      swapReminder: input.swapReminder ?? false,
+      renderVariant: input.renderVariant ?? "single",
+      entries: input.entries,
+      layoutLinks: [],
+    },
   };
 }
 
@@ -112,6 +151,201 @@ describe("base-swap DM reminder slot helpers", () => {
         battleDayStart,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("base-swap DM reminder eligibility matrix", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    {
+      label: "FWA swapReminder false",
+      clanKind: "FWA" as const,
+      swapReminder: false,
+      expectedCount: 1,
+    },
+    {
+      label: "FWA swapReminder true",
+      clanKind: "FWA" as const,
+      swapReminder: true,
+      expectedCount: 1,
+    },
+    {
+      label: "legacy missing clanKind swapReminder false",
+      clanKind: null,
+      swapReminder: false,
+      expectedCount: 1,
+    },
+    {
+      label: "CWL swapReminder false",
+      clanKind: "CWL" as const,
+      swapReminder: false,
+      expectedCount: 1,
+    },
+    {
+      label: "CWL swapReminder true",
+      clanKind: "CWL" as const,
+      swapReminder: true,
+      expectedCount: 1,
+    },
+  ])("$label", async ({ clanKind, swapReminder, expectedCount }) => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      buildTrackedMessageRow({
+        id: "tracked-1",
+        clanKind,
+        swapReminder,
+        entries: [
+          buildEntry({
+            position: 11,
+            playerTag: "#8QURGQ8UV",
+            playerName: "Bluey!",
+            section: "war_bases",
+            discordUserId: "143827744717799425",
+            acknowledged: false,
+          }),
+        ],
+      }),
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        startTime: new Date("2026-05-27T12:00:00.000Z"),
+        state: "preparation",
+        matchType: "FWA",
+      },
+    ]);
+
+    const candidates = await findPendingFwaBaseSwapDmReminderCandidatesForTest({
+      guildId: "guild-1",
+      now: new Date("2026-05-27T10:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(expectedCount);
+    if (expectedCount === 1) {
+      expect(candidates[0]).toEqual(
+        expect.objectContaining({
+          trackedMessageId: "tracked-1",
+          discordUserId: "143827744717799425",
+          dueOffsetHours: 3,
+          remainingOffsetHours: [1],
+        }),
+      );
+    }
+  });
+
+  it("keeps FWA affected-player eligibility across all supported sections when swapReminder is false", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      buildTrackedMessageRow({
+        id: "tracked-1",
+        clanKind: "FWA",
+        swapReminder: false,
+        entries: [
+          buildEntry({
+            position: 4,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            section: "war_bases",
+            discordUserId: "111",
+          }),
+          buildEntry({
+            position: 12,
+            playerTag: "#BBB222",
+            playerName: "Bravo",
+            section: "fwa_bases",
+            discordUserId: "111",
+          }),
+          buildEntry({
+            position: 23,
+            playerTag: "#CCC333",
+            playerName: "Charlie",
+            section: "base_errors",
+            discordUserId: "111",
+          }),
+        ],
+      }),
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        startTime: new Date("2026-05-27T12:00:00.000Z"),
+        state: "preparation",
+        matchType: "BL",
+      },
+    ]);
+
+    const candidates = await findPendingFwaBaseSwapDmReminderCandidatesForTest({
+      guildId: "guild-1",
+      now: new Date("2026-05-27T10:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.entries).toEqual([
+      {
+        position: 4,
+        playerTag: "#AAA111",
+        playerName: "Alpha",
+        section: "war_bases",
+      },
+      {
+        position: 12,
+        playerTag: "#BBB222",
+        playerName: "Bravo",
+        section: "fwa_bases",
+      },
+      {
+        position: 23,
+        playerTag: "#CCC333",
+        playerName: "Charlie",
+        section: "base_errors",
+      },
+    ]);
+  });
+
+  it("keeps the incident-shaped FWA row eligible even when swapReminder is false", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      buildTrackedMessageRow({
+        id: "cmqvu48i615324b9ylndebena",
+        clanKind: "FWA",
+        swapReminder: false,
+        clanName: "Eternal Blaze",
+        clanTag: "2QVGPQP0U",
+        entries: [
+          buildEntry({
+            position: 11,
+            playerTag: "#8QURGQ8UV",
+            playerName: "Bluey!",
+            section: "war_bases",
+            discordUserId: "143827744717799425",
+            acknowledged: false,
+          }),
+        ],
+      }),
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QVGPQP0U",
+        startTime: new Date("2026-06-27T20:00:58.000Z"),
+        state: "inWar",
+        matchType: "FWA",
+      },
+    ]);
+
+    const candidates = await findPendingFwaBaseSwapDmReminderCandidatesForTest({
+      guildId: "guild-1",
+      now: new Date("2026-06-27T17:00:58.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toEqual(
+      expect.objectContaining({
+        trackedMessageId: "cmqvu48i615324b9ylndebena",
+        clanTag: "#2QVGPQP0U",
+        discordUserId: "143827744717799425",
+        dueOffsetHours: 3,
+      }),
+    );
   });
 });
 
@@ -449,6 +683,143 @@ describe("base-swap DM reminder planner", () => {
       discordUserId: "111",
       offsetHours: 3,
     })).toBe("fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3");
+  });
+
+  it("releases the canonical split-row claim for a reference-scoped reminder", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+      {
+        id: "tracked-old",
+        guildId: "guild-1",
+        channelId: "mail-2",
+        messageId: "msg-old",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T09:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({ released: true, deletedCount: 1, alreadyAbsent: false });
+    expect(prismaMock.trackedMessageClaim.deleteMany).toHaveBeenCalledWith({
+      where: {
+        trackedMessageId: { in: ["tracked-new", "tracked-old"] },
+        userId: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
+        clanTag: "fwa-base-swap-dm-reminder:fwa-base-swap:split-key:111:offset=3",
+      },
+    });
+  });
+
+  it("treats a zero-delete tracked scope as already absent", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.trackedMessageClaim.findFirst.mockResolvedValueOnce(null);
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({ released: true, deletedCount: 0, alreadyAbsent: true });
+  });
+
+  it("returns target_not_found when the exact tracked scope no longer exists", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({
+      released: false,
+      reason: "target_not_found",
+      deletedCount: 0,
+    });
+  });
+
+  it("returns claim_still_present when the delete pass finds an unchanged claim", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-new",
+        guildId: "guild-1",
+        channelId: "mail-1",
+        messageId: "msg-new",
+        referenceId: "fwa-base-swap:split-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-05-26T10:00:00.000Z"),
+        expiresAt: new Date("2026-05-28T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessageClaim.deleteMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.trackedMessageClaim.findFirst.mockResolvedValueOnce({
+      id: "claim-1",
+    });
+
+    const result = await releaseFwaBaseSwapDmReminderCandidateForTest({
+      candidate: {
+        guildId: "guild-1",
+        clanTag: "2QG2C08UP",
+        trackedMessageId: "tracked-new",
+        referenceId: "fwa-base-swap:split-key",
+        messageId: "msg-new",
+        discordUserId: "111",
+        dueOffsetHours: 3,
+      },
+    });
+
+    expect(result).toEqual({
+      released: false,
+      reason: "claim_still_present",
+      deletedCount: 0,
+    });
   });
 
   it("excludes acknowledged and unlinked entries from planner candidates across all sections", async () => {

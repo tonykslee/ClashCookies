@@ -7,6 +7,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaLayouts: {
     findMany: vi.fn(),
   },
+  currentWar: {
+    findMany: vi.fn(),
+  },
   $queryRaw: vi.fn(),
   trackedMessage: {
     findUnique: vi.fn(),
@@ -101,6 +104,7 @@ beforeEach(() => {
   prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.$queryRaw.mockReset();
   prismaMock.fwaLayouts.findMany.mockReset();
+  prismaMock.currentWar.findMany.mockReset();
   prismaMock.trackedMessage.findUnique.mockReset();
   prismaMock.trackedMessage.findMany.mockReset();
   prismaMock.trackedMessage.update.mockReset();
@@ -169,6 +173,21 @@ function buildLayoutLink(input: { townhall: number; layoutLink: string }) {
   };
 }
 
+function expectAnnouncementSpacingTail(
+  content: string,
+  expectedTail: string[],
+) {
+  const lines = String(content).split("\n");
+  const separatorIndex = lines.lastIndexOf("──────────────────────────────────");
+  expect(separatorIndex).toBeGreaterThan(0);
+  expect(lines.slice(separatorIndex - 1)).toEqual([
+    "",
+    "──────────────────────────────────",
+    ...expectedTail,
+  ]);
+  return lines;
+}
+
 function buildRosterMember(input: {
   position: number;
   playerTag: string;
@@ -193,7 +212,6 @@ function makeBaseSwapCommandInteraction(input: {
   baseErrors?: string | null;
   fwaBases?: string | null;
   swapReminder?: boolean | null;
-  pingRoleId?: string | null;
   guildId?: string;
   invokeChannelId?: string;
   mailChannelId?: string | null;
@@ -277,9 +295,6 @@ function makeBaseSwapCommandInteraction(input: {
         return null;
       }),
       getRole: vi.fn((name: string) => {
-        if (name === "ping_role" && input.pingRoleId) {
-          return { id: input.pingRoleId } as any;
-        }
         return null;
       }),
       getChannel: vi.fn(() => null),
@@ -1063,58 +1078,63 @@ describe("FWA base-swap layout links", () => {
     });
   });
 
-  it("allows swap-reminder when any base-swap section is present", () => {
+  it("validates swap-reminder against the resolved clan kind", () => {
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: "1",
-        baseErrorsRaw: null,
+        clanKind: "FWA",
         fwaBasesRaw: null,
         swapReminderRaw: true,
       }),
-    ).toBeNull();
+    ).toBe(
+      "`swap-reminder` can only be used when `fwa-bases` is provided for a tracked FWA clan.",
+    );
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: "2",
-        fwaBasesRaw: null,
-        swapReminderRaw: false,
-      }),
-    ).toBeNull();
-    expect(
-      validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
+        clanKind: "FWA",
         fwaBasesRaw: "1,2",
         swapReminderRaw: null,
       }),
     ).toBeNull();
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
-        fwaBasesRaw: null,
+        clanKind: "FWA",
+        fwaBasesRaw: "1,2",
+        swapReminderRaw: false,
+      }),
+    ).toBeNull();
+    expect(
+      validateFwaBaseSwapSwapReminderOptionForTest({
+        clanKind: "CWL",
+        fwaBasesRaw: "1,2",
         swapReminderRaw: true,
       }),
     ).toBe(
-      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+      "`swap-reminder` is supported only for tracked FWA `fwa-bases` posts.",
     );
     expect(
       validateFwaBaseSwapSwapReminderOptionForTest({
-        warBasesRaw: null,
-        baseErrorsRaw: null,
-        fwaBasesRaw: null,
+        clanKind: "CWL",
+        fwaBasesRaw: "1,2",
         swapReminderRaw: false,
       }),
     ).toBe(
-      "`swap-reminder` can only be used when at least one of `war-bases`, `base-errors`, or `fwa-bases` is provided.",
+      "`swap-reminder` is supported only for tracked FWA `fwa-bases` posts.",
     );
   });
 
-  it("renders the fwa-bases section and keeps the preparation and react prompt lines", () => {
+  it("renders the fwa-bases section and preserves the FWA spacing around links, timing, and react prompt", () => {
     const content = renderFwaBaseSwapAnnouncementForTest({
       entries: [
         buildEntry({
           position: 1,
+          playerTag: "#BBB222",
+          playerName: "Bravo",
+          section: "war_bases",
+          discordUserId: "101",
+          townhallLevel: 18,
+        }),
+        buildEntry({
+          position: 2,
           playerTag: "#AAA111",
           playerName: "Alpha",
           section: "fwa_bases",
@@ -1141,11 +1161,18 @@ describe("FWA base-swap layout links", () => {
     expect(content).toContain(
       "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
     );
-    expect(content).not.toContain("TH18:");
-    expect(content).toContain("Preparation Day ends <t:1740000000:F>");
-    expect(content).toContain(
-      `React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
-    );
+    expect(content).not.toContain("# Swap to WAR Bases");
+    expect(content).not.toContain("# Swap Back to CWL Bases");
+    expect(content).not.toContain("<@&");
+    expect(content).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(content, [
+      "",
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      "",
+      "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      "",
+      `${String.fromCodePoint(0x1f447)} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
   });
 
   it("keeps the main announcement free of swap-back reminder content when swap-reminder is enabled", () => {
@@ -1166,6 +1193,7 @@ describe("FWA base-swap layout links", () => {
     });
 
     expect(mainContent).not.toContain("# Swap to WAR Bases");
+    expect(mainContent).not.toContain("# Swap Back to CWL Bases");
     expect(mainContent).not.toContain("<@&123456789012345678>");
   });
 
@@ -1317,6 +1345,8 @@ describe("FWA base-swap layout links", () => {
             "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
         }),
       ],
+      phaseTimingLine:
+        "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
     };
 
     prismaMock.trackedMessage.findUnique.mockResolvedValue({
@@ -1349,9 +1379,18 @@ describe("FWA base-swap layout links", () => {
       "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>"
     );
     expect(String(editPayload.content)).not.toContain("## <a:arrow_arrow:10002> TH18:");
-    expect(String(editPayload.content)).toContain(
-      `👇 React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`
-    );
+    expect(String(editPayload.content)).not.toContain("# Swap to WAR Bases");
+    expect(String(editPayload.content)).not.toContain("# Swap Back to CWL Bases");
+    expect(String(editPayload.content)).not.toContain("<@&");
+    expect(String(editPayload.content)).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(String(editPayload.content), [
+      "",
+      "<a:arrow_arrow:10002> TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>",
+      "",
+      "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+      "",
+      `\u{1F447} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
     expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -1774,6 +1813,54 @@ describe("FWA base-swap reminder selection", () => {
     expect(candidate?.referenceId).toBe("fwa-base-swap:split-key");
     expect(candidate?.metadata.swapReminder).toBe(true);
     expect(candidate?.metadata.entries.some((entry) => entry.section === "fwa_bases")).toBe(true);
+  });
+
+  it("rejects CWL reminder candidates even when fwa-bases and swap-reminder are present", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "row-cwl",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-cwl",
+        referenceId: "fwa-base-swap:cwl-key",
+        clanTag: "2QG2C08UP",
+        createdAt: new Date("2026-03-20T00:10:00.000Z"),
+        expiresAt: new Date("2026-03-22T00:00:00.000Z"),
+        metadata: {
+          clanKind: "CWL",
+          clanName: "Test Clan",
+          createdByUserId: "user-1",
+          createdAtIso: "2026-03-20T00:10:00.000Z",
+          swapReminder: true,
+          entries: [
+            buildEntry({
+              position: 2,
+              playerTag: "#BBB222",
+              playerName: "Bravo",
+              section: "fwa_bases",
+              discordUserId: "user-2",
+            }),
+          ],
+          layoutLinks: [],
+        },
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        startTime: new Date("2026-05-27T12:00:00.000Z"),
+        state: "preparation",
+        matchType: "BL",
+      },
+    ]);
+
+    const service = new TrackedMessageService();
+    const candidate = await service.findLatestActiveFwaBaseSwapReminderCandidate({
+      guildId: "guild-1",
+      clanTag: "2QG2C08UP",
+    });
+
+    expect(candidate).toBeNull();
   });
 
   it("claims a reminder once per reference id across split rows", async () => {
@@ -2666,7 +2753,7 @@ describe("FWA base-swap mail-channel routing", () => {
         tag: "#2QG2C08UP",
         name: "Test Clan",
         mailChannelId: "mail-1",
-        clanRoleId: "123456789012345678",
+        clanRoleId: null,
       },
     ]);
     const posted = {
@@ -2688,6 +2775,224 @@ describe("FWA base-swap mail-channel routing", () => {
         allowedMentions: { users: ["111"] },
       }),
     );
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(false);
+  });
+
+  it("defaults the persisted FWA fwa-bases reminder to true when swap-reminder is omitted", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: "123456789012345678",
+      },
+    ]);
+    const posted = {
+      id: "msg-default",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-default",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(true);
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+  });
+
+  it("fails when the default-enabled FWA reminder is missing a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(
+          "No clan role configured for Test Clan. Set the tracked clan clan role first.",
+        ),
+      }),
+    );
+    expect(run.mailChannelSend).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it("fails when an explicit FWA reminder is enabled without a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: true,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(
+          "No clan role configured for Test Clan. Set the tracked clan clan role first.",
+        ),
+      }),
+    );
+    expect(run.mailChannelSend).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it("persists explicit false without requiring a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: false,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+    const posted = {
+      id: "msg-false",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-false",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(false);
     expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "<@&123456789012345678>",
     );
@@ -3483,7 +3788,13 @@ describe("CWL base-swap labels", () => {
           townhallLevel: 16,
         }),
       ],
-      layoutLinks: [],
+      layoutLinks: [
+        buildLayoutLink({
+          townhall: 18,
+          layoutLink:
+            "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg",
+        }),
+      ],
       phaseTimingLine:
         "## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
       alertEmoji: "<a:alert:10001>",
@@ -3531,17 +3842,26 @@ describe("CWL base-swap labels", () => {
     expect(announcementContent).not.toContain(
       "\n\n## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
     );
+    expect(announcementContent).not.toContain("# Swap to WAR Bases");
+    expect(announcementContent).not.toContain("# Swap Back to CWL Bases");
+    expect(announcementContent).not.toContain("<@&");
+    expect(announcementContent).not.toContain("swap-reminder");
+    expectAnnouncementSpacingTail(announcementContent, [
+      `${FWA_BASE_SWAP_LAYOUT_BULLET_FALLBACK_EMOJI} TH18: <https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AAAAABQAAAAL-snjB9XgCUUcMqq1dHYjg>`,
+      "## Battle Day ends <t:1778093832:F> (<t:1778093832:R>)",
+      "",
+      `${String.fromCodePoint(0x1f447)} React with ${FWA_BASE_SWAP_ACK_EMOJI} once your base is fixed.`,
+    ]);
     expect(dmContent).toContain("CWL lineup swap messages:");
     expect(dmContent).toContain("CWL base error messages:");
     expect(dmContent).toContain("ACTIVE CWL LINEUP: swap to WAR BASE now");
     expect(dmContent).toContain("TH16 update CWL layout: !th16");
   });
 
-  it("renders a competitive CWL swap-back reminder block with an optional role ping", () => {
+  it("keeps the competitive CWL announcement free of swap-back reminder content", () => {
     const reminderContent = renderFwaBaseSwapAnnouncementForTest({
       clanKind: "CWL",
       swapReminder: true,
-      pingRoleId: "123456789012345678",
       entries: [
         buildEntry({
           position: 1,
@@ -3558,11 +3878,8 @@ describe("CWL base-swap labels", () => {
       fwaAlertEmoji: "<a:alert_blue:10003>",
     });
 
-    expect(reminderContent).toContain("# Swap Back to CWL Bases");
-    expect(reminderContent).toContain(
-      "Thanks for keeping active war bases up for competitive CWL. Please swap back to your CWL base for the next competitive CWL war.",
-    );
-    expect(reminderContent).toContain("<@&123456789012345678>");
+    expect(reminderContent).not.toContain("# Swap Back to CWL Bases");
+    expect(reminderContent).not.toContain("<@&123456789012345678>");
     expect(reminderContent).toContain("React with");
     expect(reminderContent).toContain("YOU HAVE AN ACTIVE FWA BASE IN CWL");
   });
@@ -3574,8 +3891,6 @@ describe("CWL base-swap labels", () => {
     const run = makeBaseSwapCommandInteraction({
       clanTag: "#2qg2c08up",
       fwaBases: "1",
-      swapReminder: true,
-      pingRoleId: "123456789012345678",
       guildId: "guild-1",
       invokeChannelId: "invoke-1",
       mailChannelId: null,
@@ -3624,19 +3939,21 @@ describe("CWL base-swap labels", () => {
     expect(run.mailChannelSend).not.toHaveBeenCalled();
     expect(run.interactionChannelSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("# Swap Back to CWL Bases"),
+        content: expect.any(String),
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
+    );
+    expect(String(run.interactionChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "# Swap Back to CWL Bases",
+    );
+    expect(String(run.interactionChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
     );
     expect(posted.pin).toHaveBeenCalledTimes(1);
     const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
     expect(upsertCall.create.channelId).toBe("invoke-1");
-    expect(upsertCall.create.metadata.pingRoleId).toBe(
-      "123456789012345678",
-    );
     expect(upsertCall.create.metadata.clanRoleId).toBeNull();
     expect(String(run.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
       posted.url,
@@ -3655,7 +3972,6 @@ describe("CWL base-swap labels", () => {
       channelId: "invoke-1",
       mailChannelId: "invoke-1",
       clanRoleId: null,
-      pingRoleId: "123456789012345678",
       clanTag: "2QG2C08UP",
       clanName: "Test Clan",
       clanKind: "CWL",
@@ -3665,7 +3981,6 @@ describe("CWL base-swap labels", () => {
         fwaBases: "1",
         baseErrors: null,
         swapReminder: true,
-        pingRoleId: "123456789012345678",
       }),
       entries: [
         buildEntry({
@@ -3741,7 +4056,6 @@ describe("CWL base-swap labels", () => {
         content: "Part 1 content",
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
     );
@@ -3751,7 +4065,6 @@ describe("CWL base-swap labels", () => {
         content: "Part 2 content",
         allowedMentions: {
           users: ["111"],
-          roles: ["123456789012345678"],
         },
       }),
     );
@@ -3761,9 +4074,6 @@ describe("CWL base-swap labels", () => {
     for (const call of prismaMock.trackedMessage.upsert.mock.calls) {
       expect(call[0].create.channelId).toBe("invoke-1");
       expect(call[0].create.metadata.clanKind).toBe("CWL");
-      expect(call[0].create.metadata.pingRoleId).toBe(
-        "123456789012345678",
-      );
       expect(call[0].create.metadata.clanRoleId).toBeNull();
     }
   });
