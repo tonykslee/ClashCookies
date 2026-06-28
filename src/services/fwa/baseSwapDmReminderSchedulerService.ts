@@ -18,6 +18,7 @@ import {
   claimFwaBaseSwapDmReminderCandidate,
   findPendingFwaBaseSwapDmReminderCandidates,
   isBaseSwapAffectedPlayerDmReminderEnabled,
+  releaseFwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderCandidate,
   type FwaBaseSwapDmReminderEntry,
 } from "./baseSwapDmReminderService";
@@ -64,13 +65,36 @@ type CandidateGroupState = {
   matchType: string | null;
   entries: FwaBaseSwapDmReminderEntry[];
   sentByUserId: Map<string, FwaBaseSwapDmReminderEntry[]>;
-  failedByUserId: Map<string, string>;
+  failedByUserId: Map<string, CandidateDeliveryFailure>;
   dedupedCount: number;
+};
+
+type CandidateDeliveryFailureStage = "user_fetch" | "dm_send";
+
+type CandidateDeliveryFailure = {
+  stage: CandidateDeliveryFailureStage;
+  retryable: boolean;
+  claimAction: "released" | "release_failed" | "retained";
+  code: string | null;
+  status: number | null;
+  error: string;
+  deletedCount: number | null;
+  alreadyAbsent: boolean | null;
+  releaseReason: string | null;
+  releaseError: string | null;
+};
+
+type ParsedFwaBaseSwapDmReminderReleaseResult = {
+  claimAction: "released" | "release_failed";
+  deletedCount: number | null;
+  alreadyAbsent: boolean | null;
+  releaseReason: string | null;
 };
 
 export type FwaBaseSwapDmReminderSchedulerDeps = {
   findPendingCandidates: typeof findPendingFwaBaseSwapDmReminderCandidates;
   claimCandidate: typeof claimFwaBaseSwapDmReminderCandidate;
+  releaseCandidate: typeof releaseFwaBaseSwapDmReminderCandidate;
   buildDmContent: typeof buildFwaBaseSwapDmReminderContent;
   stillPending: typeof stillPendingForCandidate;
   resolveLeaderChannel: typeof resolveLeaderChannelForClanTag;
@@ -79,6 +103,7 @@ export type FwaBaseSwapDmReminderSchedulerDeps = {
 const DEFAULT_FWA_BASE_SWAP_DM_REMINDER_SCHEDULER_DEPS: FwaBaseSwapDmReminderSchedulerDeps = {
   findPendingCandidates: findPendingFwaBaseSwapDmReminderCandidates,
   claimCandidate: claimFwaBaseSwapDmReminderCandidate,
+  releaseCandidate: releaseFwaBaseSwapDmReminderCandidate,
   buildDmContent: buildFwaBaseSwapDmReminderContent,
   stillPending: stillPendingForCandidate,
   resolveLeaderChannel: resolveLeaderChannelForClanTag,
@@ -118,6 +143,284 @@ function formatReminderEntryList(entries: readonly FwaBaseSwapDmReminderEntry[])
     .join(", ");
 }
 
+/** Purpose: extract a stable numeric Discord/HTTP status from unknown delivery failures. */
+function readDeliveryFailureStatus(error: unknown): number | null {
+  const rawStatus =
+    (error as { status?: unknown } | null | undefined)?.status ??
+    (error as { response?: { status?: unknown } } | null | undefined)?.response?.status;
+  if (typeof rawStatus === "number" && Number.isFinite(rawStatus)) {
+    return Math.trunc(rawStatus);
+  }
+  if (typeof rawStatus === "string" && /^\d+$/.test(rawStatus)) {
+    return Math.trunc(Number(rawStatus));
+  }
+  return null;
+}
+
+/** Purpose: extract a stable Discord-style error code from unknown delivery failures. */
+function readDeliveryFailureCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "number" && Number.isFinite(code)) return String(Math.trunc(code));
+  if (typeof code === "string" && code.trim()) return code.trim();
+  const causeCode = (error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code;
+  if (typeof causeCode === "number" && Number.isFinite(causeCode)) return String(Math.trunc(causeCode));
+  if (typeof causeCode === "string" && causeCode.trim()) return causeCode.trim();
+  return null;
+}
+
+/** Purpose: classify whether a Discord delivery failure is transient enough to retry later. */
+function classifyDiscordDeliveryRetryability(error: unknown): {
+  retryable: boolean;
+  code: string | null;
+  status: number | null;
+} {
+  const code = readDeliveryFailureCode(error);
+  const status = readDeliveryFailureStatus(error);
+  const normalizedCode = String(code ?? "").toUpperCase();
+  const normalizedMessage = String((error as { message?: unknown } | null | undefined)?.message ?? "")
+    .toLowerCase()
+    .trim();
+  const causeMessage = String((error as { cause?: { message?: unknown } } | null | undefined)?.cause?.message ?? "")
+    .toLowerCase()
+    .trim();
+  const message = `${normalizedMessage} ${causeMessage}`.trim();
+
+  if (
+    normalizedCode === "50007" ||
+    normalizedCode === "10007" ||
+    normalizedCode === "10013" ||
+    normalizedCode === "50001" ||
+    normalizedCode === "50013" ||
+    normalizedCode === "50035" ||
+    normalizedCode === "10003" ||
+    normalizedCode === "10008"
+  ) {
+    return { retryable: false, code, status };
+  }
+
+  if (status === 429 || status === 408 || status === 425) {
+    return { retryable: true, code, status };
+  }
+  if (typeof status === "number" && status >= 500) {
+    return { retryable: true, code, status };
+  }
+
+  if (
+    normalizedCode === "ECONNRESET" ||
+    normalizedCode === "ETIMEDOUT" ||
+    normalizedCode === "ECONNABORTED" ||
+    normalizedCode === "EAI_AGAIN" ||
+    normalizedCode === "ENOTFOUND" ||
+    normalizedCode === "UND_ERR_ABORTED"
+  ) {
+    return { retryable: true, code, status };
+  }
+  if (
+    message.includes("socket hang up") ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    message.includes("fetch failed") ||
+    message.includes("temporary") ||
+    message.includes("dns")
+  ) {
+    return { retryable: true, code, status };
+  }
+
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    return { retryable: false, code, status };
+  }
+
+  return { retryable: false, code, status };
+}
+
+/** Purpose: format a one-line delivery failure summary for audit logs and leader reports. */
+function formatDeliveryFailureSummary(input: CandidateDeliveryFailure): string {
+  const parts = [
+    input.stage,
+    `retryable=${input.retryable ? "true" : "false"}`,
+    `claim_action=${input.claimAction}`,
+  ];
+  if (input.releaseReason) parts.push(`release_reason=${input.releaseReason}`);
+  if (input.deletedCount !== null) parts.push(`deleted=${input.deletedCount}`);
+  if (input.alreadyAbsent !== null) parts.push(`already_absent=${input.alreadyAbsent ? 1 : 0}`);
+  if (input.code) parts.push(`code=${input.code}`);
+  if (input.status !== null) parts.push(`status=${input.status}`);
+  if (input.releaseError) parts.push(`claim_release_error=${truncateDiscordContent(input.releaseError, 120)}`);
+  parts.push(`error=${truncateDiscordContent(input.error, 180)}`);
+  return parts.join(" ");
+}
+
+function describeDeliveryFailureHeadline(input: CandidateDeliveryFailure): string {
+  if (!input.retryable) {
+    return "Terminal failure for this offset";
+  }
+  if (input.claimAction === "released") {
+    return "Transient failure \u2014 retry scheduled";
+  }
+  return "Transient failure \u2014 claim release failed; retry not scheduled";
+}
+
+function parseFwaBaseSwapDmReminderReleaseResult(input: unknown): ParsedFwaBaseSwapDmReminderReleaseResult {
+  if (!input || typeof input !== "object") {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const released = (input as { released?: unknown }).released;
+  if (released === false) {
+    const reason = (input as { reason?: unknown }).reason;
+    const deletedCount = (input as { deletedCount?: unknown }).deletedCount;
+    const normalizedDeletedCount =
+      typeof deletedCount === "number" && Number.isFinite(deletedCount) && Number.isInteger(deletedCount) && deletedCount >= 0
+        ? deletedCount
+        : null;
+    const recognizedReason =
+      reason === "target_not_found" ||
+      reason === "claim_still_present" ||
+      reason === "release_unconfirmed"
+        ? reason
+        : "release_unconfirmed";
+    return {
+      claimAction: "release_failed",
+      deletedCount: normalizedDeletedCount,
+      alreadyAbsent: null,
+      releaseReason: recognizedReason,
+    };
+  }
+
+  if (released !== true) {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const deletedCount = (input as { deletedCount?: unknown }).deletedCount;
+  const alreadyAbsent = (input as { alreadyAbsent?: unknown }).alreadyAbsent;
+  if (
+    typeof deletedCount !== "number" ||
+    !Number.isFinite(deletedCount) ||
+    !Number.isInteger(deletedCount) ||
+    deletedCount < 0 ||
+    typeof alreadyAbsent !== "boolean"
+  ) {
+    return {
+      claimAction: "release_failed",
+      deletedCount: null,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  const validSuccess =
+    (deletedCount > 0 && alreadyAbsent === false) ||
+    (deletedCount === 0 && alreadyAbsent === true);
+  if (!validSuccess) {
+    return {
+      claimAction: "release_failed",
+      deletedCount,
+      alreadyAbsent,
+      releaseReason: "release_unconfirmed",
+    };
+  }
+
+  return {
+    claimAction: "released",
+    deletedCount,
+    alreadyAbsent,
+    releaseReason: null,
+  };
+}
+
+/** Purpose: build the scheduler's retained failure record after classifying delivery and release outcomes. */
+async function handleDeliveryFailure(input: {
+  candidate: FwaBaseSwapDmReminderCandidate;
+  groupKey: string;
+  stage: CandidateDeliveryFailureStage;
+  error: unknown;
+  releaseCandidate: typeof releaseFwaBaseSwapDmReminderCandidate;
+}): Promise<CandidateDeliveryFailure> {
+  const classification = classifyDiscordDeliveryRetryability(input.error);
+  const baseFailure: CandidateDeliveryFailure = {
+    stage: input.stage,
+    retryable: classification.retryable,
+    claimAction: classification.retryable ? "release_failed" : "retained",
+    code: classification.code,
+    status: classification.status,
+    error: formatError(input.error),
+    deletedCount: null,
+    alreadyAbsent: null,
+    releaseReason: null,
+    releaseError: null,
+  };
+
+  if (!classification.retryable) {
+    dozzleLog.warn(
+      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="${describeDeliveryFailureHeadline(baseFailure)}" ${formatDeliveryFailureSummary(baseFailure)}`,
+    );
+    return baseFailure;
+  }
+
+  try {
+    const releaseResult = await input.releaseCandidate({ candidate: input.candidate });
+    const parsedReleaseResult = parseFwaBaseSwapDmReminderReleaseResult(releaseResult);
+    const releaseSucceeded = parsedReleaseResult.claimAction === "released";
+    const deletedCount = parsedReleaseResult.deletedCount ?? 0;
+    const alreadyAbsent = parsedReleaseResult.alreadyAbsent;
+    const releaseReason = parsedReleaseResult.releaseReason;
+    dozzleLog.warn(
+      `[fwa base-swap dm-reminder] delivery_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="${describeDeliveryFailureHeadline({
+        ...baseFailure,
+        claimAction: parsedReleaseResult.claimAction,
+        deletedCount,
+        alreadyAbsent,
+        releaseReason,
+        releaseError: null,
+      })}" ${formatDeliveryFailureSummary({
+        ...baseFailure,
+        claimAction: parsedReleaseResult.claimAction,
+        deletedCount,
+        alreadyAbsent,
+        releaseReason,
+        releaseError: null,
+      })} claim_released=${releaseSucceeded ? 1 : 0} deleted=${deletedCount} already_absent=${alreadyAbsent ? 1 : 0}`,
+    );
+    return {
+      ...baseFailure,
+      claimAction: parsedReleaseResult.claimAction,
+      deletedCount,
+      alreadyAbsent,
+      releaseReason,
+    };
+  } catch (releaseError) {
+    const releaseErrorText = formatError(releaseError);
+    dozzleLog.warn(
+      `[fwa base-swap dm-reminder] claim_release_failed group=${input.groupKey} user=${input.candidate.discordUserId} offset=${input.candidate.dueOffsetHours} outcome="Transient failure \u2014 claim release failed; retry not scheduled" ${formatDeliveryFailureSummary({
+        ...baseFailure,
+        claimAction: "release_failed",
+        releaseError: releaseErrorText,
+        deletedCount: 0,
+        alreadyAbsent: null,
+        releaseReason: "release_unconfirmed",
+      })}`,
+    );
+    return {
+      ...baseFailure,
+      claimAction: "release_failed",
+      deletedCount: 0,
+      alreadyAbsent: null,
+      releaseReason: "release_unconfirmed",
+      releaseError: releaseErrorText,
+    };
+  }
+}
+
 function buildLeaderChannelLogContent(input: CandidateGroupState): string {
   const clanName = String(input.clanName ?? "").trim() || "Unknown Clan";
   const clanTag = normalizeClanTag(input.clanTag);
@@ -126,7 +429,10 @@ function buildLeaderChannelLogContent(input: CandidateGroupState): string {
     .map(([discordUserId, entries]) => `- <@${discordUserId}>: ${formatReminderEntryList(entries)}`);
   const failedLines = [...input.failedByUserId.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([discordUserId, reason]) => `- <@${discordUserId}>: ${reason}`);
+    .map(
+      ([discordUserId, failure]) =>
+        `- <@${discordUserId}>: ${describeDeliveryFailureHeadline(failure)}; ${formatDeliveryFailureSummary(failure)}`,
+    );
 
   const lines: string[] = [
     "Base-swap DM reminders",
@@ -382,16 +688,6 @@ export class FwaBaseSwapDmReminderSchedulerService {
           `[fwa base-swap dm-reminder] candidate_evaluated group=${group.groupKey} user=${candidate.discordUserId} offset=${candidate.dueOffsetHours}`,
         );
 
-        const claimed = await this.deps.claimCandidate({ candidate });
-        if (!claimed) {
-          deduped += 1;
-          group.dedupedCount += 1;
-          dozzleLog.debug(
-            `[fwa base-swap dm-reminder] candidate_deduped group=${group.groupKey} user=${candidate.discordUserId} offset=${candidate.dueOffsetHours} reason=claim_exists`,
-          );
-          continue;
-        }
-
         const pending = await this.deps.stillPending({
           candidate,
           nowMs,
@@ -405,16 +701,27 @@ export class FwaBaseSwapDmReminderSchedulerService {
           continue;
         }
 
+        const claimed = await this.deps.claimCandidate({ candidate });
+        if (!claimed) {
+          deduped += 1;
+          group.dedupedCount += 1;
+          dozzleLog.debug(
+            `[fwa base-swap dm-reminder] candidate_deduped group=${group.groupKey} user=${candidate.discordUserId} offset=${candidate.dueOffsetHours} reason=claim_exists`,
+          );
+          continue;
+        }
+
         const discordUserId = String(candidate.discordUserId ?? "").trim();
-        const discordUser = await this.client.users.fetch(discordUserId).catch((err) => {
+        const discordUser = await this.client.users.fetch(discordUserId).catch(async (err) => {
           failed += 1;
-          group.failedByUserId.set(
-            discordUserId,
-            `user unavailable: ${truncateDiscordContent(formatError(err), 120)}`,
-          );
-          dozzleLog.warn(
-            `[fwa base-swap dm-reminder] dm_failed group=${group.groupKey} user=${discordUserId} reason=user_fetch_failed error=${formatError(err)}`,
-          );
+          const failure = await handleDeliveryFailure({
+            candidate,
+            groupKey: group.groupKey,
+            stage: "user_fetch",
+            error: err,
+            releaseCandidate: this.deps.releaseCandidate,
+          });
+          group.failedByUserId.set(discordUserId, failure);
           return null;
         });
         if (!discordUser) continue;
@@ -439,13 +746,14 @@ export class FwaBaseSwapDmReminderSchedulerService {
           );
         } catch (err) {
           failed += 1;
-          group.failedByUserId.set(
-            discordUserId,
-            truncateDiscordContent(formatError(err), 120),
-          );
-          dozzleLog.error(
-            `[fwa base-swap dm-reminder] dm_failed group=${group.groupKey} user=${discordUserId} offset=${candidate.dueOffsetHours} error=${formatError(err)}`,
-          );
+          const failure = await handleDeliveryFailure({
+            candidate,
+            groupKey: group.groupKey,
+            stage: "dm_send",
+            error: err,
+            releaseCandidate: this.deps.releaseCandidate,
+          });
+          group.failedByUserId.set(discordUserId, failure);
         }
       }
 
