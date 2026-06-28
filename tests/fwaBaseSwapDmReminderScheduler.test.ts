@@ -19,6 +19,7 @@ const dozzleLogMock = vi.hoisted(() => ({
 const prismaMock = vi.hoisted(() => {
   const state = {
     guildRows: [{ guildId: "guild-1" }],
+    pendingTrackedRows: [] as any[],
     trackedClanRow: null as null | {
       tag: string;
       name: string | null;
@@ -31,6 +32,9 @@ const prismaMock = vi.hoisted(() => {
     trackedMessageFindMany: vi.fn((args: any) => {
       if (args?.select?.guildId) {
         return Promise.resolve([...state.guildRows]);
+      }
+      if (args?.select?.metadata) {
+        return Promise.resolve([...state.pendingTrackedRows]);
       }
       return Promise.resolve([]);
     }),
@@ -180,6 +184,7 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.state.guildRows = [{ guildId: "guild-1" }];
+    prismaMock.state.pendingTrackedRows = [];
     prismaMock.state.trackedClanRow = {
       tag: "#ABC",
       name: "Alpha Clan",
@@ -219,9 +224,40 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
       ],
     });
     plannerMocks.findPending.mockResolvedValue([candidate]);
-    setPendingUserIds(["143827744717799425"]);
+    prismaMock.state.pendingTrackedRows = [
+      {
+        id: "tracked-incident-1",
+        guildId: candidate.guildId,
+        channelId: candidate.channelId,
+        messageId: candidate.messageId,
+        referenceId: candidate.referenceId,
+        clanTag: candidate.clanTag,
+        createdAt: new Date("2026-06-27T16:00:58.000Z"),
+        expiresAt: new Date("2026-06-27T19:00:58.000Z"),
+        metadata: {
+          clanKind: "FWA",
+          clanName: "Eternal Blaze",
+          createdByUserId: "321",
+          createdAtIso: "2026-06-27T16:00:58.000Z",
+          swapReminder: false,
+          entries: [
+            {
+              position: 11,
+              playerTag: "#8QURGQ8UV",
+              playerName: "Bluey!",
+              discordUserId: "143827744717799425",
+              townhallLevel: null,
+              section: "war_bases",
+              acknowledged: false,
+            },
+          ],
+        },
+      },
+    ];
     const { client, userSendSpies, resolveLeaderChannel } = makeClient();
-    const scheduler = await createScheduler(client, resolveLeaderChannel);
+    const scheduler = await createScheduler(client, resolveLeaderChannel, 60_000, {
+      useActualStillPending: true,
+    });
 
     const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
 
@@ -236,6 +272,89 @@ describe("FwaBaseSwapDmReminderSchedulerService", () => {
     expect(client.users.fetch).toHaveBeenCalledWith("143827744717799425");
     expect(userSendSpies.get("143827744717799425")).toHaveBeenCalledTimes(1);
     expect(plannerMocks.buildContent).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessageFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ metadata: true }),
+      }),
+    );
+  });
+
+  it("skips a CWL false reminder when the real pending check rejects it", async () => {
+    const candidate = makeCandidate({
+      discordUserId: "143827744717799425",
+      clanTag: "#2QVGPQP0U",
+      clanName: "Eternal Blaze",
+      matchType: "CWL",
+      trackedMessageId: "tracked-cwl-1",
+      referenceId: null,
+      channelId: "1496618317048184833",
+      messageId: "1520278283806052393",
+      postUrl:
+        "https://discord.com/channels/1324040917602013261/1496618317048184833/1520278283806052393",
+      battleDayStart: new Date("2026-06-27T20:00:58.000Z"),
+      dueOffsetHours: 3,
+      remainingOffsetHours: [1],
+      entries: [
+        {
+          position: 11,
+          playerTag: "#8QURGQ8UV",
+          playerName: "Bluey!",
+          section: "war_bases",
+        },
+      ],
+    });
+    plannerMocks.findPending.mockResolvedValue([candidate]);
+    prismaMock.state.pendingTrackedRows = [
+      {
+        id: "tracked-cwl-1",
+        guildId: candidate.guildId,
+        channelId: candidate.channelId,
+        messageId: candidate.messageId,
+        referenceId: candidate.referenceId,
+        clanTag: candidate.clanTag,
+        createdAt: new Date("2026-06-27T16:00:58.000Z"),
+        expiresAt: new Date("2026-06-27T19:00:58.000Z"),
+        metadata: {
+          clanKind: "CWL",
+          clanName: "Eternal Blaze",
+          createdByUserId: "321",
+          createdAtIso: "2026-06-27T16:00:58.000Z",
+          swapReminder: false,
+          entries: [
+            {
+              position: 11,
+              playerTag: "#8QURGQ8UV",
+              playerName: "Bluey!",
+              discordUserId: "143827744717799425",
+              townhallLevel: null,
+              section: "war_bases",
+              acknowledged: false,
+            },
+          ],
+        },
+      },
+    ];
+    const { client, resolveLeaderChannel } = makeClient();
+    const scheduler = await createScheduler(client, resolveLeaderChannel, 60_000, {
+      useActualStillPending: true,
+    });
+
+    const counts = await scheduler.runCycle(new Date("2026-06-27T17:00:58.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      failed: 0,
+      logFailed: 0,
+    });
+    expect(client.users.fetch).not.toHaveBeenCalled();
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessageFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ metadata: true }),
+      }),
+    );
   });
 
   it("sends a DM and posts a grouped leader log for a due candidate", async () => {
