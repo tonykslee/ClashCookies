@@ -221,12 +221,12 @@ export const buildBattleDayRefreshEditPayloadForTest =
   buildBattleDayRefreshEditPayload;
 
 function buildFwaBaseSwapBattleDayReminderContent(input: {
-  clanRoleId: string | null;
+  clanRoleId: string;
 }): string {
   const clanRoleId = String(input.clanRoleId ?? "").trim();
   const body =
     "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.";
-  return clanRoleId ? `${body}\n<@&${clanRoleId}>` : body;
+  return `${body}\n<@&${clanRoleId}>`;
 }
 
 export const buildFwaBaseSwapBattleDayReminderContentForTest =
@@ -3842,6 +3842,20 @@ export class WarEventLogService {
       return false;
     }
 
+    const clanRoleId = String(params.sub.clanRoleId ?? "").trim();
+    if (!clanRoleId) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId} channel=${mailChannelId} reason=clan_role_missing`,
+      );
+      await this.logFwaBaseSwapBattleDayReminderFailure({
+        sub: params.sub,
+        candidate,
+        targetChannelId: mailChannelId,
+        reason: "clan_role_missing",
+      });
+      return false;
+    }
+
     const claimed = await trackedMessageService.claimFwaBaseSwapBattleDayReminder({
       guildId: params.sub.guildId,
       clanTag: params.sub.clanTag,
@@ -3857,16 +3871,10 @@ export class WarEventLogService {
       `[fwa base-swap] battle-day reminder claim success guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId}`,
     );
 
-    const clanRoleId = String(params.sub.clanRoleId ?? "").trim();
-    if (!clanRoleId) {
-      console.warn(
-        `[fwa base-swap] battle-day reminder role missing guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId} channel=${mailChannelId}`,
-      );
-    }
     const reminderContent = buildFwaBaseSwapBattleDayReminderContent({
-      clanRoleId: clanRoleId || null,
+      clanRoleId,
     });
-    const allowedMentions = clanRoleId ? { roles: [clanRoleId] } : { parse: [] as [] };
+    const allowedMentions = { roles: [clanRoleId] };
     const sent = (await channel
       .send({ content: reminderContent, allowedMentions })
       .catch(async (err: unknown) => {
@@ -3954,7 +3962,7 @@ export class WarEventLogService {
           targetChannelId: params.targetChannelId,
           reminderMessageUrl: params.reminderMessageUrl,
           referenceId: params.candidate.referenceId ?? params.candidate.messageId,
-          clanRoleMentionIncluded: Boolean(String(params.sub.clanRoleId ?? "").trim()),
+          clanRoleMentionIncluded: true,
         }),
       });
     } catch {

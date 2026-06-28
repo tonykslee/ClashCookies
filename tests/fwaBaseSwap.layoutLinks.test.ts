@@ -2365,7 +2365,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(clanLogSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
     );
     expect(String(clanLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2446,7 +2446,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.client.channels.fetch).toHaveBeenCalledWith("223456789012345678");
     expect(clanLeadSend).toHaveBeenCalledTimes(1);
     expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
     );
     expect(String(clanLeadSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2530,7 +2530,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.client.channels.fetch).toHaveBeenCalledWith("bot-log-1");
     expect(botLogSend).toHaveBeenCalledTimes(1);
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
     );
     expect(String(botLogSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2611,7 +2611,7 @@ describe("FWA base-swap mail-channel routing", () => {
     expect(run.customLogChannelSend).toHaveBeenCalledTimes(1);
     expect(run.botLogSend).not.toHaveBeenCalled();
     expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1 swap-reminder:false`",
+      "Command: `/fwa base-swap clan:2QG2C08UP war-bases:1`",
     );
     expect(String(run.customLogChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "log-enable:",
@@ -2712,7 +2712,7 @@ describe("FWA base-swap mail-channel routing", () => {
         tag: "#2QG2C08UP",
         name: "Test Clan",
         mailChannelId: "mail-1",
-        clanRoleId: "123456789012345678",
+        clanRoleId: null,
       },
     ]);
     const posted = {
@@ -2734,6 +2734,224 @@ describe("FWA base-swap mail-channel routing", () => {
         allowedMentions: { users: ["111"] },
       }),
     );
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(false);
+  });
+
+  it("defaults the persisted FWA fwa-bases reminder to true when swap-reminder is omitted", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: "123456789012345678",
+      },
+    ]);
+    const posted = {
+      id: "msg-default",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-default",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(true);
+    expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
+      "<@&123456789012345678>",
+    );
+  });
+
+  it("fails when the default-enabled FWA reminder is missing a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(
+          "No clan role configured for Test Clan. Set the tracked clan clan role first.",
+        ),
+      }),
+    );
+    expect(run.mailChannelSend).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it("fails when an explicit FWA reminder is enabled without a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: true,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining(
+          "No clan role configured for Test Clan. Set the tracked clan clan role first.",
+        ),
+      }),
+    );
+    expect(run.mailChannelSend).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it("persists explicit false without requiring a clan role", async () => {
+    const run = makeBaseSwapCommandInteraction({
+      clanTag: "#2qg2c08up",
+      fwaBases: "1",
+      swapReminder: false,
+      guildId: "guild-1",
+      invokeChannelId: "invoke-1",
+      mailChannelId: "mail-1",
+      botLogChannelId: "bot-log-1",
+    });
+    baseSwapRosterMock.resolveBaseSwapRosterForClan.mockResolvedValue({
+      ok: true,
+      roster: {
+        clanKind: "FWA",
+        clanTag: "2QG2C08UP",
+        clanName: "Test Clan",
+        rosterMembers: [
+          {
+            position: 1,
+            playerTag: "#AAA111",
+            playerName: "Alpha",
+            townhallLevel: null,
+            discordUserId: "111",
+            section: "fwa_bases",
+          },
+        ],
+        phaseTiming: null,
+      },
+    });
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Test Clan",
+        mailChannelId: "mail-1",
+        clanRoleId: null,
+      },
+    ]);
+    const posted = {
+      id: "msg-false",
+      url: "https://discord.com/channels/guild-1/mail-1/msg-false",
+      react: vi.fn().mockResolvedValue(undefined),
+    };
+    run.mailChannelSend.mockResolvedValueOnce(posted);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
+      "bot-log-1",
+    );
+
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(run.mailChannelSend).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.upsert).toHaveBeenCalledTimes(1);
+    const upsertCall = prismaMock.trackedMessage.upsert.mock.calls[0]?.[0];
+    expect(upsertCall.create.metadata.swapReminder).toBe(false);
     expect(String(run.mailChannelSend.mock.calls[0]?.[0]?.content ?? "")).not.toContain(
       "<@&123456789012345678>",
     );

@@ -14545,16 +14545,31 @@ export const Fwa: Command = {
         await editReplySafe(swapReminderError);
         return;
       }
-      const swapReminder =
+      const effectiveSwapReminder =
         swapReminderRaw === null
           ? clanKind === "FWA" && fwaBasesRaw !== null
           : swapReminderRaw;
+      const commandTextSwapReminder =
+        swapReminderRaw === null
+          ? clanKind === "FWA" && fwaBasesRaw !== null
+            ? true
+            : null
+          : swapReminderRaw;
+      if (
+        effectiveSwapReminder &&
+        !String(trackedConfig?.clanRoleId ?? "").trim()
+      ) {
+        await editReplySafe(
+          `No clan role configured for ${clanName}. Set the tracked clan clan role first.`,
+        );
+        return;
+      }
       const commandText = buildFwaBaseSwapCommandText({
         clanTag,
         warBases: warBasesRaw,
         fwaBases: fwaBasesRaw,
         baseErrors: baseErrorsRaw,
-        swapReminder,
+        swapReminder: commandTextSwapReminder,
       });
       const baseSwapPhaseTimingLine = phaseTiming
         ? buildFwaBaseSwapPhaseTimingLine({
@@ -14620,7 +14635,7 @@ export const Fwa: Command = {
         entries,
         layoutLinks,
         clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
-        swapReminder: Boolean(swapReminder),
+        swapReminder: effectiveSwapReminder,
         phaseTimingLine: baseSwapPhaseTimingLine,
         alertEmoji: inlineEmojis.alertEmoji,
         fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
@@ -14668,7 +14683,7 @@ export const Fwa: Command = {
           fwaAlertEmoji: inlineEmojis.fwaAlertEmoji,
           layoutBulletEmoji: inlineEmojis.layoutBulletEmoji,
           mentionUserIds,
-          swapReminder: Boolean(swapReminder),
+          swapReminder: effectiveSwapReminder,
           createdAtIso,
           syncMessageId,
           warStartTime: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
@@ -14746,7 +14761,7 @@ export const Fwa: Command = {
               clanKind,
               clanRoleId: clanKind === "CWL" ? null : trackedConfig?.clanRoleId ?? null,
               renderVariant: "single",
-              swapReminder: Boolean(swapReminder),
+              swapReminder: effectiveSwapReminder,
             },
           },
         ],
