@@ -1230,13 +1230,13 @@ function resolveReminderLinkPlayerDisplayName(input: {
   if (backtickedIndex >= 0) {
     const beforeTag = firstLine.slice(0, backtickedIndex);
     const displayName = sanitizeTableText(
-      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+/, ""),
+      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|:no:)\s+/, ""),
     );
     if (displayName) return displayName;
   }
 
   const rowMatch = firstLine.match(
-    /^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
+    /^(?:#\d+\s*-\s*)?(?:❌|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
   );
   if (rowMatch?.[1]) {
     const displayName = sanitizeTableText(rowMatch[1]);
