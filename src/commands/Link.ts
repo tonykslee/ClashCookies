@@ -9,6 +9,7 @@ import {
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
+  MessageFlags,
   ModalBuilder,
   ModalSubmitInteraction,
   PermissionFlagsBits,
@@ -138,6 +139,37 @@ const EMBED_TITLE_LIMIT = 256;
 const LINK_EMBED_SETUP_MODAL_TITLE = "Link Account Embed";
 const LINK_EMBED_TAG_MODAL_TITLE = "Link Account";
 const LINK_EMBED_MODAL_DESCRIPTION_MAX = 4000;
+
+type LinkListComponentMessageFlags = {
+  has: (flag: number) => boolean;
+};
+
+type LinkListComponentInteractionLike = {
+  user: { id: string };
+  message?: { flags?: LinkListComponentMessageFlags | null } | null;
+};
+
+function isPublicLinkListMessage(
+  interaction: LinkListComponentInteractionLike,
+): boolean {
+  const flags = interaction.message?.flags;
+  if (!flags || typeof flags.has !== "function") return false;
+  try {
+    return !flags.has(MessageFlags.Ephemeral);
+  } catch {
+    return false;
+  }
+}
+
+function canUseLinkListComponent(
+  interaction: LinkListComponentInteractionLike,
+  ownerUserId: string,
+): boolean {
+  return (
+    interaction.user.id === ownerUserId ||
+    isPublicLinkListMessage(interaction)
+  );
+}
 
 type LinkListCurrentMemberRow = {
   playerTag: string;
@@ -1354,7 +1386,7 @@ export async function handleLinkListSelectMenu(
   const parsed = parseLinkListSelectCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (interaction.user.id !== parsed.userId) {
+  if (!canUseLinkListComponent(interaction, parsed.userId)) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this menu.",
@@ -1394,7 +1426,7 @@ export async function handleLinkListColumnsSelectMenu(
   const parsed = parseLinkListColumnsSelectCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (interaction.user.id !== parsed.userId) {
+  if (!canUseLinkListComponent(interaction, parsed.userId)) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this menu.",
@@ -1438,7 +1470,7 @@ export async function handleLinkListSortButton(
   const parsed = parseLinkListSortButtonCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (interaction.user.id !== parsed.userId) {
+  if (!canUseLinkListComponent(interaction, parsed.userId)) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this button.",
@@ -1472,7 +1504,7 @@ export async function handleLinkListRefreshButton(
   const parsed = parseLinkListRefreshButtonCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (interaction.user.id !== parsed.userId) {
+  if (!canUseLinkListComponent(interaction, parsed.userId)) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this button.",
@@ -1502,7 +1534,7 @@ export async function handleLinkListRefreshButton(
     const code =
       (err as { code?: unknown } | null)?.code ?? null;
     console.warn(
-      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=${status ?? "unknown"} code=${code ?? "unknown"} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} interaction_user_id=${interaction.user.id} status=${status ?? "unknown"} code=${code ?? "unknown"} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
     );
     await interaction.followUp({
       ephemeral: true,
@@ -1523,7 +1555,7 @@ export async function handleLinkListRefreshButton(
     );
     if (refreshResult.failedClans.includes(clanTag)) {
       console.warn(
-        `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=sync_failed code=sync_failed error=selected clan refresh failed`,
+        `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} interaction_user_id=${interaction.user.id} status=sync_failed code=sync_failed error=selected clan refresh failed`,
       );
       await interaction.followUp({
         ephemeral: true,
@@ -1532,13 +1564,13 @@ export async function handleLinkListRefreshButton(
       return;
     }
     console.info(
-      `[link-list] event=refresh_success guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} member_count=${members.length}`,
+      `[link-list] event=refresh_success guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} interaction_user_id=${interaction.user.id} member_count=${members.length}`,
     );
   } catch (err) {
     const errorCode =
       (err as { code?: unknown } | null)?.code ?? "unknown";
     console.warn(
-      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} status=sync_failed code=${errorCode} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+      `[link-list] event=refresh_failed guild_id=${interaction.guildId} clan_tag=${clanTag} command_user_id=${parsed.userId} interaction_user_id=${interaction.user.id} status=sync_failed code=${errorCode} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
     );
     await interaction.followUp({
       ephemeral: true,
@@ -2071,6 +2103,16 @@ export const Link: Command = {
           required: true,
           autocomplete: true,
         },
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
       ],
     },
     {
@@ -2185,7 +2227,7 @@ export const Link: Command = {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
 
     if (subcommand === "create") {
       const rawTag = interaction.options.getString("player-tag", true);

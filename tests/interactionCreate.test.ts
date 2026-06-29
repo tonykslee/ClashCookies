@@ -83,6 +83,87 @@ async function loadInteractionHandler(runMock: ReturnType<typeof vi.fn>): Promis
   };
 }
 
+function makeLinkSlashInteraction(visibility?: string | null) {
+  const interaction: any = {
+    id: "interaction-1",
+    commandName: "link",
+    guildId: "guild-1",
+    guild: { id: "guild-1", name: "Guild One" },
+    user: { id: "user-1", tag: "tester#0001" },
+    deferred: false,
+    replied: false,
+    inGuild: () => true,
+    memberPermissions: {
+      has: () => false,
+    },
+    member: {
+      roles: ["123"],
+    },
+    isAutocomplete: () => false,
+    isButton: () => false,
+    isUserSelectMenu: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => true,
+    options: {
+      data: [],
+      getSubcommand: vi.fn(() => "list"),
+      getSubcommandGroup: vi.fn(() => null),
+      getString: vi.fn((name: string) => {
+        if (name === "clan-tag") return "#PQL0289";
+        if (name === "visibility") return visibility ?? null;
+        return null;
+      }),
+    },
+    editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+    reply: vi.fn().mockResolvedValue(undefined),
+  };
+  const deferReply = vi.fn(async (options?: Record<string, unknown>) => {
+    interaction.deferred = true;
+    interaction.deferReplyOptions = options;
+  });
+  interaction.deferReply = deferReply;
+  return { interaction, deferReply };
+}
+
+async function loadLinkInteractionHandler(runMock: ReturnType<typeof vi.fn>): Promise<{
+  handler: ListenerHandler;
+  restoreCommand: () => void;
+}> {
+  const { Commands } = await import("../src/Commands");
+  const linkCommand = Commands.find((cmd): cmd is Command => cmd.name === "link");
+  if (!linkCommand) {
+    throw new Error("Could not find /link command");
+  }
+
+  const runSpy = vi
+    .spyOn(linkCommand, "run")
+    .mockImplementation(runMock as unknown as CompoRun);
+
+  const { default: registerInteractionCreate } = await import("../src/listeners/interactionCreate");
+  const handlers = new Map<string, ListenerHandler>();
+  const client = {
+    on: vi.fn((event: string, callback: ListenerHandler) => {
+      handlers.set(event, callback);
+    }),
+  } as unknown as Client;
+
+  registerInteractionCreate(client, {} as any);
+
+  const handler = handlers.get("interactionCreate");
+  if (!handler) {
+    throw new Error("interactionCreate listener was not registered");
+  }
+
+  return {
+    handler,
+    restoreCommand: () => {
+      runSpy.mockRestore();
+    },
+  };
+}
+
 describe("interactionCreate /compo dispatcher diagnostics", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -325,6 +406,51 @@ describe("interactionCreate /link list columns select menu routing", () => {
 
     expect(columnsSpy).toHaveBeenCalledTimes(1);
     expect(selectSpy).not.toHaveBeenCalled();
+  }, 30000);
+});
+
+describe("interactionCreate /link visibility handling", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults /link list visibility to private when omitted", async () => {
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const runMock = vi.fn(async (_client, interaction: any) => {
+      await interaction.deferReply();
+    });
+    const { handler, restoreCommand } = await loadLinkInteractionHandler(
+      runMock as unknown as ReturnType<typeof vi.fn>,
+    );
+    const { interaction, deferReply } = makeLinkSlashInteraction(null);
+
+    await handler(interaction as any);
+    restoreCommand();
+
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: true });
+  }, 30000);
+
+  it("defers publicly when /link list visibility:public is requested", async () => {
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const runMock = vi.fn(async (_client, interaction: any) => {
+      await interaction.deferReply();
+    });
+    const { handler, restoreCommand } = await loadLinkInteractionHandler(
+      runMock as unknown as ReturnType<typeof vi.fn>,
+    );
+    const { interaction, deferReply } = makeLinkSlashInteraction("public");
+
+    await handler(interaction as any);
+    restoreCommand();
+
+    expect(deferReply).toHaveBeenCalledWith({ ephemeral: false });
   }, 30000);
 });
 

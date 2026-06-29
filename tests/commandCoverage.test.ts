@@ -308,6 +308,7 @@ describe("command coverage", () => {
 
   it("documents the /link list Columns dropdown in the link help detail text", () => {
     const linkHelpText = helpEmbedText("link");
+    const normalized = linkHelpText.toLowerCase();
     expect(linkHelpText).toContain("reads persisted current-member rows by default");
     expect(linkHelpText).toContain("Columns dropdown");
     expect(linkHelpText).toContain("choose 1-5 visible fields");
@@ -326,6 +327,8 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
     expect(linkHelpText).toContain("unless a reliable shared days source is available");
+    expect(normalized).toContain("visibility:public");
+    expect(normalized).toContain("owner-only");
     expect(linkHelpText).toContain("The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without #.");
     expect(linkHelpText).toContain("one or more local PlayerLink mappings");
     expect(linkHelpText).toContain("comma-separated, space-separated, or mixed-separated tags with or without #");
@@ -333,6 +336,20 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
     expect(linkHelpText).toContain("/link delete player-tag:#ABC123 #DEF456");
     expect(linkHelpText).toContain("/link create player-tag:#ABC123 #DEF456");
+  });
+
+  it("registers optional visibility choices on /link list", () => {
+    const link = Commands.find((command) => command.name === "link");
+    expect(link).toBeTruthy();
+    const list = (link?.options ?? []).find((option) => option.name === "list") as any;
+    expect(list).toBeTruthy();
+    const visibility = (list?.options ?? []).find((option: any) => option.name === "visibility");
+    expect(visibility).toBeTruthy();
+    expect(visibility.required).toBe(false);
+    expect(visibility.choices).toEqual([
+      { name: "private", value: "private" },
+      { name: "public", value: "public" },
+    ]);
   });
 
   it("documents consecutive filtering in the /inactive help detail text", () => {
