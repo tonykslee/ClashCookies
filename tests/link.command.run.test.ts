@@ -79,6 +79,7 @@ import {
   isReminderLinkConfirmButtonCustomId,
   Link,
 } from "../src/commands/Link";
+import { buildDescriptionEmbeds } from "../src/commands/link/LinkListRender";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import {
   buildReminderLinkButtonCustomId,
@@ -225,7 +226,9 @@ function getInlineRowSegments(row: string): {
   cells: string[];
 } {
   const normalized = String(row ?? "").trimEnd();
-  const statusMatch = normalized.match(/^(?<status>[\u2705\u274C])/u);
+  const statusMatch = normalized.match(
+    /^(?<status>[\u2705\u274C]|<a?:[A-Za-z0-9_~]+:\d+>|[\p{Emoji_Presentation}\p{Extended_Pictographic}])/u,
+  );
   const cellMatches = [...normalized.matchAll(/`(?<cell>[^`]*)`/gu)];
   const cells = cellMatches.map((match) => String(match.groups?.cell ?? ""));
   const markerMatch = normalized.match(/(?<marker>\u{1F9CD})$/u);
@@ -244,13 +247,14 @@ function getInlineRowSegments(row: string): {
   };
 }
 
+const LINK_LIST_ROW_LINE_RE =
+  /^(?:[\u2705\u274C]|<a?:[A-Za-z0-9_~]+:\d+>|[\p{Emoji_Presentation}\p{Extended_Pictographic}])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u;
+
 function getInlineRows(description: string): string[] {
   return String(description ?? "")
     .split("\n")
     .map((line) => line.trimEnd())
-    .filter((line) =>
-      /^(?:[\u2705\u274C])(?:\s+[^\n`]+)*(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(line),
-    );
+    .filter((line) => LINK_LIST_ROW_LINE_RE.test(line));
 }
 
 function getComponentCustomId(component: any): string {
@@ -1107,6 +1111,18 @@ describe("/link run", () => {
       },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(oldRows as any);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_refresh:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     const refreshSync = vi
       .spyOn(
         FwaClanMembersSyncService.prototype,
@@ -1180,7 +1196,7 @@ describe("/link run", () => {
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(2);
     expect(getInlineRowSegments(rows[0] ?? "")).toMatchObject({
-      status: "✅",
+      status: "<:badge_refresh:1>",
       townHall: "18",
       value: "RefreshUser",
     });
@@ -1199,6 +1215,7 @@ describe("/link run", () => {
     expect(payload.components[1].components[0].toJSON().label).toBe(
       "Sort: Discord Name",
     );
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     refreshSync.mockRestore();
   });
 
@@ -1230,6 +1247,18 @@ describe("/link run", () => {
       },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(refreshedRows as any);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_columns:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     const refreshSync = vi
       .spyOn(
         FwaClanMembersSyncService.prototype,
@@ -1291,8 +1320,9 @@ describe("/link run", () => {
     const description = String(embed.description ?? "");
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatch(/^\u2705\s+`\s*Refreshed`\s+`140k`$/u);
+    expect(rows[0]).toMatch(/^<:badge_columns:1>\s+`\s*Refreshed`\s+`140k`$/u);
     expect(rows[1]).toMatch(/^\u274C\s+`\s*New Unlinked`\s+`132k`$/u);
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     expect(getComponentCustomId(payload.components[0].components[0])).toBe(
       buildLinkListRefreshButtonCustomId(
         "111111111111111111",
@@ -1502,68 +1532,54 @@ describe("/link run", () => {
   });
 
   it("renders compact values, keeps tags only in Player Tags mode, and places filler markers at the far right", () => {
+    const linkedRepRow = {
+      townHallLabel: "18",
+      playerName: "Persisted Sin",
+      discordDisplayName: "Persisted Sin",
+      discordUsername: "Persisted Sin",
+      weightLabel: "166k",
+      inactivityLabel: "—",
+      clanRoleLabel: "lead",
+      playerTag: "#QR9R0LGJ9",
+      linkedStatusMarkerOverride: "<:badge:1>",
+      rightMarker: "🧍",
+      isLinked: true,
+    };
+    const linkedNonRepRow = {
+      townHallLabel: "17",
+      playerName: "Linked Two",
+      discordDisplayName: "Linked Two",
+      discordUsername: "Linked Two",
+      weightLabel: "145k",
+      inactivityLabel: "—",
+      clanRoleLabel: "co",
+      playerTag: "#LCUV0289",
+      rightMarker: null,
+      isLinked: true,
+    };
+    const unlinkedRow = {
+      townHallLabel: "14",
+      playerName: "Unlinked Player",
+      discordDisplayName: "—",
+      discordUsername: "—",
+      weightLabel: "—",
+      inactivityLabel: "—",
+      clanRoleLabel: "—",
+      playerTag: "#PQL0289",
+      linkedStatusMarkerOverride: "<:badge:2>",
+      isLinked: false,
+    };
     const defaultRows = buildLinkListDescriptionLinesForTest({
-      linkedRows: [
-        {
-          townHallLabel: "18",
-          playerName: "Persisted Sin",
-          discordDisplayName: "Persisted Sin",
-          discordUsername: "Persisted Sin",
-          weightLabel: "166k",
-          inactivityLabel: "—",
-          clanRoleLabel: "lead",
-          playerTag: "#QR9R0LGJ9",
-          leftBadgePrefix: "<:badge:1>",
-          rightMarker: "🧍",
-          isLinked: true,
-        },
-      ],
-      unlinkedRows: [
-        {
-          townHallLabel: "14",
-          playerName: "Unlinked Player",
-          discordDisplayName: "—",
-          discordUsername: "—",
-          weightLabel: "—",
-          inactivityLabel: "—",
-          clanRoleLabel: "—",
-          playerTag: "#LCUV0289",
-          isLinked: false,
-        },
-      ],
+      linkedRows: [linkedRepRow, linkedNonRepRow],
+      unlinkedRows: [unlinkedRow],
       statusIcons: {
         linked: "✅",
         unlinked: "❌",
       },
     });
     const playerTagRows = buildLinkListDescriptionLinesForTest({
-      linkedRows: [
-        {
-          townHallLabel: "18",
-          playerName: "Persisted Sin",
-          discordDisplayName: "Persisted Sin",
-          discordUsername: "Persisted Sin",
-          weightLabel: "166k",
-          inactivityLabel: "—",
-          clanRoleLabel: "lead",
-          playerTag: "#QR9R0LGJ9",
-          rightMarker: "🧍",
-          isLinked: true,
-        },
-      ],
-      unlinkedRows: [
-        {
-          townHallLabel: "14",
-          playerName: "Unlinked Player",
-          discordDisplayName: "—",
-          discordUsername: "—",
-          weightLabel: "—",
-          inactivityLabel: "—",
-          clanRoleLabel: "—",
-          playerTag: "#LCUV0289",
-          isLinked: false,
-        },
-      ],
+      linkedRows: [linkedRepRow, linkedNonRepRow],
+      unlinkedRows: [unlinkedRow],
       statusIcons: {
         linked: "✅",
         unlinked: "❌",
@@ -1574,34 +1590,55 @@ describe("/link run", () => {
     const defaultRowsOnly = getInlineRows(defaultRows.join("\n"));
     const playerTagRowsOnly = getInlineRows(playerTagRows.join("\n"));
     const linkedDefaultRow = defaultRowsOnly[0] ?? "";
-    const unlinkedDefaultRow = defaultRowsOnly[1] ?? "";
+    const linkedDefaultSecondRow = defaultRowsOnly[1] ?? "";
+    const unlinkedDefaultRow = defaultRowsOnly[2] ?? "";
     const linkedTagRow = playerTagRowsOnly[0] ?? "";
-    const unlinkedTagRow = playerTagRowsOnly[1] ?? "";
+    const linkedTagSecondRow = playerTagRowsOnly[1] ?? "";
+    const unlinkedTagRow = playerTagRowsOnly[2] ?? "";
 
     const linkedDefaultParts = getInlineRowSegments(linkedDefaultRow);
+    const linkedDefaultSecondParts = getInlineRowSegments(linkedDefaultSecondRow);
     const unlinkedDefaultParts = getInlineRowSegments(unlinkedDefaultRow);
-    expect(linkedDefaultParts.status).toBe("✅");
+    expect(linkedDefaultParts.status).toBe("<:badge:1>");
     expect(linkedDefaultParts.townHall).toBe("18");
     expect(linkedDefaultParts.playerName.trim()).toBe("Persisted Sin");
     expect(linkedDefaultParts.value).toBe("Persisted Sin");
     expect(linkedDefaultParts.marker).toBe("🧍");
+    expect(linkedDefaultSecondParts.status).toBe("✅");
+    expect(linkedDefaultSecondParts.townHall).toBe("17");
+    expect(linkedDefaultSecondParts.playerName.trim()).toBe("Linked Two");
+    expect(linkedDefaultSecondParts.marker).toBe("");
     expect(unlinkedDefaultParts.status).toBe("❌");
     expect(unlinkedDefaultParts.townHall).toBe("14");
     expect(unlinkedDefaultParts.playerName.trim()).toBe("Unlinked Player");
     expect(unlinkedDefaultParts.value).toBe("—");
     expect(unlinkedDefaultParts.marker).toBe("");
-    expect(linkedDefaultRow).toContain("\u2705 <:badge:1>");
-    expect(linkedDefaultRow).toContain("\u{1F9CD}");
+    expect(linkedDefaultRow).toContain("<:badge:1>");
+    expect(linkedDefaultRow).not.toContain("✅");
+    expect(linkedDefaultRow).toContain("🧍");
+    expect(linkedDefaultSecondRow).toContain("✅");
+    expect(linkedDefaultSecondRow).not.toContain("<:badge:1>");
+    expect(linkedDefaultSecondRow).not.toContain("🧍");
+    expect(unlinkedDefaultRow).toContain("❌");
+    expect(unlinkedDefaultRow).not.toContain("<:badge:2>");
     expect(linkedDefaultRow).not.toContain("#");
     expect(unlinkedDefaultRow).not.toContain("#");
 
     const linkedTagParts = getInlineRowSegments(linkedTagRow);
+    const linkedTagSecondParts = getInlineRowSegments(linkedTagSecondRow);
     const unlinkedTagParts = getInlineRowSegments(unlinkedTagRow);
+    expect(linkedTagParts.status).toBe("<:badge:1>");
     expect(linkedTagParts.value).toBe("#QR9R0LGJ9");
     expect(linkedTagParts.townHall).toBe("18");
     expect(linkedTagParts.playerName.trim()).toBe("Persisted Sin");
     expect(linkedTagParts.marker).toBe("🧍");
-    expect(unlinkedTagParts.value).toBe("#LCUV0289");
+    expect(linkedTagSecondParts.status).toBe("✅");
+    expect(linkedTagSecondParts.value).toBe("#LCUV0289");
+    expect(linkedTagSecondParts.townHall).toBe("17");
+    expect(linkedTagSecondParts.playerName.trim()).toBe("Linked Two");
+    expect(linkedTagSecondParts.marker).toBe("");
+    expect(unlinkedTagParts.status).toBe("❌");
+    expect(unlinkedTagParts.value).toBe("#PQL0289");
     expect(unlinkedTagParts.townHall).toBe("14");
     expect(unlinkedTagParts.playerName.trim()).toBe("Unlinked Player");
 
@@ -1622,20 +1659,46 @@ describe("/link run", () => {
   it("recognizes rows with up to five inline-code cells for chunking", () => {
     const rows = getInlineRows(
       [
-        "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+        "<:badge:1> `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
         "\u274C `15` `Mystery Zero` `\u2014` `\u2014` \u{1F9CD}",
+        "<a:badge:2> `18` `Tilonius`",
         "\u2705",
-        "\u274C",
       ].join("\n"),
     );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0]).toBe(
-      "\u2705 `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
+      "<:badge:1> `18` `Tilonius` `Persisted Sin` `166k` `lead` \u{1F9CD}",
     );
     expect(rows[1]).toBe("\u274C `15` `Mystery Zero` `\u2014` `\u2014` \u{1F9CD}");
-    expect(rows[0]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
-    expect(rows[1]).toMatch(/^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u);
+    expect(rows[2]).toBe("<a:badge:2> `18` `Tilonius`");
+    expect(rows[0]).toMatch(LINK_LIST_ROW_LINE_RE);
+    expect(rows[1]).toMatch(LINK_LIST_ROW_LINE_RE);
+    expect(rows[2]).toMatch(LINK_LIST_ROW_LINE_RE);
     expect(getInlineRows("\u2705")).toHaveLength(0);
+  });
+
+  it("counts badge-led rows while chunking and trimming", () => {
+    const lines = [
+      "Linked Users: 1",
+      "<:badge_trim:1> `18` `Badge Row`",
+      ...Array.from({ length: 120 }, (_, index) =>
+        `✅ \`18\` \`Long Row ${String(index + 1).padStart(3, "0")}\` \`Linked ${index + 1}\``,
+      ),
+    ];
+
+    const result = buildDescriptionEmbeds("Tracked Alpha #PQL0289", lines, "weight");
+    const description = result.embeds
+      .map((embed: { toJSON: () => any }) => String(embed.toJSON().description ?? ""))
+      .join("\n");
+    const renderedRows = getInlineRows(description);
+
+    expect(result.trimmed).toBe(true);
+    expect(result.hiddenRows).toBeGreaterThan(0);
+    expect(result.renderedRows + result.hiddenRows).toBe(121);
+    expect(description).toContain("<:badge_trim:1>");
+    expect(
+      renderedRows.some((row) => getInlineRowSegments(row).status === "<:badge_trim:1>"),
+    ).toBe(true);
   });
 
   it("builds and parses compact columns select custom ids", () => {
@@ -1739,9 +1802,19 @@ describe("/link run", () => {
         playerTag: "#PYLQ0289",
         clan: {
           tag: "#PQL0289",
-          clanBadge: "<:badge-a:1>",
+          clanBadge: "<:badge_a:1>",
           createdAt: new Date("2026-03-01T00:00:00.000Z"),
           mailConfig: { displayOrder: 1 },
+        },
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_b:2>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 2 },
         },
       },
       {
@@ -1749,7 +1822,7 @@ describe("/link run", () => {
         playerTag: "#QGRJ2222",
         clan: {
           tag: "#PQL0289",
-          clanBadge: "<:badge-b:2>",
+          clanBadge: "<:badge_c:3>",
           createdAt: new Date("2026-03-01T00:00:00.000Z"),
           mailConfig: { displayOrder: 1 },
         },
@@ -1770,23 +1843,25 @@ describe("/link run", () => {
     expect(description).toContain("Linked Users: 1");
     expect(description).toContain("Unlinked users: 1");
     expect(description).toContain("Persisted Sin");
-    expect(description).toContain("✅");
     expect(description).toContain("❌");
+    expect(description).not.toContain("✅");
     expect(description).not.toContain("`#PYLQ0289`");
     expect(description).not.toContain("`#QGRJ2222`");
     expect(description).not.toContain("``");
-    expect(description).toContain("<:badge-a:1>");
-    expect(description).toContain("<:badge-b:2>");
+    expect(description).toContain("<:badge_a:1>");
+    expect(description).not.toContain("<:badge_b:2>");
+    expect(description).not.toContain("<:badge_c:3>");
     expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(2);
     expect(getInlineRowSegments(rows[0] ?? "")).toMatchObject({
-      status: "✅",
+      status: "<:badge_a:1>",
       townHall: "18",
       value: "Persisted Sin",
     });
     expect(getInlineRowSegments(rows[0] ?? "").playerName.trim()).toBe("Persisted Sin");
-    expect(rows[0]).toContain("\u2705 <:badge-a:1>");
+    expect(rows[0]).toContain("<:badge_a:1>");
+    expect(rows[0]).not.toContain("✅");
     expect(getInlineRowSegments(rows[1] ?? "")).toMatchObject({
       status: "❌",
       townHall: "17",
@@ -1795,11 +1870,10 @@ describe("/link run", () => {
     expect(getInlineRowSegments(rows[1] ?? "").playerName.trim()).toBe(
       "Unlinked Exa...",
     );
-    expect(rows[1]).toContain("\u274c <:badge-b:2>");
-    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
+    expect(rows[1]).toContain("❌");
+    expect(rows[1]).not.toContain("<:badge_c:3>");
     expect(description).not.toContain("``");
   });
-
   it("escapes backticks in /link list inline-code cells", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
@@ -2396,7 +2470,18 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
-    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PQL0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_select:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -2525,6 +2610,10 @@ describe("/link list select menu", () => {
         ["player-name", "weight"],
       ),
     );
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(getInlineRowSegments(getInlineRows(description)[0] ?? "").status).toBe(
+      "<:badge_select:1>",
+    );
     expect(reply).not.toHaveBeenCalled();
   });
 
@@ -2571,7 +2660,7 @@ describe("/link list select menu", () => {
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatch(
-      /^\u2705\s+`120k`\s+`—`\s+`#PQL0289`$/u,
+      /^<:badge_select:1>\s+`120k`\s+`—`\s+`#PQL0289`$/u,
     );
     expect(firstEmbed.footer?.text).toBe("Sort: Discord Name");
     expect(payload.components[0].components[0].toJSON().label).toBe(
@@ -2634,7 +2723,7 @@ describe("/link list select menu", () => {
     const rows = getInlineRows(String(payload.embeds[0].toJSON().description ?? ""));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatch(
-      /^\u2705\s+`Alpha Select`\s+`120k`\s+`—`$/u,
+      /^<:badge_select:1>\s+`Alpha Select`\s+`120k`\s+`—`$/u,
     );
     expect(payload.components[2].components[0].toJSON().placeholder).toBe(
       "Columns",
@@ -2810,7 +2899,18 @@ describe("/link list sort button", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
-    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#LCUV0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_sort:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -2876,6 +2976,7 @@ describe("/link list sort button", () => {
     expect(embedWeight.footer?.text).toBe("Sort: Weight Desc");
     const weightRows = getInlineRows(descriptionWeight);
     expect(weightRows).toHaveLength(3);
+    expect(getInlineRowSegments(weightRows[0] ?? "").status).toBe("<:badge_sort:1>");
     expect(weightRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
       "166k",
       "145k",
@@ -3231,6 +3332,30 @@ describe("/link list sort button", () => {
       })),
     );
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: rows[0]?.playerTag ?? "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_weight:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: rows[0]?.playerTag ?? "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_paginate:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
 
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -3274,10 +3399,15 @@ describe("/link list sort button", () => {
     expect(description).toContain("Unlinked users: 10");
     expect(renderedRows).toHaveLength(50);
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
+    expect(
+      renderedRows.some(
+        (row) => getInlineRowSegments(row).status === "<:badge_paginate:1>",
+      ),
+    ).toBe(true);
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).toMatch(/^#[A-Z0-9]+$/u);
     expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
-      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
+      LINK_LIST_ROW_LINE_RE,
     );
     expect(
       payload.embeds.reduce(
@@ -3358,7 +3488,7 @@ describe("/link list sort button", () => {
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
     expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
-      /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u,
+      LINK_LIST_ROW_LINE_RE,
     );
     const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
     expect(lastRow.playerName.trim()).toHaveLength(15);
@@ -3432,7 +3562,7 @@ describe("/link list sort button", () => {
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).not.toBe("");
     expect(
       String(payload.embeds[1]?.toJSON().description ?? "").length === 0 ||
-        /^(?:[\u2705\u274C])\s+`[^`]+`\s+`[^`]+`(?:\s+`[^`]+`)?(?:\s+\u{1F9CD})?$/u.test(
+        LINK_LIST_ROW_LINE_RE.test(
           getInlineRows(payload.embeds[1]?.toJSON().description ?? "")[0] ?? "",
         ),
     ).toBe(true);
@@ -3458,6 +3588,18 @@ describe("/link list sort button", () => {
       })),
     );
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: rows[0]?.playerTag ?? "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_trim:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);

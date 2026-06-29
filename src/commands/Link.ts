@@ -829,9 +829,10 @@ async function buildLinkListView(input: {
         : link
           ? discordDisplayName
           : playerTag;
+    const isLinked = Boolean(link);
 
     resolvedRows.push({
-      isLinked: Boolean(link),
+      isLinked,
       playerTag,
       defaultIndex: index,
       weightValue,
@@ -853,9 +854,11 @@ async function buildLinkListView(input: {
         inactivityLabel,
         clanRoleLabel,
         playerTag,
-        leftBadgePrefix: repBadgeTokensByTag.get(playerTag)?.join(" ") ?? null,
+        linkedStatusMarkerOverride: isLinked
+          ? repBadgeTokensByTag.get(playerTag)?.[0] ?? null
+          : null,
         rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
-        isLinked: Boolean(link),
+        isLinked,
       },
     });
   });
