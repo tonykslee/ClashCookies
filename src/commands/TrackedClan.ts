@@ -13,6 +13,7 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
 import { ActivityService } from "../services/ActivityService";
@@ -420,6 +421,8 @@ type TrackedClanRepAutocompleteIdentityRow = {
   discordUserId: string | null;
 };
 
+const TRACKED_CLAN_REP_AUTOCOMPLETE_TAG_BODY_REGEX = /^[PYLQGRJCUV0289]+$/;
+
 function formatDiscordMention(discordUserId: string | null): string | null {
   return discordUserId ? `<@${discordUserId}>` : null;
 }
@@ -437,6 +440,15 @@ function formatTrackedClanRepOutcomeLine(outcome: string): string {
   if (outcome === "not_found") return "Rep assignment was not assigned";
   if (outcome === "clan_not_found") return "Tracked clan not found";
   return "Updated";
+}
+
+function normalizeTrackedClanRepAutocompleteNameQuery(input: string): string {
+  return sanitizeDisplayText(input)?.toLowerCase() ?? "";
+}
+
+function normalizeTrackedClanRepAutocompleteTagQuery(input: string): string {
+  const normalized = normalizeClashTagBareInput(input).toUpperCase();
+  return TRACKED_CLAN_REP_AUTOCOMPLETE_TAG_BODY_REGEX.test(normalized) ? normalized : "";
 }
 
 async function loadTrackedClanRepIdentityRows(input: {
@@ -483,6 +495,11 @@ async function loadTrackedClanRepIdentityRows(input: {
       ] as const;
     }).filter((entry): entry is readonly [string, TrackedClanRepAutocompleteIdentityRow] => Boolean(entry[0])),
   );
+  const playerCurrentByTag = new Map<string, any>(
+    [...playerCurrentRows.entries()]
+      .map(([playerTag, row]) => [normalizePlayerTag(playerTag), row] as const)
+      .filter((entry): entry is readonly [string, any] => Boolean(entry[0])),
+  );
   const playerActivityByTag = new Map(
     (playerActivityRows as Array<{ tag: string; name: string | null }>).map((row) => {
       const playerTag = normalizePlayerTag(row.tag);
@@ -491,9 +508,12 @@ async function loadTrackedClanRepIdentityRows(input: {
   );
 
   for (const playerTag of normalizedTags) {
-    const playerCurrent = playerCurrentRows.get(playerTag) ?? null;
+    const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
     const playerLink = playerLinkByTag.get(playerTag) ?? null;
     const playerActivityName = playerActivityByTag.get(playerTag) ?? null;
+    const hasPlayerCurrent = playerCurrentByTag.has(playerTag);
+    const hasPlayerLink = playerLinkByTag.has(playerTag);
+    const hasPlayerActivity = playerActivityByTag.has(playerTag);
     const playerName =
       sanitizeDisplayText(playerCurrent?.playerName) ??
       sanitizeDisplayText(playerLink?.playerName) ??
@@ -504,14 +524,13 @@ async function loadTrackedClanRepIdentityRows(input: {
       playerName,
       discordUserId,
       discordMention: formatDiscordMention(discordUserId),
-      source:
-        sanitizeDisplayText(playerCurrent?.playerName) !== null
-          ? "player_current"
-          : sanitizeDisplayText(playerLink?.playerName) !== null
-            ? "player_link"
-            : playerActivityName !== null
-              ? "player_activity"
-              : "tag",
+      source: hasPlayerCurrent
+        ? "player_current"
+        : hasPlayerLink
+          ? "player_link"
+          : hasPlayerActivity
+            ? "player_activity"
+            : "tag",
     });
   }
 
@@ -598,7 +617,8 @@ function buildTrackedClanRepMutationReply(input: {
 }
 
 async function autocompleteTrackedClanChoices(query: string): Promise<{ name: string; value: string }[]> {
-  const normalizedQuery = String(query ?? "").trim().toLowerCase();
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
+  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(query);
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { name: true, tag: true },
@@ -612,13 +632,21 @@ async function autocompleteTrackedClanChoices(query: string): Promise<{ name: st
       const label = name ? `${name} (${tag})` : tag;
       const tagBody = tag.replace(/^#/, "").toLowerCase();
       const nameLower = name?.toLowerCase() ?? "";
-      const exactTagMatch = normalizedQuery.length > 0 && tagBody === normalizedQuery;
+      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery.toLowerCase();
       const prefixTagMatch =
-        normalizedQuery.length > 0 && tagBody.startsWith(normalizedQuery) && !exactTagMatch;
+        normalizedTagQuery.length > 0 && tagBody.startsWith(normalizedTagQuery.toLowerCase()) && !exactTagMatch;
       const nameMatch =
         normalizedQuery.length > 0 && name !== null && nameLower.includes(normalizedQuery);
       const matchRank =
-        normalizedQuery.length === 0 ? 3 : exactTagMatch ? 0 : prefixTagMatch ? 1 : nameMatch ? 2 : 99;
+        normalizedTagQuery.length === 0 && normalizedQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
       return {
         name: label.slice(0, 100),
         value: tag,
@@ -656,7 +684,8 @@ async function autocompleteTrackedClanRepPlayerChoices(input: {
     guildId: input.guildId,
     playerTags: repTags,
   });
-  const normalizedQuery = String(input.query ?? "").trim().toLowerCase();
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(input.query);
+  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(input.query).toLowerCase();
 
   return repTags
     .map((playerTag) => {
@@ -667,15 +696,23 @@ async function autocompleteTrackedClanRepPlayerChoices(input: {
       });
       const tagBody = playerTag.replace(/^#/, "").toLowerCase();
       const nameLower = identity?.playerName?.toLowerCase() ?? "";
-      const exactTagMatch = normalizedQuery.length > 0 && tagBody === normalizedQuery;
+      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery;
       const prefixTagMatch =
-        normalizedQuery.length > 0 && tagBody.startsWith(normalizedQuery) && !exactTagMatch;
+        normalizedTagQuery.length > 0 && tagBody.startsWith(normalizedTagQuery) && !exactTagMatch;
       const nameMatch =
         normalizedQuery.length > 0 &&
         identity?.playerName !== null &&
         nameLower.includes(normalizedQuery);
       const matchRank =
-        normalizedQuery.length === 0 ? 3 : exactTagMatch ? 0 : prefixTagMatch ? 1 : nameMatch ? 2 : 99;
+        normalizedTagQuery.length === 0 && normalizedQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
       return {
         name: label.slice(0, 100),
         value: playerTag,
@@ -696,10 +733,8 @@ async function autocompleteTrackedClanRepPlayerChoices(input: {
 }
 
 async function autocompleteTrackedClanRepAddPlayerChoices(query: string): Promise<{ name: string; value: string }[]> {
-  const normalizedQuery = String(query ?? "").trim();
-  const queryTag = normalizedQuery ? normalizePlayerTag(normalizedQuery) : "";
-  const queryTagBody = queryTag.replace(/^#/, "").toLowerCase();
-  const queryText = normalizedQuery.toLowerCase();
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
+  const queryTagBody = normalizeTrackedClanRepAutocompleteTagQuery(query).toLowerCase();
   const linkedWhereClauses: Array<Record<string, unknown>> = [];
   const currentWhereClauses: Array<Record<string, unknown>> = [];
   if (queryTagBody.length > 0) {
@@ -768,12 +803,20 @@ async function autocompleteTrackedClanRepAddPlayerChoices(query: string): Promis
       const tagBody = row.playerTag.replace(/^#/, "").toLowerCase();
       const nameLower = row.playerName?.toLowerCase() ?? "";
       const hasTagQuery = queryTagBody.length > 0;
-      const exactTagMatch = queryText.length > 0 && hasTagQuery && tagBody === queryTagBody;
+      const exactTagMatch = hasTagQuery && tagBody === queryTagBody;
       const prefixTagMatch =
-        queryText.length > 0 && hasTagQuery && tagBody.startsWith(queryTagBody) && !exactTagMatch;
-      const nameMatch = queryText.length > 0 && row.playerName !== null && nameLower.includes(queryText);
+        hasTagQuery && tagBody.startsWith(queryTagBody) && !exactTagMatch;
+      const nameMatch = normalizedQuery.length > 0 && row.playerName !== null && nameLower.includes(normalizedQuery);
       const matchRank =
-        queryText.length === 0 ? 3 : exactTagMatch ? 0 : prefixTagMatch ? 1 : nameMatch ? 2 : 99;
+        normalizedQuery.length === 0 && !hasTagQuery
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
       return {
         name: formatTrackedClanRepIdentityLabel({
           playerTag: row.playerTag,
@@ -1247,27 +1290,46 @@ export const TrackedClan: Command = {
         }
 
         if (subcommand === "remove") {
-          const identityResult = await resolveTrackedClanRepIdentity({
-            guildId: interaction.guildId ?? null,
-            playerTag,
-            allowLiveLookup: false,
-          });
           const mutation = await removeTrackedClanRepForClan(prisma as any, {
             clanTag,
             playerTag,
             trackedClan,
           });
-
+          let identityResult:
+            | TrackedClanRepResolvedIdentityWithSource
+            | { outcome: "not_found"; playerTag: string }
+            | { outcome: "lookup_failed"; playerTag: string; error: unknown };
+          try {
+            identityResult = await resolveTrackedClanRepIdentity({
+              guildId: interaction.guildId ?? null,
+              playerTag,
+              allowLiveLookup: false,
+            });
+          } catch (error) {
+            const failure = toFailureTelemetry(error);
+            console.error(
+              `[tracked-clan] event=rep_mutation_display_enrichment_failed command=clan:rep:remove guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${mutation.playerTag} result=${mutation.outcome} error_category=${failure.errorCategory} error_code=${failure.errorCode} timeout=${failure.timeout} error=${formatError(error)}`,
+            );
+            identityResult = { outcome: "not_found", playerTag: mutation.playerTag };
+          }
+          const displayIdentity =
+            "outcome" in identityResult
+              ? {
+                  playerTag: mutation.playerTag,
+                  playerName: null,
+                  discordMention: null,
+                }
+              : identityResult;
           const reply = buildTrackedClanRepMutationReply({
             outcome: mutation.outcome,
             clanTag: mutation.clanTag,
             clanName: mutation.clanName,
-            playerTag: identityResult.playerTag,
-            playerName: "outcome" in identityResult ? null : identityResult.playerName,
-            discordMention: "outcome" in identityResult ? null : identityResult.discordMention,
+            playerTag: displayIdentity.playerTag,
+            playerName: displayIdentity.playerName,
+            discordMention: displayIdentity.discordMention,
           });
           console.info(
-            `[tracked-clan] event=rep_mutation command=clan:rep:remove guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${playerTag} result=${mutation.outcome} clan_name=${mutation.clanName ?? "unknown"} player_name=${"outcome" in identityResult ? playerTag : identityResult.playerName ?? playerTag} discord_mention=${"outcome" in identityResult ? "Not linked to Discord" : identityResult.discordMention ?? "Not linked to Discord"}`,
+            `[tracked-clan] event=rep_mutation command=clan:rep:remove guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${playerTag} result=${mutation.outcome} clan_name=${mutation.clanName ?? "unknown"} player_name=${displayIdentity.playerName ?? displayIdentity.playerTag} discord_mention=${displayIdentity.discordMention ?? "Not linked to Discord"}`,
           );
           await safeReply(interaction, {
             ephemeral: true,

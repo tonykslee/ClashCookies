@@ -178,6 +178,43 @@ describe("/clan rep commands", () => {
     );
   });
 
+  it("adds a rep assignment from a persisted Discord-linked row even when the player name is null", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: null,
+        discordUserId: "222222222222222222",
+      },
+    ]);
+    prismaMock.trackedClanRep.create.mockResolvedValueOnce({});
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "add",
+      clan: "#2QG2C08UP",
+      player: "#PYLQ0289",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Rep assignment added.",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Player: #PYLQ0289",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Discord: <@222222222222222222>",
+    );
+  });
+
   it("reports already existing rep assignments without replacing other rows", async () => {
     prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
       tag: "#2QG2C08UP",
@@ -237,6 +274,38 @@ describe("/clan rep commands", () => {
     );
   });
 
+  it("keeps rep removal authoritative when identity enrichment fails after a successful delete", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValueOnce({ count: 1 });
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockRejectedValueOnce(new Error("identity boom"));
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "remove",
+      clan: "#2QG2C08UP",
+      player: "#PYLQ0289",
+    });
+    const cocService = {
+      getPlayerRaw: vi.fn(),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClanRep.deleteMany).toHaveBeenCalledTimes(1);
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Rep assignment removed.",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Player: #PYLQ0289",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Discord: Not linked to Discord",
+    );
+  });
+
   it("reports absent rep assignments", async () => {
     prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
       tag: "#2QG2C08UP",
@@ -254,6 +323,34 @@ describe("/clan rep commands", () => {
 
     expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
       "Rep assignment was not assigned.",
+    );
+  });
+
+  it("keeps not-found rep removals authoritative when identity enrichment fails", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValueOnce({ count: 0 });
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockRejectedValueOnce(new Error("identity boom"));
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "remove",
+      clan: "#2QG2C08UP",
+      player: "#PYLQ0289",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.trackedClanRep.deleteMany).toHaveBeenCalledTimes(1);
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Rep assignment was not assigned.",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Player: #PYLQ0289",
+    );
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Discord: Not linked to Discord",
     );
   });
 
@@ -388,5 +485,63 @@ describe("/clan rep commands", () => {
       "Current Alpha (#PYLQ0289)",
     );
     expect(missingClanInteraction.respond).toHaveBeenCalledWith([]);
+  });
+
+  it("matches leading-hash and short partial tag autocomplete queries", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      { tag: "#2Q0G2C08UP", name: "Alpha Clan" },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2Q0G2C08UP", playerTag: "#2Q0G2C08UP" },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#2Q0G2C08UP", playerName: null, discordUserId: "222222222222222222" },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      { playerTag: "#2Q0G2C08UP", playerName: "Current Zero" },
+    ]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
+      new Map([
+        [
+          "#2Q0G2C08UP",
+          {
+            playerTag: "#2Q0G2C08UP",
+            playerName: "Current Zero",
+          },
+        ],
+      ]),
+    );
+
+    const clanInteraction = makeRepInteraction({
+      group: "rep",
+      subcommand: "add",
+      focusedName: "clan",
+      focusedValue: "#2qo",
+    });
+    const addPlayerInteraction = makeRepInteraction({
+      group: "rep",
+      subcommand: "add",
+      focusedName: "player",
+      focusedValue: "#2qo",
+    });
+    const removePlayerInteraction = makeRepInteraction({
+      group: "rep",
+      subcommand: "remove",
+      clan: "#2Q0G2C08UP",
+      focusedName: "player",
+      focusedValue: "#2qo",
+    });
+
+    await TrackedClan.autocomplete?.(clanInteraction as any);
+    await TrackedClan.autocomplete?.(addPlayerInteraction as any);
+    await TrackedClan.autocomplete?.(removePlayerInteraction as any);
+
+    expect(String(clanInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? "")).toBe("#2Q0G2C08UP");
+    expect(String(addPlayerInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? "")).toBe(
+      "#2Q0G2C08UP",
+    );
+    expect(String(removePlayerInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? "")).toBe(
+      "#2Q0G2C08UP",
+    );
   });
 });
