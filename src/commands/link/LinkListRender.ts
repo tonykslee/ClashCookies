@@ -531,7 +531,7 @@ export function formatInactivityMetricLabel(input: {
   const daysText =
     input.daysInactive !== null ? `${Math.max(0, Math.trunc(input.daysInactive))}d` : WEIGHT_PLACEHOLDER;
   const warsText =
-    input.missedWars !== null ? `${Math.max(0, Math.trunc(input.missedWars))}w` : WEIGHT_PLACEHOLDER;
+    input.missedWars !== null ? `${Math.max(0, Math.trunc(input.missedWars))}WAR` : WEIGHT_PLACEHOLDER;
   return `${daysText} ${warsText}`;
 }
 

@@ -1747,7 +1747,7 @@ describe("/link run", () => {
           discordDisplayName: "teewizz",
           discordUsername: "teewizz",
           weightLabel: "166k",
-          inactivityLabel: "\u2014 2w",
+          inactivityLabel: "\u2014 2WAR",
           clanRoleLabel: "lead",
           playerTag: "#QR9R0LGJ9",
           rightMarker: "\u{1F9CD}",
@@ -2159,9 +2159,9 @@ describe("/link run", () => {
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(1);
     const row = getInlineRowSegments(rows[0] ?? "");
-    expect(row.cells).toEqual(["18", "Alpha Player", "7d 3w"]);
-    expect(row.value).toBe("7d 3w");
-    expect(description).toContain("7d 3w");
+    expect(row.cells).toEqual(["18", "Alpha Player", "7d 3WAR"]);
+    expect(row.value).toBe("7d 3WAR");
+    expect(description).toContain("7d 3WAR");
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
   });
 
@@ -3097,8 +3097,8 @@ describe("/link list sort button", () => {
     expect(inactivityRows).toHaveLength(3);
     expect(prismaMock.playerActivity.findMany).toHaveBeenCalledTimes(1);
     expect(inactivityRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
-      "7d 3w",
-      "7d 1w",
+      "7d 3WAR",
+      "7d 1WAR",
       "\u2014",
     ]);
 
