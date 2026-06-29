@@ -17,35 +17,17 @@ import {
   normalizeClashTagInput,
   normalizeClashTagWithHash,
 } from "../helper/clashTag";
-import { playerCurrentService } from "../services/PlayerCurrentService";
 import { listPlayerLinksForDiscordUser } from "../services/PlayerLinkService";
-import { listOpenDeferredWeightsByClanAndPlayerTags } from "../services/WeightInputDefermentService";
-import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
+import { playerCurrentService } from "../services/PlayerCurrentService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
-import { emojiResolverService } from "../services/emoji/EmojiResolverService";
-import { listTrackedClanRepBadgesForPlayerTags } from "../services/TrackedClanRepService";
+import {
+  buildAccountDisplayRowText,
+  buildAccountDisplayRows,
+  resolveTownHallEmojiMap,
+  type AccountDisplayEmojiMap,
+  type AccountDisplayRow,
+} from "../services/AccountDisplayService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
-
-type AccountRow = {
-  tag: string;
-  name: string;
-  repBadgeTokens: string[];
-  townHall: number | null;
-  weight: number | null;
-  weightSource:
-    | "FwaClanMemberCurrent"
-    | "FwaPlayerCatalog"
-    | "PlayerCurrent"
-    | "ExternalPlayerWeightCurrent"
-    | "WeightInputDeferment"
-    | null;
-  clanTag: string | null;
-  clanName: string | null;
-  clanRole: "leader" | "coleader" | null;
-  clanState: "known" | "no_clan" | "unknown";
-  isTrackedFwaClan: boolean;
-  trackedClanSortOrder: number | null;
-};
 
 type ClanGroup = {
   key: string;
@@ -54,7 +36,7 @@ type ClanGroup = {
   clanState: "known" | "no_clan" | "unknown";
   isTrackedFwaClan: boolean;
   trackedClanSortOrder: number | null;
-  entries: AccountRow[];
+  entries: AccountDisplayRow[];
 };
 
 type AccountAutocompleteRow = {
@@ -68,56 +50,10 @@ type AccountAutocompleteChoice = {
   value: string;
 };
 
-type PlayerCurrentSnapshot = Awaited<
-  ReturnType<typeof playerCurrentService.listPlayerCurrentByTags>
-> extends Map<string, infer T>
-  ? T
-  : never;
-
-type FwaClanMemberCurrentRow = {
-  playerTag: string;
-  clanTag: string;
-  townHall: number | null;
-  weight: number | null;
-  sourceSyncedAt: Date;
-};
-
-type FwaPlayerCatalogRow = {
-  playerTag: string;
-  latestTownHall: number | null;
-  latestKnownWeight: number | null;
-};
-
-type ExternalPlayerWeightCurrentRow = {
-  playerTag: string;
-  weight: number | null;
-  measuredAt: Date;
-  source: string;
-};
-
-type AccountWeightContext = {
-  tag: string;
-  playerCurrent: PlayerCurrentSnapshot | null;
-  fallback: { clanTag: string | null; clanName: string | null; name: string | null } | null;
-  linkedName: string | null;
-  clanTag: string | null;
-  clanName: string | null;
-  clanState: "known" | "no_clan" | "unknown";
-  preferredMemberRow: FwaClanMemberCurrentRow | null;
-  fwaCatalogRow: FwaPlayerCatalogRow | null;
-  playerCurrentWeight: number | null;
-  externalWeight: number | null;
-  deferredWeight: number | null;
-  isTrackedFwaClan: boolean;
-  trackedClanSortOrder: number | null;
-};
-
-type AccountDisplayEmojiMap = Map<number, string>;
-
 const ACCOUNTS_DESCRIPTION_LIMIT = 4096;
 const ACCOUNTS_DESCRIPTION_RESERVE = 100;
 const ACCOUNTS_USABLE_DESCRIPTION_LIMIT = ACCOUNTS_DESCRIPTION_LIMIT - ACCOUNTS_DESCRIPTION_RESERVE;
-const ACCOUNTS_TRUNCATION_LINE = "…and more accounts not shown.";
+const ACCOUNTS_TRUNCATION_LINE = "\u2026and more accounts not shown.";
 const ACCOUNTS_REFRESH_QUEUE_SOURCE = "accounts:list:refresh";
 
 function normalizeTag(input: string): string {
@@ -129,69 +65,6 @@ function sanitizeDisplayText(input: unknown): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeClanMemberRole(input: unknown): "leader" | "coleader" | null {
-  const normalized = String(input ?? "").trim().toLowerCase();
-  if (normalized === "leader") return "leader";
-  if (normalized === "coleader") return "coleader";
-  return null;
-}
-
-function normalizePositiveInteger(input: unknown): number | null {
-  const parsed = Math.trunc(Number(input));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function formatCompactWeightK(weight: number | null | undefined): string {
-  const normalized = normalizePositiveInteger(weight);
-  if (normalized === null) return "—";
-  if (normalized < 1000) return String(normalized);
-  return `${Math.trunc(normalized / 1000)}k`;
-}
-
-function formatTownHallFallback(townHall: number | null | undefined): string {
-  const normalized = normalizePositiveInteger(townHall);
-  return normalized === null ? "TH?" : `TH${normalized}`;
-}
-
-export async function resolveTownHallEmojiMap(client: Client): Promise<AccountDisplayEmojiMap> {
-  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
-  if (!inventory?.ok) return new Map();
-
-  const renderedByTownHall = new Map<number, string>();
-  for (let townHall = 1; townHall <= 18; townHall += 1) {
-    const shortcode = `th${townHall}`;
-    const exact = inventory.snapshot.exactByName.get(shortcode);
-    const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());
-    const rendered = exact?.rendered ?? lower?.rendered ?? null;
-    if (rendered) {
-      renderedByTownHall.set(townHall, rendered);
-    }
-  }
-  return renderedByTownHall;
-}
-
-function renderTownHallIcon(
-  townHall: number | null,
-  townHallEmojiByLevel: AccountDisplayEmojiMap,
-): string {
-  const normalized = normalizePositiveInteger(townHall);
-  if (normalized === null) return "TH?";
-  return townHallEmojiByLevel.get(normalized) ?? formatTownHallFallback(normalized);
-}
-
-function pickPreferredFwaMemberRow(
-  rows: FwaClanMemberCurrentRow[],
-  clanTag: string | null,
-): FwaClanMemberCurrentRow | null {
-  if (rows.length === 0) return null;
-  const normalizedClanTag = normalizeTag(clanTag ?? "");
-  if (normalizedClanTag) {
-    const exactMatch = rows.find((row) => normalizeTag(row.clanTag) === normalizedClanTag);
-    if (exactMatch) return exactMatch;
-  }
-  return [...rows].sort((a, b) => b.sourceSyncedAt.getTime() - a.sourceSyncedAt.getTime())[0] ?? null;
 }
 
 function normalizeAutocompleteQuery(input: string): string {
@@ -209,14 +82,6 @@ function buildClanProfileMarkdownLink(
   return `[${label}](https://link.clashofclans.com/en?action=OpenClanProfile&tag=${encodedTag})`;
 }
 
-function buildPlayerProfileMarkdownLink(playerName: string | null, playerTag: string): string {
-  const normalizedPlayerTag = normalizeTag(playerTag);
-  const label = sanitizeDisplayText(playerName) || normalizedPlayerTag || "Unknown Player";
-  if (!normalizedPlayerTag) return label;
-  const encodedTag = normalizedPlayerTag.replace(/^#/, "");
-  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
-}
-
 function buildClanHeadingLabel(group: Pick<ClanGroup, "clanName" | "clanTag">): string {
   const fallbackTag = sanitizeDisplayText(group.clanTag) ?? "Unknown Clan";
   return sanitizeDisplayText(group.clanName) ?? fallbackTag;
@@ -226,17 +91,6 @@ function buildClanHeadingMarkdown(group: Pick<ClanGroup, "clanName" | "clanTag">
   const label = buildClanHeadingLabel(group);
   const clanTag = normalizeTag(group.clanTag ?? "");
   return clanTag ? buildClanProfileMarkdownLink(label, clanTag) : label;
-}
-
-function buildAccountRowText(
-  entry: AccountRow,
-  townHallEmojiByLevel: AccountDisplayEmojiMap,
-): string {
-  const crown = entry.clanRole ? " :crown:" : "";
-  const playerLink = buildPlayerProfileMarkdownLink(entry.name, entry.tag);
-  const badgePrefix =
-    entry.repBadgeTokens.length > 0 ? `${entry.repBadgeTokens.join(" ")} ` : "";
-  return `${badgePrefix}${renderTownHallIcon(entry.townHall, townHallEmojiByLevel)} ${playerLink}${crown} \`${entry.tag}\` - ${formatCompactWeightK(entry.weight)}`;
 }
 
 function buildAccountGroupBlockLines(
@@ -254,7 +108,7 @@ function buildAccountGroupBlockLines(
   ];
 
   for (const entry of group.entries) {
-    lines.push(buildAccountRowText(entry, townHallEmojiByLevel));
+    lines.push(buildAccountDisplayRowText(entry, townHallEmojiByLevel));
   }
 
   return lines;
@@ -307,22 +161,6 @@ function truncateGroupBlockToFit(
   }
 
   return truncated;
-}
-
-function isConfirmedClanlessSource(source: string | null | undefined): boolean {
-  const normalized = sanitizeDisplayText(source)?.toLowerCase() ?? null;
-  return normalized === "accounts-refresh" || normalized === "live_refresh";
-}
-
-function resolveAccountClanState(input: {
-  playerCurrent: PlayerCurrentSnapshot | null;
-  playerActivity: { clanTag: string | null; clanName: string | null } | null;
-}): "known" | "no_clan" | "unknown" {
-  const currentClanTag = sanitizeDisplayText(input.playerCurrent?.currentClanTag);
-  const activityClanTag = sanitizeDisplayText(input.playerActivity?.clanTag);
-  if (currentClanTag || activityClanTag) return "known";
-  if (isConfirmedClanlessSource(input.playerCurrent?.lastSource)) return "no_clan";
-  return "unknown";
 }
 
 function buildAccountsTagAutocompleteChoices(
@@ -402,269 +240,13 @@ function buildAccountsTagAutocompleteChoices(
   }));
 }
 
-export async function buildAccountsRows(input: {
-  guildId: string;
-  linkedNameByTag: Map<string, string>;
-  tags: string[];
-}): Promise<AccountRow[]> {
-  const repBadgeTokensByTagPromise = listTrackedClanRepBadgesForPlayerTags(input.tags);
-  const [repBadgeTokensByTag, playerCurrentByTag, activity, fwaMemberRows, fwaCatalogRows, externalWeightRows] =
-    await Promise.all([
-      repBadgeTokensByTagPromise,
-      playerCurrentService.listPlayerCurrentByTags(input.tags),
-      prisma.playerActivity.findMany({
-        where: { guildId: input.guildId, tag: { in: input.tags } },
-        select: { tag: true, name: true, clanTag: true, clanName: true },
-      }),
-      prisma.fwaClanMemberCurrent.findMany({
-        where: { playerTag: { in: input.tags } },
-        select: {
-          playerTag: true,
-          clanTag: true,
-          townHall: true,
-          weight: true,
-          sourceSyncedAt: true,
-        },
-      }),
-      prisma.fwaPlayerCatalog.findMany({
-        where: { playerTag: { in: input.tags } },
-        select: {
-          playerTag: true,
-          latestTownHall: true,
-          latestKnownWeight: true,
-        },
-      }),
-      prisma.externalPlayerWeightCurrent.findMany({
-        where: { playerTag: { in: input.tags } },
-        select: {
-          playerTag: true,
-          weight: true,
-          measuredAt: true,
-          source: true,
-        },
-      }),
-    ]);
-  const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
-  const fwaMemberRowsByTag = new Map<string, FwaClanMemberCurrentRow[]>();
-  for (const row of fwaMemberRows as FwaClanMemberCurrentRow[]) {
-    const playerTag = normalizeTag(row.playerTag);
-    if (!playerTag) continue;
-    const bucket = fwaMemberRowsByTag.get(playerTag) ?? [];
-    bucket.push({
-      playerTag,
-      clanTag: normalizeTag(row.clanTag),
-      townHall: normalizePositiveInteger(row.townHall),
-      weight: normalizePositiveInteger(row.weight),
-      sourceSyncedAt: row.sourceSyncedAt,
-    });
-    fwaMemberRowsByTag.set(playerTag, bucket);
-  }
-  const fwaCatalogByTag = new Map<string, FwaPlayerCatalogRow>();
-  for (const row of fwaCatalogRows as FwaPlayerCatalogRow[]) {
-    const playerTag = normalizeTag(row.playerTag);
-    if (!playerTag) continue;
-    fwaCatalogByTag.set(playerTag, {
-      playerTag,
-      latestTownHall: normalizePositiveInteger(row.latestTownHall),
-      latestKnownWeight: normalizePositiveInteger(row.latestKnownWeight),
-    });
-  }
-  const externalWeightByTag = new Map<string, ExternalPlayerWeightCurrentRow>();
-  for (const row of externalWeightRows as ExternalPlayerWeightCurrentRow[]) {
-    const playerTag = normalizeTag(row.playerTag);
-    if (!playerTag) continue;
-    externalWeightByTag.set(playerTag, {
-      playerTag,
-      weight: normalizePositiveInteger(row.weight),
-      measuredAt: row.measuredAt,
-      source: sanitizeDisplayText(row.source) ?? "",
-    });
-  }
-  const candidateClanTags = [...new Set([
-    ...input.tags
-      .map((tag) => {
-        const current = playerCurrentByTag.get(tag) ?? null;
-        return current?.currentClanTag ? normalizeTag(current.currentClanTag) : "";
-      })
-      .filter(Boolean),
-    ...activity
-      .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
-      .filter(Boolean),
-  ])];
-  const trackedClanRows =
-    candidateClanTags.length > 0
-      ? await prisma.trackedClan.findMany({
-          orderBy: { createdAt: "asc" },
-          where: { tag: { in: candidateClanTags } },
-          select: { tag: true, name: true },
-        })
-      : [];
-  const trackedClanNameByTag = new Map(
-    trackedClanRows.map((row) => [
-      normalizeTag(row.tag),
-      sanitizeDisplayText(row.name),
-    ] as const)
-  );
-  const trackedClanSortOrderByTag = new Map(
-    trackedClanRows.map((row, index) => [normalizeTag(row.tag), index] as const),
-  );
-
-  const contexts: AccountWeightContext[] = input.tags.map((tag) => {
-    const playerCurrent = playerCurrentByTag.get(tag) ?? null;
-    const fallback = activityByTag.get(tag) ?? null;
-    const linkedName = input.linkedNameByTag.get(tag) ?? null;
-    const currentClanTag = playerCurrent?.currentClanTag
-      ? normalizeTag(playerCurrent.currentClanTag)
-      : null;
-    const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-    const clanTag = currentClanTag ?? fallbackClanTag ?? null;
-    const currentClanName = sanitizeDisplayText(playerCurrent?.currentClanName);
-    const fallbackClanName = sanitizeDisplayText(fallback?.clanName);
-    const clanName =
-      currentClanName ??
-      fallbackClanName ??
-      (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
-    const clanState = resolveAccountClanState({
-      playerCurrent,
-      playerActivity: fallback
-        ? {
-            clanTag: fallback.clanTag ?? null,
-            clanName: fallback.clanName ?? null,
-        }
-        : null,
-    });
-    const memberRows = fwaMemberRowsByTag.get(tag) ?? [];
-    const preferredMemberRow = pickPreferredFwaMemberRow(memberRows, clanTag);
-    const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
-    const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
-    const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
-
-    return {
-      tag,
-      playerCurrent,
-      fallback: fallback
-        ? {
-            clanTag: fallback.clanTag ?? null,
-            clanName: fallback.clanName ?? null,
-            name: sanitizeDisplayText(fallback.name),
-          }
-        : null,
-      linkedName,
-      clanTag: clanState === "known" ? clanTag : null,
-      clanName: clanState === "known" ? clanName : null,
-      clanState,
-      preferredMemberRow,
-      fwaCatalogRow,
-      playerCurrentWeight: normalizePositiveInteger(playerCurrent?.currentWeight),
-      externalWeight: externalWeightByTag.get(tag)?.weight ?? null,
-      deferredWeight: null,
-      isTrackedFwaClan,
-      trackedClanSortOrder,
-    };
-  });
-
-  const deferredWeightByClanAndPlayerTag = await listOpenDeferredWeightsByClanAndPlayerTags({
-    guildId: input.guildId,
-    clanPlayerTags: contexts.map((context) => ({
-      clanTag: context.clanTag,
-      playerTags: [context.tag],
-    })),
-  });
-
-  return contexts.map((context) => {
-    const clanKey = context.clanTag ?? "";
-    const deferredWeight = normalizePositiveInteger(
-      deferredWeightByClanAndPlayerTag.get(clanKey)?.get(context.tag) ?? null,
-    );
-    const townHall =
-      normalizePositiveInteger(context.playerCurrent?.townHall) ??
-      context.preferredMemberRow?.townHall ??
-      context.fwaCatalogRow?.latestTownHall ??
-      null;
-    const weight = resolveEffectivePlayerWeight({
-      primaryCandidates: [
-        { source: "FwaClanMemberCurrent", weight: context.preferredMemberRow?.weight },
-        { source: "FwaPlayerCatalog", weight: context.fwaCatalogRow?.latestKnownWeight },
-      ],
-      overrideCandidates: [
-        { source: "ExternalPlayerWeightCurrent", weight: context.externalWeight },
-        { source: "WeightInputDeferment", weight: deferredWeight },
-      ],
-      fallbackCandidates: [{ source: "PlayerCurrent", weight: context.playerCurrentWeight }],
-    });
-
-    return {
-      tag: context.tag,
-      name:
-        sanitizeDisplayText(context.playerCurrent?.playerName) ??
-        context.linkedName ??
-        context.fallback?.name ??
-        context.tag,
-      repBadgeTokens: repBadgeTokensByTag.get(context.tag) ?? [],
-      townHall,
-      weight: weight.resolvedWeight,
-      weightSource: weight.resolvedWeightSource,
-      clanTag: context.clanState === "known" ? context.clanTag : null,
-      clanName: context.clanState === "known" ? context.clanName : null,
-      clanRole: normalizeClanMemberRole(context.playerCurrent?.role),
-      clanState: context.clanState,
-      isTrackedFwaClan: context.isTrackedFwaClan,
-      trackedClanSortOrder: context.trackedClanSortOrder,
-    };
-  });
-}
-
-async function refreshAccountsPlayerCurrentData(input: {
-  cocService: unknown;
-  tags: string[];
-  guildId: string;
-  userId: string;
-}): Promise<void> {
-  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
-  const getPlayerRaw = coc?.getPlayerRaw?.bind(coc) ?? null;
-  if (!getPlayerRaw) return;
-
-  const existingByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
-  await Promise.all(
-    input.tags.map(async (tag) => {
-      let livePlayer: any = null;
-      try {
-        livePlayer = await getPlayerRaw(tag);
-      } catch (err) {
-        const failure = toFailureTelemetry(err);
-        console.error(
-          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=fetch guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
-        );
-        return;
-      }
-
-      if (!livePlayer) return;
-
-      try {
-        await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
-          playerTag: tag,
-          livePlayer,
-          existing: existingByTag.get(tag) ?? null,
-          source: "accounts-refresh",
-        });
-      } catch (err) {
-        const failure = toFailureTelemetry(err);
-        console.error(
-          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=upsert guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
-        );
-      }
-    }),
-  );
-}
-
-function buildGroups(rows: AccountRow[]): ClanGroup[] {
+function buildGroups(rows: AccountDisplayRow[]): ClanGroup[] {
   const grouped = new Map<string, ClanGroup>();
 
   for (const row of rows) {
     const clanName = sanitizeDisplayText(row.clanName);
     const clanTag = row.clanTag ? normalizeTag(row.clanTag) : null;
-    const key =
-      clanTag ?? (row.clanState === "unknown" ? "__UNKNOWN_CLAN__" : "__NO_CLAN__");
+    const key = clanTag ?? (row.clanState === "unknown" ? "__UNKNOWN_CLAN__" : "__NO_CLAN__");
 
     const bucket = grouped.get(key);
     if (!bucket) {
@@ -808,7 +390,7 @@ function buildAccountsControlsRow(
 }
 
 function buildEmbeds(
-  rows: AccountRow[],
+  rows: AccountDisplayRow[],
   townHallEmojiByLevel: AccountDisplayEmojiMap,
   linkedDiscordUserId?: string | null,
 ): EmbedBuilder[] {
@@ -821,7 +403,50 @@ function buildEmbeds(
     new EmbedBuilder()
       .setTitle(`My Accounts by Clan (${rows.length})`)
       .setDescription(description)
-      .setFooter({ text: `Page ${index + 1}/${pages.length}` })
+      .setFooter({ text: `Page ${index + 1}/${pages.length}` }),
+  );
+}
+
+async function refreshAccountsPlayerCurrentData(input: {
+  cocService: unknown;
+  tags: string[];
+  guildId: string;
+  userId: string;
+}): Promise<void> {
+  const coc = input.cocService as { getPlayerRaw?: (tag: string) => Promise<any> } | null;
+  const getPlayerRaw = coc?.getPlayerRaw?.bind(coc) ?? null;
+  if (!getPlayerRaw) return;
+
+  const existingByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
+  await Promise.all(
+    input.tags.map(async (tag) => {
+      let livePlayer: any = null;
+      try {
+        livePlayer = await getPlayerRaw(tag);
+      } catch (err) {
+        const failure = toFailureTelemetry(err);
+        console.error(
+          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=fetch guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
+        );
+        return;
+      }
+
+      if (!livePlayer) return;
+
+      try {
+        await playerCurrentService.upsertPlayerCurrentFromLivePlayer({
+          playerTag: tag,
+          livePlayer,
+          existing: existingByTag.get(tag) ?? null,
+          source: "accounts-refresh",
+        });
+      } catch (err) {
+        const failure = toFailureTelemetry(err);
+        console.error(
+          `[accounts] command=/accounts source=${ACCOUNTS_REFRESH_QUEUE_SOURCE} stage=upsert guild=${input.guildId} user=${input.userId} tag=${tag} errorCategory=${failure.errorCategory} errorCode=${failure.errorCode} error=${formatError(err)}`,
+        );
+      }
+    }),
   );
 }
 
@@ -856,7 +481,7 @@ export const Accounts: Command = {
   run: async (
     client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: unknown
+    cocService: unknown,
   ) => {
     const guildId = interaction.guildId;
     if (!guildId) {
@@ -910,7 +535,7 @@ export const Accounts: Command = {
 
     if (links.length === 0) {
       await interaction.editReply(
-        `No linked player tags were found for ${sourceLabel}.`
+        `No linked player tags were found for ${sourceLabel}.`,
       );
       return;
     }
@@ -922,10 +547,10 @@ export const Accounts: Command = {
     const linkedNameByTag = new Map(
       links
         .map((link) => [normalizeTag(link.playerTag), sanitizeDisplayText(link.linkedName)] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
+        .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
     );
     const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
-    const rows = await buildAccountsRows({
+    const rows = await buildAccountDisplayRows({
       guildId,
       linkedNameByTag,
       tags: uniqueTags,
@@ -978,7 +603,7 @@ export const Accounts: Command = {
                   userId: interaction.user.id,
                 }),
             );
-            const refreshedRows = await buildAccountsRows({
+            const refreshedRows = await buildAccountDisplayRows({
               guildId,
               linkedNameByTag,
               tags: uniqueTags,
@@ -1040,7 +665,8 @@ export const Accounts: Command = {
       rows as AccountAutocompleteRow[],
       query,
     );
-
     await interaction.respond(choices);
   },
 };
+
+export { resolveTownHallEmojiMap };
