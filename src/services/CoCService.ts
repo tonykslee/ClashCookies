@@ -504,8 +504,13 @@ export class CoCService {
 
   /** Purpose: normalize player. */
   private normalizePlayer(player: Player): any {
+    const runtimePlayer = player as Player & {
+      leagueTier?: { id?: number | null; name?: string | null } | null;
+      builderBaseTrophies?: number | null;
+      clanCapitalContributions?: number | null;
+    };
     return {
-      ...player,
+      ...runtimePlayer,
       tag: player.tag ?? "",
       name: player.name ?? "Unknown",
       clan: {
@@ -515,10 +520,9 @@ export class CoCService {
       trophies: player.trophies ?? 0,
       donations: player.donations ?? 0,
       warStars: player.warStars ?? 0,
-      // API v1 exposes builder trophies as versusTrophies.
-      builderBaseTrophies: player.versusTrophies ?? 0,
-      // Not present in this schema; keep compat field for existing logic.
-      clanCapitalContributions: 0,
+      builderBaseTrophies:
+        runtimePlayer.builderBaseTrophies ?? player.versusTrophies ?? 0,
+      clanCapitalContributions: runtimePlayer.clanCapitalContributions ?? 0,
     };
   }
 }

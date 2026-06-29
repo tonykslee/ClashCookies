@@ -2,12 +2,17 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
+import { dozzleLog } from "../helper/dozzleLogger";
 import { todoSnapshotService } from "./TodoSnapshotService";
 import {
   PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
   isPlayerCurrentStaleForSignup,
 } from "./PlayerCurrentFreshness";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
+import {
+  resolveHomeVillageLeagueObservation,
+  type HomeVillageLeagueSource,
+} from "./HomeVillageLeagueTaxonomy";
 
 export { PLAYER_CURRENT_SIGNUP_MAX_AGE_MS } from "./PlayerCurrentFreshness";
 
@@ -230,7 +235,8 @@ function applyLivePlayer(target: PlayerCurrentLike, livePlayer: any, now: Date):
   target.warStars = normalizeNumber(livePlayer?.warStars ?? null) ?? target.warStars;
   target.expLevel = normalizeNumber(livePlayer?.expLevel ?? null) ?? target.expLevel;
   target.role = normalizeText(livePlayer?.role ?? null) ?? target.role;
-  target.leagueName = normalizeText(livePlayer?.league?.name ?? null) ?? target.leagueName;
+  const leagueObservation = resolveHomeVillageLeagueObservation(livePlayer);
+  target.leagueName = leagueObservation.leagueName ?? target.leagueName;
   target.achievementsJson = Array.isArray(livePlayer?.achievements) ? (livePlayer.achievements as Prisma.JsonValue) : target.achievementsJson;
   target.lastSeenAt = now;
   target.lastFetchedAt = now;
@@ -639,12 +645,20 @@ export class PlayerCurrentService {
     const concurrency = Math.max(1, Math.trunc(input.concurrency ?? 4));
     const existingByTag = await this.listPlayerCurrentByTags(normalizedTags);
     const now = input.now ?? new Date();
+    const leagueSourceCounts: Record<HomeVillageLeagueSource, number> = {
+      leagueTier: 0,
+      league: 0,
+      missing: 0,
+    };
     const outcomes = await mapWithConcurrency(normalizedTags, concurrency, async (playerTag) => {
       try {
         const livePlayer = await getPlayerRaw(playerTag);
         if (!livePlayer) {
+          leagueSourceCounts.missing += 1;
           return { playerTag, success: false } as const;
         }
+        const leagueObservation = resolveHomeVillageLeagueObservation(livePlayer);
+        leagueSourceCounts[leagueObservation.source] += 1;
         await this.upsertPlayerCurrentFromLivePlayer({
           playerTag,
           livePlayer,
@@ -666,6 +680,9 @@ export class PlayerCurrentService {
     const failedPlayerTags = outcomes
       .filter((row) => !row.success)
       .map((row) => row.playerTag);
+    dozzleLog.debug(
+      `[player-current] event=live_refresh_summary source=${input.source ?? "live_refresh"} requested_count=${normalizedTags.length} success_count=${normalizedTags.length - failedPlayerTags.length} failed_count=${failedPlayerTags.length} league_source_leagueTier=${leagueSourceCounts.leagueTier} league_source_legacyLeague=${leagueSourceCounts.league} league_source_missing=${leagueSourceCounts.missing}`,
+    );
     return {
       playerCount: normalizedTags.length,
       successCount: normalizedTags.length - failedPlayerTags.length,

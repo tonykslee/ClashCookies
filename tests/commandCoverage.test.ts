@@ -396,6 +396,9 @@ describe("command coverage", () => {
     expect(autoroleHelpText).toContain("non-member-role");
     expect(autoroleHelpText).toContain("non-member-enabled");
     expect(autoroleHelpText).toContain("visitor/non-member role");
+    expect(autoroleHelpText).toContain("Legend League");
+    expect(autoroleHelpText).toContain("Legend III");
+    expect(autoroleHelpText).toContain("P.E.K.K.A League");
   });
 
   it("documents /roster delayed-signup-role in the roster help detail text", () => {

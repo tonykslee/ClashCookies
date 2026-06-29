@@ -857,7 +857,7 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
-  it("refreshes linked player profiles through the CoC queue and adds Legend when any successful account is in Legend League", async () => {
+  it("refreshes linked player profiles through the CoC queue and adds Legend when any successful account reports Legend III", async () => {
     const userId = "111111111111111111";
     const legendRoleId = "222222222222222222";
     const legendTag = "#PQL0289";
@@ -880,6 +880,7 @@ describe("AutoRoleRefreshService", () => {
             name: "Legend Player",
             townHallLevel: 16,
             role: "member",
+            leagueTier: { id: 105000034, name: "Legend III" },
             league: { name: "Legend League" },
           },
         ],
@@ -923,7 +924,7 @@ describe("AutoRoleRefreshService", () => {
           makePlayerCurrent({
             playerTag,
             playerName: playerTag === legendTag ? "Legend Player" : `Player ${playerTag}`,
-            leagueName: playerTag === legendTag ? "Legend League" : "Gold League",
+            leagueName: playerTag === legendTag ? "Legend III" : "Gold League",
           }),
         ]),
       );
@@ -991,6 +992,7 @@ describe("AutoRoleRefreshService", () => {
             name: "Legend Carrier",
             townHallLevel: 16,
             role: "member",
+            leagueTier: { id: 105000034, name: "Legend III" },
             league: { name: "Legend League" },
           },
         ],
@@ -1045,7 +1047,7 @@ describe("AutoRoleRefreshService", () => {
             playerName: "Legend Carrier",
             currentClanTag: "#PQLQ",
             currentClanName: "EB",
-            leagueName: "Legend League",
+            leagueName: "Legend III",
           }),
         ],
       ]),
@@ -1185,6 +1187,7 @@ describe("AutoRoleRefreshService", () => {
       cocService: cocService as any,
     });
 
+    expect(member.setNickname).not.toHaveBeenCalled();
     expect(member.roles.remove).not.toHaveBeenCalled();
     expect(member.__roleIds).toContain(legendRoleId);
     expect(result).toMatchObject({
@@ -1270,6 +1273,8 @@ describe("AutoRoleRefreshService", () => {
 
     expect(listPlayerCurrentSpy).not.toHaveBeenCalled();
     expect(member.roles.remove).not.toHaveBeenCalled();
+    expect(member.roles.add).not.toHaveBeenCalled();
+    expect(member.setNickname).not.toHaveBeenCalled();
     expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -1557,6 +1562,7 @@ describe("AutoRoleRefreshService", () => {
                 name: "Pending Clan",
                 townHallLevel: 16,
                 role: "member",
+                leagueTier: { id: 105000034, name: "Legend III" },
                 league: { name: "Legend League" },
               },
             ],
@@ -1854,7 +1860,7 @@ describe("AutoRoleRefreshService", () => {
                 name: "Linked Member",
                 role: "member",
                 townHallLevel: 16,
-                leagueName: "Legend League",
+                leagueName: "Legend III",
               }),
             ],
           };
