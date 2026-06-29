@@ -589,6 +589,7 @@ describe("CompoAdviceService", () => {
     );
     expect(first.summary.targetBandLabel).not.toBe(second.summary.targetBandLabel);
     expect(first.summary.targetBandMatchrate).not.toBe(second.summary.targetBandMatchrate);
+    expect(first.summary.targetDeltaByBucket).not.toEqual(second.summary.targetDeltaByBucket);
   });
 
   it("loads WAR advice from DB-backed tracked war state without sheet reads", async () => {

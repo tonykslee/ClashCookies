@@ -97,6 +97,7 @@ export type CompoAdviceSummary = {
   viewLabel: string;
   currentProjection: CompoActualStateProjection;
   projectedProjection: CompoActualStateProjection | null;
+  targetDeltaByBucket: Record<CompoWarDisplayBucket, number | null>;
   heatMapRefs: readonly HeatMapRef[];
   bandMatchRatesByBandKey?: ReadonlyMap<string, number | null>;
   resolvedRosterWeight: number;
@@ -822,6 +823,7 @@ export function evaluateCompoAdvice(input: {
     viewLabel: COMPO_ADVICE_VIEW_LABELS[input.view],
     currentProjection,
     projectedProjection,
+    targetDeltaByBucket: targetProjection.deltaByBucket,
     heatMapRefs: projectionState.heatMapRefs,
     bandMatchRatesByBandKey: input.bandMatchRatesByBandKey,
     resolvedRosterWeight: input.base.resolvedTotalWeight,
@@ -914,7 +916,7 @@ export function buildCompoAdviceContentLines(input: {
   );
   if (
     input.summary.mode === "actual" &&
-    input.summary.currentProjection.view === "raw" &&
+    input.summary.view === "raw" &&
     input.summary.currentProjection.memberCount < 50
   ) {
     lines.push("Raw roster deficits:");
@@ -968,7 +970,7 @@ export function buildCompoAdviceContentLines(input: {
     input.summary.statusText &&
     !(
       input.summary.mode === "actual" &&
-      input.summary.currentProjection.view === "raw" &&
+      input.summary.view === "raw" &&
       input.summary.currentProjection.memberCount < 50
     )
   ) {

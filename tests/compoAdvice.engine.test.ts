@@ -223,6 +223,8 @@ describe("CompoAdviceEngine", () => {
     expect(first.recommendationText).not.toBe(second.recommendationText);
     expect(first.currentScore).toBe(second.currentScore);
     expect(first.currentScore).not.toBeNull();
+    expect(first.targetDeltaByBucket).not.toEqual(second.targetDeltaByBucket);
+    expect(first.currentProjection.deltaByBucket).toEqual(second.currentProjection.deltaByBucket);
   });
 
   it("computes midpoint advice using middle-band arithmetic and end-band offsets", () => {
