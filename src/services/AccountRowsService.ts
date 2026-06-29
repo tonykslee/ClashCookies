@@ -4,7 +4,7 @@ import { playerCurrentService } from "./PlayerCurrentService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "./WeightInputDefermentService";
 import { normalizeClashTagInput } from "../helper/clashTag";
 
-type AccountRow = {
+export type AccountRow = {
   tag: string;
   name: string;
   townHall: number | null;
@@ -126,22 +126,43 @@ export async function buildAccountsRows(input: {
   linkedNameByTag: Map<string, string>;
   tags: string[];
 }): Promise<AccountRow[]> {
-  const playerCurrentByTag = await playerCurrentService.listPlayerCurrentByTags(input.tags);
-  const activity = await prisma.playerActivity.findMany({
-    where: { guildId: input.guildId, tag: { in: input.tags } },
-    select: { tag: true, name: true, clanTag: true, clanName: true },
-  });
+  const [playerCurrentByTag, activity, fwaMemberRows, fwaCatalogRows, externalWeightRows] =
+    await Promise.all([
+      playerCurrentService.listPlayerCurrentByTags(input.tags),
+      prisma.playerActivity.findMany({
+        where: { guildId: input.guildId, tag: { in: input.tags } },
+        select: { tag: true, name: true, clanTag: true, clanName: true },
+      }),
+      prisma.fwaClanMemberCurrent.findMany({
+        where: { playerTag: { in: input.tags } },
+        select: {
+          playerTag: true,
+          clanTag: true,
+          townHall: true,
+          weight: true,
+          sourceSyncedAt: true,
+        },
+      }),
+      prisma.fwaPlayerCatalog.findMany({
+        where: { playerTag: { in: input.tags } },
+        select: {
+          playerTag: true,
+          latestTownHall: true,
+          latestKnownWeight: true,
+        },
+      }),
+      prisma.externalPlayerWeightCurrent.findMany({
+        where: { playerTag: { in: input.tags } },
+        select: {
+          playerTag: true,
+          weight: true,
+          measuredAt: true,
+          source: true,
+        },
+      }),
+    ]);
+
   const activityByTag = new Map(activity.map((a) => [normalizeTag(a.tag), a]));
-  const fwaMemberRows = await prisma.fwaClanMemberCurrent.findMany({
-    where: { playerTag: { in: input.tags } },
-    select: {
-      playerTag: true,
-      clanTag: true,
-      townHall: true,
-      weight: true,
-      sourceSyncedAt: true,
-    },
-  });
   const fwaMemberRowsByTag = new Map<string, FwaClanMemberCurrentRow[]>();
   for (const row of fwaMemberRows as FwaClanMemberCurrentRow[]) {
     const playerTag = normalizeTag(row.playerTag);
@@ -156,14 +177,7 @@ export async function buildAccountsRows(input: {
     });
     fwaMemberRowsByTag.set(playerTag, bucket);
   }
-  const fwaCatalogRows = await prisma.fwaPlayerCatalog.findMany({
-    where: { playerTag: { in: input.tags } },
-    select: {
-      playerTag: true,
-      latestTownHall: true,
-      latestKnownWeight: true,
-    },
-  });
+
   const fwaCatalogByTag = new Map<string, FwaPlayerCatalogRow>();
   for (const row of fwaCatalogRows as FwaPlayerCatalogRow[]) {
     const playerTag = normalizeTag(row.playerTag);
@@ -174,15 +188,7 @@ export async function buildAccountsRows(input: {
       latestKnownWeight: normalizePositiveInteger(row.latestKnownWeight),
     });
   }
-  const externalWeightRows = await prisma.externalPlayerWeightCurrent.findMany({
-    where: { playerTag: { in: input.tags } },
-    select: {
-      playerTag: true,
-      weight: true,
-      measuredAt: true,
-      source: true,
-    },
-  });
+
   const externalWeightByTag = new Map<string, ExternalPlayerWeightCurrentRow>();
   for (const row of externalWeightRows as ExternalPlayerWeightCurrentRow[]) {
     const playerTag = normalizeTag(row.playerTag);
@@ -194,6 +200,7 @@ export async function buildAccountsRows(input: {
       source: sanitizeDisplayText(row.source) ?? "",
     });
   }
+
   const candidateClanTags = [
     ...new Set([
       ...input.tags
@@ -207,6 +214,7 @@ export async function buildAccountsRows(input: {
         .filter(Boolean),
     ]),
   ];
+
   const trackedClanRows =
     candidateClanTags.length > 0
       ? await prisma.trackedClan.findMany({
@@ -215,6 +223,7 @@ export async function buildAccountsRows(input: {
           select: { tag: true, name: true },
         })
       : [];
+
   const trackedClanNameByTag = new Map(
     trackedClanRows.map((row) => [normalizeTag(row.tag), sanitizeDisplayText(row.name)] as const),
   );
