@@ -56,6 +56,7 @@ function makeLivePlayer(overrides: Record<string, unknown> = {}): Record<string,
     warStars: 101,
     expLevel: 201,
     role: "member",
+    leagueTier: { id: 105000034, name: "Legend III" },
     league: { name: "Legend League" },
     achievements: [{ name: "Friend in Need", value: 1 }],
     ...overrides,
@@ -154,7 +155,7 @@ describe("PlayerCurrentService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
     (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
     const cocService = {
-      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ clan: null })),
+      getPlayerRaw: vi.fn().mockResolvedValue(makeLivePlayer({ clan: null, trophies: 0 })),
     } as any;
 
     const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
@@ -170,12 +171,12 @@ describe("PlayerCurrentService", () => {
       townHall: 16,
       currentClanTag: null,
       currentClanName: null,
-      trophies: 6100,
+      trophies: 0,
       builderTrophies: 4200,
       warStars: 101,
       expLevel: 201,
       role: "member",
-      leagueName: "Legend League",
+      leagueName: "Legend III",
       source: "live_refresh",
       liveRefreshInvoked: true,
     });
@@ -187,6 +188,44 @@ describe("PlayerCurrentService", () => {
           townHall: 16,
           currentClanTag: null,
           currentClanName: null,
+          trophies: 0,
+          leagueName: "Legend III",
+        }),
+      }),
+    );
+  });
+
+  it("falls back to legacy league when leagueTier is missing", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(
+        makeLivePlayer({
+          leagueTier: null,
+          league: { name: "Legend League" },
+        }),
+      ),
+    } as any;
+
+    const resolved = await playerCurrentService.resolveCurrentPlayersForTags({
+      playerTags: ["#QGRJ2222"],
+      cocService,
+      requireFields: ["townHall"],
+    });
+
+    expect(resolved.get("#QGRJ2222")).toMatchObject({
+      playerTag: "#QGRJ2222",
+      leagueName: "Legend League",
+      source: "live_refresh",
+      liveRefreshInvoked: true,
+    });
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#QGRJ2222" },
+        create: expect.objectContaining({
+          playerTag: "#QGRJ2222",
+          leagueName: "Legend League",
         }),
       }),
     );

@@ -136,11 +136,11 @@ describe("AutoRoleEvaluationService league rules", () => {
     cwlMemberTags: new Set(["#PYLQ0289"]),
   };
 
-  it("matches a linked account with leagueName set to Legend League", () => {
+  it("matches a linked account with leagueName set to Legend III", () => {
     const member = makeMember();
     const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
     const playerCurrentByTag = new Map([
-      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "Legend League" })],
+      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "Legend III" })],
     ]);
 
     const result = service.evaluateMember({
@@ -162,7 +162,7 @@ describe("AutoRoleEvaluationService league rules", () => {
     const member = makeMember();
     const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
     const playerCurrentByTag = new Map([
-      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "  LEGEND   league  " })],
+      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "  LEGEND   iii  " })],
     ]);
 
     const result = service.evaluateMember({
@@ -190,7 +190,7 @@ describe("AutoRoleEvaluationService league rules", () => {
       member,
       linkedAccounts,
       playerCurrentByTag: new Map([
-        ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "Legend League" })],
+        ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", leagueName: "Legend III" })],
       ]),
       clanMembershipByTag,
       trackedClanScope,
