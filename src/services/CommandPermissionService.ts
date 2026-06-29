@@ -44,6 +44,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "notify",
   "warplan",
   "clan:configure",
+  "clan:rep:add",
+  "clan:rep:remove",
   "clan:cwl-tags",
   "clan:raid-tags",
   "clan:remove",
@@ -183,6 +185,8 @@ type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "clan:configure",
+  "clan:rep:add",
+  "clan:rep:remove",
   "clan:cwl-tags",
   "clan:raid-tags",
   "clan:remove",

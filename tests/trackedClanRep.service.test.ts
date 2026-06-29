@@ -1,14 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  addTrackedClanRepForClan,
   listTrackedClanRepBadgesForPlayerTags,
   listTrackedClanRepTagsForClanTags,
   parseTrackedClanRepTagsInput,
+  removeTrackedClanRepForClan,
   replaceTrackedClanRepsForClan,
 } from "../src/services/TrackedClanRepService";
 
 const prismaMock = vi.hoisted(() => ({
+  trackedClan: {
+    findUnique: vi.fn(),
+  },
   trackedClanRep: {
     findMany: vi.fn(),
+    create: vi.fn(),
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
   },
 }));
 
@@ -19,7 +27,10 @@ vi.mock("../src/prisma", () => ({
 describe("TrackedClanRepService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.create.mockResolvedValue({});
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   it("parses array-style, comma-separated, and space-separated rep tags with duplicate de-dupe", () => {
@@ -67,6 +78,132 @@ describe("TrackedClanRepService", () => {
         { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
       ],
     });
+  });
+
+  it("creates one rep row with normalized tags and does not replace other rows", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+
+    const result = await addTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "2qg2c08up",
+      playerTag: "pylq0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "created",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha Clan",
+      playerTag: "#PYLQ0289",
+    });
+    expect(prismaMock.trackedClanRep.create).toHaveBeenCalledWith({
+      data: {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#PYLQ0289",
+      },
+    });
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+  });
+
+  it("reports already_exists when the unique key conflicts", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.trackedClanRep.create.mockRejectedValueOnce({ code: "P2002" });
+
+    const result = await addTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "#2QG2C08UP",
+      playerTag: "#PYLQ0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "already_exists",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha Clan",
+      playerTag: "#PYLQ0289",
+    });
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+  });
+
+  it("reports clan_not_found when the selected tracked clan is missing", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+
+    const result = await addTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "2QG2C08UP",
+      playerTag: "PYLQ0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "clan_not_found",
+      clanTag: "#2QG2C08UP",
+      clanName: null,
+      playerTag: "#PYLQ0289",
+    });
+    expect(prismaMock.trackedClanRep.create).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+  });
+
+  it("removes one rep row without touching other reps", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await removeTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "2qg2c08up",
+      playerTag: "pylq0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "removed",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha Clan",
+      playerTag: "#PYLQ0289",
+    });
+    expect(prismaMock.trackedClanRep.deleteMany).toHaveBeenCalledWith({
+      where: { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+    });
+    expect(prismaMock.trackedClanRep.createMany).not.toHaveBeenCalled();
+  });
+
+  it("reports not_found when the one-row removal target is absent", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+    });
+    prismaMock.trackedClanRep.deleteMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await removeTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "#2QG2C08UP",
+      playerTag: "#PYLQ0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "not_found",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha Clan",
+      playerTag: "#PYLQ0289",
+    });
+  });
+
+  it("reports clan_not_found when removal targets a missing tracked clan", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+
+    const result = await removeTrackedClanRepForClan(prismaMock as any, {
+      clanTag: "2QG2C08UP",
+      playerTag: "PYLQ0289",
+    });
+
+    expect(result).toEqual({
+      outcome: "clan_not_found",
+      clanTag: "#2QG2C08UP",
+      clanName: null,
+      playerTag: "#PYLQ0289",
+    });
+    expect(prismaMock.trackedClanRep.deleteMany).not.toHaveBeenCalled();
   });
 
   it("bulk-loads rep rows by clan tag for detailed FWA rendering", async () => {
