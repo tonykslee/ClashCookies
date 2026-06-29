@@ -59,4 +59,37 @@ describe("CoCService current war error wrapping", () => {
       },
     });
   });
+
+  it("preserves runtime leagueTier and modern player fields when normalizing a live player", async () => {
+    const service = new CoCService();
+    (service as any).playersApi = {
+      getPlayer: vi.fn().mockResolvedValue({
+        data: {
+          tag: "#ABC123",
+          name: "Modern Player",
+          trophies: 0,
+          leagueTier: { id: 105000034, name: "Legend III" },
+          league: { name: "Legend League" },
+          builderBaseTrophies: 4321,
+          versusTrophies: 1234,
+          clanCapitalContributions: 77,
+        },
+      }),
+    };
+
+    const player = await runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      async () => service.getPlayerRaw("#ABC123"),
+    );
+
+    expect(player).toMatchObject({
+      tag: "#ABC123",
+      name: "Modern Player",
+      trophies: 0,
+      leagueTier: { id: 105000034, name: "Legend III" },
+      league: { name: "Legend League" },
+      builderBaseTrophies: 4321,
+      clanCapitalContributions: 77,
+    });
+  });
 });

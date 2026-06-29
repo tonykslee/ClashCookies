@@ -6,6 +6,7 @@ import {
   type AutoRoleUserExclusion,
 } from "@prisma/client";
 import { prisma } from "../prisma";
+import { normalizeHomeVillageLeagueText } from "./HomeVillageLeagueTaxonomy";
 import { normalizeClanTag, normalizeDiscordUserId } from "./PlayerLinkService";
 
 export const AUTO_ROLE_RULE_TYPES = [
@@ -261,7 +262,7 @@ function normalizeGuildConfigRecord(config: AutoRoleGuildConfigRowLike): AutoRol
 
 /** Purpose: normalize human-readable league text for persistence. */
 function normalizeLeagueText(input: unknown): string {
-  return String(input ?? "").replace(/\s+/g, " ").trim();
+  return normalizeHomeVillageLeagueText(input);
 }
 
 /** Purpose: normalize and validate a rule target for persistence. */

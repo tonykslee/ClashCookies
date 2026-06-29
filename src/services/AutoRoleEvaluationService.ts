@@ -8,6 +8,7 @@ import {
   normalizePlayerTag,
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
+import { matchesHomeVillageLeagueTarget } from "./HomeVillageLeagueTaxonomy";
 import type { PlayerCurrentLike } from "./PlayerCurrentService";
 
 export type AutoRoleClanMembershipSource = "FWA" | "CWL" | "AMBIGUOUS" | "UNKNOWN";
@@ -140,13 +141,6 @@ function resolveMemberSourceCurrentClanTag(
 ): string | null {
   const currentClanTag = normalizeClanTag(linkedAccount.playerCurrent?.currentClanTag ?? "");
   return currentClanTag || null;
-}
-
-function normalizeLeagueNameForComparison(input: unknown): string {
-  return String(input ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
 }
 
 function isLinkedAccountCurrentlyInTrackedClan(
@@ -434,11 +428,8 @@ export class AutoRoleEvaluationService {
         return linkedAccounts.some((account) => account.playerCurrent?.townHall === targetTownHall);
       }
       case AutoRoleRuleType.LEAGUE: {
-        const targetLeague = normalizeLeagueNameForComparison(rule.targetValue);
-        if (!targetLeague) return false;
-        return linkedAccounts.some(
-          (account) =>
-            normalizeLeagueNameForComparison(account.playerCurrent?.leagueName) === targetLeague,
+        return linkedAccounts.some((account) =>
+          matchesHomeVillageLeagueTarget(rule.targetValue, account.playerCurrent?.leagueName),
         );
       }
       case AutoRoleRuleType.LABEL:

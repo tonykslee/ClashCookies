@@ -459,7 +459,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Nickname output is cleaned up when tokens are missing and capped to Discord's 32-character nickname limit; long multi-clan names are truncated without leaving dangling separators.",
       "Unicode emoji can be used in player names and templates, but custom Discord emoji markup does not render inside nicknames.",
       "The bot needs Manage Nicknames and must be higher in the role hierarchy than the target member to change nicknames; it also needs Manage Roles and hierarchy above managed roles to apply/remove roles.",
-      "`rules list/add/edit/remove` manage persisted rule mappings for verified, family, clan, clan-rank, league, town-hall, and label targets.",
+      "`rules list/add/edit/remove` manage persisted rule mappings for verified, family, clan, clan-rank, league, town-hall, and label targets. LEAGUE rules match exact current home-village tiers and current family selectors such as Skeleton League, Barbarian League, Archer League, Wizard League, Valkyrie League, Witch League, Golem League, P.E.K.K.A League, Titan League, Dragon League, Electro League, and Legend; the legacy `Legend League` target stays as a backward-compatible alias for Legend I, Legend II, and Legend III.",
       "`config set` can also set/clear the generic CWL clan role used for users with an eligible linked account in a tracked current-season CWL clan.",
       "`config set` can also set/clear a stale CLAN-role removal delay in minutes.",
       "`exclusions list/add-user/remove-user/add-role/remove-role` manage guild-level user and role exclusions.",
