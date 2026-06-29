@@ -327,6 +327,8 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("Inactivity");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
     expect(linkHelpText).toContain("unless a reliable shared days source is available");
+    expect(linkHelpText).toContain("? 2WAR");
+    expect(linkHelpText).not.toContain("? 2w");
     expect(normalized).toContain("visibility:public");
     expect(normalized).toContain("owner-only");
     expect(linkHelpText).toContain("The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without #.");
