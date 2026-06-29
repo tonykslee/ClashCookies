@@ -257,6 +257,18 @@ function getInlineRows(description: string): string[] {
     .filter((line) => LINK_LIST_ROW_LINE_RE.test(line));
 }
 
+function makePublicLinkListMessage() {
+  return {
+    flags: {
+      has: vi.fn().mockReturnValue(false),
+    },
+  };
+}
+
+function makeMissingFlagsLinkListMessage() {
+  return {};
+}
+
 function getComponentCustomId(component: any): string {
   return String(
     component?.custom_id ??
@@ -1219,6 +1231,136 @@ describe("/link run", () => {
     refreshSync.mockRestore();
   });
 
+  it("allows a different user to refresh a public link list and logs both the command owner and actor", async () => {
+    const oldRows = [
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Old Player",
+        townHall: 15,
+        rank: 15,
+        weight: 0,
+        sourceSyncedAt: new Date("2026-03-20T09:07:00.000Z"),
+      },
+    ];
+    const refreshedRows = [
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Refreshed",
+        townHall: 18,
+        rank: 18,
+        weight: 140000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "New Unlinked",
+        townHall: 16,
+        rank: 17,
+        weight: 132000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ];
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "RefreshUser",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(oldRows as any);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([  
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge_refresh_public:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
+    const refreshSync = vi
+      .spyOn(
+        FwaClanMembersSyncService.prototype,
+        "refreshCurrentClanMembersForClanTags",
+      )
+      .mockImplementation(async () => {
+        prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+          refreshedRows as any,
+        );
+        return {
+          clanCount: 1,
+          rowCount: refreshedRows.length,
+          changedRowCount: refreshedRows.length,
+          failedClans: [],
+        };
+      });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({
+        name: "Alpha Clan",
+        members: [
+          {
+            tag: "#PYLQ0289",
+            name: "Refreshed",
+            townHallLevel: 18,
+            clanRank: 18,
+          },
+          {
+            tag: "#QGRJ2222",
+            name: "New Unlinked",
+            townHallLevel: 16,
+            clanRank: 17,
+          },
+        ],
+      }),
+    };
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      message: makePublicLinkListMessage(),
+      deferUpdate,
+      editReply,
+      followUp,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListRefreshButton(interaction as any, cocService as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(followUp).not.toHaveBeenCalled();
+    expect(editReply).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+    );
+    expect(infoSpy.mock.calls.some((call) =>
+      String(call[0] ?? "").includes("event=refresh_success") &&
+      String(call[0] ?? "").includes("command_user_id=111111111111111111") &&
+      String(call[0] ?? "").includes("interaction_user_id=222222222222222222"),
+    )).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+    refreshSync.mockRestore();
+  });
+
   it("preserves selected columns when refreshing the selected clan", async () => {
     const refreshedRows = [
       {
@@ -1747,7 +1889,7 @@ describe("/link run", () => {
           discordDisplayName: "teewizz",
           discordUsername: "teewizz",
           weightLabel: "166k",
-          inactivityLabel: "\u2014 2w",
+          inactivityLabel: "\u2014 2WAR",
           clanRoleLabel: "lead",
           playerTag: "#QR9R0LGJ9",
           rightMarker: "\u{1F9CD}",
@@ -2159,9 +2301,9 @@ describe("/link run", () => {
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(1);
     const row = getInlineRowSegments(rows[0] ?? "");
-    expect(row.cells).toEqual(["18", "Alpha Player", "7d 3w"]);
-    expect(row.value).toBe("7d 3w");
-    expect(description).toContain("7d 3w");
+    expect(row.cells).toEqual(["18", "Alpha Player", "7d 3WAR"]);
+    expect(row.value).toBe("7d 3WAR");
+    expect(description).toContain("7d 3WAR");
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
   });
 
@@ -2804,6 +2946,173 @@ describe("/link list select menu", () => {
     expect(editReply).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
+
+  it("allows a different user to change a public columns menu and keeps the owner custom IDs", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["weight", "clan-role"],
+      message: makePublicLinkListMessage(),
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["weight", "clan-role"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["weight", "clan-role"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["weight", "clan-role"],
+      ),
+    );
+    expect(getComponentCustomId(payload.components[3].components[0])).toBe(
+      buildLinkListSelectCustomId(
+        "111111111111111111",
+        "discord",
+        ["weight", "clan-role"],
+      ),
+    );
+  });
+
+  it("allows a different user to change a public select menu and keeps the owner custom IDs", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListSelectCustomId("111111111111111111", "weight"),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["#PQL0289"],
+      message: makePublicLinkListMessage(),
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSelectMenu(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[3].components[0])).toBe(
+      buildLinkListSelectCustomId("111111111111111111", "weight"),
+    );
+  });
+
+  it("fails closed when select menu message flags are unavailable", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListSelectCustomId("111111111111111111", "weight"),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["#PQL0289"],
+      message: makeMissingFlagsLinkListMessage(),
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSelectMenu(interaction as any, {} as any);
+
+    expect(reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this menu.",
+    });
+    expect(deferUpdate).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
 });
 
 describe("/link list sort button", () => {
@@ -3097,8 +3406,8 @@ describe("/link list sort button", () => {
     expect(inactivityRows).toHaveLength(3);
     expect(prismaMock.playerActivity.findMany).toHaveBeenCalledTimes(1);
     expect(inactivityRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
-      "7d 3w",
-      "7d 1w",
+      "7d 3WAR",
+      "7d 1WAR",
       "\u2014",
     ]);
 
@@ -3883,6 +4192,63 @@ describe("/link list sort button", () => {
     expect(deferUpdate).not.toHaveBeenCalled();
     expect(editReply).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("allows a different user to cycle sort on a public message and keeps the owner custom IDs", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+      ),
+      user: { id: "222222222222222222" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      message: makePublicLinkListMessage(),
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    expect(getComponentCustomId(payload.components[0].components[0])).toBe(
+      buildLinkListRefreshButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[1].components[0])).toBe(
+      buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[2].components[0])).toBe(
+      buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "weight",
+      ),
+    );
+    expect(getComponentCustomId(payload.components[3].components[0])).toBe(
+      buildLinkListSelectCustomId("111111111111111111", "weight"),
+    );
   });
 });
 
