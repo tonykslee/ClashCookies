@@ -1472,6 +1472,19 @@ function formatSignedValue(value: number | null): string {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
+function formatCompoAdviceDeltaLines(input: {
+  deltaByBucket: Record<"TH18" | "TH17" | "TH16" | "TH15" | "TH14" | "<=TH13", number | null>;
+}): string {
+  return [
+    `TH18: ${formatSignedValue(input.deltaByBucket.TH18)}`,
+    `TH17: ${formatSignedValue(input.deltaByBucket.TH17)}`,
+    `TH16: ${formatSignedValue(input.deltaByBucket.TH16)}`,
+    `TH15: ${formatSignedValue(input.deltaByBucket.TH15)}`,
+    `TH14: ${formatSignedValue(input.deltaByBucket.TH14)}`,
+    `<=TH13: ${formatSignedValue(input.deltaByBucket["<=TH13"])}`,
+  ].join("\n");
+}
+
 function formatAdviceScore(value: number | null): string {
   if (value === null) {
     return "n/a";
@@ -1572,14 +1585,14 @@ async function buildCompoAdviceEmbed(input: {
       heatMapRefs: summary.heatMapRefs,
       selectedHeatMapRef: summary.targetHeatMapRef,
     });
-    const currentDeltas = [
-      `TH18: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH18)}`,
-      `TH17: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH17)}`,
-      `TH16: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH16)}`,
-      `TH15: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH15)}`,
-      `TH14: ${formatSignedValue(summary.currentProjection.deltaByBucket.TH14)}`,
-      `<=TH13: ${formatSignedValue(summary.currentProjection.deltaByBucket["<=TH13"])}`,
-    ].join("\n");
+    const deltaFieldName =
+      summary.view === "custom" ? "Deltas vs Target Band" : "Current Deltas";
+    const deltaFieldValue = formatCompoAdviceDeltaLines({
+      deltaByBucket:
+        summary.view === "custom"
+          ? summary.targetDeltaByBucket
+          : summary.currentProjection.deltaByBucket,
+    });
     const projectedDeltas = summary.projectedProjection
       ? [
           `TH18: ${formatSignedValue(summary.projectedProjection.deltaByBucket.TH18)}`,
@@ -1592,7 +1605,7 @@ async function buildCompoAdviceEmbed(input: {
       : null;
     const underfilledActualRaw =
       summary.mode === "actual" &&
-      summary.currentProjection.view === "raw" &&
+      summary.view === "raw" &&
       summary.currentProjection.memberCount < 50;
     const rawDeficitLines = underfilledActualRaw
       ? buildCompoActualDeltaLines({
@@ -1768,8 +1781,8 @@ async function buildCompoAdviceEmbed(input: {
         inline: false,
       },
       {
-        name: "Current Deltas",
-        value: currentDeltas,
+        name: deltaFieldName,
+        value: deltaFieldValue,
         inline: false,
       },
       {
