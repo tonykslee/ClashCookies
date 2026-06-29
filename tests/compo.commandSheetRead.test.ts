@@ -334,6 +334,7 @@ describe("/compo advice command", () => {
     expect(JSON.stringify(embed?.fields ?? [])).toContain(
       "Projected planning source: projected 50-player roster",
     );
+    expect(JSON.stringify(embed?.fields ?? [])).toContain("Projected Deltas:");
     expect(JSON.stringify(embed?.fields ?? [])).not.toContain("No improvement found.");
   });
 

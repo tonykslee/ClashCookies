@@ -752,7 +752,7 @@ export function evaluateCompoAdvice(input: {
     : null;
   const projectedProjection =
     input.mode === "actual" &&
-    currentProjection.view === "raw" &&
+    input.view === "raw" &&
     currentProjection.memberCount < 50
       ? projectCompoActualStateView({
           view: "auto",

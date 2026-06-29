@@ -760,6 +760,9 @@ describe("compo refresh button behavior", () => {
     expect(getEmbedFieldValue(nextPayload, "Deltas vs Target Band")).toContain("TH17: -3");
     expect(getEmbedFieldValue(nextPayload, "Deltas vs Target Band")).not.toContain("TH18: +9");
     expect(JSON.stringify(nextPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
+      "Projected Deltas:",
+    );
+    expect(JSON.stringify(nextPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
       "Raw roster deficits:",
     );
 
@@ -784,6 +787,9 @@ describe("compo refresh button behavior", () => {
     expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).toContain("TH18: -1");
     expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).toContain("TH17: +2");
     expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).not.toContain("TH18: +4");
+    expect(JSON.stringify(prevPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
+      "Projected Deltas:",
+    );
     expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).not.toBe(
       getEmbedFieldValue(nextPayload, "Deltas vs Target Band"),
     );

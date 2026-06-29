@@ -510,6 +510,7 @@ describe("CompoAdviceService", () => {
     expect(result.summary.currentBandLabel).toBe("(no band)");
     expect(result.summary.targetBandLabel).toContain("1,500,000");
     expect(result.summary.currentScore).toBeNull();
+    expect(result.summary.projectedProjection).toBeNull();
     expect(result.trackedClanChoices).toEqual([
       { tag: "#AAA111", name: "Alpha Clan-actual" },
     ]);
