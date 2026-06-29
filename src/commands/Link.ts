@@ -87,6 +87,7 @@ import {
   type LinkListRowViewModel,
   type LinkListSortMode,
 } from "./link/LinkListRender";
+import { listTrackedClanRepBadgesForPlayerTags } from "../services/TrackedClanRepService";
 
 type LinkListResolvedMemberRow = {
   isLinked: boolean;
@@ -692,7 +693,8 @@ async function buildLinkListView(input: {
     .map((row) => normalizePlayerTag(row.playerTag))
     .filter((tag): tag is string => Boolean(tag));
   const inactivityNeeded = sortMode === "inactivity" || activeColumns.includes("inactivity");
-  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows] = await Promise.all([
+  const repBadgeTokensByTagPromise = listTrackedClanRepBadgesForPlayerTags(memberTags);
+  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows, repBadgeTokensByTag] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: memberTags } },
       select: { playerTag: true, latestTownHall: true },
@@ -717,11 +719,13 @@ async function buildLinkListView(input: {
           clanTag: input.clanTag,
         }).then((result) => result.metricsByPlayerTag)
       : Promise.resolve(new Map<string, InactiveWarMetricRow>()),
+    repBadgeTokensByTagPromise,
   ]) as [
     LinkListTownHallCatalogRow[],
     LinkListTownHallRow[],
     LinkListPlayerActivityRow[],
     Map<string, InactiveWarMetricRow>,
+    Map<string, string[]>,
   ];
   const townHallByTag = new Map<string, number | null>();
   for (const row of currentMembers) {
@@ -849,6 +853,7 @@ async function buildLinkListView(input: {
         inactivityLabel,
         clanRoleLabel,
         playerTag,
+        leftBadgePrefix: repBadgeTokensByTag.get(playerTag)?.join(" ") ?? null,
         rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
         isLinked: Boolean(link),
       },
@@ -1225,13 +1230,13 @@ function resolveReminderLinkPlayerDisplayName(input: {
   if (backtickedIndex >= 0) {
     const beforeTag = firstLine.slice(0, backtickedIndex);
     const displayName = sanitizeTableText(
-      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+/, ""),
+      beforeTag.replace(/^(?:#\d+\s*-\s*)?(?:❌|:no:)\s+/, ""),
     );
     if (displayName) return displayName;
   }
 
   const rowMatch = firstLine.match(
-    /^(?:#\d+\s*-\s*)?(?:❌|âŒ|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
+    /^(?:#\d+\s*-\s*)?(?:❌|:no:)\s+(.+?)\s+-\s+\d+\s+\/\s+\d+$/,
   );
   if (rowMatch?.[1]) {
     const displayName = sanitizeTableText(rowMatch[1]);

@@ -8,6 +8,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
+  trackedClanRep: {
+    findMany: vi.fn(),
+  },
   playerLink: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -247,6 +250,7 @@ describe("/accounts command", () => {
     prismaMock.playerLink.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
@@ -302,6 +306,70 @@ describe("/accounts command", () => {
     expect(description).toContain(
       "TH16 [Linked Alpha](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) `#PYLQ0289` - —",
     );
+  });
+
+  it("renders rep clan badges before TH icons and keeps non-rep rows unchanged", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Rep Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Plain Beta",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Rep Alpha",
+        townHall: 17,
+        currentClanTag: "#PQL0289",
+        currentClanName: "Tracked Clan",
+        role: null,
+      }),
+      makePlayerCurrentRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Plain Beta",
+        townHall: 16,
+        currentClanTag: "#PQL0289",
+        currentClanName: "Tracked Clan",
+        role: null,
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Rep Alpha", clanTag: "#PQL0289", clanName: "Tracked Clan" },
+      { tag: "#QGRJ2222", name: "Plain Beta", clanTag: "#PQL0289", clanName: "Tracked Clan" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Tracked Clan", shortName: "TRK" },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: " <:badge:1> ",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, makeCocService() as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain(
+      "<:badge:1> TH17 [Rep Alpha](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=PYLQ0289>) `#PYLQ0289` - \u2014",
+    );
+    expect(description).toContain(
+      "TH16 [Plain Beta](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=QGRJ2222>) `#QGRJ2222` - \u2014",
+    );
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to playerActivity.name when playerName is missing", async () => {
@@ -927,6 +995,7 @@ describe("/accounts command", () => {
     expect(refreshedDescription).toContain(
       "**[New Clan](https://link.clashofclans.com/en?action=OpenClanProfile&tag=GRJ0289)**",
     );
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(2);
     expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { playerTag: "#PYLQ0289" },

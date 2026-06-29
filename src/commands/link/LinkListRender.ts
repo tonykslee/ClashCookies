@@ -96,6 +96,7 @@ export type LinkListRowViewModel = {
   inactivityLabel: string;
   clanRoleLabel: string;
   playerTag: string;
+  leftBadgePrefix?: string | null;
   rightMarker?: string | null;
   isLinked: boolean;
 };
@@ -329,12 +330,13 @@ function renderLinkListRow(input: {
   widths: Record<LinkListColumnId, number>;
   statusPrefix: string;
 }): string {
+  const leftPrefix = input.row.leftBadgePrefix ? ` ${input.row.leftBadgePrefix}` : "";
   const cells = input.columns.map((columnId) => {
     const value = sanitizeInlineCodeCell(getLinkListRowColumnValue(input.row, columnId));
     const width = input.widths[columnId] ?? value.length;
     return ` \`${rightAlign(value, width)}\``;
   });
-  const base = `${input.statusPrefix}${cells.join("")}`;
+  const base = `${input.statusPrefix}${leftPrefix}${cells.join("")}`;
   if (!input.row.rightMarker) return base;
   return `${base} ${input.row.rightMarker}`;
 }
@@ -603,7 +605,7 @@ export function resolveLinkListStatusIcons(): LinkListStatusIcons {
 }
 
 function isLinkListRowLine(line: string): boolean {
-  return /^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(
+  return /^(?:[\u2705\u274C])(?:\s+[^\n`]+)*(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(
     String(line ?? "").trim(),
   );
 }
