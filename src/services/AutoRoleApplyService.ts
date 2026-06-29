@@ -30,6 +30,8 @@ export type AutoRoleApplyInput = {
   managedRoleIds: Set<string>;
   clanRoleIds?: Set<string>;
   suppressRemovalRoleIds?: Set<string>;
+  suppressNicknameUpdate?: boolean;
+  nicknameSuppressionReason?: string | null;
   trackedFwaMemberTags?: Set<string>;
   visitorRoleAvailable?: boolean;
   rules: AutoRoleRule[];
@@ -447,61 +449,65 @@ export class AutoRoleApplyService {
 
     let nicknameStatus: AutoRoleApplyNicknameStatus = "skipped";
     let nicknameReason: string | null = null;
-    const excludedNicknameRoleId =
-      input.config.nicknameExcludeRoleIds?.find((roleId) => effectiveRoleIds.has(roleId)) ?? null;
-    if (excludedNicknameRoleId) {
-      nicknameReason = `nickname excluded by role ${excludedNicknameRoleId}`;
-      const cleanup = cleanupTrackedClanNickname(input.member.nickname ?? null, input.trackedClans);
-      if (cleanup.removedSuffix) {
-        try {
-          if (typeof input.member.setNickname === "function") {
-            await input.member.setNickname(cleanup.cleanedNickname);
-            nicknameStatus = "changed";
-          } else {
-            nicknameStatus = "skipped";
-          }
-        } catch (error) {
-          nicknameStatus = "failed";
-          nicknameReason = formatNicknameFailureReason(error);
-          failureReasons.push(nicknameReason);
-        }
-      }
-    } else if (!input.config.applyNicknames) {
-      nicknameReason = "nickname sync disabled";
-    } else if (!normalizeNicknameTemplate(input.config.nicknameTemplate)) {
-      nicknameReason = "nickname template not configured";
+    if (input.suppressNicknameUpdate) {
+      nicknameReason = input.nicknameSuppressionReason ?? "nickname update suppressed";
     } else {
-      const nicknameResult = autoRoleNicknameService.renderNickname({
-        config: input.config,
-        template: input.config.nicknameTemplate ?? null,
-        member: input.member,
-        linkedAccounts: input.linkedAccounts,
-        playerCurrentByTag: input.playerCurrentByTag,
-        trackedClans: input.trackedClans,
-      });
-
-      const renderedNickname = nicknameResult.renderedNickname;
-      if (!renderedNickname) {
-        nicknameReason = "nickname template rendered empty";
-      } else {
-        const currentDisplayNickname = normalizeText(
-          input.member.displayName ?? input.member.nickname ?? null,
-        ) ?? "";
-        if (currentDisplayNickname === renderedNickname) {
-          nicknameStatus = "unchanged";
-        } else {
+      const excludedNicknameRoleId =
+        input.config.nicknameExcludeRoleIds?.find((roleId) => effectiveRoleIds.has(roleId)) ?? null;
+      if (excludedNicknameRoleId) {
+        nicknameReason = `nickname excluded by role ${excludedNicknameRoleId}`;
+        const cleanup = cleanupTrackedClanNickname(input.member.nickname ?? null, input.trackedClans);
+        if (cleanup.removedSuffix) {
           try {
             if (typeof input.member.setNickname === "function") {
-              await input.member.setNickname(renderedNickname);
+              await input.member.setNickname(cleanup.cleanedNickname);
               nicknameStatus = "changed";
             } else {
               nicknameStatus = "skipped";
-              nicknameReason = "nickname updates are not supported on this member";
             }
           } catch (error) {
             nicknameStatus = "failed";
             nicknameReason = formatNicknameFailureReason(error);
             failureReasons.push(nicknameReason);
+          }
+        }
+      } else if (!input.config.applyNicknames) {
+        nicknameReason = "nickname sync disabled";
+      } else if (!normalizeNicknameTemplate(input.config.nicknameTemplate)) {
+        nicknameReason = "nickname template not configured";
+      } else {
+        const nicknameResult = autoRoleNicknameService.renderNickname({
+          config: input.config,
+          template: input.config.nicknameTemplate ?? null,
+          member: input.member,
+          linkedAccounts: input.linkedAccounts,
+          playerCurrentByTag: input.playerCurrentByTag,
+          trackedClans: input.trackedClans,
+        });
+
+        const renderedNickname = nicknameResult.renderedNickname;
+        if (!renderedNickname) {
+          nicknameReason = "nickname template rendered empty";
+        } else {
+          const currentDisplayNickname = normalizeText(
+            input.member.displayName ?? input.member.nickname ?? null,
+          ) ?? "";
+          if (currentDisplayNickname === renderedNickname) {
+            nicknameStatus = "unchanged";
+          } else {
+            try {
+              if (typeof input.member.setNickname === "function") {
+                await input.member.setNickname(renderedNickname);
+                nicknameStatus = "changed";
+              } else {
+                nicknameStatus = "skipped";
+                nicknameReason = "nickname updates are not supported on this member";
+              }
+            } catch (error) {
+              nicknameStatus = "failed";
+              nicknameReason = formatNicknameFailureReason(error);
+              failureReasons.push(nicknameReason);
+            }
           }
         }
       }

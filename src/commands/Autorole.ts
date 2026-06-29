@@ -572,6 +572,27 @@ function formatRefreshSummary(result: AutoRoleRefreshResult): string {
 
   if (result.scope.kind === "user" && result.memberResults.length > 0) {
     const member = result.memberResults[0];
+    if (result.linkedPlayerRefresh) {
+      const linkedRefresh = result.linkedPlayerRefresh;
+      const actionLabel =
+        linkedRefresh.action === "partial_failure"
+          ? "partial failure"
+          : linkedRefresh.action === "refreshed"
+            ? "refreshed"
+            : linkedRefresh.action === "failed"
+              ? "failed"
+              : "skipped";
+      lines.push(
+        `Linked player refresh: requested ${linkedRefresh.requestedPlayerCount}. Successful: ${linkedRefresh.successfulCount}. Failed: ${linkedRefresh.failedCount}. Action: ${actionLabel}.`,
+      );
+      if (linkedRefresh.failedCount > 0) {
+        lines.push(
+          linkedRefresh.failedCount === linkedRefresh.requestedPlayerCount
+            ? "Linked player data could not be refreshed."
+            : `Failed linked tags: ${linkedRefresh.failedPlayerTags.join(", ")}.`,
+        );
+      }
+    }
     lines.push(`Roles added: ${formatRoleMentions(member.rolesAdded)}.`);
     lines.push(`Roles removed: ${formatRoleMentions(member.rolesRemoved)}.`);
     lines.push(`Nickname: ${member.nicknameStatus}${member.nicknameReason ? ` (${member.nicknameReason})` : ""}.`);

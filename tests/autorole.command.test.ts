@@ -371,6 +371,65 @@ describe("/autorole command", () => {
     });
   });
 
+  it("includes linked player refresh failures in the user refresh summary", async () => {
+    autoRoleRefreshServiceMock.refreshUser.mockResolvedValueOnce({
+      guildId: "111111111111111111",
+      scope: { kind: "user", discordUserId: "333333333333333333" },
+      runId: "run-2",
+      evaluatedCount: 1,
+      addedCount: 1,
+      removedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      linkedPlayerRefresh: {
+        requestedPlayerCount: 6,
+        successfulCount: 1,
+        failedCount: 5,
+        failedPlayerTags: ["#PQL0289", "#GRJV0001", "#GRJV0002", "#GRJV0003", "#GRJV0004"],
+        queuePriority: "interactive",
+        queueSource: "autorole_user_refresh",
+        action: "partial_failure",
+      },
+      memberResults: [
+        {
+          discordUserId: "333333333333333333",
+          status: "applied",
+          skipReason: null,
+          rolesAdded: ["222222222222222222"],
+          rolesRemoved: [],
+          nicknameStatus: "skipped",
+          nicknameReason: "nickname renderer not implemented",
+          failureReasons: [],
+          resultHash: "hash-1",
+        },
+      ],
+    });
+
+    const guild = {
+      members: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const interaction = createInteraction({
+      group: null,
+      subcommand: "refresh",
+      isAdmin: false,
+      guild,
+      users: {
+        user: { id: "333333333333333333" },
+      },
+    });
+
+    await Autorole.run({} as any, interaction as any, {} as any);
+
+    expect(getEditReplyPayload(interaction).content).toContain(
+      "Linked player refresh: requested 6. Successful: 1. Failed: 5. Action: partial failure.",
+    );
+    expect(getEditReplyPayload(interaction).content).toContain(
+      "Failed linked tags: #PQL0289, #GRJV0001, #GRJV0002, #GRJV0003, #GRJV0004.",
+    );
+  });
+
   it("surfaces Discord member-fetch rate limits from /autorole refresh role", async () => {
     autoRoleRefreshServiceMock.refreshRole.mockRejectedValueOnce(
       new Error("Discord rate-limited member fetching. Try again in about 12 seconds."),
