@@ -66,6 +66,24 @@ function collectButtonCustomIds(payload: unknown): string[] {
   });
 }
 
+function getEmbedFieldValue(payload: unknown, fieldName: string): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const embeds = Array.isArray((payload as { embeds?: unknown[] }).embeds)
+    ? ((payload as { embeds: unknown[] }).embeds as unknown[])
+    : [];
+  const firstEmbed = embeds[0];
+  const embedData =
+    firstEmbed && typeof firstEmbed === "object" && "data" in firstEmbed
+      ? (firstEmbed as { data?: { fields?: unknown[] } }).data
+      : null;
+  const fields = Array.isArray(embedData?.fields) ? embedData.fields : [];
+  const match = fields.find((field) => {
+    if (!field || typeof field !== "object") return false;
+    return String((field as { name?: unknown }).name ?? "") === fieldName;
+  }) as { value?: unknown } | undefined;
+  return match ? String(match.value ?? "") : null;
+}
+
 function makeInteraction(customId: string) {
   const interaction: any = {
     customId,
@@ -558,6 +576,14 @@ describe("compo refresh button behavior", () => {
             "<=TH13": 0,
           },
         } as any,
+        targetDeltaByBucket: {
+          TH18: 0,
+          TH17: -1,
+          TH16: 0,
+          TH15: 0,
+          TH14: 1,
+          "<=TH13": 0,
+        },
         currentScore: 3,
         currentBandLabel: "1,500,000 - 1,999,999",
         recommendationText: "Replace one TH14 with one TH17",
@@ -602,6 +628,170 @@ describe("compo refresh button behavior", () => {
         "compo-refresh:advice-band:user-1:AAA111:2:1:prev",
         "compo-refresh:advice-band:user-1:AAA111:2:1:next",
       ]),
+    );
+  });
+
+  it("renders Custom deltas from the selected target band when stepping between bands", async () => {
+    vi.spyOn(CompoAdviceService.prototype, "refreshAdvice").mockImplementation(
+      async (input: any) => {
+        const selectedBandIndex = input.customBandIndex ?? 0;
+        const targetDeltaByBucket =
+          selectedBandIndex === 0
+            ? {
+                TH18: -1,
+                TH17: 2,
+                TH16: 0,
+                TH15: 0,
+                TH14: 0,
+                "<=TH13": 3,
+              }
+            : {
+                TH18: 4,
+                TH17: -3,
+                TH16: 1,
+                TH15: 0,
+                TH14: -2,
+                "<=TH13": 0,
+              };
+
+        return {
+          kind: "ready",
+          mode: "actual",
+          selectedView: "custom",
+          trackedClanTags: ["#AAA111"],
+          trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan" }],
+          clanTag: "#AAA111",
+          clanName: "Alpha Clan",
+          memberCount: 33,
+          rushedCount: 0,
+          refreshLine: "RAW Data last refreshed: <t:1709900000:F>",
+          summary: {
+            mode: "actual",
+            view: "custom",
+            viewLabel: "Custom",
+            heatMapRefs: [
+              { weightMinInclusive: 1_000_000, weightMaxInclusive: 1_499_999 },
+              { weightMinInclusive: 1_500_000, weightMaxInclusive: 1_999_999 },
+            ],
+            bandMatchRatesByBandKey: new Map([
+              ["1000000-1499999", 0.7],
+              ["1500000-1999999", 0.8],
+            ]),
+            currentProjection: {
+              view: "raw",
+              totalWeight: 1_650_000,
+              memberCount: 33,
+              missingWeights: 16,
+              unresolvedWeightCount: 16,
+              missingTo50Count: 17,
+              selectedHeatMapRef: {
+                weightMinInclusive: 1_500_000,
+                weightMaxInclusive: 1_999_999,
+              },
+              deltaByBucket: {
+                TH18: 9,
+                TH17: 8,
+                TH16: 7,
+                TH15: 6,
+                TH14: 5,
+                "<=TH13": 4,
+              },
+            } as any,
+            targetDeltaByBucket,
+            currentMatchrate: 0.66,
+            targetBandMatchrate: selectedBandIndex === 0 ? 0.7 : 0.8,
+            resultingMatchrate: selectedBandIndex === 0 ? 0.69 : 0.74,
+            currentWeight: 1_650_000,
+            resolvedRosterWeight: 1_650_000,
+            targetBandMidpoint: selectedBandIndex === 0 ? 1_250_000 : 1_750_000,
+            currentScore: 12,
+            currentBandLabel: "1,500,000 - 1,999,999",
+            targetBandLabel:
+              selectedBandIndex === 0
+                ? "1,000,000 - 1,499,999"
+                : "1,500,000 - 1,999,999",
+            targetHeatMapRef:
+              selectedBandIndex === 0
+                ? {
+                    weightMinInclusive: 1_000_000,
+                    weightMaxInclusive: 1_499_999,
+                  }
+                : {
+                    weightMinInclusive: 1_500_000,
+                    weightMaxInclusive: 1_999_999,
+                  },
+            recommendationText:
+              selectedBandIndex === 0
+                ? "Add TH17"
+                : "Replace one TH14 with one TH18",
+            resultingScore: selectedBandIndex === 0 ? 9 : 8,
+            resultingBandLabel:
+              selectedBandIndex === 0
+                ? "1,000,000 - 1,499,999"
+                : "1,500,000 - 1,999,999",
+            alternateTexts: [],
+            statusText: null,
+            selectedCustomBandIndex: selectedBandIndex,
+            customBandCount: 2,
+          } as any,
+        } as never;
+      },
+    );
+
+    const nextInteraction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({
+        kind: "advice-band",
+        userId: "user-1",
+        targetTag: "AAA111",
+        customBandIndex: 0,
+        customBandCount: 2,
+        direction: "next",
+      }),
+    );
+    nextInteraction.message.components = [
+      makeMessageRow("compo-refresh:advice:user-1:actual:custom:AAA111:2:0", "Refresh Data"),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(nextInteraction as any, {} as any);
+
+    const nextPayload = nextInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(getEmbedFieldValue(nextPayload, "Deltas vs Target Band")).toContain("TH18: +4");
+    expect(getEmbedFieldValue(nextPayload, "Deltas vs Target Band")).toContain("TH17: -3");
+    expect(getEmbedFieldValue(nextPayload, "Deltas vs Target Band")).not.toContain("TH18: +9");
+    expect(JSON.stringify(nextPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
+      "Projected Deltas:",
+    );
+    expect(JSON.stringify(nextPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
+      "Raw roster deficits:",
+    );
+
+    const prevInteraction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({
+        kind: "advice-band",
+        userId: "user-1",
+        targetTag: "AAA111",
+        customBandIndex: 1,
+        customBandCount: 2,
+        direction: "prev",
+      }),
+    );
+    prevInteraction.message.components = [
+      makeMessageRow("compo-refresh:advice:user-1:actual:custom:AAA111:2:1", "Refresh Data"),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(prevInteraction as any, {} as any);
+
+    const prevPayload = prevInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).toContain("TH18: -1");
+    expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).toContain("TH17: +2");
+    expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).not.toContain("TH18: +4");
+    expect(JSON.stringify(prevPayload?.embeds?.[0]?.data?.fields ?? [])).not.toContain(
+      "Projected Deltas:",
+    );
+    expect(getEmbedFieldValue(prevPayload, "Deltas vs Target Band")).not.toBe(
+      getEmbedFieldValue(nextPayload, "Deltas vs Target Band"),
     );
   });
 });
