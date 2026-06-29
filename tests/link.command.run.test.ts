@@ -34,6 +34,9 @@ const prismaMock = vi.hoisted(() => ({
   playerCurrent: {
     findMany: vi.fn(),
   },
+  trackedClanRep: {
+    findMany: vi.fn(),
+  },
   playerActivity: {
     findMany: vi.fn(),
   },
@@ -246,7 +249,7 @@ function getInlineRows(description: string): string[] {
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) =>
-      /^(?:[\u2705\u274C])(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(line),
+      /^(?:[\u2705\u274C])(?:\s+[^\n`]+)*(?:\s+`[^`]+`)+(?:\s+\u{1F9CD})?$/u.test(line),
     );
 }
 
@@ -329,6 +332,7 @@ describe("/link run", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
@@ -338,6 +342,7 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -1508,6 +1513,7 @@ describe("/link run", () => {
           inactivityLabel: "—",
           clanRoleLabel: "lead",
           playerTag: "#QR9R0LGJ9",
+          leftBadgePrefix: "<:badge:1>",
           rightMarker: "🧍",
           isLinked: true,
         },
@@ -1584,6 +1590,8 @@ describe("/link run", () => {
     expect(unlinkedDefaultParts.playerName.trim()).toBe("Unlinked Player");
     expect(unlinkedDefaultParts.value).toBe("—");
     expect(unlinkedDefaultParts.marker).toBe("");
+    expect(linkedDefaultRow).toContain("\u2705 <:badge:1>");
+    expect(linkedDefaultRow).toContain("\u{1F9CD}");
     expect(linkedDefaultRow).not.toContain("#");
     expect(unlinkedDefaultRow).not.toContain("#");
 
@@ -1725,6 +1733,28 @@ describe("/link run", () => {
         sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
       },
     ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge-a:1>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#QGRJ2222",
+        clan: {
+          tag: "#PQL0289",
+          clanBadge: "<:badge-b:2>",
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          mailConfig: { displayOrder: 1 },
+        },
+      },
+    ]);
     const interaction = makeInteraction({
       subcommand: "list",
       clanTag: "#PQL0289",
@@ -1745,6 +1775,9 @@ describe("/link run", () => {
     expect(description).not.toContain("`#PYLQ0289`");
     expect(description).not.toContain("`#QGRJ2222`");
     expect(description).not.toContain("``");
+    expect(description).toContain("<:badge-a:1>");
+    expect(description).toContain("<:badge-b:2>");
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(2);
     expect(getInlineRowSegments(rows[0] ?? "")).toMatchObject({
@@ -1753,6 +1786,7 @@ describe("/link run", () => {
       value: "Persisted Sin",
     });
     expect(getInlineRowSegments(rows[0] ?? "").playerName.trim()).toBe("Persisted Sin");
+    expect(rows[0]).toContain("\u2705 <:badge-a:1>");
     expect(getInlineRowSegments(rows[1] ?? "")).toMatchObject({
       status: "❌",
       townHall: "17",
@@ -1761,6 +1795,8 @@ describe("/link run", () => {
     expect(getInlineRowSegments(rows[1] ?? "").playerName.trim()).toBe(
       "Unlinked Exa...",
     );
+    expect(rows[1]).toContain("\u274c <:badge-b:2>");
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledTimes(1);
     expect(description).not.toContain("``");
   });
 
@@ -2327,6 +2363,7 @@ describe("/link list select menu", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -2359,6 +2396,7 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 
@@ -2692,6 +2730,7 @@ describe("/link list sort button", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
     prismaMock.playerLink.findMany.mockResolvedValue([
@@ -2771,6 +2810,7 @@ describe("/link list sort button", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
 

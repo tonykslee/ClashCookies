@@ -558,7 +558,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If `tag` is provided, resolves linked Discord ID from local PlayerLink, then lists that user's accounts and shows `Linked Discord: <@id>` under the title.",
       "Only one of `tag` or `discord-id` can be provided.",
       "Runtime link resolution is local-only from `PlayerLink`.",
-      "Account display uses persisted local data only, with TH badges, crowns for leaders/co-leaders, linked player-profile names, and compact FWA weights when available. Pagination keeps each clan group together and uses available embed description space before creating another page. Weight (`Wt`) comes from the higher of FWA clan members/catalog values and deferred/manual weight sources, then `PlayerCurrent.currentWeight`, with `—` when no resolved positive weight exists.",
+      "Account display uses persisted local data only, with TH badges, rep-clan badges before the TH icon, crowns for leaders/co-leaders, linked player-profile names, and compact FWA weights when available. Pagination keeps each clan group together and uses available embed description space before creating another page. Weight (`Wt`) comes from the higher of FWA clan members/catalog values and deferred/manual weight sources, then `PlayerCurrent.currentWeight`, with `—` when no resolved positive weight exists.",
       "Set `visibility:public` to post the response directly in channel.",
     ],
     examples: [
