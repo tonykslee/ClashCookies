@@ -375,12 +375,7 @@ export class WarPlanViolationHistoryService {
     const aggregate = buildHistoryAggregation(rows);
     const clanSummaries = toClanSummaries(aggregate.clans);
     const topPlayers = toPlayerSummaries(aggregate.players);
-    const distinctClanCount = new Set(
-      rows.flatMap((row) => {
-        const clanTag = normalizeTag(row.warHistory?.clanTag ?? "");
-        return clanTag ? [clanTag] : [];
-      }),
-    ).size;
+    const distinctClanCount = clanSummaries.length;
     const distinctPlayerCount = new Set(topPlayers.map((row) => row.playerTag)).size;
 
     return {
@@ -427,9 +422,16 @@ export class WarPlanViolationHistoryService {
     }
 
     const identityRow = await this.db.clanWarHistory.findFirst({
-      where: { clanTag: normalizedClanTag },
+      where: {
+        clanTag: normalizedClanTag,
+        warPlanEvaluations: {
+          some: {
+            guildId,
+            status: "COMPLETED",
+          },
+        },
+      },
       orderBy: [
-        { warEndTime: "desc" },
         { warStartTime: "desc" },
         { warId: "desc" },
       ],

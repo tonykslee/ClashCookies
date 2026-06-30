@@ -59,11 +59,57 @@ function compareFixturesDesc(a: EvaluationFixture, b: EvaluationFixture): number
   return b.warId - a.warId;
 }
 
+function compareIdentityRows(
+  a: EvaluationFixture,
+  b: EvaluationFixture,
+  orderBy: Array<Record<string, "asc" | "desc">> | undefined,
+): number {
+  if (!orderBy?.length) return 0;
+
+  for (const clause of orderBy) {
+    const [field, direction] = Object.entries(clause)[0] as [
+      keyof EvaluationFixture,
+      "asc" | "desc",
+    ];
+    const aValue = a[field];
+    const bValue = b[field];
+
+    let delta = 0;
+    if (aValue instanceof Date && bValue instanceof Date) {
+      delta = aValue.getTime() - bValue.getTime();
+    } else if (typeof aValue === "number" && typeof bValue === "number") {
+      delta = aValue - bValue;
+    } else {
+      delta = String(aValue ?? "").localeCompare(String(bValue ?? ""));
+    }
+
+    if (delta !== 0) {
+      return direction === "desc" ? -delta : delta;
+    }
+  }
+
+  return 0;
+}
+
 function extractRelationFilter(where: Record<string, unknown> | undefined): Record<string, unknown> | null {
   const relation = where?.warHistory as Record<string, unknown> | undefined;
   if (!relation) return null;
   const nested = relation.is as Record<string, unknown> | undefined;
   return nested ?? relation;
+}
+
+function matchesIdentityRelation(
+  row: EvaluationFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  const relation = where?.warPlanEvaluations as
+    | { some?: { guildId?: string; status?: string } }
+    | undefined;
+  const some = relation?.some;
+  if (!some) return true;
+  if (typeof some.guildId === "string" && some.guildId !== row.guildId) return false;
+  if (typeof some.status === "string" && some.status !== row.status) return false;
+  return true;
 }
 
 function matchesEvaluationWhere(row: EvaluationFixture, where: Record<string, unknown> | undefined): boolean {
@@ -92,10 +138,17 @@ function buildDb(fixtures: EvaluationFixture[]) {
 
   const db = {
     clanWarHistory: {
-      findFirst: vi.fn(async (args?: { where?: { clanTag?: string } }) => {
+      findFirst: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Array<Record<string, "asc" | "desc">>;
+      }) => {
         const clanTag = normalizeTag(args?.where?.clanTag ?? "");
         if (!clanTag) return null;
-        const hit = ordered.find((row) => normalizeTag(row.clanTag) === clanTag);
+        const matches = ordered.filter(
+          (row) =>
+            normalizeTag(row.clanTag) === clanTag && matchesIdentityRelation(row, args?.where),
+        );
+        const hit = matches.sort((a, b) => compareIdentityRows(a, b, args?.orderBy))[0];
         if (!hit) return null;
         return {
           clanTag: hit.clanTag,
@@ -260,6 +313,7 @@ describe("WarPlanViolationHistoryService", () => {
 
     const identityWhere = db.clanWarHistory.findFirst.mock.calls[0]?.[0]?.where as {
       clanTag?: string;
+      warPlanEvaluations?: { some?: { guildId?: string; status?: string } };
     };
     const queryWhere = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where as Record<
       string,
@@ -267,6 +321,12 @@ describe("WarPlanViolationHistoryService", () => {
     >;
 
     expect(identityWhere.clanTag).toBe("#2QG2C08UP");
+    expect(identityWhere.warPlanEvaluations).toEqual({
+      some: {
+        guildId: "guild-1",
+        status: "COMPLETED",
+      },
+    });
     expect(queryWhere).toMatchObject({
       guildId: "guild-1",
       status: "COMPLETED",
@@ -291,6 +351,47 @@ describe("WarPlanViolationHistoryService", () => {
     ]);
   });
 
+  it("returns not_found when the clan is only completed under a different guild", async () => {
+    const { db, service } = buildService([
+      buildFixture({
+        guildId: "guild-b",
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Alpha One",
+            townHallLevelSnapshot: 16,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-a",
+      clanTag: "#2QG2C08UP",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(db.clanWarHistory.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(0);
+    expect(result).toMatchObject({
+      outcome: "not_found",
+      clanTag: "#2QG2C08UP",
+      clanName: null,
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      players: [],
+      hasCompletedEvaluations: false,
+    });
+  });
+
   it("returns successful no-data metadata for a known clan with only outside-window evaluations", async () => {
     const { db, service } = buildService([
       buildFixture({
@@ -307,6 +408,20 @@ describe("WarPlanViolationHistoryService", () => {
           },
         ],
       }),
+      buildFixture({
+        warId: 2,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Latest",
+        warStartTime: d("2026-04-02T00:00:00.000Z"),
+        warEndTime: d("2026-04-02T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#G2R9RQLJQ",
+            playerNameSnapshot: "Outside Latest",
+            townHallLevelSnapshot: 15,
+          },
+        ],
+      }),
     ]);
 
     const result = await service.getClanLeaderboard({
@@ -317,11 +432,15 @@ describe("WarPlanViolationHistoryService", () => {
     });
 
     expect(db.clanWarHistory.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.clanWarHistory.findFirst.mock.calls[0]?.[0]?.orderBy).toEqual([
+      { warStartTime: "desc" },
+      { warId: "desc" },
+    ]);
     expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       outcome: "success",
       clanTag: "#2QG2C08UP",
-      clanName: "Alpha",
+      clanName: "Alpha Latest",
       evaluatedWarCount: 0,
       affectedWarCount: 0,
       violationCount: 0,
@@ -602,6 +721,58 @@ describe("WarPlanViolationHistoryService", () => {
       topPlayers: [],
       hasCompletedEvaluations: false,
       trackingSince: null,
+    });
+  });
+
+  it("counts only violating clans in distinctClanCount while preserving zero-violation coverage", async () => {
+    const { service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Violating Alpha",
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Violator",
+            townHallLevelSnapshot: 16,
+          },
+        ],
+      }),
+      buildFixture({
+        warId: 2,
+        clanTag: "#G2R9RQLJQ",
+        clanName: "Clean Beta",
+        warStartTime: d("2026-05-11T00:00:00.000Z"),
+        warEndTime: d("2026-05-11T01:00:00.000Z"),
+        violations: [],
+      }),
+    ]);
+
+    const result = await service.getAllianceOverview({
+      guildId: "guild-1",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      outcome: "success",
+      evaluatedWarCount: 2,
+      affectedWarCount: 1,
+      violationCount: 1,
+      distinctPlayerCount: 1,
+      distinctClanCount: 1,
+      hasCompletedEvaluations: true,
+    });
+    expect(result.clanSummaries).toHaveLength(1);
+    expect(result.clanSummaries[0]).toMatchObject({
+      clanTag: "#2QG2C08UP",
+      clanName: "Violating Alpha",
+      evaluatedWarCount: 1,
+      affectedWarCount: 1,
+      violationCount: 1,
+      distinctPlayerCount: 1,
     });
   });
 });
