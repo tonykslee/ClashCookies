@@ -54,6 +54,19 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     update: vi.fn(),
   },
+  warPlanComplianceEvaluation: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  warPlanViolation: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   clanNotifyConfig: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -87,6 +100,15 @@ beforeEach(() => {
   prismaMock.reminderFireLog.create.mockResolvedValue({ id: "fire-1" });
   prismaMock.reminderFireLog.updateMany.mockResolvedValue({ count: 0 });
   prismaMock.reminderFireLog.update.mockResolvedValue({});
+  prismaMock.warPlanComplianceEvaluation.findMany.mockResolvedValue([]);
+  prismaMock.warPlanComplianceEvaluation.findUnique.mockResolvedValue(null);
+  prismaMock.warPlanComplianceEvaluation.create.mockResolvedValue({});
+  prismaMock.warPlanComplianceEvaluation.update.mockResolvedValue({});
+  prismaMock.warPlanComplianceEvaluation.updateMany.mockResolvedValue({ count: 0 });
+  prismaMock.warPlanComplianceEvaluation.deleteMany.mockResolvedValue({ count: 0 });
+  prismaMock.warPlanViolation.findMany.mockResolvedValue([]);
+  prismaMock.warPlanViolation.createMany.mockResolvedValue({ count: 0 });
+  prismaMock.warPlanViolation.deleteMany.mockResolvedValue({ count: 0 });
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
   prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);

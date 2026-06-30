@@ -1,8 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { formatError } from "../../helper/formatError";
 import { CoCService } from "../CoCService";
 import { PointsSyncService } from "../PointsSyncService";
 import { WarComplianceService } from "../WarComplianceService";
+import { WarPlanViolationService } from "../WarPlanViolationService";
 import {
   type EventType,
   type FwaLoseStyle,
@@ -27,14 +29,35 @@ export function resolveParticipationGuildId(input: {
   return null;
 }
 
+class RetryableArchiveInputError extends Error {
+  readonly code = "archive_input_retryable";
+  readonly retryable = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryableArchiveInputError";
+  }
+}
+
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
+  private readonly coc: CoCService;
+  private readonly pointsSync: PointsSyncService;
+  private readonly compliance: WarComplianceService;
+  private readonly warPlanViolations: WarPlanViolationService;
+
   /** Purpose: initialize war history service dependencies. */
   constructor(
-    private readonly coc: CoCService,
-    private readonly pointsSync = new PointsSyncService(),
-    private readonly compliance = new WarComplianceService(),
-  ) {}
+    coc: CoCService,
+    pointsSync = new PointsSyncService(),
+    compliance = new WarComplianceService(),
+    warPlanViolations?: WarPlanViolationService,
+  ) {
+    this.coc = coc;
+    this.pointsSync = pointsSync;
+    this.compliance = compliance;
+    this.warPlanViolations = warPlanViolations ?? new WarPlanViolationService(compliance);
+  }
 
   /** Purpose: build the war-end points line text shown in event embeds. */
   buildWarEndPointsLine(
@@ -484,7 +507,7 @@ export class WarEventHistoryService {
       finalResult.resultLabel === "UNKNOWN" && payload.outcome
         ? payload.outcome
         : finalResult.resultLabel;
-    
+
     const scopedGuildId = String(payload.guildId ?? "").trim() || null;
     const currentSnapshot = await prisma.currentWar.findFirst({
       where: {
@@ -493,6 +516,7 @@ export class WarEventHistoryService {
         ...(scopedGuildId ? { guildId: scopedGuildId } : {}),
       },
       select: {
+        warId: true,
         guildId: true,
         inferredMatchType: true,
         matchType: true,
@@ -505,61 +529,6 @@ export class WarEventHistoryService {
         endTime: true,
       },
     });
-
-    
-    const resolvedExpectedOutcome: "WIN" | "LOSE" | null =
-      normalizeOutcome(payload.outcome) ??
-      normalizeOutcome(currentSnapshot?.outcome ?? null) ??
-      (payload.matchType === "FWA" &&
-      (resolvedActualOutcome === "WIN" || resolvedActualOutcome === "LOSE")
-        ? resolvedActualOutcome
-        : null);
-
-    const row = await prisma.$queryRaw<Array<{ warId: number }>>(
-      Prisma.sql`
-        INSERT INTO "ClanWarHistory"
-          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
-        VALUES
-          (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${resolvedExpectedOutcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
-        ON CONFLICT ("warStartTime","clanTag","opponentTag")
-        DO UPDATE SET
-          "syncNumber" = EXCLUDED."syncNumber",
-          "matchType" = EXCLUDED."matchType",
-          "clanStars" = EXCLUDED."clanStars",
-          "clanDestruction" = EXCLUDED."clanDestruction",
-          "opponentStars" = EXCLUDED."opponentStars",
-          "opponentDestruction" = EXCLUDED."opponentDestruction",
-          "pointsAfterWar" = EXCLUDED."pointsAfterWar",
-          "expectedOutcome" = EXCLUDED."expectedOutcome",
-          "actualOutcome" = COALESCE(EXCLUDED."actualOutcome", "ClanWarHistory"."actualOutcome", EXCLUDED."expectedOutcome", 'UNKNOWN'),
-          "prepStartTime" = EXCLUDED."prepStartTime",
-          "warEndTime" = EXCLUDED."warEndTime",
-          "clanName" = EXCLUDED."clanName",
-          "opponentName" = EXCLUDED."opponentName",
-          "opponentTag" = EXCLUDED."opponentTag",
-          "updatedAt" = NOW()
-        RETURNING "warId"
-      `,
-    );
-    const warId = Number(row[0]?.warId ?? NaN);
-    if (!Number.isFinite(warId)) return;
-
-    // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
-    await prisma.warAttacks.updateMany({
-      where: { clanTag, warStartTime },
-      data: { warId },
-    });
-    await prisma.currentWar.updateMany({
-      where: { clanTag, startTime: warStartTime, warId: null },
-      data: { warId },
-    });
-    await this.pointsSync.attachWarId({
-      clanTag,
-      warStartTime,
-      warId: String(warId),
-    });
-
-    
     const participationGuildId = resolveParticipationGuildId({
       payloadGuildId: scopedGuildId,
       snapshotGuildId: currentSnapshot?.guildId ?? null,
@@ -568,168 +537,320 @@ export class WarEventHistoryService {
       ? await this.pointsSync.getCurrentSyncForClan({
           guildId: participationGuildId,
           clanTag,
-          warId: String(warId),
+          warId:
+            currentSnapshot?.warId !== null &&
+            currentSnapshot?.warId !== undefined
+              ? String(currentSnapshot.warId)
+              : null,
           warStartTime,
         })
       : null;
-    const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
-    const teamSize = participants.length > 0 ? participants.length : null;
-    const pointsAwarded =
-      payload.warStartFwaPoints !== null &&
-      Number.isFinite(payload.warStartFwaPoints) &&
-      resolvedPointsAfterWar !== null &&
-      Number.isFinite(resolvedPointsAfterWar)
-        ? resolvedPointsAfterWar - payload.warStartFwaPoints
-        : pointsDelta;
-    const attacksPayload = attacks
-      .filter((a) => Number(a.attackOrder) > 0)
-      .map((a) => ({
-        attackerTag: a.playerTag,
-        attackerName: a.playerName,
-        attackerPosition: a.playerPosition,
-        defenderTag: a.defenderTag,
-        defenderName: a.defenderName,
-        defenderPosition: a.defenderPosition,
-        stars: a.stars,
-        trueStars: a.trueStars,
-        destruction: a.destruction,
-        order: a.attackOrder,
-        attackSeenAt:
-          a.attackSeenAt instanceof Date ? a.attackSeenAt.toISOString() : null,
-      }));
-    const mirrorHits = attacksPayload.filter((a) => {
-      const row = attacks.find(
-        (x) =>
-          x.playerTag === a.attackerTag &&
-          x.defenderTag === a.defenderTag &&
-          Number(x.attackOrder) === Number(a.order),
+
+    const resolvedExpectedOutcome: "WIN" | "LOSE" | null =
+      normalizeOutcome(payload.outcome) ??
+      normalizeOutcome(currentSnapshot?.outcome ?? null) ??
+      (payload.matchType === "FWA" &&
+      (resolvedActualOutcome === "WIN" || resolvedActualOutcome === "LOSE")
+        ? resolvedActualOutcome
+        : null);
+
+    const warIdResult = await prisma.$transaction(async (tx) => {
+      const row = await tx.$queryRaw<Array<{ warId: number }>>(
+        Prisma.sql`
+          INSERT INTO "ClanWarHistory"
+            ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+          VALUES
+            (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${resolvedExpectedOutcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
+          ON CONFLICT ("warStartTime","clanTag","opponentTag")
+          DO UPDATE SET
+            "syncNumber" = EXCLUDED."syncNumber",
+            "matchType" = EXCLUDED."matchType",
+            "clanStars" = EXCLUDED."clanStars",
+            "clanDestruction" = EXCLUDED."clanDestruction",
+            "opponentStars" = EXCLUDED."opponentStars",
+            "opponentDestruction" = EXCLUDED."opponentDestruction",
+            "pointsAfterWar" = EXCLUDED."pointsAfterWar",
+            "expectedOutcome" = EXCLUDED."expectedOutcome",
+            "actualOutcome" = COALESCE(EXCLUDED."actualOutcome", "ClanWarHistory"."actualOutcome", EXCLUDED."expectedOutcome", 'UNKNOWN'),
+            "prepStartTime" = EXCLUDED."prepStartTime",
+            "warEndTime" = EXCLUDED."warEndTime",
+            "clanName" = EXCLUDED."clanName",
+            "opponentName" = EXCLUDED."opponentName",
+            "opponentTag" = EXCLUDED."opponentTag",
+            "updatedAt" = NOW()
+          RETURNING "warId"
+        `,
       );
-      if (!row) return false;
-      return (
-        Number.isFinite(Number(row.playerPosition)) &&
-        Number.isFinite(Number(row.defenderPosition)) &&
-        Number(row.playerPosition) === Number(row.defenderPosition)
-      );
-    }).length;
-    const nonMirrorHits = Math.max(0, attacksPayload.length - mirrorHits);
-    const lookupPayload = {
-      warMeta: {
-        warId: String(warId),
-        clanTag,
-        opponentTag: normalizeTag(payload.opponentTag) || null,
-        state: "warEnded",
-        teamSize,
-        startTime: warStartTime.toISOString(),
-        endTime: warEndTime ? warEndTime.toISOString() : null,
-        result: resolvedActualOutcome.toLowerCase(),
-        synced: true,
-      },
-      score: {
-        clanStars: finalResult.clanStars,
-        opponentStars: finalResult.opponentStars,
-        clanDestruction: finalResult.clanDestruction,
-        opponentDestruction: finalResult.opponentDestruction,
-      },
-      fwa: {
-        syncNumber: payload.syncNumber ?? syncRow?.syncNum ?? null,
-        pointsAwarded: pointsAwarded ?? null,
-        inferred: Boolean(currentSnapshot?.inferredMatchType),
-        mismatch: payload.matchType === "MM",
-        blacklist: payload.matchType === "BL",
-      },
-      clan: {
-        tag: clanTag,
-        name: payload.clanName ?? currentSnapshot?.clanName ?? clanTag,
-        members: participants.map((p) => ({
-          tag: p.playerTag,
-          name: p.playerName,
-          mapPosition: p.playerPosition,
-          townHall: null,
-        })),
-      },
-      opponent: {
-        tag:
-          normalizeTag(payload.opponentTag) ||
-          currentSnapshot?.opponentTag ||
-          null,
-        name: payload.opponentName ?? currentSnapshot?.opponentName ?? null,
-        members: Array.from(
-          new Map(
-            attacks
-              .filter((a) => Number(a.attackOrder) > 0 && a.defenderTag)
-              .map((a) => [
-                a.defenderTag,
-                {
-                  tag: a.defenderTag,
-                  name: a.defenderName,
-                  mapPosition: a.defenderPosition,
+      const persistedWarId = Number(row[0]?.warId ?? NaN);
+      if (!Number.isFinite(persistedWarId)) return null;
+      let archiveTransition:
+        | Awaited<
+            ReturnType<WarPlanViolationService["syncArchivedEvaluationState"]>
+          >
+        | null = null;
+      if (participationGuildId) {
+        archiveTransition =
+          await this.warPlanViolations.syncArchivedEvaluationState({
+            tx,
+            guildId: participationGuildId,
+            warId: persistedWarId,
+          });
+      }
+      const hasLiveAttacks = attacks.length > 0;
+      const lookupPayload = hasLiveAttacks
+        ? (() => {
+            const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
+            const teamSize = participants.length > 0 ? participants.length : null;
+            const pointsAwarded =
+              payload.warStartFwaPoints !== null &&
+              Number.isFinite(payload.warStartFwaPoints) &&
+              resolvedPointsAfterWar !== null &&
+              Number.isFinite(resolvedPointsAfterWar)
+                ? resolvedPointsAfterWar - payload.warStartFwaPoints
+                : pointsDelta;
+            const attacksPayload = attacks
+              .filter((a) => Number(a.attackOrder) > 0)
+              .map((a) => ({
+                attackerTag: a.playerTag,
+                attackerName: a.playerName,
+                attackerPosition: a.playerPosition,
+                defenderTag: a.defenderTag,
+                defenderName: a.defenderName,
+                defenderPosition: a.defenderPosition,
+                stars: a.stars,
+                trueStars: a.trueStars,
+                destruction: a.destruction,
+                order: a.attackOrder,
+                attackSeenAt:
+                  a.attackSeenAt instanceof Date
+                    ? a.attackSeenAt.toISOString()
+                    : null,
+              }));
+            const mirrorHits = attacksPayload.filter((a) => {
+              const row = attacks.find(
+                (x) =>
+                  x.playerTag === a.attackerTag &&
+                  x.defenderTag === a.defenderTag &&
+                  Number(x.attackOrder) === Number(a.order),
+              );
+              if (!row) return false;
+              return (
+                Number.isFinite(Number(row.playerPosition)) &&
+                Number.isFinite(Number(row.defenderPosition)) &&
+                Number(row.playerPosition) === Number(row.defenderPosition)
+              );
+            }).length;
+            const nonMirrorHits = Math.max(0, attacksPayload.length - mirrorHits);
+            return {
+              warMeta: {
+                warId: String(persistedWarId),
+                clanTag,
+                opponentTag: normalizeTag(payload.opponentTag) || null,
+                state: "warEnded",
+                teamSize,
+                startTime: warStartTime.toISOString(),
+                endTime: warEndTime ? warEndTime.toISOString() : null,
+                result: resolvedActualOutcome.toLowerCase(),
+                synced: true,
+              },
+              score: {
+                clanStars: finalResult.clanStars,
+                opponentStars: finalResult.opponentStars,
+                clanDestruction: finalResult.clanDestruction,
+                opponentDestruction: finalResult.opponentDestruction,
+              },
+              fwa: {
+                syncNumber: payload.syncNumber ?? syncRow?.syncNum ?? null,
+                pointsAwarded: pointsAwarded ?? null,
+                inferred: Boolean(currentSnapshot?.inferredMatchType),
+                mismatch: payload.matchType === "MM",
+                blacklist: payload.matchType === "BL",
+              },
+              clan: {
+                tag: clanTag,
+                name: payload.clanName ?? currentSnapshot?.clanName ?? clanTag,
+                members: participants.map((p) => ({
+                  tag: p.playerTag,
+                  name: p.playerName,
+                  mapPosition: p.playerPosition,
                   townHall: null,
+                })),
+              },
+              opponent: {
+                tag:
+                  normalizeTag(payload.opponentTag) ||
+                  currentSnapshot?.opponentTag ||
+                  null,
+                name: payload.opponentName ?? currentSnapshot?.opponentName ?? null,
+                members: Array.from(
+                  new Map(
+                    attacks
+                      .filter((a) => Number(a.attackOrder) > 0 && a.defenderTag)
+                      .map((a) => [
+                        a.defenderTag,
+                        {
+                          tag: a.defenderTag,
+                          name: a.defenderName,
+                          mapPosition: a.defenderPosition,
+                          townHall: null,
+                        },
+                      ]),
+                  ).values(),
+                ),
+              },
+              attacks: attacksPayload,
+              compliance: {
+                mirrorHits,
+                nonMirrorHits,
+                lateHits: 0,
+                violations: [] as string[],
+                canonical: {
+                  warEndTime: warEndTime ? warEndTime.toISOString() : null,
+                  participants: participants.map((p) => ({
+                    playerTag: p.playerTag,
+                    playerName: p.playerName,
+                    playerPosition: p.playerPosition,
+                    attacksUsed: p.attacksUsed,
+                  })),
+                  attacks: attacksPayload.map((attack) => ({
+                    playerTag: attack.attackerTag,
+                    playerName: attack.attackerName,
+                    playerPosition: attack.attackerPosition,
+                    defenderPosition: attack.defenderPosition,
+                    stars: attack.stars,
+                    trueStars: attack.trueStars,
+                    attackOrder: attack.order,
+                    attackSeenAt: attack.attackSeenAt,
+                  })),
                 },
-              ]),
-          ).values(),
-        ),
-      },
-      attacks: attacksPayload,
-      compliance: {
-        mirrorHits,
-        nonMirrorHits,
-        lateHits: 0,
-        violations: [] as string[],
-        canonical: {
-          warEndTime: warEndTime ? warEndTime.toISOString() : null,
-          participants: participants.map((p) => ({
-            playerTag: p.playerTag,
-            playerName: p.playerName,
-            playerPosition: p.playerPosition,
-            attacksUsed: p.attacksUsed,
-          })),
-          attacks: attacksPayload.map((attack) => ({
-            playerTag: attack.attackerTag,
-            playerName: attack.attackerName,
-            playerPosition: attack.attackerPosition,
-            defenderPosition: attack.defenderPosition,
-            stars: attack.stars,
-            trueStars: attack.trueStars,
-            attackOrder: attack.order,
-            attackSeenAt: attack.attackSeenAt,
-          })),
-        },
-      },
-    };
-    await prisma.$executeRaw(
-      Prisma.sql`
-        INSERT INTO "WarLookup" ("warId","clanTag","opponentTag","startTime","endTime","result","payload","createdAt")
-        VALUES (${String(warId)}, ${clanTag}, ${normalizeTag(payload.opponentTag) || null}, ${warStartTime}, ${warEndTime}, ${resolvedActualOutcome.toLowerCase()}, ${JSON.stringify(lookupPayload)}::jsonb, NOW())
-        ON CONFLICT ("warId")
-        DO UPDATE SET
-          "clanTag" = EXCLUDED."clanTag",
-          "opponentTag" = EXCLUDED."opponentTag",
-          "startTime" = EXCLUDED."startTime",
-          "endTime" = EXCLUDED."endTime",
-          "result" = EXCLUDED."result",
+              },
+            };
+          })()
+        : await tx.$queryRaw<Array<{ payload: Prisma.JsonValue }>>(
+            Prisma.sql`
+              SELECT "payload"
+              FROM "WarLookup"
+              WHERE "warId" = ${String(persistedWarId)}
+              LIMIT 1
+            `,
+          ).then((rows) => {
+            const existingPayload = rows[0]?.payload ?? null;
+            if (existingPayload === null || existingPayload === undefined) {
+              throw new RetryableArchiveInputError(
+                `[war-events] archive input missing live attacks and existing lookup guild=${participationGuildId ?? scopedGuildId ?? "unknown"} clan=${clanTag} war_id=${persistedWarId}`,
+              );
+            }
+            return existingPayload;
+          });
+      await tx.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "WarLookup" ("warId","clanTag","opponentTag","startTime","endTime","result","payload","createdAt")
+          VALUES (${String(persistedWarId)}, ${clanTag}, ${normalizeTag(payload.opponentTag) || null}, ${warStartTime}, ${warEndTime}, ${resolvedActualOutcome.toLowerCase()}, ${JSON.stringify(lookupPayload)}::jsonb, NOW())
+          ON CONFLICT ("warId")
+          DO UPDATE SET
+            "clanTag" = EXCLUDED."clanTag",
+            "opponentTag" = EXCLUDED."opponentTag",
+            "startTime" = EXCLUDED."startTime",
+            "endTime" = EXCLUDED."endTime",
+            "result" = EXCLUDED."result",
           "payload" = EXCLUDED."payload"
-      `,
-    );
-    await this.persistWarParticipationSnapshot({
-      guildId: participationGuildId,
-      warId: String(warId),
-      clanTag,
-      opponentTag:
-        normalizeTag(payload.opponentTag) ||
-        currentSnapshot?.opponentTag ||
-        null,
-      warStartTime: currentSnapshot?.startTime ?? warStartTime,
-      warEndTime: currentSnapshot?.endTime ?? warEndTime,
-      matchType: currentSnapshot?.matchType ?? payload.matchType,
-      participantRows: participants,
-      attackRows: attacks.filter((a) => Number(a.attackOrder) > 0),
+        `,
+      );
+      if (hasLiveAttacks) {
+        const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
+        await this.persistWarParticipationSnapshot({
+          tx,
+          guildId: participationGuildId,
+          warId: String(persistedWarId),
+          clanTag,
+          opponentTag:
+            normalizeTag(payload.opponentTag) ||
+            currentSnapshot?.opponentTag ||
+            null,
+          warStartTime: currentSnapshot?.startTime ?? warStartTime,
+          warEndTime: currentSnapshot?.endTime ?? warEndTime,
+          matchType: currentSnapshot?.matchType ?? payload.matchType,
+          participantRows: participants,
+          attackRows: attacks.filter((a) => Number(a.attackOrder) > 0),
+        });
+      }
+
+      return {
+        persistedWarId,
+        archiveTransition,
+      };
     });
+    if (
+      warIdResult === null ||
+      warIdResult === undefined ||
+      !Number.isFinite(Number(warIdResult.persistedWarId))
+    ) {
+      return;
+    }
+    const persistedWarId = Math.trunc(Number(warIdResult.persistedWarId));
+
+    // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
+    await prisma.warAttacks.updateMany({
+      where: { clanTag, warStartTime },
+      data: { warId: persistedWarId },
+    });
+    await prisma.currentWar.updateMany({
+      where: { clanTag, startTime: warStartTime, warId: null },
+      data: { warId: persistedWarId },
+    });
+    await this.pointsSync.attachWarId({
+      clanTag,
+      warStartTime,
+      warId: String(persistedWarId),
+    });
+
+    if (participationGuildId) {
+      try {
+        await this.warPlanViolations.finalizeEvaluation({
+          guildId: participationGuildId,
+          warId: persistedWarId,
+        });
+      } catch (error) {
+        console.error(
+          `[war-plan-violation] event=finalization_error guild=${participationGuildId} war_id=${persistedWarId} clan_tag=${clanTag} error=${formatError(error)}`,
+        );
+      }
+    }
+
+    const archiveTransition = warIdResult.archiveTransition;
+    if (archiveTransition && archiveTransition.action !== "created") {
+      const action =
+        archiveTransition.action === "terminalized"
+          ? "evaluation_terminalized_non_fwa"
+          : archiveTransition.action === "reactivated"
+            ? "evaluation_reactivated"
+            : "evaluation_canonical_reset";
+      console.info(
+        [
+          `[war-plan-violation] event=${action}`,
+          `guild=${archiveTransition.guildId}`,
+          `war_id=${archiveTransition.warId}`,
+          `evaluation_id=${archiveTransition.evaluationId || "unknown"}`,
+          `previous_status=${archiveTransition.previousStatus ?? "null"}`,
+          `stored_match_type=${archiveTransition.previousMatchType ?? "null"}`,
+          `stored_expected_outcome=${
+            archiveTransition.previousExpectedOutcome ?? "null"
+          }`,
+          `current_match_type=${archiveTransition.currentMatchType ?? "null"}`,
+          `current_expected_outcome=${
+            archiveTransition.currentExpectedOutcome ?? "null"
+          }`,
+          `violation_count=${archiveTransition.violationCount}`,
+        ].join(" "),
+      );
+    }
+
     // Ephemeral lifecycle: archive complete, then clear active-war rows by warId.
     await prisma.warAttacks.deleteMany({
-      where: { warId },
+      where: { warId: persistedWarId },
     });
     await prisma.currentWar.deleteMany({
-      where: { warId },
+      where: { warId: persistedWarId },
     });
   }
 
@@ -845,6 +966,7 @@ export class WarEventHistoryService {
 
   /** Purpose: snapshot per-player war participation before current-war rows are deleted. */
   private async persistWarParticipationSnapshot(input: {
+    tx: Prisma.TransactionClient;
     guildId: string | null;
     warId: string;
     clanTag: string;
@@ -930,7 +1052,7 @@ export class WarEventHistoryService {
     });
     if (rows.length === 0) return;
 
-    await prisma.clanWarParticipation.createMany({
+    await input.tx.clanWarParticipation.createMany({
       data: rows,
       skipDuplicates: true,
     });

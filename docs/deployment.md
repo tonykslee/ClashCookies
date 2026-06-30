@@ -51,6 +51,7 @@ Flow:
 | Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` | `127.0.0.1:18085/healthz` |
 
 Staging mirror mode must not run the upstream pollers directly. Production continues to own active polling and schedulers.
+Mirror sync also carries the finalized war-plan history tables (`WarPlanComplianceEvaluation` and `WarPlanViolation`) so staging reads stay consistent without performing local evaluation.
 
 ## Operational Notes
 
