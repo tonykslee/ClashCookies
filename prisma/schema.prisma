@@ -696,6 +696,7 @@ enum WarPlanComplianceEvaluationStatus {
   COMPLETED
   INSUFFICIENT_DATA
   FAILED
+  SKIPPED
 }
 
 enum WarPlanViolationType {
@@ -1600,6 +1601,8 @@ model WarPlanComplianceEvaluation {
   guildId                    String
   warId                      Int
   status                     WarPlanComplianceEvaluationStatus    @default(PENDING)
+  claimToken                 String?
+  claimExpiresAt             DateTime?
   engineVersion              String?
   matchType                  WarMatchType?
   expectedOutcome            String?
@@ -1619,6 +1622,7 @@ model WarPlanComplianceEvaluation {
   violations                 WarPlanViolation[]
 
   @@unique([guildId, warId])
+  @@index([status, nextAttemptAt])
   @@index([guildId, status, nextAttemptAt])
   @@index([guildId, completedAt])
   @@index([warId])

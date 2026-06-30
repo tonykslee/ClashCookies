@@ -518,6 +518,10 @@ export class WarEventHistoryService {
         endTime: true,
       },
     });
+    const participationGuildId = resolveParticipationGuildId({
+      payloadGuildId: scopedGuildId,
+      snapshotGuildId: currentSnapshot?.guildId ?? null,
+    });
 
     
     const resolvedExpectedOutcome: "WIN" | "LOSE" | null =
@@ -528,60 +532,79 @@ export class WarEventHistoryService {
         ? resolvedActualOutcome
         : null);
 
-    const row = await prisma.$queryRaw<Array<{ warId: number }>>(
-      Prisma.sql`
-        INSERT INTO "ClanWarHistory"
-          ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
-        VALUES
-          (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${resolvedExpectedOutcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
-        ON CONFLICT ("warStartTime","clanTag","opponentTag")
-        DO UPDATE SET
-          "syncNumber" = EXCLUDED."syncNumber",
-          "matchType" = EXCLUDED."matchType",
-          "clanStars" = EXCLUDED."clanStars",
-          "clanDestruction" = EXCLUDED."clanDestruction",
-          "opponentStars" = EXCLUDED."opponentStars",
-          "opponentDestruction" = EXCLUDED."opponentDestruction",
-          "pointsAfterWar" = EXCLUDED."pointsAfterWar",
-          "expectedOutcome" = EXCLUDED."expectedOutcome",
-          "actualOutcome" = COALESCE(EXCLUDED."actualOutcome", "ClanWarHistory"."actualOutcome", EXCLUDED."expectedOutcome", 'UNKNOWN'),
-          "prepStartTime" = EXCLUDED."prepStartTime",
-          "warEndTime" = EXCLUDED."warEndTime",
-          "clanName" = EXCLUDED."clanName",
-          "opponentName" = EXCLUDED."opponentName",
-          "opponentTag" = EXCLUDED."opponentTag",
-          "updatedAt" = NOW()
-        RETURNING "warId"
-      `,
-    );
-    const warId = Number(row[0]?.warId ?? NaN);
-    if (!Number.isFinite(warId)) return;
+    const shouldEnrollEvaluation =
+      Boolean(participationGuildId) && payload.matchType === "FWA";
+    const warId = await prisma.$transaction(async (tx) => {
+      const row = await tx.$queryRaw<Array<{ warId: number }>>(
+        Prisma.sql`
+          INSERT INTO "ClanWarHistory"
+            ("syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","prepStartTime","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag","updatedAt")
+          VALUES
+            (${payload.syncNumber}, CAST(${payload.matchType} AS "WarMatchType"), ${finalResult.clanStars}, ${finalResult.clanDestruction}, ${finalResult.opponentStars}, ${finalResult.opponentDestruction}, ${resolvedPointsAfterWar}, ${resolvedExpectedOutcome}, ${resolvedActualOutcome}, ${payload.prepStartTime}, ${warStartTime}, ${warEndTime}, ${payload.clanName}, ${clanTag}, ${payload.opponentName}, ${normalizeTag(payload.opponentTag) || null}, NOW())
+          ON CONFLICT ("warStartTime","clanTag","opponentTag")
+          DO UPDATE SET
+            "syncNumber" = EXCLUDED."syncNumber",
+            "matchType" = EXCLUDED."matchType",
+            "clanStars" = EXCLUDED."clanStars",
+            "clanDestruction" = EXCLUDED."clanDestruction",
+            "opponentStars" = EXCLUDED."opponentStars",
+            "opponentDestruction" = EXCLUDED."opponentDestruction",
+            "pointsAfterWar" = EXCLUDED."pointsAfterWar",
+            "expectedOutcome" = EXCLUDED."expectedOutcome",
+            "actualOutcome" = COALESCE(EXCLUDED."actualOutcome", "ClanWarHistory"."actualOutcome", EXCLUDED."expectedOutcome", 'UNKNOWN'),
+            "prepStartTime" = EXCLUDED."prepStartTime",
+            "warEndTime" = EXCLUDED."warEndTime",
+            "clanName" = EXCLUDED."clanName",
+            "opponentName" = EXCLUDED."opponentName",
+            "opponentTag" = EXCLUDED."opponentTag",
+            "updatedAt" = NOW()
+          RETURNING "warId"
+        `,
+      );
+      const persistedWarId = Number(row[0]?.warId ?? NaN);
+      if (!Number.isFinite(persistedWarId)) return null;
+      if (shouldEnrollEvaluation && participationGuildId) {
+        await tx.warPlanComplianceEvaluation.upsert({
+          where: {
+            guildId_warId: {
+              guildId: participationGuildId,
+              warId: persistedWarId,
+            },
+          },
+          create: {
+            guildId: participationGuildId,
+            warId: persistedWarId,
+            status: "PENDING",
+          },
+          update: {},
+        });
+      }
+      return persistedWarId;
+    });
+    if (warId === null || warId === undefined || !Number.isFinite(Number(warId))) {
+      return;
+    }
+    const persistedWarId = Math.trunc(Number(warId));
 
     // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
     await prisma.warAttacks.updateMany({
       where: { clanTag, warStartTime },
-      data: { warId },
+      data: { warId: persistedWarId },
     });
     await prisma.currentWar.updateMany({
       where: { clanTag, startTime: warStartTime, warId: null },
-      data: { warId },
+      data: { warId: persistedWarId },
     });
     await this.pointsSync.attachWarId({
       clanTag,
       warStartTime,
-      warId: String(warId),
-    });
-
-    
-    const participationGuildId = resolveParticipationGuildId({
-      payloadGuildId: scopedGuildId,
-      snapshotGuildId: currentSnapshot?.guildId ?? null,
+      warId: String(persistedWarId),
     });
     const syncRow = participationGuildId
       ? await this.pointsSync.getCurrentSyncForClan({
           guildId: participationGuildId,
           clanTag,
-          warId: String(warId),
+          warId: String(persistedWarId),
           warStartTime,
         })
       : null;
@@ -627,7 +650,7 @@ export class WarEventHistoryService {
     const nonMirrorHits = Math.max(0, attacksPayload.length - mirrorHits);
     const lookupPayload = {
       warMeta: {
-        warId: String(warId),
+        warId: String(persistedWarId),
         clanTag,
         opponentTag: normalizeTag(payload.opponentTag) || null,
         state: "warEnded",
@@ -712,7 +735,7 @@ export class WarEventHistoryService {
     await prisma.$executeRaw(
       Prisma.sql`
         INSERT INTO "WarLookup" ("warId","clanTag","opponentTag","startTime","endTime","result","payload","createdAt")
-        VALUES (${String(warId)}, ${clanTag}, ${normalizeTag(payload.opponentTag) || null}, ${warStartTime}, ${warEndTime}, ${resolvedActualOutcome.toLowerCase()}, ${JSON.stringify(lookupPayload)}::jsonb, NOW())
+        VALUES (${String(persistedWarId)}, ${clanTag}, ${normalizeTag(payload.opponentTag) || null}, ${warStartTime}, ${warEndTime}, ${resolvedActualOutcome.toLowerCase()}, ${JSON.stringify(lookupPayload)}::jsonb, NOW())
         ON CONFLICT ("warId")
         DO UPDATE SET
           "clanTag" = EXCLUDED."clanTag",
@@ -725,7 +748,7 @@ export class WarEventHistoryService {
     );
     await this.persistWarParticipationSnapshot({
       guildId: participationGuildId,
-      warId: String(warId),
+      warId: String(persistedWarId),
       clanTag,
       opponentTag:
         normalizeTag(payload.opponentTag) ||
@@ -740,27 +763,23 @@ export class WarEventHistoryService {
 
     if (participationGuildId) {
       try {
-        await this.warPlanViolations.ensurePendingEvaluation({
-          guildId: participationGuildId,
-          warId,
-        });
         await this.warPlanViolations.finalizeEvaluation({
           guildId: participationGuildId,
-          warId,
+          warId: persistedWarId,
         });
       } catch (error) {
         console.error(
-          `[war-plan-violation] event=finalization_error guild=${participationGuildId} war_id=${warId} clan_tag=${clanTag} error=${formatError(error)}`,
+          `[war-plan-violation] event=finalization_error guild=${participationGuildId} war_id=${persistedWarId} clan_tag=${clanTag} error=${formatError(error)}`,
         );
       }
     }
 
     // Ephemeral lifecycle: archive complete, then clear active-war rows by warId.
     await prisma.warAttacks.deleteMany({
-      where: { warId },
+      where: { warId: persistedWarId },
     });
     await prisma.currentWar.deleteMany({
-      where: { warId },
+      where: { warId: persistedWarId },
     });
   }
 

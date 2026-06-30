@@ -2,10 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
 import { prisma } from "../src/prisma";
+import { MaintenanceWindowService } from "../src/services/MaintenanceWindowService";
 import {
   WarEventLogService,
   buildWarEndDiscrepancyFingerprintForTest,
 } from "../src/services/WarEventLogService";
+
+vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
+  maintenanceTransition: null,
+});
 
 function buildBasePayload(overrides?: Partial<Record<string, unknown>>) {
   return {

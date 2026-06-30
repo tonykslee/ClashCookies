@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { Prisma, type WarPlanComplianceEvaluationStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import {
@@ -20,6 +21,7 @@ export const WAR_PLAN_COMPLIANCE_ENGINE_VERSION = "war-plan-compliance-v1";
 const MAX_RECONCILE_LIMIT = 20;
 const RETRY_BASE_DELAY_MS = 15 * 60 * 1000;
 const RETRY_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
+const EVALUATION_CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 type EvaluationStatus =
   | "COMPLETED"
@@ -49,9 +51,24 @@ export type WarPlanViolationReconcileResult = {
   durationMs: number;
 };
 
-type WarPlanEvaluationRow = Awaited<
-  ReturnType<typeof prisma.warPlanComplianceEvaluation.findUnique>
->;
+type WarPlanEvaluationRow = Prisma.WarPlanComplianceEvaluationGetPayload<{
+  include: {
+    warHistory: {
+      select: {
+        warId: true;
+        clanTag: true;
+        clanName: true;
+        opponentName: true;
+        matchType: true;
+        expectedOutcome: true;
+        actualOutcome: true;
+        warStartTime: true;
+        warEndTime: true;
+      };
+    };
+    violations: true;
+  };
+}>;
 
 type EvaluatedViolationRow = Awaited<
   ReturnType<typeof prisma.warPlanViolation.findMany>
@@ -166,6 +183,21 @@ function resolveBreachTimeRemaining(issue: WarComplianceIssue): string | null {
   return value || null;
 }
 
+function normalizeComparisonText(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildEvaluationCanonicalComparisonKey(input: {
+  matchType: string | null | undefined;
+  expectedOutcome: string | null | undefined;
+}): string {
+  return JSON.stringify({
+    matchType: normalizeComparisonText(input.matchType),
+    expectedOutcome: normalizeComparisonText(input.expectedOutcome),
+  });
+}
+
 function resolveTownHallSnapshot(
   row:
     | { townHall: number | null; playerTag: string }
@@ -224,6 +256,231 @@ export class WarPlanViolationService {
     });
   }
 
+  /** Purpose: compare the stored evaluation snapshot against the current canonical history fields. */
+  private hasCanonicalEvaluationChanged(
+    evaluation: NonNullable<WarPlanEvaluationRow>,
+  ): boolean {
+    const history = evaluation.warHistory;
+    if (!history) return false;
+    return (
+      buildEvaluationCanonicalComparisonKey({
+        matchType: evaluation.matchType ?? null,
+        expectedOutcome: evaluation.expectedOutcome ?? null,
+      }) !==
+      buildEvaluationCanonicalComparisonKey({
+        matchType: history.matchType ?? null,
+        expectedOutcome: history.expectedOutcome ?? null,
+      })
+    );
+  }
+
+  /** Purpose: reserve one durable claim for a finalize attempt without double-counting competing workers. */
+  private async acquireEvaluationClaim(input: {
+    evaluation: NonNullable<WarPlanEvaluationRow>;
+    resetToPending: boolean;
+    claimToken: string;
+    now: Date;
+  }): Promise<WarPlanEvaluationRow | null> {
+    const claimExpiresAt = new Date(
+      input.now.getTime() + EVALUATION_CLAIM_LEASE_MS,
+    );
+    const statusFilter: WarPlanComplianceEvaluationStatus[] =
+      input.resetToPending
+        ? ["COMPLETED", "SKIPPED"]
+        : ["PENDING", "FAILED", "INSUFFICIENT_DATA", "SKIPPED"];
+    const result = await prisma.warPlanComplianceEvaluation.updateMany({
+      where: {
+        id: input.evaluation.id,
+        status: { in: statusFilter },
+        OR: [{ claimToken: null }, { claimExpiresAt: { lte: input.now } }],
+      },
+      data: input.resetToPending
+        ? {
+            status: "PENDING",
+            completedAt: null,
+            failureCode: null,
+            failureMessage: null,
+            nextAttemptAt: null,
+            claimToken: input.claimToken,
+            claimExpiresAt,
+            attemptCount: { increment: 1 },
+            lastAttemptAt: input.now,
+          }
+        : {
+            claimToken: input.claimToken,
+            claimExpiresAt,
+            attemptCount: { increment: 1 },
+            lastAttemptAt: input.now,
+          },
+    });
+    if (result.count !== 1) {
+      return null;
+    }
+
+    return prisma.warPlanComplianceEvaluation.findUnique({
+      where: {
+        id: input.evaluation.id,
+      },
+      include: {
+        warHistory: {
+          select: {
+            warId: true,
+            clanTag: true,
+            clanName: true,
+            opponentName: true,
+            matchType: true,
+            expectedOutcome: true,
+            actualOutcome: true,
+            warStartTime: true,
+            warEndTime: true,
+          },
+        },
+        violations: true,
+      },
+    });
+  }
+
+  /** Purpose: permanently terminalize a non-FWA evaluation so it leaves the retry queue. */
+  private async terminalizeEvaluation(input: {
+    evaluation: NonNullable<WarPlanEvaluationRow>;
+    guildId: string;
+    warId: number;
+    startedAt: number;
+    reason: string;
+    logEvent: string;
+  }): Promise<WarPlanViolationFinalizeResult | null> {
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.warPlanComplianceEvaluation.updateMany({
+        where: {
+          id: input.evaluation.id,
+          status: {
+            in: [
+              "PENDING",
+              "FAILED",
+              "INSUFFICIENT_DATA",
+              "COMPLETED",
+              "SKIPPED",
+            ],
+          },
+          OR: [{ claimToken: null }, { claimExpiresAt: { lte: new Date() } }],
+        },
+        data: {
+          status: "SKIPPED",
+          claimToken: null,
+          claimExpiresAt: null,
+          nextAttemptAt: null,
+          completedAt: null,
+          failureCode: "NON_FWA_HISTORY",
+          failureMessage: input.reason,
+        },
+      });
+      if (result.count !== 1) return null;
+      await tx.warPlanViolation.deleteMany({
+        where: { evaluationId: input.evaluation.id },
+      });
+      return tx.warPlanComplianceEvaluation.findUnique({
+        where: {
+          id: input.evaluation.id,
+        },
+        include: {
+          violations: true,
+        },
+      });
+    });
+    if (!updated) return null;
+
+    const durationMs = Date.now() - input.startedAt;
+    console.info(
+      [
+        `[war-plan-violation] event=${input.logEvent}`,
+        `guild=${input.guildId}`,
+        `war_id=${input.warId}`,
+        `clan_tag=${input.evaluation.warHistory?.clanTag ?? "unknown"}`,
+        `status=${updated.status}`,
+        `violation_count=${updated.violations.length}`,
+        `duration_ms=${durationMs}`,
+        `reason=${input.reason}`,
+      ].join(" "),
+    );
+    return {
+      status: "SKIPPED",
+      guildId: input.guildId,
+      warId: input.warId,
+      violationCount: updated.violations.length,
+      attemptCount: updated.attemptCount,
+      durationMs,
+      failureCode: "NON_FWA_HISTORY",
+      failureMessage: input.reason,
+      completedAt: updated.completedAt ?? null,
+    };
+  }
+
+  /** Purpose: clear a leased evaluation after canonical history corrections make it permanently non-FWA. */
+  private async terminalizeClaimedEvaluation(input: {
+    evaluation: NonNullable<WarPlanEvaluationRow>;
+    guildId: string;
+    warId: number;
+    startedAt: number;
+    claimToken: string;
+    reason: string;
+  }): Promise<WarPlanViolationFinalizeResult | null> {
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.warPlanComplianceEvaluation.updateMany({
+        where: {
+          id: input.evaluation.id,
+          claimToken: input.claimToken,
+        },
+        data: {
+          status: "SKIPPED",
+          claimToken: null,
+          claimExpiresAt: null,
+          nextAttemptAt: null,
+          completedAt: null,
+          failureCode: "NON_FWA_HISTORY",
+          failureMessage: input.reason,
+        },
+      });
+      if (result.count !== 1) return null;
+      await tx.warPlanViolation.deleteMany({
+        where: { evaluationId: input.evaluation.id },
+      });
+      return tx.warPlanComplianceEvaluation.findUnique({
+        where: {
+          id: input.evaluation.id,
+        },
+        include: {
+          violations: true,
+        },
+      });
+    });
+    if (!updated) return null;
+
+    const durationMs = Date.now() - input.startedAt;
+    console.info(
+      [
+        "[war-plan-violation] event=evaluation_terminalized_non_fwa",
+        `guild=${input.guildId}`,
+        `war_id=${input.warId}`,
+        `clan_tag=${input.evaluation.warHistory?.clanTag ?? "unknown"}`,
+        `status=${updated.status}`,
+        `violation_count=${updated.violations.length}`,
+        `duration_ms=${durationMs}`,
+        `reason=${input.reason}`,
+      ].join(" "),
+    );
+    return {
+      status: "SKIPPED",
+      guildId: input.guildId,
+      warId: input.warId,
+      violationCount: updated.violations.length,
+      attemptCount: updated.attemptCount,
+      durationMs,
+      failureCode: "NON_FWA_HISTORY",
+      failureMessage: input.reason,
+      completedAt: updated.completedAt ?? null,
+    };
+  }
+
   /** Purpose: finalize one pending or retryable evaluation without recomputing completed history. */
   async finalizeEvaluation(input: {
     guildId: string;
@@ -261,7 +518,38 @@ export class WarPlanViolationService {
     });
     if (!evaluation) return null;
 
-    if (evaluation.status === "COMPLETED" && !input.force) {
+    const historyRow = evaluation.warHistory;
+    if (!historyRow) return null;
+
+    const historyMatchType = normalizeComparisonText(historyRow.matchType);
+    if (historyMatchType !== "FWA") {
+      if (evaluation.status === "SKIPPED") {
+        return {
+          status: "SKIPPED",
+          guildId,
+          warId,
+          violationCount: evaluation.violations.length,
+          attemptCount: evaluation.attemptCount,
+          durationMs: Date.now() - startedAt,
+          failureCode: evaluation.failureCode ?? "NON_FWA_HISTORY",
+          failureMessage:
+            evaluation.failureMessage ?? "Historical war is not an FWA match.",
+          completedAt: evaluation.completedAt ?? null,
+        };
+      }
+
+      return this.terminalizeEvaluation({
+        evaluation,
+        guildId,
+        warId,
+        startedAt,
+        reason: "Historical war is not an FWA match.",
+        logEvent: "evaluation_terminalized_non_fwa",
+      });
+    }
+
+    const canonicalChanged = this.hasCanonicalEvaluationChanged(evaluation);
+    if (evaluation.status === "COMPLETED" && !canonicalChanged) {
       return {
         status: "COMPLETED",
         guildId,
@@ -275,53 +563,114 @@ export class WarPlanViolationService {
       };
     }
 
-    const historyRow = evaluation.warHistory;
-    const wasCompleted = evaluation.status === "COMPLETED";
-    if (!historyRow || historyRow.matchType !== "FWA") {
-      return {
-        status: "SKIPPED",
-        guildId,
-        warId,
-        violationCount: evaluation.violations.length,
-        attemptCount: evaluation.attemptCount,
-        durationMs: Date.now() - startedAt,
-        failureCode: null,
-        failureMessage: "Historical war is not an FWA match.",
-        completedAt: evaluation.completedAt ?? null,
-      };
+    const now = new Date();
+    const claimToken = randomUUID();
+    const claimedEvaluation = await this.acquireEvaluationClaim({
+      evaluation,
+      resetToPending:
+        evaluation.status === "COMPLETED" || evaluation.status === "SKIPPED",
+      claimToken,
+      now,
+    });
+    if (!claimedEvaluation) {
+      console.warn(
+        [
+          "[war-plan-violation] event=evaluation_claim_unavailable",
+          `guild=${guildId}`,
+          `war_id=${warId}`,
+          `status=${evaluation.status}`,
+        ].join(" "),
+      );
+      return null;
     }
 
-    const attemptCount = evaluation.attemptCount + 1;
-    const attemptAt = new Date();
+    const claimedHistoryRow = claimedEvaluation.warHistory;
+    if (!claimedHistoryRow || normalizeComparisonText(claimedHistoryRow.matchType) !== "FWA") {
+      return this.terminalizeClaimedEvaluation({
+        evaluation: claimedEvaluation,
+        guildId,
+        warId,
+        startedAt,
+        claimToken,
+        reason: "Historical war is not an FWA match.",
+      });
+    }
+
+    if (evaluation.status === "COMPLETED" && canonicalChanged) {
+      console.info(
+        [
+          "[war-plan-violation] event=evaluation_canonical_reset",
+          `guild=${guildId}`,
+          `war_id=${warId}`,
+          `stored_match_type=${evaluation.matchType ?? "null"}`,
+          `stored_expected_outcome=${evaluation.expectedOutcome ?? "null"}`,
+          `current_match_type=${claimedHistoryRow.matchType ?? "null"}`,
+          `current_expected_outcome=${
+            claimedHistoryRow.expectedOutcome ?? "null"
+          }`,
+        ].join(" "),
+      );
+    } else if (evaluation.status === "SKIPPED") {
+      console.info(
+        [
+          "[war-plan-violation] event=evaluation_reactivated",
+          `guild=${guildId}`,
+          `war_id=${warId}`,
+          `stored_status=SKIPPED`,
+        ].join(" "),
+      );
+    }
+
+    const attemptCount = claimedEvaluation.attemptCount;
+    const attemptAt = claimedEvaluation.lastAttemptAt ?? now;
 
     const persistFailure = async (failure: {
       status: "INSUFFICIENT_DATA" | "FAILED";
       failureCode: string;
       failureMessage: string;
-    }): Promise<WarPlanViolationFinalizeResult> => {
+    }): Promise<WarPlanViolationFinalizeResult | null> => {
       const nextAttemptAt = new Date(
         Date.now() + clampRetryDelayMs(attemptCount),
       );
       try {
-        const updated = await prisma.warPlanComplianceEvaluation.update({
-          where: {
-            guildId_warId: {
-              guildId,
-              warId,
+        const updated = await prisma.$transaction(async (tx) => {
+          const result = await tx.warPlanComplianceEvaluation.updateMany({
+            where: {
+              id: claimedEvaluation.id,
+              claimToken,
             },
-          },
-          data: {
-            status: failure.status,
-            attemptCount,
-            lastAttemptAt: attemptAt,
-            nextAttemptAt,
-            failureCode: failure.failureCode,
-            failureMessage: failure.failureMessage,
-          },
-          include: {
-            violations: true,
-          },
+            data: {
+              status: failure.status,
+              attemptCount,
+              lastAttemptAt: attemptAt,
+              nextAttemptAt,
+              claimToken: null,
+              claimExpiresAt: null,
+              failureCode: failure.failureCode,
+              failureMessage: failure.failureMessage,
+            },
+          });
+          if (result.count !== 1) return null;
+          return tx.warPlanComplianceEvaluation.findUnique({
+            where: {
+              id: claimedEvaluation.id,
+            },
+            include: {
+              violations: true,
+            },
+          });
         });
+        if (!updated) {
+          console.warn(
+            [
+              "[war-plan-violation] event=evaluation_claim_lost",
+              `guild=${guildId}`,
+              `war_id=${warId}`,
+              `status=${failure.status}`,
+            ].join(" "),
+          );
+          return null;
+        }
         const durationMs = Date.now() - startedAt;
         console.warn(
           [
@@ -344,9 +693,9 @@ export class WarPlanViolationService {
           attemptCount: updated.attemptCount,
           durationMs,
           failureCode: updated.failureCode ?? failure.failureCode,
-          failureMessage: updated.failureMessage ?? failure.failureMessage,
-          completedAt: updated.completedAt ?? null,
-        };
+            failureMessage: updated.failureMessage ?? failure.failureMessage,
+            completedAt: updated.completedAt ?? null,
+          };
       } catch (error) {
         console.error(
           [
@@ -375,33 +724,12 @@ export class WarPlanViolationService {
     try {
       const evaluationResult = await this.compliance.evaluateComplianceForCommand({
         guildId,
-        clanTag: historyRow.clanTag,
+        clanTag: claimedHistoryRow.clanTag,
         scope: "war_id",
         warId,
       });
 
       if (evaluationResult.status === "insufficient_data") {
-        if (wasCompleted && input.force) {
-          console.warn(
-            [
-              "[war-plan-violation] event=evaluation_force_insufficient_data_preserve_completed",
-              `guild=${guildId}`,
-              `war_id=${warId}`,
-              `clan_tag=${historyRow.clanTag}`,
-            ].join(" "),
-          );
-          return {
-            status: "COMPLETED",
-            guildId,
-            warId,
-            violationCount: evaluation.violations.length,
-            attemptCount: evaluation.attemptCount,
-            durationMs: Date.now() - startedAt,
-            failureCode: evaluation.failureCode ?? null,
-            failureMessage: evaluation.failureMessage ?? null,
-            completedAt: evaluation.completedAt ?? null,
-          };
-        }
         return persistFailure({
           status: "INSUFFICIENT_DATA",
           failureCode: "INSUFFICIENT_DATA",
@@ -410,28 +738,6 @@ export class WarPlanViolationService {
       }
 
       if (evaluationResult.status !== "ok" || !evaluationResult.report) {
-        if (wasCompleted && input.force) {
-          console.warn(
-            [
-              "[war-plan-violation] event=evaluation_force_failed_preserve_completed",
-              `guild=${guildId}`,
-              `war_id=${warId}`,
-              `clan_tag=${historyRow.clanTag}`,
-              `status=${evaluationResult.status}`,
-            ].join(" "),
-          );
-          return {
-            status: "COMPLETED",
-            guildId,
-            warId,
-            violationCount: evaluation.violations.length,
-            attemptCount: evaluation.attemptCount,
-            durationMs: Date.now() - startedAt,
-            failureCode: evaluation.failureCode ?? null,
-            failureMessage: evaluation.failureMessage ?? null,
-            completedAt: evaluation.completedAt ?? null,
-          };
-        }
         return persistFailure({
           status: "FAILED",
           failureCode: evaluationResult.status.toUpperCase(),
@@ -440,37 +746,16 @@ export class WarPlanViolationService {
       }
 
       return await this.persistCompletedEvaluation({
-        evaluation,
+        evaluation: claimedEvaluation,
         guildId,
         warId,
         report: evaluationResult.report,
         attemptCount,
         attemptAt,
         startedAt,
+        claimToken,
       });
     } catch (error) {
-      if (wasCompleted && input.force) {
-        console.warn(
-          [
-            "[war-plan-violation] event=evaluation_force_failed_preserve_completed",
-            `guild=${guildId}`,
-            `war_id=${warId}`,
-            `clan_tag=${historyRow.clanTag}`,
-            `error=${formatError(error)}`,
-          ].join(" "),
-        );
-        return {
-          status: "COMPLETED",
-          guildId,
-          warId,
-          violationCount: evaluation.violations.length,
-          attemptCount: evaluation.attemptCount,
-          durationMs: Date.now() - startedAt,
-          failureCode: evaluation.failureCode ?? null,
-          failureMessage: evaluation.failureMessage ?? null,
-          completedAt: evaluation.completedAt ?? null,
-        };
-      }
       return persistFailure({
         status: "FAILED",
         failureCode: "FAILED",
@@ -504,10 +789,22 @@ export class WarPlanViolationService {
     const now = new Date();
     const candidates = await prisma.warPlanComplianceEvaluation.findMany({
       where: {
-        status: {
-          in: ["PENDING", "INSUFFICIENT_DATA", "FAILED"],
-        },
-        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+        AND: [
+          {
+            status: {
+              in: ["PENDING", "INSUFFICIENT_DATA", "FAILED"],
+            },
+          },
+          {
+            OR: [
+              { nextAttemptAt: null },
+              { nextAttemptAt: { lte: now } },
+            ],
+          },
+          {
+            OR: [{ claimToken: null }, { claimExpiresAt: { lte: now } }],
+          },
+        ],
       },
       orderBy: [{ nextAttemptAt: "asc" }, { updatedAt: "asc" }, { id: "asc" }],
       take: limit,
@@ -582,7 +879,8 @@ export class WarPlanViolationService {
     attemptCount: number;
     attemptAt: Date;
     startedAt: number;
-  }): Promise<WarPlanViolationFinalizeResult> {
+    claimToken: string;
+  }): Promise<WarPlanViolationFinalizeResult | null> {
     const issueContext = {
       matchType: input.report.matchType,
       expectedOutcome: input.report.expectedOutcome,
@@ -631,18 +929,10 @@ export class WarPlanViolationService {
     }));
 
     const updated = await prisma.$transaction(async (tx) => {
-      await tx.warPlanViolation.deleteMany({
-        where: { evaluationId: input.evaluation.id },
-      });
-      const insertedViolations =
-        violationRows.length > 0
-          ? await tx.warPlanViolation.createMany({
-              data: violationRows,
-            })
-          : { count: 0 };
-      const parent = await tx.warPlanComplianceEvaluation.update({
+      const updatedParent = await tx.warPlanComplianceEvaluation.updateMany({
         where: {
           id: input.evaluation.id,
+          claimToken: input.claimToken,
         },
         data: {
           status: "COMPLETED",
@@ -657,16 +947,41 @@ export class WarPlanViolationService {
           lastAttemptAt: input.attemptAt,
           nextAttemptAt: null,
           completedAt,
+          claimToken: null,
+          claimExpiresAt: null,
           failureCode: null,
           failureMessage: null,
+        },
+      });
+      if (updatedParent.count !== 1) return null;
+      await tx.warPlanViolation.deleteMany({
+        where: { evaluationId: input.evaluation.id },
+      });
+      if (violationRows.length > 0) {
+        await tx.warPlanViolation.createMany({
+          data: violationRows,
+        });
+      }
+      return tx.warPlanComplianceEvaluation.findUnique({
+        where: {
+          id: input.evaluation.id,
         },
         include: {
           violations: true,
         },
       });
-      void insertedViolations;
-      return parent;
     });
+    if (!updated) {
+      console.warn(
+        [
+          "[war-plan-violation] event=evaluation_claim_lost",
+          `guild=${input.guildId}`,
+          `war_id=${input.warId}`,
+          "status=COMPLETED",
+        ].join(" "),
+      );
+      return null;
+    }
 
     const durationMs = Date.now() - input.startedAt;
     console.info(

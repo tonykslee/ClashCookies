@@ -192,7 +192,80 @@ function buildEvaluationRow(params?: Partial<Record<string, unknown>>) {
   } as any;
 }
 
-function installTransactionMock() {
+function applyEvaluationUpdate(
+  row: Record<string, unknown>,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...row };
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "attemptCount" && value && typeof value === "object") {
+      const increment = Number((value as { increment?: unknown }).increment ?? 0);
+      const current = Number(next.attemptCount ?? 0);
+      next.attemptCount = Math.trunc(current + increment);
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
+function installEvaluationStateMock(
+  initialRow = buildEvaluationRow(),
+  options?: { enforceClaimLease?: boolean },
+) {
+  const state = {
+    row: initialRow as Record<string, unknown>,
+  };
+  const updateManySpy = vi
+    .spyOn(prisma.warPlanComplianceEvaluation, "updateMany")
+    .mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (options?.enforceClaimLease) {
+        const where = args as unknown as {
+          where?: Record<string, unknown>;
+          data: Record<string, unknown>;
+        };
+        const claimToken = String((where.where?.claimToken as string | undefined) ?? "");
+        const wantsClaim = Boolean(where.data.claimToken);
+        if (wantsClaim) {
+          const currentStatus = String(state.row.status ?? "");
+          const allowedStatuses = Array.isArray(where.where?.status?.in)
+            ? (where.where?.status?.in as string[])
+            : null;
+          if (allowedStatuses && !allowedStatuses.includes(currentStatus)) {
+            return { count: 0 } as any;
+          }
+          const now = new Date();
+          const currentClaimExpiresAt = state.row.claimExpiresAt as Date | null | undefined;
+          const currentClaimToken = String(state.row.claimToken ?? "");
+          if (
+            currentClaimToken &&
+            currentClaimToken.length > 0 &&
+            currentClaimExpiresAt instanceof Date &&
+            currentClaimExpiresAt.getTime() > now.getTime()
+          ) {
+            return { count: 0 } as any;
+          }
+        } else if (claimToken) {
+          if (String(state.row.claimToken ?? "") !== claimToken) {
+            return { count: 0 } as any;
+          }
+        }
+      }
+      state.row = applyEvaluationUpdate(state.row, args.data);
+      return { count: 1 } as any;
+    });
+  const findUniqueSpy = vi
+    .spyOn(prisma.warPlanComplianceEvaluation, "findUnique")
+    .mockImplementation(async () =>
+      ({
+        ...state.row,
+      }) as any,
+    );
+
+  return { state, updateManySpy, findUniqueSpy };
+}
+
+function installTransactionMock(state: { row: Record<string, unknown> }) {
   const createdViolations: Array<Record<string, unknown>> = [];
   const tx = {
     warPlanViolation: {
@@ -207,25 +280,13 @@ function installTransactionMock() {
       }),
     },
     warPlanComplianceEvaluation: {
-      update: vi.fn(async (args: { data: Record<string, unknown> }) => ({
-        ...buildEvaluationRow({
-          status: args.data.status ?? "COMPLETED",
-          engineVersion: args.data.engineVersion ?? WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
-          matchType: args.data.matchType ?? "FWA",
-          expectedOutcome: args.data.expectedOutcome ?? "WIN",
-          loseStyle: args.data.loseStyle ?? "TRIPLE_TOP_30",
-          nonMirrorTripleMinClanStars:
-            args.data.nonMirrorTripleMinClanStars ?? null,
-          allBasesOpenHoursLeft: args.data.allBasesOpenHoursLeft ?? null,
-          rulesFingerprint: args.data.rulesFingerprint ?? null,
-          attemptCount: args.data.attemptCount ?? 0,
-          lastAttemptAt: args.data.lastAttemptAt ?? null,
-          nextAttemptAt: args.data.nextAttemptAt ?? null,
-          completedAt: args.data.completedAt ?? null,
-          failureCode: args.data.failureCode ?? null,
-          failureMessage: args.data.failureMessage ?? null,
-          violations: [...createdViolations],
-        }),
+      updateMany: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        state.row = applyEvaluationUpdate(state.row, args.data);
+        return { count: 1 };
+      }),
+      findUnique: vi.fn(async () => ({
+        ...state.row,
+        violations: [...createdViolations],
       })),
     },
   };
@@ -290,14 +351,12 @@ describe("WarPlanViolationService", () => {
       })),
     } as any;
     const service = new WarPlanViolationService(compliance);
-    const findUniqueSpy = vi.spyOn(prisma.warPlanComplianceEvaluation, "findUnique").mockResolvedValue(
-      buildEvaluationRow() as any,
-    );
+    const { state, updateManySpy } = installEvaluationStateMock();
     vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([]);
-    const { tx, createdViolations } = installTransactionMock();
+    const { tx, createdViolations } = installTransactionMock(state);
 
     const result = await service.finalizeEvaluation({
       guildId: "g1",
@@ -307,29 +366,32 @@ describe("WarPlanViolationService", () => {
     expect(result?.status).toBe("COMPLETED");
     expect(result?.violationCount).toBe(0);
     expect(createdViolations).toHaveLength(0);
-    expect(tx.warPlanComplianceEvaluation.update).toHaveBeenCalledWith(
+    expect(updateManySpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: "COMPLETED",
-          engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
-          rulesFingerprint: expect.any(String),
-          attemptCount: 1,
-          nextAttemptAt: null,
-          failureCode: null,
-          failureMessage: null,
+        where: expect.objectContaining({
+          id: "eval-1",
         }),
       }),
     );
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.row).toMatchObject({
+      status: "COMPLETED",
+      engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+      nextAttemptAt: null,
+      failureCode: null,
+      failureMessage: null,
+      attemptCount: 1,
+    });
     expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
 
-    findUniqueSpy.mockResolvedValue(
-      buildEvaluationRow({
-        status: "COMPLETED",
-        engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
-        completedAt: new Date("2026-03-30T01:05:00.000Z"),
-        violations: [],
-      }) as any,
-    );
+    state.row = buildEvaluationRow({
+      status: "COMPLETED",
+      engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      completedAt: new Date("2026-03-30T01:05:00.000Z"),
+      violations: [],
+    });
     const idempotent = await service.finalizeEvaluation({
       guildId: "g1",
       warId: 1,
@@ -337,7 +399,227 @@ describe("WarPlanViolationService", () => {
 
     expect(idempotent?.status).toBe("COMPLETED");
     expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
-    expect(tx.warPlanComplianceEvaluation.update).toHaveBeenCalledTimes(1);
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not recompute completed history when only configuration fields change", async () => {
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const { state, updateManySpy } = installEvaluationStateMock(
+      buildEvaluationRow({
+        status: "COMPLETED",
+        engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        rulesFingerprint: "old-fingerprint",
+        nonMirrorTripleMinClanStars: 77,
+        allBasesOpenHoursLeft: 6,
+        completedAt: new Date("2026-03-30T01:05:00.000Z"),
+        violations: [],
+        warHistory: {
+          warId: 1,
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          opponentName: "Beta",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          actualOutcome: "WIN",
+          warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+          warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        },
+      }),
+    );
+    const { tx } = installTransactionMock(state);
+
+    const result = await service.finalizeEvaluation({
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.status).toBe("COMPLETED");
+    expect(compliance.evaluateComplianceForCommand).not.toHaveBeenCalled();
+    expect(updateManySpy).not.toHaveBeenCalled();
+    expect(tx.warPlanComplianceEvaluation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("re-finalizes the same evaluation id when the canonical expectedOutcome changes", async () => {
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(async () => ({
+        status: "ok",
+        report: {
+          ...buildZeroViolationReport(),
+          expectedOutcome: "LOSE" as const,
+        },
+      })),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const { state, updateManySpy } = installEvaluationStateMock(
+      buildEvaluationRow({
+        status: "COMPLETED",
+        engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        attemptCount: 1,
+        rulesFingerprint: "old-fingerprint",
+        completedAt: new Date("2026-03-30T01:05:00.000Z"),
+        violations: [],
+        warHistory: {
+          warId: 1,
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          opponentName: "Beta",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          actualOutcome: "WIN",
+          warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+          warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        },
+      }),
+      { enforceClaimLease: true },
+    );
+    const { tx } = installTransactionMock(state);
+
+    const result = await service.finalizeEvaluation({
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.status).toBe("COMPLETED");
+    expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.row).toMatchObject({
+      id: "eval-1",
+      status: "COMPLETED",
+      expectedOutcome: "LOSE",
+      attemptCount: 2,
+    });
+  });
+
+  it("recovers an expired claim before finalizing the evaluation", async () => {
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(async () => ({
+        status: "ok",
+        report: buildZeroViolationReport(),
+      })),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const { state, updateManySpy } = installEvaluationStateMock(
+      buildEvaluationRow({
+        status: "FAILED",
+        attemptCount: 3,
+        claimToken: "stale-token",
+        claimExpiresAt: new Date("2026-03-30T00:00:00.000Z"),
+        nextAttemptAt: null,
+        warHistory: {
+          warId: 1,
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          opponentName: "Beta",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          actualOutcome: "WIN",
+          warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+          warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        },
+      }),
+      { enforceClaimLease: true },
+    );
+    const { tx } = installTransactionMock(state);
+
+    const result = await service.finalizeEvaluation({
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.status).toBe("COMPLETED");
+    expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.row).toMatchObject({
+      status: "COMPLETED",
+      claimToken: null,
+      attemptCount: 4,
+    });
+  });
+
+  it("lets only one concurrent finalize attempt claim the evaluation", async () => {
+    let releaseGate: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(async () => {
+        await gate;
+        return {
+          status: "ok",
+          report: buildViolationReport(),
+        };
+      }),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const { state, updateManySpy } = installEvaluationStateMock(
+      buildEvaluationRow({
+        status: "PENDING",
+        attemptCount: 0,
+        nextAttemptAt: null,
+        warHistory: {
+          warId: 1,
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          opponentName: "Beta",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          actualOutcome: "WIN",
+          warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+          warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        },
+      }),
+      { enforceClaimLease: true },
+    );
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([
+      { playerTag: "#P1", townHall: 16 },
+    ] as any);
+    vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+    const { tx } = installTransactionMock(state);
+
+    const firstAttempt = service.finalizeEvaluation({
+      guildId: "g1",
+      warId: 1,
+    });
+    await Promise.resolve();
+    const secondAttempt = service.finalizeEvaluation({
+      guildId: "g1",
+      warId: 1,
+    });
+
+    releaseGate?.();
+    const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
+
+    expect([firstResult, secondResult].filter(Boolean)).toHaveLength(1);
+    expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
+    expect(tx.warPlanViolation.createMany).toHaveBeenCalledTimes(1);
+    expect(updateManySpy).toHaveBeenCalledTimes(2);
+    expect(state.row).toMatchObject({
+      status: "COMPLETED",
+      attemptCount: 1,
+    });
+  });
+
+  it("caps reconciliation selection at 20 rows", async () => {
+    const service = new WarPlanViolationService({} as any);
+    const findManySpy = vi.spyOn(prisma.warPlanComplianceEvaluation, "findMany").mockResolvedValue([]);
+
+    const result = await service.reconcileDueEvaluations({ limit: 999 });
+
+    expect(findManySpy).toHaveBeenCalledTimes(1);
+    expect(findManySpy.mock.calls[0]?.[0]?.take).toBe(20);
+    expect(result.requestedLimit).toBe(999);
+    expect(result.processedCount).toBe(0);
   });
 
   it("persists one violation per player and retains merged evidence with fallback classification", async () => {
@@ -348,9 +630,7 @@ describe("WarPlanViolationService", () => {
       })),
     } as any;
     const service = new WarPlanViolationService(compliance);
-    vi.spyOn(prisma.warPlanComplianceEvaluation, "findUnique").mockResolvedValue(
-      buildEvaluationRow() as any,
-    );
+    const { state, updateManySpy } = installEvaluationStateMock();
     vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([
       { playerTag: "#P1", townHall: 16 },
     ] as any);
@@ -364,7 +644,7 @@ describe("WarPlanViolationService", () => {
     vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([
       { playerTag: "#P4", townHall: 13 },
     ] as any);
-    const { tx, createdViolations } = installTransactionMock();
+    const { tx, createdViolations } = installTransactionMock(state);
 
     const result = await service.finalizeEvaluation({
       guildId: "g1",
@@ -374,6 +654,7 @@ describe("WarPlanViolationService", () => {
     expect(result?.status).toBe("COMPLETED");
     expect(tx.warPlanViolation.createMany).toHaveBeenCalledTimes(1);
     expect(createdViolations).toHaveLength(4);
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
 
     const p1 = createdViolations.find((row) => row.playerTag === "#P1");
     const p2 = createdViolations.find((row) => row.playerTag === "#P2");
@@ -417,9 +698,7 @@ describe("WarPlanViolationService", () => {
       attemptCount: 2,
       nextAttemptAt: new Date("2026-03-30T00:30:00.000Z"),
     });
-    const findUniqueSpy = vi.spyOn(prisma.warPlanComplianceEvaluation, "findUnique").mockResolvedValue(
-      evaluationRow as any,
-    );
+    const { state, updateManySpy } = installEvaluationStateMock(evaluationRow);
     const findManySpy = vi.spyOn(prisma.warPlanComplianceEvaluation, "findMany").mockResolvedValue([
       {
         guildId: "g1",
@@ -430,15 +709,7 @@ describe("WarPlanViolationService", () => {
     vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([]);
-    const updateSpy = vi
-      .spyOn(prisma.warPlanComplianceEvaluation, "update")
-      .mockResolvedValue(
-        buildEvaluationRow({
-          status: "FAILED",
-          attemptCount: 3,
-        }) as any,
-      );
-    const { tx } = installTransactionMock();
+    const { tx } = installTransactionMock(state);
 
     const failed = await service.finalizeEvaluation({
       guildId: "g1",
@@ -446,20 +717,23 @@ describe("WarPlanViolationService", () => {
     });
 
     expect(failed?.status).toBe("FAILED");
-    expect(updateSpy).toHaveBeenCalledWith(
+    expect(updateManySpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: "FAILED",
-          attemptCount: 3,
-          failureCode: "FAILED",
-          nextAttemptAt: expect.any(Date),
+        where: expect.objectContaining({
+          id: evaluationRow.id,
         }),
       }),
     );
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.row).toMatchObject({
+      status: "FAILED",
+      attemptCount: 3,
+      failureCode: "FAILED",
+      nextAttemptAt: expect.any(Date),
+    });
 
     compliance.evaluateComplianceForCommand.mockClear();
-    updateSpy.mockClear();
-    tx.warPlanComplianceEvaluation.update.mockClear();
+    tx.warPlanComplianceEvaluation.updateMany.mockClear();
     tx.warPlanViolation.deleteMany.mockClear();
     tx.warPlanViolation.createMany.mockClear();
     findManySpy.mockResolvedValue([
@@ -468,22 +742,17 @@ describe("WarPlanViolationService", () => {
         warId: 1,
       },
     ] as any);
-    findUniqueSpy.mockResolvedValue(
-      buildEvaluationRow({
-        status: "FAILED",
-        attemptCount: 3,
-      }) as any,
-    );
+    state.row = buildEvaluationRow({
+      status: "FAILED",
+      attemptCount: 3,
+    });
     const retried = await service.reconcileDueEvaluations({ limit: 20 });
 
     expect(retried.completedCount).toBe(1);
-    expect(tx.warPlanComplianceEvaluation.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: "COMPLETED",
-          attemptCount: 4,
-        }),
-      }),
-    );
+    expect(tx.warPlanComplianceEvaluation.updateMany).toHaveBeenCalledTimes(1);
+    expect(state.row).toMatchObject({
+      status: "COMPLETED",
+      attemptCount: 4,
+    });
   });
 });
