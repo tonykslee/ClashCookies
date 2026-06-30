@@ -170,10 +170,10 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     });
 
     expect(order).toEqual([
+      "get_current_sync",
       "transaction_begin",
       "history_upsert",
       "evaluation_sync",
-      "get_current_sync",
       "war_lookup_write",
       "participation_snapshot",
       "transaction_end",
@@ -186,7 +186,143 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     ]);
   });
 
-  it("rolls back the archive transaction when WarLookup persistence fails after history upsert", async () => {
+  it("preserves existing WarLookup payload and participation when re-entered without live attacks", async () => {
+    const order: string[] = [];
+    const { service, warPlanViolations } = buildService(order);
+    const existingPayload = {
+      compliance: {
+        canonical: {
+          participants: [
+            {
+              playerTag: "#P1",
+              playerName: "Alpha",
+              playerPosition: 1,
+              attacksUsed: 2,
+            },
+          ],
+          attacks: [
+            {
+              playerTag: "#P1",
+              playerName: "Alpha",
+              playerPosition: 1,
+              defenderPosition: 1,
+              stars: 3,
+              trueStars: 3,
+              attackOrder: 1,
+              attackSeenAt: "2026-03-30T00:30:00.000Z",
+            },
+          ],
+        },
+      },
+    };
+
+    prismaMock.warAttacks.findFirst.mockResolvedValue({
+      warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+    });
+    prismaMock.warAttacks.findMany.mockResolvedValue([]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      guildId: "g1",
+      inferredMatchType: false,
+      matchType: "FWA",
+      state: "notInWar",
+      outcome: "WIN",
+      clanName: "Alpha",
+      opponentTag: "#OPP",
+      opponentName: "Beta",
+      startTime: new Date("2026-03-30T00:00:00.000Z"),
+      endTime: new Date("2026-03-30T01:00:00.000Z"),
+    });
+
+    const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          order.push("history_upsert");
+          return [{ warId: 99 }];
+        })
+        .mockImplementationOnce(async () => {
+          order.push("lookup_select");
+          return [{ payload: existingPayload }];
+        }),
+      $executeRaw: vi.fn(async () => {
+        order.push("war_lookup_write");
+        return 1;
+      }),
+      warPlanComplianceEvaluation: {
+        findUnique: vi.fn(async () => null),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(async (fn: any) => {
+      order.push("transaction_begin");
+      const result = await fn(tx as any);
+      order.push("transaction_end");
+      return result;
+    });
+    prismaMock.warAttacks.updateMany.mockImplementation(async () => {
+      order.push("war_attacks_update");
+      return { count: 1 };
+    });
+    prismaMock.currentWar.updateMany.mockImplementation(async () => {
+      order.push("current_war_update");
+      return { count: 1 };
+    });
+    prismaMock.warAttacks.deleteMany.mockImplementation(async () => {
+      order.push("war_attacks_delete");
+      return { count: 1 };
+    });
+    prismaMock.currentWar.deleteMany.mockImplementation(async () => {
+      order.push("current_war_delete");
+      return { count: 1 };
+    });
+
+    await service.persistWarEndHistory({
+      eventType: "war_ended",
+      guildId: "g1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      opponentTag: "#OPP",
+      opponentName: "Beta",
+      syncNumber: 10,
+      notifyRole: null,
+      fwaPoints: 100,
+      opponentFwaPoints: 99,
+      outcome: "WIN",
+      matchType: "FWA",
+      warStartFwaPoints: 100,
+      warEndFwaPoints: 99,
+      clanStars: 100,
+      opponentStars: 99,
+      prepStartTime: new Date("2026-03-29T12:00:00.000Z"),
+      warStartTime: null,
+    });
+
+    expect(order).toEqual([
+      "get_current_sync",
+      "transaction_begin",
+      "history_upsert",
+      "evaluation_sync",
+      "lookup_select",
+      "war_lookup_write",
+      "transaction_end",
+      "war_attacks_update",
+      "current_war_update",
+      "attach_war_id",
+      "finalize_evaluation",
+      "war_attacks_delete",
+      "current_war_delete",
+    ]);
+    expect(warPlanViolations.finalizeEvaluation).toHaveBeenCalledTimes(1);
+    expect(warPlanViolations.finalizeEvaluation).toHaveBeenCalledWith({
+      guildId: "g1",
+      warId: 99,
+    });
+    expect((service as any).persistWarParticipationSnapshot).not.toHaveBeenCalled();
+    expect(prismaMock.warAttacks.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warAttacks.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back the archive transaction when re-entered without live attacks or an existing WarLookup", async () => {
     const order: string[] = [];
     const { service, warPlanViolations } = buildService(order);
 
@@ -208,13 +344,19 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     });
 
     const tx = {
-      $queryRaw: vi.fn(async () => {
-        order.push("history_upsert");
-        return [{ warId: 99 }];
-      }),
+      $queryRaw: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          order.push("history_upsert");
+          return [{ warId: 99 }];
+        })
+        .mockImplementationOnce(async () => {
+          order.push("lookup_select");
+          return [];
+        }),
       $executeRaw: vi.fn(async () => {
         order.push("war_lookup_write");
-        throw new Error("war lookup failed");
+        return 1;
       }),
       warPlanComplianceEvaluation: {
         findUnique: vi.fn(async () => null),
@@ -222,9 +364,9 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     };
     prismaMock.$transaction.mockImplementation(async (fn: any) => {
       order.push("transaction_begin");
-      await expect(fn(tx as any)).rejects.toThrow("war lookup failed");
+      await expect(fn(tx as any)).rejects.toThrow("archive input missing live attacks");
       order.push("transaction_failed");
-      throw new Error("war lookup failed");
+      throw new Error("archive input missing live attacks");
     });
 
     await expect(
@@ -248,19 +390,22 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
         prepStartTime: new Date("2026-03-29T12:00:00.000Z"),
         warStartTime: null,
       }),
-    ).rejects.toThrow("war lookup failed");
+    ).rejects.toThrow("archive input missing live attacks");
 
     expect(order).toEqual([
+      "get_current_sync",
       "transaction_begin",
       "history_upsert",
       "evaluation_sync",
-      "get_current_sync",
-      "war_lookup_write",
+      "lookup_select",
       "transaction_failed",
     ]);
     expect(warPlanViolations.finalizeEvaluation).not.toHaveBeenCalled();
+    expect((service as any).persistWarParticipationSnapshot).not.toHaveBeenCalled();
     expect(prismaMock.warAttacks.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.warAttacks.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.deleteMany).not.toHaveBeenCalled();
   });
 
   it("rolls back the archive transaction when participation persistence fails after WarLookup", async () => {
@@ -367,10 +512,10 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     ).rejects.toThrow("participation failed");
 
     expect(order).toEqual([
+      "get_current_sync",
       "transaction_begin",
       "history_upsert",
       "evaluation_sync",
-      "get_current_sync",
       "war_lookup_write",
       "participation_snapshot",
       "transaction_failed",

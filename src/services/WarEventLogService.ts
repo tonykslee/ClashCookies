@@ -3019,6 +3019,15 @@ export class WarEventLogService {
         `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`,
       );
     }
+    if (
+      currentState === "notInWar" &&
+      (await this.maybeRecoverEndedWarArchive({
+        sub,
+        nextOpponentTag,
+      }))
+    ) {
+      return false;
+    }
     let preserveExistingWarId = false;
     let effectiveWarIdentityChanged = warIdentityChanged;
     if (
@@ -3067,6 +3076,7 @@ export class WarEventLogService {
         })
         .catch(() => null);
     }
+
     const lifecycleState =
       sub.pointsConfirmedByClanMail === null &&
       sub.pointsNeedsValidation === null &&
@@ -3540,6 +3550,70 @@ export class WarEventLogService {
       });
     }
     return eventType === "war_ended";
+  }
+
+  /** Purpose: recover a failed ended-war archive before attack sync can discard the stale rows. */
+  private async maybeRecoverEndedWarArchive(params: {
+    sub: SubscriptionRow;
+    nextOpponentTag: string | null;
+  }): Promise<boolean> {
+    if (params.sub.state !== "notInWar") return false;
+    if (!params.sub.startTime) return false;
+
+    const exactCanonicalRow = await this.history.resolveExactCanonicalWarEndedHistoryRow(
+      {
+        clanTag: params.sub.clanTag,
+        opponentTag: params.nextOpponentTag || params.sub.opponentTag || "",
+        warStartTime: params.sub.startTime,
+      },
+    );
+    if (exactCanonicalRow) return false;
+
+    const staleAttackRow = await prisma.warAttacks.findFirst({
+      where: {
+        clanTag: params.sub.clanTag,
+        warStartTime: params.sub.startTime,
+      },
+      select: { warId: true },
+    });
+    if (!staleAttackRow) return false;
+
+    try {
+      await this.history.persistWarEndHistory({
+        eventType: "war_ended",
+        guildId: params.sub.guildId,
+        clanTag: params.sub.clanTag,
+        clanName: String(params.sub.clanName ?? params.sub.clanTag).trim() || params.sub.clanTag,
+        opponentTag:
+          normalizeTag(params.sub.opponentTag ?? params.nextOpponentTag ?? "") ||
+          params.sub.opponentTag ||
+          params.nextOpponentTag ||
+          "",
+        opponentName:
+          String(params.sub.opponentName ?? "Unknown").trim() || "Unknown",
+        syncNumber: params.sub.syncNum ?? null,
+        notifyRole: params.sub.notifyRole,
+        fwaPoints: params.sub.fwaPoints,
+        opponentFwaPoints: params.sub.opponentFwaPoints,
+        outcome: normalizeOutcome(params.sub.outcome),
+        matchType: params.sub.matchType,
+        warStartFwaPoints: params.sub.warStartFwaPoints,
+        warEndFwaPoints: params.sub.warEndFwaPoints,
+        clanStars: params.sub.clanStars,
+        opponentStars: params.sub.opponentStars,
+        prepStartTime: params.sub.prepStartTime,
+        warStartTime: params.sub.startTime,
+      });
+      console.info(
+        `[war-events] archive_recovery_success guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"}`,
+      );
+    } catch (error) {
+      console.error(
+        `[war-events] archive_recovery_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"} error=${formatError(error)}`,
+      );
+    }
+
+    return true;
   }
 
   private async syncWarAttacksFromWarSnapshot(params: {
