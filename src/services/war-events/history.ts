@@ -1,8 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { formatError } from "../../helper/formatError";
 import { CoCService } from "../CoCService";
 import { PointsSyncService } from "../PointsSyncService";
 import { WarComplianceService } from "../WarComplianceService";
+import { WarPlanViolationService } from "../WarPlanViolationService";
 import {
   type EventType,
   type FwaLoseStyle,
@@ -29,12 +31,23 @@ export function resolveParticipationGuildId(input: {
 
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
+  private readonly coc: CoCService;
+  private readonly pointsSync: PointsSyncService;
+  private readonly compliance: WarComplianceService;
+  private readonly warPlanViolations: WarPlanViolationService;
+
   /** Purpose: initialize war history service dependencies. */
   constructor(
-    private readonly coc: CoCService,
-    private readonly pointsSync = new PointsSyncService(),
-    private readonly compliance = new WarComplianceService(),
-  ) {}
+    coc: CoCService,
+    pointsSync = new PointsSyncService(),
+    compliance = new WarComplianceService(),
+    warPlanViolations?: WarPlanViolationService,
+  ) {
+    this.coc = coc;
+    this.pointsSync = pointsSync;
+    this.compliance = compliance;
+    this.warPlanViolations = warPlanViolations ?? new WarPlanViolationService(compliance);
+  }
 
   /** Purpose: build the war-end points line text shown in event embeds. */
   buildWarEndPointsLine(
@@ -724,6 +737,24 @@ export class WarEventHistoryService {
       participantRows: participants,
       attackRows: attacks.filter((a) => Number(a.attackOrder) > 0),
     });
+
+    if (participationGuildId) {
+      try {
+        await this.warPlanViolations.ensurePendingEvaluation({
+          guildId: participationGuildId,
+          warId,
+        });
+        await this.warPlanViolations.finalizeEvaluation({
+          guildId: participationGuildId,
+          warId,
+        });
+      } catch (error) {
+        console.error(
+          `[war-plan-violation] event=finalization_error guild=${participationGuildId} war_id=${warId} clan_tag=${clanTag} error=${formatError(error)}`,
+        );
+      }
+    }
+
     // Ephemeral lifecycle: archive complete, then clear active-war rows by warId.
     await prisma.warAttacks.deleteMany({
       where: { warId },

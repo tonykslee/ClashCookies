@@ -37,11 +37,12 @@ High-level runtime model:
 - The Discord command surface renders primarily from persisted state.
 - Active runtime instances own upstream pollers, schedulers, and refresh loops.
 - Mirror runtime instances do not own upstream polling; they mirror a guarded runtime-table allowlist from production for staging-safe reads.
+- Active runtime owns war-plan enrollment, finalization, and bounded retry through `WarPlanViolationService`; mirror runtime only mirrors the resulting tables.
 - The app exposes health endpoints and emits internal telemetry in addition to the external droplet observability stack.
 
 Core subsystems:
 
-- War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
+- War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarPlanComplianceEvaluation / WarPlanViolation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
@@ -82,9 +83,12 @@ Important owners:
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
 | Ended-war participation | ClanWarParticipation |
+| Finalized war-plan evaluation | WarPlanComplianceEvaluation |
+| Finalized war-plan player violation | WarPlanViolation |
 | Points sync metadata | ClanPointsSync |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
+| Active-runtime war-plan finalization/retry | WarPlanViolationService |
 | Todo activation gate | TodoUserUsage |
 | Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render context) |
 | Guild reminders | Reminder* tables |

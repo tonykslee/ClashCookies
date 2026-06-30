@@ -41,6 +41,7 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "./WarComplianceService";
+import { WarPlanViolationService } from "./WarPlanViolationService";
 import { FwaPoliceService } from "./FwaPoliceService";
 import {
   fireBattleDayTransitionWar24hRemindersForClan,
@@ -1321,6 +1322,7 @@ export class WarEventLogService {
   private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly warCompliance: WarComplianceService;
+  private readonly warPlanViolations: WarPlanViolationService;
   private readonly fwaPolice: FwaPoliceService;
   private readonly postedMessages: PostedMessageService;
   private readonly botLogChannels = new BotLogChannelService();
@@ -1341,8 +1343,14 @@ export class WarEventLogService {
     this.currentSyncs = new PointsSyncService();
     this.syncResolution = new ActiveWarSyncResolutionService(this.currentSyncs);
     this.commandPermissions = new CommandPermissionService();
-    this.history = new WarEventHistoryService(coc);
     this.warCompliance = new WarComplianceService();
+    this.warPlanViolations = new WarPlanViolationService(this.warCompliance);
+    this.history = new WarEventHistoryService(
+      coc,
+      this.currentSyncs,
+      this.warCompliance,
+      this.warPlanViolations,
+    );
     this.fwaPolice = new FwaPoliceService();
     this.postedMessages = new PostedMessageService();
     this.maintenanceWindowService = new MaintenanceWindowService(
@@ -1396,6 +1404,14 @@ export class WarEventLogService {
         );
       });
     }
+
+    await this.warPlanViolations
+      .reconcileDueEvaluations({ limit: 20 })
+      .catch((err) => {
+        console.error(
+          `[war-plan-violation] event=reconcile_failed error=${formatError(err)}`,
+        );
+      });
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
