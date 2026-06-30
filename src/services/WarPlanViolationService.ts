@@ -79,6 +79,25 @@ type ViolationIssueBundle = {
   violationType: FwaPoliceViolation | "OTHER_PLAN_VIOLATION";
 };
 
+type ArchivedEvaluationTransitionAction =
+  | "created"
+  | "reactivated"
+  | "reset"
+  | "terminalized";
+
+type ArchivedEvaluationTransition = {
+  action: ArchivedEvaluationTransitionAction;
+  guildId: string;
+  warId: number;
+  evaluationId: string;
+  previousStatus: WarPlanComplianceEvaluationStatus | null;
+  previousMatchType: string | null;
+  previousExpectedOutcome: string | null;
+  currentMatchType: string | null;
+  currentExpectedOutcome: string | null;
+  violationCount: number;
+};
+
 function clampRetryDelayMs(attemptCount: number): number {
   const safeAttemptCount = Math.max(1, Math.trunc(Number(attemptCount) || 1));
   return Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * safeAttemptCount);
@@ -254,6 +273,183 @@ export class WarPlanViolationService {
         violations: true,
       },
     });
+  }
+
+  /** Purpose: atomically reconcile archive-time canonical evaluation state inside the history transaction. */
+  async syncArchivedEvaluationState(input: {
+    tx: Prisma.TransactionClient;
+    guildId: string;
+    warId: number;
+  }): Promise<ArchivedEvaluationTransition | null> {
+    const guildId = String(input.guildId ?? "").trim();
+    const warId = Math.trunc(Number(input.warId));
+    if (!guildId || !Number.isFinite(warId) || warId <= 0) return null;
+
+    const evaluation = await input.tx.warPlanComplianceEvaluation.findUnique({
+      where: {
+        guildId_warId: {
+          guildId,
+          warId,
+        },
+      },
+      include: {
+        warHistory: {
+          select: {
+            warId: true,
+            clanTag: true,
+            clanName: true,
+            opponentName: true,
+            matchType: true,
+            expectedOutcome: true,
+            actualOutcome: true,
+            warStartTime: true,
+            warEndTime: true,
+          },
+        },
+        violations: true,
+      },
+    });
+    if (!evaluation) {
+      const historyRow = await input.tx.clanWarHistory.findUnique({
+        where: { warId },
+        select: {
+          warId: true,
+          matchType: true,
+          expectedOutcome: true,
+        },
+      });
+      if (!historyRow || normalizeComparisonText(historyRow.matchType) !== "FWA") {
+        return null;
+      }
+      const created = await input.tx.warPlanComplianceEvaluation.create({
+        data: {
+          guildId,
+          warId,
+          status: "PENDING",
+        },
+      });
+      return {
+        action: "created",
+        guildId,
+        warId,
+        evaluationId: String((created as { id?: string | null }).id ?? ""),
+        previousStatus: null,
+        previousMatchType: null,
+        previousExpectedOutcome: null,
+        currentMatchType: normalizeComparisonText(historyRow.matchType),
+        currentExpectedOutcome: normalizeComparisonText(historyRow.expectedOutcome),
+        violationCount: 0,
+      };
+    }
+
+    const historyRow = evaluation.warHistory;
+    if (!historyRow) return null;
+    const historyMatchType = normalizeComparisonText(historyRow.matchType);
+    const currentExpectedOutcome = normalizeComparisonText(historyRow.expectedOutcome);
+    const canonicalChanged = this.hasCanonicalEvaluationChanged(evaluation);
+    const previousStatus = evaluation.status;
+    const previousMatchType = normalizeComparisonText(evaluation.matchType);
+    const previousExpectedOutcome = normalizeComparisonText(evaluation.expectedOutcome);
+
+    if (historyMatchType !== "FWA") {
+      if (
+        evaluation.status === "SKIPPED" &&
+        evaluation.failureCode === "NON_FWA_HISTORY" &&
+        evaluation.failureMessage === "Historical war is not an FWA match." &&
+        evaluation.claimToken === null &&
+        evaluation.claimExpiresAt === null &&
+        evaluation.nextAttemptAt === null &&
+        evaluation.completedAt === null &&
+        evaluation.violations.length === 0
+      ) {
+        return null;
+      }
+
+      await input.tx.warPlanComplianceEvaluation.update({
+        where: {
+          id: evaluation.id,
+        },
+        data: {
+          status: "SKIPPED",
+          claimToken: null,
+          claimExpiresAt: null,
+          nextAttemptAt: null,
+          completedAt: null,
+          failureCode: "NON_FWA_HISTORY",
+          failureMessage: "Historical war is not an FWA match.",
+        },
+      });
+      if (evaluation.violations.length > 0) {
+        await input.tx.warPlanViolation.deleteMany({
+          where: {
+            evaluationId: evaluation.id,
+          },
+        });
+      }
+      return {
+        action: "terminalized",
+        guildId,
+        warId,
+        evaluationId: evaluation.id,
+        previousStatus,
+        previousMatchType,
+        previousExpectedOutcome,
+        currentMatchType: historyMatchType,
+        currentExpectedOutcome,
+        violationCount: evaluation.violations.length,
+      };
+    }
+
+    if (evaluation.status === "COMPLETED" && !canonicalChanged) {
+      return null;
+    }
+
+    if (
+      evaluation.status === "SKIPPED" ||
+      evaluation.status === "COMPLETED" ||
+      canonicalChanged
+    ) {
+      await input.tx.warPlanComplianceEvaluation.update({
+        where: {
+          id: evaluation.id,
+        },
+        data: {
+          status: "PENDING",
+          claimToken: null,
+          claimExpiresAt: null,
+          nextAttemptAt: null,
+          completedAt: null,
+          failureCode: null,
+          failureMessage: null,
+        },
+      });
+      if (evaluation.violations.length > 0) {
+        await input.tx.warPlanViolation.deleteMany({
+          where: {
+            evaluationId: evaluation.id,
+          },
+        });
+      }
+      return {
+        action:
+          evaluation.status === "SKIPPED"
+            ? "reactivated"
+            : canonicalChanged
+              ? "reset"
+              : "reset",
+        guildId,
+        warId,
+        evaluationId: evaluation.id,
+        previousStatus,
+        previousMatchType,
+        previousExpectedOutcome,
+        currentMatchType: historyMatchType,
+        currentExpectedOutcome,
+        violationCount: evaluation.violations.length,
+      };
+    }
+
+    return null;
   }
 
   /** Purpose: compare the stored evaluation snapshot against the current canonical history fields. */

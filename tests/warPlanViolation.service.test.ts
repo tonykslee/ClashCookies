@@ -300,6 +300,77 @@ function installTransactionMock(state: { row: Record<string, unknown> }) {
   return { tx, createdViolations, transactionSpy };
 }
 
+function installArchiveTxMock(initialRow: Record<string, unknown> | null) {
+  const state = {
+    row: initialRow as Record<string, unknown> | null,
+  };
+  const tx = {
+    warPlanComplianceEvaluation: {
+      findUnique: vi.fn(async () =>
+        state.row
+          ? {
+              ...state.row,
+              warHistory: state.row.warHistory,
+              violations: Array.isArray(state.row.violations)
+                ? [...(state.row.violations as Array<Record<string, unknown>>)]
+                : [],
+            }
+          : null,
+      ),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        state.row = {
+          id: "archive-eval",
+          guildId: args.data.guildId,
+          warId: args.data.warId,
+          status: args.data.status,
+          attemptCount: 0,
+          lastAttemptAt: null,
+          nextAttemptAt: null,
+          completedAt: null,
+          claimToken: null,
+          claimExpiresAt: null,
+          failureCode: null,
+          failureMessage: null,
+          matchType: null,
+          expectedOutcome: null,
+          warHistory: state.row?.warHistory ?? null,
+          violations: [],
+        };
+        return { ...state.row };
+      }),
+      update: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        if (!state.row) throw new Error("missing archive row");
+        state.row = applyEvaluationUpdate(state.row, args.data);
+        return { ...state.row };
+      }),
+    },
+    warPlanViolation: {
+      deleteMany: vi.fn(async () => {
+        const count = Array.isArray(state.row?.violations)
+          ? (state.row?.violations.length ?? 0)
+          : 0;
+        if (state.row) {
+          state.row.violations = [];
+        }
+        return { count };
+      }),
+    },
+    clanWarHistory: {
+      findUnique: vi.fn(async () =>
+        state.row?.warHistory
+          ? {
+              warId: state.row.warId,
+              matchType: (state.row.warHistory as any).matchType,
+              expectedOutcome: (state.row.warHistory as any).expectedOutcome,
+            }
+          : null,
+      ),
+    },
+  };
+
+  return { state, tx };
+}
+
 describe("WarPlanViolationService", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -620,6 +691,141 @@ describe("WarPlanViolationService", () => {
     expect(findManySpy.mock.calls[0]?.[0]?.take).toBe(20);
     expect(result.requestedLimit).toBe(999);
     expect(result.processedCount).toBe(0);
+  });
+
+  it("resets a completed evaluation to pending when archive canonical outcome changes", async () => {
+    const service = new WarPlanViolationService({} as any);
+    const initialRow = buildEvaluationRow({
+      status: "COMPLETED",
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      completedAt: new Date("2026-03-30T01:05:00.000Z"),
+      violations: [
+        {
+          id: "v1",
+        },
+      ],
+      warHistory: {
+        warId: 1,
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        opponentName: "Beta",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        actualOutcome: "WIN",
+        warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    });
+    const { state, tx } = installArchiveTxMock(initialRow);
+
+    const result = await service.syncArchivedEvaluationState({
+      tx: tx as any,
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.action).toBe("reset");
+    expect(state.row).toMatchObject({
+      status: "PENDING",
+      completedAt: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      nextAttemptAt: null,
+      failureCode: null,
+      failureMessage: null,
+    });
+    expect(tx.warPlanViolation.deleteMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminalizes archive evaluations for non-FWA canonical history", async () => {
+    const service = new WarPlanViolationService({} as any);
+    const initialRow = buildEvaluationRow({
+      status: "PENDING",
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      violations: [
+        {
+          id: "v1",
+        },
+      ],
+      warHistory: {
+        warId: 1,
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        opponentName: "Beta",
+        matchType: "MM",
+        expectedOutcome: null,
+        actualOutcome: "WIN",
+        warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    });
+    const { state, tx } = installArchiveTxMock(initialRow);
+
+    const result = await service.syncArchivedEvaluationState({
+      tx: tx as any,
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.action).toBe("terminalized");
+    expect(state.row).toMatchObject({
+      status: "SKIPPED",
+      completedAt: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      nextAttemptAt: null,
+      failureCode: "NON_FWA_HISTORY",
+      failureMessage: "Historical war is not an FWA match.",
+    });
+    expect(tx.warPlanViolation.deleteMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("reactivates the same evaluation id when archive canonical history returns to FWA", async () => {
+    const service = new WarPlanViolationService({} as any);
+    const initialRow = buildEvaluationRow({
+      status: "SKIPPED",
+      matchType: "MM",
+      expectedOutcome: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      completedAt: null,
+      nextAttemptAt: null,
+      failureCode: "NON_FWA_HISTORY",
+      failureMessage: "Historical war is not an FWA match.",
+      violations: [],
+      warHistory: {
+        warId: 1,
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        opponentName: "Beta",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        actualOutcome: "LOSE",
+        warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    });
+    const { state, tx } = installArchiveTxMock(initialRow);
+
+    const result = await service.syncArchivedEvaluationState({
+      tx: tx as any,
+      guildId: "g1",
+      warId: 1,
+    });
+
+    expect(result?.action).toBe("reactivated");
+    expect(state.row).toMatchObject({
+      status: "PENDING",
+      completedAt: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      nextAttemptAt: null,
+      failureCode: null,
+      failureMessage: null,
+    });
+    expect(tx.warPlanViolation.deleteMany).not.toHaveBeenCalled();
   });
 
   it("persists one violation per player and retains merged evidence with fallback classification", async () => {
