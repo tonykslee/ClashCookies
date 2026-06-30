@@ -1,65 +1,132 @@
 import { describe, expect, it, vi } from "vitest";
+import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 
-type ViolationRow = {
+type ViolationFixture = {
   playerTag: string;
   playerNameSnapshot: string | null;
   townHallLevelSnapshot: number | null;
 };
 
-type HistoryRow = {
-  status: string;
+type EvaluationFixture = {
+  guildId: string;
   warId: number;
-  completedAt: Date | null;
-  warHistory: {
-    warId: number;
-    clanTag: string;
-    clanName: string | null;
-    warEndTime: Date | null;
-    warStartTime: Date;
-  } | null;
-  violations: ViolationRow[];
+  clanTag: string;
+  clanName: string | null;
+  warStartTime: Date;
+  warEndTime: Date | null;
+  completedAt?: Date | null;
+  status?: string;
+  violations: ViolationFixture[];
 };
 
 function d(value: string): Date {
   return new Date(value);
 }
 
-function buildRow(input: {
+function buildFixture(input: Partial<EvaluationFixture> & {
+  guildId?: string;
   warId: number;
-  status?: string;
   clanTag: string;
-  clanName?: string | null;
-  warStartTime?: Date;
-  warEndTime?: Date | null;
-  completedAt?: Date | null;
-  violations?: ViolationRow[];
-}): HistoryRow {
+  warStartTime: Date;
+  warEndTime: Date | null;
+  violations?: ViolationFixture[];
+}): EvaluationFixture {
   return {
+    guildId: input.guildId ?? "guild-1",
     warId: input.warId,
-    status: input.status ?? "COMPLETED",
+    clanTag: input.clanTag,
+    clanName: input.clanName ?? null,
+    warStartTime: input.warStartTime,
+    warEndTime: input.warEndTime,
     completedAt: input.completedAt ?? input.warEndTime ?? null,
-    warHistory: {
-      warId: input.warId,
-      clanTag: input.clanTag,
-      clanName: input.clanName ?? input.clanTag,
-      warEndTime: input.warEndTime ?? null,
-      warStartTime: input.warStartTime ?? input.warEndTime ?? d("2026-05-01T00:00:00.000Z"),
-    },
+    status: input.status ?? "COMPLETED",
     violations: input.violations ?? [],
   };
 }
 
-function makeDb(rows: HistoryRow[]) {
-  return {
-    warPlanComplianceEvaluation: {
-      findMany: vi.fn(async () => rows),
-    },
-  };
+function normalizeTag(input: string | null | undefined): string {
+  return normalizeClashTagInput(input);
 }
 
-function buildService(rows: HistoryRow[]) {
-  const db = makeDb(rows);
+function resolveCanonicalMs(row: EvaluationFixture): number {
+  return (row.warEndTime ?? row.warStartTime).getTime();
+}
+
+function compareFixturesDesc(a: EvaluationFixture, b: EvaluationFixture): number {
+  const timeDelta = resolveCanonicalMs(b) - resolveCanonicalMs(a);
+  if (timeDelta !== 0) return timeDelta;
+  return b.warId - a.warId;
+}
+
+function extractRelationFilter(where: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const relation = where?.warHistory as Record<string, unknown> | undefined;
+  if (!relation) return null;
+  const nested = relation.is as Record<string, unknown> | undefined;
+  return nested ?? relation;
+}
+
+function matchesEvaluationWhere(row: EvaluationFixture, where: Record<string, unknown> | undefined): boolean {
+  if (!where) return true;
+  if (typeof where.guildId === "string" && where.guildId !== row.guildId) return false;
+  if (typeof where.status === "string" && where.status !== row.status) return false;
+
+  const relation = extractRelationFilter(where);
+  if (!relation) return true;
+
+  if (typeof relation.clanTag === "string" && normalizeTag(relation.clanTag) !== normalizeTag(row.clanTag)) {
+    return false;
+  }
+
+  const warEndTime = relation.warEndTime as { gte?: Date } | undefined;
+  if (warEndTime?.gte instanceof Date) {
+    if (!(row.warEndTime instanceof Date)) return false;
+    if (row.warEndTime.getTime() < warEndTime.gte.getTime()) return false;
+  }
+
+  return true;
+}
+
+function buildDb(fixtures: EvaluationFixture[]) {
+  const ordered = [...fixtures].sort(compareFixturesDesc);
+
+  const db = {
+    clanWarHistory: {
+      findFirst: vi.fn(async (args?: { where?: { clanTag?: string } }) => {
+        const clanTag = normalizeTag(args?.where?.clanTag ?? "");
+        if (!clanTag) return null;
+        const hit = ordered.find((row) => normalizeTag(row.clanTag) === clanTag);
+        if (!hit) return null;
+        return {
+          clanTag: hit.clanTag,
+          clanName: hit.clanName,
+        };
+      }),
+    },
+    warPlanComplianceEvaluation: {
+      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
+        ordered
+          .filter((row) => matchesEvaluationWhere(row, args?.where))
+          .map((row) => ({
+            warId: row.warId,
+            warHistory: {
+              warId: row.warId,
+              clanTag: row.clanTag,
+              clanName: row.clanName,
+              warStartTime: row.warStartTime,
+              warEndTime: row.warEndTime,
+            },
+            violations: row.violations,
+          })),
+      ),
+    },
+  };
+
+  return db;
+}
+
+function buildService(fixtures: EvaluationFixture[]) {
+  const db = buildDb(fixtures);
   return {
     db,
     service: new WarPlanViolationHistoryService(db as any),
@@ -67,154 +134,48 @@ function buildService(rows: HistoryRow[]) {
 }
 
 describe("WarPlanViolationHistoryService", () => {
-  it("includes only completed evaluations and issues one bounded query", async () => {
+  it("pushes the 30-day cutoff into Prisma and reuses the exact cutoff Date", async () => {
+    const now = d("2026-06-01T00:00:00.000Z");
     const { db, service } = buildService([
-      buildRow({
+      buildFixture({
         warId: 1,
-        clanTag: "#AAA111",
+        clanTag: "#PYLQ0289",
         clanName: "Alpha",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
+        warStartTime: d("2026-05-02T00:00:00.000Z"),
+        warEndTime: d("2026-05-02T01:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P1",
-            playerNameSnapshot: "Alpha One",
-            townHallLevelSnapshot: 16,
-          },
-        ],
-      }),
-      buildRow({
-        warId: 2,
-        status: "PENDING",
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P2",
-            playerNameSnapshot: "Pending Player",
-            townHallLevelSnapshot: 15,
-          },
-        ],
-      }),
-      buildRow({
-        warId: 3,
-        status: "FAILED",
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P3",
-            playerNameSnapshot: "Failed Player",
-            townHallLevelSnapshot: 15,
-          },
-        ],
-      }),
-      buildRow({
-        warId: 4,
-        status: "INSUFFICIENT_DATA",
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P4",
-            playerNameSnapshot: "Missing Player",
-            townHallLevelSnapshot: 15,
-          },
-        ],
-      }),
-      buildRow({
-        warId: 5,
-        status: "SKIPPED",
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P5",
-            playerNameSnapshot: "Skipped Player",
-            townHallLevelSnapshot: 15,
-          },
-        ],
-      }),
-    ]);
-
-    const result = await service.getAllianceOverview({
-      guildId: "guild-1",
-      period: "lifetime",
-      now: d("2026-05-31T00:00:00.000Z"),
-    });
-
-    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
-    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          guildId: "guild-1",
-          status: "COMPLETED",
-        },
-      }),
-    );
-    expect(result).toMatchObject({
-      outcome: "success",
-      evaluatedWarCount: 1,
-      affectedWarCount: 1,
-      violationCount: 1,
-      distinctPlayerCount: 1,
-      distinctClanCount: 1,
-      hasCompletedEvaluations: true,
-    });
-    expect(result.topPlayers).toEqual([
-      expect.objectContaining({
-        playerTag: "#P1",
-        playerNameSnapshot: "Alpha One",
-        townHallLevelSnapshot: 16,
-      }),
-    ]);
-  });
-
-  it("applies the 30-day cutoff to canonical warEndTime and excludes null-ended wars", async () => {
-    const now = d("2026-05-31T00:00:00.000Z");
-    const { service } = buildService([
-      buildRow({
-        warId: 1,
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warStartTime: d("2026-05-19T00:00:00.000Z"),
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P1",
+            playerTag: "#2QG2C08UP",
             playerNameSnapshot: "Inside Window",
             townHallLevelSnapshot: 16,
           },
         ],
       }),
-      buildRow({
+      buildFixture({
         warId: 2,
-        clanTag: "#AAA111",
+        clanTag: "#PYLQ0289",
         clanName: "Alpha",
-        warStartTime: d("2026-05-30T00:00:00.000Z"),
-        warEndTime: d("2026-04-29T00:00:00.000Z"),
-        completedAt: d("2026-05-30T00:00:00.000Z"),
+        warStartTime: d("2026-04-01T00:00:00.000Z"),
+        warEndTime: d("2026-04-02T00:00:00.000Z"),
+        completedAt: d("2026-06-10T00:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P2",
-            playerNameSnapshot: "Old by End Time",
+            playerTag: "#G2R9RQLJQ",
+            playerNameSnapshot: "Outside Window",
             townHallLevelSnapshot: 15,
           },
         ],
       }),
-      buildRow({
+      buildFixture({
         warId: 3,
-        clanTag: "#AAA111",
+        clanTag: "#PYLQ0289",
         clanName: "Alpha",
-        warStartTime: d("2026-05-30T00:00:00.000Z"),
+        warStartTime: d("2026-05-31T00:00:00.000Z"),
         warEndTime: null,
-        completedAt: d("2026-05-30T01:00:00.000Z"),
+        completedAt: d("2026-06-30T00:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P3",
+            playerTag: "#2RVGJYLC0",
             playerNameSnapshot: "Null Ended",
             townHallLevelSnapshot: 14,
           },
@@ -228,245 +189,419 @@ describe("WarPlanViolationHistoryService", () => {
       now,
     });
 
+    const where = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where as Record<
+      string,
+      unknown
+    >;
+    const cutoff = (where.warHistory as { is?: { warEndTime?: { gte?: Date } } })?.is?.warEndTime?.gte;
+
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(where).toMatchObject({
+      guildId: "guild-1",
+      status: "COMPLETED",
+    });
+    expect((where.warHistory as { is?: { warEndTime?: { gte?: Date } } }).is?.warEndTime?.gte).toBe(
+      result.cutoff,
+    );
+    expect(result.cutoff).toBe(cutoff);
     expect(result).toMatchObject({
-      cutoff: d("2026-05-01T00:00:00.000Z"),
+      outcome: "success",
       evaluatedWarCount: 1,
       affectedWarCount: 1,
       violationCount: 1,
-      trackingSince: d("2026-05-20T00:00:00.000Z"),
+      hasCompletedEvaluations: true,
     });
     expect(result.topPlayers).toEqual([
       expect.objectContaining({
-        playerTag: "#P1",
+        playerTag: "#2QG2C08UP",
         playerNameSnapshot: "Inside Window",
       }),
     ]);
   });
 
-  it("counts zero-violation completed evaluations toward coverage and trackingSince in lifetime", async () => {
-    const now = d("2026-05-31T00:00:00.000Z");
-    const { service } = buildService([
-      buildRow({
+  it("pushes the normalized clan tag into Prisma and excludes unrelated clan rows", async () => {
+    const { db, service } = buildService([
+      buildFixture({
         warId: 1,
-        clanTag: "#AAA111",
+        clanTag: "#2QG2C08UP",
         clanName: "Alpha",
-        warEndTime: d("2026-05-01T00:00:00.000Z"),
-        violations: [],
-      }),
-      buildRow({
-        warId: 2,
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-10T00:00:00.000Z"),
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P1",
+            playerTag: "#PYLQ0289",
             playerNameSnapshot: "Alpha One",
             townHallLevelSnapshot: 16,
           },
         ],
       }),
-      buildRow({
-        warId: 3,
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: null,
-        completedAt: d("2026-05-12T00:00:00.000Z"),
-        violations: [],
-      }),
-    ]);
-
-    const result = await service.getAllianceOverview({
-      guildId: "guild-1",
-      period: "lifetime",
-      now,
-    });
-
-    expect(result).toMatchObject({
-      evaluatedWarCount: 3,
-      affectedWarCount: 1,
-      violationCount: 1,
-      trackingSince: d("2026-05-01T00:00:00.000Z"),
-      hasCompletedEvaluations: true,
-    });
-  });
-
-  it("builds deterministic alliance and player rankings from the newest canonical snapshots", async () => {
-    const { service } = buildService([
-      buildRow({
-        warId: 1,
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        warEndTime: d("2026-05-10T00:00:00.000Z"),
+      buildFixture({
+        warId: 2,
+        clanTag: "#G2R9RQLJQ",
+        clanName: "Beta",
+        warStartTime: d("2026-05-11T00:00:00.000Z"),
+        warEndTime: d("2026-05-11T01:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P1",
-            playerNameSnapshot: "Alpha One",
-            townHallLevelSnapshot: 14,
-          },
-          {
-            playerTag: "#P2",
-            playerNameSnapshot: "Beta Two",
+            playerTag: "#2RVGJYLC0",
+            playerNameSnapshot: "Beta One",
             townHallLevelSnapshot: 15,
           },
         ],
       }),
-      buildRow({
-        warId: 2,
-        clanTag: "#AAA111",
-        clanName: "Alpha Renamed",
-        warEndTime: d("2026-05-20T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P1",
-            playerNameSnapshot: "Alpha Renamed",
-            townHallLevelSnapshot: null,
-          },
-        ],
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "2qg2c08up",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    const identityWhere = db.clanWarHistory.findFirst.mock.calls[0]?.[0]?.where as {
+      clanTag?: string;
+    };
+    const queryWhere = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where as Record<
+      string,
+      unknown
+    >;
+
+    expect(identityWhere.clanTag).toBe("#2QG2C08UP");
+    expect(queryWhere).toMatchObject({
+      guildId: "guild-1",
+      status: "COMPLETED",
+    });
+    expect((queryWhere.warHistory as { is?: { clanTag?: string } }).is?.clanTag).toBe("#2QG2C08UP");
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      outcome: "success",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha",
+      evaluatedWarCount: 1,
+      affectedWarCount: 1,
+      violationCount: 1,
+      distinctPlayerCount: 1,
+      hasCompletedEvaluations: true,
+    });
+    expect(result.players).toEqual([
+      expect.objectContaining({
+        playerTag: "#PYLQ0289",
+        playerNameSnapshot: "Alpha One",
       }),
-      buildRow({
-        warId: 3,
-        clanTag: "#BBB222",
-        clanName: "Bravo Current",
-        warEndTime: d("2026-05-30T00:00:00.000Z"),
+    ]);
+  });
+
+  it("returns successful no-data metadata for a known clan with only outside-window evaluations", async () => {
+    const { db, service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-04-01T00:00:00.000Z"),
+        warEndTime: d("2026-04-01T01:00:00.000Z"),
         violations: [
           {
-            playerTag: "#P3",
-            playerNameSnapshot: "Charlie Three",
-            townHallLevelSnapshot: 13,
-          },
-          {
-            playerTag: "#P4",
-            playerNameSnapshot: "   ",
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Outside Only",
             townHallLevelSnapshot: 16,
           },
         ],
       }),
     ]);
 
-    const result = await service.getAllianceOverview({
+    const result = await service.getClanLeaderboard({
       guildId: "guild-1",
-      period: "lifetime",
-      now: d("2026-05-31T00:00:00.000Z"),
+      clanTag: "#2QG2C08UP",
+      period: "30d",
+      now: d("2026-06-01T00:00:00.000Z"),
     });
 
+    expect(db.clanWarHistory.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
-      evaluatedWarCount: 3,
-      affectedWarCount: 3,
-      violationCount: 5,
-      distinctPlayerCount: 4,
-      distinctClanCount: 2,
+      outcome: "success",
+      clanTag: "#2QG2C08UP",
+      clanName: "Alpha",
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      players: [],
+      hasCompletedEvaluations: false,
+      trackingSince: null,
     });
-    expect(result.clanSummaries).toEqual([
-      expect.objectContaining({
-        clanTag: "#AAA111",
-        clanName: "Alpha Renamed",
-        evaluatedWarCount: 2,
-        affectedWarCount: 2,
-        violationCount: 3,
-        distinctPlayerCount: 2,
-      }),
-      expect.objectContaining({
-        clanTag: "#BBB222",
-        clanName: "Bravo Current",
-        evaluatedWarCount: 1,
-        affectedWarCount: 1,
-        violationCount: 2,
-        distinctPlayerCount: 2,
-      }),
-    ]);
-    expect(result.topPlayers).toEqual([
-      expect.objectContaining({
-        playerTag: "#P1",
-        playerNameSnapshot: "Alpha Renamed",
-        townHallLevelSnapshot: 14,
-        violationCount: 2,
-        affectedWarCount: 2,
-      }),
-      expect.objectContaining({
-        playerTag: "#P4",
-        playerNameSnapshot: "#P4",
-        townHallLevelSnapshot: 16,
-        violationCount: 1,
-        affectedWarCount: 1,
-      }),
-      expect.objectContaining({
-        playerTag: "#P2",
-        playerNameSnapshot: "Beta Two",
-        townHallLevelSnapshot: 15,
-        violationCount: 1,
-        affectedWarCount: 1,
-      }),
-      expect.objectContaining({
-        playerTag: "#P3",
-        playerNameSnapshot: "Charlie Three",
-        townHallLevelSnapshot: 13,
-        violationCount: 1,
-        affectedWarCount: 1,
-      }),
-    ]);
   });
 
-  it("returns a zero-violation clan leaderboard as success and a missing clan as not_found", async () => {
+  it("returns not_found for malformed and genuinely unknown clans", async () => {
     const { db, service } = buildService([
-      buildRow({
+      buildFixture({
         warId: 1,
-        clanTag: "#AAA111",
+        clanTag: "#2QG2C08UP",
         clanName: "Alpha",
-        warEndTime: d("2026-05-10T00:00:00.000Z"),
-        violations: [
-          {
-            playerTag: "#P1",
-            playerNameSnapshot: "Alpha One",
-            townHallLevelSnapshot: 14,
-          },
-        ],
-      }),
-      buildRow({
-        warId: 2,
-        clanTag: "#CCC333",
-        clanName: "Gamma",
-        warEndTime: d("2026-05-11T00:00:00.000Z"),
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
         violations: [],
       }),
     ]);
 
-    const success = await service.getClanLeaderboard({
+    const malformed = await service.getClanLeaderboard({
       guildId: "guild-1",
-      clanTag: "#CCC333",
+      clanTag: "bad-tag",
       period: "lifetime",
-      now: d("2026-05-31T00:00:00.000Z"),
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+    const unknown = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#G2R9RQLJQ",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
     });
 
-    const missing = await service.getClanLeaderboard({
-      guildId: "guild-1",
-      clanTag: "#DDD444",
-      period: "lifetime",
-      now: d("2026-05-31T00:00:00.000Z"),
-    });
-
-    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(2);
-    expect(success).toMatchObject({
-      outcome: "success",
-      clanTag: "#CCC333",
-      clanName: "Gamma",
-      evaluatedWarCount: 1,
-      affectedWarCount: 0,
-      violationCount: 0,
-      distinctPlayerCount: 0,
-      hasCompletedEvaluations: true,
-    });
-    expect(success.players).toEqual([]);
-    expect(missing).toMatchObject({
+    expect(malformed.outcome).toBe("not_found");
+    expect(malformed.clanTag).toBe("");
+    expect(unknown).toMatchObject({
       outcome: "not_found",
-      clanTag: "#DDD444",
+      clanTag: "#G2R9RQLJQ",
       clanName: null,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
       violationCount: 0,
       distinctPlayerCount: 0,
-      trackingSince: null,
+      players: [],
       hasCompletedEvaluations: false,
+    });
+    expect(db.clanWarHistory.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(0);
+  });
+
+  it("orders snapshots by canonical history instead of completedAt when a null-ended war is newer on paper", async () => {
+    const { service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#PYLQ0289",
+        clanName: "Older Null Clan",
+        warStartTime: d("2026-05-01T00:00:00.000Z"),
+        warEndTime: null,
+        completedAt: d("2026-05-20T00:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#2QG2C08UP",
+            playerNameSnapshot: "Older Null",
+            townHallLevelSnapshot: 14,
+          },
+        ],
+      }),
+      buildFixture({
+        warId: 2,
+        clanTag: "#PYLQ0289",
+        clanName: "Newer Canonical Clan",
+        warStartTime: d("2026-05-16T00:00:00.000Z"),
+        warEndTime: d("2026-05-16T01:00:00.000Z"),
+        completedAt: d("2026-05-16T01:30:00.000Z"),
+        violations: [
+          {
+            playerTag: "#2QG2C08UP",
+            playerNameSnapshot: "Newer Canonical",
+            townHallLevelSnapshot: 16,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#PYLQ0289",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(result.clanName).toBe("Newer Canonical Clan");
+    expect(result.trackingSince).toEqual(d("2026-05-16T01:00:00.000Z"));
+    expect(result.players[0]).toMatchObject({
+      playerTag: "#2QG2C08UP",
+      playerNameSnapshot: "Newer Canonical",
+      townHallLevelSnapshot: 16,
+    });
+  });
+
+  it("uses warStartTime when warEndTime is null for canonical recency ordering", async () => {
+    const { service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#PYLQ0289",
+        clanName: "Null Newer Clan",
+        warStartTime: d("2026-05-17T00:00:00.000Z"),
+        warEndTime: null,
+        completedAt: d("2026-05-17T00:30:00.000Z"),
+        violations: [
+          {
+            playerTag: "#2QG2C08UP",
+            playerNameSnapshot: "Null Newer",
+            townHallLevelSnapshot: 17,
+          },
+        ],
+      }),
+      buildFixture({
+        warId: 2,
+        clanTag: "#PYLQ0289",
+        clanName: "Ended Older Clan",
+        warStartTime: d("2026-05-16T00:00:00.000Z"),
+        warEndTime: d("2026-05-16T01:00:00.000Z"),
+        completedAt: d("2026-05-16T01:05:00.000Z"),
+        violations: [
+          {
+            playerTag: "#2QG2C08UP",
+            playerNameSnapshot: "Ended Older",
+            townHallLevelSnapshot: 15,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#PYLQ0289",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(result.clanName).toBe("Null Newer Clan");
+    expect(result.players[0]).toMatchObject({
+      playerTag: "#2QG2C08UP",
+      playerNameSnapshot: "Null Newer",
+      townHallLevelSnapshot: 17,
+    });
+  });
+
+  it("keeps zero-violation completed evaluations in coverage and returns deterministic player ordering", async () => {
+    const { service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
+        violations: [],
+      }),
+      buildFixture({
+        warId: 2,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-05-11T00:00:00.000Z"),
+        warEndTime: d("2026-05-11T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Zulu",
+            townHallLevelSnapshot: 16,
+          },
+          {
+            playerTag: "#G2R9RQLJQ",
+            playerNameSnapshot: "Alpha",
+            townHallLevelSnapshot: 15,
+          },
+        ],
+      }),
+      buildFixture({
+        warId: 3,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Latest",
+        warStartTime: d("2026-05-12T00:00:00.000Z"),
+        warEndTime: d("2026-05-12T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Zulu Updated",
+            townHallLevelSnapshot: null,
+          },
+          {
+            playerTag: "#G2R9RQLJQ",
+            playerNameSnapshot: "Alpha Updated",
+            townHallLevelSnapshot: 14,
+          },
+          {
+            playerTag: "#2RVGJYLC0",
+            playerNameSnapshot: "Beta",
+            townHallLevelSnapshot: 13,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      period: "lifetime",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      outcome: "success",
+      evaluatedWarCount: 3,
+      affectedWarCount: 2,
+      violationCount: 5,
+      distinctPlayerCount: 3,
+      hasCompletedEvaluations: true,
+      clanName: "Alpha Latest",
+    });
+    expect(result.players).toEqual([
+      expect.objectContaining({
+        playerTag: "#G2R9RQLJQ",
+        playerNameSnapshot: "Alpha Updated",
+        violationCount: 2,
+        affectedWarCount: 2,
+      }),
+      expect.objectContaining({
+        playerTag: "#PYLQ0289",
+        playerNameSnapshot: "Zulu Updated",
+        violationCount: 2,
+        affectedWarCount: 2,
+      }),
+      expect.objectContaining({
+        playerTag: "#2RVGJYLC0",
+        playerNameSnapshot: "Beta",
+        violationCount: 1,
+        affectedWarCount: 1,
+      }),
+    ]);
+  });
+
+  it("returns a success shell for alliance overviews with no completed evaluations in range", async () => {
+    const { db, service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-04-01T00:00:00.000Z"),
+        warEndTime: d("2026-04-01T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Outside",
+            townHallLevelSnapshot: 16,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getAllianceOverview({
+      guildId: "guild-1",
+      period: "30d",
+      now: d("2026-06-01T00:00:00.000Z"),
+    });
+
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      outcome: "success",
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      distinctClanCount: 0,
+      clanSummaries: [],
+      topPlayers: [],
+      hasCompletedEvaluations: false,
+      trackingSince: null,
     });
   });
 });

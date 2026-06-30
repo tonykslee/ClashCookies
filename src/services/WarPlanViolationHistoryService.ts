@@ -1,5 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
-import { normalizeClashTagInput } from "../helper/clashTag";
+import {
+  normalizeClashTagInput,
+  normalizeClashTagWithHash,
+} from "../helper/clashTag";
 
 export type WarPlanViolationHistoryPeriod = "30d" | "lifetime";
 
@@ -70,15 +74,13 @@ export type WarPlanViolationHistoryClanLeaderboardResult =
   | WarPlanViolationHistoryClanLeaderboardNotFound;
 
 type CompletedEvaluationRow = {
-  status: string;
   warId: number;
-  completedAt: Date | null;
   warHistory: {
     warId: number;
     clanTag: string;
     clanName: string | null;
-    warEndTime: Date | null;
     warStartTime: Date;
+    warEndTime: Date | null;
   } | null;
   violations: Array<{
     playerTag: string;
@@ -87,23 +89,38 @@ type CompletedEvaluationRow = {
   }>;
 };
 
-type PlayerAggregate = {
+type AggregatedPlayerRow = {
   playerTag: string;
   playerNameSnapshot: string;
   townHallLevelSnapshot: number | null;
   violationCount: number;
-  affectedWarCount: number;
+  affectedWarIds: Set<number>;
 };
 
-type ClanAggregate = {
+type AggregatedClanRow = {
   clanTag: string;
-  clanName: string;
+  clanNameSnapshot: string;
   evaluatedWarCount: number;
   affectedWarCount: number;
   violationCount: number;
   distinctPlayerTags: Set<string>;
 };
 
+type HistoryAggregation = {
+  evaluatedWarCount: number;
+  affectedWarCount: number;
+  violationCount: number;
+  trackingSince: Date | null;
+  clans: Map<string, AggregatedClanRow>;
+  players: Map<string, AggregatedPlayerRow>;
+};
+
+type PeriodWindow = {
+  now: Date;
+  cutoff: Date | null;
+};
+
+/** Purpose: normalize free-form display text while preserving empty-as-null semantics. */
 function normalizeDisplayText(input: unknown): string | null {
   const normalized = String(input ?? "")
     .replace(/\s+/g, " ")
@@ -111,103 +128,70 @@ function normalizeDisplayText(input: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+/** Purpose: canonicalize stored or queried Clash tags into comparable #TAG form. */
 function normalizeTag(input: string | null | undefined): string {
   return normalizeClashTagInput(input);
 }
 
+/** Purpose: normalize a positive integer snapshot field when present. */
 function normalizePositiveInteger(input: unknown): number | null {
   const parsed = Math.trunc(Number(input));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function resolveSortTime(row: CompletedEvaluationRow): number {
-  const warEndTime = row.warHistory?.warEndTime;
-  if (warEndTime instanceof Date) return warEndTime.getTime();
-  const completedAt = row.completedAt;
-  if (completedAt instanceof Date) return completedAt.getTime();
-  return Number.NEGATIVE_INFINITY;
+/** Purpose: derive a single canonical chronology timestamp for a completed war row. */
+function resolveCanonicalChronologyMs(row: CompletedEvaluationRow): number {
+  const history = row.warHistory;
+  if (!history) return Number.NEGATIVE_INFINITY;
+  const canonicalTime = history.warEndTime ?? history.warStartTime;
+  return canonicalTime.getTime();
 }
 
-function sortPlayerSummaries(a: WarPlanViolationHistoryPlayerSummary, b: WarPlanViolationHistoryPlayerSummary): number {
+/** Purpose: order rows by newest canonical history first, then war id as the final tie-breaker. */
+function compareCanonicalRowsDesc(a: CompletedEvaluationRow, b: CompletedEvaluationRow): number {
+  const timeDelta = resolveCanonicalChronologyMs(b) - resolveCanonicalChronologyMs(a);
+  if (timeDelta !== 0) return timeDelta;
+  return b.warId - a.warId;
+}
+
+/** Purpose: sort player summaries by the documented public leaderboard order. */
+function sortPlayerSummaries(
+  a: WarPlanViolationHistoryPlayerSummary,
+  b: WarPlanViolationHistoryPlayerSummary,
+): number {
   if (b.violationCount !== a.violationCount) return b.violationCount - a.violationCount;
   const nameCompare = a.playerNameSnapshot.localeCompare(b.playerNameSnapshot);
   if (nameCompare !== 0) return nameCompare;
   return a.playerTag.localeCompare(b.playerTag);
 }
 
-function sortClanSummaries(a: WarPlanViolationHistoryClanSummary, b: WarPlanViolationHistoryClanSummary): number {
+/** Purpose: sort clan summaries by the documented public leaderboard order. */
+function sortClanSummaries(
+  a: WarPlanViolationHistoryClanSummary,
+  b: WarPlanViolationHistoryClanSummary,
+): number {
   if (b.violationCount !== a.violationCount) return b.violationCount - a.violationCount;
   const nameCompare = a.clanName.localeCompare(b.clanName);
   if (nameCompare !== 0) return nameCompare;
   return a.clanTag.localeCompare(b.clanTag);
 }
 
-function buildPlayerSummaries(rows: CompletedEvaluationRow[]): WarPlanViolationHistoryPlayerSummary[] {
-  const orderedRows = [...rows].sort((a, b) => {
-    const sortTime = resolveSortTime(b) - resolveSortTime(a);
-    if (sortTime !== 0) return sortTime;
-    return b.warId - a.warId;
-  });
-
-  const playerByTag = new Map<string, PlayerAggregate>();
-
-  for (const row of orderedRows) {
-    for (const violation of row.violations) {
-      const playerTag = normalizeTag(violation.playerTag);
-      if (!playerTag) continue;
-
-      const current = playerByTag.get(playerTag);
-      const playerNameSnapshot = normalizeDisplayText(violation.playerNameSnapshot) ?? playerTag;
-      const townHallLevelSnapshot = normalizePositiveInteger(violation.townHallLevelSnapshot);
-
-      if (!current) {
-        playerByTag.set(playerTag, {
-          playerTag,
-          playerNameSnapshot,
-          townHallLevelSnapshot,
-          violationCount: 1,
-          affectedWarCount: 1,
-        });
-        continue;
-      }
-
-      current.violationCount += 1;
-      current.affectedWarCount += 1;
-      if (current.townHallLevelSnapshot === null && townHallLevelSnapshot !== null) {
-        current.townHallLevelSnapshot = townHallLevelSnapshot;
-      }
-    }
-  }
-
-  return [...playerByTag.values()]
-    .map((row) => ({
-      playerTag: row.playerTag,
-      playerNameSnapshot: row.playerNameSnapshot,
-      townHallLevelSnapshot: row.townHallLevelSnapshot,
-      violationCount: row.violationCount,
-      affectedWarCount: row.affectedWarCount,
-    }))
-    .sort(sortPlayerSummaries);
+/** Purpose: derive the selected reporting window once and reuse the same Date objects for query and metadata. */
+function resolvePeriodWindow(input: {
+  period: WarPlanViolationHistoryPeriod;
+  now?: Date;
+}): PeriodWindow {
+  const now = input.now ?? new Date();
+  const cutoff =
+    input.period === "30d" ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) : null;
+  return { now, cutoff };
 }
 
-function buildClanSummaries(rows: CompletedEvaluationRow[]): {
-  clanSummaries: WarPlanViolationHistoryClanSummary[];
-  trackedClanCount: number;
-  topPlayers: WarPlanViolationHistoryPlayerSummary[];
-  trackingSince: Date | null;
-  evaluatedWarCount: number;
-  affectedWarCount: number;
-  violationCount: number;
-  hasCompletedEvaluations: boolean;
-  allClanAggregates: Map<string, ClanAggregate>;
-} {
-  const orderedRows = [...rows].sort((a, b) => {
-    const sortTime = resolveSortTime(b) - resolveSortTime(a);
-    if (sortTime !== 0) return sortTime;
-    return b.warId - a.warId;
-  });
-
-  const clanByTag = new Map<string, ClanAggregate>();
+/** Purpose: aggregate canonical history rows into deterministic player/clan summaries. */
+function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggregation {
+  const orderedRows = [...rows].sort(compareCanonicalRowsDesc);
+  const clans = new Map<string, AggregatedClanRow>();
+  const players = new Map<string, AggregatedPlayerRow>();
   let evaluatedWarCount = 0;
   let affectedWarCount = 0;
   let violationCount = 0;
@@ -215,71 +199,142 @@ function buildClanSummaries(rows: CompletedEvaluationRow[]): {
 
   for (const row of orderedRows) {
     evaluatedWarCount += 1;
-    if (row.violations.length > 0) affectedWarCount += 1;
+    const history = row.warHistory;
+    if (!history) continue;
 
-    const warEndTime = row.warHistory?.warEndTime ?? null;
-    if (warEndTime instanceof Date) {
-      if (trackingSince === null || warEndTime.getTime() < trackingSince.getTime()) {
-        trackingSince = warEndTime;
+    if (history.warEndTime instanceof Date) {
+      if (trackingSince === null || history.warEndTime.getTime() < trackingSince.getTime()) {
+        trackingSince = history.warEndTime;
       }
     }
 
-    const clanTag = normalizeTag(row.warHistory?.clanTag ?? "");
+    const clanTag = normalizeTag(history.clanTag);
     if (clanTag) {
-      const currentClan = clanByTag.get(clanTag);
-      const clanName = normalizeDisplayText(row.warHistory?.clanName) ?? clanTag;
-      if (!currentClan) {
-        clanByTag.set(clanTag, {
+      const clanNameSnapshot = normalizeDisplayText(history.clanName) ?? clanTag;
+      const clan = clans.get(clanTag);
+      if (!clan) {
+        clans.set(clanTag, {
           clanTag,
-          clanName,
+          clanNameSnapshot,
           evaluatedWarCount: 1,
           affectedWarCount: row.violations.length > 0 ? 1 : 0,
           violationCount: row.violations.length,
-          distinctPlayerTags: new Set(
-            row.violations.map((violation) => normalizeTag(violation.playerTag)).filter(Boolean),
-          ),
+          distinctPlayerTags: new Set(),
         });
       } else {
-        currentClan.evaluatedWarCount += 1;
-        currentClan.affectedWarCount += row.violations.length > 0 ? 1 : 0;
-        currentClan.violationCount += row.violations.length;
-        for (const violation of row.violations) {
-          const playerTag = normalizeTag(violation.playerTag);
-          if (playerTag) {
-            currentClan.distinctPlayerTags.add(playerTag);
-          }
-        }
+        clan.evaluatedWarCount += 1;
+        if (row.violations.length > 0) clan.affectedWarCount += 1;
+        clan.violationCount += row.violations.length;
       }
     }
 
+    if (row.violations.length > 0) {
+      affectedWarCount += 1;
+    }
+
+    const seenPlayersInRow = new Set<string>();
     for (const violation of row.violations) {
       const playerTag = normalizeTag(violation.playerTag);
       if (!playerTag) continue;
 
       violationCount += 1;
+      if (clanTag) {
+        clans.get(clanTag)?.distinctPlayerTags.add(playerTag);
+      }
+
+      const player = players.get(playerTag);
+      const playerNameSnapshot = normalizeDisplayText(violation.playerNameSnapshot) ?? playerTag;
+      const townHallLevelSnapshot = normalizePositiveInteger(violation.townHallLevelSnapshot);
+
+      if (!player) {
+        players.set(playerTag, {
+          playerTag,
+          playerNameSnapshot,
+          townHallLevelSnapshot,
+          violationCount: 1,
+          affectedWarIds: new Set(seenPlayersInRow.has(playerTag) ? [] : [row.warId]),
+        });
+        seenPlayersInRow.add(playerTag);
+        continue;
+      }
+
+      player.violationCount += 1;
+      if (!player.affectedWarIds.has(row.warId)) {
+        player.affectedWarIds.add(row.warId);
+      }
+      if (player.townHallLevelSnapshot === null && townHallLevelSnapshot !== null) {
+        player.townHallLevelSnapshot = townHallLevelSnapshot;
+      }
+      seenPlayersInRow.add(playerTag);
     }
   }
 
   return {
-    clanSummaries: [...clanByTag.values()]
-      .map((row) => ({
-        clanTag: row.clanTag,
-        clanName: row.clanName,
-        evaluatedWarCount: row.evaluatedWarCount,
-        affectedWarCount: row.affectedWarCount,
-        violationCount: row.violationCount,
-        distinctPlayerCount: row.distinctPlayerTags.size,
-      }))
-      .filter((row) => row.violationCount > 0)
-      .sort(sortClanSummaries),
-    trackedClanCount: clanByTag.size,
-    topPlayers: buildPlayerSummaries(rows),
-    trackingSince,
     evaluatedWarCount,
     affectedWarCount,
     violationCount,
-    hasCompletedEvaluations: orderedRows.length > 0,
-    allClanAggregates: clanByTag,
+    trackingSince,
+    clans,
+    players,
+  };
+}
+
+/** Purpose: convert aggregated player state into the public summary shape. */
+function toPlayerSummaries(
+  players: Map<string, AggregatedPlayerRow>,
+): WarPlanViolationHistoryPlayerSummary[] {
+  return [...players.values()]
+    .map((row) => ({
+      playerTag: row.playerTag,
+      playerNameSnapshot: row.playerNameSnapshot,
+      townHallLevelSnapshot: row.townHallLevelSnapshot,
+      violationCount: row.violationCount,
+      affectedWarCount: row.affectedWarIds.size,
+    }))
+    .sort(sortPlayerSummaries);
+}
+
+/** Purpose: convert aggregated clan state into the public summary shape. */
+function toClanSummaries(
+  clans: Map<string, AggregatedClanRow>,
+): WarPlanViolationHistoryClanSummary[] {
+  return [...clans.values()]
+    .filter((row) => row.violationCount > 0)
+    .map((row) => ({
+      clanTag: row.clanTag,
+      clanName: row.clanNameSnapshot,
+      evaluatedWarCount: row.evaluatedWarCount,
+      affectedWarCount: row.affectedWarCount,
+      violationCount: row.violationCount,
+      distinctPlayerCount: row.distinctPlayerTags.size,
+    }))
+    .sort(sortClanSummaries);
+}
+
+/** Purpose: build the Prisma where input for the completed-history query. */
+function buildCompletedEvaluationWhere(input: {
+  guildId: string;
+  cutoff: Date | null;
+  clanTag: string | null;
+}): Prisma.WarPlanComplianceEvaluationWhereInput {
+  const warHistoryFilter: Prisma.ClanWarHistoryWhereInput = {};
+  if (input.cutoff) {
+    warHistoryFilter.warEndTime = { gte: input.cutoff };
+  }
+  if (input.clanTag) {
+    warHistoryFilter.clanTag = input.clanTag;
+  }
+
+  return {
+    guildId: input.guildId,
+    status: "COMPLETED",
+    ...(Object.keys(warHistoryFilter).length > 0
+      ? {
+          warHistory: {
+            is: warHistoryFilter,
+          },
+        }
+      : {}),
   };
 }
 
@@ -294,14 +349,39 @@ export class WarPlanViolationHistoryService {
     period: WarPlanViolationHistoryPeriod;
     now?: Date;
   }): Promise<WarPlanViolationHistoryAllianceOverview> {
-    const rows = await this.loadCompletedEvaluations({
-      guildId: input.guildId,
-      period: input.period,
-      now: input.now,
-    });
+    const guildId = String(input.guildId ?? "").trim();
+    const { cutoff } = resolvePeriodWindow(input);
+    if (!guildId) {
+      return {
+        outcome: "success",
+        period: input.period,
+        cutoff,
+        trackingSince: null,
+        evaluatedWarCount: 0,
+        affectedWarCount: 0,
+        violationCount: 0,
+        distinctPlayerCount: 0,
+        distinctClanCount: 0,
+        clanSummaries: [],
+        topPlayers: [],
+        hasCompletedEvaluations: false,
+      };
+    }
 
-    const aggregate = buildClanSummaries(rows);
-    const cutoff = input.period === "30d" ? new Date((input.now ?? new Date()).getTime() - 30 * 24 * 60 * 60 * 1000) : null;
+    const rows = await this.loadCompletedEvaluations({
+      guildId,
+      cutoff,
+    });
+    const aggregate = buildHistoryAggregation(rows);
+    const clanSummaries = toClanSummaries(aggregate.clans);
+    const topPlayers = toPlayerSummaries(aggregate.players);
+    const distinctClanCount = new Set(
+      rows.flatMap((row) => {
+        const clanTag = normalizeTag(row.warHistory?.clanTag ?? "");
+        return clanTag ? [clanTag] : [];
+      }),
+    ).size;
+    const distinctPlayerCount = new Set(topPlayers.map((row) => row.playerTag)).size;
 
     return {
       outcome: "success",
@@ -311,11 +391,11 @@ export class WarPlanViolationHistoryService {
       evaluatedWarCount: aggregate.evaluatedWarCount,
       affectedWarCount: aggregate.affectedWarCount,
       violationCount: aggregate.violationCount,
-      distinctPlayerCount: new Set(aggregate.topPlayers.map((row) => row.playerTag)).size,
-      distinctClanCount: aggregate.clanSummaries.length,
-      clanSummaries: aggregate.clanSummaries,
-      topPlayers: aggregate.topPlayers,
-      hasCompletedEvaluations: aggregate.hasCompletedEvaluations,
+      distinctPlayerCount,
+      distinctClanCount,
+      clanSummaries,
+      topPlayers,
+      hasCompletedEvaluations: rows.length > 0,
     };
   }
 
@@ -326,14 +406,45 @@ export class WarPlanViolationHistoryService {
     period: WarPlanViolationHistoryPeriod;
     now?: Date;
   }): Promise<WarPlanViolationHistoryClanLeaderboardResult> {
-    const normalizedClanTag = normalizeTag(input.clanTag);
-    if (!normalizedClanTag) {
+    const guildId = String(input.guildId ?? "").trim();
+    const normalizedClanTag = normalizeClashTagWithHash(input.clanTag);
+    const { cutoff } = resolvePeriodWindow(input);
+    if (!guildId || !normalizedClanTag) {
       return {
         outcome: "not_found",
-        clanTag: "",
+        clanTag: normalizedClanTag,
         clanName: null,
         period: input.period,
-        cutoff: input.period === "30d" ? new Date((input.now ?? new Date()).getTime() - 30 * 24 * 60 * 60 * 1000) : null,
+        cutoff,
+        trackingSince: null,
+        evaluatedWarCount: 0,
+        affectedWarCount: 0,
+        violationCount: 0,
+        distinctPlayerCount: 0,
+        players: [],
+        hasCompletedEvaluations: false,
+      };
+    }
+
+    const identityRow = await this.db.clanWarHistory.findFirst({
+      where: { clanTag: normalizedClanTag },
+      orderBy: [
+        { warEndTime: "desc" },
+        { warStartTime: "desc" },
+        { warId: "desc" },
+      ],
+      select: {
+        clanTag: true,
+        clanName: true,
+      },
+    });
+    if (!identityRow) {
+      return {
+        outcome: "not_found",
+        clanTag: normalizedClanTag,
+        clanName: null,
+        period: input.period,
+        cutoff,
         trackingSince: null,
         evaluatedWarCount: 0,
         affectedWarCount: 0,
@@ -345,19 +456,17 @@ export class WarPlanViolationHistoryService {
     }
 
     const rows = await this.loadCompletedEvaluations({
-      guildId: input.guildId,
-      period: input.period,
-      now: input.now,
+      guildId,
+      cutoff,
+      clanTag: normalizedClanTag,
     });
-
-    const clanRows = rows.filter((row) => normalizeTag(row.warHistory?.clanTag ?? "") === normalizedClanTag);
-    if (clanRows.length === 0) {
+    if (rows.length === 0) {
       return {
-        outcome: "not_found",
+        outcome: "success",
         clanTag: normalizedClanTag,
-        clanName: null,
+        clanName: normalizeDisplayText(identityRow.clanName) ?? normalizedClanTag,
         period: input.period,
-        cutoff: input.period === "30d" ? new Date((input.now ?? new Date()).getTime() - 30 * 24 * 60 * 60 * 1000) : null,
+        cutoff,
         trackingSince: null,
         evaluatedWarCount: 0,
         affectedWarCount: 0,
@@ -368,54 +477,51 @@ export class WarPlanViolationHistoryService {
       };
     }
 
-    const aggregate = buildClanSummaries(clanRows);
-    const firstClan = aggregate.allClanAggregates.get(normalizedClanTag);
-    const cutoff = input.period === "30d" ? new Date((input.now ?? new Date()).getTime() - 30 * 24 * 60 * 60 * 1000) : null;
+    const aggregate = buildHistoryAggregation(rows);
+    const clanSummary = aggregate.clans.get(normalizedClanTag);
+    const players = toPlayerSummaries(aggregate.players);
 
     return {
       outcome: "success",
       clanTag: normalizedClanTag,
-      clanName: firstClan?.clanName ?? normalizedClanTag,
+      clanName:
+        clanSummary?.clanNameSnapshot ??
+        normalizeDisplayText(identityRow.clanName) ??
+        normalizedClanTag,
       period: input.period,
       cutoff,
       trackingSince: aggregate.trackingSince,
       evaluatedWarCount: aggregate.evaluatedWarCount,
       affectedWarCount: aggregate.affectedWarCount,
       violationCount: aggregate.violationCount,
-      distinctPlayerCount: new Set(aggregate.topPlayers.map((row) => row.playerTag)).size,
-      players: aggregate.topPlayers,
-      hasCompletedEvaluations: aggregate.hasCompletedEvaluations,
+      distinctPlayerCount: new Set(players.map((row) => row.playerTag)).size,
+      players,
+      hasCompletedEvaluations: true,
     };
   }
 
-  /** Purpose: load completed evaluations with the canonical history and violation snapshots needed for aggregation. */
+  /** Purpose: load the completed canonical history rows needed for read-only aggregation. */
   private async loadCompletedEvaluations(input: {
     guildId: string;
-    period: WarPlanViolationHistoryPeriod;
-    now?: Date;
+    cutoff: Date | null;
+    clanTag?: string | null;
   }): Promise<CompletedEvaluationRow[]> {
-    const guildId = String(input.guildId ?? "").trim();
-    if (!guildId) return [];
-
-    const now = input.now ?? new Date();
-    const cutoff = input.period === "30d" ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) : null;
-
-    const rows = (await this.db.warPlanComplianceEvaluation.findMany({
-      where: {
-        guildId,
-        status: "COMPLETED",
-      },
+    const where = buildCompletedEvaluationWhere({
+      guildId: input.guildId,
+      cutoff: input.cutoff,
+      clanTag: input.clanTag ?? null,
+    });
+    const rows = await this.db.warPlanComplianceEvaluation.findMany({
+      where,
       select: {
         warId: true,
-        status: true,
-        completedAt: true,
         warHistory: {
           select: {
             warId: true,
             clanTag: true,
             clanName: true,
-            warEndTime: true,
             warStartTime: true,
+            warEndTime: true,
           },
         },
         violations: {
@@ -426,17 +532,7 @@ export class WarPlanViolationHistoryService {
           },
         },
       },
-    })) as CompletedEvaluationRow[];
-
-    return rows.filter((row) => {
-      if (!row || row.status !== "COMPLETED") return false;
-      if (!row.warHistory) return false;
-      if (input.period === "30d") {
-        if (!(row.warHistory.warEndTime instanceof Date)) return false;
-        if (!cutoff) return false;
-        return row.warHistory.warEndTime.getTime() >= cutoff.getTime();
-      }
-      return true;
     });
+    return rows as CompletedEvaluationRow[];
   }
 }
