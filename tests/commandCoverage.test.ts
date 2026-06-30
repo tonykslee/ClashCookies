@@ -229,6 +229,7 @@ describe("command coverage", () => {
   it("documents the /clan root in clan help detail text", () => {
     const clanHelpText = helpEmbedText("clan");
     expect(clanHelpText).toContain("/clan configure");
+    expect(clanHelpText.toLowerCase()).toContain("rep assignments");
     expect(clanHelpText).toContain("leader channel");
     expect(clanHelpText).toContain("lead-role");
     expect(clanHelpText).toContain("rep player tags");

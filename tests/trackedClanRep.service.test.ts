@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addTrackedClanRepForClan,
   listTrackedClanRepBadgesForPlayerTags,
+  listTrackedClanRepDisplayRowsForClanTags,
   listTrackedClanRepTagsForClanTags,
   parseTrackedClanRepTagsInput,
   removeTrackedClanRepForClan,
@@ -11,6 +12,7 @@ import {
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   trackedClanRep: {
     findMany: vi.fn(),
@@ -28,6 +30,7 @@ describe("TrackedClanRepService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.create.mockResolvedValue({});
     prismaMock.trackedClanRep.deleteMany.mockResolvedValue({ count: 0 });
@@ -317,5 +320,87 @@ describe("TrackedClanRepService", () => {
         },
       },
     });
+  });
+
+  it("bulk-loads tracked clan rep display rows in deterministic clan order and keeps empty clans", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: " Alpha Clan ",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        tag: "#2RVGJYLC0",
+        name: "Beta Clan",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      { clanTag: "#2RVGJYLC0", playerTag: "#QGRJ2222" },
+    ]);
+
+    const rows = await listTrackedClanRepDisplayRowsForClanTags(["#2rvgjylc0", "2qg2c08up", "bad-tag"]);
+
+    expect(rows).toEqual([
+      {
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+        trackedClanSortOrder: 0,
+        repPlayerTags: ["#PYLQ0289"],
+      },
+      {
+        clanTag: "#2RVGJYLC0",
+        clanName: "Beta Clan",
+        trackedClanSortOrder: 1,
+        repPlayerTags: ["#QGRJ2222"],
+      },
+    ]);
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith({
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+      where: { tag: { in: ["#2RVGJYLC0", "#2QG2C08UP"] } },
+      select: { tag: true, name: true, createdAt: true },
+    });
+    expect(prismaMock.trackedClanRep.findMany).toHaveBeenCalledWith({
+      where: { clanTag: { in: ["#2QG2C08UP", "#2RVGJYLC0"] } },
+      orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
+      select: { clanTag: true, playerTag: true },
+    });
+  });
+
+  it("returns all tracked clans even when some have no rep rows", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        tag: "#2RVGJYLC0",
+        name: "Beta Clan",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2RVGJYLC0", playerTag: "#PYLQ0289" },
+    ]);
+
+    const rows = await listTrackedClanRepDisplayRowsForClanTags(null);
+
+    expect(rows).toEqual([
+      {
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+        trackedClanSortOrder: 0,
+        repPlayerTags: [],
+      },
+      {
+        clanTag: "#2RVGJYLC0",
+        clanName: "Beta Clan",
+        trackedClanSortOrder: 1,
+        repPlayerTags: ["#PYLQ0289"],
+      },
+    ]);
   });
 });
