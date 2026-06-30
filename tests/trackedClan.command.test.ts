@@ -128,6 +128,7 @@ import {
 
 type InteractionInput = {
   subcommand: string;
+  subcommandGroup?: string | null;
   strings?: Record<string, string | null | undefined>;
   integers?: Record<string, number | null | undefined>;
   channels?: Record<string, { id: string; isTextBased?: () => boolean } | null | undefined>;
@@ -157,6 +158,7 @@ function createInteraction(input: InteractionInput) {
     channelId: "channel-1",
     user: { id: "user-1" },
     options: {
+      getSubcommandGroup: vi.fn().mockReturnValue(input.subcommandGroup ?? null),
       getSubcommand: vi.fn().mockReturnValue(input.subcommand),
       getString: vi.fn((name: string) => strings[name] ?? null),
       getInteger: vi.fn((name: string) => integers[name] ?? null),
