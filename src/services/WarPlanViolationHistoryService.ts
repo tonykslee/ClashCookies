@@ -4,13 +4,15 @@ import {
   normalizeClashTagInput,
   normalizeClashTagWithHash,
 } from "../helper/clashTag";
+import { normalizeDiscordUserId } from "./PlayerLinkService";
 
 export type WarPlanViolationHistoryPeriod = "30d" | "lifetime";
 
 export type WarPlanViolationHistoryPlayerSummary = {
   playerTag: string;
-  playerNameSnapshot: string;
-  townHallLevelSnapshot: number | null;
+  playerName: string;
+  townHallLevel: number | null;
+  discordUserId: string | null;
   violationCount: number;
   affectedWarCount: number;
 };
@@ -34,6 +36,7 @@ export type WarPlanViolationHistoryAllianceOverview = {
   violationCount: number;
   distinctPlayerCount: number;
   distinctClanCount: number;
+  distinctCurrentDiscordUserCount: number;
   clanSummaries: WarPlanViolationHistoryClanSummary[];
   topPlayers: WarPlanViolationHistoryPlayerSummary[];
   hasCompletedEvaluations: boolean;
@@ -89,10 +92,13 @@ type CompletedEvaluationRow = {
   }>;
 };
 
+type PlayerSnapshotFallback = {
+  playerName: string | null;
+  townHallLevel: number | null;
+};
+
 type AggregatedPlayerRow = {
   playerTag: string;
-  playerNameSnapshot: string;
-  townHallLevelSnapshot: number | null;
   violationCount: number;
   affectedWarIds: Set<number>;
 };
@@ -113,6 +119,46 @@ type HistoryAggregation = {
   trackingSince: Date | null;
   clans: Map<string, AggregatedClanRow>;
   players: Map<string, AggregatedPlayerRow>;
+  playerFallbacks: Map<string, PlayerSnapshotFallback>;
+};
+
+type CurrentPlayerRow = {
+  playerTag: string;
+  playerName: string | null;
+  townHall: number | null;
+};
+
+type FwaClanMemberCurrentRow = {
+  playerTag: string;
+  clanTag: string;
+  townHall: number | null;
+  sourceSyncedAt: Date;
+};
+
+type FwaPlayerCatalogRow = {
+  playerTag: string;
+  latestName: string | null;
+  latestTownHall: number | null;
+};
+
+type TodoPlayerSnapshotRow = {
+  playerTag: string;
+  playerName: string | null;
+  townHall: number | null;
+};
+
+type PlayerLinkRow = {
+  playerTag: string;
+  discordUserId: string | null;
+  verificationStatus: string;
+};
+
+type PlayerIdentityData = {
+  currentByTag: Map<string, CurrentPlayerRow>;
+  fwaMemberRowsByTag: Map<string, FwaClanMemberCurrentRow[]>;
+  fwaCatalogByTag: Map<string, FwaPlayerCatalogRow>;
+  todoSnapshotByTag: Map<string, TodoPlayerSnapshotRow>;
+  playerLinkByTag: Map<string, PlayerLinkRow>;
 };
 
 type PeriodWindow = {
@@ -139,6 +185,75 @@ function normalizePositiveInteger(input: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+/** Purpose: rank FWA clan-member rows by newest sync and deterministic clan tag tie-breaker. */
+function compareFwaClanMemberRowsDesc(
+  a: FwaClanMemberCurrentRow,
+  b: FwaClanMemberCurrentRow,
+): number {
+  const syncDelta = b.sourceSyncedAt.getTime() - a.sourceSyncedAt.getTime();
+  if (syncDelta !== 0) return syncDelta;
+  return a.clanTag.localeCompare(b.clanTag);
+}
+
+/** Purpose: choose the newest applicable FWA clan-member row for one player. */
+function pickPreferredFwaClanMemberRow(
+  rows: FwaClanMemberCurrentRow[],
+): FwaClanMemberCurrentRow | null {
+  if (rows.length === 0) return null;
+  return [...rows].sort(compareFwaClanMemberRowsDesc)[0] ?? null;
+}
+
+/** Purpose: normalize a persisted PlayerLink row into the current-owner attribution contract. */
+function normalizePlayerLinkRow(row: PlayerLinkRow): PlayerLinkRow {
+  const discordUserId = normalizeDiscordUserId(row.discordUserId);
+  return {
+    playerTag: normalizeTag(row.playerTag),
+    discordUserId: row.verificationStatus === "REVOKED" ? null : discordUserId,
+    verificationStatus: row.verificationStatus,
+  };
+}
+
+/** Purpose: resolve the best persisted identity fields for one violating player. */
+function resolveEnrichedPlayerIdentity(input: {
+  playerTag: string;
+  fallback: PlayerSnapshotFallback | undefined;
+  current: CurrentPlayerRow | null;
+  fwaMemberRows: FwaClanMemberCurrentRow[];
+  fwaCatalog: FwaPlayerCatalogRow | null;
+  todoSnapshot: TodoPlayerSnapshotRow | null;
+  playerLink: PlayerLinkRow | null;
+}): {
+  playerName: string;
+  townHallLevel: number | null;
+  discordUserId: string | null;
+} {
+  const currentName = normalizeDisplayText(input.current?.playerName);
+  const fwaName = normalizeDisplayText(input.fwaCatalog?.latestName);
+  const todoName = normalizeDisplayText(input.todoSnapshot?.playerName);
+  const fallbackName = normalizeDisplayText(input.fallback?.playerName);
+
+  const playerName = currentName ?? fwaName ?? todoName ?? fallbackName ?? normalizeTag(input.playerTag);
+
+  const currentTownHall = normalizePositiveInteger(input.current?.townHall);
+  const preferredMember = pickPreferredFwaClanMemberRow(input.fwaMemberRows);
+  const memberTownHall = normalizePositiveInteger(preferredMember?.townHall);
+  const fwaTownHall = normalizePositiveInteger(input.fwaCatalog?.latestTownHall);
+  const todoTownHall = normalizePositiveInteger(input.todoSnapshot?.townHall);
+  const fallbackTownHall = normalizePositiveInteger(input.fallback?.townHallLevel);
+
+  const townHallLevel =
+    currentTownHall ?? memberTownHall ?? fwaTownHall ?? todoTownHall ?? fallbackTownHall ?? null;
+
+  const normalizedPlayerLink = input.playerLink ? normalizePlayerLinkRow(input.playerLink) : null;
+  const discordUserId = normalizedPlayerLink?.discordUserId ?? null;
+
+  return {
+    playerName,
+    townHallLevel,
+    discordUserId,
+  };
+}
+
 /** Purpose: derive a single canonical chronology timestamp for a completed war row. */
 function resolveCanonicalChronologyMs(row: CompletedEvaluationRow): number {
   const history = row.warHistory;
@@ -160,7 +275,7 @@ function sortPlayerSummaries(
   b: WarPlanViolationHistoryPlayerSummary,
 ): number {
   if (b.violationCount !== a.violationCount) return b.violationCount - a.violationCount;
-  const nameCompare = a.playerNameSnapshot.localeCompare(b.playerNameSnapshot);
+  const nameCompare = a.playerName.localeCompare(b.playerName);
   if (nameCompare !== 0) return nameCompare;
   return a.playerTag.localeCompare(b.playerTag);
 }
@@ -192,6 +307,7 @@ function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggrega
   const orderedRows = [...rows].sort(compareCanonicalRowsDesc);
   const clans = new Map<string, AggregatedClanRow>();
   const players = new Map<string, AggregatedPlayerRow>();
+  const playerFallbacks = new Map<string, PlayerSnapshotFallback>();
   let evaluatedWarCount = 0;
   let affectedWarCount = 0;
   let violationCount = 0;
@@ -242,15 +358,29 @@ function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggrega
         clans.get(clanTag)?.distinctPlayerTags.add(playerTag);
       }
 
-      const player = players.get(playerTag);
-      const playerNameSnapshot = normalizeDisplayText(violation.playerNameSnapshot) ?? playerTag;
-      const townHallLevelSnapshot = normalizePositiveInteger(violation.townHallLevelSnapshot);
+      const snapshotFallback = playerFallbacks.get(playerTag) ?? {
+        playerName: null,
+        townHallLevel: null,
+      };
+      const playerName = normalizeDisplayText(violation.playerNameSnapshot);
+      const townHallLevel = normalizePositiveInteger(violation.townHallLevelSnapshot);
+      if (snapshotFallback.playerName === null && playerName !== null) {
+        playerFallbacks.set(playerTag, {
+          playerName,
+          townHallLevel: snapshotFallback.townHallLevel,
+        });
+      }
+      if (snapshotFallback.townHallLevel === null && townHallLevel !== null) {
+        playerFallbacks.set(playerTag, {
+          playerName: playerFallbacks.get(playerTag)?.playerName ?? snapshotFallback.playerName,
+          townHallLevel,
+        });
+      }
 
+      const player = players.get(playerTag);
       if (!player) {
         players.set(playerTag, {
           playerTag,
-          playerNameSnapshot,
-          townHallLevelSnapshot,
           violationCount: 1,
           affectedWarIds: new Set(seenPlayersInRow.has(playerTag) ? [] : [row.warId]),
         });
@@ -261,9 +391,6 @@ function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggrega
       player.violationCount += 1;
       if (!player.affectedWarIds.has(row.warId)) {
         player.affectedWarIds.add(row.warId);
-      }
-      if (player.townHallLevelSnapshot === null && townHallLevelSnapshot !== null) {
-        player.townHallLevelSnapshot = townHallLevelSnapshot;
       }
       seenPlayersInRow.add(playerTag);
     }
@@ -276,21 +403,43 @@ function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggrega
     trackingSince,
     clans,
     players,
+    playerFallbacks,
   };
 }
 
 /** Purpose: convert aggregated player state into the public summary shape. */
-function toPlayerSummaries(
-  players: Map<string, AggregatedPlayerRow>,
-): WarPlanViolationHistoryPlayerSummary[] {
-  return [...players.values()]
-    .map((row) => ({
-      playerTag: row.playerTag,
-      playerNameSnapshot: row.playerNameSnapshot,
-      townHallLevelSnapshot: row.townHallLevelSnapshot,
-      violationCount: row.violationCount,
-      affectedWarCount: row.affectedWarIds.size,
-    }))
+function toPlayerSummaries(input: {
+  players: Map<string, AggregatedPlayerRow>;
+  playerFallbacks: Map<string, PlayerSnapshotFallback>;
+  identityData?: PlayerIdentityData | null;
+}): WarPlanViolationHistoryPlayerSummary[] {
+  return [...input.players.values()]
+    .map((row) => {
+      const fallback = input.playerFallbacks.get(row.playerTag);
+      const current = input.identityData?.currentByTag.get(row.playerTag) ?? null;
+      const fwaMemberRows = input.identityData?.fwaMemberRowsByTag.get(row.playerTag) ?? [];
+      const fwaCatalog = input.identityData?.fwaCatalogByTag.get(row.playerTag) ?? null;
+      const todoSnapshot = input.identityData?.todoSnapshotByTag.get(row.playerTag) ?? null;
+      const playerLink = input.identityData?.playerLinkByTag.get(row.playerTag) ?? null;
+      const identity = resolveEnrichedPlayerIdentity({
+        playerTag: row.playerTag,
+        fallback,
+        current,
+        fwaMemberRows,
+        fwaCatalog,
+        todoSnapshot,
+        playerLink,
+      });
+
+      return {
+        playerTag: row.playerTag,
+        playerName: identity.playerName,
+        townHallLevel: identity.townHallLevel,
+        discordUserId: identity.discordUserId,
+        violationCount: row.violationCount,
+        affectedWarCount: row.affectedWarIds.size,
+      };
+    })
     .sort(sortPlayerSummaries);
 }
 
@@ -362,6 +511,7 @@ export class WarPlanViolationHistoryService {
         violationCount: 0,
         distinctPlayerCount: 0,
         distinctClanCount: 0,
+        distinctCurrentDiscordUserCount: 0,
         clanSummaries: [],
         topPlayers: [],
         hasCompletedEvaluations: false,
@@ -374,9 +524,22 @@ export class WarPlanViolationHistoryService {
     });
     const aggregate = buildHistoryAggregation(rows);
     const clanSummaries = toClanSummaries(aggregate.clans);
-    const topPlayers = toPlayerSummaries(aggregate.players);
+    const identityData =
+      aggregate.players.size > 0
+        ? await this.loadPlayerIdentityData([...aggregate.players.keys()])
+        : null;
+    const topPlayers = toPlayerSummaries({
+      players: aggregate.players,
+      playerFallbacks: aggregate.playerFallbacks,
+      identityData,
+    });
     const distinctClanCount = clanSummaries.length;
     const distinctPlayerCount = new Set(topPlayers.map((row) => row.playerTag)).size;
+    const distinctCurrentDiscordUserCount = new Set(
+      topPlayers
+        .map((row) => row.discordUserId)
+        .filter((discordUserId): discordUserId is string => Boolean(discordUserId)),
+    ).size;
 
     return {
       outcome: "success",
@@ -388,6 +551,7 @@ export class WarPlanViolationHistoryService {
       violationCount: aggregate.violationCount,
       distinctPlayerCount,
       distinctClanCount,
+      distinctCurrentDiscordUserCount,
       clanSummaries,
       topPlayers,
       hasCompletedEvaluations: rows.length > 0,
@@ -481,7 +645,15 @@ export class WarPlanViolationHistoryService {
 
     const aggregate = buildHistoryAggregation(rows);
     const clanSummary = aggregate.clans.get(normalizedClanTag);
-    const players = toPlayerSummaries(aggregate.players);
+    const identityData =
+      aggregate.players.size > 0
+        ? await this.loadPlayerIdentityData([...aggregate.players.keys()])
+        : null;
+    const players = toPlayerSummaries({
+      players: aggregate.players,
+      playerFallbacks: aggregate.playerFallbacks,
+      identityData,
+    });
 
     return {
       outcome: "success",
@@ -499,6 +671,145 @@ export class WarPlanViolationHistoryService {
       distinctPlayerCount: new Set(players.map((row) => row.playerTag)).size,
       players,
       hasCompletedEvaluations: true,
+    };
+  }
+
+  /** Purpose: bulk-load persisted identity sources for one set of violating player tags. */
+  private async loadPlayerIdentityData(playerTags: string[]): Promise<PlayerIdentityData | null> {
+    const normalizedTags = [...new Set(playerTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
+    if (normalizedTags.length === 0) return null;
+
+    const [
+      currentRows,
+      fwaMemberRows,
+      fwaCatalogRows,
+      todoSnapshotRows,
+      playerLinkRows,
+    ] = await Promise.all([
+      this.db.playerCurrent.findMany({
+        where: { playerTag: { in: normalizedTags } },
+        select: {
+          playerTag: true,
+          playerName: true,
+          townHall: true,
+        },
+      }),
+      this.db.fwaClanMemberCurrent.findMany({
+        where: { playerTag: { in: normalizedTags } },
+        select: {
+          playerTag: true,
+          clanTag: true,
+          townHall: true,
+          sourceSyncedAt: true,
+        },
+      }),
+      this.db.fwaPlayerCatalog.findMany({
+        where: { playerTag: { in: normalizedTags } },
+        select: {
+          playerTag: true,
+          latestName: true,
+          latestTownHall: true,
+        },
+      }),
+      this.db.todoPlayerSnapshot.findMany({
+        where: { playerTag: { in: normalizedTags } },
+        select: {
+          playerTag: true,
+          playerName: true,
+          townHall: true,
+        },
+      }),
+      this.db.playerLink.findMany({
+        where: { playerTag: { in: normalizedTags } },
+        select: {
+          playerTag: true,
+          discordUserId: true,
+          verificationStatus: true,
+        },
+      }),
+    ]);
+
+    const currentByTag = new Map<string, CurrentPlayerRow>();
+    for (const row of currentRows as Array<{ playerTag: string; playerName: string | null; townHall: number | null }>) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      currentByTag.set(playerTag, {
+        playerTag,
+        playerName: normalizeDisplayText(row.playerName),
+        townHall: normalizePositiveInteger(row.townHall),
+      });
+    }
+
+    const fwaMemberRowsByTag = new Map<string, FwaClanMemberCurrentRow[]>();
+    for (const row of fwaMemberRows as Array<{
+      playerTag: string;
+      clanTag: string;
+      townHall: number | null;
+      sourceSyncedAt: Date;
+    }>) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      const bucket = fwaMemberRowsByTag.get(playerTag) ?? [];
+      bucket.push({
+        playerTag,
+        clanTag: normalizeTag(row.clanTag),
+        townHall: normalizePositiveInteger(row.townHall),
+        sourceSyncedAt: row.sourceSyncedAt,
+      });
+      fwaMemberRowsByTag.set(playerTag, bucket);
+    }
+
+    const fwaCatalogByTag = new Map<string, FwaPlayerCatalogRow>();
+    for (const row of fwaCatalogRows as Array<{
+      playerTag: string;
+      latestName: string | null;
+      latestTownHall: number | null;
+    }>) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      fwaCatalogByTag.set(playerTag, {
+        playerTag,
+        latestName: normalizeDisplayText(row.latestName),
+        latestTownHall: normalizePositiveInteger(row.latestTownHall),
+      });
+    }
+
+    const todoSnapshotByTag = new Map<string, TodoPlayerSnapshotRow>();
+    for (const row of todoSnapshotRows as Array<{
+      playerTag: string;
+      playerName: string | null;
+      townHall: number | null;
+    }>) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      todoSnapshotByTag.set(playerTag, {
+        playerTag,
+        playerName: normalizeDisplayText(row.playerName),
+        townHall: normalizePositiveInteger(row.townHall),
+      });
+    }
+
+    const playerLinkByTag = new Map<string, PlayerLinkRow>();
+    for (const row of playerLinkRows as Array<{
+      playerTag: string;
+      discordUserId: string | null;
+      verificationStatus: string;
+    }>) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      playerLinkByTag.set(playerTag, {
+        playerTag,
+        discordUserId: normalizeDiscordUserId(row.discordUserId),
+        verificationStatus: String(row.verificationStatus ?? ""),
+      });
+    }
+
+    return {
+      currentByTag,
+      fwaMemberRowsByTag,
+      fwaCatalogByTag,
+      todoSnapshotByTag,
+      playerLinkByTag,
     };
   }
 
