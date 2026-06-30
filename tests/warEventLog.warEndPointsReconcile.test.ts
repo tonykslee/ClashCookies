@@ -542,6 +542,7 @@ describe("Post-war same-war freeze guard", () => {
         resultLabel: "UNKNOWN",
       }),
     };
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue(null as any);
 
     await (service as any).processSubscription("guild-1", "#AAA111", {
       previousSync: 10,
@@ -773,6 +774,7 @@ describe("Post-war same-war freeze guard", () => {
         resultLabel: "UNKNOWN",
       }),
     };
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue(null as any);
 
     await (service as any).processSubscription("guild-1", "#AAA111", {
       previousSync: 10,
@@ -1125,6 +1127,7 @@ describe("War outage recovery reconciliation", () => {
     );
     const sub = makeSubscription(input.subOverrides);
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue(null as any);
     const updateSpy = vi
       .spyOn(prisma.currentWar, "update")
       .mockImplementation(async (args: any) => {
@@ -1172,8 +1175,12 @@ describe("War outage recovery reconciliation", () => {
       markNeedsValidation: vi.fn().mockResolvedValue(undefined),
       getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
     };
-    const ensureSpy = vi.spyOn(service as any, "ensureCurrentWarId");
-    const allocateSpy = vi.spyOn(service as any, "allocateNextWarId");
+    const ensureSpy = vi
+      .spyOn(service as any, "ensureCurrentWarId")
+      .mockResolvedValue(1001);
+    const allocateSpy = vi
+      .spyOn(service as any, "allocateNextWarId")
+      .mockResolvedValue(1002);
     return {
       service,
       sub,
@@ -1299,28 +1306,54 @@ describe("War outage recovery reconciliation", () => {
     expect(sub.warId).toBe(1001);
   });
 
-  it("replays a failed archive before attack sync and stops the current cycle", async () => {
+  it("recovers a failed archive before a newly observed war can replace stale rows", async () => {
     const recoveryPersistSpy = vi.fn().mockResolvedValue(undefined);
-    const { service, dispatchSpy } = buildOutageRecoveryService({
-      subOverrides: {
-        state: "notInWar",
-        warId: 1001,
-        startTime: new Date("2026-03-12T00:00:00.000Z"),
-        endTime: new Date("2026-03-13T00:00:00.000Z"),
-        clanName: "Alpha",
-        opponentTag: "#OPP123",
-        opponentName: "Enemy",
-      },
-      snapshots: [
-        {
-          war: null,
-          observation: { kind: "success" as const },
+    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+      buildOutageRecoveryService({
+        subOverrides: {
+          state: "notInWar",
+          warId: 1001,
+          startTime: new Date("2026-03-12T00:00:00.000Z"),
+          endTime: new Date("2026-03-13T00:00:00.000Z"),
+          clanName: "Alpha",
+          opponentTag: null,
+          opponentName: "Enemy",
         },
-      ],
-    });
+        snapshots: [
+          {
+            war: {
+              state: "preparation",
+              clan: {
+                tag: "#AAA111",
+                name: "Alpha",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              opponent: {
+                tag: "#NEW999",
+                name: "New Enemy",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              preparationStartTime: "20260314T000000.000Z",
+              startTime: "20260315T000000.000Z",
+              endTime: "20260316T000000.000Z",
+              teamSize: 50,
+              attacksPerMember: 2,
+            },
+            observation: { kind: "success" as const },
+          },
+        ],
+      });
     const history = (service as any).history;
+    const exactLookupSpy = vi
+      .spyOn(history, "resolveExactCanonicalWarEndedHistoryRow")
+      .mockResolvedValue(null);
     history.persistWarEndHistory = recoveryPersistSpy;
     vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      opponentClanTag: "#XYZ111",
       warId: 1001,
     } as any);
 
@@ -1329,44 +1362,80 @@ describe("War outage recovery reconciliation", () => {
       activeSync: 11,
     });
 
+    expect(exactLookupSpy).toHaveBeenCalledTimes(1);
+    expect(exactLookupSpy.mock.calls[0]?.[0]).toMatchObject({
+      clanTag: "#AAA111",
+      opponentTag: "#XYZ111",
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+    });
     expect(recoveryPersistSpy).toHaveBeenCalledTimes(1);
     expect(recoveryPersistSpy.mock.calls[0]?.[0]).toMatchObject({
       eventType: "war_ended",
       guildId: "guild-1",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      opponentTag: "#0PP123",
+      opponentTag: "#XYZ111",
       opponentName: "Enemy",
       warStartTime: new Date("2026-03-12T00:00:00.000Z"),
     });
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect((service as any).history.resolveExactCanonicalWarEndedHistoryRow).toHaveBeenCalledTimes(1);
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(allocateSpy).not.toHaveBeenCalled();
   });
 
-  it("logs and stops when archive recovery replay fails", async () => {
-    const recoveryPersistSpy = vi.fn().mockRejectedValue(new Error("archive replay failed"));
+  it("stops newer-war processing when archive recovery replay fails", async () => {
+    const recoveryPersistSpy = vi
+      .fn()
+      .mockRejectedValue(new Error("archive replay failed"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { service, dispatchSpy } = buildOutageRecoveryService({
-      subOverrides: {
-        state: "notInWar",
-        warId: 1001,
-        startTime: new Date("2026-03-12T00:00:00.000Z"),
-        endTime: new Date("2026-03-13T00:00:00.000Z"),
-        clanName: "Alpha",
-        opponentTag: "#OPP123",
-        opponentName: "Enemy",
-      },
-      snapshots: [
-        {
-          war: null,
-          observation: { kind: "success" as const },
+    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+      buildOutageRecoveryService({
+        subOverrides: {
+          state: "notInWar",
+          warId: 1001,
+          startTime: new Date("2026-03-12T00:00:00.000Z"),
+          endTime: new Date("2026-03-13T00:00:00.000Z"),
+          clanName: "Alpha",
+          opponentTag: null,
+          opponentName: "Enemy",
         },
-      ],
-    });
+        snapshots: [
+          {
+            war: {
+              state: "preparation",
+              clan: {
+                tag: "#AAA111",
+                name: "Alpha",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              opponent: {
+                tag: "#NEW999",
+                name: "New Enemy",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              preparationStartTime: "20260314T000000.000Z",
+              startTime: "20260315T000000.000Z",
+              endTime: "20260316T000000.000Z",
+              teamSize: 50,
+              attacksPerMember: 2,
+            },
+            observation: { kind: "success" as const },
+          },
+        ],
+      });
     const history = (service as any).history;
+    const exactLookupSpy = vi
+      .spyOn(history, "resolveExactCanonicalWarEndedHistoryRow")
+      .mockResolvedValue(null);
     history.persistWarEndHistory = recoveryPersistSpy;
     vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      opponentClanTag: "#XYZ111",
       warId: 1001,
     } as any);
 
@@ -1375,12 +1444,100 @@ describe("War outage recovery reconciliation", () => {
       activeSync: 11,
     });
 
+    expect(exactLookupSpy).toHaveBeenCalledTimes(1);
     expect(recoveryPersistSpy).toHaveBeenCalledTimes(1);
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(errorSpy.mock.calls.some(([message]) =>
-      String(message).includes("archive_recovery_failed"),
-    )).toBe(true);
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(
+      errorSpy.mock.calls.some(([message]) =>
+        String(message).includes("archive_recovery_failed"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips recovery when exact old history already exists and continues normal new-war processing", async () => {
+    const recoveryPersistSpy = vi.fn();
+    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+      buildOutageRecoveryService({
+        subOverrides: {
+          state: "notInWar",
+          warId: 1001,
+          startTime: new Date("2026-03-12T00:00:00.000Z"),
+          endTime: new Date("2026-03-13T00:00:00.000Z"),
+          clanName: "Alpha",
+          opponentTag: "#XYZ111",
+          opponentName: "Enemy",
+        },
+        snapshots: [
+          {
+            war: {
+              state: "preparation",
+              clan: {
+                tag: "#AAA111",
+                name: "Alpha",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              opponent: {
+                tag: "#NEW999",
+                name: "New Enemy",
+                stars: 0,
+                attacks: 0,
+                destructionPercentage: 0,
+              },
+              preparationStartTime: "20260314T000000.000Z",
+              startTime: "20260315T000000.000Z",
+              endTime: "20260316T000000.000Z",
+              teamSize: 50,
+              attacksPerMember: 2,
+            },
+            observation: { kind: "success" as const },
+          },
+        ],
+      });
+    const history = (service as any).history;
+    const exactLookupSpy = vi
+      .spyOn(history, "resolveExactCanonicalWarEndedHistoryRow")
+      .mockResolvedValue({
+        warId: 1001,
+        syncNumber: 10,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        actualOutcome: "WIN",
+        pointsAfterWar: 99,
+        clanName: "Alpha",
+        opponentTag: "#XYZ111",
+        opponentName: "Enemy",
+        warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-13T00:00:00.000Z"),
+      } as any);
+    history.persistWarEndHistory = recoveryPersistSpy;
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      opponentClanTag: "#XYZ111",
+      warId: 1001,
+    } as any);
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(exactLookupSpy).toHaveBeenCalledTimes(1);
+    expect(exactLookupSpy.mock.calls[0]?.[0]).toMatchObject({
+      clanTag: "#AAA111",
+      opponentTag: "#XYZ111",
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+    });
+    expect(recoveryPersistSpy).not.toHaveBeenCalled();
+    expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(ensureSpy).toHaveBeenCalled();
+    expect(allocateSpy).not.toHaveBeenCalled();
   });
 
   it("keeps healthy non-outage preparation->inWar transitions emitting once", async () => {

@@ -3019,13 +3019,7 @@ export class WarEventLogService {
         `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`,
       );
     }
-    if (
-      currentState === "notInWar" &&
-      (await this.maybeRecoverEndedWarArchive({
-        sub,
-        nextOpponentTag,
-      }))
-    ) {
+    if (sub.state === "notInWar" && (await this.maybeRecoverEndedWarArchive({ sub }))) {
       return false;
     }
     let preserveExistingWarId = false;
@@ -3555,40 +3549,43 @@ export class WarEventLogService {
   /** Purpose: recover a failed ended-war archive before attack sync can discard the stale rows. */
   private async maybeRecoverEndedWarArchive(params: {
     sub: SubscriptionRow;
-    nextOpponentTag: string | null;
   }): Promise<boolean> {
     if (params.sub.state !== "notInWar") return false;
     if (!params.sub.startTime) return false;
 
+    const oldAttackRow = await prisma.warAttacks.findFirst({
+      where: {
+        clanTag: params.sub.clanTag,
+        warStartTime: params.sub.startTime,
+      },
+      orderBy: [{ updatedAt: "desc" }, { attackSeenAt: "desc" }],
+      select: {
+        opponentClanTag: true,
+        warId: true,
+      },
+    });
+    const persistedOpponentTag = normalizeTag(params.sub.opponentTag ?? "");
+    const fallbackOpponentTag = normalizeTag(oldAttackRow?.opponentClanTag ?? "");
+    const recoveryOpponentTag = persistedOpponentTag || fallbackOpponentTag;
+    if (!recoveryOpponentTag) return false;
+
     const exactCanonicalRow = await this.history.resolveExactCanonicalWarEndedHistoryRow(
       {
         clanTag: params.sub.clanTag,
-        opponentTag: params.nextOpponentTag || params.sub.opponentTag || "",
+        opponentTag: recoveryOpponentTag,
         warStartTime: params.sub.startTime,
       },
     );
     if (exactCanonicalRow) return false;
 
-    const staleAttackRow = await prisma.warAttacks.findFirst({
-      where: {
-        clanTag: params.sub.clanTag,
-        warStartTime: params.sub.startTime,
-      },
-      select: { warId: true },
-    });
-    if (!staleAttackRow) return false;
-
+    const recoveryWarId = params.sub.warId ?? oldAttackRow?.warId ?? "unknown";
     try {
       await this.history.persistWarEndHistory({
         eventType: "war_ended",
         guildId: params.sub.guildId,
         clanTag: params.sub.clanTag,
         clanName: String(params.sub.clanName ?? params.sub.clanTag).trim() || params.sub.clanTag,
-        opponentTag:
-          normalizeTag(params.sub.opponentTag ?? params.nextOpponentTag ?? "") ||
-          params.sub.opponentTag ||
-          params.nextOpponentTag ||
-          "",
+        opponentTag: recoveryOpponentTag,
         opponentName:
           String(params.sub.opponentName ?? "Unknown").trim() || "Unknown",
         syncNumber: params.sub.syncNum ?? null,
@@ -3605,11 +3602,11 @@ export class WarEventLogService {
         warStartTime: params.sub.startTime,
       });
       console.info(
-        `[war-events] archive_recovery_success guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"}`,
+        `[war-events] archive_recovery_success guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${recoveryWarId} opponent=${recoveryOpponentTag}`,
       );
     } catch (error) {
       console.error(
-        `[war-events] archive_recovery_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"} error=${formatError(error)}`,
+        `[war-events] archive_recovery_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${recoveryWarId} opponent=${recoveryOpponentTag} error=${formatError(error)}`,
       );
     }
 
