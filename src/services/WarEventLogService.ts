@@ -3577,6 +3577,12 @@ export class WarEventLogService {
       },
     );
     if (exactCanonicalRow) return false;
+    if (!oldAttackRow) {
+      console.warn(
+        `[war-events] event=archive_recovery_skipped reason=no_matching_attack_rows guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"} opponent=${persistedOpponentTag || "unknown"}`,
+      );
+      return false;
+    }
 
     const recoveryWarId = params.sub.warId ?? oldAttackRow?.warId ?? "unknown";
     try {
