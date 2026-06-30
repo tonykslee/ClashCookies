@@ -10,11 +10,34 @@ export type ParsedTrackedClanRepTagInput = {
 
 export type TrackedClanRepWriteClient = {
   trackedClanRep: {
-    deleteMany: (args: { where: { clanTag: string } }) => Promise<{ count: number }>;
+    deleteMany: (args: { where: { clanTag: string; playerTag?: string } }) => Promise<{ count: number }>;
+    create: (args: {
+      data: {
+        clanTag: string;
+        playerTag: string;
+      };
+    }) => Promise<unknown>;
     createMany: (args: {
       data: Array<{ clanTag: string; playerTag: string }>;
     }) => Promise<{ count: number }>;
   };
+};
+
+export type TrackedClanRepAddOutcome = "created" | "already_exists" | "clan_not_found";
+export type TrackedClanRepRemoveOutcome = "removed" | "not_found" | "clan_not_found";
+
+export type TrackedClanRepAddResult = {
+  outcome: TrackedClanRepAddOutcome;
+  clanTag: string;
+  clanName: string | null;
+  playerTag: string;
+};
+
+export type TrackedClanRepRemoveResult = {
+  outcome: TrackedClanRepRemoveOutcome;
+  clanTag: string;
+  clanName: string | null;
+  playerTag: string;
 };
 
 type TrackedClanRepReadClient = {
@@ -25,6 +48,43 @@ type TrackedClanRepReadClient = {
       select: { clanTag: true; playerTag: true };
     }) => Promise<Array<{ clanTag: string; playerTag: string }>>;
   };
+};
+
+type TrackedClanRepDisplayTrackedClanRow = {
+  tag: string;
+  name: string | null;
+  createdAt: Date;
+};
+
+type TrackedClanRepDisplayTrackedClanClient = {
+  trackedClan?: {
+    findMany: (args: {
+      orderBy: [{ createdAt: "asc" }, { tag: "asc" }];
+      where?: { tag: { in: string[] } };
+      select: { tag: true; name: true; createdAt: true };
+    }) => Promise<TrackedClanRepDisplayTrackedClanRow[]>;
+  };
+};
+
+type TrackedClanRepClanLookupClient = {
+  trackedClan?: {
+    findUnique: (args: {
+      where: { tag: string };
+      select: { tag: true; name: true };
+    }) => Promise<{ tag: string; name: string | null } | null>;
+  };
+} & Partial<TrackedClanRepReadClient>;
+
+export type TrackedClanRepResolvedClan = {
+  tag: string;
+  name: string | null;
+};
+
+export type TrackedClanRepDisplayClanRow = {
+  clanTag: string;
+  clanName: string | null;
+  trackedClanSortOrder: number;
+  repPlayerTags: string[];
 };
 
 type TrackedClanRepBadgeClanRow = {
@@ -69,6 +129,35 @@ function splitFreeFormTagList(rawInput: string): string[] {
     .split(/[\s,;]+/g)
     .map((part) => part.trim().replace(/^['"`]+|['"`]+$/g, ""))
     .filter(Boolean);
+}
+
+function normalizeDisplayText(input: unknown): string | null {
+  const normalized = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function isKnownPrismaErrorCode(error: unknown, code: string): boolean {
+  return String((error as { code?: unknown } | null | undefined)?.code ?? "") === code;
+}
+
+async function resolveTrackedClanForRepMutation(
+  clanTag: string,
+  db: TrackedClanRepClanLookupClient = prisma,
+): Promise<{ tag: string; name: string | null } | null> {
+  if (!db.trackedClan?.findUnique) return null;
+  const clan = await db.trackedClan.findUnique({
+    where: { tag: clanTag },
+    select: { tag: true, name: true },
+  });
+  if (!clan) return null;
+  const normalizedTag = normalizeClanTag(clan.tag);
+  if (!normalizedTag) return null;
+  return {
+    tag: normalizedTag,
+    name: normalizeDisplayText(clan.name),
+  };
 }
 
 /** Purpose: parse a free-form tracked-clan rep player-tag list into normalized valid/invalid buckets. */
@@ -191,6 +280,119 @@ export async function replaceTrackedClanRepsForClan(
   return playerTags;
 }
 
+/** Purpose: create one rep player assignment for a tracked clan without replacing other rows. */
+export async function addTrackedClanRepForClan(
+  db: TrackedClanRepWriteClient & TrackedClanRepClanLookupClient,
+  input: {
+    clanTag: string;
+    playerTag: string;
+    trackedClan?: TrackedClanRepResolvedClan | null;
+  },
+): Promise<TrackedClanRepAddResult> {
+  const clanTag = normalizeClanTag(input.clanTag);
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!clanTag || !playerTag) {
+    return {
+      outcome: "clan_not_found",
+      clanTag: clanTag || "",
+      clanName: null,
+      playerTag: playerTag || "",
+    };
+  }
+
+  const clan =
+    input.trackedClan ??
+    (await resolveTrackedClanForRepMutation(clanTag, db));
+  if (!clan) {
+    return {
+      outcome: "clan_not_found",
+      clanTag,
+      clanName: null,
+      playerTag,
+    };
+  }
+
+  try {
+    await db.trackedClanRep.create({
+      data: {
+        clanTag: clan.tag,
+        playerTag,
+      },
+    });
+    return {
+      outcome: "created",
+      clanTag: clan.tag,
+      clanName: clan.name,
+      playerTag,
+    };
+  } catch (error) {
+    if (isKnownPrismaErrorCode(error, "P2002")) {
+      return {
+        outcome: "already_exists",
+        clanTag: clan.tag,
+        clanName: clan.name,
+        playerTag,
+      };
+    }
+    if (isKnownPrismaErrorCode(error, "P2003")) {
+      return {
+        outcome: "clan_not_found",
+        clanTag,
+        clanName: null,
+        playerTag,
+      };
+    }
+    throw error;
+  }
+}
+
+/** Purpose: delete one rep player assignment for a tracked clan without touching other rows. */
+export async function removeTrackedClanRepForClan(
+  db: TrackedClanRepWriteClient & TrackedClanRepClanLookupClient,
+  input: {
+    clanTag: string;
+    playerTag: string;
+    trackedClan?: TrackedClanRepResolvedClan | null;
+  },
+): Promise<TrackedClanRepRemoveResult> {
+  const clanTag = normalizeClanTag(input.clanTag);
+  const playerTag = normalizePlayerTag(input.playerTag);
+  if (!clanTag || !playerTag) {
+    return {
+      outcome: "clan_not_found",
+      clanTag: clanTag || "",
+      clanName: null,
+      playerTag: playerTag || "",
+    };
+  }
+
+  const clan =
+    input.trackedClan ??
+    (await resolveTrackedClanForRepMutation(clanTag, db));
+  if (!clan) {
+    return {
+      outcome: "clan_not_found",
+      clanTag,
+      clanName: null,
+      playerTag,
+    };
+  }
+
+  const removed = await db.trackedClanRep.deleteMany({
+    where: {
+      clanTag: clan.tag,
+      playerTag,
+    },
+  });
+
+  return {
+    outcome: removed.count > 0 ? "removed" : "not_found",
+    clanTag: clan.tag,
+    clanName: clan.name,
+    playerTag,
+  };
+}
+
 /** Purpose: bulk-load rep player tags for tracked clan tags in deterministic clan/player order. */
 export async function listTrackedClanRepTagsForClanTags(
   clanTags: string[],
@@ -223,6 +425,79 @@ export async function listTrackedClanRepTagsForClanTags(
   }
 
   return byClan;
+}
+
+/** Purpose: load tracked clan rep display rows for all requested clans in deterministic clan order. */
+export async function listTrackedClanRepDisplayRowsForClanTags(
+  clanTags: string[] | null | undefined,
+  db: TrackedClanRepReadClient & TrackedClanRepDisplayTrackedClanClient = prisma,
+): Promise<TrackedClanRepDisplayClanRow[]> {
+  const normalizedClanTags = clanTags
+    ? [...new Set(clanTags.map((tag) => normalizeClanTag(tag)).filter(Boolean))]
+    : [];
+
+  if (!db.trackedClan?.findMany || !db.trackedClanRep?.findMany) {
+    return [];
+  }
+
+  const trackedClanRows = await db.trackedClan.findMany({
+    orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+    ...(normalizedClanTags.length > 0 ? { where: { tag: { in: normalizedClanTags } } } : {}),
+    select: { tag: true, name: true, createdAt: true },
+  });
+
+  if (trackedClanRows.length === 0) {
+    return [];
+  }
+
+  const canonicalClanRows = trackedClanRows
+    .map((row) => {
+      const clanTag = normalizeClanTag(row.tag);
+      if (!clanTag) return null;
+      return {
+        clanTag,
+        clanName: normalizeDisplayText(row.name),
+        createdAt: row.createdAt,
+      };
+    })
+    .filter(
+      (row): row is { clanTag: string; clanName: string | null; createdAt: Date } =>
+        Boolean(row),
+    );
+
+  if (canonicalClanRows.length === 0) {
+    return [];
+  }
+
+  const repRows = await db.trackedClanRep.findMany({
+    where: {
+      clanTag: { in: canonicalClanRows.map((row) => row.clanTag) },
+    },
+    orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
+    select: {
+      clanTag: true,
+      playerTag: true,
+    },
+  });
+
+  const repTagsByClan = new Map<string, string[]>();
+  for (const row of repRows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    if (!clanTag || !playerTag) continue;
+    const bucket = repTagsByClan.get(clanTag) ?? [];
+    if (!bucket.includes(playerTag)) {
+      bucket.push(playerTag);
+      repTagsByClan.set(clanTag, bucket);
+    }
+  }
+
+  return canonicalClanRows.map((row, index) => ({
+    clanTag: row.clanTag,
+    clanName: row.clanName,
+    trackedClanSortOrder: index,
+    repPlayerTags: repTagsByClan.get(row.clanTag) ?? [],
+  }));
 }
 
 /** Purpose: bulk-load rendered rep badges for player tags in deterministic clan-order. */

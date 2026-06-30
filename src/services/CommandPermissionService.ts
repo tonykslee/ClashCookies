@@ -44,6 +44,9 @@ export const COMMAND_PERMISSION_TARGETS = [
   "notify",
   "warplan",
   "clan:configure",
+  "clan:rep:add",
+  "clan:rep:remove",
+  "clan:rep:list",
   "clan:cwl-tags",
   "clan:raid-tags",
   "clan:remove",
@@ -183,6 +186,8 @@ type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "clan:configure",
+  "clan:rep:add",
+  "clan:rep:remove",
   "clan:cwl-tags",
   "clan:raid-tags",
   "clan:remove",
@@ -269,6 +274,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "defer:config",
   "defer:remove",
   "defer:clear",
+  "clan:rep:list",
   "fwa:mail:send",
   "link:create:other-user",
   "recruitment:show",

@@ -14,6 +14,11 @@ describe("/clan command shape", () => {
         option.type === ApplicationCommandOptionType.Subcommand &&
         option.name === "remove",
     );
+    const repGroup = TrackedClan.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.SubcommandGroup &&
+        option.name === "rep",
+    );
     const list = TrackedClan.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -32,6 +37,7 @@ describe("/clan command shape", () => {
 
     expect(configure).toBeTruthy();
     expect(remove).toBeTruthy();
+    expect(repGroup).toBeTruthy();
     expect(list).toBeTruthy();
     expect(cwlTags).toBeTruthy();
     expect(raidTags).toBeTruthy();
@@ -59,6 +65,30 @@ describe("/clan command shape", () => {
     expect(
       remove?.options?.find((o: any) => o.name === "type")?.choices?.map((choice: any) => choice.value)
     ).toEqual(expect.arrayContaining(["FWA", "CWL", "RAIDS"]));
+    expect(repGroup?.options?.find((o: any) => o.name === "add")?.type).toBe(
+      ApplicationCommandOptionType.Subcommand,
+    );
+    expect(repGroup?.options?.find((o: any) => o.name === "remove")?.type).toBe(
+      ApplicationCommandOptionType.Subcommand,
+    );
+    expect(repGroup?.options?.find((o: any) => o.name === "list")?.type).toBe(
+      ApplicationCommandOptionType.Subcommand,
+    );
+    const repAdd = repGroup?.options?.find((o: any) => o.name === "add");
+    const repRemove = repGroup?.options?.find((o: any) => o.name === "remove");
+    const repList = repGroup?.options?.find((o: any) => o.name === "list");
+    expect(repAdd?.options?.find((o: any) => o.name === "clan")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repAdd?.options?.find((o: any) => o.name === "clan")?.required).toBe(true);
+    expect(repAdd?.options?.find((o: any) => o.name === "player")?.autocomplete).toBe(true);
+    expect(repRemove?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
+    expect(repRemove?.options?.find((o: any) => o.name === "player")?.required).toBe(true);
+    expect(repList?.options?.find((o: any) => o.name === "clan")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repList?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
+    expect(repList?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
     expect(list?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,
     );

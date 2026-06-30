@@ -13,12 +13,22 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
+import {
+  buildAccountDisplayRowText,
+  buildAccountDisplayRows,
+  resolveTownHallEmojiMap,
+} from "../services/AccountDisplayService";
 import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
-import { normalizeClanTag } from "../services/PlayerLinkService";
+import {
+  normalizeClanTag,
+  normalizePlayerTag,
+} from "../services/PlayerLinkService";
+import { playerCurrentService } from "../services/PlayerCurrentService";
 import { FwaClanMembersSyncService } from "../services/fwa-feeds/FwaClanMembersSyncService";
 import {
   addCwlClanTagsForSeason,
@@ -53,12 +63,23 @@ import {
 } from "../services/TrackedClanListService";
 import {
   listTrackedClanRepTagsForClanTags,
+  listTrackedClanRepDisplayRowsForClanTags,
   parseTrackedClanRepTagsInput,
+  addTrackedClanRepForClan,
+  removeTrackedClanRepForClan,
   replaceTrackedClanRepsForClan,
 } from "../services/TrackedClanRepService";
+import { toFailureTelemetry } from "../services/telemetry/ingest";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
+
+function sanitizeDisplayText(input: unknown): string | null {
+  const normalized = String(input ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
+}
 
 function normalizeClanShortNameInput(input: string): string | null {
   const normalized = input.trim().toUpperCase();
@@ -380,6 +401,558 @@ function formatTagListForSummary(tags: string[]): string {
   return tags.join(", ");
 }
 
+type TrackedClanRepResolvedIdentity = {
+  playerTag: string;
+  playerName: string | null;
+  discordUserId: string | null;
+  discordMention: string | null;
+};
+
+type TrackedClanRepIdentitySource = "player_current" | "player_link" | "player_activity" | "coc" | "tag";
+
+type TrackedClanRepResolvedIdentityWithSource = TrackedClanRepResolvedIdentity & {
+  source: TrackedClanRepIdentitySource;
+};
+
+type TrackedClanRepIdentityLookupOptions = {
+  guildId: string | null;
+  playerTag: string;
+  cocService?: CoCService | null;
+  allowLiveLookup: boolean;
+};
+
+type TrackedClanRepAutocompleteIdentityRow = {
+  playerTag: string;
+  playerName: string | null;
+  discordUserId: string | null;
+};
+
+type TrackedClanRepListDisplayRow = Awaited<ReturnType<typeof buildAccountDisplayRows>>[number];
+
+const TRACKED_CLAN_REP_AUTOCOMPLETE_TAG_BODY_REGEX = /^[PYLQGRJCUV0289]+$/;
+
+function formatDiscordMention(discordUserId: string | null): string | null {
+  return discordUserId ? `<@${discordUserId}>` : null;
+}
+
+function formatTrackedClanRepIdentityLabel(identity: Pick<TrackedClanRepResolvedIdentity, "playerName" | "playerTag">): string {
+  const playerName = sanitizeDisplayText(identity.playerName);
+  const playerTag = normalizePlayerTag(identity.playerTag) || identity.playerTag;
+  return playerName ? `${playerName} (${playerTag})` : playerTag;
+}
+
+function formatTrackedClanRepOutcomeLine(outcome: string): string {
+  if (outcome === "created") return "Rep assignment added";
+  if (outcome === "already_exists") return "Rep assignment already existed";
+  if (outcome === "removed") return "Rep assignment removed";
+  if (outcome === "not_found") return "Rep assignment was not assigned";
+  if (outcome === "clan_not_found") return "Tracked clan not found";
+  return "Updated";
+}
+
+function normalizeTrackedClanRepAutocompleteNameQuery(input: string): string {
+  return sanitizeDisplayText(input)?.toLowerCase() ?? "";
+}
+
+function normalizeTrackedClanRepAutocompleteTagQuery(input: string): string {
+  const normalized = normalizeClashTagBareInput(input).toUpperCase();
+  return TRACKED_CLAN_REP_AUTOCOMPLETE_TAG_BODY_REGEX.test(normalized) ? normalized : "";
+}
+
+async function loadTrackedClanRepIdentityRows(input: {
+  guildId: string | null;
+  playerTags: string[];
+}): Promise<Map<string, TrackedClanRepResolvedIdentityWithSource>> {
+  const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean))];
+  const rowsByTag = new Map<string, TrackedClanRepResolvedIdentityWithSource>();
+  if (normalizedTags.length === 0) {
+    return rowsByTag;
+  }
+
+  const [playerLinkRows, playerCurrentRows, playerActivityRows] = await Promise.all([
+    prisma.playerLink.findMany({
+      where: { playerTag: { in: normalizedTags } },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        playerName: true,
+      },
+    }),
+    playerCurrentService.listPlayerCurrentByTags(normalizedTags),
+    input.guildId
+      ? prisma.playerActivity.findMany({
+          where: { guildId: input.guildId, tag: { in: normalizedTags } },
+          select: {
+            tag: true,
+            name: true,
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const playerLinkByTag = new Map(
+    playerLinkRows.map((row) => {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      return [
+        playerTag,
+        {
+          playerTag,
+          playerName: sanitizeDisplayText(row.playerName),
+          discordUserId: String(row.discordUserId ?? "").trim() || null,
+        },
+      ] as const;
+    }).filter((entry): entry is readonly [string, TrackedClanRepAutocompleteIdentityRow] => Boolean(entry[0])),
+  );
+  const playerCurrentByTag = new Map<string, any>(
+    [...playerCurrentRows.entries()]
+      .map(([playerTag, row]) => [normalizePlayerTag(playerTag), row] as const)
+      .filter((entry): entry is readonly [string, any] => Boolean(entry[0])),
+  );
+  const playerActivityByTag = new Map(
+    (playerActivityRows as Array<{ tag: string; name: string | null }>).map((row) => {
+      const playerTag = normalizePlayerTag(row.tag);
+      return [playerTag, sanitizeDisplayText(row.name)] as const;
+    }).filter((entry): entry is readonly [string, string | null] => Boolean(entry[0])),
+  );
+
+  for (const playerTag of normalizedTags) {
+    const playerCurrent = playerCurrentByTag.get(playerTag) ?? null;
+    const playerLink = playerLinkByTag.get(playerTag) ?? null;
+    const playerActivityName = playerActivityByTag.get(playerTag) ?? null;
+    const hasPlayerCurrent = playerCurrentByTag.has(playerTag);
+    const hasPlayerLink = playerLinkByTag.has(playerTag);
+    const hasPlayerActivity = playerActivityByTag.has(playerTag);
+    const playerName =
+      sanitizeDisplayText(playerCurrent?.playerName) ??
+      sanitizeDisplayText(playerLink?.playerName) ??
+      playerActivityName;
+    const discordUserId = String(playerLink?.discordUserId ?? "").trim() || null;
+    rowsByTag.set(playerTag, {
+      playerTag,
+      playerName,
+      discordUserId,
+      discordMention: formatDiscordMention(discordUserId),
+      source: hasPlayerCurrent
+        ? "player_current"
+        : hasPlayerLink
+          ? "player_link"
+          : hasPlayerActivity
+            ? "player_activity"
+            : "tag",
+    });
+  }
+
+  return rowsByTag;
+}
+
+async function resolveTrackedClanRepIdentity(
+  input: TrackedClanRepIdentityLookupOptions,
+): Promise<TrackedClanRepResolvedIdentityWithSource | { outcome: "not_found"; playerTag: string } | { outcome: "lookup_failed"; playerTag: string; error: unknown }> {
+  const normalizedPlayerTag = normalizePlayerTag(input.playerTag);
+  if (!normalizedPlayerTag) {
+    return { outcome: "not_found", playerTag: "" };
+  }
+
+  const persisted = await loadTrackedClanRepIdentityRows({
+    guildId: input.guildId,
+    playerTags: [normalizedPlayerTag],
+  });
+  const existing = persisted.get(normalizedPlayerTag) ?? null;
+  if (existing && existing.source !== "tag") {
+    return existing;
+  }
+
+  if (!input.allowLiveLookup || !input.cocService) {
+    return existing ?? {
+      playerTag: normalizedPlayerTag,
+      playerName: null,
+      discordUserId: null,
+      discordMention: null,
+      source: "tag",
+    };
+  }
+
+  try {
+    const livePlayer = await runWithCoCQueueContext(
+      {
+        priority: "interactive",
+        source: "tracked-clan:rep:add:player-lookup",
+      },
+      () => input.cocService!.getPlayerRaw(normalizedPlayerTag, { suppressTelemetry: false }),
+    );
+    if (!livePlayer) {
+      return { outcome: "not_found", playerTag: normalizedPlayerTag };
+    }
+
+    const liveName = sanitizeDisplayText(livePlayer?.name ?? null);
+    const resolved: TrackedClanRepResolvedIdentityWithSource = {
+      playerTag: normalizedPlayerTag,
+      playerName: liveName,
+      discordUserId: existing?.discordUserId ?? null,
+      discordMention: existing?.discordMention ?? null,
+      source: "coc",
+    };
+    return resolved;
+  } catch (error) {
+    return {
+      outcome: "lookup_failed",
+      playerTag: normalizedPlayerTag,
+      error,
+    };
+  }
+}
+
+function buildTrackedClanRepMutationReply(input: {
+  outcome: "created" | "already_exists" | "removed" | "not_found" | "clan_not_found";
+  clanTag: string;
+  clanName: string | null;
+  playerTag: string;
+  playerName: string | null;
+  discordMention: string | null;
+}): string {
+  const clanLabel = input.clanName ? `${input.clanName} (${input.clanTag})` : input.clanTag;
+  const playerLabel = formatTrackedClanRepIdentityLabel({
+    playerTag: input.playerTag,
+    playerName: input.playerName,
+  });
+  const discordLine = input.discordMention ?? "Not linked to Discord";
+  return [
+    `${formatTrackedClanRepOutcomeLine(input.outcome)}.`,
+    `Clan: ${clanLabel}`,
+    `Player: ${playerLabel}`,
+    `Discord: ${discordLine}`,
+  ].join("\n");
+}
+
+function compareTrackedClanRepListRows(
+  a: TrackedClanRepListDisplayRow,
+  b: TrackedClanRepListDisplayRow,
+): number {
+  const aTownHall = a.townHall;
+  const bTownHall = b.townHall;
+  if (aTownHall === null && bTownHall !== null) return 1;
+  if (aTownHall !== null && bTownHall === null) return -1;
+  if (aTownHall !== null && bTownHall !== null && aTownHall !== bTownHall) {
+    return bTownHall - aTownHall;
+  }
+
+  const aWeight = a.weight;
+  const bWeight = b.weight;
+  if (aWeight === null && bWeight !== null) return 1;
+  if (aWeight !== null && bWeight === null) return -1;
+  if (aWeight !== null && bWeight !== null && aWeight !== bWeight) {
+    return bWeight - aWeight;
+  }
+
+  const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  if (byName !== 0) return byName;
+  return a.tag.localeCompare(b.tag, undefined, { sensitivity: "base" });
+}
+
+function buildTrackedClanRepSectionBlocks(input: {
+  clanTag: string;
+  clanName: string | null;
+  playerRows: TrackedClanRepListDisplayRow[];
+  townHallEmojiByLevel: Map<number, string>;
+}): string[] {
+  const title = buildClanProfileMarkdownLink(input.clanName, input.clanTag);
+  const header = input.clanName
+    ? `**${title}** \`${input.clanTag}\``
+    : `**${title}**`;
+  const rows = [...input.playerRows].sort(compareTrackedClanRepListRows);
+  const lines =
+    rows.length > 0
+      ? rows.map((row) => buildAccountDisplayRowText(row, input.townHallEmojiByLevel))
+      : ["No reps configured."];
+
+  const maxChars = 3900;
+  const chunks: string[] = [];
+  let currentLines: string[] = [];
+  let currentLength = 0;
+
+  for (const line of [header, ...lines]) {
+    const nextLength = currentLength + (currentLines.length > 0 ? 1 : 0) + line.length;
+    if (currentLines.length > 0 && nextLength > maxChars) {
+      chunks.push(currentLines.join("\n"));
+      currentLines = [header, line];
+      currentLength = header.length + 1 + line.length;
+      continue;
+    }
+    currentLines.push(line);
+    currentLength = nextLength;
+  }
+
+  if (currentLines.length > 0) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks;
+}
+
+async function loadLinkedNameByTagForPlayerTags(playerTags: string[]): Promise<Map<string, string>> {
+  const normalizedPlayerTags = [
+    ...new Set(playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean)),
+  ];
+  if (normalizedPlayerTags.length === 0) {
+    return new Map();
+  }
+
+  const rows = await prisma.playerLink.findMany({
+    where: { playerTag: { in: normalizedPlayerTags } },
+    select: { playerTag: true, playerName: true },
+  });
+
+  const linkedNameByTag = new Map<string, string>();
+  for (const row of rows) {
+    const tag = normalizePlayerTag(row.playerTag);
+    if (!tag) continue;
+    const linkedName = sanitizeDisplayText(row.playerName);
+    if (linkedName !== null) {
+      linkedNameByTag.set(tag, linkedName);
+    }
+  }
+
+  return linkedNameByTag;
+}
+
+function logTrackedClanRepListOutcome(input: {
+  outcome: "invalid_clan_tag" | "tracked_clan_not_found" | "no_tracked_clans" | "success";
+  guildId: string | null;
+  actorDiscordId: string;
+  clanFilter: string | null;
+  displayedClanCount: number;
+  totalAssignmentCount: number;
+  uniquePlayerCount: number;
+  pageCount: number;
+}): void {
+  console.info(
+    `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${input.guildId ?? "none"} actor_discord_id=${input.actorDiscordId} clan_filter=${input.clanFilter ?? "none"} displayed_clan_count=${input.displayedClanCount} total_assignment_count=${input.totalAssignmentCount} unique_player_count=${input.uniquePlayerCount} page_count=${input.pageCount} outcome=${input.outcome}`,
+  );
+}
+
+async function autocompleteTrackedClanChoices(query: string): Promise<{ name: string; value: string }[]> {
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
+  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(query);
+  const trackedClans = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { name: true, tag: true },
+  });
+
+  const ranked = trackedClans
+    .map((clan) => {
+      const tag = normalizeClanTag(clan.tag);
+      if (!tag) return null;
+      const name = sanitizeDisplayText(clan.name);
+      const label = name ? `${name} (${tag})` : tag;
+      const tagBody = tag.replace(/^#/, "").toLowerCase();
+      const nameLower = name?.toLowerCase() ?? "";
+      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery.toLowerCase();
+      const prefixTagMatch =
+        normalizedTagQuery.length > 0 && tagBody.startsWith(normalizedTagQuery.toLowerCase()) && !exactTagMatch;
+      const nameMatch =
+        normalizedQuery.length > 0 && name !== null && nameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedTagQuery.length === 0 && normalizedQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
+      return {
+        name: label.slice(0, 100),
+        value: tag,
+        matchRank,
+        sortName: nameLower || "\uffff",
+        sortTag: tagBody,
+      };
+    })
+    .filter((row): row is { name: string; value: string; matchRank: number; sortName: string; sortTag: string } => Boolean(row))
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25);
+
+  return ranked.map(({ name, value }) => ({ name, value }));
+}
+
+async function autocompleteTrackedClanRepPlayerChoices(input: {
+  guildId: string | null;
+  clanTag: string;
+  query: string;
+}): Promise<{ name: string; value: string }[]> {
+  const clanTag = normalizeClanTag(input.clanTag);
+  if (!clanTag) return [];
+
+  const repTagsByClan = await listTrackedClanRepTagsForClanTags([clanTag]);
+  const repTags = repTagsByClan.get(clanTag) ?? [];
+  if (repTags.length === 0) return [];
+
+  const identities = await loadTrackedClanRepIdentityRows({
+    guildId: input.guildId,
+    playerTags: repTags,
+  });
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(input.query);
+  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(input.query).toLowerCase();
+
+  return repTags
+    .map((playerTag) => {
+      const identity = identities.get(playerTag) ?? null;
+      const label = formatTrackedClanRepIdentityLabel({
+        playerTag,
+        playerName: identity?.playerName ?? null,
+      });
+      const tagBody = playerTag.replace(/^#/, "").toLowerCase();
+      const nameLower = identity?.playerName?.toLowerCase() ?? "";
+      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery;
+      const prefixTagMatch =
+        normalizedTagQuery.length > 0 && tagBody.startsWith(normalizedTagQuery) && !exactTagMatch;
+      const nameMatch =
+        normalizedQuery.length > 0 &&
+        identity?.playerName !== null &&
+        nameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedTagQuery.length === 0 && normalizedQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
+      return {
+        name: label.slice(0, 100),
+        value: playerTag,
+        matchRank,
+        sortName: nameLower || "\uffff",
+        sortTag: tagBody,
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25)
+    .map(({ name, value }) => ({ name, value }));
+}
+
+async function autocompleteTrackedClanRepAddPlayerChoices(query: string): Promise<{ name: string; value: string }[]> {
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
+  const queryTagBody = normalizeTrackedClanRepAutocompleteTagQuery(query).toLowerCase();
+  const linkedWhereClauses: Array<Record<string, unknown>> = [];
+  const currentWhereClauses: Array<Record<string, unknown>> = [];
+  if (queryTagBody.length > 0) {
+    linkedWhereClauses.push({ playerTag: { contains: queryTagBody, mode: "insensitive" as const } });
+    currentWhereClauses.push({ playerTag: { contains: queryTagBody, mode: "insensitive" as const } });
+  }
+  if (normalizedQuery.length > 0) {
+    linkedWhereClauses.push({ playerName: { contains: normalizedQuery, mode: "insensitive" as const } });
+    currentWhereClauses.push({ playerName: { contains: normalizedQuery, mode: "insensitive" as const } });
+  }
+  const [linkedRows, currentRows] = await Promise.all([
+    prisma.playerLink.findMany({
+      ...(linkedWhereClauses.length > 0 ? { where: { OR: linkedWhereClauses } } : {}),
+      orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
+      take: 100,
+      select: {
+        playerTag: true,
+        playerName: true,
+        discordUserId: true,
+      },
+    }),
+    prisma.playerCurrent.findMany({
+      ...(currentWhereClauses.length > 0 ? { where: { OR: currentWhereClauses } } : {}),
+      orderBy: [{ playerName: "asc" }, { playerTag: "asc" }],
+      take: 100,
+      select: {
+        playerTag: true,
+        playerName: true,
+      },
+    }),
+  ]);
+
+  const deduped = new Map<
+    string,
+    { playerTag: string; playerName: string | null; hasDiscordUserId: boolean }
+  >();
+  for (const row of [
+    ...linkedRows.map((entry) => ({
+      playerTag: normalizePlayerTag(entry.playerTag),
+      playerName: sanitizeDisplayText(entry.playerName),
+      hasDiscordUserId: Boolean(String(entry.discordUserId ?? "").trim()),
+    })),
+    ...currentRows.map((entry) => ({
+      playerTag: normalizePlayerTag(entry.playerTag),
+      playerName: sanitizeDisplayText(entry.playerName),
+      hasDiscordUserId: false,
+    })),
+  ]) {
+    if (!row.playerTag) continue;
+    const existing = deduped.get(row.playerTag);
+    if (!existing) {
+      deduped.set(row.playerTag, row);
+      continue;
+    }
+    if (row.hasDiscordUserId && !existing.hasDiscordUserId) {
+      deduped.set(row.playerTag, row);
+      continue;
+    }
+    if (row.hasDiscordUserId === existing.hasDiscordUserId && row.playerName && !existing.playerName) {
+      deduped.set(row.playerTag, row);
+    }
+  }
+
+  return [...deduped.values()]
+    .map((row) => {
+      const tagBody = row.playerTag.replace(/^#/, "").toLowerCase();
+      const nameLower = row.playerName?.toLowerCase() ?? "";
+      const hasTagQuery = queryTagBody.length > 0;
+      const exactTagMatch = hasTagQuery && tagBody === queryTagBody;
+      const prefixTagMatch =
+        hasTagQuery && tagBody.startsWith(queryTagBody) && !exactTagMatch;
+      const nameMatch = normalizedQuery.length > 0 && row.playerName !== null && nameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedQuery.length === 0 && !hasTagQuery
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
+      return {
+        name: formatTrackedClanRepIdentityLabel({
+          playerTag: row.playerTag,
+          playerName: row.playerName,
+        }).slice(0, 100),
+        value: row.playerTag,
+        matchRank,
+        sortName: nameLower || "\uffff",
+        sortTag: tagBody,
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25)
+    .map(({ name, value }) => ({ name, value }));
+}
+
 type TrackedClanSummaryRefreshRenderer = (input: {
   memberCountByTag: Map<string, number>;
   refreshing: boolean;
@@ -520,7 +1093,7 @@ async function normalizeClanBadgeInput(
 
 export const TrackedClan: Command = {
   name: "clan",
-  description: "Configure, remove, or list tracked clans",
+  description: "Configure, remove, or list tracked clans and rep assignments",
   options: [
     {
       name: "configure",
@@ -592,6 +1165,69 @@ export const TrackedClan: Command = {
             "Rep player tags for this tracked FWA clan (array, comma, or space separated; use reps:[] to clear)",
           type: ApplicationCommandOptionType.String,
           required: false,
+        },
+      ],
+    },
+    {
+      name: "rep",
+      description: "Add, remove, or list tracked clan rep assignments",
+      type: ApplicationCommandOptionType.SubcommandGroup,
+      options: [
+        {
+          name: "add",
+          description: "Add one rep player to one tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "player",
+              description: "Player tag to assign as a rep",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "remove",
+          description: "Remove one rep player from one tracked clan",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Tracked clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "player",
+              description: "Player tag to remove from the clan",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "list",
+          description: "List tracked clan rep assignments",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Optional tracked clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+          ],
         },
       ],
     },
@@ -694,7 +1330,334 @@ export const TrackedClan: Command = {
       console.info(
         `[tracked-clan] stage=interaction_deferred command=tracked-clan guild=${interaction.guildId ?? "none"} user=${interaction.user.id}`,
       );
+      const subcommandGroup = interaction.options.getSubcommandGroup(false);
       const subcommand = interaction.options.getSubcommand(true);
+
+      if (subcommandGroup === "rep") {
+        if (subcommand === "list") {
+          const clanInput = interaction.options.getString("clan", false);
+          const normalizedFilterClanTag =
+            clanInput === null ? null : normalizeClanTag(clanInput);
+          if (clanInput !== null && !normalizedFilterClanTag) {
+            logTrackedClanRepListOutcome({
+              outcome: "invalid_clan_tag",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: null,
+              displayedClanCount: 0,
+              totalAssignmentCount: 0,
+              uniquePlayerCount: 0,
+              pageCount: 0,
+            });
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+            });
+            return;
+          }
+
+          let displayedClanCount = 0;
+          let totalAssignmentCount = 0;
+          let uniquePlayerCount = 0;
+          let pageCount = 0;
+
+          try {
+            const displayRows = await listTrackedClanRepDisplayRowsForClanTags(
+              normalizedFilterClanTag ? [normalizedFilterClanTag] : null,
+            );
+
+            if (normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "tracked_clan_not_found",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: normalizedFilterClanTag,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: `Tracked clan ${normalizedFilterClanTag} was not found.`,
+              });
+              return;
+            }
+
+            if (!normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "no_tracked_clans",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: null,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: "No tracked clans in the database.",
+              });
+              return;
+            }
+
+            displayedClanCount = displayRows.length;
+            totalAssignmentCount = displayRows.reduce(
+              (sum, row) => sum + row.repPlayerTags.length,
+              0,
+            );
+
+            const uniquePlayerTags = [
+              ...new Set(displayRows.flatMap((row) => row.repPlayerTags)),
+            ];
+            uniquePlayerCount = uniquePlayerTags.length;
+
+            const linkedNameByTag = await loadLinkedNameByTagForPlayerTags(uniquePlayerTags);
+            const accountRows =
+              uniquePlayerTags.length > 0
+                ? await buildAccountDisplayRows({
+                    guildId: interaction.guildId ?? "",
+                    linkedNameByTag,
+                    tags: uniquePlayerTags,
+                  })
+                : [];
+            const accountRowByTag = new Map(
+              accountRows.map((row) => [row.tag, row] as const),
+            );
+            const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
+
+            const sectionBlocks = displayRows.flatMap((clanRow) =>
+              buildTrackedClanRepSectionBlocks({
+                clanTag: clanRow.clanTag,
+                clanName: clanRow.clanName,
+                playerRows: clanRow.repPlayerTags
+                  .map((tag) => accountRowByTag.get(tag) ?? null)
+                  .filter((row): row is TrackedClanRepListDisplayRow => Boolean(row)),
+                townHallEmojiByLevel,
+              }),
+            );
+            const pageContents = paginateTrackedClanBlocks(sectionBlocks);
+            pageCount = pageContents.length > 0 ? pageContents.length : 1;
+            const refreshPrefix = `tracked-clan-rep-list:${interaction.id}`;
+            let page = 0;
+            const renderPage = (pageIndex: number) => ({
+              embeds: [
+                new EmbedBuilder()
+                  .setTitle(`Tracked Clan Reps (${totalAssignmentCount})`)
+                  .setDescription(pageContents[pageIndex] ?? "")
+                  .setColor(0x57f287)
+                  .setFooter({ text: `Page ${pageIndex + 1}/${pageCount}` }),
+              ],
+              components:
+                pageCount > 1
+                  ? [buildTrackedClanListRow(refreshPrefix, pageIndex, pageCount)]
+                  : [],
+            });
+
+            await interaction.editReply(renderPage(page));
+
+            const message = await interaction.fetchReply();
+            if (pageCount > 1) {
+              const collector = message.createMessageComponentCollector({
+                componentType: ComponentType.Button,
+                time: 10 * 60 * 1000,
+                filter: (button) =>
+                  button.user.id === interaction.user.id &&
+                  button.customId.startsWith(`${refreshPrefix}:`),
+              });
+
+              collector.on("collect", async (button: ButtonInteraction) => {
+                try {
+                  if (button.user.id !== interaction.user.id) {
+                    return;
+                  }
+                  if (button.customId === `${refreshPrefix}:prev`) {
+                    page = Math.max(0, page - 1);
+                  } else if (button.customId === `${refreshPrefix}:next`) {
+                    page = Math.min(pageCount - 1, page + 1);
+                  } else {
+                    return;
+                  }
+                  await button.update(renderPage(page));
+                } catch (error) {
+                  console.error(
+                    `[tracked-clan] stage=rep_list_pagination_update_failed command=clan:rep:list guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} page=${page + 1} error=${formatError(error)}`,
+                  );
+                  if (!button.replied && !button.deferred) {
+                    try {
+                      await button.deferUpdate();
+                    } catch {
+                      // no-op
+                    }
+                  }
+                }
+              });
+
+              collector.on("end", async () => {
+                try {
+                  await interaction.editReply({
+                    embeds: renderPage(page).embeds,
+                    components: [],
+                  });
+                } catch {
+                  // no-op
+                }
+              });
+            }
+
+            logTrackedClanRepListOutcome({
+              outcome: "success",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: normalizedFilterClanTag,
+              displayedClanCount,
+              totalAssignmentCount,
+              uniquePlayerCount,
+              pageCount,
+            });
+            return;
+          } catch (error) {
+            const failure = toFailureTelemetry(error);
+            console.error(
+              `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_filter=${normalizedFilterClanTag ?? "none"} displayed_clan_count=${displayedClanCount} total_assignment_count=${totalAssignmentCount} unique_player_count=${uniquePlayerCount} page_count=${pageCount} outcome=failed error_category=${failure.errorCategory} error_code=${failure.errorCode} timeout=${failure.timeout} error=${formatError(error)}`,
+            );
+            throw error;
+          }
+        }
+
+        const clanInput = interaction.options.getString("clan", true);
+        const clanTag = normalizeClanTag(clanInput);
+        if (!clanTag) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+          });
+          return;
+        }
+
+        const playerInput = interaction.options.getString("player", true);
+        const playerTag = normalizePlayerTag(playerInput);
+        if (!playerTag) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Invalid player tag format. Use a valid player tag with or without `#`.",
+          });
+          return;
+        }
+
+        const trackedClan = await prisma.trackedClan.findUnique({
+          where: { tag: clanTag },
+          select: { tag: true, name: true },
+        });
+        if (!trackedClan) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: `Tracked clan ${clanTag} was not found.`,
+          });
+          return;
+        }
+
+        if (subcommand === "add") {
+          const identityResult = await resolveTrackedClanRepIdentity({
+            guildId: interaction.guildId ?? null,
+            playerTag,
+            cocService,
+            allowLiveLookup: true,
+          });
+          if ("outcome" in identityResult) {
+            if (identityResult.outcome === "not_found") {
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: `No persisted identity was found for player ${playerTag}, and the live CoC lookup did not find that player.`,
+              });
+              return;
+            }
+
+            const failure = toFailureTelemetry(identityResult.error);
+            console.error(
+              `[tracked-clan] event=rep_mutation command=clan:rep:add guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${clanTag} player_tag=${playerTag} result=lookup_failed error_category=${failure.errorCategory} error_code=${failure.errorCode} timeout=${failure.timeout} error=${formatError(identityResult.error)}`,
+            );
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Could not look up that player right now. Please try again or confirm the player tag is correct.",
+            });
+            return;
+          }
+
+          const mutation = await addTrackedClanRepForClan(prisma as any, {
+            clanTag,
+            playerTag,
+            trackedClan,
+          });
+
+          const reply = buildTrackedClanRepMutationReply({
+            outcome: mutation.outcome,
+            clanTag: mutation.clanTag,
+            clanName: mutation.clanName,
+            playerTag: identityResult.playerTag,
+            playerName: identityResult.playerName,
+            discordMention: identityResult.discordMention,
+          });
+          console.info(
+            `[tracked-clan] event=rep_mutation command=clan:rep:add guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${identityResult.playerTag} result=${mutation.outcome} clan_name=${mutation.clanName ?? "unknown"} player_name=${identityResult.playerName ?? identityResult.playerTag} discord_mention=${identityResult.discordMention ?? "Not linked to Discord"}`,
+          );
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: reply,
+          });
+          return;
+        }
+
+        if (subcommand === "remove") {
+          const mutation = await removeTrackedClanRepForClan(prisma as any, {
+            clanTag,
+            playerTag,
+            trackedClan,
+          });
+          let identityResult:
+            | TrackedClanRepResolvedIdentityWithSource
+            | { outcome: "not_found"; playerTag: string }
+            | { outcome: "lookup_failed"; playerTag: string; error: unknown };
+          try {
+            identityResult = await resolveTrackedClanRepIdentity({
+              guildId: interaction.guildId ?? null,
+              playerTag,
+              allowLiveLookup: false,
+            });
+          } catch (error) {
+            const failure = toFailureTelemetry(error);
+            console.error(
+              `[tracked-clan] event=rep_mutation_display_enrichment_failed command=clan:rep:remove guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${mutation.playerTag} result=${mutation.outcome} error_category=${failure.errorCategory} error_code=${failure.errorCode} timeout=${failure.timeout} error=${formatError(error)}`,
+            );
+            identityResult = { outcome: "not_found", playerTag: mutation.playerTag };
+          }
+          const displayIdentity =
+            "outcome" in identityResult
+              ? {
+                  playerTag: mutation.playerTag,
+                  playerName: null,
+                  discordMention: null,
+                }
+              : identityResult;
+          const reply = buildTrackedClanRepMutationReply({
+            outcome: mutation.outcome,
+            clanTag: mutation.clanTag,
+            clanName: mutation.clanName,
+            playerTag: displayIdentity.playerTag,
+            playerName: displayIdentity.playerName,
+            discordMention: displayIdentity.discordMention,
+          });
+          console.info(
+            `[tracked-clan] event=rep_mutation command=clan:rep:remove guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_tag=${mutation.clanTag} player_tag=${playerTag} result=${mutation.outcome} clan_name=${mutation.clanName ?? "unknown"} player_name=${displayIdentity.playerName ?? displayIdentity.playerTag} discord_mention=${displayIdentity.discordMention ?? "Not linked to Discord"}`,
+          );
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: reply,
+          });
+          return;
+        }
+      }
 
       if (subcommand === "list") {
         const listType = interaction.options.getString("type", false) as
@@ -2080,12 +3043,48 @@ export const TrackedClan: Command = {
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
     const focused = interaction.options.getFocused(true);
+    const group = interaction.options.getSubcommandGroup(false);
+    const subcommand = interaction.options.getSubcommand(false);
+
+    if (group === "rep") {
+      if (focused.name === "clan") {
+        await interaction.respond(await autocompleteTrackedClanChoices(String(focused.value ?? "")));
+        return;
+      }
+
+      if (focused.name === "player" && subcommand === "add") {
+        await interaction.respond(
+          await autocompleteTrackedClanRepAddPlayerChoices(String(focused.value ?? "")),
+        );
+        return;
+      }
+
+      if (focused.name === "player" && subcommand === "remove") {
+        const clanInput = interaction.options.getString("clan", false);
+        const clanTag = normalizeClanTag(clanInput ?? "");
+        if (!clanTag) {
+          await interaction.respond([]);
+          return;
+        }
+        await interaction.respond(
+          await autocompleteTrackedClanRepPlayerChoices({
+            guildId: interaction.guildId ?? null,
+            clanTag,
+            query: String(focused.value ?? ""),
+          }),
+        );
+        return;
+      }
+
+      await interaction.respond([]);
+      return;
+    }
+
     if (focused.name !== "tag") {
       await interaction.respond([]);
       return;
     }
 
-    const subcommand = interaction.options.getSubcommand(false);
     const query = String(focused.value ?? "").trim().toLowerCase();
     if (subcommand === "remove") {
       const season = resolveCurrentCwlSeasonKey();
