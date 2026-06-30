@@ -277,10 +277,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     ],
   },
   "clan": {
-    summary: "Manage tracked clans used by activity features.",
+    summary: "Manage tracked clans and rep assignments used by activity features.",
     details: [
       "Configure/remove tracked clans or list current tracked set.",
-      "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, leader channel, clan role, lead role, clan badge emoji, short name, rep player tags).",
+      "`configure` upserts tracked clan settings (lose-style, mail channel, log channel, leader channel, clan role, lead role, clan badge emoji, short name, rep player tags). `/clan configure ... reps:<tags>` replaces the entire rep list for that clan, and `/clan configure ... reps:[]` clears the entire rep list.",
+      "`rep add` and `rep remove` are the normal way to change one assignment at a time; `rep add` and `rep remove` are administrator-only by default.",
+      "`rep list [clan]` is read-only, is available to the configured FWA leader role and administrators, groups assignments by assigned tracked clan, includes tracked clans with no reps, and uses the shared account row renderer.",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
       "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, stores the clan name from the clan profile API on write, and caches the clan join status from the clan profile API on write.",
       "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view and accepts `display:minimal|detailed` (default `minimal`). Overview/minimal rows show current member counts when persisted, no longer show `leadRole`, and include a member-count `Refresh` button; CWL minimal rows show the CWL league emoji plus a short league abbreviation when ranked, use the bot application's `unranked` emoji for unranked/unknown/unsupported league values, and show spin status as emoji only. CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status before rerendering the same message. `display:detailed` opens the drilldown, detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste, detailed CWL shows the clan link/tag, CWL league emoji, spin status emoji, observed CWL roster count, current clan member count, and active roster link/title with a manual refresh button, and detailed RAIDS keeps its refresh button. Detailed CWL rows sort by CWL league descending, then active roster title ascending. If `type` is omitted, `display` is ignored.",
@@ -290,6 +292,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/clan configure tag:#2QG2C08UP",
       "/clan configure tag:#2QG2C08UP lose-style:Traditional mail-channel:#war-mail",
+      "/clan rep add clan:#2QG2C08UP player:#PYLQ0289",
+      "/clan rep remove clan:#2QG2C08UP player:#PYLQ0289",
+      "/clan rep list",
+      "/clan rep list clan:#2QG2C08UP",
       "/clan configure tag:#2QG2C08UP reps:[#2RVGJYLC0,#PYLQ0289]",
       "/clan configure tag:#2QG2C08UP reps:#2RVGJYLC0,#PYLQ0289",
       "/clan configure tag:#2QG2C08UP reps:#2RVGJYLC0 #PYLQ0289",

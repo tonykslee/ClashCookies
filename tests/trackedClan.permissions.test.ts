@@ -28,21 +28,26 @@ function buildInteraction(input?: { isAdmin?: boolean; roleIds?: string[]; group
 }
 
 describe("tracked-clan permission defaults", () => {
-  it("registers rep add/remove permission targets", () => {
+  it("registers rep add/remove/list permission targets", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:add");
     expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:remove");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:list");
   });
 
-  it("resolves rep add/remove target paths for permission checks", () => {
+  it("resolves rep add/remove/list target paths for permission checks", () => {
     const addTargets = getCommandTargetsFromInteraction(
       buildInteraction({ group: "rep", sub: "add" }),
     );
     const removeTargets = getCommandTargetsFromInteraction(
       buildInteraction({ group: "rep", sub: "remove" }),
     );
+    const listTargets = getCommandTargetsFromInteraction(
+      buildInteraction({ group: "rep", sub: "list" }),
+    );
 
     expect(addTargets).toContain("clan:rep:add");
     expect(removeTargets).toContain("clan:rep:remove");
+    expect(listTargets).toContain("clan:rep:list");
   });
 
   it("keeps rep add/remove admin-only by default", async () => {
@@ -67,6 +72,27 @@ describe("tracked-clan permission defaults", () => {
         ["clan:rep:remove"],
         buildInteraction({ isAdmin: true, group: "rep", sub: "remove" }),
       ),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps rep list available to the fwa leader role or administrators by default", async () => {
+    const service = new CommandPermissionService({
+      get: vi.fn(async (key: string) => {
+        if (String(key).startsWith("fwa_leader_role:")) {
+          return "999";
+        }
+        return null;
+      }),
+    } as any);
+
+    await expect(
+      service.canUseAnyTarget(["clan:rep:list"], buildInteraction({ roleIds: ["999"], group: "rep", sub: "list" })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["clan:rep:list"], buildInteraction({ roleIds: ["123"], group: "rep", sub: "list" })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["clan:rep:list"], buildInteraction({ isAdmin: true, group: "rep", sub: "list" })),
     ).resolves.toBe(true);
   });
 });

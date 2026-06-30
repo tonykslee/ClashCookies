@@ -16,6 +16,11 @@ import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { safeReply } from "../helper/safeReply";
 import { prisma } from "../prisma";
+import {
+  buildAccountDisplayRowText,
+  buildAccountDisplayRows,
+  resolveTownHallEmojiMap,
+} from "../services/AccountDisplayService";
 import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
@@ -58,6 +63,7 @@ import {
 } from "../services/TrackedClanListService";
 import {
   listTrackedClanRepTagsForClanTags,
+  listTrackedClanRepDisplayRowsForClanTags,
   parseTrackedClanRepTagsInput,
   addTrackedClanRepForClan,
   removeTrackedClanRepForClan,
@@ -421,6 +427,8 @@ type TrackedClanRepAutocompleteIdentityRow = {
   discordUserId: string | null;
 };
 
+type TrackedClanRepListDisplayRow = Awaited<ReturnType<typeof buildAccountDisplayRows>>[number];
+
 const TRACKED_CLAN_REP_AUTOCOMPLETE_TAG_BODY_REGEX = /^[PYLQGRJCUV0289]+$/;
 
 function formatDiscordMention(discordUserId: string | null): string | null {
@@ -614,6 +622,112 @@ function buildTrackedClanRepMutationReply(input: {
     `Player: ${playerLabel}`,
     `Discord: ${discordLine}`,
   ].join("\n");
+}
+
+function compareTrackedClanRepListRows(
+  a: TrackedClanRepListDisplayRow,
+  b: TrackedClanRepListDisplayRow,
+): number {
+  const aTownHall = a.townHall;
+  const bTownHall = b.townHall;
+  if (aTownHall === null && bTownHall !== null) return 1;
+  if (aTownHall !== null && bTownHall === null) return -1;
+  if (aTownHall !== null && bTownHall !== null && aTownHall !== bTownHall) {
+    return bTownHall - aTownHall;
+  }
+
+  const aWeight = a.weight;
+  const bWeight = b.weight;
+  if (aWeight === null && bWeight !== null) return 1;
+  if (aWeight !== null && bWeight === null) return -1;
+  if (aWeight !== null && bWeight !== null && aWeight !== bWeight) {
+    return bWeight - aWeight;
+  }
+
+  const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  if (byName !== 0) return byName;
+  return a.tag.localeCompare(b.tag, undefined, { sensitivity: "base" });
+}
+
+function buildTrackedClanRepSectionBlocks(input: {
+  clanTag: string;
+  clanName: string | null;
+  playerRows: TrackedClanRepListDisplayRow[];
+  townHallEmojiByLevel: Map<number, string>;
+}): string[] {
+  const title = buildClanProfileMarkdownLink(input.clanName, input.clanTag);
+  const header = input.clanName
+    ? `**${title}** \`${input.clanTag}\``
+    : `**${title}**`;
+  const rows = [...input.playerRows].sort(compareTrackedClanRepListRows);
+  const lines =
+    rows.length > 0
+      ? rows.map((row) => buildAccountDisplayRowText(row, input.townHallEmojiByLevel))
+      : ["No reps configured."];
+
+  const maxChars = 3900;
+  const chunks: string[] = [];
+  let currentLines: string[] = [];
+  let currentLength = 0;
+
+  for (const line of [header, ...lines]) {
+    const nextLength = currentLength + (currentLines.length > 0 ? 1 : 0) + line.length;
+    if (currentLines.length > 0 && nextLength > maxChars) {
+      chunks.push(currentLines.join("\n"));
+      currentLines = [header, line];
+      currentLength = header.length + 1 + line.length;
+      continue;
+    }
+    currentLines.push(line);
+    currentLength = nextLength;
+  }
+
+  if (currentLines.length > 0) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks;
+}
+
+async function loadLinkedNameByTagForPlayerTags(playerTags: string[]): Promise<Map<string, string>> {
+  const normalizedPlayerTags = [
+    ...new Set(playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean)),
+  ];
+  if (normalizedPlayerTags.length === 0) {
+    return new Map();
+  }
+
+  const rows = await prisma.playerLink.findMany({
+    where: { playerTag: { in: normalizedPlayerTags } },
+    select: { playerTag: true, playerName: true },
+  });
+
+  const linkedNameByTag = new Map<string, string>();
+  for (const row of rows) {
+    const tag = normalizePlayerTag(row.playerTag);
+    if (!tag) continue;
+    const linkedName = sanitizeDisplayText(row.playerName);
+    if (linkedName !== null) {
+      linkedNameByTag.set(tag, linkedName);
+    }
+  }
+
+  return linkedNameByTag;
+}
+
+function logTrackedClanRepListOutcome(input: {
+  outcome: "invalid_clan_tag" | "tracked_clan_not_found" | "no_tracked_clans" | "success";
+  guildId: string | null;
+  actorDiscordId: string;
+  clanFilter: string | null;
+  displayedClanCount: number;
+  totalAssignmentCount: number;
+  uniquePlayerCount: number;
+  pageCount: number;
+}): void {
+  console.info(
+    `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${input.guildId ?? "none"} actor_discord_id=${input.actorDiscordId} clan_filter=${input.clanFilter ?? "none"} displayed_clan_count=${input.displayedClanCount} total_assignment_count=${input.totalAssignmentCount} unique_player_count=${input.uniquePlayerCount} page_count=${input.pageCount} outcome=${input.outcome}`,
+  );
 }
 
 async function autocompleteTrackedClanChoices(query: string): Promise<{ name: string; value: string }[]> {
@@ -979,7 +1093,7 @@ async function normalizeClanBadgeInput(
 
 export const TrackedClan: Command = {
   name: "clan",
-  description: "Configure, remove, or list tracked clans",
+  description: "Configure, remove, or list tracked clans and rep assignments",
   options: [
     {
       name: "configure",
@@ -1056,7 +1170,7 @@ export const TrackedClan: Command = {
     },
     {
       name: "rep",
-      description: "Add or remove one tracked clan rep assignment",
+      description: "Add, remove, or list tracked clan rep assignments",
       type: ApplicationCommandOptionType.SubcommandGroup,
       options: [
         {
@@ -1097,6 +1211,20 @@ export const TrackedClan: Command = {
               description: "Player tag to remove from the clan",
               type: ApplicationCommandOptionType.String,
               required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "list",
+          description: "List tracked clan rep assignments",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Optional tracked clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: false,
               autocomplete: true,
             },
           ],
@@ -1206,6 +1334,198 @@ export const TrackedClan: Command = {
       const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommandGroup === "rep") {
+        if (subcommand === "list") {
+          const clanInput = interaction.options.getString("clan", false);
+          const normalizedFilterClanTag =
+            clanInput === null ? null : normalizeClanTag(clanInput);
+          if (clanInput !== null && !normalizedFilterClanTag) {
+            logTrackedClanRepListOutcome({
+              outcome: "invalid_clan_tag",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: null,
+              displayedClanCount: 0,
+              totalAssignmentCount: 0,
+              uniquePlayerCount: 0,
+              pageCount: 0,
+            });
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+            });
+            return;
+          }
+
+          let displayedClanCount = 0;
+          let totalAssignmentCount = 0;
+          let uniquePlayerCount = 0;
+          let pageCount = 0;
+
+          try {
+            const displayRows = await listTrackedClanRepDisplayRowsForClanTags(
+              normalizedFilterClanTag ? [normalizedFilterClanTag] : null,
+            );
+
+            if (normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "tracked_clan_not_found",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: normalizedFilterClanTag,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: `Tracked clan ${normalizedFilterClanTag} was not found.`,
+              });
+              return;
+            }
+
+            if (!normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "no_tracked_clans",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: null,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
+              await safeReply(interaction, {
+                ephemeral: true,
+                content: "No tracked clans in the database.",
+              });
+              return;
+            }
+
+            displayedClanCount = displayRows.length;
+            totalAssignmentCount = displayRows.reduce(
+              (sum, row) => sum + row.repPlayerTags.length,
+              0,
+            );
+
+            const uniquePlayerTags = [
+              ...new Set(displayRows.flatMap((row) => row.repPlayerTags)),
+            ];
+            uniquePlayerCount = uniquePlayerTags.length;
+
+            const linkedNameByTag = await loadLinkedNameByTagForPlayerTags(uniquePlayerTags);
+            const accountRows =
+              uniquePlayerTags.length > 0
+                ? await buildAccountDisplayRows({
+                    guildId: interaction.guildId ?? "",
+                    linkedNameByTag,
+                    tags: uniquePlayerTags,
+                  })
+                : [];
+            const accountRowByTag = new Map(
+              accountRows.map((row) => [row.tag, row] as const),
+            );
+            const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
+
+            const sectionBlocks = displayRows.flatMap((clanRow) =>
+              buildTrackedClanRepSectionBlocks({
+                clanTag: clanRow.clanTag,
+                clanName: clanRow.clanName,
+                playerRows: clanRow.repPlayerTags
+                  .map((tag) => accountRowByTag.get(tag) ?? null)
+                  .filter((row): row is TrackedClanRepListDisplayRow => Boolean(row)),
+                townHallEmojiByLevel,
+              }),
+            );
+            const pageContents = paginateTrackedClanBlocks(sectionBlocks);
+            pageCount = pageContents.length > 0 ? pageContents.length : 1;
+            const refreshPrefix = `tracked-clan-rep-list:${interaction.id}`;
+            let page = 0;
+            const renderPage = (pageIndex: number) => ({
+              embeds: [
+                new EmbedBuilder()
+                  .setTitle(`Tracked Clan Reps (${totalAssignmentCount})`)
+                  .setDescription(pageContents[pageIndex] ?? "")
+                  .setColor(0x57f287)
+                  .setFooter({ text: `Page ${pageIndex + 1}/${pageCount}` }),
+              ],
+              components:
+                pageCount > 1
+                  ? [buildTrackedClanListRow(refreshPrefix, pageIndex, pageCount)]
+                  : [],
+            });
+
+            await interaction.editReply(renderPage(page));
+
+            const message = await interaction.fetchReply();
+            if (pageCount > 1) {
+              const collector = message.createMessageComponentCollector({
+                componentType: ComponentType.Button,
+                time: 10 * 60 * 1000,
+                filter: (button) =>
+                  button.user.id === interaction.user.id &&
+                  button.customId.startsWith(`${refreshPrefix}:`),
+              });
+
+              collector.on("collect", async (button: ButtonInteraction) => {
+                try {
+                  if (button.user.id !== interaction.user.id) {
+                    return;
+                  }
+                  if (button.customId === `${refreshPrefix}:prev`) {
+                    page = Math.max(0, page - 1);
+                  } else if (button.customId === `${refreshPrefix}:next`) {
+                    page = Math.min(pageCount - 1, page + 1);
+                  } else {
+                    return;
+                  }
+                  await button.update(renderPage(page));
+                } catch (error) {
+                  console.error(
+                    `[tracked-clan] stage=rep_list_pagination_update_failed command=clan:rep:list guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} page=${page + 1} error=${formatError(error)}`,
+                  );
+                  if (!button.replied && !button.deferred) {
+                    try {
+                      await button.deferUpdate();
+                    } catch {
+                      // no-op
+                    }
+                  }
+                }
+              });
+
+              collector.on("end", async () => {
+                try {
+                  await interaction.editReply({
+                    embeds: renderPage(page).embeds,
+                    components: [],
+                  });
+                } catch {
+                  // no-op
+                }
+              });
+            }
+
+            logTrackedClanRepListOutcome({
+              outcome: "success",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: normalizedFilterClanTag,
+              displayedClanCount,
+              totalAssignmentCount,
+              uniquePlayerCount,
+              pageCount,
+            });
+            return;
+          } catch (error) {
+            const failure = toFailureTelemetry(error);
+            console.error(
+              `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_filter=${normalizedFilterClanTag ?? "none"} displayed_clan_count=${displayedClanCount} total_assignment_count=${totalAssignmentCount} unique_player_count=${uniquePlayerCount} page_count=${pageCount} outcome=failed error_category=${failure.errorCategory} error_code=${failure.errorCode} timeout=${failure.timeout} error=${formatError(error)}`,
+            );
+            throw error;
+          }
+        }
+
         const clanInput = interaction.options.getString("clan", true);
         const clanTag = normalizeClanTag(clanInput);
         if (!clanTag) {
