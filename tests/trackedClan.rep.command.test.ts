@@ -91,11 +91,20 @@ import { TrackedClan } from "../src/commands/TrackedClan";
 
 type RepInteractionInput = {
   group?: "rep" | null;
-  subcommand: "add" | "remove";
+  subcommand: "add" | "remove" | "list";
   clan?: string | null;
   player?: string | null;
   focusedName?: "clan" | "player" | "tag";
   focusedValue?: string;
+};
+
+type CollectorHarness = {
+  options: any;
+  handlers: {
+    collect?: (button: any) => Promise<void> | void;
+    end?: () => Promise<void> | void;
+  };
+  createMessageComponentCollector: ReturnType<typeof vi.fn>;
 };
 
 function makeRepInteraction(input: RepInteractionInput) {
@@ -134,6 +143,40 @@ function makeRepInteraction(input: RepInteractionInput) {
     },
   };
   return interaction as any;
+}
+
+function makeCollectorHarness(): CollectorHarness {
+  const harness: CollectorHarness = {
+    options: null,
+    handlers: {},
+    createMessageComponentCollector: vi.fn().mockImplementation((options: any) => {
+      harness.options = options;
+      return {
+        on: vi.fn((event: "collect" | "end", handler: (...args: any[]) => Promise<void> | void) => {
+          harness.handlers[event] = handler;
+        }),
+      };
+    }),
+  };
+  return harness;
+}
+
+function getRenderedPayloadText(payload: any): string {
+  const embed = payload.embeds?.[0]?.toJSON?.() ?? payload.embeds?.[0];
+  return String(embed?.description ?? "");
+}
+
+function getRenderedFooterText(payload: any): string {
+  const embed = payload.embeds?.[0]?.toJSON?.() ?? payload.embeds?.[0];
+  return String(embed?.footer?.text ?? "");
+}
+
+function getRenderedButtonStates(payload: any): Array<{ customId: string; disabled: boolean }> {
+  const row = payload.components?.[0]?.toJSON?.() ?? payload.components?.[0];
+  return (row?.components ?? []).map((button: any) => ({
+    customId: String(button.customId ?? button.custom_id ?? button.data?.custom_id ?? ""),
+    disabled: Boolean(button.disabled),
+  }));
 }
 
 describe("/clan rep commands", () => {
@@ -584,19 +627,13 @@ describe("/clan rep commands", () => {
     );
   });
 
-  it("lists tracked clan rep assignments grouped by clan and keeps empty clans visible", async () => {
+  it("lists one tracked clan with a normalized filter and only renders that clan", async () => {
     trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([
       {
-        clanTag: "#ALPHA001",
+        clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         trackedClanSortOrder: 0,
         repPlayerTags: ["#PYLQ0289", "#QGRJ2222"],
-      },
-      {
-        clanTag: "#BETA001",
-        clanName: "Beta Clan",
-        trackedClanSortOrder: 1,
-        repPlayerTags: [],
       },
     ]);
     accountDisplayServiceMock.buildAccountDisplayRows.mockResolvedValueOnce([
@@ -606,7 +643,7 @@ describe("/clan rep commands", () => {
         townHall: 16,
         weight: 210000,
         weightSource: "FwaClanMemberCurrent",
-        clanTag: "#ALPHA001",
+        clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         clanRole: "leader",
         clanState: "known",
@@ -619,7 +656,7 @@ describe("/clan rep commands", () => {
         townHall: 15,
         weight: 175000,
         weightSource: "WeightInputDeferment",
-        clanTag: "#ALPHA001",
+        clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
         clanRole: null,
         clanState: "known",
@@ -632,13 +669,14 @@ describe("/clan rep commands", () => {
     const interaction = makeRepInteraction({
       group: "rep",
       subcommand: "list",
+      clan: "2qg2c08up",
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
-    expect(trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags).toHaveBeenCalledWith(
-      null,
-    );
+    expect(trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags).toHaveBeenCalledWith([
+      "#2QG2C08UP",
+    ]);
     expect(accountDisplayServiceMock.buildAccountDisplayRows).toHaveBeenCalledWith({
       guildId: "guild-1",
       linkedNameByTag: new Map(),
@@ -646,15 +684,263 @@ describe("/clan rep commands", () => {
     });
 
     const payload = interaction.editReply.mock.calls[0]?.[0] ?? {};
-    const embed = payload.embeds?.[0]?.toJSON?.() ?? payload.embeds?.[0];
-    expect(String(embed?.description ?? "")).toContain("Alpha Clan");
-    expect(String(embed?.description ?? "")).toContain("#PYLQ0289 Alpha One");
-    expect(String(embed?.description ?? "")).toContain("#QGRJ2222 Alpha Two");
-    expect(String(embed?.description ?? "")).toContain("Beta Clan");
-    expect(String(embed?.description ?? "")).toContain("No reps configured.");
+    const text = getRenderedPayloadText(payload);
+    expect(text).toContain("Alpha Clan");
+    expect(text).not.toContain("Beta Clan");
+    expect(text).toContain("#PYLQ0289 Alpha One");
+    expect(text).toContain("#QGRJ2222 Alpha Two");
   });
 
-  it("paginates long rep lists and keeps previous/next controls attached", async () => {
+  it("logs invalid clan filters and skips display hydration", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "list",
+      clan: "not-a-clan",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags).not.toHaveBeenCalled();
+    expect(accountDisplayServiceMock.buildAccountDisplayRows).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Invalid clan tag format",
+    );
+    expect(
+      infoSpy.mock.calls.some((call) => String(call[0] ?? "").includes("outcome=invalid_clan_tag")),
+    ).toBe(true);
+  });
+
+  it("logs tracked clan not found and returns the clear not-found response", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([]);
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "list",
+      clan: "#2QG2C08UP",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags).toHaveBeenCalledWith([
+      "#2QG2C08UP",
+    ]);
+    expect(accountDisplayServiceMock.buildAccountDisplayRows).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Tracked clan #2QG2C08UP was not found.",
+    );
+    expect(
+      infoSpy.mock.calls.some((call) =>
+        String(call[0] ?? "").includes("outcome=tracked_clan_not_found"),
+      ),
+    ).toBe(true);
+  });
+
+  it("logs no tracked clans and returns the empty-registry response", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([]);
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "list",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags).toHaveBeenCalledWith(
+      null,
+    );
+    expect(accountDisplayServiceMock.buildAccountDisplayRows).not.toHaveBeenCalled();
+    expect(String(interaction.editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "No tracked clans in the database.",
+    );
+    expect(
+      infoSpy.mock.calls.some((call) => String(call[0] ?? "").includes("outcome=no_tracked_clans")),
+    ).toBe(true);
+  });
+
+  it("renders the same player under multiple assignment clans and keeps the hydrated current clan separate", async () => {
+    trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([
+      {
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        trackedClanSortOrder: 0,
+        repPlayerTags: ["#PYLQ0289"],
+      },
+      {
+        clanTag: "#BETA001",
+        clanName: "Beta Clan",
+        trackedClanSortOrder: 1,
+        repPlayerTags: ["#PYLQ0289"],
+      },
+    ]);
+    accountDisplayServiceMock.buildAccountDisplayRows.mockResolvedValueOnce([
+      {
+        tag: "#PYLQ0289",
+        name: "Shared Player",
+        townHall: 16,
+        weight: 210000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#CURRENT",
+        clanName: "Current Clan",
+        clanRole: "leader",
+        clanState: "known",
+        isTrackedFwaClan: false,
+        trackedClanSortOrder: null,
+      },
+    ]);
+    accountDisplayServiceMock.buildAccountDisplayRowText.mockImplementation(
+      (row: any) => `${row.tag}|current=${row.clanTag}`,
+    );
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([]);
+
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "list",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(accountDisplayServiceMock.buildAccountDisplayRows).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      linkedNameByTag: new Map(),
+      tags: ["#PYLQ0289"],
+    });
+    expect(accountDisplayServiceMock.buildAccountDisplayRowText).toHaveBeenCalledTimes(2);
+
+    const text = getRenderedPayloadText(interaction.editReply.mock.calls[0]?.[0] ?? {});
+    expect(text).toContain("Alpha Clan");
+    expect(text).toContain("Beta Clan");
+    expect((text.match(/#PYLQ0289\|current=#CURRENT/g) ?? []).length).toBe(2);
+  });
+
+  it("orders rep rows by TH, weight, name, and tag with null values last", async () => {
+    trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([
+      {
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        trackedClanSortOrder: 0,
+        repPlayerTags: ["#TH16A", "#TH16B", "#TH15A", "#TH15B", "#TH15C", "#TH15N", "#NULLTH"],
+      },
+    ]);
+    accountDisplayServiceMock.buildAccountDisplayRows.mockResolvedValueOnce([
+      {
+        tag: "#TH16A",
+        name: "Alpha",
+        townHall: 16,
+        weight: 300000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#TH16B",
+        name: "Zulu",
+        townHall: 16,
+        weight: 200000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#TH15A",
+        name: "Alpha",
+        townHall: 15,
+        weight: 200000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#TH15B",
+        name: "Zulu",
+        townHall: 15,
+        weight: 200000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#TH15C",
+        name: "Zulu",
+        townHall: 15,
+        weight: 200000,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#TH15N",
+        name: "Omega",
+        townHall: 15,
+        weight: null,
+        weightSource: null,
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+      {
+        tag: "#NULLTH",
+        name: "Aaron",
+        townHall: null,
+        weight: 999999,
+        weightSource: "FwaClanMemberCurrent",
+        clanTag: "#ALPHA001",
+        clanName: "Alpha Clan",
+        clanRole: null,
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 0,
+      },
+    ]);
+    accountDisplayServiceMock.buildAccountDisplayRowText.mockImplementation((row: any) => row.tag);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([]);
+
+    const interaction = makeRepInteraction({
+      group: "rep",
+      subcommand: "list",
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const text = getRenderedPayloadText(interaction.editReply.mock.calls[0]?.[0] ?? {});
+    const renderedTags = text
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("#"));
+    expect(renderedTags).toEqual([
+      "#TH16A",
+      "#TH16B",
+      "#TH15A",
+      "#TH15B",
+      "#TH15C",
+      "#TH15N",
+      "#NULLTH",
+    ]);
+  });
+
+  it("paginates long rep lists with real collector callbacks and respects button bounds", async () => {
     trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValueOnce([
       {
         clanTag: "#ALPHA001",
@@ -700,22 +986,90 @@ describe("/clan rep commands", () => {
     accountDisplayServiceMock.buildAccountDisplayRowText.mockImplementation((row: any) =>
       `${row.tag} ${"x".repeat(2500)}`,
     );
-    prismaMock.playerLink.findMany.mockResolvedValue([]);
-    const collector = { on: vi.fn() };
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([]);
 
+    const collector = makeCollectorHarness();
     const interaction = makeRepInteraction({
       group: "rep",
       subcommand: "list",
     });
     interaction.fetchReply.mockResolvedValueOnce({
-      createMessageComponentCollector: vi.fn().mockReturnValue(collector),
+      createMessageComponentCollector: collector.createMessageComponentCollector,
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
-    const payload = interaction.editReply.mock.calls[0]?.[0] ?? {};
-    expect(payload.components).toHaveLength(1);
-    const embed = payload.embeds?.[0]?.toJSON?.() ?? payload.embeds?.[0];
-    expect(String(embed?.footer?.text ?? "")).toContain("Page 1/2");
+    expect(collector.options.filter({ user: { id: "other-user" }, customId: "tracked-clan-rep-list:tracked-clan-rep-itx:next" })).toBe(false);
+
+    const initialPayload = interaction.editReply.mock.calls[0]?.[0] ?? {};
+    expect(getRenderedFooterText(initialPayload)).toBe("Page 1/2");
+    expect(getRenderedButtonStates(initialPayload)).toEqual([
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:prev",
+        disabled: true,
+      },
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:next",
+        disabled: false,
+      },
+    ]);
+
+    const nextButton = {
+      user: { id: interaction.user.id },
+      customId: "tracked-clan-rep-list:tracked-clan-rep-itx:next",
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: false,
+    };
+    await collector.handlers.collect?.(nextButton);
+
+    const firstNextPayload = nextButton.update.mock.calls[0]?.[0] ?? {};
+    expect(getRenderedFooterText(firstNextPayload)).toBe("Page 2/2");
+    expect(getRenderedButtonStates(firstNextPayload)).toEqual([
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:prev",
+        disabled: false,
+      },
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:next",
+        disabled: true,
+      },
+    ]);
+
+    await collector.handlers.collect?.(nextButton);
+    const repeatedNextPayload = nextButton.update.mock.calls[1]?.[0] ?? {};
+    expect(getRenderedFooterText(repeatedNextPayload)).toBe("Page 2/2");
+
+    const prevButton = {
+      user: { id: interaction.user.id },
+      customId: "tracked-clan-rep-list:tracked-clan-rep-itx:prev",
+      update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      replied: false,
+      deferred: false,
+    };
+    await collector.handlers.collect?.(prevButton);
+
+    const firstPrevPayload = prevButton.update.mock.calls[0]?.[0] ?? {};
+    expect(getRenderedFooterText(firstPrevPayload)).toBe("Page 1/2");
+    expect(getRenderedButtonStates(firstPrevPayload)).toEqual([
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:prev",
+        disabled: true,
+      },
+      {
+        customId: "tracked-clan-rep-list:tracked-clan-rep-itx:next",
+        disabled: false,
+      },
+    ]);
+
+    await collector.handlers.collect?.(prevButton);
+    const repeatedPrevPayload = prevButton.update.mock.calls[1]?.[0] ?? {};
+    expect(getRenderedFooterText(repeatedPrevPayload)).toBe("Page 1/2");
+
+    await collector.handlers.end?.();
+    const finalPayload = interaction.editReply.mock.calls.at(-1)?.[0] ?? {};
+    expect(finalPayload.components ?? []).toEqual([]);
   });
 });

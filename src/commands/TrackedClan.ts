@@ -715,6 +715,21 @@ async function loadLinkedNameByTagForPlayerTags(playerTags: string[]): Promise<M
   return linkedNameByTag;
 }
 
+function logTrackedClanRepListOutcome(input: {
+  outcome: "invalid_clan_tag" | "tracked_clan_not_found" | "no_tracked_clans" | "success";
+  guildId: string | null;
+  actorDiscordId: string;
+  clanFilter: string | null;
+  displayedClanCount: number;
+  totalAssignmentCount: number;
+  uniquePlayerCount: number;
+  pageCount: number;
+}): void {
+  console.info(
+    `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${input.guildId ?? "none"} actor_discord_id=${input.actorDiscordId} clan_filter=${input.clanFilter ?? "none"} displayed_clan_count=${input.displayedClanCount} total_assignment_count=${input.totalAssignmentCount} unique_player_count=${input.uniquePlayerCount} page_count=${input.pageCount} outcome=${input.outcome}`,
+  );
+}
+
 async function autocompleteTrackedClanChoices(query: string): Promise<{ name: string; value: string }[]> {
   const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
   const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(query);
@@ -1324,6 +1339,16 @@ export const TrackedClan: Command = {
           const normalizedFilterClanTag =
             clanInput === null ? null : normalizeClanTag(clanInput);
           if (clanInput !== null && !normalizedFilterClanTag) {
+            logTrackedClanRepListOutcome({
+              outcome: "invalid_clan_tag",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: null,
+              displayedClanCount: 0,
+              totalAssignmentCount: 0,
+              uniquePlayerCount: 0,
+              pageCount: 0,
+            });
             await safeReply(interaction, {
               ephemeral: true,
               content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
@@ -1342,6 +1367,16 @@ export const TrackedClan: Command = {
             );
 
             if (normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "tracked_clan_not_found",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: normalizedFilterClanTag,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
               await safeReply(interaction, {
                 ephemeral: true,
                 content: `Tracked clan ${normalizedFilterClanTag} was not found.`,
@@ -1350,6 +1385,16 @@ export const TrackedClan: Command = {
             }
 
             if (!normalizedFilterClanTag && displayRows.length === 0) {
+              logTrackedClanRepListOutcome({
+                outcome: "no_tracked_clans",
+                guildId: interaction.guildId ?? null,
+                actorDiscordId: interaction.user.id,
+                clanFilter: null,
+                displayedClanCount: 0,
+                totalAssignmentCount: 0,
+                uniquePlayerCount: 0,
+                pageCount: 0,
+              });
               await safeReply(interaction, {
                 ephemeral: true,
                 content: "No tracked clans in the database.",
@@ -1461,9 +1506,16 @@ export const TrackedClan: Command = {
               });
             }
 
-            console.info(
-              `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} clan_filter=${normalizedFilterClanTag ?? "none"} displayed_clan_count=${displayedClanCount} total_assignment_count=${totalAssignmentCount} unique_player_count=${uniquePlayerCount} page_count=${pageCount} outcome=success`,
-            );
+            logTrackedClanRepListOutcome({
+              outcome: "success",
+              guildId: interaction.guildId ?? null,
+              actorDiscordId: interaction.user.id,
+              clanFilter: normalizedFilterClanTag,
+              displayedClanCount,
+              totalAssignmentCount,
+              uniquePlayerCount,
+              pageCount,
+            });
             return;
           } catch (error) {
             const failure = toFailureTelemetry(error);
