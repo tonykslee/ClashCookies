@@ -717,14 +717,7 @@ function buildPlayerHistorySnapshotFallback(
 function normalizePlayerHistoryAttackEvidence(
   value: Prisma.JsonValue | null,
 ): WarPlanViolationHistoryAttackEvidence {
-  if (Array.isArray(value)) {
-    return {
-      attacks: value.map(normalizePlayerHistoryAttackEvidenceAttack),
-      breachContext: null,
-    };
-  }
-
-  if (!value || typeof value !== "object") {
+  if (!isPlainJsonObject(value)) {
     return {
       attacks: [],
       breachContext: null,
@@ -733,7 +726,9 @@ function normalizePlayerHistoryAttackEvidence(
 
   const record = value as Record<string, unknown>;
   const attacks = Array.isArray(record.attackDetails)
-    ? record.attackDetails.map(normalizePlayerHistoryAttackEvidenceAttack)
+    ? record.attackDetails
+        .filter(isPlainJsonObject)
+        .map(normalizePlayerHistoryAttackEvidenceAttack)
     : [];
   return {
     attacks,
@@ -743,22 +738,13 @@ function normalizePlayerHistoryAttackEvidence(
 
 /** Purpose: defensively normalize one persisted attack detail row. */
 function normalizePlayerHistoryAttackEvidenceAttack(
-  value: unknown,
+  value: Record<string, unknown>,
 ): WarPlanViolationHistoryAttackEvidenceAttack {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {
-      defenderPosition: null,
-      stars: null,
-      attackOrder: null,
-      isBreach: false,
-    };
-  }
-
-  const record = value as Record<string, unknown>;
+  const record = value;
   return {
-    defenderPosition: normalizeLooseInteger(record.defenderPosition),
-    stars: normalizeLooseInteger(record.stars),
-    attackOrder: normalizeLooseInteger(record.attackOrder),
+    defenderPosition: normalizeFiniteInteger(record.defenderPosition),
+    stars: normalizeFiniteInteger(record.stars),
+    attackOrder: normalizeFiniteInteger(record.attackOrder),
     isBreach: record.isBreach === true,
   };
 }
@@ -767,27 +753,33 @@ function normalizePlayerHistoryAttackEvidenceAttack(
 function normalizePlayerHistoryAttackEvidenceBreachContext(
   value: unknown,
 ): WarPlanViolationHistoryAttackEvidenceBreachContext | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!isPlainJsonObject(value)) return null;
 
   const record = value as Record<string, unknown>;
   return {
-    starsAtBreach: normalizeLooseInteger(record.starsAtBreach),
-    timeRemaining: normalizeDisplayText(record.timeRemaining),
+    starsAtBreach: normalizeFiniteInteger(record.starsAtBreach),
+    timeRemaining: normalizePlayerHistoryTimeRemaining(record.timeRemaining),
   };
 }
 
-/** Purpose: normalize permissive integer-like JSON values without throwing. */
-function normalizeLooseInteger(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? Math.trunc(value) : null;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-  }
-  return null;
+/** Purpose: normalize strict finite integer-like JSON values without coercion. */
+function normalizeFiniteInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.trunc(value);
+}
+
+/** Purpose: normalize breach time remaining strictly from stored string values. */
+function normalizePlayerHistoryTimeRemaining(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Purpose: determine whether a JSON value is a plain object suitable for defensive inspection. */
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /** Purpose: aggregate completed war-plan violations into read-only history summaries. */

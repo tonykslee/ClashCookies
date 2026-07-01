@@ -2443,7 +2443,65 @@ describe("WarPlanViolationHistoryService", () => {
       });
     });
 
-    it("defensively normalizes malformed persisted attack evidence", async () => {
+    it("returns empty attack evidence for root arrays and primitives", async () => {
+      const arrayResult = await buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails: [{ defenderPosition: 1, stars: 3, attackOrder: 1, isBreach: true }],
+            },
+          ],
+        }),
+      ]).service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+      const primitiveResult = await buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails: 42,
+            },
+          ],
+        }),
+      ]).service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(arrayResult.entries[0]?.attackEvidence).toEqual({
+        attacks: [],
+        breachContext: null,
+      });
+      expect(primitiveResult.entries[0]?.attackEvidence).toEqual({
+        attacks: [],
+        breachContext: null,
+      });
+    });
+
+    it("omits invalid nested attack entries rather than replacing them with placeholders", async () => {
       const { service } = buildService([
         buildFixture({
           warId: 1,
@@ -2457,23 +2515,20 @@ describe("WarPlanViolationHistoryService", () => {
               playerTag: "#PYLQ0289",
               playerNameSnapshot: "Snapshot Alpha",
               townHallLevelSnapshot: 12,
-              expectedBehavior: "Expected Alpha",
-              actualBehavior: "Actual Alpha",
-              breachStarsAt: 3,
-              breachTimeRemaining: "0s",
               attackDetails: {
                 attackDetails: [
                   {
-                    defenderPosition: "4",
-                    stars: "2",
-                    attackOrder: "7",
+                    defenderPosition: 4,
+                    stars: 2,
+                    attackOrder: 7,
                     isBreach: true,
                   },
                   "bad-row",
                   null,
+                  [1, 2, 3],
                 ],
                 breachContext: {
-                  starsAtBreach: "6",
+                  starsAtBreach: 6,
                   timeRemaining: " 33m left ",
                 },
               },
@@ -2497,24 +2552,152 @@ describe("WarPlanViolationHistoryService", () => {
             attackOrder: 7,
             isBreach: true,
           },
-          {
-            defenderPosition: null,
-            stars: null,
-            attackOrder: null,
-            isBreach: false,
-          },
-          {
-            defenderPosition: null,
-            stars: null,
-            attackOrder: null,
-            isBreach: false,
-          },
         ],
         breachContext: {
           starsAtBreach: 6,
           timeRemaining: "33m left",
         },
       });
+    });
+
+    it("preserves zero stars, truncates finite decimals, and nulls strict-invalid values", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails: {
+                attackDetails: [
+                  {
+                    defenderPosition: 4.9,
+                    stars: 0,
+                    attackOrder: 2.7,
+                    isBreach: true,
+                  },
+                ],
+                breachContext: {
+                  starsAtBreach: 5.4,
+                  timeRemaining: 123,
+                },
+              },
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.entries[0]?.attackEvidence).toEqual({
+        attacks: [
+          {
+            defenderPosition: 4,
+            stars: 0,
+            attackOrder: 2,
+            isBreach: true,
+          },
+        ],
+        breachContext: {
+          starsAtBreach: 5,
+          timeRemaining: null,
+        },
+      });
+    });
+
+    it("keeps a structurally valid empty breachContext as an object with null fields", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails: {
+                attackDetails: [],
+                breachContext: {},
+              },
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.entries[0]?.attackEvidence).toEqual({
+        attacks: [],
+        breachContext: {
+          starsAtBreach: null,
+          timeRemaining: null,
+        },
+      });
+    });
+
+    it("does not mutate the original persisted evidence object", async () => {
+      const attackDetails = {
+        attackDetails: [
+          {
+            defenderPosition: 4.8,
+            stars: 1,
+            attackOrder: 2,
+            isBreach: true,
+          },
+        ],
+        breachContext: {
+          starsAtBreach: 7.1,
+          timeRemaining: " 12m left ",
+        },
+      };
+      const snapshot = JSON.parse(JSON.stringify(attackDetails));
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails,
+            },
+          ],
+        }),
+      ]);
+
+      await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(attackDetails).toEqual(snapshot);
     });
 
     it("returns successful empty-period metadata when the player has lifetime violations but none in 30d", async () => {
@@ -2875,6 +3058,9 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.select).toMatchObject({
+        attackDetails: true,
+      });
       expect(db.warPlanViolation.findFirst).not.toHaveBeenCalled();
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(1);
       expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
