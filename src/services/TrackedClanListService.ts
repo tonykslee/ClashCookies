@@ -491,7 +491,7 @@ async function loadCwlTrackedClanDetailedRows(input: {
   });
   const currentCwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
 
-  const [observedRosterRows, memberCountRows, activeRosterRows, currentRoundRows, prepRows, historyRows] = await Promise.all([
+  const [observedRosterRows, memberCountRows, activeRosterRows] = await Promise.all([
     currentCwlEventIds.length > 0
       ? prisma.cwlPlayerClanSeason.findMany({
           where: {
@@ -535,30 +535,6 @@ async function loadCwlTrackedClanDetailedRows(input: {
           },
         })
       : Promise.resolve([]),
-    currentCwlEventIds.length > 0
-      ? prisma.currentCwlRound.findMany({
-          where: { eventInstanceId: { in: currentCwlEventIds } },
-          select: {
-            clanTag: true,
-          },
-        })
-      : Promise.resolve([]),
-    currentCwlEventIds.length > 0
-      ? prisma.currentCwlPrepSnapshot.findMany({
-          where: { eventInstanceId: { in: currentCwlEventIds } },
-          select: {
-            clanTag: true,
-          },
-        })
-      : Promise.resolve([]),
-    currentCwlEventIds.length > 0
-      ? prisma.cwlRoundHistory.findMany({
-          where: { eventInstanceId: { in: currentCwlEventIds } },
-          select: {
-            clanTag: true,
-          },
-        })
-      : Promise.resolve([]),
   ]);
 
   const observedRosterCountByTag = new Map<string, Set<string>>();
@@ -596,28 +572,13 @@ async function loadCwlTrackedClanDetailedRows(input: {
     rostersByClanTag.set(clanTag, current);
   }
 
-  const persistedEvidenceTags = new Set<string>();
-  for (const row of currentRoundRows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    if (clanTag) persistedEvidenceTags.add(clanTag);
-  }
-  for (const row of prepRows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    if (clanTag) persistedEvidenceTags.add(clanTag);
-  }
-  for (const row of historyRows) {
-    const clanTag = normalizeClanTag(row.clanTag);
-    if (clanTag) persistedEvidenceTags.add(clanTag);
-  }
-
   const rows = trackedClans.map((row) => {
     const clanTag = normalizeClanTag(row.tag) || row.tag;
     const observedCount = observedRosterCountByTag.get(clanTag)?.size ?? 0;
     const currentMemberCount = guildId ? currentClanMemberCountByTag.get(clanTag) ?? 0 : null;
     const roster = chooseBestCwlTrackedClanRoster(rostersByClanTag.get(clanTag) ?? []);
     const liveStatus = input.liveSpinStatusByTag?.get(clanTag) ?? null;
-    const spinStatus: CwlTrackedClanSpinStatus =
-      liveStatus ?? (observedCount > 0 || persistedEvidenceTags.has(clanTag) ? "matched" : "idle");
+    const spinStatus: CwlTrackedClanSpinStatus = liveStatus ?? (observedCount > 0 ? "matched" : "idle");
     return {
       season: row.season,
       tag: clanTag,
@@ -663,16 +624,46 @@ async function loadCwlTrackedClanLiveSpinStatus(input: {
     try {
       const group = await input.cocService.getClanWarLeagueGroup(tag);
       const returnedSeason = String(group?.season ?? "").trim();
-      if (group && returnedSeason === requestedSeason) {
+      const groupState = String((group as { state?: string | null } | null)?.state ?? "").trim();
+      const groupClanTags = normalizeCwlLeagueGroupClanTags(group);
+      const groupWarTags = normalizeCwlLeagueGroupWarTags(group);
+      const groupHasTrackedClan = groupClanTags.has(tag);
+      const hasValidWarTags = groupWarTags.length > 0;
+      const isSearchingState = groupState.toLowerCase().includes("search");
+
+      if (group && returnedSeason === requestedSeason && groupHasTrackedClan && hasValidWarTags) {
         liveSpinStatusByTag.set(tag, "matched");
         matchedCount += 1;
         continue;
       }
       if (group) {
-        liveSpinStatusByTag.set(tag, "idle");
-        idleCount += 1;
+        let spinStatus: CwlTrackedClanSpinStatus = "idle";
+        let reason = returnedSeason !== requestedSeason ? "stale_group_season" : "no_valid_war_tags";
+        if (returnedSeason === requestedSeason) {
+          if (!groupHasTrackedClan) {
+            reason = "missing_tracked_clan";
+          } else if (!hasValidWarTags && isSearchingState) {
+            spinStatus = "searching";
+            reason = "no_valid_war_tags";
+          }
+        }
+
+        liveSpinStatusByTag.set(tag, spinStatus);
+        if (spinStatus === "searching") {
+          searchingCount += 1;
+        } else {
+          idleCount += 1;
+        }
         console.info(
-          `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${requestedSeason} clan=${tag} status=idle raw_reason=stale_group_season requested_season=${requestedSeason} returned_season=${returnedSeason}`,
+          [
+            "[tracked-clan] stage=cwl_detailed_refresh_live_state",
+            `requested_season=${requestedSeason}`,
+            `returned_season=${returnedSeason || "none"}`,
+            `clan_tag=${tag}`,
+            `group_state=${groupState || "none"}`,
+            `status=${spinStatus}`,
+            `reason=${reason}`,
+          ].join(" "),
         );
         continue;
       }
@@ -705,6 +696,46 @@ async function loadCwlTrackedClanLiveSpinStatus(input: {
     searchingCount,
     idleCount,
   };
+}
+
+function normalizeCwlLeagueGroupClanTags(group: unknown): Set<string> {
+  const clanTags = new Set<string>();
+  const rawClans: unknown[] = Array.isArray((group as { clans?: unknown }).clans)
+    ? ((group as { clans?: unknown[] }).clans ?? [])
+    : [];
+  for (const clan of rawClans) {
+    if (typeof clan === "string") {
+      const clanTag = normalizeClanTag(clan);
+      if (clanTag) clanTags.add(clanTag);
+      continue;
+    }
+    if (!clan || typeof clan !== "object") continue;
+    const clanTag = normalizeClanTag(
+      String((clan as { tag?: unknown; clanTag?: unknown }).tag ?? (clan as { tag?: unknown; clanTag?: unknown }).clanTag ?? ""),
+    );
+    if (clanTag) clanTags.add(clanTag);
+  }
+  return clanTags;
+}
+
+function normalizeCwlLeagueGroupWarTags(group: unknown): string[] {
+  const rawRounds: unknown[] = Array.isArray((group as { rounds?: unknown }).rounds)
+    ? ((group as { rounds?: unknown[] }).rounds ?? [])
+    : [];
+  const warTags: string[] = [];
+  for (const round of rawRounds) {
+    if (!round || typeof round !== "object") continue;
+    const roundWarTags = Array.isArray((round as { warTags?: unknown }).warTags)
+      ? ((round as { warTags?: unknown[] }).warTags as unknown[])
+      : [];
+    for (const warTag of roundWarTags) {
+      const normalizedWarTag = normalizeClanTag(String(warTag ?? ""));
+      if (normalizedWarTag && normalizedWarTag !== "#0") {
+        warTags.push(normalizedWarTag);
+      }
+    }
+  }
+  return [...new Set(warTags)];
 }
 
 /** Purpose: list tracked FWA clans in deterministic creation order for command rendering. */

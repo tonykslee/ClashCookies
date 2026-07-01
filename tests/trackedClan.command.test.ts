@@ -1789,6 +1789,15 @@ describe("/clan command behavior", () => {
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       })),
     );
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      initialRows.map((row) => ({
+        season: row.season,
+        tag: row.tag,
+        name: row.name,
+        leagueLabel: row.leagueLabel,
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      })),
+    );
 
     await TrackedClan.run({} as any, interaction as any, cocService as any);
     const describePayload = (payload: any): string =>

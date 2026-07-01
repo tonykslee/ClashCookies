@@ -407,9 +407,195 @@ describe("TrackedClanListService CWL detailed helpers", () => {
     const logLines = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) =>
       String(call[0] ?? ""),
     );
-    expect(logLines.some((line) => line.includes("raw_reason=stale_group_season"))).toBe(true);
+    expect(
+      logLines.some(
+        (line) =>
+          line.includes("reason=stale_group_season") &&
+          line.includes("requested_season=2026-07") &&
+          line.includes("returned_season=2026-06"),
+      ),
+    ).toBe(true);
     expect(logLines.some((line) => line.includes("returned_season=2026-06"))).toBe(true);
     expect(queueContextMock.runWithCoCQueueContext).toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "matches a current-season live group with the tracked clan and a valid war tag",
+      group: {
+        season: "2026-07",
+        state: "ended",
+        clans: [{ tag: "#PYLQ0289" }],
+        rounds: [{ warTags: ["#QGRJ2222", "#0", ""] }],
+      },
+      expectedStatus: "matched",
+      expectedCount: 2,
+    },
+    {
+      name: "keeps a current-season live group idle when it only has invalid war tags",
+      group: {
+        season: "2026-07",
+        state: "ended",
+        clans: [{ tag: "#PYLQ0289" }],
+        rounds: [{ warTags: ["#0", "", "   "] }],
+      },
+      expectedStatus: "idle",
+      expectedCount: 2,
+      expectedLogReason: "no_valid_war_tags",
+    },
+    {
+      name: "keeps a current-season live group searching when it is clearly searching and has no valid war tags",
+      group: {
+        season: "2026-07",
+        state: "searching",
+        clans: [{ tag: "#PYLQ0289" }],
+        rounds: [{ warTags: ["#0", "", "   "] }],
+      },
+      expectedStatus: "searching",
+      expectedCount: 2,
+      expectedLogReason: "no_valid_war_tags",
+    },
+    {
+      name: "keeps a current-season live group idle when it does not contain the tracked clan",
+      group: {
+        season: "2026-07",
+        state: "ended",
+        clans: [{ tag: "#OTHER" }],
+        rounds: [{ warTags: ["#QGRJ2222"] }],
+      },
+      expectedStatus: "idle",
+      expectedCount: 2,
+      expectedLogReason: "missing_tracked_clan",
+    },
+    {
+      name: "keeps a previous-season live group idle even with valid war tags",
+      group: {
+        season: "2026-06",
+        state: "ended",
+        clans: [{ tag: "#PYLQ0289" }],
+        rounds: [{ warTags: ["#QGRJ2222"] }],
+      },
+      expectedStatus: "idle",
+      expectedCount: 2,
+      expectedLogReason: "stale_group_season",
+    },
+  ])("$name", async ({ group, expectedStatus, expectedCount, expectedLogReason }) => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: {
+          id: "event-july",
+          season: "2026-07",
+          anchorWarTag: "#JULY",
+          firstObservedAt: new Date("2026-07-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-07-01T01:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      { cwlClanTag: "#PYLQ0289", playerTag: "#PYLQ0289" },
+      { cwlClanTag: "#PYLQ0289", playerTag: "#pylq0289" },
+      { cwlClanTag: "#PYLQ0289", playerTag: "#QGRJ2222" },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue(group),
+      getClan: vi.fn(),
+    };
+
+    const result = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
+      season: "2026-07",
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-07",
+      displayedClanCount: 1,
+      matchedCount: expectedStatus === "matched" ? 1 : 0,
+      searchingCount: expectedStatus === "searching" ? 1 : 0,
+      idleCount: expectedStatus === "idle" ? 1 : 0,
+    });
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        observedCwlRosterCount: expectedCount,
+        spinStatus: expectedStatus,
+      }),
+    ]);
+    const logLines = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) =>
+      String(call[0] ?? ""),
+    );
+    if (expectedLogReason) {
+      expect(
+        logLines.some(
+          (line) =>
+            line.includes(`reason=${expectedLogReason}`) &&
+            line.includes("requested_season=2026-07") &&
+            line.includes(`returned_season=${group.season}`) &&
+            line.includes("clan_tag=#PYLQ0289"),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("keeps searching detection intact when live league lookup throws a search-related error", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: {
+          id: "event-july",
+          season: "2026-07",
+          anchorWarTag: "#JULY",
+          firstObservedAt: new Date("2026-07-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-07-01T01:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([
+      { cwlClanTag: "#PYLQ0289", playerTag: "#PYLQ0289" },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockRejectedValue(new Error("searching for a league group")),
+      getClan: vi.fn(),
+    };
+
+    const result = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
+      season: "2026-07",
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({
+      matchedCount: 0,
+      searchingCount: 1,
+      idleCount: 0,
+    });
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        spinStatus: "searching",
+      }),
+    ]);
   });
 
   it("sorts CWL rows by planned roster league, division, and bracket with title precedence over league label", async () => {
