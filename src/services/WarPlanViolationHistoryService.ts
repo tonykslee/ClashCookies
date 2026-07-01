@@ -366,17 +366,10 @@ type DiscordUserAggregatePlayerRow = {
   snapshotFallback: PlayerSnapshotFallback | undefined;
 };
 
-type PlayerAutocompleteHistoryRow = {
+type PlayerAutocompleteSnapshotFallbackRow = {
   playerTag: string;
   playerNameSnapshot: string | null;
   townHallLevelSnapshot: number | null;
-  evaluation: {
-    warHistory: {
-      warId: number;
-      warStartTime: Date;
-      warEndTime: Date | null;
-    };
-  };
 };
 
 const PLAYER_AUTOCOMPLETE_DISCOVERY_CAP = 100;
@@ -886,22 +879,6 @@ function buildPlayerHistorySnapshotFallback(
 }
 
 /** Purpose: derive a single canonical chronology timestamp for one autocomplete candidate row. */
-function resolvePlayerAutocompleteChronologyMs(row: PlayerAutocompleteHistoryRow): number {
-  const history = row.evaluation.warHistory;
-  const canonicalTime = history.warEndTime ?? history.warStartTime;
-  return canonicalTime.getTime();
-}
-
-/** Purpose: order autocomplete history rows by newest canonical history first and war id as a stable tie-breaker. */
-function comparePlayerAutocompleteHistoryRowsDesc(
-  a: PlayerAutocompleteHistoryRow,
-  b: PlayerAutocompleteHistoryRow,
-): number {
-  const timeDelta = resolvePlayerAutocompleteChronologyMs(b) - resolvePlayerAutocompleteChronologyMs(a);
-  if (timeDelta !== 0) return timeDelta;
-  return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
-}
-
 /** Purpose: normalize the focused autocomplete text for stable comparisons. */
 function normalizeAutocompleteQueryText(input: string | null | undefined): string {
   return String(input ?? "").trim().toLowerCase();
@@ -997,49 +974,6 @@ function mergePlayerAutocompleteDiscoveryTags(lanes: string[][]): string[] {
     }
   }
   return merged;
-}
-
-/** Purpose: build canonical snapshot fallbacks for a bounded set of autocomplete tags. */
-function buildPlayerAutocompleteLatestRowsByTag(
-  rows: PlayerAutocompleteHistoryRow[],
-): Map<string, PlayerAutocompleteHistoryRow> {
-  const latestByTag = new Map<string, PlayerAutocompleteHistoryRow>();
-  for (const row of rows) {
-    const playerTag = normalizeTag(row.playerTag);
-    if (!playerTag) continue;
-    const existing = latestByTag.get(playerTag);
-    if (!existing || comparePlayerAutocompleteHistoryRowsDesc(row, existing) < 0) {
-      latestByTag.set(playerTag, {
-        ...row,
-        playerTag,
-      });
-    }
-  }
-  return latestByTag;
-}
-
-/** Purpose: merge bounded name and town-hall history rows into snapshot fallbacks. */
-function buildPlayerAutocompleteSnapshotFallbacks(input: {
-  nameRows: PlayerAutocompleteHistoryRow[];
-  townHallRows: PlayerAutocompleteHistoryRow[];
-}): Map<string, PlayerSnapshotFallback | undefined> {
-  const latestNameRows = buildPlayerAutocompleteLatestRowsByTag(input.nameRows);
-  const latestTownHallRows = buildPlayerAutocompleteLatestRowsByTag(input.townHallRows);
-  const fallbacks = new Map<string, PlayerSnapshotFallback | undefined>();
-  const tags = new Set<string>([...latestNameRows.keys(), ...latestTownHallRows.keys()]);
-
-  for (const playerTag of tags) {
-    const nameRow = latestNameRows.get(playerTag) ?? null;
-    const townHallRow = latestTownHallRows.get(playerTag) ?? null;
-    if (!nameRow && !townHallRow) continue;
-
-    fallbacks.set(playerTag, {
-      playerName: normalizeDisplayText(nameRow?.playerNameSnapshot),
-      townHallLevel: normalizePositiveInteger(townHallRow?.townHallLevelSnapshot),
-    });
-  }
-
-  return fallbacks;
 }
 
 /** Purpose: defensively normalize persisted player-history attack evidence. */
@@ -1457,7 +1391,15 @@ export class WarPlanViolationHistoryService {
       this.loadPlayerIdentityData(candidateTags),
     ]);
 
-    const fallbackByTag = buildPlayerAutocompleteSnapshotFallbacks(snapshotRows);
+    const fallbackByTag = new Map<string, PlayerSnapshotFallback | undefined>();
+    for (const row of snapshotRows) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      fallbackByTag.set(playerTag, {
+        playerName: normalizeDisplayText(row.playerNameSnapshot),
+        townHallLevel: normalizePositiveInteger(row.townHallLevelSnapshot),
+      });
+    }
     const candidates = candidateTags
       .map((candidateTag) => {
         const violationCount = countByTag.get(candidateTag) ?? 0;
@@ -1738,194 +1680,61 @@ export class WarPlanViolationHistoryService {
   private async loadPlayerAutocompleteSnapshotFallbackRows(input: {
     guildId: string;
     playerTags: string[];
-  }): Promise<{
-    nameRows: PlayerAutocompleteHistoryRow[];
-    townHallRows: PlayerAutocompleteHistoryRow[];
-  }> {
+  }): Promise<PlayerAutocompleteSnapshotFallbackRow[]> {
     const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
-    if (normalizedTags.length === 0) {
-      return {
-        nameRows: [],
-        townHallRows: [],
-      };
-    }
+    if (normalizedTags.length === 0) return [];
 
-    const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
-      this.loadPlayerAutocompleteNameSnapshotRows({
-        guildId: input.guildId,
-        playerTags: normalizedTags,
-        warEndTimeMode: "ended",
-      }),
-      this.loadPlayerAutocompleteNameSnapshotRows({
-        guildId: input.guildId,
-        playerTags: normalizedTags,
-        warEndTimeMode: "null",
-      }),
-      this.loadPlayerAutocompleteTownHallSnapshotRows({
-        guildId: input.guildId,
-        playerTags: normalizedTags,
-        warEndTimeMode: "ended",
-      }),
-      this.loadPlayerAutocompleteTownHallSnapshotRows({
-        guildId: input.guildId,
-        playerTags: normalizedTags,
-        warEndTimeMode: "null",
-      }),
-    ]);
-
-    return {
-      nameRows: [...endedNameRows, ...nullEndedNameRows],
-      townHallRows: [...endedTownHallRows, ...nullEndedTownHallRows],
-    };
-  }
-
-  /** Purpose: load the newest canonical autocomplete rows for fallback names. */
-  private async loadPlayerAutocompleteNameSnapshotRows(input: {
-    guildId: string;
-    playerTags: string[];
-    warEndTimeMode: "ended" | "null";
-  }): Promise<PlayerAutocompleteHistoryRow[]> {
-    return (await this.db.warPlanViolation.findMany({
-      where: {
-        playerTag: {
-          in: input.playerTags,
-        },
-        evaluation: {
-          is: {
-            guildId: input.guildId,
-            status: "COMPLETED",
-            warHistory: {
-              is:
-                input.warEndTimeMode === "ended"
-                  ? {
-                      warEndTime: { not: null },
-                    }
-                  : {
-                      warEndTime: null,
-                    },
-            },
-          },
-        },
-      },
-      distinct: ["playerTag"],
-      orderBy: [
-        { playerTag: "asc" },
-        {
-          evaluation: {
-            warHistory: {
-              warEndTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warStartTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warId: "desc",
-            },
-          },
-        },
-      ],
-      select: {
-        playerTag: true,
-        playerNameSnapshot: true,
-        townHallLevelSnapshot: true,
-        evaluation: {
-          select: {
-            warHistory: {
-              select: {
-                warId: true,
-                warStartTime: true,
-                warEndTime: true,
-              },
-            },
-          },
-        },
-      },
-      take: input.playerTags.length,
-    })) as PlayerAutocompleteHistoryRow[];
-  }
-
-  /** Purpose: load the newest canonical autocomplete rows that still carry a valid Town Hall snapshot. */
-  private async loadPlayerAutocompleteTownHallSnapshotRows(input: {
-    guildId: string;
-    playerTags: string[];
-    warEndTimeMode: "ended" | "null";
-  }): Promise<PlayerAutocompleteHistoryRow[]> {
-    return (await this.db.warPlanViolation.findMany({
-      where: {
-        playerTag: {
-          in: input.playerTags,
-        },
-        townHallLevelSnapshot: {
-          gt: 0,
-        },
-        evaluation: {
-          is: {
-            guildId: input.guildId,
-            status: "COMPLETED",
-            warHistory: {
-              is:
-                input.warEndTimeMode === "ended"
-                  ? {
-                      warEndTime: { not: null },
-                    }
-                  : {
-                      warEndTime: null,
-                    },
-            },
-          },
-        },
-      },
-      distinct: ["playerTag"],
-      orderBy: [
-        { playerTag: "asc" },
-        {
-          evaluation: {
-            warHistory: {
-              warEndTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warStartTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warId: "desc",
-            },
-          },
-        },
-      ],
-      select: {
-        playerTag: true,
-        playerNameSnapshot: true,
-        townHallLevelSnapshot: true,
-        evaluation: {
-          select: {
-            warHistory: {
-              select: {
-                warId: true,
-                warStartTime: true,
-                warEndTime: true,
-              },
-            },
-          },
-        },
-      },
-      take: input.playerTags.length,
-    })) as PlayerAutocompleteHistoryRow[];
+    const candidateTagSql = normalizedTags.map((playerTag) => Prisma.sql`(${playerTag})`);
+    return (await this.db.$queryRaw<PlayerAutocompleteSnapshotFallbackRow[]>(Prisma.sql`
+      WITH "params" AS (
+        SELECT ${input.guildId}::text AS "guildId"
+      ),
+      "candidate_tags"("playerTag") AS (
+        VALUES ${Prisma.join(candidateTagSql)}
+      )
+      SELECT
+        c."playerTag" AS "playerTag",
+        name_row."playerNameSnapshot" AS "playerNameSnapshot",
+        th_row."townHallLevelSnapshot" AS "townHallLevelSnapshot"
+      FROM "candidate_tags" c
+      CROSS JOIN "params" p
+      LEFT JOIN LATERAL (
+        SELECT
+          v."playerNameSnapshot"
+        FROM "WarPlanViolation" v
+        INNER JOIN "WarPlanComplianceEvaluation" e
+          ON e."id" = v."evaluationId"
+        INNER JOIN "ClanWarHistory" h
+          ON h."warId" = e."warId"
+        WHERE
+          v."playerTag" = c."playerTag"
+          AND e."guildId" = p."guildId"
+          AND e."status" = 'COMPLETED'::"WarPlanComplianceEvaluationStatus"
+        ORDER BY
+          COALESCE(h."warEndTime", h."warStartTime") DESC,
+          h."warId" DESC
+        LIMIT 1
+      ) name_row ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          v."townHallLevelSnapshot"
+        FROM "WarPlanViolation" v
+        INNER JOIN "WarPlanComplianceEvaluation" e
+          ON e."id" = v."evaluationId"
+        INNER JOIN "ClanWarHistory" h
+          ON h."warId" = e."warId"
+        WHERE
+          v."playerTag" = c."playerTag"
+          AND v."townHallLevelSnapshot" > 0
+          AND e."guildId" = p."guildId"
+          AND e."status" = 'COMPLETED'::"WarPlanComplianceEvaluationStatus"
+        ORDER BY
+          COALESCE(h."warEndTime", h."warStartTime") DESC,
+          h."warId" DESC
+        LIMIT 1
+      ) th_row ON TRUE
+      ORDER BY c."playerTag" ASC
+    `)) as PlayerAutocompleteSnapshotFallbackRow[];
   }
 
   /** Purpose: discover the top violator tags when autocomplete has no focused text. */

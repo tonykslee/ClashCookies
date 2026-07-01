@@ -261,6 +261,20 @@ function matchesNumericCondition(value: number | null | undefined, filter: unkno
   return true;
 }
 
+function normalizeSqlText(query: unknown): string {
+  if (!query || typeof query !== "object") return "";
+  const record = query as { strings?: string[] };
+  return Array.isArray(record.strings)
+    ? record.strings.join("?").replace(/\s+/g, " ").trim()
+    : "";
+}
+
+function extractSqlValues(query: unknown): unknown[] {
+  if (!query || typeof query !== "object") return [];
+  const record = query as { values?: unknown[] };
+  return Array.isArray(record.values) ? record.values : [];
+}
+
 function matchesInFilter(where: Record<string, unknown> | undefined, playerTag: string): boolean {
   if (!where) return true;
   const normalizedPlayerTag = normalizeTag(playerTag);
@@ -306,6 +320,42 @@ function matchesTodoPlayerSnapshotWhere(
   if (!where) return true;
   if (!matchesInFilter(where, row.playerTag)) return false;
   return matchesTextCondition(row.playerName, where.playerName);
+}
+
+function compareAutocompleteSnapshotRowsDesc(a: BuiltViolationRow, b: BuiltViolationRow): number {
+  const aTime = (a.evaluation.warHistory.warEndTime ?? a.evaluation.warHistory.warStartTime).getTime();
+  const bTime = (b.evaluation.warHistory.warEndTime ?? b.evaluation.warHistory.warStartTime).getTime();
+  if (bTime !== aTime) return bTime - aTime;
+  return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+}
+
+function buildAutocompleteSnapshotRows(
+  rows: BuiltViolationRow[],
+  guildId: string,
+  candidateTags: string[],
+): Array<{
+  playerTag: string;
+  playerNameSnapshot: string | null;
+  townHallLevelSnapshot: number | null;
+}> {
+  const uniqueTags = [...new Set(candidateTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
+  return uniqueTags.map((playerTag) => {
+    const matchedRows = rows
+      .filter(
+        (row) =>
+          row.guildId === guildId &&
+          row.status === "COMPLETED" &&
+          normalizeTag(row.playerTag) === playerTag,
+      )
+      .sort(compareAutocompleteSnapshotRowsDesc);
+    const nameRow = matchedRows[0] ?? null;
+    const townHallRow = matchedRows.find((row) => (row.townHallLevelSnapshot ?? 0) > 0) ?? null;
+    return {
+      playerTag,
+      playerNameSnapshot: nameRow?.playerNameSnapshot ?? null,
+      townHallLevelSnapshot: townHallRow?.townHallLevelSnapshot ?? null,
+    };
+  });
 }
 
 function compareIdentityRows(
@@ -606,6 +656,12 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
   };
 
   const db = {
+    $queryRaw: vi.fn(async (query?: unknown) => {
+      const values = extractSqlValues(query);
+      const guildId = String(values[0] ?? "").trim();
+      const candidateTags = values.slice(1).map((value) => normalizeTag(String(value ?? ""))).filter(Boolean);
+      return buildAutocompleteSnapshotRows(violationRows, guildId, candidateTags);
+    }),
     playerCurrent: {
       findMany: vi.fn(async (args?: {
         where?: Record<string, unknown>;
@@ -4024,8 +4080,9 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(result.map((choice) => choice.value)).toEqual(["#PYLQ0289"]);
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(4);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.where).toMatchObject({
         evaluation: {
@@ -4046,17 +4103,12 @@ describe("WarPlanViolationHistoryService", () => {
           in: ["#PYLQ0289"],
         },
       });
-      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-        playerTag: {
-          in: ["#PYLQ0289"],
-        },
-        evaluation: {
-          is: {
-            guildId: "guild-a",
-            status: "COMPLETED",
-          },
-        },
-      });
+      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(sqlText).toContain('h."warId" DESC');
+      expect(sqlValues).toEqual(["guild-a", "#PYLQ0289"]);
       expect(result[0]?.name).toContain("Guild Alpha");
     });
 
@@ -4129,9 +4181,14 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Current Alpha");
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(6);
-      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.take).toBe(100);
-      expect(db.warPlanViolation.findMany.mock.calls[1]?.[0]?.take).toBe(100);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(sqlText).toContain('h."warId" DESC');
+      expect(sqlValues).toEqual(["guild-1", "#PYLQ0289"]);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.playerCurrent.findMany.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
@@ -4193,20 +4250,17 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(4);
-      expect(db.warPlanViolation.findMany.mock.calls.slice(0, 4).every((call) => call[0]?.take === 1)).toBe(true);
-
-      const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
-        db.warPlanViolation.findMany.mock.results[0]?.value,
-        db.warPlanViolation.findMany.mock.results[1]?.value,
-        db.warPlanViolation.findMany.mock.results[2]?.value,
-        db.warPlanViolation.findMany.mock.results[3]?.value,
-      ]);
-
-      expect(endedNameRows).toHaveLength(1);
-      expect(nullEndedNameRows).toHaveLength(1);
-      expect(endedTownHallRows).toHaveLength(1);
-      expect(nullEndedTownHallRows).toHaveLength(1);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(sqlText).toContain('h."warId" DESC');
+      expect(sqlValues[0]).toBe("guild-1");
+      expect(sqlValues.slice(1)).toHaveLength(1);
+      expect(rawRows).toHaveLength(1);
       expect(result[0]?.value).toBe("#PYLQ0289");
     });
 
@@ -4247,19 +4301,10 @@ describe("WarPlanViolationHistoryService", () => {
         focusedText: "",
       });
 
-      const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
-        db.warPlanViolation.findMany.mock.results[0]?.value,
-        db.warPlanViolation.findMany.mock.results[1]?.value,
-        db.warPlanViolation.findMany.mock.results[2]?.value,
-        db.warPlanViolation.findMany.mock.results[3]?.value,
-      ]);
-
-      expect(endedNameRows).toHaveLength(1);
-      expect(nullEndedNameRows).toHaveLength(1);
-      expect(endedNameRows[0]?.playerNameSnapshot).toBe("Older Name");
-      expect(nullEndedNameRows[0]?.playerNameSnapshot).toBe("   ");
-      expect(endedTownHallRows[0]?.townHallLevelSnapshot).toBe(15);
-      expect(nullEndedTownHallRows).toHaveLength(0);
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      expect(rawRows).toHaveLength(1);
+      expect(rawRows[0]?.playerNameSnapshot).toBe("   ");
+      expect(rawRows[0]?.townHallLevelSnapshot).toBe(15);
       expect(result[0]?.name).toContain("#PYLQ0289");
     });
 
@@ -4680,11 +4725,14 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(25);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
-      expect(
-        (db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where as { playerTag?: { in?: string[] } })
-          ?.playerTag?.in,
-      ).toHaveLength(100);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      expect(sqlValues[0]).toBe("guild-1");
+      expect(sqlValues.slice(1)).toHaveLength(100);
+      expect(rawRows).toHaveLength(100);
       expect(
         (db.playerCurrent.findMany.mock.calls[0]?.[0]?.where as { playerTag?: { in?: string[] } })
           ?.playerTag?.in,
@@ -4799,8 +4847,9 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(historySpy).not.toHaveBeenCalled();
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(6);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
       expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
