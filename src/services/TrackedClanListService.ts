@@ -340,8 +340,9 @@ const CWL_PLANNED_ROSTER_FAMILY_RANK = new Map<string, number>([
   ["BRONZE", 1],
 ]);
 
-const CWL_PLANNED_ROSTER_TITLE_PATTERN =
-  /^(?<family>legend(?:s)?|champion(?:s)?|master(?:s)?|crystal(?:s)?|gold(?:s)?|silver(?:s)?|bronze(?:s)?)(?:\s+league)?(?:\s+(?<division>\d+|[ivxlcdm]+))?(?:\s*\[\s*(?<bracket>[a-z])\s*\])?$/i;
+const CWL_PLANNED_ROSTER_LEGEND_PATTERN = /^legend(?:\s+league)?$/i;
+const CWL_PLANNED_ROSTER_STANDARD_PATTERN =
+  /^(?<family>champion(?:s)?|master(?:s)?|crystal(?:s)?|gold(?:s)?|silver(?:s)?|bronze(?:s)?)(?:\s+league)?\s+(?<division>\d+|[ivxlcdm]+)(?:\s*\[\s*(?<bracket>[a-e])\s*\])?$/i;
 
 type CwlPlannedRosterSortKey = {
   familyRank: number;
@@ -358,23 +359,30 @@ function parseCwlPlannedRosterSortKey(input: string | null): CwlPlannedRosterSor
   if (!normalized) return null;
 
   const titleSegment = normalized.split("|", 1)[0]?.trim() ?? "";
-  const match = titleSegment.match(CWL_PLANNED_ROSTER_TITLE_PATTERN);
+  if (CWL_PLANNED_ROSTER_LEGEND_PATTERN.test(titleSegment)) {
+    return {
+      familyRank: CWL_PLANNED_ROSTER_FAMILY_RANK.get("LEGEND") ?? -1,
+      divisionRank: 0,
+      bracketRank: 0,
+    };
+  }
+
+  const match = titleSegment.match(CWL_PLANNED_ROSTER_STANDARD_PATTERN);
   const familyToken = match?.groups?.family?.toUpperCase().replace(/S$/, "") ?? "";
   const familyRank = CWL_PLANNED_ROSTER_FAMILY_RANK.get(familyToken) ?? -1;
   if (familyRank < 0) return null;
 
   const divisionToken = match?.groups?.division?.trim() ?? "";
-  const divisionRank = familyToken === "LEGEND" ? 0 : parseRomanNumeral(divisionToken);
-  if (familyToken !== "LEGEND" && divisionRank === null) return null;
+  const divisionRank = parseRomanNumeral(divisionToken);
+  if (divisionRank === null || divisionRank < 1 || divisionRank > 3) return null;
 
   const bracketToken = match?.groups?.bracket?.trim().toUpperCase() ?? "";
-  const bracketRank = bracketToken
-    ? Math.max(1, Math.min(26, bracketToken.charCodeAt(0) - 64))
-    : 0;
+  const bracketRank = bracketToken ? bracketToken.charCodeAt(0) - 64 : 0;
+  if (bracketRank < 0 || bracketRank > 5) return null;
 
   return {
     familyRank,
-    divisionRank: divisionRank ?? 0,
+    divisionRank,
     bracketRank,
   };
 }

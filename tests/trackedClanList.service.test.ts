@@ -531,6 +531,150 @@ describe("TrackedClanListService CWL detailed helpers", () => {
     expect(rows.map((row) => row.tag)).toEqual(orderedRows.map((row) => row.tag));
   });
 
+  it.each([
+    {
+      name: "accepts Masters 1 [A] as a valid planned roster key",
+      rows: [
+        {
+          tag: buildValidCwlTag(40),
+          name: "Masters 2 Anchor",
+          leagueLabel: "Unranked",
+          rosterTitle: "Masters 2 [A] | TH17 - 18",
+        },
+        {
+          tag: buildValidCwlTag(41),
+          name: "Masters 1 Anchor",
+          leagueLabel: "Unranked",
+          rosterTitle: "Masters 1 [A] | TH18 175k+",
+        },
+      ],
+      expectedOrder: [buildValidCwlTag(41), buildValidCwlTag(40)],
+    },
+    {
+      name: "accepts Masters II [B] as a valid planned roster key",
+      rows: [
+        {
+          tag: buildValidCwlTag(42),
+          name: "Masters II B",
+          leagueLabel: "Unranked",
+          rosterTitle: "Masters II [B] | TH18 175k+",
+        },
+        {
+          tag: buildValidCwlTag(43),
+          name: "Masters II A",
+          leagueLabel: "Unranked",
+          rosterTitle: "Masters II [A] | TH18 175k+",
+        },
+      ],
+      expectedOrder: [buildValidCwlTag(43), buildValidCwlTag(42)],
+    },
+    {
+      name: "accepts Master League III as a valid planned roster key",
+      rows: [
+        {
+          tag: buildValidCwlTag(44),
+          name: "Master League III",
+          leagueLabel: "Unranked",
+          rosterTitle: "Master League III | TH14 - 16",
+        },
+        {
+          tag: buildValidCwlTag(45),
+          name: "Master League II",
+          leagueLabel: "Unranked",
+          rosterTitle: "Master League II | TH14 - 16",
+        },
+      ],
+      expectedOrder: [buildValidCwlTag(45), buildValidCwlTag(44)],
+    },
+    {
+      name: "rejects Masters 4 [A] and falls back to Crystal League I",
+      rows: [
+        {
+          tag: buildValidCwlTag(46),
+          name: "Gold Anchor",
+          leagueLabel: "Gold League I",
+          rosterTitle: "Gold 1 | TH13 and below",
+        },
+        {
+          tag: buildValidCwlTag(47),
+          name: "Crystal Fallback",
+          leagueLabel: "Crystal League I",
+          rosterTitle: "Masters 4 [A] | TH17 - 18",
+        },
+        {
+          tag: buildValidCwlTag(48),
+          name: "Crystal Anchor",
+          leagueLabel: "Crystal League I",
+          rosterTitle: "Crystal 1 | TH13 and below",
+        },
+      ],
+      expectedOrder: [buildValidCwlTag(48), buildValidCwlTag(47), buildValidCwlTag(46)],
+    },
+    {
+      name: "rejects Legend 2 as malformed Legend syntax and leaves it in the unknown group",
+      rows: [
+        {
+          tag: buildValidCwlTag(49),
+          name: "Legend Exact",
+          leagueLabel: "Unranked",
+          rosterTitle: "Legend | Showcase",
+        },
+        {
+          tag: buildValidCwlTag(50),
+          name: "Legend League",
+          leagueLabel: "Unranked",
+          rosterTitle: "Legend League | Showcase",
+        },
+        {
+          tag: buildValidCwlTag(51),
+          name: "Broken Alpha",
+          leagueLabel: null,
+          rosterTitle: "Broken Roster",
+        },
+        {
+          tag: buildValidCwlTag(52),
+          name: "Broken Zulu",
+          leagueLabel: null,
+          rosterTitle: "Broken Roster",
+        },
+        {
+          tag: buildValidCwlTag(53),
+          name: "Legend Invalid",
+          leagueLabel: null,
+          rosterTitle: "Legend 2 | Showcase",
+        },
+      ],
+      expectedOrder: [
+        buildValidCwlTag(49),
+        buildValidCwlTag(50),
+        buildValidCwlTag(51),
+        buildValidCwlTag(52),
+        buildValidCwlTag(53),
+      ],
+    },
+  ])("$name", async ({ rows, expectedOrder }) => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(rows.map((row) => buildCwlTrackedClanSeasonRow(row)));
+    prismaMock.roster.findMany.mockResolvedValueOnce(
+      rows.map((row, index) =>
+        buildCwlRosterRow({
+          tag: row.tag,
+          title: row.rosterTitle,
+          lifecycleState: index % 3 === 0 ? "OPEN" : index % 3 === 1 ? "ACTIVE" : "CLOSED",
+          postedMessageUrl: index % 2 === 0 ? `https://discord.com/channels/1/2/${index + 50}` : null,
+          postedAt: index % 2 === 0 ? new Date(`2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`) : null,
+          createdAt: new Date(`2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`),
+        }),
+      ),
+    );
+
+    const rowsResult = await listCwlTrackedClansForDetailedDisplay({
+      season: "2026-07",
+      guildId: "guild-1",
+    });
+
+    expect(rowsResult.map((row) => row.tag)).toEqual(expectedOrder);
+  });
+
   it("falls back to leagueLabel when the roster title is missing or unparseable", async () => {
     const fallbackRows = [
       {
@@ -607,6 +751,24 @@ describe("TrackedClanListService CWL detailed helpers", () => {
         leagueLabel: "Unknown",
         rosterTitle: "Broken Roster",
       },
+      {
+        tag: buildValidCwlTag(34),
+        name: "Legend Invalid",
+        leagueLabel: null,
+        rosterTitle: "Legend 2 | Showcase",
+      },
+      {
+        tag: buildValidCwlTag(35),
+        name: "Foxtrot Broken",
+        leagueLabel: null,
+        rosterTitle: "Masters 1 [F] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(36),
+        name: "Zulu Broken",
+        leagueLabel: null,
+        rosterTitle: "Masters 1 [Z] | TH18 175k+",
+      },
     ];
 
     prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
@@ -635,6 +797,9 @@ describe("TrackedClanListService CWL detailed helpers", () => {
       malformedRows[0].tag,
       malformedRows[2].tag,
       malformedRows[1].tag,
+      malformedRows[3].tag,
+      malformedRows[4].tag,
+      malformedRows[5].tag,
     ]);
   });
 });

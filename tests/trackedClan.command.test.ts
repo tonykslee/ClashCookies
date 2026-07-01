@@ -1699,6 +1699,123 @@ describe("/clan command behavior", () => {
     expect(finalDescription).toContain("Members: 37 CWL / 49 clan");
   });
 
+  it("keeps the planned CWL order unchanged after a manual minimal refresh rerender", async () => {
+    const initialRows = [
+      {
+        season: "2026-03",
+        tag: "#2RVGJYLC0",
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        spinStatus: "matched",
+        observedCwlRosterCount: 12,
+        currentClanMemberCount: 52,
+        rosterTitle: "Champions 3 | Serious CWL (Invite-only)",
+        rosterPostedMessageUrl: null,
+      },
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        spinStatus: "matched",
+        observedCwlRosterCount: 37,
+        currentClanMemberCount: 49,
+        rosterTitle: "Masters 1 [A] | TH18 175k+",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/3",
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        spinStatus: "matched",
+        observedCwlRosterCount: 27,
+        currentClanMemberCount: 51,
+        rosterTitle: "Masters 1 [B] | TH18 175k+",
+        rosterPostedMessageUrl: "https://discord.com/channels/1/2/4",
+      },
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "Beta Clan",
+        leagueLabel: "Master League II",
+        spinStatus: "idle",
+        observedCwlRosterCount: 31,
+        currentClanMemberCount: 50,
+        rosterTitle: "Masters 2 [A] | TH17 - 18",
+        rosterPostedMessageUrl: null,
+      },
+    ];
+    const refreshedRows = initialRows.map((row, index) => ({
+      ...row,
+      spinStatus: index === 0 ? "matched" : "searching",
+      currentClanMemberCount: row.currentClanMemberCount + 1,
+      rosterPostedMessageUrl: row.rosterPostedMessageUrl ?? `https://discord.com/channels/1/2/${index + 190}`,
+    }));
+
+    const listSpy = vi
+      .spyOn(trackedClanListService, "listCwlTrackedClansForDetailedDisplay")
+      .mockResolvedValue(initialRows as any);
+    const refreshSpy = vi
+      .spyOn(trackedClanListService, "refreshCwlTrackedClanDetailedDisplayWithQueueContext")
+      .mockResolvedValue({
+        season: "2026-03",
+        displayedClanCount: refreshedRows.length,
+        failedClanCount: 0,
+        failedClanTags: [],
+        metadataHydratedCount: 0,
+        metadataSkippedCount: 0,
+        matchedCount: 1,
+        searchingCount: 2,
+        idleCount: 1,
+        rows: refreshedRows as any,
+      });
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      initialRows.map((row) => ({
+        season: row.season,
+        tag: row.tag,
+        name: row.name,
+        leagueLabel: row.leagueLabel,
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      })),
+    );
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+    const describePayload = (payload: any): string =>
+      String((payload?.embeds ?? []).map((embed: any) => String(embed?.toJSON?.().description ?? "")).join("\n"));
+
+    const initialPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const initialDescription = describePayload(initialPayload);
+    expect(initialDescription.indexOf("Delta Clan")).toBeLessThan(initialDescription.indexOf("Alpha Clan"));
+    expect(initialDescription.indexOf("Alpha Clan")).toBeLessThan(initialDescription.indexOf("Charlie Clan"));
+    expect(initialDescription.indexOf("Charlie Clan")).toBeLessThan(initialDescription.indexOf("Beta Clan"));
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    const refreshButton = makeButtonInteraction("tracked-clan-list:cwl-summary:tracked-clan-itx-1:refresh");
+    await collectHandler?.(refreshButton);
+
+    expect(refreshButton.update).toHaveBeenCalled();
+    const finalPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const finalDescription = describePayload(finalPayload);
+    expect(finalDescription.indexOf("Delta Clan")).toBeLessThan(finalDescription.indexOf("Alpha Clan"));
+    expect(finalDescription.indexOf("Alpha Clan")).toBeLessThan(finalDescription.indexOf("Charlie Clan"));
+    expect(finalDescription.indexOf("Charlie Clan")).toBeLessThan(finalDescription.indexOf("Beta Clan"));
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("renders detailed CWL overflow as seamless multi-embed output without page footers", async () => {
     const rows = Array.from({ length: 4 }, (_, index) => {
       const tag = "#PYLQ0289";
