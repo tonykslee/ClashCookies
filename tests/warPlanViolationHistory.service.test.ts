@@ -116,6 +116,17 @@ function makePlayerLinkFixture(input: PlayerLinkFixture): PlayerLinkFixture {
   return input;
 }
 
+function makeAutocompleteTag(index: number): string {
+  const chars = "PYLQGRJCUV0289";
+  const first = chars[index % chars.length] ?? "P";
+  const second = chars[Math.floor(index / chars.length) % chars.length] ?? "Y";
+  return `#2QG2C08${first}${second}`;
+}
+
+function makeLongPlayerName(prefix: string): string {
+  return `${prefix} ${"X".repeat(120)}`;
+}
+
 function normalizeTag(input: string | null | undefined): string {
   return normalizeClashTagInput(input);
 }
@@ -130,10 +141,260 @@ function compareFixturesDesc(a: EvaluationFixture, b: EvaluationFixture): number
   return b.warId - a.warId;
 }
 
+function compareViolationRowsForDistinct(
+  a: BuiltViolationRow,
+  b: BuiltViolationRow,
+  orderBy: Array<Record<string, "asc" | "desc">> | undefined,
+): number {
+  if (!orderBy?.length) return 0;
+
+  for (const clause of orderBy) {
+    const [field, direction] = Object.entries(clause)[0] as [string, "asc" | "desc"];
+    let delta = 0;
+    if (field === "playerTag") {
+      delta = normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+    } else if (field === "id") {
+      delta = String(a.id).localeCompare(String(b.id));
+    } else if (field === "evaluation") {
+      const evaluationOrder = clause.evaluation as
+        | { warHistory?: Record<string, "asc" | "desc"> }
+        | undefined;
+      const historyOrder = evaluationOrder?.warHistory;
+      if (historyOrder?.warEndTime) {
+        const aTime = a.evaluation.warHistory.warEndTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const bTime = b.evaluation.warHistory.warEndTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+        delta = aTime - bTime;
+      } else if (historyOrder?.warStartTime) {
+        delta = a.evaluation.warHistory.warStartTime.getTime() - b.evaluation.warHistory.warStartTime.getTime();
+      } else if (historyOrder?.warId) {
+        delta = a.evaluation.warHistory.warId - b.evaluation.warHistory.warId;
+      }
+    } else {
+      delta = String((a as Record<string, unknown>)[field] ?? "").localeCompare(
+        String((b as Record<string, unknown>)[field] ?? ""),
+      );
+    }
+
+    if (delta !== 0) {
+      return direction === "desc" ? -delta : delta;
+    }
+  }
+
+  return 0;
+}
+
+function applyViolationDistinct(rows: BuiltViolationRow[], args?: { distinct?: string[]; orderBy?: Array<Record<string, "asc" | "desc">>; take?: number }): BuiltViolationRow[] {
+  let ordered = [...rows];
+  if (args?.orderBy?.length) {
+    ordered.sort((a, b) => compareViolationRowsForDistinct(a, b, args.orderBy));
+  }
+
+  if (args?.distinct?.includes("playerTag")) {
+    const seen = new Set<string>();
+    ordered = ordered.filter((row) => {
+      const tag = normalizeTag(row.playerTag);
+      if (!tag || seen.has(tag)) return false;
+      seen.add(tag);
+      return true;
+    });
+  }
+
+  if (typeof args?.take === "number" && Number.isFinite(args.take)) {
+    ordered = ordered.slice(0, Math.max(0, Math.trunc(args.take)));
+  }
+
+  return ordered;
+}
+
+function applyTake<T>(rows: T[], take?: number): T[] {
+  if (typeof take !== "number" || !Number.isFinite(take)) return rows;
+  return rows.slice(0, Math.max(0, Math.trunc(take)));
+}
+
+function normalizeSearchText(input: string | null | undefined): string {
+  return String(input ?? "").trim().toLowerCase();
+}
+
+function matchesTextCondition(
+  value: string | null | undefined,
+  filter: unknown,
+): boolean {
+  if (filter === undefined || filter === null) return true;
+  const candidate = normalizeSearchText(value);
+  if (typeof filter === "string") {
+    return candidate === normalizeSearchText(filter);
+  }
+  if (typeof filter !== "object" || Array.isArray(filter)) return true;
+  const record = filter as {
+    contains?: string;
+    startsWith?: string;
+    equals?: string;
+    mode?: string;
+  };
+  if (typeof record.equals === "string" && candidate !== normalizeSearchText(record.equals)) return false;
+  if (typeof record.startsWith === "string" && !candidate.startsWith(normalizeSearchText(record.startsWith))) return false;
+  if (typeof record.contains === "string" && !candidate.includes(normalizeSearchText(record.contains))) return false;
+  return true;
+}
+
+function matchesNumericCondition(value: number | null | undefined, filter: unknown): boolean {
+  if (filter === undefined || filter === null) return true;
+  const candidate = typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof filter === "number") {
+    return candidate === filter;
+  }
+  if (typeof filter !== "object" || Array.isArray(filter)) return true;
+  const record = filter as {
+    equals?: number;
+    gt?: number;
+    gte?: number;
+    lt?: number;
+    lte?: number;
+    in?: number[];
+  };
+  if (typeof record.equals === "number" && candidate !== record.equals) return false;
+  if (typeof record.gt === "number" && !(candidate !== null && candidate > record.gt)) return false;
+  if (typeof record.gte === "number" && !(candidate !== null && candidate >= record.gte)) return false;
+  if (typeof record.lt === "number" && !(candidate !== null && candidate < record.lt)) return false;
+  if (typeof record.lte === "number" && !(candidate !== null && candidate <= record.lte)) return false;
+  if (Array.isArray(record.in) && !record.in.includes(candidate ?? Number.NaN)) return false;
+  return true;
+}
+
+function normalizeSqlText(query: unknown): string {
+  if (!query || typeof query !== "object") return "";
+  const record = query as { strings?: string[] };
+  return Array.isArray(record.strings)
+    ? record.strings.join("?").replace(/\s+/g, " ").trim()
+    : "";
+}
+
+function extractSqlValues(query: unknown): unknown[] {
+  if (!query || typeof query !== "object") return [];
+  const record = query as { values?: unknown[] };
+  return Array.isArray(record.values) ? record.values : [];
+}
+
 function matchesInFilter(where: Record<string, unknown> | undefined, playerTag: string): boolean {
-  const inValues = (where?.playerTag as { in?: string[] } | undefined)?.in;
-  if (!inValues) return true;
-  return inValues.map((tag) => normalizeTag(tag)).includes(normalizeTag(playerTag));
+  if (!where) return true;
+  const normalizedPlayerTag = normalizeTag(playerTag);
+  const tagFilter = where.playerTag as
+    | string
+    | { in?: string[]; contains?: string; startsWith?: string; equals?: string }
+    | undefined;
+  if (typeof tagFilter === "string") {
+    if (normalizeTag(tagFilter) !== normalizedPlayerTag) return false;
+  } else if (tagFilter && Array.isArray(tagFilter.in)) {
+    const allowedTags = tagFilter.in.map((tag) => normalizeTag(tag)).filter(Boolean);
+    if (!allowedTags.includes(normalizedPlayerTag)) return false;
+  } else if (tagFilter && typeof tagFilter === "object") {
+    if (typeof tagFilter.equals === "string" && normalizeTag(tagFilter.equals) !== normalizedPlayerTag) return false;
+    if (typeof tagFilter.startsWith === "string" && !normalizedPlayerTag.startsWith(normalizeTag(tagFilter.startsWith))) return false;
+    if (typeof tagFilter.contains === "string" && !normalizedPlayerTag.includes(normalizeTag(tagFilter.contains))) return false;
+  }
+  return true;
+}
+
+function matchesPlayerCurrentWhere(
+  row: PlayerCurrentFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.playerName, where.playerName);
+}
+
+function matchesFwaPlayerCatalogWhere(
+  row: FwaPlayerCatalogFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.latestName, where.latestName);
+}
+
+function matchesTodoPlayerSnapshotWhere(
+  row: TodoPlayerSnapshotFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.playerName, where.playerName);
+}
+
+function compareAutocompleteSnapshotRowsDesc(a: BuiltViolationRow, b: BuiltViolationRow): number {
+  const aTime = (a.evaluation.warHistory.warEndTime ?? a.evaluation.warHistory.warStartTime).getTime();
+  const bTime = (b.evaluation.warHistory.warEndTime ?? b.evaluation.warHistory.warStartTime).getTime();
+  if (bTime !== aTime) return bTime - aTime;
+  return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+}
+
+function buildAutocompleteSnapshotRows(
+  rows: BuiltViolationRow[],
+  guildId: string,
+  candidateTags: string[],
+): Array<{
+  playerTag: string;
+  playerNameSnapshot: string | null;
+  townHallLevelSnapshot: number | null;
+}> {
+  const uniqueTags = [...new Set(candidateTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
+  return uniqueTags.map((playerTag) => {
+    const matchedRows = rows
+      .filter(
+        (row) =>
+          row.guildId === guildId &&
+          row.status === "COMPLETED" &&
+          normalizeTag(row.playerTag) === playerTag,
+      )
+      .sort(compareAutocompleteSnapshotRowsDesc);
+    const nameRow = matchedRows[0] ?? null;
+    const townHallRow = matchedRows.find((row) => (row.townHallLevelSnapshot ?? 0) > 0) ?? null;
+    return {
+      playerTag,
+      playerNameSnapshot: nameRow?.playerNameSnapshot ?? null,
+      townHallLevelSnapshot: townHallRow?.townHallLevelSnapshot ?? null,
+    };
+  });
+}
+
+function compareAutocompleteDiscoveryRows(a: BuiltViolationRow, b: BuiltViolationRow): number {
+  const aTime = (a.evaluation.warHistory.warEndTime ?? a.evaluation.warHistory.warStartTime).getTime();
+  const bTime = (b.evaluation.warHistory.warEndTime ?? b.evaluation.warHistory.warStartTime).getTime();
+  if (bTime !== aTime) return bTime - aTime;
+  const tagCompare = normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+  if (tagCompare !== 0) return tagCompare;
+  return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+}
+
+function buildAutocompleteDiscoveryRows(
+  rows: BuiltViolationRow[],
+  guildId: string,
+  query: string,
+  lane: "tag" | "snapshot",
+): Array<{ playerTag: string }> {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedBareTagQuery = normalizeTag(query).replace(/^#/, "");
+  const matchingRows = rows
+    .filter((row) => row.guildId === guildId && row.status === "COMPLETED")
+    .filter((row) => {
+      if (lane === "tag") {
+        return normalizeTag(row.playerTag).replace(/^#/, "").includes(normalizedBareTagQuery);
+      }
+      return normalizeSearchText(row.playerNameSnapshot).includes(normalizedQuery);
+    })
+    .sort(compareAutocompleteDiscoveryRows);
+
+  const seen = new Set<string>();
+  const result: Array<{ playerTag: string }> = [];
+  for (const row of matchingRows) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag || seen.has(playerTag)) continue;
+    seen.add(playerTag);
+    result.push({ playerTag });
+    if (result.length >= 100) break;
+  }
+  return result;
 }
 
 function compareIdentityRows(
@@ -260,11 +521,27 @@ function matchesViolationEvaluationRelation(
   const history = nested.warHistory as Record<string, unknown> | undefined;
   if (!history) return true;
   const nestedHistory = (history as { is?: Record<string, unknown> }).is ?? history;
-  if (typeof nestedHistory.warEndTime === "object" && nestedHistory.warEndTime !== null) {
-    const gte = (nestedHistory.warEndTime as { gte?: Date }).gte;
+  const warEndTimeFilter = nestedHistory.warEndTime as
+    | { gte?: Date; not?: null | Date }
+    | Date
+    | null
+    | undefined;
+  if (warEndTimeFilter === null) {
+    if (row.evaluation.warHistory.warEndTime !== null) return false;
+  } else if (typeof warEndTimeFilter === "object") {
+    const gte = warEndTimeFilter.gte;
     if (gte instanceof Date) {
       if (!(row.evaluation.warHistory.warEndTime instanceof Date)) return false;
       if (row.evaluation.warHistory.warEndTime.getTime() < gte.getTime()) return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(warEndTimeFilter, "not")) {
+      if (warEndTimeFilter.not === null) {
+        if (row.evaluation.warHistory.warEndTime === null) return false;
+      } else if (warEndTimeFilter.not instanceof Date) {
+        if (row.evaluation.warHistory.warEndTime instanceof Date && row.evaluation.warHistory.warEndTime.getTime() === warEndTimeFilter.not.getTime()) {
+          return false;
+        }
+      }
     }
   }
   if (typeof nestedHistory.clanTag === "string" && normalizeTag(nestedHistory.clanTag) !== normalizeTag(row.evaluation.warHistory.clanTag)) {
@@ -280,14 +557,20 @@ function matchesViolationWhere(
   if (!where) return true;
   const playerTagFilter = where.playerTag as
     | string
-    | { in?: string[] }
+    | { in?: string[]; contains?: string; startsWith?: string; equals?: string }
     | undefined;
   if (typeof playerTagFilter === "string") {
     if (normalizeTag(playerTagFilter) !== normalizeTag(row.playerTag)) return false;
   } else if (playerTagFilter && Array.isArray(playerTagFilter.in)) {
     const allowedTags = playerTagFilter.in.map((tag) => normalizeTag(tag)).filter(Boolean);
     if (!allowedTags.includes(normalizeTag(row.playerTag))) return false;
+  } else if (playerTagFilter && typeof playerTagFilter === "object") {
+    if (typeof playerTagFilter.equals === "string" && normalizeTag(playerTagFilter.equals) !== normalizeTag(row.playerTag)) return false;
+    if (typeof playerTagFilter.startsWith === "string" && !normalizeTag(row.playerTag).startsWith(normalizeTag(playerTagFilter.startsWith))) return false;
+    if (typeof playerTagFilter.contains === "string" && !normalizeTag(row.playerTag).includes(normalizeTag(playerTagFilter.contains))) return false;
   }
+  if (!matchesTextCondition(row.playerNameSnapshot, where.playerNameSnapshot)) return false;
+  if (!matchesNumericCondition(row.townHallLevelSnapshot, where.townHallLevelSnapshot)) return false;
   return matchesViolationEvaluationRelation(row, where);
 }
 
@@ -412,10 +695,33 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
   };
 
   const db = {
+    $queryRaw: vi.fn(async (query?: unknown) => {
+      const sqlText = normalizeSqlText(query);
+      const values = extractSqlValues(query);
+      const guildId = String(values[0] ?? "").trim();
+      const candidateTags = values.slice(1).map((value) => normalizeTag(String(value ?? ""))).filter(Boolean);
+      if (sqlText.includes("candidate_tags") || sqlText.includes("LATERAL")) {
+        return buildAutocompleteSnapshotRows(violationRows, guildId, candidateTags);
+      }
+      if (sqlText.includes('FROM "WarPlanViolation" v') && sqlText.includes('playerNameSnapshot')) {
+        return buildAutocompleteDiscoveryRows(violationRows, guildId, String(values[1] ?? ""), "snapshot");
+      }
+      if (sqlText.includes('FROM "WarPlanViolation" v') && sqlText.includes('playerTag')) {
+        return buildAutocompleteDiscoveryRows(violationRows, guildId, String(values[1] ?? ""), "tag");
+      }
+      return [];
+    }),
     playerCurrent: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.playerCurrent.filter((row) => matchesInFilter(args?.where, row.playerTag)),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.playerCurrent
+          .filter((row) => matchesPlayerCurrentWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     fwaClanMemberCurrent: {
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
@@ -425,18 +731,28 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
       ),
     },
     fwaPlayerCatalog: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.fwaPlayerCatalog.filter((row) =>
-          matchesInFilter(args?.where, row.playerTag),
-        ),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.fwaPlayerCatalog
+          .filter((row) => matchesFwaPlayerCatalogWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     todoPlayerSnapshot: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.todoPlayerSnapshot.filter((row) =>
-          matchesInFilter(args?.where, row.playerTag),
-        ),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.todoPlayerSnapshot
+          .filter((row) => matchesTodoPlayerSnapshotWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     playerLink: {
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
@@ -447,10 +763,14 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
       findMany: vi.fn(async (args?: {
         where?: Record<string, unknown>;
         select?: Record<string, unknown>;
+        distinct?: string[];
+        orderBy?: Array<Record<string, "asc" | "desc">>;
+        take?: number;
       }) =>
-        violationRows
-          .filter((row) => matchesViolationWhere(row, args?.where))
-          .map((row) => projectViolationRow(row, args?.select)),
+        applyViolationDistinct(
+          violationRows.filter((row) => matchesViolationWhere(row, args?.where)),
+          args,
+        ).map((row) => projectViolationRow(row, args?.select)),
       ),
       findFirst: vi.fn(async (args?: {
         where?: Record<string, unknown>;
@@ -458,6 +778,51 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
       }) => {
         const hit = violationRows.find((row) => matchesViolationWhere(row, args?.where));
         return hit ? projectViolationRow(hit, args?.select) : null;
+      }),
+      groupBy: vi.fn(async (args?: {
+        by?: string[];
+        where?: Record<string, unknown>;
+        _count?: { _all?: boolean };
+        orderBy?: Array<Record<string, "asc" | "desc">> | Record<string, Record<string, "asc" | "desc">>;
+        take?: number;
+      }) => {
+        const grouped = new Map<string, number>();
+        for (const row of violationRows.filter((entry) => matchesViolationWhere(entry, args?.where))) {
+          const tag = normalizeTag(row.playerTag);
+          if (!tag) continue;
+          grouped.set(tag, (grouped.get(tag) ?? 0) + 1);
+        }
+        let rows = [...grouped.entries()]
+          .map(([playerTag, count]) => ({
+            playerTag,
+            _count: { _all: count },
+          }))
+          .sort((a, b) => {
+            const orderBy = args?.orderBy;
+            if (Array.isArray(orderBy) && orderBy.length > 0) {
+              for (const clause of orderBy) {
+                const [field, direction] = Object.entries(clause)[0] as [string, "asc" | "desc"];
+                let delta = 0;
+                if (field === "_count") {
+                  const countOrder = clause._count as Record<string, "asc" | "desc"> | undefined;
+                  const countField = (countOrder ? Object.keys(countOrder)[0] : undefined) as
+                    | string
+                    | undefined;
+                  const countDirection = countField ? countOrder?.[countField] : undefined;
+                  if (countDirection && countField) {
+                    delta = a._count._all - b._count._all;
+                    if (delta !== 0) return countDirection === "desc" ? -delta : delta;
+                  }
+                } else if (field === "playerTag") {
+                  delta = a.playerTag.localeCompare(b.playerTag);
+                  if (delta !== 0) return direction === "desc" ? -delta : delta;
+                }
+              }
+            }
+            return a.playerTag.localeCompare(b.playerTag);
+          });
+        rows = applyTake(rows, args?.take);
+        return rows;
       }),
     },
     clanWarHistory: {
@@ -3686,6 +4051,915 @@ describe("WarPlanViolationHistoryService", () => {
       expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(1);
       expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(1);
       expect(result.accounts).toHaveLength(2);
+    });
+  });
+
+  describe("getPlayerAutocompleteChoices", () => {
+    it("returns an empty array for a blank guild without database reads", async () => {
+      const { db, service } = buildService([]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "   ",
+        focusedText: "alpha",
+      });
+
+      expect(result).toEqual([]);
+      expect(db.warPlanViolation.findMany).not.toHaveBeenCalled();
+      expect(db.warPlanViolation.groupBy).not.toHaveBeenCalled();
+      expect(db.playerCurrent.findMany).not.toHaveBeenCalled();
+      expect(db.fwaClanMemberCurrent.findMany).not.toHaveBeenCalled();
+      expect(db.fwaPlayerCatalog.findMany).not.toHaveBeenCalled();
+      expect(db.todoPlayerSnapshot.findMany).not.toHaveBeenCalled();
+      expect(db.playerLink.findMany).not.toHaveBeenCalled();
+    });
+
+    it("only includes guild-scoped completed violators", async () => {
+      const { db, service } = buildService([
+        buildFixture({
+          guildId: "guild-a",
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Guild Alpha",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+        buildFixture({
+          guildId: "guild-a",
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          status: "FAILED",
+          violations: [
+            {
+              playerTag: "#2RVGJYLC0",
+              playerNameSnapshot: "Guild Failed",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          guildId: "guild-b",
+          warId: 3,
+          clanTag: "#2QG2C08UR",
+          clanName: "Beta",
+          warStartTime: d("2026-05-12T00:00:00.000Z"),
+          warEndTime: d("2026-05-12T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#8J9PP8GV9",
+              playerNameSnapshot: "Other Guild",
+              townHallLevelSnapshot: 14,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-a",
+        focusedText: "",
+      });
+
+      expect(result.map((choice) => choice.value)).toEqual(["#PYLQ0289"]);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.where).toMatchObject({
+        evaluation: {
+          is: {
+            guildId: "guild-a",
+            status: "COMPLETED",
+          },
+        },
+      });
+      expect(db.warPlanViolation.groupBy.mock.calls[1]?.[0]?.where).toMatchObject({
+        evaluation: {
+          is: {
+            guildId: "guild-a",
+            status: "COMPLETED",
+          },
+        },
+        playerTag: {
+          in: ["#PYLQ0289"],
+        },
+      });
+      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(sqlText).toContain('h."warId" DESC');
+      expect(sqlValues).toEqual(["guild-a", "#PYLQ0289"]);
+      expect(result[0]?.name).toContain("Guild Alpha");
+    });
+
+    it.each(["#pylq0289", "pylq0289", "#PyLq0289"])(
+      "matches tags case-insensitively with or without a leading hash (%s)",
+      async (focusedText) => {
+        const { db, service } = buildService([
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Guild Alpha",
+                townHallLevelSnapshot: 16,
+              },
+            ],
+          }),
+        ]);
+
+        const result = await service.getPlayerAutocompleteChoices({
+          guildId: "guild-1",
+          focusedText,
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({
+          name: "Guild Alpha (#PYLQ0289) — 1 violation",
+          value: "#PYLQ0289",
+        });
+        expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+        expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+        const discoveryValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+        expect(discoveryValues).toEqual(["guild-1", "PYLQ0289", 100]);
+      },
+    );
+
+    it("makes current resolved player names searchable", async () => {
+      const { db, service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Snapshot Alpha",
+                townHallLevelSnapshot: 16,
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Current Alpha",
+              townHall: 19,
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "current",
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toContain("Current Alpha");
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const firstSqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const firstSqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const secondSqlText = normalizeSqlText(db.$queryRaw.mock.calls[1]?.[0]);
+      const secondSqlValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      const hydrationSqlText = normalizeSqlText(db.$queryRaw.mock.calls[2]?.[0]);
+      const hydrationSqlValues = extractSqlValues(db.$queryRaw.mock.calls[2]?.[0]);
+      expect(firstSqlText).toContain('DISTINCT ON (v."playerTag")');
+      expect(secondSqlText).toContain('DISTINCT ON (v."playerTag")');
+      expect(firstSqlText).toContain("LIMIT ?");
+      expect(secondSqlText).toContain("LIMIT ?");
+      expect(firstSqlValues).toEqual(["guild-1", "CURRENT", 100]);
+      expect(secondSqlValues).toEqual(["guild-1", "current", 100]);
+      expect(hydrationSqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(hydrationSqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(hydrationSqlText).toContain('h."warId" DESC');
+      expect(hydrationSqlValues).toEqual(["guild-1", "#PYLQ0289"]);
+      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
+      expect(db.playerCurrent.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
+      expect(db.fwaPlayerCatalog.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(2);
+      expect(db.todoPlayerSnapshot.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+    });
+
+    it("keeps snapshot-only fallback names searchable when they are the final resolved name", async () => {
+      const { db, service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Only",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "snapshot",
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toContain("Snapshot Only");
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const discoveryValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      expect(discoveryValues).toEqual(["guild-1", "snapshot", 100]);
+    });
+
+    it("hydrates only one bounded row per tag even when hundreds of historical rows exist", async () => {
+      const { db, service } = buildService([
+        ...Array.from({ length: 200 }, (_, index) =>
+          buildFixture({
+            warId: index + 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+            warEndTime: index % 2 === 0 ? d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`) : null,
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: index === 199 ? "Newest Snapshot" : `Older Snapshot ${index + 1}`,
+                townHallLevelSnapshot: index === 199 ? null : 12 + (index % 5),
+              },
+            ],
+          }),
+        ),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result).toHaveLength(1);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(sqlText).toContain('h."warId" DESC');
+      expect(sqlValues[0]).toBe("guild-1");
+      expect(sqlValues.slice(1)).toHaveLength(1);
+      expect(rawRows).toHaveLength(1);
+      expect(result[0]?.value).toBe("#PYLQ0289");
+    });
+
+    it("keeps recorded discovery lanes capped at 100 rows each", async () => {
+      const fixtures = Array.from({ length: 140 }, (_, index) =>
+        buildFixture({
+          warId: index + 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+          warEndTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`),
+          violations: [
+            {
+              playerTag: makeAutocompleteTag(index),
+              playerNameSnapshot: `2QG2C08 Player ${index + 1}`,
+              townHallLevelSnapshot: 10 + (index % 5),
+            },
+          ],
+        }),
+      );
+      const { db, service } = buildService(fixtures);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "2qg2c08",
+      });
+
+      expect(result).toHaveLength(25);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const tagDiscoveryRows = await db.$queryRaw.mock.results[0]?.value;
+      const snapshotDiscoveryRows = await db.$queryRaw.mock.results[1]?.value;
+      const tagSqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const snapshotSqlValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      expect(tagSqlValues).toEqual(["guild-1", "2QG2C08", 100]);
+      expect(snapshotSqlValues).toEqual(["guild-1", "2qg2c08", 100]);
+      expect(tagDiscoveryRows).toHaveLength(100);
+      expect(snapshotDiscoveryRows).toHaveLength(100);
+    });
+
+    it("keeps the newest canonical name blank while still taking an older valid Town Hall", async () => {
+      const { db, service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older Name",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "   ",
+              townHallLevelSnapshot: null,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      expect(rawRows).toHaveLength(1);
+      expect(rawRows[0]?.playerNameSnapshot).toBe("   ");
+      expect(rawRows[0]?.townHallLevelSnapshot).toBe(15);
+      expect(result[0]?.name).toContain("#PYLQ0289");
+    });
+
+    it("compares ended and null-ended rows by canonical chronology and war id", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Ended Older",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T02:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Null Later",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 3,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-12T01:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#2RVGJYLC0",
+              playerNameSnapshot: "Tie Low",
+              townHallLevelSnapshot: 17,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 4,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-12T01:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#2RVGJYLC0",
+              playerNameSnapshot: "Tie High",
+              townHallLevelSnapshot: 17,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result.map((choice) => choice.name)).toEqual(
+        expect.arrayContaining(["Null Later (#PYLQ0289) — 2 violations", "Tie High (#2RVGJYLC0) — 2 violations"]),
+      );
+      expect(result.some((choice) => choice.name.includes("Ended Older"))).toBe(false);
+      expect(result.some((choice) => choice.name.includes("Tie Low"))).toBe(false);
+    });
+
+    it("does not return an old snapshot match when a higher-precedence current name does not match", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Old Snapshot",
+                townHallLevelSnapshot: 16,
+              },
+            ],
+          }),
+          buildFixture({
+            warId: 2,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-11T00:00:00.000Z"),
+            warEndTime: d("2026-05-11T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "   ",
+                townHallLevelSnapshot: null,
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Current Alpha",
+              townHall: 19,
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "old snapshot",
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it("deduplicates multiple violation rows into one choice with the total count", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 16,
+            },
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toContain("— 2 violations");
+    });
+
+    it("ranks exact tag matches ahead of substring matches", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#2QG2C08UP",
+                playerNameSnapshot: "Exact Match",
+                townHallLevelSnapshot: 16,
+              },
+            ],
+          }),
+          buildFixture({
+            warId: 2,
+            clanTag: "#2QG2C08UR",
+            clanName: "Beta",
+            warStartTime: d("2026-05-11T00:00:00.000Z"),
+            warEndTime: d("2026-05-11T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "My #2QG2C08UP Player",
+                townHallLevelSnapshot: 15,
+              },
+            ],
+          }),
+        ],
+      );
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "#2QG2C08UP",
+      });
+
+      expect(result.map((choice) => choice.value)).toEqual(["#2QG2C08UP", "#PYLQ0289"]);
+    });
+
+    it("ranks tag prefix, name prefix, and substring matches deterministically", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#2QG2C08UR",
+                playerNameSnapshot: "Tag Prefix",
+                townHallLevelSnapshot: 16,
+              },
+            ],
+          }),
+          buildFixture({
+            warId: 2,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-11T00:00:00.000Z"),
+            warEndTime: d("2026-05-11T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#8J9PP8GV9",
+                playerNameSnapshot: "2QG Name Prefix",
+                townHallLevelSnapshot: 15,
+              },
+            ],
+          }),
+          buildFixture({
+            warId: 3,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-12T00:00:00.000Z"),
+            warEndTime: d("2026-05-12T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Contains 2QG",
+                townHallLevelSnapshot: 14,
+              },
+            ],
+          }),
+        ],
+      );
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "2qg",
+      });
+
+      expect(result.map((choice) => choice.value)).toEqual([
+        "#2QG2C08UR",
+        "#8J9PP8GV9",
+        "#PYLQ0289",
+      ]);
+    });
+
+    it("orders empty queries by count, resolved name, then tag", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#2QG2C08UP",
+              playerNameSnapshot: "Bravo",
+              townHallLevelSnapshot: 16,
+            },
+            {
+              playerTag: "#2QG2C08UP",
+              playerNameSnapshot: "Bravo",
+              townHallLevelSnapshot: 16,
+            },
+            {
+              playerTag: "#2QG2C08UP",
+              playerNameSnapshot: "Bravo",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#2QG2C08UR",
+              playerNameSnapshot: "Alpha",
+              townHallLevelSnapshot: 15,
+            },
+            {
+              playerTag: "#2QG2C08UR",
+              playerNameSnapshot: "Alpha",
+              townHallLevelSnapshot: 15,
+            },
+            {
+              playerTag: "#2QG2C08UR",
+              playerNameSnapshot: "Alpha",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 3,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-12T00:00:00.000Z"),
+          warEndTime: d("2026-05-12T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Charlie",
+              townHallLevelSnapshot: 14,
+            },
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Charlie",
+              townHallLevelSnapshot: 14,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result.map((choice) => choice.value)).toEqual([
+        "#2QG2C08UR",
+        "#2QG2C08UP",
+        "#PYLQ0289",
+      ]);
+    });
+
+    it("keeps the tag and count suffix while truncating only the resolved name", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#2QG2C08UP",
+              playerNameSnapshot: makeLongPlayerName("Solo"),
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#2QG2C08UR",
+              playerNameSnapshot: "Plural",
+              townHallLevelSnapshot: 15,
+            },
+            {
+              playerTag: "#2QG2C08UR",
+              playerNameSnapshot: "Plural",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(
+        result.some((choice) => choice.name.endsWith(" (#2QG2C08UP) \u2014 1 violation")),
+      ).toBe(true);
+      expect(
+        result.some((choice) => choice.name.endsWith(" (#2QG2C08UR) \u2014 2 violations")),
+      ).toBe(true);
+      expect(result.every((choice) => choice.name.length <= 100)).toBe(true);
+    });
+
+    it("keeps the candidate pool bounded when more historical violators exist than the discovery cap", async () => {
+      const fixtures = Array.from({ length: 140 }, (_, index) =>
+        buildFixture({
+          warId: index + 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+          warEndTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`),
+          violations: [
+            {
+              playerTag: makeAutocompleteTag(index),
+              playerNameSnapshot: `Player ${index + 1}`,
+              townHallLevelSnapshot: 10 + (index % 5),
+            },
+          ],
+        }),
+      );
+      const { db, service } = buildService(fixtures);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result).toHaveLength(25);
+      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
+      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const rawRows = await db.$queryRaw.mock.results[0]?.value;
+      expect(sqlValues[0]).toBe("guild-1");
+      expect(sqlValues.slice(1)).toHaveLength(100);
+      expect(rawRows).toHaveLength(100);
+      expect(
+        (db.playerCurrent.findMany.mock.calls[0]?.[0]?.where as { playerTag?: { in?: string[] } })
+          ?.playerTag?.in,
+      ).toHaveLength(100);
+    });
+
+    it("clamps the limit to the allowed 1 through 25 range", async () => {
+      const fixtures = Array.from({ length: 30 }, (_, index) =>
+        buildFixture({
+          warId: index + 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d(`2026-05-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`),
+          warEndTime: d(`2026-05-${String(index + 1).padStart(2, "0")}T01:00:00.000Z`),
+          violations: [
+            {
+              playerTag: makeAutocompleteTag(index),
+              playerNameSnapshot: `Player ${index + 1}`,
+              townHallLevelSnapshot: 10 + (index % 5),
+            },
+          ],
+        }),
+      );
+      const { service } = buildService(fixtures);
+
+      const defaultLimit = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+      });
+      const cappedLimit = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        limit: 100,
+      });
+      const minLimit = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        limit: 0,
+      });
+      const fractionalLimit = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        limit: 2.9,
+      });
+
+      expect(defaultLimit).toHaveLength(25);
+      expect(cappedLimit).toHaveLength(25);
+      expect(minLimit).toHaveLength(1);
+      expect(fractionalLimit).toHaveLength(2);
+    });
+
+    it("keeps reads bounded and avoids per-player history calls", async () => {
+      const { db, service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                playerTag: "#2QG2C08UP",
+                playerNameSnapshot: "Alpha One",
+                townHallLevelSnapshot: 16,
+              },
+              {
+                playerTag: "#2QG2C08UR",
+                playerNameSnapshot: "Alpha Two",
+                townHallLevelSnapshot: 15,
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#2QG2C08UP",
+              playerName: "Current Alpha One",
+              townHall: 18,
+            }),
+            makePlayerCurrentFixture({
+              playerTag: "#2QG2C08UR",
+              playerName: "Current Alpha Two",
+              townHall: 17,
+            }),
+          ],
+          fwaPlayerCatalog: [
+            makeFwaPlayerCatalogFixture({
+              playerTag: "#2QG2C08UP",
+              latestName: "Catalog Alpha One",
+              latestTownHall: 19,
+            }),
+          ],
+          todoPlayerSnapshot: [
+            makeTodoPlayerSnapshotFixture({
+              playerTag: "#2QG2C08UR",
+              playerName: "Todo Alpha Two",
+              townHall: 16,
+            }),
+          ],
+          playerLink: [
+            makePlayerLinkFixture({
+              playerTag: "#2QG2C08UP",
+              discordUserId: "111111111111111111",
+              verificationStatus: "VERIFIED",
+            }),
+          ],
+        },
+      );
+      const historySpy = vi.spyOn(service, "getPlayerHistory");
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "alpha",
+      });
+
+      expect(historySpy).not.toHaveBeenCalled();
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
+      expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
+      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(2);
+      expect(db.playerLink.findMany).toHaveBeenCalledTimes(1);
+      expect(result.length).toBeGreaterThan(0);
     });
   });
 });
