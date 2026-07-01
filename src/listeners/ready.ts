@@ -1269,21 +1269,75 @@ export default (client: Client, cocService: CoCService): void => {
               );
             }
             await runFetchTelemetryBatch("war_event_poll_cycle", async () => {
+              const recordCycleFailure = (stage: string, err: unknown): void => {
+                if (!pollError) {
+                  pollError = err;
+                }
+                console.error(
+                  `[war-events] event=war_event_poll_cycle stage=${stage} failed error=${formatError(err)}`,
+                );
+              };
+
+              try {
+                await rolloverCwlTrackedClanRegistryForSeason({
+                  season: resolveCurrentCwlSeasonKey(scheduledAtMs),
+                  nowMs: scheduledAtMs,
+                });
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  skippedReason = err.message;
+                } else {
+                  recordCycleFailure("cwl_registry_rollover", err);
+                }
+              }
+
               try {
                 await warEventLogService.poll({
                   sendBattleDaySwapReminders: true,
                   currentWarSnapshotCycleContext,
                 });
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  skippedReason = skippedReason ?? err.message;
+                } else {
+                  recordCycleFailure("war_event_poll", err);
+                }
+              }
+
+              try {
                 await warEventLogService.refreshBattleDayPosts();
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  skippedReason = skippedReason ?? err.message;
+                } else {
+                  recordCycleFailure("war_battle_day_posts", err);
+                }
+              }
+
+              try {
                 await refreshAllTrackedWarMailPosts(client);
-                await rolloverCwlTrackedClanRegistryForSeason({
-                  season: resolveCurrentCwlSeasonKey(scheduledAtMs),
-                  nowMs: scheduledAtMs,
-                });
+              } catch (err) {
+                if (isCoCQueueSkippedError(err)) {
+                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
+                  skippedReason = skippedReason ?? err.message;
+                } else {
+                  recordCycleFailure("war_mail_posts", err);
+                }
+              }
+
+              try {
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
                   cwlFetchCycleCache,
                 });
+              } catch (err) {
+                recordCycleFailure("cwl_state_refresh", err);
+              }
+
+              try {
                 await todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots({
                   cadence: "tracked",
                   cocService,
@@ -1294,19 +1348,13 @@ export default (client: Client, cocService: CoCService): void => {
                     currentWarSnapshotCycleContext.currentWarSnapshotByClanTag,
                 });
               } catch (err) {
-                if (isCoCQueueSkippedError(err)) {
-                  console.warn(`[war-events] poll_skipped reason=${err.message}`);
-                  skippedReason = err.message;
-                  return;
-                }
-                pollError = err;
-                console.error(`[war-events] poll loop failed: ${formatError(err)}`);
-              } finally {
-                const cwlFetchStats = cwlFetchCycleCache.getStats();
-                console.info(
-                  `[cwl-fetch-cycle] event=war_event_poll_cycle group_hit_count=${cwlFetchStats.groupHitCount} group_miss_count=${cwlFetchStats.groupMissCount} war_hit_count=${cwlFetchStats.warHitCount} war_miss_count=${cwlFetchStats.warMissCount} cached_group_count=${cwlFetchStats.cachedGroupCount} cached_war_count=${cwlFetchStats.cachedWarCount}`,
-                );
+                recordCycleFailure("todo_snapshot_refresh", err);
               }
+
+              const cwlFetchStats = cwlFetchCycleCache.getStats();
+              console.info(
+                `[cwl-fetch-cycle] event=war_event_poll_cycle group_hit_count=${cwlFetchStats.groupHitCount} group_miss_count=${cwlFetchStats.groupMissCount} war_hit_count=${cwlFetchStats.warHitCount} war_miss_count=${cwlFetchStats.warMissCount} cached_group_count=${cwlFetchStats.cachedGroupCount} cached_war_count=${cwlFetchStats.cachedWarCount}`,
+              );
             });
           });
           guardRan = guardResult.ran;
@@ -1314,20 +1362,6 @@ export default (client: Client, cocService: CoCService): void => {
       );
       if (!guardRan) {
         skippedReason = skippedReason ?? "in_flight";
-        await markPollJobSkipped({
-          jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
-          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
-          intervalMs: warEventPollMs,
-          nextDueAt,
-          metadata: {
-            mode: activePollingEnabled ? "active" : "mirror",
-            skippedReason,
-          },
-        });
-        return;
-      }
-
-      if (skippedReason) {
         await markPollJobSkipped({
           jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
           displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
@@ -1350,6 +1384,20 @@ export default (client: Client, cocService: CoCService): void => {
           nextDueAt,
           metadata: {
             mode: activePollingEnabled ? "active" : "mirror",
+          },
+        });
+        return;
+      }
+
+      if (skippedReason) {
+        await markPollJobSkipped({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.warEventPollCycle,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.warEventPollCycle,
+          intervalMs: warEventPollMs,
+          nextDueAt,
+          metadata: {
+            mode: activePollingEnabled ? "active" : "mirror",
+            skippedReason,
           },
         });
         return;

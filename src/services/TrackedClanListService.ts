@@ -8,7 +8,7 @@ import {
 import { formatError } from "../helper/formatError";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { prisma } from "../prisma";
-import { normalizeClanTag } from "./PlayerLinkService";
+import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import { CoCService } from "./CoCService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
@@ -515,7 +515,7 @@ async function loadCwlTrackedClanDetailedRows(input: {
   for (const row of observedRosterRows) {
     const clanTag = normalizeClanTag(row.cwlClanTag);
     if (!clanTag) continue;
-    const playerTag = normalizeClanTag(row.playerTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag) continue;
     const existing = observedRosterCountByTag.get(clanTag) ?? new Set<string>();
     existing.add(playerTag);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityService } from "../src/services/ActivityService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
+import { normalizePlayerTag } from "../src/services/PlayerLinkService";
 import * as trackedClanListService from "../src/services/TrackedClanListService";
 
 const prismaMock = vi.hoisted(() => {
@@ -101,6 +102,15 @@ function mockCurrentCwlEventsForRequestedTags() {
   prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) =>
     buildMockCurrentCwlEventClanRows(args?.where?.clanTag?.in ?? []),
   );
+}
+
+function buildUniqueNormalizedPlayerTag(clanTag: string, index: number): string {
+  const normalizedClanTag = normalizePlayerTag(clanTag);
+  const seed = normalizedClanTag.replace(/^#/, "") || "PYLQ0289";
+  const alphabet = "PYLQGRJCUV0289";
+  const first = alphabet[index % alphabet.length] ?? "P";
+  const second = alphabet[Math.floor(index / alphabet.length) % alphabet.length] ?? "Y";
+  return normalizePlayerTag(`${seed}${first}${second}`);
 }
 
 const fwaClanMembersSyncMock = vi.hoisted(() => ({
@@ -253,7 +263,7 @@ describe("/clan command behavior", () => {
         const count = Math.max(0, Math.trunc(Number(row?._count?.cwlClanTag ?? 0)));
         return Array.from({ length: count }, (_, index) => ({
           cwlClanTag: row.cwlClanTag,
-          playerTag: `${row.cwlClanTag}-player-${index + 1}`,
+          playerTag: buildUniqueNormalizedPlayerTag(row.cwlClanTag, index),
         }));
       });
     });
@@ -706,14 +716,15 @@ describe("/clan command behavior", () => {
     const description = getFirstEmbedDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(description).toContain("**CWL**");
-    expect(description).toContain("CWL Alpha");
-    expect(description).toContain("CWL Charlie");
-    expect(description).toContain("CWL Beta");
-    expect(description).toContain("CH1");
-    expect(description).toContain("M1");
-    expect(description).toContain("49");
-    expect(description).toContain("51");
-    expect(description).toContain("50");
+    expect(description).toContain(
+      "<:CWL_Champion_1:1511515166313939116> CH1 | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | ⚔️ | 49 👥",
+    );
+    expect(description).toContain(
+      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Charlie](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=G2R9RQLJQ>) `#G2R9RQLJQ` | ⚔️ | 51 👥",
+    );
+    expect(description).toContain(
+      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
+    );
     expect(description.indexOf("CWL Alpha")).toBeLessThan(description.indexOf("CWL Charlie"));
     expect(description.indexOf("CWL Charlie")).toBeLessThan(description.indexOf("CWL Beta"));
     expect(description).not.toContain("registry: CWL seasonal");
@@ -1064,9 +1075,7 @@ describe("/clan command behavior", () => {
       "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289` <:CWL_Champion_1:1511515166313939116>",
     );
     expect(description).toContain("Spin status: ⚔️");
-    expect(description).toContain("Members:");
-    expect(description).toContain("CWL");
-    expect(description).toContain("clan");
+    expect(description).toContain("Members: 37 CWL / 49 clan");
     expect(description).toContain("Roster: [Alpha Roster](<https://discord.com/channels/1/2/3>)");
     expect(description).toContain("Roster: Zulu Roster");
     expect(description).not.toContain("registry: CWL seasonal");
@@ -2297,7 +2306,9 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, typedInteraction as any, {} as any);
     const typedDescription = getFirstEmbedDescription(typedInteraction);
     expect(typedDescription).toContain("**CWL**");
-    expect(typedDescription).toContain("| 12 👥");
+    expect(typedDescription).toContain(
+      "- | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 💤 | 12 👥",
+    );
     expect(typedDescription).not.toContain("leadRole:");
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(

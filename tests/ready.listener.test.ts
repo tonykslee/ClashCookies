@@ -561,6 +561,19 @@ describe("ready listener startup", () => {
         displayName: "War event poll",
       }),
     );
+    expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps later war, CWL, and todo work attempted when rollover fails", async () => {
+    cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason.mockRejectedValueOnce(new Error("rollover boom"));
+
+    await runStartup();
+
+    expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).toHaveBeenCalledTimes(1);
+    expect(warEventPollMock).toHaveBeenCalledTimes(1);
+    expect(warEventRefreshMock).toHaveBeenCalledTimes(1);
+    expect(cwlStateService.refreshTrackedCwlState).toHaveBeenCalledTimes(1);
+    expect(todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots).toHaveBeenCalledTimes(1);
   });
 
   it("does not auto-post the checklist after sync time", async () => {

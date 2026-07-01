@@ -73,7 +73,7 @@ function logCwlRegistryRollover(input: {
   skippedReason: string | null;
   durationMs: number;
   error?: unknown;
-}): void {
+}, level: "info" | "error" = "info"): void {
   const parts = [
     `[tracked-clan] event=cwl_registry_rollover`,
     `target_season=${input.targetSeason}`,
@@ -87,7 +87,12 @@ function logCwlRegistryRollover(input: {
   if (input.error) {
     parts.push(`error=${formatError(input.error)}`);
   }
-  console.info(parts.join(" "));
+  const message = parts.join(" ");
+  if (level === "error") {
+    console.error(message);
+    return;
+  }
+  console.info(message);
 }
 
 /** Purpose: roll the latest populated CWL registry season forward into an empty target season. */
@@ -189,7 +194,7 @@ export async function rolloverCwlTrackedClanRegistryForSeason(input?: {
     logCwlRegistryRollover({
       ...failure,
       error,
-    });
+    }, "error");
     throw error;
   }
 }
