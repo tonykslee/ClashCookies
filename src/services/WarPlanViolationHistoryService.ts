@@ -358,21 +358,17 @@ function buildHistoryAggregation(rows: CompletedEvaluationRow[]): HistoryAggrega
         clans.get(clanTag)?.distinctPlayerTags.add(playerTag);
       }
 
-      const snapshotFallback = playerFallbacks.get(playerTag) ?? {
-        playerName: null,
-        townHallLevel: null,
-      };
       const playerName = normalizeDisplayText(violation.playerNameSnapshot);
       const townHallLevel = normalizePositiveInteger(violation.townHallLevelSnapshot);
-      if (snapshotFallback.playerName === null && playerName !== null) {
+      const snapshotFallback = playerFallbacks.get(playerTag);
+      if (!snapshotFallback) {
         playerFallbacks.set(playerTag, {
           playerName,
-          townHallLevel: snapshotFallback.townHallLevel,
+          townHallLevel,
         });
-      }
-      if (snapshotFallback.townHallLevel === null && townHallLevel !== null) {
+      } else if (snapshotFallback.townHallLevel === null && townHallLevel !== null) {
         playerFallbacks.set(playerTag, {
-          playerName: playerFallbacks.get(playerTag)?.playerName ?? snapshotFallback.playerName,
+          playerName: snapshotFallback.playerName,
           townHallLevel,
         });
       }
