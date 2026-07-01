@@ -170,6 +170,72 @@ export type WarPlanViolationHistoryPlayerHistoryResult =
   | WarPlanViolationHistoryPlayerHistoryInvalidTag
   | WarPlanViolationHistoryPlayerHistoryNotFound;
 
+export type WarPlanViolationHistoryDiscordUserAggregateSuccess = {
+  outcome: "success";
+  discordUserId: string;
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  clanTag: string | null;
+  trackingSince: Date | null;
+  currentLinkedAccountCount: number;
+  violatingAccountCount: number;
+  violationCount: number;
+  affectedWarCount: number;
+  hasViolationsInPeriod: boolean;
+  accounts: WarPlanViolationHistoryPlayerSummary[];
+};
+
+export type WarPlanViolationHistoryDiscordUserAggregateInvalidUser = {
+  outcome: "invalid_user";
+  discordUserId: string;
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  clanTag: string | null;
+  trackingSince: null;
+  currentLinkedAccountCount: 0;
+  violatingAccountCount: 0;
+  violationCount: 0;
+  affectedWarCount: 0;
+  hasViolationsInPeriod: false;
+  accounts: [];
+};
+
+export type WarPlanViolationHistoryDiscordUserAggregateInvalidClan = {
+  outcome: "invalid_clan";
+  discordUserId: string;
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  clanTag: string | null;
+  trackingSince: null;
+  currentLinkedAccountCount: 0;
+  violatingAccountCount: 0;
+  violationCount: 0;
+  affectedWarCount: 0;
+  hasViolationsInPeriod: false;
+  accounts: [];
+};
+
+export type WarPlanViolationHistoryDiscordUserAggregateNotFound = {
+  outcome: "not_found";
+  discordUserId: string;
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  clanTag: string | null;
+  trackingSince: null;
+  currentLinkedAccountCount: 0;
+  violatingAccountCount: 0;
+  violationCount: 0;
+  affectedWarCount: 0;
+  hasViolationsInPeriod: false;
+  accounts: [];
+};
+
+export type WarPlanViolationHistoryDiscordUserAggregateResult =
+  | WarPlanViolationHistoryDiscordUserAggregateSuccess
+  | WarPlanViolationHistoryDiscordUserAggregateInvalidUser
+  | WarPlanViolationHistoryDiscordUserAggregateInvalidClan
+  | WarPlanViolationHistoryDiscordUserAggregateNotFound;
+
 type CompletedEvaluationRow = {
   warId: number;
   warHistory: {
@@ -275,6 +341,28 @@ type PlayerLinkRow = {
   playerTag: string;
   discordUserId: string | null;
   verificationStatus: string;
+};
+
+type DiscordUserAggregateViolationRow = {
+  id: string;
+  playerTag: string;
+  playerNameSnapshot: string | null;
+  townHallLevelSnapshot: number | null;
+  evaluation: {
+    warHistory: {
+      warId: number;
+      clanTag: string;
+      warStartTime: Date;
+      warEndTime: Date | null;
+    };
+  };
+};
+
+type DiscordUserAggregatePlayerRow = {
+  playerTag: string;
+  violationCount: number;
+  affectedWarIds: Set<number>;
+  snapshotFallback: PlayerSnapshotFallback | undefined;
 };
 
 type PlayerIdentityData = {
@@ -637,6 +725,43 @@ function buildPlayerHistoryViolationWhere(input: {
   };
 }
 
+/** Purpose: build the Prisma where input for Discord-user aggregate violation lookups. */
+function buildDiscordUserAggregateViolationWhere(input: {
+  guildId: string;
+  playerTags: string[];
+  cutoff: Date | null;
+  clanTag: string | null;
+}): Prisma.WarPlanViolationWhereInput {
+  const warHistoryFilter: Prisma.ClanWarHistoryWhereInput = {};
+  if (input.cutoff) {
+    warHistoryFilter.warEndTime = { gte: input.cutoff };
+  }
+  if (input.clanTag) {
+    warHistoryFilter.clanTag = input.clanTag;
+  }
+
+  const evaluationWhere: Prisma.WarPlanComplianceEvaluationWhereInput = {
+    guildId: input.guildId,
+    status: "COMPLETED",
+    ...(Object.keys(warHistoryFilter).length > 0
+      ? {
+          warHistory: {
+            is: warHistoryFilter,
+          },
+        }
+      : {}),
+  };
+
+  return {
+    playerTag: {
+      in: input.playerTags,
+    },
+    evaluation: {
+      is: evaluationWhere,
+    },
+  };
+}
+
 /** Purpose: derive a single canonical chronology timestamp for a player-history violation row. */
 function resolvePlayerHistoryChronologyMs(row: PlayerHistoryEvaluationRow): number {
   const history = row.evaluation.warHistory;
@@ -650,6 +775,25 @@ function comparePlayerHistoryRowsDesc(
   b: PlayerHistoryEvaluationRow,
 ): number {
   const timeDelta = resolvePlayerHistoryChronologyMs(b) - resolvePlayerHistoryChronologyMs(a);
+  if (timeDelta !== 0) return timeDelta;
+  const warDelta = b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+  if (warDelta !== 0) return warDelta;
+  return a.id.localeCompare(b.id);
+}
+
+/** Purpose: derive the canonical chronology timestamp for a Discord-user aggregate violation row. */
+function resolveDiscordUserAggregateChronologyMs(row: DiscordUserAggregateViolationRow): number {
+  const history = row.evaluation.warHistory;
+  const canonicalTime = history.warEndTime ?? history.warStartTime;
+  return canonicalTime.getTime();
+}
+
+/** Purpose: order Discord-user aggregate violations by newest canonical history first. */
+function compareDiscordUserAggregateRowsDesc(
+  a: DiscordUserAggregateViolationRow,
+  b: DiscordUserAggregateViolationRow,
+): number {
+  const timeDelta = resolveDiscordUserAggregateChronologyMs(b) - resolveDiscordUserAggregateChronologyMs(a);
   if (timeDelta !== 0) return timeDelta;
   const warDelta = b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
   if (warDelta !== 0) return warDelta;
@@ -850,6 +994,249 @@ export class WarPlanViolationHistoryService {
       clanSummaries,
       topPlayers,
       hasCompletedEvaluations: rows.length > 0,
+    };
+  }
+
+  /** Purpose: build the read-only Discord-user aggregate war-plan report. */
+  async getDiscordUserAggregate(input: {
+    guildId: string;
+    discordUserId: string;
+    period: WarPlanViolationHistoryPeriod;
+    clanTag?: string | null;
+    now?: Date;
+  }): Promise<WarPlanViolationHistoryDiscordUserAggregateResult> {
+    const guildId = String(input.guildId ?? "").trim();
+    const normalizedDiscordUserId = normalizeDiscordUserId(input.discordUserId);
+    const normalizedClanTag =
+      input.clanTag === undefined || input.clanTag === null || String(input.clanTag).trim() === ""
+        ? null
+        : normalizeClashTagWithHash(input.clanTag);
+    const { cutoff } = resolvePeriodWindow(input);
+
+    if (!normalizedDiscordUserId) {
+      return {
+        outcome: "invalid_user",
+        discordUserId: "",
+        period: input.period,
+        cutoff,
+        clanTag: normalizedClanTag,
+        trackingSince: null,
+        currentLinkedAccountCount: 0,
+        violatingAccountCount: 0,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasViolationsInPeriod: false,
+        accounts: [],
+      };
+    }
+
+    if (input.clanTag !== undefined && input.clanTag !== null && !normalizedClanTag) {
+      return {
+        outcome: "invalid_clan",
+        discordUserId: normalizedDiscordUserId,
+        period: input.period,
+        cutoff,
+        clanTag: "",
+        trackingSince: null,
+        currentLinkedAccountCount: 0,
+        violatingAccountCount: 0,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasViolationsInPeriod: false,
+        accounts: [],
+      };
+    }
+
+    if (!guildId) {
+      return {
+        outcome: "not_found",
+        discordUserId: normalizedDiscordUserId,
+        period: input.period,
+        cutoff,
+        clanTag: normalizedClanTag,
+        trackingSince: null,
+        currentLinkedAccountCount: 0,
+        violatingAccountCount: 0,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasViolationsInPeriod: false,
+        accounts: [],
+      };
+    }
+
+    const currentLinkRows = await this.db.playerLink.findMany({
+      where: {
+        discordUserId: normalizedDiscordUserId,
+        verificationStatus: {
+          not: "REVOKED",
+        },
+      },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        verificationStatus: true,
+      },
+      orderBy: {
+        playerTag: "asc",
+      },
+    });
+
+    const currentLinkedAccounts = new Map<string, PlayerLinkRow>();
+    for (const row of currentLinkRows as Array<{
+      playerTag: string;
+      discordUserId: string | null;
+      verificationStatus: string;
+    }>) {
+      const normalizedRow = normalizePlayerLinkRow(row);
+      if (!normalizedRow.playerTag || !normalizedRow.discordUserId) continue;
+      if (!currentLinkedAccounts.has(normalizedRow.playerTag)) {
+        currentLinkedAccounts.set(normalizedRow.playerTag, normalizedRow);
+      }
+    }
+
+    const currentLinkedTags = [...currentLinkedAccounts.keys()];
+    if (currentLinkedTags.length === 0) {
+      return {
+        outcome: "not_found",
+        discordUserId: normalizedDiscordUserId,
+        period: input.period,
+        cutoff,
+        clanTag: normalizedClanTag,
+        trackingSince: null,
+        currentLinkedAccountCount: 0,
+        violatingAccountCount: 0,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasViolationsInPeriod: false,
+        accounts: [],
+      };
+    }
+
+    const [violationRows, identityData] = await Promise.all([
+      this.db.warPlanViolation.findMany({
+        where: buildDiscordUserAggregateViolationWhere({
+          guildId,
+          playerTags: currentLinkedTags,
+          cutoff,
+          clanTag: normalizedClanTag,
+        }),
+        select: {
+          id: true,
+          playerTag: true,
+          playerNameSnapshot: true,
+          townHallLevelSnapshot: true,
+          evaluation: {
+            select: {
+              warHistory: {
+                select: {
+                  warId: true,
+                  clanTag: true,
+                  warStartTime: true,
+                  warEndTime: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      this.loadPlayerIdentityData(currentLinkedTags),
+    ]);
+
+    const orderedRows = [...(violationRows as DiscordUserAggregateViolationRow[])].sort(
+      compareDiscordUserAggregateRowsDesc,
+    );
+    const accountsByTag = new Map<string, DiscordUserAggregatePlayerRow>();
+    const affectedWarIds = new Set<number>();
+    for (const playerTag of currentLinkedTags) {
+      accountsByTag.set(playerTag, {
+        playerTag,
+        violationCount: 0,
+        affectedWarIds: new Set<number>(),
+        snapshotFallback: undefined,
+      });
+    }
+
+    let violationCount = 0;
+    let trackingSince: Date | null = null;
+
+    for (const row of orderedRows) {
+      const playerTag = normalizeTag(row.playerTag);
+      if (!playerTag) continue;
+      const account = accountsByTag.get(playerTag);
+      if (!account) continue;
+
+      account.violationCount += 1;
+      violationCount += 1;
+      const warId = row.evaluation.warHistory.warId;
+      affectedWarIds.add(warId);
+      if (!account.affectedWarIds.has(warId)) {
+        account.affectedWarIds.add(warId);
+      }
+
+      const rowSnapshot = {
+        playerName: normalizeDisplayText(row.playerNameSnapshot),
+        townHallLevel: normalizePositiveInteger(row.townHallLevelSnapshot),
+      };
+      if (!account.snapshotFallback) {
+        account.snapshotFallback = rowSnapshot;
+      } else if (account.snapshotFallback.townHallLevel === null && rowSnapshot.townHallLevel !== null) {
+        account.snapshotFallback = {
+          playerName: account.snapshotFallback.playerName,
+          townHallLevel: rowSnapshot.townHallLevel,
+        };
+      }
+
+      const warEndTime = row.evaluation.warHistory.warEndTime;
+      if (warEndTime instanceof Date) {
+        if (trackingSince === null || warEndTime.getTime() < trackingSince.getTime()) {
+          trackingSince = warEndTime;
+        }
+      }
+    }
+
+    const accounts = [...accountsByTag.values()]
+      .map((row) => {
+        const current = identityData?.currentByTag.get(row.playerTag) ?? null;
+        const fwaMemberRows = identityData?.fwaMemberRowsByTag.get(row.playerTag) ?? [];
+        const fwaCatalog = identityData?.fwaCatalogByTag.get(row.playerTag) ?? null;
+        const todoSnapshot = identityData?.todoSnapshotByTag.get(row.playerTag) ?? null;
+        const playerLink = identityData?.playerLinkByTag.get(row.playerTag) ?? null;
+        const identity = resolveEnrichedPlayerIdentity({
+          playerTag: row.playerTag,
+          fallback: row.violationCount > 0 ? row.snapshotFallback : undefined,
+          current,
+          fwaMemberRows,
+          fwaCatalog,
+          todoSnapshot,
+          playerLink,
+        });
+
+        return {
+          playerTag: row.playerTag,
+          playerName: identity.playerName,
+          townHallLevel: identity.townHallLevel,
+          discordUserId: identity.discordUserId,
+          violationCount: row.violationCount,
+          affectedWarCount: row.affectedWarIds.size,
+        };
+      })
+      .sort(sortPlayerSummaries);
+
+    const violatingAccountCount = accounts.filter((row) => row.violationCount > 0).length;
+
+    return {
+      outcome: "success",
+      discordUserId: normalizedDiscordUserId,
+      period: input.period,
+      cutoff,
+      clanTag: normalizedClanTag,
+      trackingSince,
+      currentLinkedAccountCount: currentLinkedAccounts.size,
+      violatingAccountCount,
+      violationCount,
+      affectedWarCount: affectedWarIds.size,
+      hasViolationsInPeriod: violationCount > 0,
+      accounts,
     };
   }
 
