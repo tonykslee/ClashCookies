@@ -827,6 +827,45 @@ describe("/clan command behavior", () => {
     expect(description.indexOf("Charlie Clan")).toBeLessThan(description.indexOf("Beta Clan"));
   });
 
+  it("renders a pre-spin CWL clan as idle in minimal display before any current-season match exists", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-pre-spin",
+        title: "Pre-Spin Roster",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/1/2/3",
+        postedAt: new Date("2026-03-02T00:00:00.000Z"),
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    mockCurrentCwlEventsForRequestedTags();
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const description = String(getFirstEmbedDescription(interaction));
+    expect(description).toContain("| 💤 | 49 👥");
+    expect(description).not.toContain("⚔️");
+  });
+
   it("renders CWL minimal rows with the resolved unranked emoji and no literal UNK", async () => {
     const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
     resolveByNameMock.mockImplementation(async (_client, name) => {
@@ -1182,6 +1221,51 @@ describe("/clan command behavior", () => {
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
+  });
+
+  it("renders a pre-spin CWL clan as idle in detailed display before any current-season match exists", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-pre-spin",
+        title: "Pre-Spin Roster",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "ACTIVE",
+        postedMessageUrl: "https://discord.com/channels/1/2/3",
+        postedAt: new Date("2026-03-02T00:00:00.000Z"),
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    mockCurrentCwlEventsForRequestedTags();
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("Spin status: 💤");
+    expect(description).toContain("Members: 0 CWL / 49 clan");
+    expect(description).toContain("Roster: [Pre-Spin Roster](<https://discord.com/channels/1/2/3>)");
+    expect(description).not.toContain("⚔️");
   });
 
   it("renders detailed CWL rows in planned roster order when roster titles carry the bracketed assignment", async () => {

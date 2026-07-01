@@ -700,6 +700,8 @@ async function loadCwlTrackedClanLiveSpinStatus(input: {
 
 function normalizeCwlLeagueGroupClanTags(group: unknown): Set<string> {
   const clanTags = new Set<string>();
+  if (!group || typeof group !== "object") return clanTags;
+
   const rawClans: unknown[] = Array.isArray((group as { clans?: unknown }).clans)
     ? ((group as { clans?: unknown[] }).clans ?? [])
     : [];
@@ -719,6 +721,8 @@ function normalizeCwlLeagueGroupClanTags(group: unknown): Set<string> {
 }
 
 function normalizeCwlLeagueGroupWarTags(group: unknown): string[] {
+  if (!group || typeof group !== "object") return [];
+
   const rawRounds: unknown[] = Array.isArray((group as { rounds?: unknown }).rounds)
     ? ((group as { rounds?: unknown[] }).rounds ?? [])
     : [];

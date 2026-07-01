@@ -336,6 +336,57 @@ describe("TrackedClanListService CWL detailed helpers", () => {
     expect(prismaMock.cwlRoundHistory.findMany).not.toHaveBeenCalled();
   });
 
+  it("keeps a current-season CWL event idle when there are no registered players and does not query round history delegates", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: {
+          id: "event-july",
+          season: "2026-07",
+          anchorWarTag: "#JULY",
+          firstObservedAt: new Date("2026-07-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-07-01T01:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValueOnce([]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValueOnce([
+      { clanTag: "#PYLQ0289" },
+    ] as any);
+    prismaMock.currentCwlPrepSnapshot.findMany.mockResolvedValueOnce([
+      { clanTag: "#PYLQ0289" },
+    ] as any);
+    prismaMock.cwlRoundHistory.findMany.mockResolvedValueOnce([
+      { clanTag: "#PYLQ0289" },
+    ] as any);
+
+    const rows = await listCwlTrackedClansForDetailedDisplay({
+      season: "2026-07",
+      guildId: "guild-1",
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        observedCwlRosterCount: 0,
+        spinStatus: "idle",
+      }),
+    ]);
+    expect(prismaMock.currentCwlRound.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentCwlPrepSnapshot.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.cwlRoundHistory.findMany).not.toHaveBeenCalled();
+  });
+
   it("counts duplicate registered player tags once and downgrades stale live league groups to idle", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       {
@@ -417,6 +468,66 @@ describe("TrackedClanListService CWL detailed helpers", () => {
     ).toBe(true);
     expect(logLines.some((line) => line.includes("returned_season=2026-06"))).toBe(true);
     expect(queueContextMock.runWithCoCQueueContext).toHaveBeenCalled();
+  });
+
+  it("treats a null live CWL group as idle without counting it as a failure", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-07",
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlEventClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: {
+          id: "event-july",
+          season: "2026-07",
+          anchorWarTag: "#JULY",
+          firstObservedAt: new Date("2026-07-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-07-01T01:00:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-july",
+        title: "July Roster",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "ACTIVE",
+        postedMessageUrl: "https://discord.com/channels/1/2/3",
+        postedAt: new Date("2026-07-01T00:00:00.000Z"),
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ]);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue(null),
+      getClan: vi.fn(),
+    };
+
+    const result = await refreshCwlTrackedClanDetailedDisplayWithQueueContext({
+      season: "2026-07",
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({
+      season: "2026-07",
+      displayedClanCount: 1,
+      matchedCount: 0,
+      searchingCount: 0,
+      idleCount: 1,
+      failedClanCount: 0,
+      failedClanTags: [],
+    });
+    const logLines = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) =>
+      String(call[0] ?? ""),
+    );
+    expect(logLines.some((line) => line.includes("raw_reason=api_null"))).toBe(true);
   });
 
   it.each([
