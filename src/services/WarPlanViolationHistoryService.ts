@@ -76,6 +76,82 @@ export type WarPlanViolationHistoryClanLeaderboardResult =
   | WarPlanViolationHistoryClanLeaderboardSuccess
   | WarPlanViolationHistoryClanLeaderboardNotFound;
 
+export type WarPlanViolationHistoryPlayerHistoryEntry = {
+  violationId: string;
+  evaluationId: string;
+  warId: number;
+  warStartTime: Date;
+  warEndTime: Date | null;
+  clanTag: string;
+  clanName: string;
+  opponentTag: string;
+  opponentName: string | null;
+  expectedOutcome: string | null;
+  loseStyle: string | null;
+  playerNameSnapshot: string | null;
+  townHallLevelSnapshot: number | null;
+  playerPosition: number | null;
+  violationType: string;
+  reasonLabel: string | null;
+  expectedBehavior: string;
+  actualBehavior: string;
+  breachStarsAt: number | null;
+  breachTimeRemaining: string | null;
+};
+
+export type WarPlanViolationHistoryPlayerHistorySuccess = {
+  outcome: "success";
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  trackingSince: Date | null;
+  playerTag: string;
+  playerName: string;
+  townHallLevel: number | null;
+  discordUserId: string | null;
+  violationCount: number;
+  affectedWarCount: number;
+  hasRecordedViolations: true;
+  hasViolationsInPeriod: boolean;
+  entries: WarPlanViolationHistoryPlayerHistoryEntry[];
+};
+
+export type WarPlanViolationHistoryPlayerHistoryInvalidTag = {
+  outcome: "invalid_tag";
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  trackingSince: null;
+  playerTag: "";
+  playerName: null;
+  townHallLevel: null;
+  discordUserId: null;
+  violationCount: 0;
+  affectedWarCount: 0;
+  hasRecordedViolations: false;
+  hasViolationsInPeriod: false;
+  entries: [];
+};
+
+export type WarPlanViolationHistoryPlayerHistoryNotFound = {
+  outcome: "not_found";
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date | null;
+  trackingSince: null;
+  playerTag: string;
+  playerName: null;
+  townHallLevel: null;
+  discordUserId: null;
+  violationCount: 0;
+  affectedWarCount: 0;
+  hasRecordedViolations: false;
+  hasViolationsInPeriod: false;
+  entries: [];
+};
+
+export type WarPlanViolationHistoryPlayerHistoryResult =
+  | WarPlanViolationHistoryPlayerHistorySuccess
+  | WarPlanViolationHistoryPlayerHistoryInvalidTag
+  | WarPlanViolationHistoryPlayerHistoryNotFound;
+
 type CompletedEvaluationRow = {
   warId: number;
   warHistory: {
@@ -90,6 +166,35 @@ type CompletedEvaluationRow = {
     playerNameSnapshot: string | null;
     townHallLevelSnapshot: number | null;
   }>;
+};
+
+type PlayerHistoryEvaluationRow = {
+  id: string;
+  evaluationId: string;
+  playerTag: string;
+  playerNameSnapshot: string | null;
+  playerPosition: number | null;
+  townHallLevelSnapshot: number | null;
+  violationType: string;
+  reasonLabel: string | null;
+  expectedBehavior: string;
+  actualBehavior: string;
+  breachStarsAt: number | null;
+  breachTimeRemaining: string | null;
+  evaluation: {
+    id: string;
+    expectedOutcome: string | null;
+    loseStyle: string | null;
+    warHistory: {
+      warId: number;
+      clanTag: string;
+      clanName: string | null;
+      opponentTag: string | null;
+      opponentName: string | null;
+      warStartTime: Date;
+      warEndTime: Date | null;
+    };
+  };
 };
 
 type PlayerSnapshotFallback = {
@@ -483,6 +588,86 @@ function buildCompletedEvaluationWhere(input: {
   };
 }
 
+/** Purpose: build the Prisma where input for player-history violation lookups. */
+function buildPlayerHistoryViolationWhere(input: {
+  guildId: string;
+  playerTag: string;
+  cutoff: Date | null;
+}): Prisma.WarPlanViolationWhereInput {
+  const evaluationWhere: Prisma.WarPlanComplianceEvaluationWhereInput = {
+    guildId: input.guildId,
+    status: "COMPLETED",
+    ...(input.cutoff
+      ? {
+          warHistory: {
+            is: {
+              warEndTime: {
+                gte: input.cutoff,
+              },
+            },
+          },
+        }
+      : {}),
+  };
+
+  return {
+    playerTag: input.playerTag,
+    evaluation: {
+      is: evaluationWhere,
+    },
+  };
+}
+
+/** Purpose: derive a single canonical chronology timestamp for a player-history violation row. */
+function resolvePlayerHistoryChronologyMs(row: PlayerHistoryEvaluationRow): number {
+  const history = row.evaluation.warHistory;
+  const canonicalTime = history.warEndTime ?? history.warStartTime;
+  return canonicalTime.getTime();
+}
+
+/** Purpose: order player-history violations by newest canonical history first and violation id as a stable tie-breaker. */
+function comparePlayerHistoryRowsDesc(
+  a: PlayerHistoryEvaluationRow,
+  b: PlayerHistoryEvaluationRow,
+): number {
+  const timeDelta = resolvePlayerHistoryChronologyMs(b) - resolvePlayerHistoryChronologyMs(a);
+  if (timeDelta !== 0) return timeDelta;
+  const warDelta = b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+  if (warDelta !== 0) return warDelta;
+  return a.id.localeCompare(b.id);
+}
+
+/** Purpose: convert a raw violation row into the public player-history entry shape. */
+function toPlayerHistoryEntry(
+  row: PlayerHistoryEvaluationRow,
+): WarPlanViolationHistoryPlayerHistoryEntry {
+  const history = row.evaluation.warHistory;
+  const clanTag = normalizeTag(history.clanTag);
+  const opponentTag = normalizeTag(history.opponentTag);
+  return {
+    violationId: row.id,
+    evaluationId: row.evaluationId,
+    warId: history.warId,
+    warStartTime: history.warStartTime,
+    warEndTime: history.warEndTime,
+    clanTag,
+    clanName: normalizeDisplayText(history.clanName) ?? clanTag,
+    opponentTag,
+    opponentName: normalizeDisplayText(history.opponentName) ?? (opponentTag || null),
+    expectedOutcome: row.evaluation.expectedOutcome ?? null,
+    loseStyle: row.evaluation.loseStyle ?? null,
+    playerNameSnapshot: normalizeDisplayText(row.playerNameSnapshot),
+    townHallLevelSnapshot: normalizePositiveInteger(row.townHallLevelSnapshot),
+    playerPosition: row.playerPosition ?? null,
+    violationType: String(row.violationType ?? ""),
+    reasonLabel: normalizeDisplayText(row.reasonLabel),
+    expectedBehavior: normalizeDisplayText(row.expectedBehavior) ?? "",
+    actualBehavior: normalizeDisplayText(row.actualBehavior) ?? "",
+    breachStarsAt: row.breachStarsAt ?? null,
+    breachTimeRemaining: normalizeDisplayText(row.breachTimeRemaining),
+  };
+}
+
 /** Purpose: aggregate completed war-plan violations into read-only history summaries. */
 export class WarPlanViolationHistoryService {
   /** Purpose: initialize service dependencies. */
@@ -670,6 +855,126 @@ export class WarPlanViolationHistoryService {
     };
   }
 
+  /** Purpose: build the read-only player-history report for one player tag. */
+  async getPlayerHistory(input: {
+    guildId: string;
+    playerTag: string;
+    period: WarPlanViolationHistoryPeriod;
+    now?: Date;
+  }): Promise<WarPlanViolationHistoryPlayerHistoryResult> {
+    const guildId = String(input.guildId ?? "").trim();
+    const normalizedPlayerTag = normalizeClashTagWithHash(input.playerTag);
+    const { cutoff } = resolvePeriodWindow(input);
+    if (!normalizedPlayerTag) {
+      return {
+        outcome: "invalid_tag",
+        period: input.period,
+        cutoff,
+        trackingSince: null,
+        playerTag: "",
+        playerName: null,
+        townHallLevel: null,
+        discordUserId: null,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasRecordedViolations: false,
+        hasViolationsInPeriod: false,
+        entries: [],
+      };
+    }
+
+    if (!guildId) {
+      return {
+        outcome: "not_found",
+        period: input.period,
+        cutoff,
+        trackingSince: null,
+        playerTag: normalizedPlayerTag,
+        playerName: null,
+        townHallLevel: null,
+        discordUserId: null,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasRecordedViolations: false,
+        hasViolationsInPeriod: false,
+        entries: [],
+      };
+    }
+
+    const periodRows = await this.loadPlayerHistoryRows({
+      guildId,
+      playerTag: normalizedPlayerTag,
+      cutoff,
+    });
+    if (periodRows.length === 0) {
+      const recordedExists = await this.db.warPlanViolation.findFirst({
+        where: buildPlayerHistoryViolationWhere({
+          guildId,
+          playerTag: normalizedPlayerTag,
+          cutoff: null,
+        }),
+        select: {
+          id: true,
+        },
+      });
+      if (!recordedExists) {
+        return {
+          outcome: "not_found",
+          period: input.period,
+          cutoff,
+          trackingSince: null,
+          playerTag: normalizedPlayerTag,
+          playerName: null,
+          townHallLevel: null,
+          discordUserId: null,
+          violationCount: 0,
+          affectedWarCount: 0,
+          hasRecordedViolations: false,
+          hasViolationsInPeriod: false,
+          entries: [],
+        };
+      }
+    }
+
+    const orderedRows = [...periodRows].sort(comparePlayerHistoryRowsDesc);
+    const entries = orderedRows.map(toPlayerHistoryEntry);
+    const trackingSince =
+      entries.reduce<Date | null>((earliest, entry) => {
+        if (!(entry.warEndTime instanceof Date)) return earliest;
+        if (earliest === null || entry.warEndTime.getTime() < earliest.getTime()) {
+          return entry.warEndTime;
+        }
+        return earliest;
+      }, null) ?? null;
+    const affectedWarCount = new Set(entries.map((entry) => entry.warId)).size;
+    const identityData = await this.loadPlayerIdentityData([normalizedPlayerTag]);
+    const identity = resolveEnrichedPlayerIdentity({
+      playerTag: normalizedPlayerTag,
+      fallback: undefined,
+      current: identityData?.currentByTag.get(normalizedPlayerTag) ?? null,
+      fwaMemberRows: identityData?.fwaMemberRowsByTag.get(normalizedPlayerTag) ?? [],
+      fwaCatalog: identityData?.fwaCatalogByTag.get(normalizedPlayerTag) ?? null,
+      todoSnapshot: identityData?.todoSnapshotByTag.get(normalizedPlayerTag) ?? null,
+      playerLink: identityData?.playerLinkByTag.get(normalizedPlayerTag) ?? null,
+    });
+
+    return {
+      outcome: "success",
+      period: input.period,
+      cutoff,
+      trackingSince,
+      playerTag: normalizedPlayerTag,
+      playerName: identity.playerName,
+      townHallLevel: identity.townHallLevel,
+      discordUserId: identity.discordUserId,
+      violationCount: entries.length,
+      affectedWarCount,
+      hasRecordedViolations: true,
+      hasViolationsInPeriod: periodRows.length > 0,
+      entries,
+    };
+  }
+
   /** Purpose: bulk-load persisted identity sources for one set of violating player tags. */
   private async loadPlayerIdentityData(playerTags: string[]): Promise<PlayerIdentityData | null> {
     const normalizedTags = [...new Set(playerTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
@@ -807,6 +1112,50 @@ export class WarPlanViolationHistoryService {
       todoSnapshotByTag,
       playerLinkByTag,
     };
+  }
+
+  /** Purpose: bulk-load player-history violation rows for one player and reporting window. */
+  private async loadPlayerHistoryRows(input: {
+    guildId: string;
+    playerTag: string;
+    cutoff: Date | null;
+  }): Promise<PlayerHistoryEvaluationRow[]> {
+    const rows = await this.db.warPlanViolation.findMany({
+      where: buildPlayerHistoryViolationWhere(input),
+      select: {
+        id: true,
+        evaluationId: true,
+        playerTag: true,
+        playerNameSnapshot: true,
+        playerPosition: true,
+        townHallLevelSnapshot: true,
+        violationType: true,
+        reasonLabel: true,
+        expectedBehavior: true,
+        actualBehavior: true,
+        breachStarsAt: true,
+        breachTimeRemaining: true,
+        evaluation: {
+          select: {
+            id: true,
+            expectedOutcome: true,
+            loseStyle: true,
+            warHistory: {
+              select: {
+                warId: true,
+                clanTag: true,
+                clanName: true,
+                opponentTag: true,
+                opponentName: true,
+                warStartTime: true,
+                warEndTime: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    return rows as PlayerHistoryEvaluationRow[];
   }
 
   /** Purpose: load the completed canonical history rows needed for read-only aggregation. */

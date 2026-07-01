@@ -3,9 +3,17 @@ import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 
 type ViolationFixture = {
+  id?: string;
   playerTag: string;
   playerNameSnapshot: string | null;
   townHallLevelSnapshot: number | null;
+  playerPosition?: number | null;
+  violationType?: string;
+  reasonLabel?: string | null;
+  expectedBehavior?: string;
+  actualBehavior?: string;
+  breachStarsAt?: number | null;
+  breachTimeRemaining?: string | null;
 };
 
 type EvaluationFixture = {
@@ -17,6 +25,8 @@ type EvaluationFixture = {
   warEndTime: Date | null;
   completedAt?: Date | null;
   status?: string;
+  expectedOutcome?: string | null;
+  loseStyle?: string | null;
   violations: ViolationFixture[];
 };
 
@@ -156,11 +166,149 @@ function compareIdentityRows(
   return 0;
 }
 
+type BuiltViolationRow = {
+  id: string;
+  evaluationId: string;
+  guildId: string;
+  status: string;
+  playerTag: string;
+  playerNameSnapshot: string | null;
+  playerPosition: number | null;
+  townHallLevelSnapshot: number | null;
+  violationType: string;
+  reasonLabel: string | null;
+  expectedBehavior: string;
+  actualBehavior: string;
+  breachStarsAt: number | null;
+  breachTimeRemaining: string | null;
+  evaluation: {
+    id: string;
+    expectedOutcome: string | null;
+    loseStyle: string | null;
+    warHistory: {
+      warId: number;
+      clanTag: string;
+      clanName: string | null;
+      opponentTag: string | null;
+      opponentName: string | null;
+      warStartTime: Date;
+      warEndTime: Date | null;
+    };
+  };
+};
+
+function buildViolationRows(fixtures: EvaluationFixture[]): BuiltViolationRow[] {
+  return fixtures.flatMap((evaluation) =>
+    evaluation.violations.map((violation, index) => {
+      const evaluationId = `eval-${evaluation.guildId}-${evaluation.warId}`;
+      return {
+        id: violation.id ?? `vio-${evaluation.warId}-${index + 1}`,
+        evaluationId,
+        guildId: evaluation.guildId,
+        status: evaluation.status ?? "COMPLETED",
+        playerTag: violation.playerTag,
+        playerNameSnapshot: violation.playerNameSnapshot,
+        playerPosition: violation.playerPosition ?? null,
+        townHallLevelSnapshot: violation.townHallLevelSnapshot,
+        violationType: violation.violationType ?? "OTHER_PLAN_VIOLATION",
+        reasonLabel: violation.reasonLabel ?? null,
+        expectedBehavior: violation.expectedBehavior ?? "expected",
+        actualBehavior: violation.actualBehavior ?? "actual",
+        breachStarsAt: violation.breachStarsAt ?? null,
+        breachTimeRemaining: violation.breachTimeRemaining ?? null,
+        evaluation: {
+          id: evaluationId,
+          expectedOutcome: evaluation.expectedOutcome ?? null,
+          loseStyle: evaluation.loseStyle ?? null,
+          warHistory: {
+            warId: evaluation.warId,
+            clanTag: evaluation.clanTag,
+            clanName: evaluation.clanName,
+            opponentTag: null,
+            opponentName: null,
+            warStartTime: evaluation.warStartTime,
+            warEndTime: evaluation.warEndTime,
+          },
+        },
+      };
+    }),
+  );
+}
+
 function extractRelationFilter(where: Record<string, unknown> | undefined): Record<string, unknown> | null {
   const relation = where?.warHistory as Record<string, unknown> | undefined;
   if (!relation) return null;
   const nested = relation.is as Record<string, unknown> | undefined;
   return nested ?? relation;
+}
+
+function matchesViolationEvaluationRelation(
+  row: BuiltViolationRow,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  const relation = where?.evaluation as
+    | { is?: { guildId?: string; status?: string; warHistory?: Record<string, unknown> } }
+    | undefined;
+  const nested = relation?.is;
+  if (!nested) return true;
+  if (typeof nested.guildId === "string" && nested.guildId !== row.guildId) return false;
+  if (typeof nested.status === "string" && nested.status !== row.status) return false;
+  const history = nested.warHistory as Record<string, unknown> | undefined;
+  if (!history) return true;
+  const nestedHistory = (history as { is?: Record<string, unknown> }).is ?? history;
+  if (typeof nestedHistory.warEndTime === "object" && nestedHistory.warEndTime !== null) {
+    const gte = (nestedHistory.warEndTime as { gte?: Date }).gte;
+    if (gte instanceof Date) {
+      if (!(row.evaluation.warHistory.warEndTime instanceof Date)) return false;
+      if (row.evaluation.warHistory.warEndTime.getTime() < gte.getTime()) return false;
+    }
+  }
+  if (typeof nestedHistory.clanTag === "string" && normalizeTag(nestedHistory.clanTag) !== normalizeTag(row.evaluation.warHistory.clanTag)) {
+    return false;
+  }
+  return true;
+}
+
+function matchesViolationWhere(
+  row: BuiltViolationRow,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (typeof where.playerTag === "string" && normalizeTag(where.playerTag) !== normalizeTag(row.playerTag)) {
+    return false;
+  }
+  return matchesViolationEvaluationRelation(row, where);
+}
+
+function projectViolationRow(row: BuiltViolationRow, select: Record<string, unknown> | undefined) {
+  if (!select) return row;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(select)) {
+    if (!value) continue;
+    if (key === "evaluation" && typeof value === "object") {
+      const evaluationSelect = value as { select?: Record<string, unknown> };
+      const evaluationResult: Record<string, unknown> = {};
+      const evaluationRow = row.evaluation;
+      for (const [evaluationKey, evaluationValue] of Object.entries(evaluationSelect.select ?? {})) {
+        if (!evaluationValue) continue;
+        if (evaluationKey === "warHistory" && typeof evaluationValue === "object") {
+          const historySelect = evaluationValue as { select?: Record<string, unknown> };
+          const historyResult: Record<string, unknown> = {};
+          for (const [historyKey, historyValue] of Object.entries(historySelect.select ?? {})) {
+            if (!historyValue) continue;
+            historyResult[historyKey] = (evaluationRow.warHistory as Record<string, unknown>)[historyKey];
+          }
+          evaluationResult.warHistory = historyResult;
+          continue;
+        }
+        evaluationResult[evaluationKey] = (evaluationRow as Record<string, unknown>)[evaluationKey];
+      }
+      result[key] = evaluationResult;
+      continue;
+    }
+    result[key] = (row as Record<string, unknown>)[key];
+  }
+  return result;
 }
 
 function matchesIdentityRelation(
@@ -200,6 +348,7 @@ function matchesEvaluationWhere(row: EvaluationFixture, where: Record<string, un
 
 function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtures> = {}) {
   const ordered = [...fixtures].sort(compareFixturesDesc);
+  const violationRows = buildViolationRows(ordered);
   const identityFixtures: IdentityFixtures = {
     playerCurrent: identity.playerCurrent ?? [],
     fwaClanMemberCurrent: identity.fwaClanMemberCurrent ?? [],
@@ -239,6 +388,23 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
         identityFixtures.playerLink.filter((row) => matchesInFilter(args?.where, row.playerTag)),
       ),
+    },
+    warPlanViolation: {
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        select?: Record<string, unknown>;
+      }) =>
+        violationRows
+          .filter((row) => matchesViolationWhere(row, args?.where))
+          .map((row) => projectViolationRow(row, args?.select)),
+      ),
+      findFirst: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        select?: Record<string, unknown>;
+      }) => {
+        const hit = violationRows.find((row) => matchesViolationWhere(row, args?.where));
+        return hit ? projectViolationRow(hit, args?.select) : null;
+      }),
     },
     clanWarHistory: {
       findFirst: vi.fn(async (args?: {
@@ -1889,6 +2055,575 @@ describe("WarPlanViolationHistoryService", () => {
       clanSummaries: [],
       topPlayers: [],
       hasCompletedEvaluations: true,
+    });
+  });
+
+  describe("getPlayerHistory", () => {
+    it("returns invalid_tag without database reads", async () => {
+      const { db, service } = buildService([]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "not-a-tag",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.outcome).toBe("invalid_tag");
+      expect(db.warPlanViolation.findMany).not.toHaveBeenCalled();
+      expect(db.warPlanViolation.findFirst).not.toHaveBeenCalled();
+      expect(db.warPlanComplianceEvaluation.findMany).not.toHaveBeenCalled();
+      expect(db.playerCurrent.findMany).not.toHaveBeenCalled();
+      expect(db.fwaClanMemberCurrent.findMany).not.toHaveBeenCalled();
+      expect(db.fwaPlayerCatalog.findMany).not.toHaveBeenCalled();
+      expect(db.todoPlayerSnapshot.findMany).not.toHaveBeenCalled();
+      expect(db.playerLink.findMany).not.toHaveBeenCalled();
+    });
+
+    it("keeps guild isolation and completed-evaluation filtering", async () => {
+      const { db, service } = buildService([
+        buildFixture({
+          guildId: "guild-a",
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          status: "FAILED",
+          violations: [
+            {
+              id: "vio-a",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Alpha One",
+              townHallLevelSnapshot: 16,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+        buildFixture({
+          guildId: "guild-b",
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Beta",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-b",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Beta One",
+              townHallLevelSnapshot: 17,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-a",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where).toMatchObject({
+        playerTag: "#PYLQ0289",
+        evaluation: {
+          is: {
+            guildId: "guild-a",
+            status: "COMPLETED",
+          },
+        },
+      });
+      expect(db.warPlanViolation.findFirst).toHaveBeenCalledTimes(1);
+      expect(result.outcome).toBe("not_found");
+      expect(result.playerTag).toBe("#PYLQ0289");
+    });
+
+    it("pushes the exact canonical 30-day cutoff into Prisma", async () => {
+      const now = d("2026-06-01T00:00:00.000Z");
+      const { db, service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Alpha One",
+              townHallLevelSnapshot: 16,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "30d",
+        now,
+      });
+
+      const where = db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where as {
+        evaluation?: { is?: { warHistory?: { is?: { warEndTime?: { gte?: Date } } } } };
+      };
+      const cutoff = where.evaluation?.is?.warHistory?.is?.warEndTime?.gte;
+
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(cutoff).toBe(result.cutoff);
+      expect(result.cutoff).toBe(cutoff);
+      expect(result.outcome).toBe("success");
+      expect(result.hasViolationsInPeriod).toBe(true);
+    });
+
+    it("excludes null-ended wars from 30d but includes them in lifetime", async () => {
+      const fixtures = [
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-30T23:00:00.000Z"),
+          warEndTime: d("2026-05-31T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-ended",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Ended",
+              townHallLevelSnapshot: 16,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-31T23:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              id: "vio-null",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Null Ended",
+              townHallLevelSnapshot: 17,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+      ];
+
+      const thirtyDay = await buildService(fixtures).service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "30d",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+      const lifetime = await buildService(fixtures).service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(thirtyDay.outcome).toBe("success");
+      expect(thirtyDay.entries).toHaveLength(1);
+      expect(thirtyDay.entries[0]?.violationId).toBe("vio-ended");
+      expect(lifetime.outcome).toBe("success");
+      expect(lifetime.entries.map((entry) => entry.violationId)).toEqual([
+        "vio-null",
+        "vio-ended",
+      ]);
+      expect(lifetime.trackingSince).toEqual(d("2026-05-31T01:00:00.000Z"));
+    });
+
+    it("sorts entries by canonical war time, war ID, then violation ID", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 10,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-c",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older",
+              townHallLevelSnapshot: 15,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 20,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-b",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Same War Later",
+              townHallLevelSnapshot: 16,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+            {
+              id: "vio-a",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Same War Earlier",
+              townHallLevelSnapshot: 17,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.entries.map((entry) => entry.violationId)).toEqual([
+        "vio-a",
+        "vio-b",
+        "vio-c",
+      ]);
+    });
+
+    it("returns populated entry fields and counts", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            expectedOutcome: "WIN",
+            loseStyle: "NONE",
+            violations: [
+              {
+                id: "vio-1",
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Snapshot Alpha",
+                townHallLevelSnapshot: 12,
+                playerPosition: 3,
+                violationType: "ANY_3STAR",
+                reasonLabel: "Reason Alpha",
+                expectedOutcome: "WIN",
+                loseStyle: "NONE",
+                expectedBehavior: "Expected Alpha",
+                actualBehavior: "Actual Alpha",
+                breachStarsAt: 3,
+                breachTimeRemaining: "0s",
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Current Alpha",
+              townHall: 17,
+            }),
+          ],
+          playerLink: [
+            makePlayerLinkFixture({
+              playerTag: "#PYLQ0289",
+              discordUserId: "111111111111111111",
+              verificationStatus: "VERIFIED",
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "success",
+        playerTag: "#PYLQ0289",
+        playerName: "Current Alpha",
+        townHallLevel: 17,
+        discordUserId: "111111111111111111",
+        violationCount: 1,
+        affectedWarCount: 1,
+        hasRecordedViolations: true,
+        hasViolationsInPeriod: true,
+      });
+      expect(result.entries[0]).toMatchObject({
+        violationId: "vio-1",
+        evaluationId: "eval-guild-1-1",
+        warId: 1,
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        opponentTag: "",
+        opponentName: null,
+        playerNameSnapshot: "Snapshot Alpha",
+        townHallLevelSnapshot: 12,
+        playerPosition: 3,
+        violationType: "ANY_3STAR",
+        reasonLabel: "Reason Alpha",
+        expectedBehavior: "Expected Alpha",
+        actualBehavior: "Actual Alpha",
+        breachStarsAt: 3,
+        breachTimeRemaining: "0s",
+      });
+    });
+
+    it("returns successful empty-period metadata when the player has lifetime violations but none in 30d", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-04-01T00:00:00.000Z"),
+            warEndTime: d("2026-04-01T01:00:00.000Z"),
+            violations: [
+              {
+                id: "vio-1",
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Outside Window",
+                townHallLevelSnapshot: 12,
+                expectedBehavior: "Expected",
+                actualBehavior: "Actual",
+                violationType: "OTHER_PLAN_VIOLATION",
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: null,
+              townHall: null,
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "30d",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "success",
+        playerTag: "#PYLQ0289",
+        playerName: "#PYLQ0289",
+        townHallLevel: null,
+        discordUserId: null,
+        violationCount: 0,
+        affectedWarCount: 0,
+        hasRecordedViolations: true,
+        hasViolationsInPeriod: false,
+        trackingSince: null,
+        entries: [],
+      });
+    });
+
+    it("returns not_found when the player has no completed violations in the guild", async () => {
+      const { service } = buildService([
+        buildFixture({
+          guildId: "guild-a",
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          status: "FAILED",
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Alpha One",
+              townHallLevelSnapshot: 16,
+              expectedBehavior: "Expected",
+              actualBehavior: "Actual",
+              violationType: "OTHER_PLAN_VIOLATION",
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-a",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.outcome).toBe("not_found");
+      expect(result.playerTag).toBe("#PYLQ0289");
+    });
+
+    it("returns current identity and PlayerLink ownership", async () => {
+      const { service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                id: "vio-1",
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Snapshot Alpha",
+                townHallLevelSnapshot: 12,
+                expectedBehavior: "Expected",
+                actualBehavior: "Actual",
+                violationType: "OTHER_PLAN_VIOLATION",
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Current Alpha",
+              townHall: 17,
+            }),
+          ],
+          playerLink: [
+            makePlayerLinkFixture({
+              playerTag: "#PYLQ0289",
+              discordUserId: "111111111111111111",
+              verificationStatus: "VERIFIED",
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        playerName: "Current Alpha",
+        townHallLevel: 17,
+        discordUserId: "111111111111111111",
+      });
+    });
+
+    it("performs bounded reads without per-entry queries or state mutations", async () => {
+      const { db, service } = buildService(
+        [
+          buildFixture({
+            warId: 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d("2026-05-10T00:00:00.000Z"),
+            warEndTime: d("2026-05-10T01:00:00.000Z"),
+            violations: [
+              {
+                id: "vio-1",
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Snapshot Alpha",
+                townHallLevelSnapshot: 12,
+                expectedBehavior: "Expected",
+                actualBehavior: "Actual",
+                violationType: "OTHER_PLAN_VIOLATION",
+              },
+              {
+                id: "vio-2",
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: "Snapshot Alpha 2",
+                townHallLevelSnapshot: 13,
+                expectedBehavior: "Expected",
+                actualBehavior: "Actual",
+                violationType: "OTHER_PLAN_VIOLATION",
+              },
+            ],
+          }),
+        ],
+        {
+          playerCurrent: [
+            makePlayerCurrentFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Current Alpha",
+              townHall: 17,
+            }),
+          ],
+          fwaPlayerCatalog: [
+            makeFwaPlayerCatalogFixture({
+              playerTag: "#PYLQ0289",
+              latestName: "Catalog Alpha",
+              latestTownHall: 18,
+            }),
+          ],
+          todoPlayerSnapshot: [
+            makeTodoPlayerSnapshotFixture({
+              playerTag: "#PYLQ0289",
+              playerName: "Todo Alpha",
+              townHall: 19,
+            }),
+          ],
+          playerLink: [
+            makePlayerLinkFixture({
+              playerTag: "#PYLQ0289",
+              discordUserId: "111111111111111111",
+              verificationStatus: "VERIFIED",
+            }),
+          ],
+        },
+      );
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.findFirst).not.toHaveBeenCalled();
+      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(1);
+      expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(1);
+      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(1);
+      expect(db.playerLink.findMany).toHaveBeenCalledTimes(1);
+      expect(result.entries).toHaveLength(2);
     });
   });
 });
