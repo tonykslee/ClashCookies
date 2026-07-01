@@ -1502,51 +1502,24 @@ export class WarPlanViolationHistoryService {
   }): Promise<string[]> {
     if (!input.tagQuery) return [];
 
-    const rows = await this.db.warPlanViolation.findMany({
-      where: {
-        evaluation: {
-          is: {
-            guildId: input.guildId,
-            status: "COMPLETED",
-          },
-        },
-        playerTag: {
-          contains: input.tagQuery,
-          mode: "insensitive",
-        },
-      },
-      distinct: ["playerTag"],
-      orderBy: [
-        {
-          evaluation: {
-            warHistory: {
-              warEndTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warStartTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warId: "desc",
-            },
-          },
-        },
-        {
-          playerTag: "asc",
-        },
-      ],
-      select: {
-        playerTag: true,
-      },
-      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
-    });
+    const rows = await this.db.$queryRaw<Array<{ playerTag: string }>>(Prisma.sql`
+      SELECT DISTINCT ON (v."playerTag")
+        v."playerTag" AS "playerTag"
+      FROM "WarPlanViolation" v
+      INNER JOIN "WarPlanComplianceEvaluation" e
+        ON e."id" = v."evaluationId"
+      INNER JOIN "ClanWarHistory" h
+        ON h."warId" = e."warId"
+      WHERE
+        e."guildId" = ${input.guildId}
+        AND e."status" = 'COMPLETED'::"WarPlanComplianceEvaluationStatus"
+        AND LOWER(REPLACE(v."playerTag", '#', '')) LIKE '%' || LOWER(${input.tagQuery}) || '%'
+      ORDER BY
+        v."playerTag" ASC,
+        COALESCE(h."warEndTime", h."warStartTime") DESC,
+        h."warId" DESC
+      LIMIT ${PLAYER_AUTOCOMPLETE_DISCOVERY_CAP}
+    `);
 
     return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
   }
@@ -1558,51 +1531,24 @@ export class WarPlanViolationHistoryService {
   }): Promise<string[]> {
     if (!input.query) return [];
 
-    const rows = await this.db.warPlanViolation.findMany({
-      where: {
-        evaluation: {
-          is: {
-            guildId: input.guildId,
-            status: "COMPLETED",
-          },
-        },
-        playerNameSnapshot: {
-          contains: input.query,
-          mode: "insensitive",
-        },
-      },
-      distinct: ["playerTag"],
-      orderBy: [
-        {
-          evaluation: {
-            warHistory: {
-              warEndTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warStartTime: "desc",
-            },
-          },
-        },
-        {
-          evaluation: {
-            warHistory: {
-              warId: "desc",
-            },
-          },
-        },
-        {
-          playerTag: "asc",
-        },
-      ],
-      select: {
-        playerTag: true,
-      },
-      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
-    });
+    const rows = await this.db.$queryRaw<Array<{ playerTag: string }>>(Prisma.sql`
+      SELECT DISTINCT ON (v."playerTag")
+        v."playerTag" AS "playerTag"
+      FROM "WarPlanViolation" v
+      INNER JOIN "WarPlanComplianceEvaluation" e
+        ON e."id" = v."evaluationId"
+      INNER JOIN "ClanWarHistory" h
+        ON h."warId" = e."warId"
+      WHERE
+        e."guildId" = ${input.guildId}
+        AND e."status" = 'COMPLETED'::"WarPlanComplianceEvaluationStatus"
+        AND LOWER(v."playerNameSnapshot") LIKE '%' || LOWER(${input.query}) || '%'
+      ORDER BY
+        v."playerTag" ASC,
+        COALESCE(h."warEndTime", h."warStartTime") DESC,
+        h."warId" DESC
+      LIMIT ${PLAYER_AUTOCOMPLETE_DISCOVERY_CAP}
+    `);
 
     return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
   }

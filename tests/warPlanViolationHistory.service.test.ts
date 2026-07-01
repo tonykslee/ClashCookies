@@ -358,6 +358,45 @@ function buildAutocompleteSnapshotRows(
   });
 }
 
+function compareAutocompleteDiscoveryRows(a: BuiltViolationRow, b: BuiltViolationRow): number {
+  const aTime = (a.evaluation.warHistory.warEndTime ?? a.evaluation.warHistory.warStartTime).getTime();
+  const bTime = (b.evaluation.warHistory.warEndTime ?? b.evaluation.warHistory.warStartTime).getTime();
+  if (bTime !== aTime) return bTime - aTime;
+  const tagCompare = normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+  if (tagCompare !== 0) return tagCompare;
+  return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
+}
+
+function buildAutocompleteDiscoveryRows(
+  rows: BuiltViolationRow[],
+  guildId: string,
+  query: string,
+  lane: "tag" | "snapshot",
+): Array<{ playerTag: string }> {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedBareTagQuery = normalizeTag(query).replace(/^#/, "");
+  const matchingRows = rows
+    .filter((row) => row.guildId === guildId && row.status === "COMPLETED")
+    .filter((row) => {
+      if (lane === "tag") {
+        return normalizeTag(row.playerTag).replace(/^#/, "").includes(normalizedBareTagQuery);
+      }
+      return normalizeSearchText(row.playerNameSnapshot).includes(normalizedQuery);
+    })
+    .sort(compareAutocompleteDiscoveryRows);
+
+  const seen = new Set<string>();
+  const result: Array<{ playerTag: string }> = [];
+  for (const row of matchingRows) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag || seen.has(playerTag)) continue;
+    seen.add(playerTag);
+    result.push({ playerTag });
+    if (result.length >= 100) break;
+  }
+  return result;
+}
+
 function compareIdentityRows(
   a: EvaluationFixture,
   b: EvaluationFixture,
@@ -657,10 +696,20 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
 
   const db = {
     $queryRaw: vi.fn(async (query?: unknown) => {
+      const sqlText = normalizeSqlText(query);
       const values = extractSqlValues(query);
       const guildId = String(values[0] ?? "").trim();
       const candidateTags = values.slice(1).map((value) => normalizeTag(String(value ?? ""))).filter(Boolean);
-      return buildAutocompleteSnapshotRows(violationRows, guildId, candidateTags);
+      if (sqlText.includes("candidate_tags") || sqlText.includes("LATERAL")) {
+        return buildAutocompleteSnapshotRows(violationRows, guildId, candidateTags);
+      }
+      if (sqlText.includes('FROM "WarPlanViolation" v') && sqlText.includes('playerNameSnapshot')) {
+        return buildAutocompleteDiscoveryRows(violationRows, guildId, String(values[1] ?? ""), "snapshot");
+      }
+      if (sqlText.includes('FROM "WarPlanViolation" v') && sqlText.includes('playerTag')) {
+        return buildAutocompleteDiscoveryRows(violationRows, guildId, String(values[1] ?? ""), "tag");
+      }
+      return [];
     }),
     playerCurrent: {
       findMany: vi.fn(async (args?: {
@@ -4115,7 +4164,7 @@ describe("WarPlanViolationHistoryService", () => {
     it.each(["#pylq0289", "pylq0289", "#PyLq0289"])(
       "matches tags case-insensitively with or without a leading hash (%s)",
       async (focusedText) => {
-        const { service } = buildService([
+        const { db, service } = buildService([
           buildFixture({
             warId: 1,
             clanTag: "#2QG2C08UP",
@@ -4142,6 +4191,10 @@ describe("WarPlanViolationHistoryService", () => {
           name: "Guild Alpha (#PYLQ0289) — 1 violation",
           value: "#PYLQ0289",
         });
+        expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+        expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+        const discoveryValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+        expect(discoveryValues).toEqual(["guild-1", "PYLQ0289", 100]);
       },
     );
 
@@ -4181,14 +4234,24 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Current Alpha");
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
-      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
-      const sqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
-      const sqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
-      expect(sqlText.match(/LIMIT 1/g)).toHaveLength(2);
-      expect(sqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
-      expect(sqlText).toContain('h."warId" DESC');
-      expect(sqlValues).toEqual(["guild-1", "#PYLQ0289"]);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const firstSqlText = normalizeSqlText(db.$queryRaw.mock.calls[0]?.[0]);
+      const firstSqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const secondSqlText = normalizeSqlText(db.$queryRaw.mock.calls[1]?.[0]);
+      const secondSqlValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      const hydrationSqlText = normalizeSqlText(db.$queryRaw.mock.calls[2]?.[0]);
+      const hydrationSqlValues = extractSqlValues(db.$queryRaw.mock.calls[2]?.[0]);
+      expect(firstSqlText).toContain('DISTINCT ON (v."playerTag")');
+      expect(secondSqlText).toContain('DISTINCT ON (v."playerTag")');
+      expect(firstSqlText).toContain("LIMIT ?");
+      expect(secondSqlText).toContain("LIMIT ?");
+      expect(firstSqlValues).toEqual(["guild-1", "CURRENT", 100]);
+      expect(secondSqlValues).toEqual(["guild-1", "current", 100]);
+      expect(hydrationSqlText.match(/LIMIT 1/g)).toHaveLength(2);
+      expect(hydrationSqlText).toContain('COALESCE(h."warEndTime", h."warStartTime") DESC');
+      expect(hydrationSqlText).toContain('h."warId" DESC');
+      expect(hydrationSqlValues).toEqual(["guild-1", "#PYLQ0289"]);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.playerCurrent.findMany.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
@@ -4198,7 +4261,7 @@ describe("WarPlanViolationHistoryService", () => {
     });
 
     it("keeps snapshot-only fallback names searchable when they are the final resolved name", async () => {
-      const { service } = buildService([
+      const { db, service } = buildService([
         buildFixture({
           warId: 1,
           clanTag: "#2QG2C08UP",
@@ -4222,6 +4285,10 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Snapshot Only");
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const discoveryValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      expect(discoveryValues).toEqual(["guild-1", "snapshot", 100]);
     });
 
     it("hydrates only one bounded row per tag even when hundreds of historical rows exist", async () => {
@@ -4262,6 +4329,43 @@ describe("WarPlanViolationHistoryService", () => {
       expect(sqlValues.slice(1)).toHaveLength(1);
       expect(rawRows).toHaveLength(1);
       expect(result[0]?.value).toBe("#PYLQ0289");
+    });
+
+    it("keeps recorded discovery lanes capped at 100 rows each", async () => {
+      const fixtures = Array.from({ length: 140 }, (_, index) =>
+        buildFixture({
+          warId: index + 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+          warEndTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`),
+          violations: [
+            {
+              playerTag: makeAutocompleteTag(index),
+              playerNameSnapshot: `2QG2C08 Player ${index + 1}`,
+              townHallLevelSnapshot: 10 + (index % 5),
+            },
+          ],
+        }),
+      );
+      const { db, service } = buildService(fixtures);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "2qg2c08",
+      });
+
+      expect(result).toHaveLength(25);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
+      const tagDiscoveryRows = await db.$queryRaw.mock.results[0]?.value;
+      const snapshotDiscoveryRows = await db.$queryRaw.mock.results[1]?.value;
+      const tagSqlValues = extractSqlValues(db.$queryRaw.mock.calls[0]?.[0]);
+      const snapshotSqlValues = extractSqlValues(db.$queryRaw.mock.calls[1]?.[0]);
+      expect(tagSqlValues).toEqual(["guild-1", "2QG2C08", 100]);
+      expect(snapshotSqlValues).toEqual(["guild-1", "2qg2c08", 100]);
+      expect(tagDiscoveryRows).toHaveLength(100);
+      expect(snapshotDiscoveryRows).toHaveLength(100);
     });
 
     it("keeps the newest canonical name blank while still taking an older valid Town Hall", async () => {
@@ -4847,9 +4951,9 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(historySpy).not.toHaveBeenCalled();
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(0);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
-      expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(db.$queryRaw).toHaveBeenCalledTimes(3);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
       expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
