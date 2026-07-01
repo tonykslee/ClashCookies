@@ -285,7 +285,7 @@ describe("war plan violations view helpers", () => {
     assertEmbedWithinLimits(embed);
   });
 
-  it("renders clan leaderboard not-found and zero-violation states", () => {
+  it("renders clan leaderboard not-found and no-completed-evaluations states", () => {
     const notFound = toEmbedJson(
       buildWarPlanViolationsClanLeaderboardEmbed({
         result: {
@@ -307,8 +307,36 @@ describe("war plan violations view helpers", () => {
     expect(notFound.title).toBe("War Plan Violations — #ABC123");
     expect(notFound.fields?.[0]?.value).toContain("No completed evaluation history exists for this clan in this guild.");
     expect(notFound.description).toContain("Period: Last 30 Days");
+    assertEmbedWithinLimits(notFound);
 
-    const zeroState = toEmbedJson(
+    const noCompletedEvaluations = toEmbedJson(
+      buildWarPlanViolationsClanLeaderboardEmbed({
+        result: {
+          outcome: "success",
+          clanTag: "#ABC123",
+          clanName: "Alpha Clan",
+          period: "30d",
+          cutoff: new Date("2026-01-01T00:00:00.000Z"),
+          trackingSince: new Date("2026-01-02T00:00:00.000Z"),
+          evaluatedWarCount: 0,
+          affectedWarCount: 0,
+          violationCount: 0,
+          distinctPlayerCount: 0,
+          players: [],
+          hasCompletedEvaluations: false,
+        },
+      }),
+    );
+    expect(noCompletedEvaluations.fields?.[0]?.value).toContain("Affected wars: 0 affected / 0 evaluated wars");
+    expect(noCompletedEvaluations.fields?.[1]?.value).toContain("No players to show in this period.");
+    expect(
+      noCompletedEvaluations.fields?.some((field) => field.value.includes("completed tracking exists")),
+    ).toBe(false);
+    assertEmbedWithinLimits(noCompletedEvaluations);
+  });
+
+  it("renders clan leaderboard completed-zero and violating states without contradictory zero-state text", () => {
+    const completedZero = toEmbedJson(
       buildWarPlanViolationsClanLeaderboardEmbed({
         result: {
           outcome: "success",
@@ -326,10 +354,36 @@ describe("war plan violations view helpers", () => {
         },
       }),
     );
-    expect(zeroState.fields?.[0]?.value).toContain("Violations: 0");
-    expect(zeroState.fields?.[1]?.value).toContain("No violations were recorded in the selected period.");
-    assertEmbedWithinLimits(notFound);
-    assertEmbedWithinLimits(zeroState);
+    expect(completedZero.fields?.[0]?.value).toContain("Completed evaluations exist, but no violations were recorded");
+    expect(completedZero.fields?.[1]?.value).toContain("No violating players to show in this period.");
+    expect(
+      completedZero.fields?.some((field) => field.value.includes("No completed evaluations were found")),
+    ).toBe(false);
+    assertEmbedWithinLimits(completedZero);
+
+    const withViolations = toEmbedJson(
+      buildWarPlanViolationsClanLeaderboardEmbed({
+        result: {
+          outcome: "success",
+          clanTag: "#ABC123",
+          clanName: "Alpha Clan",
+          period: "30d",
+          cutoff: new Date("2026-01-01T00:00:00.000Z"),
+          trackingSince: new Date("2026-01-02T00:00:00.000Z"),
+          evaluatedWarCount: 5,
+          affectedWarCount: 2,
+          violationCount: 4,
+          distinctPlayerCount: 3,
+          players: [makePlayerSummary(1), makePlayerSummary(2)],
+          hasCompletedEvaluations: true,
+        },
+      }),
+    );
+    expect(withViolations.fields?.[0]?.value).toContain("Affected wars: 2 affected / 5 evaluated wars");
+    expect(withViolations.fields?.[0]?.value).not.toContain("No completed evaluations were found");
+    expect(withViolations.fields?.[0]?.value).not.toContain("Completed evaluations exist, but no violations were recorded");
+    expect(withViolations.fields?.[1]?.value).not.toContain("No violating players to show in this period.");
+    assertEmbedWithinLimits(withViolations);
   });
 
   it("renders discord-user aggregate success, invalid-user, and not-found states", () => {
@@ -356,6 +410,7 @@ describe("war plan violations view helpers", () => {
     );
     expect(success.fields?.[0]?.value).toContain("Current linked accounts: 2");
     expect(success.fields?.[0]?.value).toContain("Affected wars: 2");
+    expect(success.fields?.[0]?.value).not.toContain("evaluated");
     expect(success.fields?.[1]?.value).toContain("Zero Violations");
     expect(success.fields?.[1]?.value).toContain("Violator");
     assertEmbedWithinLimits(success);

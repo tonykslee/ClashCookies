@@ -522,17 +522,24 @@ export function buildWarPlanViolationsClanLeaderboardEmbed(input: {
     `Period: ${formatWarPlanViolationsPeriodLabel(input.result.period)}`,
     `Violations: ${normalizeDisplayCount(input.result.violationCount)}`,
     `Player accounts: ${normalizeDisplayCount(input.result.distinctPlayerCount)}`,
-    `Affected wars: ${normalizeDisplayCount(input.result.affectedWarCount)}`,
-    input.result.hasCompletedEvaluations
-      ? null
-      : "Completed tracking exists, but no violations were recorded in the selected period.",
+    `Affected wars: ${formatAffectedEvaluatedLabel(
+      input.result.affectedWarCount,
+      input.result.evaluatedWarCount,
+    )}`,
+    !input.result.hasCompletedEvaluations
+      ? "No completed evaluations were found for this clan in the selected period."
+      : input.result.violationCount === 0
+        ? "Completed evaluations exist, but no violations were recorded in the selected period."
+        : null,
   ]);
 
   if (input.result.players.length === 0) {
     appendSummaryField(fields, budget, "Players", [
       input.result.hasCompletedEvaluations
-        ? "No violations were recorded in the selected period."
-        : "No completed evaluations were found for this clan in the selected period.",
+        ? input.result.violationCount === 0
+          ? "No violating players to show in this period."
+          : "No players to show in this period."
+        : "No players to show in this period.",
     ]);
   } else {
     const playerLines = input.result.players.map((row) =>
