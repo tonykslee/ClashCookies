@@ -104,6 +104,12 @@ function normalizeDisplayCount(input: number | null | undefined): number {
   return Math.max(0, Math.trunc(value));
 }
 
+/** Purpose: accept only finite numeric evidence values without coercion. */
+function normalizeStrictFiniteNumber(input: unknown): number | null {
+  if (typeof input !== "number" || !Number.isFinite(input)) return null;
+  return Math.trunc(input);
+}
+
 /** Purpose: render one Town Hall icon with a readable fallback when no application emoji exists. */
 function resolveTownHallIcon(
   townHallLevel: number | null | undefined,
@@ -210,7 +216,7 @@ export function formatWarPlanViolationsPlayerSummaryLine(input: {
   const playerTag = displayOrFallback(input.playerTag, "#?");
   const discordUser = formatDiscordUserDisplay(input.discordUserId);
   const suffix = `\`${playerTag}\` ${discordUser} - ${formatViolationCountLabel(input.violationCount)}`;
-  const availableForName = maxLength - icon.length - 1 - suffix.length;
+  const availableForName = maxLength - icon.length - suffix.length - 2;
   const renderedName = availableForName > 0 ? truncateText(playerName, availableForName) : "";
   if (!renderedName) {
     return `${icon} ${suffix}`;
@@ -337,9 +343,15 @@ function appendChunkedSection(
   budget: EmbedBudget,
   name: string,
   lines: Array<string | null | undefined>,
+  options?: {
+    reserveFields?: number;
+    reserveChars?: number;
+  },
 ): void {
   const visibleLines = lines.map((line) => normalizeDisplayText(line)).filter(Boolean) as string[];
   if (visibleLines.length === 0) return;
+  const reserveFields = Math.max(0, Math.trunc(options?.reserveFields ?? 0));
+  const reserveChars = Math.max(0, Math.trunc(options?.reserveChars ?? 0));
 
   const chunks = planFieldChunks(visibleLines);
   let shownRows = 0;
@@ -348,6 +360,15 @@ function appendChunkedSection(
   for (const chunk of chunks) {
     const fieldName =
       chunks.length > 1 ? `${name} (${shownChunks + 1}/${chunks.length})` : name;
+    const safeName = truncateText(normalizeDisplayText(fieldName) ?? "Summary", DISCORD_EMBED_LIMITS.fieldName);
+    const safeValue = truncateText(normalizeFieldValueText(chunk.value), DISCORD_EMBED_LIMITS.fieldValue);
+    const nextChars = safeName.length + safeValue.length;
+    if (
+      budget.fieldCount + 1 + reserveFields > DISCORD_EMBED_LIMITS.fields ||
+      budget.usedChars + nextChars + reserveChars > DISCORD_EMBED_LIMITS.total
+    ) {
+      break;
+    }
     const added = appendField(fields, budget, fieldName, chunk.value);
     if (!added) break;
     shownRows += chunk.rowCount;
@@ -358,20 +379,7 @@ function appendChunkedSection(
   if (hiddenRows <= 0) return;
 
   const marker = `+${hiddenRows} more`;
-  if (fields.length > 0) {
-    const last = fields[fields.length - 1];
-    const extra = `\n${marker}`;
-    if (
-      last.value.length + extra.length <= DISCORD_EMBED_LIMITS.fieldValue &&
-      budget.usedChars + extra.length <= DISCORD_EMBED_LIMITS.total
-    ) {
-      last.value = `${last.value}${extra}`;
-      budget.usedChars += extra.length;
-      return;
-    }
-  }
-
-  appendField(fields, budget, "More", marker);
+  appendField(fields, budget, name, marker);
 }
 
 /** Purpose: build a deterministic embed shell and budget tracker for this module. */
@@ -446,7 +454,10 @@ export function buildWarPlanViolationsAllianceOverviewEmbed(input: {
       }),
     );
     if (clanLines.length > 0) {
-      appendChunkedSection(fields, budget, "By Clan", clanLines);
+      appendChunkedSection(fields, budget, "By Clan", clanLines, {
+        reserveFields: 6,
+        reserveChars: 2400,
+      });
     } else {
       appendSummaryField(fields, budget, "By Clan", ["No clans had violations in this period."]);
     }
@@ -465,13 +476,9 @@ export function buildWarPlanViolationsAllianceOverviewEmbed(input: {
     );
     if (topPlayerLines.length > 0) {
       appendChunkedSection(fields, budget, "Top Violators", topPlayerLines);
-      if (input.result.topPlayers.length > visibleTopPlayers.length) {
-        appendField(
-          fields,
-          budget,
-          "More",
-          `+${input.result.topPlayers.length - visibleTopPlayers.length} more`,
-        );
+      const omittedTopPlayers = input.result.topPlayers.length - visibleTopPlayers.length;
+      if (omittedTopPlayers > 0) {
+        appendField(fields, budget, "Top Violators", `+${omittedTopPlayers} more`);
       }
     } else {
       appendSummaryField(fields, budget, "Top Violators", ["No violating players in this period."]);
@@ -515,7 +522,7 @@ export function buildWarPlanViolationsClanLeaderboardEmbed(input: {
     `Period: ${formatWarPlanViolationsPeriodLabel(input.result.period)}`,
     `Violations: ${normalizeDisplayCount(input.result.violationCount)}`,
     `Player accounts: ${normalizeDisplayCount(input.result.distinctPlayerCount)}`,
-    `Affected wars: ${formatAffectedEvaluatedLabel(input.result.affectedWarCount, input.result.evaluatedWarCount)}`,
+    `Affected wars: ${normalizeDisplayCount(input.result.affectedWarCount)}`,
     input.result.hasCompletedEvaluations
       ? null
       : "Completed tracking exists, but no violations were recorded in the selected period.",
@@ -553,23 +560,24 @@ export function buildWarPlanViolationsDiscordUserAggregateEmbed(input: {
   result: WarPlanViolationHistoryDiscordUserAggregateResult;
   townHallIconSource?: WarPlanViolationsTownHallIconSource;
 }): EmbedBuilder {
+  const periodLines = buildPeriodLines({
+    period: input.result.period,
+    trackingSince: input.result.trackingSince,
+  });
   const { embed, fields, budget } = createEmbedShell({
     title: "War Plan Violations — Discord User",
     descriptionLines:
       input.result.outcome === "success"
         ? [
             `User: ${formatDiscordUserDisplay(input.result.discordUserId)}`,
-            ...buildPeriodLines({
-              period: input.result.period,
-              trackingSince: input.result.trackingSince,
-            }),
+            ...periodLines,
             input.result.clanTag
               ? `Historical clan filter: ${input.result.clanTag}`
               : "Historical clan filter: All clans",
           ]
         : [
             `Discord user: ${formatDiscordUserDisplay(input.result.discordUserId)}`,
-            `Period: ${formatWarPlanViolationsPeriodLabel(input.result.period)}`,
+            ...periodLines,
           ],
   });
 
@@ -591,7 +599,7 @@ export function buildWarPlanViolationsDiscordUserAggregateEmbed(input: {
     `Current linked accounts: ${normalizeDisplayCount(input.result.currentLinkedAccountCount)}`,
     `Violating accounts: ${normalizeDisplayCount(input.result.violatingAccountCount)}`,
     `Violations: ${normalizeDisplayCount(input.result.violationCount)}`,
-    `Affected wars: ${formatAffectedEvaluatedLabel(input.result.affectedWarCount, input.result.affectedWarCount)}`,
+    `Affected wars: ${normalizeDisplayCount(input.result.affectedWarCount)}`,
     input.result.clanTag
       ? `Historical clan filter: ${input.result.clanTag}`
       : "Historical clan filter: All clans",
@@ -628,15 +636,15 @@ function formatAttackEvidenceAttackLine(
   attack: WarPlanViolationHistoryAttackEvidenceAttack,
   index: number,
 ): string {
-  const orderRaw = Number(attack.attackOrder);
-  const order = Number.isFinite(orderRaw) && orderRaw > 0 ? Math.trunc(orderRaw) : index + 1;
-  const defenderPositionRaw = Number(attack.defenderPosition);
+  const orderRaw = normalizeStrictFiniteNumber(attack.attackOrder);
+  const order = orderRaw !== null && orderRaw > 0 ? orderRaw : index + 1;
+  const defenderPositionRaw = normalizeStrictFiniteNumber(attack.defenderPosition);
   const defenderPosition =
-    Number.isFinite(defenderPositionRaw) && defenderPositionRaw > 0
-      ? `#${Math.trunc(defenderPositionRaw)}`
+    defenderPositionRaw !== null && defenderPositionRaw > 0
+      ? `#${defenderPositionRaw}`
       : "#?";
-  const starsRaw = Number(attack.stars);
-  const starsLabel = Number.isFinite(starsRaw) ? `${Math.max(0, Math.trunc(starsRaw))} stars` : "? stars";
+  const starsRaw = normalizeStrictFiniteNumber(attack.stars);
+  const starsLabel = starsRaw === null ? "? stars" : `${Math.max(0, starsRaw)} stars`;
   return `Attack ${order}: ${defenderPosition} - ${starsLabel}${attack.isBreach ? " (breach)" : ""}`;
 }
 
@@ -645,20 +653,13 @@ function formatBreachContextLine(
   breachContext: WarPlanViolationHistoryAttackEvidenceBreachContext | null,
 ): string | null {
   if (!breachContext) return null;
-  const starsRaw = Number(breachContext.starsAtBreach);
-  const stars =
-    Number.isFinite(starsRaw) ? `${Math.max(0, Math.trunc(starsRaw))} stars at breach` : null;
+  const starsRaw = normalizeStrictFiniteNumber(breachContext.starsAtBreach);
+  const stars = starsRaw !== null ? `${Math.max(0, starsRaw)} stars at breach` : null;
   const timeRemaining = normalizeDisplayText(breachContext.timeRemaining);
-  if (stars && timeRemaining) {
-    return `${stars} | ${timeRemaining}`;
-  }
-  if (stars) {
-    return stars;
-  }
-  if (timeRemaining) {
-    return timeRemaining;
-  }
-  return "—";
+  if (stars && timeRemaining) return `${stars} | ${timeRemaining}`;
+  if (stars) return stars;
+  if (timeRemaining) return timeRemaining;
+  return null;
 }
 
 /** Purpose: render the attack-evidence block for one player-history entry. */
@@ -686,18 +687,7 @@ function formatPlayerHistoryViolationSummaryLines(entry: WarPlanViolationHistory
     `Expected outcome: ${displayOrFallback(entry.expectedOutcome, "UNKNOWN")}`,
     `Lose style: ${displayOrFallback(entry.loseStyle, "UNKNOWN")}`,
     `Violation type: ${formatWarPlanViolationsViolationTypeLabel(entry.violationType)}`,
-    entry.reasonLabel ? `Reason: ${entry.reasonLabel}` : null,
     entry.playerPosition !== null ? `Player position: #${Math.trunc(entry.playerPosition)}` : null,
-  ].filter((line): line is string => Boolean(line));
-}
-
-/** Purpose: render the behavior block for one player-history entry. */
-function formatPlayerHistoryBehaviorLines(entry: WarPlanViolationHistoryPlayerHistoryEntry): string[] {
-  return [
-    `Expected: ${entry.expectedBehavior || "—"}`,
-    `Actual: ${entry.actualBehavior || "—"}`,
-    entry.breachStarsAt !== null ? `Breach stars at: ${Math.trunc(entry.breachStarsAt)}` : null,
-    entry.breachTimeRemaining ? `Breach time remaining: ${entry.breachTimeRemaining}` : null,
   ].filter((line): line is string => Boolean(line));
 }
 
@@ -710,15 +700,21 @@ export function buildWarPlanViolationsPlayerHistoryEmbed(input: {
   const title = "War Plan Violations — Player History";
 
   if (input.result.outcome !== "success") {
+    const periodLines = buildPeriodLines({
+      period: input.result.period,
+      trackingSince: input.result.trackingSince,
+    });
+    const descriptionLines =
+      input.result.outcome === "invalid_tag"
+        ? ["Invalid player tag.", ...periodLines]
+        : [
+            `Player tag: ${input.result.playerTag}`,
+            ...periodLines,
+            "No recorded player-history violations were found for this guild.",
+          ];
     const { embed, fields, budget } = createEmbedShell({
       title,
-      descriptionLines:
-        input.result.outcome === "invalid_tag"
-          ? ["Invalid player tag.", "No valid Clash tag was provided."]
-          : [
-              `Player tag: ${input.result.playerTag}`,
-              "No recorded player-history violations were found for this guild.",
-            ],
+      descriptionLines,
     });
     appendSummaryField(fields, budget, "Summary", ["This player history could not be displayed."]);
     if (fields.length > 0) {
@@ -752,8 +748,19 @@ export function buildWarPlanViolationsPlayerHistoryEmbed(input: {
 
   if (currentEntry) {
     appendSummaryField(fields, budget, `Violation ${page + 1}/${totalPages}`, formatPlayerHistoryViolationSummaryLines(currentEntry));
-    appendSummaryField(fields, budget, "Behavior", formatPlayerHistoryBehaviorLines(currentEntry));
+    appendSummaryField(fields, budget, "Expected", [`Expected: ${currentEntry.expectedBehavior || "—"}`]);
+    appendSummaryField(fields, budget, "Actual", [`Actual: ${currentEntry.actualBehavior || "—"}`]);
+    const breachLines = [
+      currentEntry.breachStarsAt !== null ? `Breach stars at: ${Math.trunc(currentEntry.breachStarsAt)}` : null,
+      currentEntry.breachTimeRemaining ? `Breach time remaining: ${currentEntry.breachTimeRemaining}` : null,
+    ].filter((line): line is string => Boolean(line));
+    if (breachLines.length > 0) {
+      appendSummaryField(fields, budget, "Breach", breachLines);
+    }
     appendChunkedSection(fields, budget, "Attack Evidence", formatAttackEvidence(currentEntry));
+    if (currentEntry.reasonLabel) {
+      appendSummaryField(fields, budget, "Reason", [`Reason: ${currentEntry.reasonLabel}`]);
+    }
   } else {
     appendSummaryField(fields, budget, "Summary", [
       "No violations were recorded in the selected period.",
