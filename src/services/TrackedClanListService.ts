@@ -330,59 +330,101 @@ function parseRomanNumeral(input: string): number | null {
   return total > 0 ? total : null;
 }
 
-function parseCwlLeagueSortWeight(label: string | null): number {
-  const normalized = String(label ?? "").trim().toUpperCase();
-  if (!normalized) return -1;
-  if (normalized === "UNRANKED") return 0;
+const CWL_PLANNED_ROSTER_FAMILY_RANK = new Map<string, number>([
+  ["LEGEND", 7],
+  ["CHAMPION", 6],
+  ["MASTER", 5],
+  ["CRYSTAL", 4],
+  ["GOLD", 3],
+  ["SILVER", 2],
+  ["BRONZE", 1],
+]);
 
-  const cleaned = normalized.replace(/\bLEAGUE\b/g, "").replace(/\s+/g, " ").trim();
-  const match = cleaned.match(/^(LEGEND|CHAMPION|MASTER|CRYSTAL|GOLD|SILVER|BRONZE)(?:\s+(.+))?$/);
-  if (!match) return -1;
+const CWL_PLANNED_ROSTER_TITLE_PATTERN =
+  /^(?<family>legend(?:s)?|champion(?:s)?|master(?:s)?|crystal(?:s)?|gold(?:s)?|silver(?:s)?|bronze(?:s)?)(?:\s+league)?(?:\s+(?<division>\d+|[ivxlcdm]+))?(?:\s*\[\s*(?<bracket>[a-z])\s*\])?$/i;
 
-  const tier = match[1] ?? "";
-  const tierRankByName = new Map([
-    ["LEGEND", 8],
-    ["CHAMPION", 7],
-    ["MASTER", 6],
-    ["CRYSTAL", 5],
-    ["GOLD", 4],
-    ["SILVER", 3],
-    ["BRONZE", 2],
-  ]);
-  const tierRank = tierRankByName.get(tier) ?? -1;
-  if (tierRank < 0) return -1;
+type CwlPlannedRosterSortKey = {
+  familyRank: number;
+  divisionRank: number;
+  bracketRank: number;
+};
 
-  const tierSuffix = match[2]?.trim() ?? "";
-  const tierOrdinal = tierSuffix ? parseRomanNumeral(tierSuffix) : null;
-  if (tier === "LEGEND") {
-    return tierRank * 1000 + 999;
-  }
-  if (tierOrdinal === null) {
-    return tierRank * 1000;
-  }
-  return tierRank * 1000 + Math.max(0, 100 - tierOrdinal);
+function normalizeCwlPlannedRosterSortText(input: string | null | undefined): string {
+  return String(input ?? "").replace(/\s+/g, " ").trim();
+}
+
+function parseCwlPlannedRosterSortKey(input: string | null): CwlPlannedRosterSortKey | null {
+  const normalized = normalizeCwlPlannedRosterSortText(input);
+  if (!normalized) return null;
+
+  const titleSegment = normalized.split("|", 1)[0]?.trim() ?? "";
+  const match = titleSegment.match(CWL_PLANNED_ROSTER_TITLE_PATTERN);
+  const familyToken = match?.groups?.family?.toUpperCase().replace(/S$/, "") ?? "";
+  const familyRank = CWL_PLANNED_ROSTER_FAMILY_RANK.get(familyToken) ?? -1;
+  if (familyRank < 0) return null;
+
+  const divisionToken = match?.groups?.division?.trim() ?? "";
+  const divisionRank = familyToken === "LEGEND" ? 0 : parseRomanNumeral(divisionToken);
+  if (familyToken !== "LEGEND" && divisionRank === null) return null;
+
+  const bracketToken = match?.groups?.bracket?.trim().toUpperCase() ?? "";
+  const bracketRank = bracketToken
+    ? Math.max(1, Math.min(26, bracketToken.charCodeAt(0) - 64))
+    : 0;
+
+  return {
+    familyRank,
+    divisionRank: divisionRank ?? 0,
+    bracketRank,
+  };
+}
+
+function compareCwlPlannedRosterSortKeys(
+  left: CwlPlannedRosterSortKey | null,
+  right: CwlPlannedRosterSortKey | null,
+): number {
+  const leftRank = left?.familyRank ?? -1;
+  const rightRank = right?.familyRank ?? -1;
+  if (leftRank !== rightRank) return rightRank - leftRank;
+
+  const leftDivision = left?.divisionRank ?? Number.MAX_SAFE_INTEGER;
+  const rightDivision = right?.divisionRank ?? Number.MAX_SAFE_INTEGER;
+  if (leftDivision !== rightDivision) return leftDivision - rightDivision;
+
+  const leftBracket = left?.bracketRank ?? Number.MAX_SAFE_INTEGER;
+  const rightBracket = right?.bracketRank ?? Number.MAX_SAFE_INTEGER;
+  if (leftBracket !== rightBracket) return leftBracket - rightBracket;
+
+  return 0;
 }
 
 function compareCwlTrackedClanDetailedRows(
   left: CwlTrackedClanDetailedDisplayRow,
   right: CwlTrackedClanDetailedDisplayRow,
 ): number {
-  const leagueCompare = parseCwlLeagueSortWeight(right.leagueLabel) - parseCwlLeagueSortWeight(left.leagueLabel);
-  if (leagueCompare !== 0) return leagueCompare;
+  const leftPlannedSortKey =
+    parseCwlPlannedRosterSortKey(left.rosterTitle) ??
+    parseCwlPlannedRosterSortKey(left.leagueLabel);
+  const rightPlannedSortKey =
+    parseCwlPlannedRosterSortKey(right.rosterTitle) ??
+    parseCwlPlannedRosterSortKey(right.leagueLabel);
 
-  const leftRosterTitle = sanitizeDisplayText(left.rosterTitle);
-  const rightRosterTitle = sanitizeDisplayText(right.rosterTitle);
-  if (!leftRosterTitle && !rightRosterTitle) {
-    return left.tag.localeCompare(right.tag);
-  }
-  if (!leftRosterTitle) return 1;
-  if (!rightRosterTitle) return -1;
+  const plannedCompare = compareCwlPlannedRosterSortKeys(leftPlannedSortKey, rightPlannedSortKey);
+  if (plannedCompare !== 0) return plannedCompare;
 
+  const leftRosterTitle = normalizeCwlPlannedRosterSortText(left.rosterTitle);
+  const rightRosterTitle = normalizeCwlPlannedRosterSortText(right.rosterTitle);
   const rosterTitleCompare = leftRosterTitle.localeCompare(rightRosterTitle, undefined, {
     sensitivity: "base",
   });
   if (rosterTitleCompare !== 0) return rosterTitleCompare;
-  return left.tag.localeCompare(right.tag);
+
+  const leftName = sanitizeDisplayText(left.name) ?? "";
+  const rightName = sanitizeDisplayText(right.name) ?? "";
+  const nameCompare = leftName.localeCompare(rightName, undefined, { sensitivity: "base" });
+  if (nameCompare !== 0) return nameCompare;
+
+  return left.tag.localeCompare(right.tag, undefined, { sensitivity: "base" });
 }
 
 function chooseBestCwlTrackedClanRoster(rows: CwlTrackedClanRosterRow[]): CwlTrackedClanRosterRow | null {

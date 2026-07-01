@@ -726,7 +726,7 @@ describe("/clan command behavior", () => {
       "<:CWL_Master_1:1511515179236593674> M1 | [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
     );
     expect(description.indexOf("CWL Alpha")).toBeLessThan(description.indexOf("CWL Charlie"));
-    expect(description.indexOf("CWL Charlie")).toBeLessThan(description.indexOf("CWL Beta"));
+    expect(description.indexOf("CWL Beta")).toBeLessThan(description.indexOf("CWL Charlie"));
     expect(description).not.toContain("registry: CWL seasonal");
     expect(payload?.components).toHaveLength(1);
     expect(payload?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -734,6 +734,97 @@ describe("/clan command behavior", () => {
     );
     expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
     expect(prismaMock.raidTrackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("renders typed CWL minimal rows in planned roster order using roster titles first", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "Beta Clan",
+        leagueLabel: "Master League II",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#2RVGJYLC0",
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-beta",
+        title: "Masters 2 [A] | TH17 - 18",
+        clanTag: "#QGRJ2222",
+        lifecycleState: "ACTIVE",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-05T00:00:00.000Z"),
+      },
+      {
+        id: "roster-charlie",
+        title: "Masters 1 [B] | TH18 175k+",
+        clanTag: "#G2R9RQLJQ",
+        lifecycleState: "CLOSED",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-06T00:00:00.000Z"),
+      },
+      {
+        id: "roster-alpha",
+        title: "Masters 1 [A] | TH18 175k+",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        id: "roster-delta",
+        title: "Champions 3 | Serious CWL (Invite-only)",
+        clanTag: "#2RVGJYLC0",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-07T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+      { clanTag: "#QGRJ2222", _count: { clanTag: 50 } },
+      { clanTag: "#G2R9RQLJQ", _count: { clanTag: 51 } },
+      { clanTag: "#2RVGJYLC0", _count: { clanTag: 52 } },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "minimal" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const description = String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+    expect(description).toContain("**CWL**");
+    expect(description.indexOf("Delta Clan")).toBeLessThan(description.indexOf("Alpha Clan"));
+    expect(description.indexOf("Alpha Clan")).toBeLessThan(description.indexOf("Charlie Clan"));
+    expect(description.indexOf("Charlie Clan")).toBeLessThan(description.indexOf("Beta Clan"));
   });
 
   it("renders CWL minimal rows with the resolved unranked emoji and no literal UNK", async () => {
@@ -1093,6 +1184,113 @@ describe("/clan command behavior", () => {
     expect(cocService.getClanWarLeagueGroup).not.toHaveBeenCalled();
   });
 
+  it("renders detailed CWL rows in planned roster order when roster titles carry the bracketed assignment", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "Beta Clan",
+        leagueLabel: "Master League II",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#2RVGJYLC0",
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValue([
+      { cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 37 } },
+      { cwlClanTag: "#QGRJ2222", _count: { cwlClanTag: 31 } },
+      { cwlClanTag: "#G2R9RQLJQ", _count: { cwlClanTag: 27 } },
+      { cwlClanTag: "#2RVGJYLC0", _count: { cwlClanTag: 12 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+      { clanTag: "#QGRJ2222", _count: { clanTag: 50 } },
+      { clanTag: "#G2R9RQLJQ", _count: { clanTag: 51 } },
+      { clanTag: "#2RVGJYLC0", _count: { clanTag: 52 } },
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      { clanTag: "#PYLQ0289" },
+      { clanTag: "#G2R9RQLJQ" },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-beta",
+        title: "Masters 2 [A] | TH17 - 18",
+        clanTag: "#QGRJ2222",
+        lifecycleState: "ACTIVE",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-05T00:00:00.000Z"),
+      },
+      {
+        id: "roster-charlie",
+        title: "Masters 1 [B] | TH18 175k+",
+        clanTag: "#G2R9RQLJQ",
+        lifecycleState: "CLOSED",
+        postedMessageUrl: "https://discord.com/channels/1/2/4",
+        postedAt: new Date("2026-03-06T00:00:00.000Z"),
+        createdAt: new Date("2026-03-06T00:00:00.000Z"),
+      },
+      {
+        id: "roster-alpha",
+        title: "Masters 1 [A] | TH18 175k+",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/1/2/3",
+        postedAt: new Date("2026-03-04T00:00:00.000Z"),
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        id: "roster-delta",
+        title: "Champions 3 | Serious CWL (Invite-only)",
+        clanTag: "#2RVGJYLC0",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-07T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const description = String(payload?.embeds?.[0]?.toJSON?.().description ?? "");
+    expect(description.indexOf("Delta Clan")).toBeLessThan(description.indexOf("Alpha Clan"));
+    expect(description.indexOf("Alpha Clan")).toBeLessThan(description.indexOf("Charlie Clan"));
+    expect(description.indexOf("Charlie Clan")).toBeLessThan(description.indexOf("Beta Clan"));
+    expect(description).toContain("Members: 37 CWL / 49 clan");
+    expect(description).toContain("Roster: ");
+    expect(description).not.toContain("registry: CWL seasonal");
+  });
+
   it("resolves CWL league and spin emojis through the application emoji resolver by name", async () => {
     const resolveByNameMock = vi.mocked(emojiResolverService.resolveByName);
     resolveByNameMock.mockImplementation(async (_client, name) => {
@@ -1348,6 +1546,157 @@ describe("/clan command behavior", () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(120000);
     expect(refreshHelperMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the planned CWL order unchanged after a manual detailed refresh rerender", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#2RVGJYLC0",
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "Beta Clan",
+        leagueLabel: "Master League II",
+        spinStatus: "matched",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        season: "2026-03",
+        tag: "#2RVGJYLC0",
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#PYLQ0289",
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#G2R9RQLJQ",
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        createdAt: new Date("2026-03-03T00:00:00.000Z"),
+      },
+      {
+        season: "2026-03",
+        tag: "#QGRJ2222",
+        name: "Beta Clan",
+        leagueLabel: "Master League II",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValue([
+      { cwlClanTag: "#2RVGJYLC0", _count: { cwlClanTag: 12 } },
+      { cwlClanTag: "#PYLQ0289", _count: { cwlClanTag: 37 } },
+      { cwlClanTag: "#G2R9RQLJQ", _count: { cwlClanTag: 27 } },
+      { cwlClanTag: "#QGRJ2222", _count: { cwlClanTag: 31 } },
+    ]);
+    prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([
+      { clanTag: "#2RVGJYLC0", _count: { clanTag: 52 } },
+      { clanTag: "#PYLQ0289", _count: { clanTag: 49 } },
+      { clanTag: "#G2R9RQLJQ", _count: { clanTag: 51 } },
+      { clanTag: "#QGRJ2222", _count: { clanTag: 50 } },
+    ]);
+    prismaMock.currentCwlRound.findMany.mockResolvedValue([
+      { clanTag: "#PYLQ0289" },
+      { clanTag: "#G2R9RQLJQ" },
+    ]);
+    prismaMock.roster.findMany.mockResolvedValue([
+      {
+        id: "roster-delta",
+        title: "Champions 3 | Serious CWL (Invite-only)",
+        clanTag: "#2RVGJYLC0",
+        lifecycleState: "OPEN",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        id: "roster-alpha",
+        title: "Masters 1 [A] | TH18 175k+",
+        clanTag: "#PYLQ0289",
+        lifecycleState: "OPEN",
+        postedMessageUrl: "https://discord.com/channels/1/2/3",
+        postedAt: new Date("2026-03-04T00:00:00.000Z"),
+        createdAt: new Date("2026-03-04T00:00:00.000Z"),
+      },
+      {
+        id: "roster-charlie",
+        title: "Masters 1 [B] | TH18 175k+",
+        clanTag: "#G2R9RQLJQ",
+        lifecycleState: "CLOSED",
+        postedMessageUrl: "https://discord.com/channels/1/2/4",
+        postedAt: new Date("2026-03-06T00:00:00.000Z"),
+        createdAt: new Date("2026-03-06T00:00:00.000Z"),
+      },
+      {
+        id: "roster-beta",
+        title: "Masters 2 [A] | TH17 - 18",
+        clanTag: "#QGRJ2222",
+        lifecycleState: "ACTIVE",
+        postedMessageUrl: null,
+        postedAt: null,
+        createdAt: new Date("2026-03-05T00:00:00.000Z"),
+      },
+    ]);
+
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { type: "CWL", display: "detailed" },
+    });
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn(),
+      getClan: vi.fn(),
+    };
+
+    const describeEditReply = (callIndex: number): string =>
+      ((interaction.editReply.mock.calls[callIndex]?.[0] as any)?.embeds ?? [])
+        .map((embed: any) => String(embed?.toJSON?.().description ?? ""))
+        .join("\n");
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+    const initialDescription = describeEditReply(0);
+    expect(initialDescription.indexOf("Delta Clan")).toBeLessThan(initialDescription.indexOf("Alpha Clan"));
+    expect(initialDescription.indexOf("Alpha Clan")).toBeLessThan(initialDescription.indexOf("Charlie Clan"));
+    expect(initialDescription.indexOf("Charlie Clan")).toBeLessThan(initialDescription.indexOf("Beta Clan"));
+
+    const collectHandler = interaction.__collectorHandlers.collect as
+      | ((button: any) => Promise<void>)
+      | undefined;
+    const refreshButton = makeButtonInteraction("tracked-clan-list:cwl:tracked-clan-itx-1:refresh");
+    await collectHandler?.(refreshButton);
+
+    expect(refreshButton.update).toHaveBeenCalled();
+    const finalDescription = describeEditReply(interaction.editReply.mock.calls.length - 1);
+    expect(finalDescription.indexOf("Delta Clan")).toBeLessThan(finalDescription.indexOf("Alpha Clan"));
+    expect(finalDescription.indexOf("Alpha Clan")).toBeLessThan(finalDescription.indexOf("Charlie Clan"));
+    expect(finalDescription.indexOf("Charlie Clan")).toBeLessThan(finalDescription.indexOf("Beta Clan"));
+    expect(finalDescription).toContain("Members: 37 CWL / 49 clan");
   });
 
   it("renders detailed CWL overflow as seamless multi-embed output without page footers", async () => {

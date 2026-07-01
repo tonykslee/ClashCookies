@@ -83,6 +83,49 @@ import {
   refreshCwlTrackedClanDetailedDisplayWithQueueContext,
 } from "../src/services/TrackedClanListService";
 
+function buildCwlTrackedClanSeasonRow(input: {
+  tag: string;
+  name: string;
+  leagueLabel: string | null;
+  season?: string;
+  createdAt?: Date;
+}) {
+  return {
+    season: input.season ?? "2026-07",
+    tag: input.tag,
+    name: input.name,
+    leagueLabel: input.leagueLabel,
+    createdAt: input.createdAt ?? new Date("2026-07-01T00:00:00.000Z"),
+  };
+}
+
+function buildCwlRosterRow(input: {
+  tag: string;
+  title: string | null;
+  lifecycleState?: "OPEN" | "ACTIVE" | "CLOSED";
+  postedMessageUrl?: string | null;
+  postedAt?: Date | null;
+  createdAt?: Date;
+}) {
+  return {
+    id: `${String(input.tag ?? "").replace(/^#/, "")}-roster`,
+    title: input.title ?? "",
+    clanTag: input.tag,
+    lifecycleState: input.lifecycleState ?? "OPEN",
+    postedMessageUrl: input.postedMessageUrl ?? null,
+    postedAt: input.postedAt ?? null,
+    createdAt: input.createdAt ?? new Date("2026-07-01T00:00:00.000Z"),
+  };
+}
+
+const CWL_TAG_ALPHABET = "PYLQGRJCUV0289";
+
+function buildValidCwlTag(index: number): string {
+  const first = CWL_TAG_ALPHABET[index % CWL_TAG_ALPHABET.length] ?? "P";
+  const second = CWL_TAG_ALPHABET[Math.floor(index / CWL_TAG_ALPHABET.length) % CWL_TAG_ALPHABET.length] ?? "Y";
+  return `#PYLQ${first}${second}`;
+}
+
 describe("TrackedClanListService FWA minimal helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -367,5 +410,231 @@ describe("TrackedClanListService CWL detailed helpers", () => {
     expect(logLines.some((line) => line.includes("raw_reason=stale_group_season"))).toBe(true);
     expect(logLines.some((line) => line.includes("returned_season=2026-06"))).toBe(true);
     expect(queueContextMock.runWithCoCQueueContext).toHaveBeenCalled();
+  });
+
+  it("sorts CWL rows by planned roster league, division, and bracket with title precedence over league label", async () => {
+    const orderedRows = [
+      {
+        tag: buildValidCwlTag(0),
+        name: "Delta Clan",
+        leagueLabel: "Champion League III",
+        rosterTitle: "Champions 3 | Serious CWL (Invite-only)",
+      },
+      {
+        tag: buildValidCwlTag(1),
+        name: "Alpha Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 1 [A] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(2),
+        name: "Charlie Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 1 [B] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(14),
+        name: "Papa Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 1 [C] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(12),
+        name: "November Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 1 [D] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(13),
+        name: "Oscar Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 1 [E] | TH18 175k+",
+      },
+      {
+        tag: buildValidCwlTag(3),
+        name: "Echo Clan",
+        leagueLabel: "Master League II",
+        rosterTitle: "Masters 2 [A] | TH17 - 18",
+      },
+      {
+        tag: buildValidCwlTag(4),
+        name: "Foxtrot Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 2 [B] | TH17 - 18",
+      },
+      {
+        tag: buildValidCwlTag(5),
+        name: "Golf Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 2 [C] | TH17 - 18",
+      },
+      {
+        tag: buildValidCwlTag(6),
+        name: "Hotel Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 2 [D] | TH17 - 18",
+      },
+      {
+        tag: buildValidCwlTag(7),
+        name: "India Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 2 [E] | TH17 - 18",
+      },
+      {
+        tag: buildValidCwlTag(8),
+        name: "Juliet Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 3 [A] | TH14 - 16",
+      },
+      {
+        tag: buildValidCwlTag(9),
+        name: "Kilo Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 3 [B] | TH14 - 16",
+      },
+      {
+        tag: buildValidCwlTag(10),
+        name: "Lima Clan",
+        leagueLabel: "Unranked",
+        rosterTitle: "Masters 3 [C] | TH14 - 16",
+      },
+      {
+        tag: buildValidCwlTag(11),
+        name: "Mike Clan",
+        leagueLabel: "Crystal League I",
+        rosterTitle: "Crystal 1 | TH13 and below",
+      },
+    ];
+
+    const shuffledRows = [...orderedRows].reverse();
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      shuffledRows.map((row) => buildCwlTrackedClanSeasonRow(row)),
+    );
+    prismaMock.roster.findMany.mockResolvedValueOnce(
+      shuffledRows.map((row, index) =>
+        buildCwlRosterRow({
+          tag: row.tag,
+          title: row.rosterTitle,
+          lifecycleState: index % 3 === 0 ? "OPEN" : index % 3 === 1 ? "ACTIVE" : "CLOSED",
+          postedMessageUrl: index % 2 === 0 ? `https://discord.com/channels/1/2/${index + 10}` : null,
+          postedAt: index % 2 === 0 ? new Date(`2026-07-${String((index % 9) + 1).padStart(2, "0")}T00:00:00.000Z`) : null,
+          createdAt: new Date(`2026-07-${String((index % 9) + 1).padStart(2, "0")}T00:00:00.000Z`),
+        }),
+      ),
+    );
+
+    const rows = await listCwlTrackedClansForDetailedDisplay({
+      season: "2026-07",
+      guildId: "guild-1",
+    });
+
+    expect(rows.map((row) => row.tag)).toEqual(orderedRows.map((row) => row.tag));
+  });
+
+  it("falls back to leagueLabel when the roster title is missing or unparseable", async () => {
+    const fallbackRows = [
+      {
+        tag: buildValidCwlTag(20),
+        name: "Fallback Champion",
+        leagueLabel: "Champion League I",
+        rosterTitle: null,
+      },
+      {
+        tag: buildValidCwlTag(21),
+        name: "Fallback Master",
+        leagueLabel: "Master League II",
+        rosterTitle: "Not a CWL roster",
+      },
+      {
+        tag: buildValidCwlTag(22),
+        name: "Fallback Unknown",
+        leagueLabel: null,
+        rosterTitle: null,
+      },
+    ];
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      fallbackRows.map((row) => buildCwlTrackedClanSeasonRow(row)),
+    );
+    prismaMock.roster.findMany.mockResolvedValueOnce(
+      fallbackRows.map((row, index) =>
+        buildCwlRosterRow({
+          tag: row.tag,
+          title: row.rosterTitle,
+          lifecycleState: index === 0 ? "OPEN" : "ACTIVE",
+          postedMessageUrl: null,
+          postedAt: null,
+          createdAt: new Date(`2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`),
+        }),
+      ),
+    );
+
+    const rows = await listCwlTrackedClansForDetailedDisplay({
+      season: "2026-07",
+      guildId: "guild-1",
+    });
+
+    expect(rows.map((row) => row.tag)).toEqual([
+      fallbackRows[0].tag,
+      fallbackRows[1].tag,
+      fallbackRows[2].tag,
+    ]);
+  });
+
+  it("keeps malformed and unknown rows at the end with deterministic tie-breakers", async () => {
+    const validRow = {
+      tag: buildValidCwlTag(30),
+      name: "Valid Champion",
+      leagueLabel: "Champion League I",
+      rosterTitle: "Champion 3 | Serious CWL",
+    };
+    const malformedRows = [
+      {
+        tag: buildValidCwlTag(31),
+        name: "Alpha Broken",
+        leagueLabel: null,
+        rosterTitle: null,
+      },
+      {
+        tag: buildValidCwlTag(32),
+        name: "Beta Broken",
+        leagueLabel: "Unranked",
+        rosterTitle: "Broken Roster",
+      },
+      {
+        tag: buildValidCwlTag(33),
+        name: "Alpha Broken 2",
+        leagueLabel: "Unknown",
+        rosterTitle: "Broken Roster",
+      },
+    ];
+
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValueOnce(
+      [validRow, ...malformedRows].map((row) => buildCwlTrackedClanSeasonRow(row)),
+    );
+    prismaMock.roster.findMany.mockResolvedValueOnce(
+      [validRow, ...malformedRows].map((row, index) =>
+        buildCwlRosterRow({
+          tag: row.tag,
+          title: row.rosterTitle,
+          lifecycleState: index % 2 === 0 ? "OPEN" : "ACTIVE",
+          postedMessageUrl: null,
+          postedAt: null,
+          createdAt: new Date(`2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`),
+        }),
+      ),
+    );
+
+    const rows = await listCwlTrackedClansForDetailedDisplay({
+      season: "2026-07",
+      guildId: "guild-1",
+    });
+
+    expect(rows.map((row) => row.tag)).toEqual([
+      validRow.tag,
+      malformedRows[0].tag,
+      malformedRows[2].tag,
+      malformedRows[1].tag,
+    ]);
   });
 });
