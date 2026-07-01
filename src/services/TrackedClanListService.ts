@@ -437,19 +437,20 @@ async function loadCwlTrackedClanDetailedRows(input: {
   }
   const currentCwlEvents = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
     clanTags: trackedTags,
+    season,
   });
   const currentCwlEventIds = [...new Set([...currentCwlEvents.values()].map((event) => event.id))];
 
   const [observedRosterRows, memberCountRows, activeRosterRows, currentRoundRows, prepRows, historyRows] = await Promise.all([
     currentCwlEventIds.length > 0
-      ? prisma.cwlPlayerClanSeason.groupBy({
-          by: ["cwlClanTag"],
+      ? prisma.cwlPlayerClanSeason.findMany({
           where: {
             eventInstanceId: { in: currentCwlEventIds },
             cwlClanTag: { in: trackedTags },
           },
-          _count: {
+          select: {
             cwlClanTag: true,
+            playerTag: true,
           },
         })
       : Promise.resolve([]),
@@ -510,11 +511,15 @@ async function loadCwlTrackedClanDetailedRows(input: {
       : Promise.resolve([]),
   ]);
 
-  const observedRosterCountByTag = new Map<string, number>();
+  const observedRosterCountByTag = new Map<string, Set<string>>();
   for (const row of observedRosterRows) {
     const clanTag = normalizeClanTag(row.cwlClanTag);
     if (!clanTag) continue;
-    observedRosterCountByTag.set(clanTag, row._count.cwlClanTag);
+    const playerTag = normalizeClanTag(row.playerTag);
+    if (!playerTag) continue;
+    const existing = observedRosterCountByTag.get(clanTag) ?? new Set<string>();
+    existing.add(playerTag);
+    observedRosterCountByTag.set(clanTag, existing);
   }
 
   const currentClanMemberCountByTag = new Map<string, number>();
@@ -557,7 +562,7 @@ async function loadCwlTrackedClanDetailedRows(input: {
 
   const rows = trackedClans.map((row) => {
     const clanTag = normalizeClanTag(row.tag) || row.tag;
-    const observedCount = observedRosterCountByTag.get(clanTag) ?? 0;
+    const observedCount = observedRosterCountByTag.get(clanTag)?.size ?? 0;
     const currentMemberCount = guildId ? currentClanMemberCountByTag.get(clanTag) ?? 0 : null;
     const roster = chooseBestCwlTrackedClanRoster(rostersByClanTag.get(clanTag) ?? []);
     const liveStatus = input.liveSpinStatusByTag?.get(clanTag) ?? null;
@@ -602,19 +607,29 @@ async function loadCwlTrackedClanLiveSpinStatus(input: {
   let matchedCount = 0;
   let searchingCount = 0;
   let idleCount = 0;
+  const requestedSeason = String(input.season ?? "").trim();
 
   for (const tag of input.clanTags) {
     try {
       const group = await input.cocService.getClanWarLeagueGroup(tag);
-      if (group) {
+      const returnedSeason = String(group?.season ?? "").trim();
+      if (group && returnedSeason === requestedSeason) {
         liveSpinStatusByTag.set(tag, "matched");
         matchedCount += 1;
+        continue;
+      }
+      if (group) {
+        liveSpinStatusByTag.set(tag, "idle");
+        idleCount += 1;
+        console.info(
+          `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${requestedSeason} clan=${tag} status=idle raw_reason=stale_group_season requested_season=${requestedSeason} returned_season=${returnedSeason}`,
+        );
         continue;
       }
       liveSpinStatusByTag.set(tag, "idle");
       idleCount += 1;
       console.info(
-        `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${input.season} clan=${tag} status=idle raw_reason=api_null`,
+        `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${requestedSeason} clan=${tag} status=idle raw_reason=api_null`,
       );
     } catch (err) {
       const reason = formatError(err);
@@ -627,7 +642,7 @@ async function loadCwlTrackedClanLiveSpinStatus(input: {
       }
       failedClanTags.push(tag);
       console.info(
-        `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${input.season} clan=${tag} status=${spinStatus} raw_reason=${reason}`,
+        `[tracked-clan] stage=cwl_detailed_refresh_live_state season=${requestedSeason} clan=${tag} status=${spinStatus} raw_reason=${reason}`,
       );
     }
   }

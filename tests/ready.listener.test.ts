@@ -26,6 +26,16 @@ const trackedMessageSyncRemindersMock = vi.hoisted(() => vi.fn().mockResolvedVal
 const warEventPollMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const warEventRefreshMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mirrorSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const cwlRegistryMock = vi.hoisted(() => ({
+  rolloverCwlTrackedClanRegistryForSeason: vi.fn().mockResolvedValue({
+    targetSeason: "2026-04",
+    sourceSeason: null,
+    copiedCount: 0,
+    skippedReason: "target_season_already_populated",
+    durationMs: 0,
+  }),
+  resolveCurrentCwlSeasonKey: vi.fn(() => "2026-04"),
+}));
 const fwaMatchChecklistAutoPostSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -124,6 +134,11 @@ vi.mock("../src/services/AutoRoleSchedulerService", () => ({
   AutoRoleSchedulerService: vi.fn().mockImplementation(() => ({
     start: autoRoleStart,
   })),
+}));
+
+vi.mock("../src/services/CwlRegistryService", () => ({
+  rolloverCwlTrackedClanRegistryForSeason: cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason,
+  resolveCurrentCwlSeasonKey: cwlRegistryMock.resolveCurrentCwlSeasonKey,
 }));
 
 vi.mock("../src/services/SettingsService", () => ({
@@ -481,6 +496,13 @@ describe("ready listener startup", () => {
     expect(todoSnapshotCall?.preloadedCurrentWarSnapshotsByClanTag).toBe(
       warEventPollCall?.currentWarSnapshotCycleContext?.currentWarSnapshotByClanTag,
     );
+    expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).toHaveBeenCalledWith({
+      season: "2026-04",
+      nowMs: expect.any(Number),
+    });
+    expect(
+      (cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason as any).mock.invocationCallOrder[0],
+    ).toBeLessThan((cwlStateService.refreshTrackedCwlState as any).mock.invocationCallOrder[0]);
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
@@ -622,6 +644,7 @@ describe("ready listener startup", () => {
         displayName: "User activity reminder scheduler",
       }),
     );
+    expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).not.toHaveBeenCalled();
   });
 
   it("keeps startup working when a poll-status write fails", async () => {

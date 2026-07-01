@@ -8,6 +8,10 @@ import { Prisma } from "@prisma/client";
 import { Commands } from "../Commands";
 import { CoCService } from "../services/CoCService";
 import { ActivityService } from "../services/ActivityService";
+import {
+  resolveCurrentCwlSeasonKey,
+  rolloverCwlTrackedClanRegistryForSeason,
+} from "../services/CwlRegistryService";
 import { formatError } from "../helper/formatError";
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
@@ -1272,6 +1276,10 @@ export default (client: Client, cocService: CoCService): void => {
                 });
                 await warEventLogService.refreshBattleDayPosts();
                 await refreshAllTrackedWarMailPosts(client);
+                await rolloverCwlTrackedClanRegistryForSeason({
+                  season: resolveCurrentCwlSeasonKey(scheduledAtMs),
+                  nowMs: scheduledAtMs,
+                });
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
                   cwlFetchCycleCache,

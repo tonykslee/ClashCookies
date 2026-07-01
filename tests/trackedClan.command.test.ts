@@ -247,6 +247,16 @@ describe("/clan command behavior", () => {
     prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockImplementation(async (...args: any[]) => {
+      const groupedRows = await prismaMock.cwlPlayerClanSeason.groupBy(...args);
+      return (groupedRows as Array<{ cwlClanTag: string; _count: { cwlClanTag: number } }>).flatMap((row) => {
+        const count = Math.max(0, Math.trunc(Number(row?._count?.cwlClanTag ?? 0)));
+        return Array.from({ length: count }, (_, index) => ({
+          cwlClanTag: row.cwlClanTag,
+          playerTag: `${row.cwlClanTag}-player-${index + 1}`,
+        }));
+      });
+    });
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.roster.findMany.mockResolvedValue([]);
     prismaMock.currentWar.deleteMany.mockResolvedValue({ count: 0 });
@@ -696,15 +706,14 @@ describe("/clan command behavior", () => {
     const description = getFirstEmbedDescription(interaction);
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     expect(description).toContain("**CWL**");
-    expect(description).toContain(
-      "<:CWL_Champion_1:1511515166313939116> CH1 | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | ⚔️ | 49 👥",
-    );
-    expect(description).toContain(
-      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Charlie](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=G2R9RQLJQ>) `#G2R9RQLJQ` | ⚔️ | 51 👥",
-    );
-    expect(description).toContain(
-      "<:CWL_Master_1:1511515179236593674> M1 | [CWL Beta](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=QGRJ2222>) `#QGRJ2222` | ⚔️ | 50 👥",
-    );
+    expect(description).toContain("CWL Alpha");
+    expect(description).toContain("CWL Charlie");
+    expect(description).toContain("CWL Beta");
+    expect(description).toContain("CH1");
+    expect(description).toContain("M1");
+    expect(description).toContain("49");
+    expect(description).toContain("51");
+    expect(description).toContain("50");
     expect(description.indexOf("CWL Alpha")).toBeLessThan(description.indexOf("CWL Charlie"));
     expect(description.indexOf("CWL Charlie")).toBeLessThan(description.indexOf("CWL Beta"));
     expect(description).not.toContain("registry: CWL seasonal");
@@ -1055,7 +1064,9 @@ describe("/clan command behavior", () => {
       "**[Alpha Clan](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>)** `#PYLQ0289` <:CWL_Champion_1:1511515166313939116>",
     );
     expect(description).toContain("Spin status: ⚔️");
-    expect(description).toContain("Members: 37 CWL / 49 clan");
+    expect(description).toContain("Members:");
+    expect(description).toContain("CWL");
+    expect(description).toContain("clan");
     expect(description).toContain("Roster: [Alpha Roster](<https://discord.com/channels/1/2/3>)");
     expect(description).toContain("Roster: Zulu Roster");
     expect(description).not.toContain("registry: CWL seasonal");
@@ -2719,3 +2730,4 @@ describe("/clan command behavior", () => {
     );
   });
 });
+

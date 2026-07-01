@@ -54,11 +54,20 @@ import {
   hydrateMissingCwlClanNamesForSeason,
   removeTrackedClanTagFromRegistries,
   refreshCwlTrackedClanMetadataForSeason,
+  rolloverCwlTrackedClanRegistryForSeason,
 } from "../src/services/CwlRegistryService";
 
 describe("CwlRegistryService helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.cwlTrackedClan.findFirst.mockReset();
+    prismaMock.cwlTrackedClan.findMany.mockReset();
+    prismaMock.cwlTrackedClan.createMany.mockReset();
+    prismaMock.cwlTrackedClan.updateMany.mockReset();
+    prismaMock.cwlTrackedClan.deleteMany.mockReset();
+    prismaMock.cwlEventClan.findMany.mockReset();
+    prismaMock.cwlPlayerClanSeason.deleteMany.mockReset();
+    prismaMock.cwlRotationPlan.updateMany.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-26T00:00:00.000Z"));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -101,6 +110,115 @@ describe("CwlRegistryService helpers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("rolls the latest populated CWL registry season forward into an empty target season and stays idempotent", async () => {
+    const julyRows = [
+      {
+        tag: "#PYLQ0289",
+        name: "CWL Alpha",
+        leagueLabel: "Champion League I",
+      },
+      {
+        tag: "#QGRJ2222",
+        name: "CWL Beta",
+        leagueLabel: "Master League I",
+      },
+    ];
+    const firstTx = {
+      cwlTrackedClan: {
+        findFirst: vi.fn(async (args: any) => {
+          if (args?.where?.season === "2026-07") return null;
+          if (args?.where?.season?.lt === "2026-07") {
+            return { id: "source-season-row", season: "2026-06" } as any;
+          }
+          return null;
+        }),
+        findMany: vi.fn(async (args: any) => {
+          if (args?.where?.season === "2026-06") return julyRows;
+          return [];
+        }),
+        createMany: vi.fn(async () => ({ count: 2 })),
+      },
+    } as any;
+    prismaMock.$transaction.mockImplementationOnce(async (callback: any) => callback(firstTx));
+
+    const result = await rolloverCwlTrackedClanRegistryForSeason({ season: "2026-07" });
+
+    expect(firstTx.cwlTrackedClan.createMany).toHaveBeenCalledWith({
+      data: [
+        { season: "2026-07", tag: "#PYLQ0289", name: "CWL Alpha", leagueLabel: "Champion League I" },
+        { season: "2026-07", tag: "#QGRJ2222", name: "CWL Beta", leagueLabel: "Master League I" },
+      ],
+      skipDuplicates: true,
+    });
+
+    expect(result).toMatchObject({
+      targetSeason: "2026-07",
+      sourceSeason: "2026-06",
+      copiedCount: 2,
+      skippedReason: null,
+    });
+
+    const secondTx = {
+      cwlTrackedClan: {
+        findFirst: vi.fn(async (args: any) => {
+          if (args?.where?.season === "2026-07") return { id: "target-season-row" } as any;
+          if (args?.where?.season?.lt === "2026-07") {
+            return { id: "source-season-row", season: "2026-06" } as any;
+          }
+          return null;
+        }),
+        findMany: vi.fn(async () => julyRows),
+        createMany: vi.fn(),
+      },
+    } as any;
+    prismaMock.$transaction.mockImplementationOnce(async (callback: any) => callback(secondTx));
+
+    const secondResult = await rolloverCwlTrackedClanRegistryForSeason({ season: "2026-07" });
+    expect(secondResult).toMatchObject({
+      targetSeason: "2026-07",
+      sourceSeason: null,
+      copiedCount: 0,
+      skippedReason: "target_season_already_populated",
+    });
+    expect(firstTx.cwlTrackedClan.createMany).toHaveBeenCalledTimes(1);
+    expect(secondTx.cwlTrackedClan.createMany).not.toHaveBeenCalled();
+
+    const logLines = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((call) =>
+      String(call[0] ?? ""),
+    );
+    expect(logLines.some((line) => line.includes("event=cwl_registry_rollover"))).toBe(true);
+    expect(logLines.some((line) => line.includes("target_season=2026-07"))).toBe(true);
+    expect(logLines.some((line) => line.includes("source_season=2026-06"))).toBe(true);
+    expect(logLines.some((line) => line.includes("copied_count=2"))).toBe(true);
+    expect(logLines.some((line) => line.includes("duration_ms="))).toBe(true);
+  });
+
+  it("does not merge a prior CWL registry into an already populated target season", async () => {
+    const tx = {
+      cwlTrackedClan: {
+        findFirst: vi.fn(async (args: any) => {
+          if (args?.where?.season === "2026-07") return { id: "target-season-row" } as any;
+          if (args?.where?.season?.lt === "2026-07") return { id: "source-season-row", season: "2026-06" } as any;
+          return null;
+        }),
+        findMany: vi.fn(),
+        createMany: vi.fn(),
+      },
+    } as any;
+    prismaMock.$transaction.mockImplementationOnce(async (callback: any) => callback(tx));
+
+    const result = await rolloverCwlTrackedClanRegistryForSeason({ season: "2026-07" });
+
+    expect(result).toMatchObject({
+      targetSeason: "2026-07",
+      sourceSeason: null,
+      copiedCount: 0,
+      skippedReason: "target_season_already_populated",
+    });
+    expect(tx.cwlTrackedClan.findMany).not.toHaveBeenCalled();
+    expect(tx.cwlTrackedClan.createMany).not.toHaveBeenCalled();
   });
 
   it("creates new CWL rows with null names when clan lookups are unavailable", async () => {
