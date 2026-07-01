@@ -885,31 +885,6 @@ function buildPlayerHistorySnapshotFallback(
   return fallback;
 }
 
-/** Purpose: derive the canonical snapshot fallback for autocomplete candidates. */
-function buildPlayerAutocompleteSnapshotFallback(
-  rows: PlayerAutocompleteHistoryRow[],
-): PlayerSnapshotFallback | undefined {
-  let fallback: PlayerSnapshotFallback | undefined;
-  for (const row of rows) {
-    const playerName = normalizeDisplayText(row.playerNameSnapshot);
-    const townHallLevel = normalizePositiveInteger(row.townHallLevelSnapshot);
-    if (!fallback) {
-      fallback = {
-        playerName,
-        townHallLevel,
-      };
-      continue;
-    }
-    if (fallback.townHallLevel === null && townHallLevel !== null) {
-      fallback = {
-        playerName: fallback.playerName,
-        townHallLevel,
-      };
-    }
-  }
-  return fallback;
-}
-
 /** Purpose: derive a single canonical chronology timestamp for one autocomplete candidate row. */
 function resolvePlayerAutocompleteChronologyMs(row: PlayerAutocompleteHistoryRow): number {
   const history = row.evaluation.warHistory;
@@ -925,16 +900,6 @@ function comparePlayerAutocompleteHistoryRowsDesc(
   const timeDelta = resolvePlayerAutocompleteChronologyMs(b) - resolvePlayerAutocompleteChronologyMs(a);
   if (timeDelta !== 0) return timeDelta;
   return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
-}
-
-/** Purpose: order autocomplete history rows by tag first and canonical chronology within each tag. */
-function comparePlayerAutocompleteHistoryRowsByTagDesc(
-  a: PlayerAutocompleteHistoryRow,
-  b: PlayerAutocompleteHistoryRow,
-): number {
-  const tagCompare = a.playerTag.localeCompare(b.playerTag);
-  if (tagCompare !== 0) return tagCompare;
-  return comparePlayerAutocompleteHistoryRowsDesc(a, b);
 }
 
 /** Purpose: normalize the focused autocomplete text for stable comparisons. */
@@ -1035,31 +1000,45 @@ function mergePlayerAutocompleteDiscoveryTags(lanes: string[][]): string[] {
 }
 
 /** Purpose: build canonical snapshot fallbacks for a bounded set of autocomplete tags. */
-function buildPlayerAutocompleteSnapshotFallbacks(
+function buildPlayerAutocompleteLatestRowsByTag(
   rows: PlayerAutocompleteHistoryRow[],
-): Map<string, PlayerSnapshotFallback | undefined> {
-  const fallbacks = new Map<string, PlayerSnapshotFallback | undefined>();
-  let currentTag: string | null = null;
-  let currentRows: PlayerAutocompleteHistoryRow[] = [];
-
-  const flush = () => {
-    if (currentTag) {
-      fallbacks.set(currentTag, buildPlayerAutocompleteSnapshotFallback(currentRows));
-    }
-    currentRows = [];
-  };
-
+): Map<string, PlayerAutocompleteHistoryRow> {
+  const latestByTag = new Map<string, PlayerAutocompleteHistoryRow>();
   for (const row of rows) {
     const playerTag = normalizeTag(row.playerTag);
     if (!playerTag) continue;
-    if (currentTag !== playerTag) {
-      flush();
-      currentTag = playerTag;
+    const existing = latestByTag.get(playerTag);
+    if (!existing || comparePlayerAutocompleteHistoryRowsDesc(row, existing) < 0) {
+      latestByTag.set(playerTag, {
+        ...row,
+        playerTag,
+      });
     }
-    currentRows.push(row);
+  }
+  return latestByTag;
+}
+
+/** Purpose: merge bounded name and town-hall history rows into snapshot fallbacks. */
+function buildPlayerAutocompleteSnapshotFallbacks(input: {
+  nameRows: PlayerAutocompleteHistoryRow[];
+  townHallRows: PlayerAutocompleteHistoryRow[];
+}): Map<string, PlayerSnapshotFallback | undefined> {
+  const latestNameRows = buildPlayerAutocompleteLatestRowsByTag(input.nameRows);
+  const latestTownHallRows = buildPlayerAutocompleteLatestRowsByTag(input.townHallRows);
+  const fallbacks = new Map<string, PlayerSnapshotFallback | undefined>();
+  const tags = new Set<string>([...latestNameRows.keys(), ...latestTownHallRows.keys()]);
+
+  for (const playerTag of tags) {
+    const nameRow = latestNameRows.get(playerTag) ?? null;
+    const townHallRow = latestTownHallRows.get(playerTag) ?? null;
+    if (!nameRow && !townHallRow) continue;
+
+    fallbacks.set(playerTag, {
+      playerName: normalizeDisplayText(nameRow?.playerNameSnapshot),
+      townHallLevel: normalizePositiveInteger(townHallRow?.townHallLevelSnapshot),
+    });
   }
 
-  flush();
   return fallbacks;
 }
 
@@ -1466,21 +1445,19 @@ export class WarPlanViolationHistoryService {
     });
     if (candidateTags.length === 0) return [];
 
-    const [countByTag, historyRows, identityData] = await Promise.all([
+    const [countByTag, snapshotRows, identityData] = await Promise.all([
       this.loadPlayerAutocompleteViolationCounts({
         guildId,
         playerTags: candidateTags,
       }),
-      this.loadPlayerAutocompleteHistoryRows({
+      this.loadPlayerAutocompleteSnapshotFallbackRows({
         guildId,
         playerTags: candidateTags,
       }),
       this.loadPlayerIdentityData(candidateTags),
     ]);
 
-    const fallbackByTag = buildPlayerAutocompleteSnapshotFallbacks(
-      [...historyRows].sort(comparePlayerAutocompleteHistoryRowsByTagDesc),
-    );
+    const fallbackByTag = buildPlayerAutocompleteSnapshotFallbacks(snapshotRows);
     const candidates = candidateTags
       .map((candidateTag) => {
         const violationCount = countByTag.get(candidateTag) ?? 0;
@@ -1758,25 +1735,79 @@ export class WarPlanViolationHistoryService {
   }
 
   /** Purpose: load the latest canonical violator snapshot rows for a bounded set of autocomplete tags. */
-  private async loadPlayerAutocompleteHistoryRows(input: {
+  private async loadPlayerAutocompleteSnapshotFallbackRows(input: {
     guildId: string;
     playerTags: string[];
-  }): Promise<PlayerAutocompleteHistoryRow[]> {
+  }): Promise<{
+    nameRows: PlayerAutocompleteHistoryRow[];
+    townHallRows: PlayerAutocompleteHistoryRow[];
+  }> {
     const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
-    if (normalizedTags.length === 0) return [];
+    if (normalizedTags.length === 0) {
+      return {
+        nameRows: [],
+        townHallRows: [],
+      };
+    }
 
+    const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
+      this.loadPlayerAutocompleteNameSnapshotRows({
+        guildId: input.guildId,
+        playerTags: normalizedTags,
+        warEndTimeMode: "ended",
+      }),
+      this.loadPlayerAutocompleteNameSnapshotRows({
+        guildId: input.guildId,
+        playerTags: normalizedTags,
+        warEndTimeMode: "null",
+      }),
+      this.loadPlayerAutocompleteTownHallSnapshotRows({
+        guildId: input.guildId,
+        playerTags: normalizedTags,
+        warEndTimeMode: "ended",
+      }),
+      this.loadPlayerAutocompleteTownHallSnapshotRows({
+        guildId: input.guildId,
+        playerTags: normalizedTags,
+        warEndTimeMode: "null",
+      }),
+    ]);
+
+    return {
+      nameRows: [...endedNameRows, ...nullEndedNameRows],
+      townHallRows: [...endedTownHallRows, ...nullEndedTownHallRows],
+    };
+  }
+
+  /** Purpose: load the newest canonical autocomplete rows for fallback names. */
+  private async loadPlayerAutocompleteNameSnapshotRows(input: {
+    guildId: string;
+    playerTags: string[];
+    warEndTimeMode: "ended" | "null";
+  }): Promise<PlayerAutocompleteHistoryRow[]> {
     return (await this.db.warPlanViolation.findMany({
       where: {
         playerTag: {
-          in: normalizedTags,
+          in: input.playerTags,
         },
         evaluation: {
           is: {
             guildId: input.guildId,
             status: "COMPLETED",
+            warHistory: {
+              is:
+                input.warEndTimeMode === "ended"
+                  ? {
+                      warEndTime: { not: null },
+                    }
+                  : {
+                      warEndTime: null,
+                    },
+            },
           },
         },
       },
+      distinct: ["playerTag"],
       orderBy: [
         { playerTag: "asc" },
         {
@@ -1817,6 +1848,83 @@ export class WarPlanViolationHistoryService {
           },
         },
       },
+      take: input.playerTags.length,
+    })) as PlayerAutocompleteHistoryRow[];
+  }
+
+  /** Purpose: load the newest canonical autocomplete rows that still carry a valid Town Hall snapshot. */
+  private async loadPlayerAutocompleteTownHallSnapshotRows(input: {
+    guildId: string;
+    playerTags: string[];
+    warEndTimeMode: "ended" | "null";
+  }): Promise<PlayerAutocompleteHistoryRow[]> {
+    return (await this.db.warPlanViolation.findMany({
+      where: {
+        playerTag: {
+          in: input.playerTags,
+        },
+        townHallLevelSnapshot: {
+          gt: 0,
+        },
+        evaluation: {
+          is: {
+            guildId: input.guildId,
+            status: "COMPLETED",
+            warHistory: {
+              is:
+                input.warEndTimeMode === "ended"
+                  ? {
+                      warEndTime: { not: null },
+                    }
+                  : {
+                      warEndTime: null,
+                    },
+            },
+          },
+        },
+      },
+      distinct: ["playerTag"],
+      orderBy: [
+        { playerTag: "asc" },
+        {
+          evaluation: {
+            warHistory: {
+              warEndTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warStartTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warId: "desc",
+            },
+          },
+        },
+      ],
+      select: {
+        playerTag: true,
+        playerNameSnapshot: true,
+        townHallLevelSnapshot: true,
+        evaluation: {
+          select: {
+            warHistory: {
+              select: {
+                warId: true,
+                warStartTime: true,
+                warEndTime: true,
+              },
+            },
+          },
+        },
+      },
+      take: input.playerTags.length,
     })) as PlayerAutocompleteHistoryRow[];
   }
 

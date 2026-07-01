@@ -237,6 +237,30 @@ function matchesTextCondition(
   return true;
 }
 
+function matchesNumericCondition(value: number | null | undefined, filter: unknown): boolean {
+  if (filter === undefined || filter === null) return true;
+  const candidate = typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof filter === "number") {
+    return candidate === filter;
+  }
+  if (typeof filter !== "object" || Array.isArray(filter)) return true;
+  const record = filter as {
+    equals?: number;
+    gt?: number;
+    gte?: number;
+    lt?: number;
+    lte?: number;
+    in?: number[];
+  };
+  if (typeof record.equals === "number" && candidate !== record.equals) return false;
+  if (typeof record.gt === "number" && !(candidate !== null && candidate > record.gt)) return false;
+  if (typeof record.gte === "number" && !(candidate !== null && candidate >= record.gte)) return false;
+  if (typeof record.lt === "number" && !(candidate !== null && candidate < record.lt)) return false;
+  if (typeof record.lte === "number" && !(candidate !== null && candidate <= record.lte)) return false;
+  if (Array.isArray(record.in) && !record.in.includes(candidate ?? Number.NaN)) return false;
+  return true;
+}
+
 function matchesInFilter(where: Record<string, unknown> | undefined, playerTag: string): boolean {
   if (!where) return true;
   const normalizedPlayerTag = normalizeTag(playerTag);
@@ -457,6 +481,7 @@ function matchesViolationWhere(
     if (typeof playerTagFilter.contains === "string" && !normalizeTag(row.playerTag).includes(normalizeTag(playerTagFilter.contains))) return false;
   }
   if (!matchesTextCondition(row.playerNameSnapshot, where.playerNameSnapshot)) return false;
+  if (!matchesNumericCondition(row.townHallLevelSnapshot, where.townHallLevelSnapshot)) return false;
   return matchesViolationEvaluationRelation(row, where);
 }
 
@@ -3999,7 +4024,7 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(result.map((choice) => choice.value)).toEqual(["#PYLQ0289"]);
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(4);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.where).toMatchObject({
@@ -4104,7 +4129,7 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Current Alpha");
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(3);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(6);
       expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.warPlanViolation.findMany.mock.calls[1]?.[0]?.take).toBe(100);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
@@ -4140,6 +4165,174 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Snapshot Only");
+    });
+
+    it("hydrates only one bounded row per tag even when hundreds of historical rows exist", async () => {
+      const { db, service } = buildService([
+        ...Array.from({ length: 200 }, (_, index) =>
+          buildFixture({
+            warId: index + 1,
+            clanTag: "#2QG2C08UP",
+            clanName: "Alpha",
+            warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+            warEndTime: index % 2 === 0 ? d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`) : null,
+            violations: [
+              {
+                playerTag: "#PYLQ0289",
+                playerNameSnapshot: index === 199 ? "Newest Snapshot" : `Older Snapshot ${index + 1}`,
+                townHallLevelSnapshot: index === 199 ? null : 12 + (index % 5),
+              },
+            ],
+          }),
+        ),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result).toHaveLength(1);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(4);
+      expect(db.warPlanViolation.findMany.mock.calls.slice(0, 4).every((call) => call[0]?.take === 1)).toBe(true);
+
+      const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
+        db.warPlanViolation.findMany.mock.results[0]?.value,
+        db.warPlanViolation.findMany.mock.results[1]?.value,
+        db.warPlanViolation.findMany.mock.results[2]?.value,
+        db.warPlanViolation.findMany.mock.results[3]?.value,
+      ]);
+
+      expect(endedNameRows).toHaveLength(1);
+      expect(nullEndedNameRows).toHaveLength(1);
+      expect(endedTownHallRows).toHaveLength(1);
+      expect(nullEndedTownHallRows).toHaveLength(1);
+      expect(result[0]?.value).toBe("#PYLQ0289");
+    });
+
+    it("keeps the newest canonical name blank while still taking an older valid Town Hall", async () => {
+      const { db, service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older Name",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "   ",
+              townHallLevelSnapshot: null,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      const [endedNameRows, nullEndedNameRows, endedTownHallRows, nullEndedTownHallRows] = await Promise.all([
+        db.warPlanViolation.findMany.mock.results[0]?.value,
+        db.warPlanViolation.findMany.mock.results[1]?.value,
+        db.warPlanViolation.findMany.mock.results[2]?.value,
+        db.warPlanViolation.findMany.mock.results[3]?.value,
+      ]);
+
+      expect(endedNameRows).toHaveLength(1);
+      expect(nullEndedNameRows).toHaveLength(1);
+      expect(endedNameRows[0]?.playerNameSnapshot).toBe("Older Name");
+      expect(nullEndedNameRows[0]?.playerNameSnapshot).toBe("   ");
+      expect(endedTownHallRows[0]?.townHallLevelSnapshot).toBe(15);
+      expect(nullEndedTownHallRows).toHaveLength(0);
+      expect(result[0]?.name).toContain("#PYLQ0289");
+    });
+
+    it("compares ended and null-ended rows by canonical chronology and war id", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Ended Older",
+              townHallLevelSnapshot: 15,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T02:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Null Later",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 3,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-12T01:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#2RVGJYLC0",
+              playerNameSnapshot: "Tie Low",
+              townHallLevelSnapshot: 17,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 4,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-12T01:00:00.000Z"),
+          warEndTime: null,
+          violations: [
+            {
+              playerTag: "#2RVGJYLC0",
+              playerNameSnapshot: "Tie High",
+              townHallLevelSnapshot: 17,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result.map((choice) => choice.name)).toEqual(
+        expect.arrayContaining(["Null Later (#PYLQ0289) — 2 violations", "Tie High (#2RVGJYLC0) — 2 violations"]),
+      );
+      expect(result.some((choice) => choice.name.includes("Ended Older"))).toBe(false);
+      expect(result.some((choice) => choice.name.includes("Tie Low"))).toBe(false);
     });
 
     it("does not return an old snapshot match when a higher-precedence current name does not match", async () => {
@@ -4606,7 +4799,7 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(historySpy).not.toHaveBeenCalled();
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(3);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(6);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
       expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
