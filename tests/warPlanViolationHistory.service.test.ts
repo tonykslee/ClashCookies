@@ -14,6 +14,7 @@ type ViolationFixture = {
   actualBehavior?: string;
   breachStarsAt?: number | null;
   breachTimeRemaining?: string | null;
+  attackDetails?: unknown;
 };
 
 type EvaluationFixture = {
@@ -181,6 +182,7 @@ type BuiltViolationRow = {
   actualBehavior: string;
   breachStarsAt: number | null;
   breachTimeRemaining: string | null;
+  attackDetails: unknown;
   evaluation: {
     id: string;
     expectedOutcome: string | null;
@@ -216,6 +218,7 @@ function buildViolationRows(fixtures: EvaluationFixture[]): BuiltViolationRow[] 
         actualBehavior: violation.actualBehavior ?? "actual",
         breachStarsAt: violation.breachStarsAt ?? null,
         breachTimeRemaining: violation.breachTimeRemaining ?? null,
+        attackDetails: violation.attackDetails ?? null,
         evaluation: {
           id: evaluationId,
           expectedOutcome: evaluation.expectedOutcome ?? null,
@@ -2326,11 +2329,11 @@ describe("WarPlanViolationHistoryService", () => {
             expectedOutcome: "WIN",
             loseStyle: "NONE",
             violations: [
-              {
-                id: "vio-1",
-                playerTag: "#PYLQ0289",
-                playerNameSnapshot: "Snapshot Alpha",
-                townHallLevelSnapshot: 12,
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
                 playerPosition: 3,
                 violationType: "ANY_3STAR",
                 reasonLabel: "Reason Alpha",
@@ -2338,6 +2341,26 @@ describe("WarPlanViolationHistoryService", () => {
                 actualBehavior: "Actual Alpha",
                 breachStarsAt: 3,
                 breachTimeRemaining: "0s",
+                attackDetails: {
+                  attackDetails: [
+                    {
+                      defenderPosition: 3,
+                      stars: 3,
+                      attackOrder: 1,
+                      isBreach: true,
+                    },
+                    {
+                      defenderPosition: null,
+                      stars: 2,
+                      attackOrder: 2,
+                      isBreach: false,
+                    },
+                  ],
+                  breachContext: {
+                    starsAtBreach: 3,
+                    timeRemaining: "0s",
+                  },
+                },
               },
             ],
           }),
@@ -2397,6 +2420,100 @@ describe("WarPlanViolationHistoryService", () => {
         actualBehavior: "Actual Alpha",
         breachStarsAt: 3,
         breachTimeRemaining: "0s",
+        attackEvidence: {
+          attacks: [
+            {
+              defenderPosition: 3,
+              stars: 3,
+              attackOrder: 1,
+              isBreach: true,
+            },
+            {
+              defenderPosition: null,
+              stars: 2,
+              attackOrder: 2,
+              isBreach: false,
+            },
+          ],
+          breachContext: {
+            starsAtBreach: 3,
+            timeRemaining: "0s",
+          },
+        },
+      });
+    });
+
+    it("defensively normalizes malformed persisted attack evidence", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              expectedBehavior: "Expected Alpha",
+              actualBehavior: "Actual Alpha",
+              breachStarsAt: 3,
+              breachTimeRemaining: "0s",
+              attackDetails: {
+                attackDetails: [
+                  {
+                    defenderPosition: "4",
+                    stars: "2",
+                    attackOrder: "7",
+                    isBreach: true,
+                  },
+                  "bad-row",
+                  null,
+                ],
+                breachContext: {
+                  starsAtBreach: "6",
+                  timeRemaining: " 33m left ",
+                },
+              },
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.entries[0]?.attackEvidence).toEqual({
+        attacks: [
+          {
+            defenderPosition: 4,
+            stars: 2,
+            attackOrder: 7,
+            isBreach: true,
+          },
+          {
+            defenderPosition: null,
+            stars: null,
+            attackOrder: null,
+            isBreach: false,
+          },
+          {
+            defenderPosition: null,
+            stars: null,
+            attackOrder: null,
+            isBreach: false,
+          },
+        ],
+        breachContext: {
+          starsAtBreach: 6,
+          timeRemaining: "33m left",
+        },
       });
     });
 

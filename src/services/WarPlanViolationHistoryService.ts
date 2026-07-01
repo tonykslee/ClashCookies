@@ -97,6 +97,24 @@ export type WarPlanViolationHistoryPlayerHistoryEntry = {
   actualBehavior: string;
   breachStarsAt: number | null;
   breachTimeRemaining: string | null;
+  attackEvidence: WarPlanViolationHistoryAttackEvidence;
+};
+
+export type WarPlanViolationHistoryAttackEvidence = {
+  attacks: WarPlanViolationHistoryAttackEvidenceAttack[];
+  breachContext: WarPlanViolationHistoryAttackEvidenceBreachContext | null;
+};
+
+export type WarPlanViolationHistoryAttackEvidenceAttack = {
+  defenderPosition: number | null;
+  stars: number | null;
+  attackOrder: number | null;
+  isBreach: boolean;
+};
+
+export type WarPlanViolationHistoryAttackEvidenceBreachContext = {
+  starsAtBreach: number | null;
+  timeRemaining: string | null;
 };
 
 export type WarPlanViolationHistoryPlayerHistorySuccess = {
@@ -181,6 +199,7 @@ type PlayerHistoryEvaluationRow = {
   actualBehavior: string;
   breachStarsAt: number | null;
   breachTimeRemaining: string | null;
+  attackDetails: Prisma.JsonValue | null;
   evaluation: {
     id: string;
     expectedOutcome: string | null;
@@ -665,6 +684,7 @@ function toPlayerHistoryEntry(
     actualBehavior: normalizeDisplayText(row.actualBehavior) ?? "",
     breachStarsAt: row.breachStarsAt ?? null,
     breachTimeRemaining: normalizeDisplayText(row.breachTimeRemaining),
+    attackEvidence: normalizePlayerHistoryAttackEvidence(row.attackDetails),
   };
 }
 
@@ -691,6 +711,83 @@ function buildPlayerHistorySnapshotFallback(
     }
   }
   return fallback;
+}
+
+/** Purpose: defensively normalize persisted player-history attack evidence. */
+function normalizePlayerHistoryAttackEvidence(
+  value: Prisma.JsonValue | null,
+): WarPlanViolationHistoryAttackEvidence {
+  if (Array.isArray(value)) {
+    return {
+      attacks: value.map(normalizePlayerHistoryAttackEvidenceAttack),
+      breachContext: null,
+    };
+  }
+
+  if (!value || typeof value !== "object") {
+    return {
+      attacks: [],
+      breachContext: null,
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  const attacks = Array.isArray(record.attackDetails)
+    ? record.attackDetails.map(normalizePlayerHistoryAttackEvidenceAttack)
+    : [];
+  return {
+    attacks,
+    breachContext: normalizePlayerHistoryAttackEvidenceBreachContext(record.breachContext),
+  };
+}
+
+/** Purpose: defensively normalize one persisted attack detail row. */
+function normalizePlayerHistoryAttackEvidenceAttack(
+  value: unknown,
+): WarPlanViolationHistoryAttackEvidenceAttack {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      defenderPosition: null,
+      stars: null,
+      attackOrder: null,
+      isBreach: false,
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    defenderPosition: normalizeLooseInteger(record.defenderPosition),
+    stars: normalizeLooseInteger(record.stars),
+    attackOrder: normalizeLooseInteger(record.attackOrder),
+    isBreach: record.isBreach === true,
+  };
+}
+
+/** Purpose: defensively normalize the persisted breach context for history output. */
+function normalizePlayerHistoryAttackEvidenceBreachContext(
+  value: unknown,
+): WarPlanViolationHistoryAttackEvidenceBreachContext | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const record = value as Record<string, unknown>;
+  return {
+    starsAtBreach: normalizeLooseInteger(record.starsAtBreach),
+    timeRemaining: normalizeDisplayText(record.timeRemaining),
+  };
+}
+
+/** Purpose: normalize permissive integer-like JSON values without throwing. */
+function normalizeLooseInteger(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.trunc(value) : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+  }
+  return null;
 }
 
 /** Purpose: aggregate completed war-plan violations into read-only history summaries. */
@@ -1161,6 +1258,7 @@ export class WarPlanViolationHistoryService {
         actualBehavior: true,
         breachStarsAt: true,
         breachTimeRemaining: true,
+        attackDetails: true,
         evaluation: {
           select: {
             id: true,
