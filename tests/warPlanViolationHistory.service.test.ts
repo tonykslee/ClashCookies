@@ -2334,8 +2334,6 @@ describe("WarPlanViolationHistoryService", () => {
                 playerPosition: 3,
                 violationType: "ANY_3STAR",
                 reasonLabel: "Reason Alpha",
-                expectedOutcome: "WIN",
-                loseStyle: "NONE",
                 expectedBehavior: "Expected Alpha",
                 actualBehavior: "Actual Alpha",
                 breachStarsAt: 3,
@@ -2543,6 +2541,149 @@ describe("WarPlanViolationHistoryService", () => {
         playerName: "Current Alpha",
         townHallLevel: 17,
         discordUserId: "111111111111111111",
+      });
+    });
+
+    it("uses the newest violation snapshots when no persisted identity exists", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older Name",
+              townHallLevelSnapshot: 17,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Newest Name",
+              townHallLevelSnapshot: 18,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        playerName: "Newest Name",
+        townHallLevel: 18,
+      });
+      expect(result.entries.map((entry) => entry.playerNameSnapshot)).toEqual([
+        "Newest Name",
+        "Older Name",
+      ]);
+    });
+
+    it("falls back to the player tag when the newest violation name is blank", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older Name",
+              townHallLevelSnapshot: 18,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "   ",
+              townHallLevelSnapshot: null,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        playerName: "#PYLQ0289",
+        townHallLevel: 18,
+      });
+      expect(result.entries.map((entry) => entry.playerNameSnapshot)).toEqual([
+        null,
+        "Older Name",
+      ]);
+    });
+
+    it("uses the older non-null Town Hall snapshot when the newest one is absent", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Older Name",
+              townHallLevelSnapshot: 18,
+            },
+          ],
+        }),
+        buildFixture({
+          warId: 2,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-11T00:00:00.000Z"),
+          warEndTime: d("2026-05-11T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Newest Name",
+              townHallLevelSnapshot: null,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        playerName: "Newest Name",
+        townHallLevel: 18,
       });
     });
 

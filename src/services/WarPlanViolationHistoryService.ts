@@ -668,6 +668,31 @@ function toPlayerHistoryEntry(
   };
 }
 
+/** Purpose: derive the canonical snapshot fallback for populated player-history results. */
+function buildPlayerHistorySnapshotFallback(
+  rows: PlayerHistoryEvaluationRow[],
+): PlayerSnapshotFallback | undefined {
+  let fallback: PlayerSnapshotFallback | undefined;
+  for (const row of rows) {
+    const playerName = normalizeDisplayText(row.playerNameSnapshot);
+    const townHallLevel = normalizePositiveInteger(row.townHallLevelSnapshot);
+    if (!fallback) {
+      fallback = {
+        playerName,
+        townHallLevel,
+      };
+      continue;
+    }
+    if (fallback.townHallLevel === null && townHallLevel !== null) {
+      fallback = {
+        playerName: fallback.playerName,
+        townHallLevel,
+      };
+    }
+  }
+  return fallback;
+}
+
 /** Purpose: aggregate completed war-plan violations into read-only history summaries. */
 export class WarPlanViolationHistoryService {
   /** Purpose: initialize service dependencies. */
@@ -938,6 +963,7 @@ export class WarPlanViolationHistoryService {
 
     const orderedRows = [...periodRows].sort(comparePlayerHistoryRowsDesc);
     const entries = orderedRows.map(toPlayerHistoryEntry);
+    const fallback = orderedRows.length > 0 ? buildPlayerHistorySnapshotFallback(orderedRows) : undefined;
     const trackingSince =
       entries.reduce<Date | null>((earliest, entry) => {
         if (!(entry.warEndTime instanceof Date)) return earliest;
@@ -950,7 +976,7 @@ export class WarPlanViolationHistoryService {
     const identityData = await this.loadPlayerIdentityData([normalizedPlayerTag]);
     const identity = resolveEnrichedPlayerIdentity({
       playerTag: normalizedPlayerTag,
-      fallback: undefined,
+      fallback,
       current: identityData?.currentByTag.get(normalizedPlayerTag) ?? null,
       fwaMemberRows: identityData?.fwaMemberRowsByTag.get(normalizedPlayerTag) ?? [],
       fwaCatalog: identityData?.fwaCatalogByTag.get(normalizedPlayerTag) ?? null,
