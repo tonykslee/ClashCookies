@@ -379,6 +379,8 @@ type PlayerAutocompleteHistoryRow = {
   };
 };
 
+const PLAYER_AUTOCOMPLETE_DISCOVERY_CAP = 100;
+
 type PlayerAutocompleteCandidate = {
   playerTag: string;
   violationCount: number;
@@ -751,31 +753,6 @@ function buildPlayerHistoryViolationWhere(input: {
   };
 }
 
-/** Purpose: build the Prisma where input for guild-wide autocomplete discovery. */
-function buildPlayerAutocompleteViolationWhere(input: {
-  guildId: string;
-  warEndTimeMode: "ended" | "null";
-}): Prisma.WarPlanViolationWhereInput {
-  return {
-    evaluation: {
-      is: {
-        guildId: input.guildId,
-        status: "COMPLETED",
-        warHistory: {
-          is:
-            input.warEndTimeMode === "ended"
-              ? {
-                  warEndTime: { not: null },
-                }
-              : {
-                  warEndTime: null,
-                },
-        },
-      },
-    },
-  };
-}
-
 /** Purpose: build the Prisma where input for Discord-user aggregate violation lookups. */
 function buildDiscordUserAggregateViolationWhere(input: {
   guildId: string;
@@ -950,9 +927,24 @@ function comparePlayerAutocompleteHistoryRowsDesc(
   return b.evaluation.warHistory.warId - a.evaluation.warHistory.warId;
 }
 
+/** Purpose: order autocomplete history rows by tag first and canonical chronology within each tag. */
+function comparePlayerAutocompleteHistoryRowsByTagDesc(
+  a: PlayerAutocompleteHistoryRow,
+  b: PlayerAutocompleteHistoryRow,
+): number {
+  const tagCompare = a.playerTag.localeCompare(b.playerTag);
+  if (tagCompare !== 0) return tagCompare;
+  return comparePlayerAutocompleteHistoryRowsDesc(a, b);
+}
+
 /** Purpose: normalize the focused autocomplete text for stable comparisons. */
 function normalizeAutocompleteQueryText(input: string | null | undefined): string {
   return String(input ?? "").trim().toLowerCase();
+}
+
+/** Purpose: normalize the focused autocomplete text for partial Clash-tag matching. */
+function normalizeAutocompleteTagQuery(input: string | null | undefined): string {
+  return normalizeClashTagBareInput(input);
 }
 
 /** Purpose: normalize the requested autocomplete limit into Discord's allowed range. */
@@ -969,10 +961,13 @@ function buildPlayerAutocompleteChoiceName(input: {
   violationCount: number;
 }): string {
   const violationLabel = input.violationCount === 1 ? "violation" : "violations";
-  return `${input.playerName} (${input.playerTag}) — ${input.violationCount} ${violationLabel}`.slice(
-    0,
-    100,
-  );
+  const suffix = ` (${input.playerTag}) \u2014 ${input.violationCount} ${violationLabel}`;
+  const maxPlayerNameLength = Math.max(0, 100 - suffix.length);
+  const truncatedPlayerName =
+    input.playerName.length > maxPlayerNameLength
+      ? input.playerName.slice(0, maxPlayerNameLength)
+      : input.playerName;
+  return `${truncatedPlayerName}${suffix}`;
 }
 
 /** Purpose: classify one autocomplete candidate against the focused search text. */
@@ -1022,6 +1017,50 @@ function comparePlayerAutocompleteCandidates(
   const nameCompare = a.resolvedName.localeCompare(b.resolvedName);
   if (nameCompare !== 0) return nameCompare;
   return a.playerTag.localeCompare(b.playerTag);
+}
+
+/** Purpose: merge bounded candidate discovery lanes into one deduplicated tag list. */
+function mergePlayerAutocompleteDiscoveryTags(lanes: string[][]): string[] {
+  const unique = new Set<string>();
+  const merged: string[] = [];
+  for (const lane of lanes) {
+    for (const tag of lane) {
+      const normalizedTag = normalizeTag(tag);
+      if (!normalizedTag || unique.has(normalizedTag)) continue;
+      unique.add(normalizedTag);
+      merged.push(normalizedTag);
+    }
+  }
+  return merged;
+}
+
+/** Purpose: build canonical snapshot fallbacks for a bounded set of autocomplete tags. */
+function buildPlayerAutocompleteSnapshotFallbacks(
+  rows: PlayerAutocompleteHistoryRow[],
+): Map<string, PlayerSnapshotFallback | undefined> {
+  const fallbacks = new Map<string, PlayerSnapshotFallback | undefined>();
+  let currentTag: string | null = null;
+  let currentRows: PlayerAutocompleteHistoryRow[] = [];
+
+  const flush = () => {
+    if (currentTag) {
+      fallbacks.set(currentTag, buildPlayerAutocompleteSnapshotFallback(currentRows));
+    }
+    currentRows = [];
+  };
+
+  for (const row of rows) {
+    const playerTag = normalizeTag(row.playerTag);
+    if (!playerTag) continue;
+    if (currentTag !== playerTag) {
+      flush();
+      currentTag = playerTag;
+    }
+    currentRows.push(row);
+  }
+
+  flush();
+  return fallbacks;
 }
 
 /** Purpose: defensively normalize persisted player-history attack evidence. */
@@ -1418,29 +1457,43 @@ export class WarPlanViolationHistoryService {
 
     const resultLimit = normalizeAutocompleteLimit(input.limit);
     const query = normalizeAutocompleteQueryText(input.focusedText);
+    const tagQuery = normalizeAutocompleteTagQuery(input.focusedText);
 
-    const candidateRows = await this.loadPlayerAutocompleteRows({ guildId });
-    if (candidateRows.length === 0) return [];
+    const candidateTags = await this.loadPlayerAutocompleteCandidateTags({
+      guildId,
+      query,
+      tagQuery,
+    });
+    if (candidateTags.length === 0) return [];
 
-    const candidateTags = candidateRows.map((row) => row.playerTag);
-    const [countByTag, identityData] = await Promise.all([
+    const [countByTag, historyRows, identityData] = await Promise.all([
       this.loadPlayerAutocompleteViolationCounts({
+        guildId,
+        playerTags: candidateTags,
+      }),
+      this.loadPlayerAutocompleteHistoryRows({
         guildId,
         playerTags: candidateTags,
       }),
       this.loadPlayerIdentityData(candidateTags),
     ]);
 
-    const candidates = candidateRows
-      .map((row) => {
-        const fallback = buildPlayerAutocompleteSnapshotFallback([row]);
-        const current = identityData?.currentByTag.get(row.playerTag) ?? null;
-        const fwaMemberRows = identityData?.fwaMemberRowsByTag.get(row.playerTag) ?? [];
-        const fwaCatalog = identityData?.fwaCatalogByTag.get(row.playerTag) ?? null;
-        const todoSnapshot = identityData?.todoSnapshotByTag.get(row.playerTag) ?? null;
-        const playerLink = identityData?.playerLinkByTag.get(row.playerTag) ?? null;
+    const fallbackByTag = buildPlayerAutocompleteSnapshotFallbacks(
+      [...historyRows].sort(comparePlayerAutocompleteHistoryRowsByTagDesc),
+    );
+    const candidates = candidateTags
+      .map((candidateTag) => {
+        const violationCount = countByTag.get(candidateTag) ?? 0;
+        if (violationCount <= 0) return null;
+
+        const fallback = fallbackByTag.get(candidateTag);
+        const current = identityData?.currentByTag.get(candidateTag) ?? null;
+        const fwaMemberRows = identityData?.fwaMemberRowsByTag.get(candidateTag) ?? [];
+        const fwaCatalog = identityData?.fwaCatalogByTag.get(candidateTag) ?? null;
+        const todoSnapshot = identityData?.todoSnapshotByTag.get(candidateTag) ?? null;
+        const playerLink = identityData?.playerLinkByTag.get(candidateTag) ?? null;
         const identity = resolveEnrichedPlayerIdentity({
-          playerTag: row.playerTag,
+          playerTag: candidateTag,
           fallback,
           current,
           fwaMemberRows,
@@ -1448,16 +1501,15 @@ export class WarPlanViolationHistoryService {
           todoSnapshot,
           playerLink,
         });
-        const violationCount = countByTag.get(row.playerTag) ?? 0;
         const matchRank = classifyPlayerAutocompleteMatch({
           query,
-          candidateTag: row.playerTag,
+          candidateTag,
           candidateName: identity.playerName,
         });
         if (matchRank === null) return null;
 
         return {
-          playerTag: row.playerTag,
+          playerTag: candidateTag,
           violationCount,
           snapshotFallback: fallback,
           current,
@@ -1481,6 +1533,324 @@ export class WarPlanViolationHistoryService {
       }),
       value: candidate.playerTag,
     }));
+  }
+
+  /** Purpose: discover a bounded set of candidate tags for autocomplete. */
+  private async loadPlayerAutocompleteCandidateTags(input: {
+    guildId: string;
+    query: string;
+    tagQuery: string;
+  }): Promise<string[]> {
+    if (!input.query) {
+      return this.loadPlayerAutocompleteTopViolatorTags({
+        guildId: input.guildId,
+      });
+    }
+
+    const [tagRows, snapshotRows, currentRows, catalogRows, todoRows] = await Promise.all([
+      this.loadPlayerAutocompleteRecordedTagCandidates({
+        guildId: input.guildId,
+        tagQuery: input.tagQuery,
+      }),
+      this.loadPlayerAutocompleteRecordedSnapshotCandidates({
+        guildId: input.guildId,
+        query: input.query,
+      }),
+      this.loadPlayerAutocompleteCurrentNameCandidates({
+        query: input.query,
+      }),
+      this.loadPlayerAutocompleteCatalogNameCandidates({
+        query: input.query,
+      }),
+      this.loadPlayerAutocompleteTodoNameCandidates({
+        query: input.query,
+      }),
+    ]);
+
+    return mergePlayerAutocompleteDiscoveryTags([
+      tagRows,
+      snapshotRows,
+      currentRows,
+      catalogRows,
+      todoRows,
+    ]);
+  }
+
+  /** Purpose: discover candidate tags from recorded violation player-tag matches. */
+  private async loadPlayerAutocompleteRecordedTagCandidates(input: {
+    guildId: string;
+    tagQuery: string;
+  }): Promise<string[]> {
+    if (!input.tagQuery) return [];
+
+    const rows = await this.db.warPlanViolation.findMany({
+      where: {
+        evaluation: {
+          is: {
+            guildId: input.guildId,
+            status: "COMPLETED",
+          },
+        },
+        playerTag: {
+          contains: input.tagQuery,
+          mode: "insensitive",
+        },
+      },
+      distinct: ["playerTag"],
+      orderBy: [
+        {
+          evaluation: {
+            warHistory: {
+              warEndTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warStartTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warId: "desc",
+            },
+          },
+        },
+        {
+          playerTag: "asc",
+        },
+      ],
+      select: {
+        playerTag: true,
+      },
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
+  }
+
+  /** Purpose: discover candidate tags from recorded violation snapshot-name matches. */
+  private async loadPlayerAutocompleteRecordedSnapshotCandidates(input: {
+    guildId: string;
+    query: string;
+  }): Promise<string[]> {
+    if (!input.query) return [];
+
+    const rows = await this.db.warPlanViolation.findMany({
+      where: {
+        evaluation: {
+          is: {
+            guildId: input.guildId,
+            status: "COMPLETED",
+          },
+        },
+        playerNameSnapshot: {
+          contains: input.query,
+          mode: "insensitive",
+        },
+      },
+      distinct: ["playerTag"],
+      orderBy: [
+        {
+          evaluation: {
+            warHistory: {
+              warEndTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warStartTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warId: "desc",
+            },
+          },
+        },
+        {
+          playerTag: "asc",
+        },
+      ],
+      select: {
+        playerTag: true,
+      },
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
+  }
+
+  /** Purpose: discover candidate tags from current persisted player-name matches. */
+  private async loadPlayerAutocompleteCurrentNameCandidates(input: {
+    query: string;
+  }): Promise<string[]> {
+    const rows = await this.db.playerCurrent.findMany({
+      where: {
+        playerName: {
+          contains: input.query,
+          mode: "insensitive",
+        },
+      },
+      orderBy: {
+        playerTag: "asc",
+      },
+      select: {
+        playerTag: true,
+      },
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
+  }
+
+  /** Purpose: discover candidate tags from FWA catalog name matches. */
+  private async loadPlayerAutocompleteCatalogNameCandidates(input: {
+    query: string;
+  }): Promise<string[]> {
+    const rows = await this.db.fwaPlayerCatalog.findMany({
+      where: {
+        latestName: {
+          contains: input.query,
+          mode: "insensitive",
+        },
+      },
+      orderBy: {
+        playerTag: "asc",
+      },
+      select: {
+        playerTag: true,
+      },
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
+  }
+
+  /** Purpose: discover candidate tags from todo snapshot name matches. */
+  private async loadPlayerAutocompleteTodoNameCandidates(input: {
+    query: string;
+  }): Promise<string[]> {
+    const rows = await this.db.todoPlayerSnapshot.findMany({
+      where: {
+        playerName: {
+          contains: input.query,
+          mode: "insensitive",
+        },
+      },
+      orderBy: {
+        playerTag: "asc",
+      },
+      select: {
+        playerTag: true,
+      },
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => row.playerTag);
+  }
+
+  /** Purpose: load the latest canonical violator snapshot rows for a bounded set of autocomplete tags. */
+  private async loadPlayerAutocompleteHistoryRows(input: {
+    guildId: string;
+    playerTags: string[];
+  }): Promise<PlayerAutocompleteHistoryRow[]> {
+    const normalizedTags = [...new Set(input.playerTags.map((tag) => normalizeTag(tag)).filter(Boolean))];
+    if (normalizedTags.length === 0) return [];
+
+    return (await this.db.warPlanViolation.findMany({
+      where: {
+        playerTag: {
+          in: normalizedTags,
+        },
+        evaluation: {
+          is: {
+            guildId: input.guildId,
+            status: "COMPLETED",
+          },
+        },
+      },
+      orderBy: [
+        { playerTag: "asc" },
+        {
+          evaluation: {
+            warHistory: {
+              warEndTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warStartTime: "desc",
+            },
+          },
+        },
+        {
+          evaluation: {
+            warHistory: {
+              warId: "desc",
+            },
+          },
+        },
+      ],
+      select: {
+        playerTag: true,
+        playerNameSnapshot: true,
+        townHallLevelSnapshot: true,
+        evaluation: {
+          select: {
+            warHistory: {
+              select: {
+                warId: true,
+                warStartTime: true,
+                warEndTime: true,
+              },
+            },
+          },
+        },
+      },
+    })) as PlayerAutocompleteHistoryRow[];
+  }
+
+  /** Purpose: discover the top violator tags when autocomplete has no focused text. */
+  private async loadPlayerAutocompleteTopViolatorTags(input: {
+    guildId: string;
+  }): Promise<string[]> {
+    const rows = await this.db.warPlanViolation.groupBy({
+      by: ["playerTag"],
+      where: {
+        evaluation: {
+          is: {
+            guildId: input.guildId,
+            status: "COMPLETED",
+          },
+        },
+      },
+      _count: {
+        _all: true,
+      },
+      orderBy: [
+        {
+          _count: {
+            playerTag: "desc",
+          },
+        },
+        {
+          playerTag: "asc",
+        },
+      ],
+      take: PLAYER_AUTOCOMPLETE_DISCOVERY_CAP,
+    });
+
+    return (rows as Array<{ playerTag: string }>).map((row) => normalizeTag(row.playerTag)).filter(Boolean);
   }
 
   /** Purpose: build the read-only war-plan leaderboard for one clan. */
@@ -1857,129 +2227,6 @@ export class WarPlanViolationHistoryService {
       todoSnapshotByTag,
       playerLinkByTag,
     };
-  }
-
-  /** Purpose: load the latest canonical violator snapshot rows for autocomplete candidate discovery. */
-  private async loadPlayerAutocompleteRows(input: {
-    guildId: string;
-  }): Promise<PlayerAutocompleteHistoryRow[]> {
-    const [endedRows, nullEndedRows] = await Promise.all([
-      this.db.warPlanViolation.findMany({
-        where: buildPlayerAutocompleteViolationWhere({
-          guildId: input.guildId,
-          warEndTimeMode: "ended",
-        }),
-        distinct: ["playerTag"],
-        orderBy: [
-          { playerTag: "asc" },
-          {
-            evaluation: {
-              warHistory: {
-                warEndTime: "desc",
-              },
-            },
-          },
-          {
-            evaluation: {
-              warHistory: {
-                warId: "desc",
-              },
-            },
-          },
-        ],
-        select: {
-          playerTag: true,
-          playerNameSnapshot: true,
-          townHallLevelSnapshot: true,
-          evaluation: {
-            select: {
-              warHistory: {
-                select: {
-                  warId: true,
-                  warStartTime: true,
-                  warEndTime: true,
-                },
-              },
-            },
-          },
-        },
-      }),
-      this.db.warPlanViolation.findMany({
-        where: buildPlayerAutocompleteViolationWhere({
-          guildId: input.guildId,
-          warEndTimeMode: "null",
-        }),
-        distinct: ["playerTag"],
-        orderBy: [
-          { playerTag: "asc" },
-          {
-            evaluation: {
-              warHistory: {
-                warStartTime: "desc",
-              },
-            },
-          },
-          {
-            evaluation: {
-              warHistory: {
-                warId: "desc",
-              },
-            },
-          },
-        ],
-        select: {
-          playerTag: true,
-          playerNameSnapshot: true,
-          townHallLevelSnapshot: true,
-          evaluation: {
-            select: {
-              warHistory: {
-                select: {
-                  warId: true,
-                  warStartTime: true,
-                  warEndTime: true,
-                },
-              },
-            },
-          },
-        },
-      }),
-    ]);
-
-    const latestByTag = new Map<string, PlayerAutocompleteHistoryRow>();
-    for (const row of [...endedRows, ...nullEndedRows] as Array<{
-      playerTag: string;
-      playerNameSnapshot: string | null;
-      townHallLevelSnapshot: number | null;
-      evaluation: {
-        warHistory: {
-          warId: number;
-          warStartTime: Date;
-          warEndTime: Date | null;
-        };
-      };
-    }>) {
-      const playerTag = normalizeTag(row.playerTag);
-      if (!playerTag) continue;
-      const candidate: PlayerAutocompleteHistoryRow = {
-        playerTag,
-        playerNameSnapshot: normalizeDisplayText(row.playerNameSnapshot),
-        townHallLevelSnapshot: normalizePositiveInteger(row.townHallLevelSnapshot),
-        evaluation: {
-          warHistory: {
-            warId: row.evaluation.warHistory.warId,
-            warStartTime: row.evaluation.warHistory.warStartTime,
-            warEndTime: row.evaluation.warHistory.warEndTime,
-          },
-        },
-      };
-      const existing = latestByTag.get(playerTag);
-      if (!existing || comparePlayerAutocompleteHistoryRowsDesc(candidate, existing) < 0) {
-        latestByTag.set(playerTag, candidate);
-      }
-    }
-
-    return [...latestByTag.values()].sort((a, b) => a.playerTag.localeCompare(b.playerTag));
   }
 
   /** Purpose: count completed guild violations for a bounded set of autocomplete candidate tags. */

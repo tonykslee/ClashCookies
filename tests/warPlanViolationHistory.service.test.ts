@@ -206,10 +206,82 @@ function applyViolationDistinct(rows: BuiltViolationRow[], args?: { distinct?: s
   return ordered;
 }
 
+function applyTake<T>(rows: T[], take?: number): T[] {
+  if (typeof take !== "number" || !Number.isFinite(take)) return rows;
+  return rows.slice(0, Math.max(0, Math.trunc(take)));
+}
+
+function normalizeSearchText(input: string | null | undefined): string {
+  return String(input ?? "").trim().toLowerCase();
+}
+
+function matchesTextCondition(
+  value: string | null | undefined,
+  filter: unknown,
+): boolean {
+  if (filter === undefined || filter === null) return true;
+  const candidate = normalizeSearchText(value);
+  if (typeof filter === "string") {
+    return candidate === normalizeSearchText(filter);
+  }
+  if (typeof filter !== "object" || Array.isArray(filter)) return true;
+  const record = filter as {
+    contains?: string;
+    startsWith?: string;
+    equals?: string;
+    mode?: string;
+  };
+  if (typeof record.equals === "string" && candidate !== normalizeSearchText(record.equals)) return false;
+  if (typeof record.startsWith === "string" && !candidate.startsWith(normalizeSearchText(record.startsWith))) return false;
+  if (typeof record.contains === "string" && !candidate.includes(normalizeSearchText(record.contains))) return false;
+  return true;
+}
+
 function matchesInFilter(where: Record<string, unknown> | undefined, playerTag: string): boolean {
-  const inValues = (where?.playerTag as { in?: string[] } | undefined)?.in;
-  if (!inValues) return true;
-  return inValues.map((tag) => normalizeTag(tag)).includes(normalizeTag(playerTag));
+  if (!where) return true;
+  const normalizedPlayerTag = normalizeTag(playerTag);
+  const tagFilter = where.playerTag as
+    | string
+    | { in?: string[]; contains?: string; startsWith?: string; equals?: string }
+    | undefined;
+  if (typeof tagFilter === "string") {
+    if (normalizeTag(tagFilter) !== normalizedPlayerTag) return false;
+  } else if (tagFilter && Array.isArray(tagFilter.in)) {
+    const allowedTags = tagFilter.in.map((tag) => normalizeTag(tag)).filter(Boolean);
+    if (!allowedTags.includes(normalizedPlayerTag)) return false;
+  } else if (tagFilter && typeof tagFilter === "object") {
+    if (typeof tagFilter.equals === "string" && normalizeTag(tagFilter.equals) !== normalizedPlayerTag) return false;
+    if (typeof tagFilter.startsWith === "string" && !normalizedPlayerTag.startsWith(normalizeTag(tagFilter.startsWith))) return false;
+    if (typeof tagFilter.contains === "string" && !normalizedPlayerTag.includes(normalizeTag(tagFilter.contains))) return false;
+  }
+  return true;
+}
+
+function matchesPlayerCurrentWhere(
+  row: PlayerCurrentFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.playerName, where.playerName);
+}
+
+function matchesFwaPlayerCatalogWhere(
+  row: FwaPlayerCatalogFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.latestName, where.latestName);
+}
+
+function matchesTodoPlayerSnapshotWhere(
+  row: TodoPlayerSnapshotFixture,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) return true;
+  if (!matchesInFilter(where, row.playerTag)) return false;
+  return matchesTextCondition(row.playerName, where.playerName);
 }
 
 function compareIdentityRows(
@@ -372,14 +444,19 @@ function matchesViolationWhere(
   if (!where) return true;
   const playerTagFilter = where.playerTag as
     | string
-    | { in?: string[] }
+    | { in?: string[]; contains?: string; startsWith?: string; equals?: string }
     | undefined;
   if (typeof playerTagFilter === "string") {
     if (normalizeTag(playerTagFilter) !== normalizeTag(row.playerTag)) return false;
   } else if (playerTagFilter && Array.isArray(playerTagFilter.in)) {
     const allowedTags = playerTagFilter.in.map((tag) => normalizeTag(tag)).filter(Boolean);
     if (!allowedTags.includes(normalizeTag(row.playerTag))) return false;
+  } else if (playerTagFilter && typeof playerTagFilter === "object") {
+    if (typeof playerTagFilter.equals === "string" && normalizeTag(playerTagFilter.equals) !== normalizeTag(row.playerTag)) return false;
+    if (typeof playerTagFilter.startsWith === "string" && !normalizeTag(row.playerTag).startsWith(normalizeTag(playerTagFilter.startsWith))) return false;
+    if (typeof playerTagFilter.contains === "string" && !normalizeTag(row.playerTag).includes(normalizeTag(playerTagFilter.contains))) return false;
   }
+  if (!matchesTextCondition(row.playerNameSnapshot, where.playerNameSnapshot)) return false;
   return matchesViolationEvaluationRelation(row, where);
 }
 
@@ -505,9 +582,16 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
 
   const db = {
     playerCurrent: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.playerCurrent.filter((row) => matchesInFilter(args?.where, row.playerTag)),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.playerCurrent
+          .filter((row) => matchesPlayerCurrentWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     fwaClanMemberCurrent: {
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
@@ -517,18 +601,28 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
       ),
     },
     fwaPlayerCatalog: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.fwaPlayerCatalog.filter((row) =>
-          matchesInFilter(args?.where, row.playerTag),
-        ),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.fwaPlayerCatalog
+          .filter((row) => matchesFwaPlayerCatalogWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     todoPlayerSnapshot: {
-      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        identityFixtures.todoPlayerSnapshot.filter((row) =>
-          matchesInFilter(args?.where, row.playerTag),
-        ),
-      ),
+      findMany: vi.fn(async (args?: {
+        where?: Record<string, unknown>;
+        orderBy?: Record<string, "asc" | "desc">;
+        take?: number;
+      }) => {
+        const rows = identityFixtures.todoPlayerSnapshot
+          .filter((row) => matchesTodoPlayerSnapshotWhere(row, args?.where))
+          .sort((a, b) => normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag)));
+        return applyTake(rows, args?.take);
+      }),
     },
     playerLink: {
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
@@ -559,6 +653,8 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
         by?: string[];
         where?: Record<string, unknown>;
         _count?: { _all?: boolean };
+        orderBy?: Array<Record<string, "asc" | "desc">> | Record<string, Record<string, "asc" | "desc">>;
+        take?: number;
       }) => {
         const grouped = new Map<string, number>();
         for (const row of violationRows.filter((entry) => matchesViolationWhere(entry, args?.where))) {
@@ -566,12 +662,37 @@ function buildDb(fixtures: EvaluationFixture[], identity: Partial<IdentityFixtur
           if (!tag) continue;
           grouped.set(tag, (grouped.get(tag) ?? 0) + 1);
         }
-        return [...grouped.entries()]
+        let rows = [...grouped.entries()]
           .map(([playerTag, count]) => ({
             playerTag,
             _count: { _all: count },
           }))
-          .sort((a, b) => a.playerTag.localeCompare(b.playerTag));
+          .sort((a, b) => {
+            const orderBy = args?.orderBy;
+            if (Array.isArray(orderBy) && orderBy.length > 0) {
+              for (const clause of orderBy) {
+                const [field, direction] = Object.entries(clause)[0] as [string, "asc" | "desc"];
+                let delta = 0;
+                if (field === "_count") {
+                  const countOrder = clause._count as Record<string, "asc" | "desc"> | undefined;
+                  const countField = (countOrder ? Object.keys(countOrder)[0] : undefined) as
+                    | string
+                    | undefined;
+                  const countDirection = countField ? countOrder?.[countField] : undefined;
+                  if (countDirection && countField) {
+                    delta = a._count._all - b._count._all;
+                    if (delta !== 0) return countDirection === "desc" ? -delta : delta;
+                  }
+                } else if (field === "playerTag") {
+                  delta = a.playerTag.localeCompare(b.playerTag);
+                  if (delta !== 0) return direction === "desc" ? -delta : delta;
+                }
+              }
+            }
+            return a.playerTag.localeCompare(b.playerTag);
+          });
+        rows = applyTake(rows, args?.take);
+        return rows;
       }),
     },
     clanWarHistory: {
@@ -3878,35 +3999,29 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(result.map((choice) => choice.value)).toEqual(["#PYLQ0289"]);
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
-      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
-      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-        evaluation: {
-          is: {
-            guildId: "guild-a",
-            status: "COMPLETED",
-            warHistory: {
-              is: {
-                warEndTime: { not: null },
-              },
-            },
-          },
-        },
-      });
-      expect(db.warPlanViolation.findMany.mock.calls[1]?.[0]?.where).toMatchObject({
-        evaluation: {
-          is: {
-            guildId: "guild-a",
-            status: "COMPLETED",
-            warHistory: {
-              is: {
-                warEndTime: null,
-              },
-            },
-          },
-        },
-      });
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
+      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
       expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.where).toMatchObject({
+        evaluation: {
+          is: {
+            guildId: "guild-a",
+            status: "COMPLETED",
+          },
+        },
+      });
+      expect(db.warPlanViolation.groupBy.mock.calls[1]?.[0]?.where).toMatchObject({
+        evaluation: {
+          is: {
+            guildId: "guild-a",
+            status: "COMPLETED",
+          },
+        },
+        playerTag: {
+          in: ["#PYLQ0289"],
+        },
+      });
+      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where).toMatchObject({
         playerTag: {
           in: ["#PYLQ0289"],
         },
@@ -3954,7 +4069,7 @@ describe("WarPlanViolationHistoryService", () => {
     );
 
     it("makes current resolved player names searchable", async () => {
-      const { service } = buildService(
+      const { db, service } = buildService(
         [
           buildFixture({
             warId: 1,
@@ -3989,6 +4104,15 @@ describe("WarPlanViolationHistoryService", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toContain("Current Alpha");
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(3);
+      expect(db.warPlanViolation.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.warPlanViolation.findMany.mock.calls[1]?.[0]?.take).toBe(100);
+      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
+      expect(db.playerCurrent.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
+      expect(db.fwaPlayerCatalog.findMany.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(2);
+      expect(db.todoPlayerSnapshot.findMany.mock.calls[0]?.[0]?.take).toBe(100);
     });
 
     it("keeps snapshot-only fallback names searchable when they are the final resolved name", async () => {
@@ -4286,7 +4410,7 @@ describe("WarPlanViolationHistoryService", () => {
       ]);
     });
 
-    it("formats singular and plural violation labels and keeps names under 100 characters", async () => {
+    it("keeps the tag and count suffix while truncating only the resolved name", async () => {
       const { service } = buildService([
         buildFixture({
           warId: 1,
@@ -4328,8 +4452,50 @@ describe("WarPlanViolationHistoryService", () => {
         focusedText: "",
       });
 
-      expect(result.some((choice) => choice.name.includes("— 2 violations"))).toBe(true);
+      expect(
+        result.some((choice) => choice.name.endsWith(" (#2QG2C08UP) \u2014 1 violation")),
+      ).toBe(true);
+      expect(
+        result.some((choice) => choice.name.endsWith(" (#2QG2C08UR) \u2014 2 violations")),
+      ).toBe(true);
       expect(result.every((choice) => choice.name.length <= 100)).toBe(true);
+    });
+
+    it("keeps the candidate pool bounded when more historical violators exist than the discovery cap", async () => {
+      const fixtures = Array.from({ length: 140 }, (_, index) =>
+        buildFixture({
+          warId: index + 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+          warEndTime: d(`2026-05-${String((index % 28) + 1).padStart(2, "0")}T01:00:00.000Z`),
+          violations: [
+            {
+              playerTag: makeAutocompleteTag(index),
+              playerNameSnapshot: `Player ${index + 1}`,
+              townHallLevelSnapshot: 10 + (index % 5),
+            },
+          ],
+        }),
+      );
+      const { db, service } = buildService(fixtures);
+
+      const result = await service.getPlayerAutocompleteChoices({
+        guildId: "guild-1",
+        focusedText: "",
+      });
+
+      expect(result).toHaveLength(25);
+      expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.groupBy.mock.calls[0]?.[0]?.take).toBe(100);
+      expect(
+        (db.warPlanViolation.findMany.mock.calls[0]?.[0]?.where as { playerTag?: { in?: string[] } })
+          ?.playerTag?.in,
+      ).toHaveLength(100);
+      expect(
+        (db.playerCurrent.findMany.mock.calls[0]?.[0]?.where as { playerTag?: { in?: string[] } })
+          ?.playerTag?.in,
+      ).toHaveLength(100);
     });
 
     it("clamps the limit to the allowed 1 through 25 range", async () => {
@@ -4440,12 +4606,12 @@ describe("WarPlanViolationHistoryService", () => {
       });
 
       expect(historySpy).not.toHaveBeenCalled();
-      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(2);
+      expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(3);
       expect(db.warPlanViolation.groupBy).toHaveBeenCalledTimes(1);
-      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(1);
+      expect(db.playerCurrent.findMany).toHaveBeenCalledTimes(2);
       expect(db.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
-      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(1);
-      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(1);
+      expect(db.fwaPlayerCatalog.findMany).toHaveBeenCalledTimes(2);
+      expect(db.todoPlayerSnapshot.findMany).toHaveBeenCalledTimes(2);
       expect(db.playerLink.findMany).toHaveBeenCalledTimes(1);
       expect(result.length).toBeGreaterThan(0);
     });
