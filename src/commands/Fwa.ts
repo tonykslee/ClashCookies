@@ -84,6 +84,11 @@ import {
 import { WarEventLogService } from "../services/WarEventLogService";
 import { buildComplianceWarPlanText } from "../services/warPlanDisplay";
 import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocompleteService";
+import {
+  FWA_VIOLATIONS_SUBCOMMAND,
+  autocompleteFwaViolationsCommand,
+  runFwaViolationsCommand,
+} from "./fwa/violationsCommand";
 import { FwaStatsWeightService } from "../services/FwaStatsWeightService";
 import { FwaStatsWeightCookieService } from "../services/FwaStatsWeightCookieService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
@@ -13884,6 +13889,9 @@ export const Fwa: Command = {
       ],
     },
     {
+      ...FWA_VIOLATIONS_SUBCOMMAND,
+    },
+    {
       name: "police",
       description: "Manage FWA police automation, status, and preview delivery",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -14096,6 +14104,10 @@ export const Fwa: Command = {
   ) => {
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand(true);
+    if (subcommand === "violations") {
+      await runFwaViolationsCommand(interaction, cocService);
+      return;
+    }
     const requestedVisibility =
       interaction.options.getString("visibility", false) ?? "private";
     let visibility = requestedVisibility;
@@ -16839,6 +16851,11 @@ export const Fwa: Command = {
         query: String(focused.value ?? ""),
       });
       await interaction.respond(choices);
+      return;
+    }
+
+    if (subcommand === "violations") {
+      await autocompleteFwaViolationsCommand(interaction);
       return;
     }
 
