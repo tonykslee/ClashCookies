@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityService } from "../src/services/ActivityService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
+import { normalizePlayerTag } from "../src/services/PlayerLinkService";
 import * as trackedClanListService from "../src/services/TrackedClanListService";
 
 const prismaMock = vi.hoisted(() => {
@@ -101,6 +102,15 @@ function mockCurrentCwlEventsForRequestedTags() {
   prismaMock.cwlEventClan.findMany.mockImplementation(async (args: any) =>
     buildMockCurrentCwlEventClanRows(args?.where?.clanTag?.in ?? []),
   );
+}
+
+function buildUniqueNormalizedPlayerTag(clanTag: string, index: number): string {
+  const normalizedClanTag = normalizePlayerTag(clanTag);
+  const seed = normalizedClanTag.replace(/^#/, "") || "PYLQ0289";
+  const alphabet = "PYLQGRJCUV0289";
+  const first = alphabet[index % alphabet.length] ?? "P";
+  const second = alphabet[Math.floor(index / alphabet.length) % alphabet.length] ?? "Y";
+  return normalizePlayerTag(`${seed}${first}${second}`);
 }
 
 const fwaClanMembersSyncMock = vi.hoisted(() => ({
@@ -247,6 +257,16 @@ describe("/clan command behavior", () => {
     prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.groupBy.mockResolvedValue([]);
+    prismaMock.cwlPlayerClanSeason.findMany.mockImplementation(async (...args: any[]) => {
+      const groupedRows = await prismaMock.cwlPlayerClanSeason.groupBy(...args);
+      return (groupedRows as Array<{ cwlClanTag: string; _count: { cwlClanTag: number } }>).flatMap((row) => {
+        const count = Math.max(0, Math.trunc(Number(row?._count?.cwlClanTag ?? 0)));
+        return Array.from({ length: count }, (_, index) => ({
+          cwlClanTag: row.cwlClanTag,
+          playerTag: buildUniqueNormalizedPlayerTag(row.cwlClanTag, index),
+        }));
+      });
+    });
     prismaMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.roster.findMany.mockResolvedValue([]);
     prismaMock.currentWar.deleteMany.mockResolvedValue({ count: 0 });
@@ -2286,7 +2306,9 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, typedInteraction as any, {} as any);
     const typedDescription = getFirstEmbedDescription(typedInteraction);
     expect(typedDescription).toContain("**CWL**");
-    expect(typedDescription).toContain("| 12 👥");
+    expect(typedDescription).toContain(
+      "- | [CWL Alpha](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=PYLQ0289>) `#PYLQ0289` | 💤 | 12 👥",
+    );
     expect(typedDescription).not.toContain("leadRole:");
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components).toHaveLength(1);
     expect(typedInteraction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.custom_id).toBe(
@@ -2719,3 +2741,4 @@ describe("/clan command behavior", () => {
     );
   });
 });
+
