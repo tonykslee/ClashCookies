@@ -329,6 +329,225 @@ describe("AutoRoleSchedulerService", () => {
     );
   });
 
+  it("treats a newer failed scheduled attempt as a retry when it follows an older completed run", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:40:00.000Z"),
+            },
+          },
+        ];
+      }
+      if (where?.status === "FAILED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:55:00.000Z"),
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=retry_after_failed_scheduled_run"),
+    );
+  });
+
+  it("keeps a failed attempt older than the latest completed run from producing the retry reason", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:40:00.000Z"),
+            },
+          },
+        ];
+      }
+      if (where?.status === "FAILED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:35:00.000Z"),
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=due_after_completed_scheduled_run"),
+    );
+    expect(dozzleLogMock.debug).not.toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=retry_after_failed_scheduled_run"),
+    );
+  });
+
+  it("keeps a newer failure from overriding interval_not_elapsed before the completed anchor boundary", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:50:00.000Z"),
+            },
+          },
+        ];
+      }
+      if (where?.status === "FAILED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:55:00.000Z"),
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 0,
+      started: 0,
+      completed: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=interval_not_elapsed"),
+    );
+    expect(dozzleLogMock.debug).not.toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=retry_after_failed_scheduled_run"),
+    );
+  });
+
+  it("treats a failed attempt as the retry reason when no completed scheduled run exists", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        return [];
+      }
+      if (where?.status === "FAILED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:58:00.000Z"),
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=retry_after_failed_scheduled_run"),
+    );
+  });
+
   it("treats the absence of a completed scheduled guild run as immediately due", async () => {
     const guild = makeGuild();
     const client = {

@@ -2279,8 +2279,7 @@ async function runRefreshPass(input: {
   const { excludedUserIds, excludedRoleIds } = buildExclusionIndexes(input.snapshot);
 
   const memberResults: AutoRoleMemberApplyResult[] = [];
-  try {
-    for (const userId of normalizeMemberIds(candidateUserIds)) {
+  for (const userId of normalizeMemberIds(candidateUserIds)) {
       const member = input.membersById.get(userId) ?? null;
       if (!member) {
         dozzleLog.warn(`[autorole] event=member_missing guild_id=${input.guildId} user_id=${userId} scope=${input.scope.kind}`);
@@ -2422,31 +2421,6 @@ async function runRefreshPass(input: {
       memberResults,
       memberSourceSummary: input.memberSourceSummary ?? null,
     };
-    } catch (error) {
-      await prisma.autoRoleSyncRun.update({
-        where: { id: input.runId },
-        data: {
-          status: "FAILED",
-          finishedAt: new Date(),
-          error: formatError(error),
-        },
-      });
-      dozzleLog.error(
-        `[autorole] event=autorole_run_failed ${formatAutoRoleRunMetadata({
-          runId: input.runId,
-          guildId: input.guildId,
-          runScope: input.scope.kind === "guild"
-            ? AutoRoleRunScope.GUILD
-            : input.scope.kind === "role"
-              ? AutoRoleRunScope.ROLE
-              : AutoRoleRunScope.USER,
-          runTrigger: input.runTrigger,
-          scopeTargetId,
-          status: "FAILED",
-        })} error=${formatError(error)}`,
-      );
-      throw error;
-    }
   }
 
 /** Purpose: execute manual autorole refreshes for a guild, one member, or one managed role. */

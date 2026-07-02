@@ -295,11 +295,16 @@ export class AutoRoleSchedulerService {
         const cadenceAnchorStartedAtMs = lastCompletedRunAt ? lastCompletedRunAt.getTime() : null;
         let nextDueAtMs = normalizedNowMs;
         let cadenceReason: AutoRoleSchedulerCadenceReason;
+        const hasNewerFailedAttempt =
+          lastFailedAttemptAt !== null &&
+          (lastCompletedRunAt === null || lastFailedAttemptAt.getTime() > lastCompletedRunAt.getTime());
 
         if (lastCompletedRunAt) {
           nextDueAtMs = lastCompletedRunAt.getTime() + intervalMs;
           if (normalizedNowMs < nextDueAtMs) {
             cadenceReason = "interval_not_elapsed";
+          } else if (hasNewerFailedAttempt) {
+            cadenceReason = "retry_after_failed_scheduled_run";
           } else {
             cadenceReason = "due_after_completed_scheduled_run";
           }

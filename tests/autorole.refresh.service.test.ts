@@ -4289,6 +4289,79 @@ describe("AutoRoleRefreshService", () => {
     expect(guild.members.fetch).not.toHaveBeenCalled();
   });
 
+  it("finalizes a failed refresh run exactly once when a pass step throws", async () => {
+    const userId = "111111111111111111";
+    const roleId = "222222222222222222";
+    const member = makeMember(userId);
+    const guild = makeGuild(new Map([[userId, member]]), [roleId]);
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#2QG2C08UP",
+          discordUserId: userId,
+          playerName: "Alpha",
+          verified: true,
+        }),
+      ], where);
+    });
+    prismaMock.autoRoleMemberState.upsert.mockRejectedValueOnce(new Error("member state boom"));
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({ removeStaleManagedRoles: false }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.VERIFIED,
+          targetValue: "__verified__",
+          discordRoleId: roleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await expect(
+      autoRoleRefreshService.refreshGuild({
+        guild,
+        guildId: "111111111111111111",
+      }),
+    ).rejects.toThrow("member state boom");
+
+    expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledTimes(1);
+    expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "run-1" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          error: expect.stringContaining("member state boom"),
+        }),
+      }),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("event=autorole_run_failed"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("run_id=run-1"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("guild_id=111111111111111111"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("run_scope=GUILD"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("run_trigger=MANUAL"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("scope_target_id=none"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("status=FAILED"),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("member state boom"),
+    );
+  });
+
   it("records a failed run and blocks writes when the kill switch is enabled", async () => {
     const guild = makeGuild(new Map());
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
