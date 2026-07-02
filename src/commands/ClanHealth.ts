@@ -31,11 +31,31 @@ function formatPercent(numerator: number, denominator: number): string {
   return `${((numerator / denominator) * 100).toFixed(1)}%`;
 }
 
+/** Purpose: pluralize player account labels for the compliance summary. */
+function formatPlayerAccountLabel(count: number): string {
+  return count === 1 ? "player account" : "player accounts";
+}
+
+/** Purpose: render the persisted 30-day war-plan compliance summary for clan-health. */
+function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
+  if (!snapshot.warPlanCompliance.hasCompletedEvaluations) {
+    return ["No completed FWA war-plan evaluations are available yet."];
+  }
+
+  return [
+    `Violations: **${snapshot.warPlanCompliance.violationCount}** across **${snapshot.warPlanCompliance.distinctPlayerCount}** ${formatPlayerAccountLabel(
+      snapshot.warPlanCompliance.distinctPlayerCount
+    )}`,
+    `Linked Discord users involved: **${snapshot.warPlanCompliance.distinctCurrentDiscordUserCount}**`,
+    `Affected wars: **${snapshot.warPlanCompliance.affectedWarCount}/${snapshot.warPlanCompliance.evaluatedWarCount}** evaluated FWA wars`,
+  ];
+}
+
 /** Purpose: build response embed for a clan-health snapshot. */
 function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
-    .setDescription("Leadership snapshot from persisted data only (no live API calls in command path).")
+    .setDescription("Leadership snapshot: persisted war-plan compliance, inactivity, and missing Discord links.")
     .addFields(
       {
         name: "War Performance",
@@ -54,6 +74,11 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
             snapshot.warMetrics.endedWarSampleSize
           )}**`,
         ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "War Plan Compliance \u2014 Last 30 Days",
+        value: buildWarPlanComplianceLines(snapshot).join("\n"),
         inline: false,
       },
       {
@@ -76,7 +101,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
 
 export const ClanHealth: Command = {
   name: "clan-health",
-  description: "Leadership snapshot: rates, inactivity, and missing Discord links",
+  description: "Leadership snapshot: 30-day war-plan compliance, inactivity, and missing Discord links",
   options: [
     {
       name: "tag",

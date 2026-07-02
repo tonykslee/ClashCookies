@@ -365,6 +365,9 @@ describe("command coverage", () => {
 
   it("documents the /clan-health war breakdown and six-day inactivity threshold", () => {
     const clanHealthHelpText = helpEmbedText("clan-health");
+    expect(clanHealthHelpText).toContain("persisted 30-day war-plan compliance summary");
+    expect(clanHealthHelpText).toContain("currently linked Discord users involved");
+    expect(clanHealthHelpText).toContain("Only completed evaluations recorded since violation tracking was enabled are counted");
     expect(clanHealthHelpText).toContain("FWA win/loss/BL/MM breakdown");
     expect(clanHealthHelpText).toContain("BL-inclusive match rate");
     expect(clanHealthHelpText).toContain("missed both attacks in at least one of the last 3 ended FWA wars");
