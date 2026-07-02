@@ -34,7 +34,7 @@ export type AutoRoleApplyInput = {
   nicknameSuppressionReason?: string | null;
   trackedFwaMemberTags?: Set<string>;
   visitorRoleAvailable?: boolean;
-  visitorRoleMutationsSuppressed?: boolean;
+  visitorRoleAdditionsSuppressed?: boolean;
   rules: AutoRoleRule[];
   member: AutoRoleEvaluationMemberLike;
   evaluation: AutoRoleMemberEvaluation;
@@ -198,7 +198,7 @@ export class AutoRoleApplyService {
     const visitorRoleConfigured =
       Boolean(visitorRoleId) && input.config.nonMemberEnabled && input.managedRoleIds.has(visitorRoleId);
     const visitorRoleAvailable = input.visitorRoleAvailable ?? true;
-    const visitorRoleMutationsSuppressed = input.visitorRoleMutationsSuppressed ?? false;
+    const visitorRoleAdditionsSuppressed = input.visitorRoleAdditionsSuppressed ?? false;
     const isBot = Boolean(input.member.user?.bot);
     const familyMember = visitorRoleConfigured
       ? isLinkedAccountFamilyMember({
@@ -428,9 +428,9 @@ export class AutoRoleApplyService {
       effectiveClanRolePresent || (Boolean(memberRoleId) && effectiveRoleIds.has(memberRoleId));
     const shouldHaveVisitorRole =
       visitorRoleConfigured && visitorRoleAvailable && !familyMember && !isBot && !effectiveClanOrMemberRolePresent;
-    if (visitorRoleConfigured && visitorRoleAvailable && !isBot && !visitorRoleMutationsSuppressed) {
+    if (visitorRoleConfigured && visitorRoleAvailable && !isBot) {
       const visitorRolePresent = effectiveRoleIds.has(visitorRoleId);
-      if (shouldHaveVisitorRole && !visitorRolePresent) {
+      if (shouldHaveVisitorRole && !visitorRolePresent && !visitorRoleAdditionsSuppressed) {
         try {
           await input.member.roles.add(visitorRoleId);
           effectiveRoleIds.add(visitorRoleId);
