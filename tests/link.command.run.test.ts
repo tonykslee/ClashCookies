@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
@@ -89,6 +89,7 @@ import {
   getLinkListSortModeLabel,
   getNextLinkListSortMode,
   normalizeLinkListSortMode,
+  sortLinkListRows,
 } from "../src/commands/link/LinkListRender";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import {
@@ -1706,12 +1707,12 @@ describe("/link run", () => {
       discordDisplayName: "Persisted Sin",
       discordUsername: "Persisted Sin",
       weightLabel: "166k",
-      inactivityLabel: "—",
+      inactivityLabel: "\u2014",
       clanRoleLabel: "lead",
       playerTag: "#QR9R0LGJ9",
       violationsLabel: "0",
       linkedStatusMarkerOverride: "<:badge:1>",
-      rightMarker: "ðŸ§",
+      rightMarker: "\u{1F9CD}",
       isLinked: true,
     };
     const linkedNonRepRow = {
@@ -1758,21 +1759,20 @@ describe("/link run", () => {
       sortMode: "player-tags",
     });
 
-    const defaultRowsOnly = getInlineRows(defaultRows.join("\n"));
-    const defaultRowsText = defaultRows.join("\n");
-    const playerTagRowsText = playerTagRows.join("\n");
-    expect(getInlineRows(defaultRowsText).length).toBeGreaterThanOrEqual(2);
-    expect(getInlineRows(playerTagRowsText).length).toBeGreaterThanOrEqual(2);
-    expect(defaultRowsText).toContain("<:badge:1>");
-    expect(defaultRowsText).toContain("Persisted Sin");
-    expect(defaultRowsText).toContain("Linked Two");
-    expect(defaultRowsText).toContain("Unlinked Player");
-    expect(defaultRowsText).toContain("❌");
-    expect(playerTagRowsText).toContain("<:badge:1>");
-    expect(playerTagRowsText).toContain("Persisted Sin");
-    expect(playerTagRowsText).toContain("Linked Two");
-    expect(playerTagRowsText).toContain("Unlinked Player");
-    expect(playerTagRowsText).toContain("❌");
+    expect(defaultRows).toEqual([
+      "Linked Users: 2",
+      "<:badge:1> `18` `  Persisted Sin` `Persisted Sin` \u{1F9CD}",
+      "\u2705 `17` `     Linked Two` `   Linked Two`",
+      "Unlinked users: 1",
+      "\u274C `14` `Unlinked Player` `            \u2014`",
+    ])
+    expect(playerTagRows).toEqual([
+      "Linked Users: 2",
+      "<:badge:1> `18` `  Persisted Sin` `#QR9R0LGJ9` \u{1F9CD}",
+      "\u2705 `17` `     Linked Two` ` #LCUV0289`",
+      "Unlinked users: 1",
+      "\u274C `14` `Unlinked Player` `  #PQL0289`",
+    ])
     expect(getLinkListDefaultColumnsForSortModeForTest("discord")).toEqual([
       "townhall",
       "player-name",
@@ -1792,6 +1792,133 @@ describe("/link run", () => {
     expect(getLinkListSelectableColumnsForTest()).toContain("violations");
     expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
     expect(getLinkListColumnLabelForTest("violations")).toBe("Violations (30d)");
+  });
+
+  it("sorts violation counts within one section by count, known zero, null, name, tag, and default index", () => {
+    const sorted = sortLinkListRows(
+      [
+        {
+          isLinked: true,
+          playerTag: "#Z99999999",
+          defaultIndex: 6,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Zulu",
+          discordSort: "Zulu",
+          violationsValue: 5,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#B22222222",
+          defaultIndex: 5,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "alpha",
+          discordSort: "alpha",
+          violationsValue: 2,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#A11111111",
+          defaultIndex: 4,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Alpha",
+          discordSort: "Alpha",
+          violationsValue: 2,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#C33333333",
+          defaultIndex: 3,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Bravo",
+          discordSort: "Bravo",
+          violationsValue: 0,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#D44444444",
+          defaultIndex: 2,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Bravo",
+          discordSort: "Bravo",
+          violationsValue: 0,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#E55555555",
+          defaultIndex: 1,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Charlie",
+          discordSort: "Charlie",
+          violationsValue: null,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#E55555555",
+          defaultIndex: 9,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Charlie",
+          discordSort: "Charlie",
+          violationsValue: null,
+          row: {} as any,
+        },
+      ],
+      "violations",
+    );
+
+    expect(sorted.map((row) => row.violationsValue)).toEqual([5, 2, 2, 0, 0, null, null]);
+    expect(sorted.map((row) => row.playerSort)).toEqual([
+      "Zulu",
+      "Alpha",
+      "alpha",
+      "Bravo",
+      "Bravo",
+      "Charlie",
+      "Charlie",
+    ]);
+    expect(sorted.map((row) => row.playerTag)).toEqual([
+      "#Z99999999",
+      "#A11111111",
+      "#B22222222",
+      "#C33333333",
+      "#D44444444",
+      "#E55555555",
+      "#E55555555",
+    ]);
+    expect(sorted.map((row) => row.defaultIndex)).toEqual([6, 4, 5, 3, 2, 1, 9]);
   });
 
   it("recognizes rows with up to five inline-code cells for chunking", () => {
@@ -3865,6 +3992,100 @@ describe("/link list sort button", () => {
     expect(lastRow.value.trim()).toMatch(/^#[A-Z0-9]+$/u);
   }, 30000);
 
+  it("logs a sanitized aggregate warning and still renders when violation counts fail", async () => {
+    const guildId = "guild-1";
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 18,
+        role: "member",
+        rank: 1,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 17,
+        role: "member",
+        rank: 2,
+        weight: 144000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: "#PQL0289",
+      clanBadge: null,
+      name: "Alpha Clan",
+    });
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
+        ),
+      );
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "inactivity",
+        getLinkListDefaultColumnsForSortModeForTest("inactivity"),
+      ),
+      user: { id: "111111111111111111" },
+      guildId,
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "—",
+      "—",
+    ]);
+
+    const warning = String(warningSpy.mock.calls[0]?.[0] ?? "");
+    expect(warning).toContain("event=link_list_violations_failed");
+    expect(warning).toContain(`guildId=${guildId}`);
+    expect(warning).toContain("clanTag=#PQL0289");
+    expect(warning).toContain("sortMode=violations");
+    expect(warning).toContain("errorClass=");
+    expect(warning).not.toContain("#SECRETPLAYER");
+    expect(warning).not.toContain("987654321012345678");
+    expect(warning).not.toContain("attack evidence should never leak");
+
+    warningSpy.mockRestore();
+    violationSpy.mockRestore();
+  });
+
   it("renders a realistic 50-member Discord Name view without aggressively trimming", async () => {
     const rows = makeLinkListClanMembers({
       clanTag: "#PQL0289",
@@ -4898,4 +5119,3 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
-

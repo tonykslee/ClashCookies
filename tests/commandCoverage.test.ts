@@ -340,6 +340,7 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
     expect(linkHelpText).toContain("/link delete player-tag:#ABC123 #DEF456");
     expect(linkHelpText).toContain("/link create player-tag:#ABC123 #DEF456");
+    expect(normalized).toContain("owner-only");
   });
 
   it("registers optional visibility choices on /link list", () => {

@@ -990,7 +990,7 @@ function normalizePlayerTagList(playerTags: string[]): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
   for (const tag of playerTags) {
-    const normalizedTag = normalizeTag(tag);
+    const normalizedTag = normalizeClashTagWithHash(tag);
     if (!normalizedTag || seen.has(normalizedTag)) continue;
     seen.add(normalizedTag);
     normalized.push(normalizedTag);
@@ -1393,6 +1393,7 @@ export class WarPlanViolationHistoryService {
     const clanTag = normalizeClashTagWithHash(input.clanTag);
     const { cutoff } = resolvePeriodWindow(input);
     const playerTags = normalizePlayerTagList(input.playerTags ?? []);
+    const playerTagSet = new Set(playerTags);
 
     if (!guildId || !clanTag || playerTags.length === 0) {
       return {
@@ -1433,7 +1434,7 @@ export class WarPlanViolationHistoryService {
     }>) {
       for (const violation of row.violations ?? []) {
         const playerTag = normalizeTag(violation.playerTag);
-        if (!playerTag || !playerTags.includes(playerTag)) continue;
+        if (!playerTag || !playerTagSet.has(playerTag)) continue;
         violationCountByPlayerTag.set(
           playerTag,
           (violationCountByPlayerTag.get(playerTag) ?? 0) + 1,

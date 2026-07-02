@@ -4325,6 +4325,107 @@ describe("WarPlanViolationHistoryService", () => {
       expect(Array.from(result.violationCountByPlayerTag.entries())).toEqual([]);
       expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
     });
+
+    it("returns a deterministic empty result without Prisma reads for all invalid player tags", async () => {
+      const { db, service } = buildService([]);
+
+      const result = await service.getClanPlayerViolationCounts({
+        guildId: "guild-1",
+        clanTag: "#2QG2C08UP",
+        playerTags: ["not-a-tag", "123", "#", "   "],
+        period: "30d",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result).toMatchObject({
+        period: "30d",
+        clanTag: "#2QG2C08UP",
+        hasCompletedEvaluations: false,
+        evaluatedWarCount: 0,
+      });
+      expect(Array.from(result.violationCountByPlayerTag.entries())).toEqual([]);
+      expect(db.warPlanComplianceEvaluation.findMany).not.toHaveBeenCalled();
+    });
+
+    it("filters mixed valid and invalid player tags down to the strict normalized set", async () => {
+      const now = d("2026-06-01T00:00:00.000Z");
+      const { db, service } = buildService([
+        buildFixture({
+          guildId: "guild-1",
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Alpha One",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getClanPlayerViolationCounts({
+        guildId: "guild-1",
+        clanTag: "2qg2c08up",
+        playerTags: ["#pylq0289", "not-a-tag", "pylq0289", "#PYLQ0289"],
+        period: "30d",
+        now,
+      });
+
+      expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+      const query = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0] as {
+        select?: Record<string, unknown>;
+      };
+      expect((query.select?.violations as { where?: { playerTag?: { in?: string[] } } })?.where?.playerTag?.in).toEqual([
+        "#PYLQ0289",
+      ]);
+      expect(Array.from(result.violationCountByPlayerTag.entries())).toEqual([
+        ["#PYLQ0289", 1],
+      ]);
+    });
+
+    it("deduplicates repeated valid player tags before querying", async () => {
+      const now = d("2026-06-01T00:00:00.000Z");
+      const { db, service } = buildService([
+        buildFixture({
+          guildId: "guild-1",
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Alpha One",
+              townHallLevelSnapshot: 16,
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getClanPlayerViolationCounts({
+        guildId: "guild-1",
+        clanTag: "#2QG2C08UP",
+        playerTags: ["#PYLQ0289", "pylq0289", "  #PYLQ0289  "],
+        period: "30d",
+        now,
+      });
+
+      expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+      const query = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0] as {
+        select?: Record<string, unknown>;
+      };
+      expect((query.select?.violations as { where?: { playerTag?: { in?: string[] } } })?.where?.playerTag?.in).toEqual([
+        "#PYLQ0289",
+      ]);
+      expect(Array.from(result.violationCountByPlayerTag.entries())).toEqual([
+        ["#PYLQ0289", 1],
+      ]);
+    });
   });
 
   describe("getPlayerAutocompleteChoices", () => {

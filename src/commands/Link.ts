@@ -653,6 +653,46 @@ function rightAlign(value: string, width: number): string {
   return `${" ".repeat(width - value.length)}${value}`;
 }
 
+function sanitizeLinkListViolationHistoryLogToken(input: string): string {
+  const normalized = String(input ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/g, "");
+  return normalized.length > 0 ? normalized.slice(0, 64) : "unknown";
+}
+
+function describeLinkListViolationHistoryFailure(err: unknown): string {
+  if (!err || typeof err !== "object") {
+    return "errorClass=unknown";
+  }
+
+  const typed = err as {
+    code?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+    name?: unknown;
+    constructor?: { name?: unknown } | null;
+  };
+  if (typeof typed.code === "string" && typed.code.trim()) {
+    return `errorCode=${sanitizeLinkListViolationHistoryLogToken(typed.code)}`;
+  }
+  if (typeof typed.status === "string" && typed.status.trim()) {
+    return `errorStatus=${sanitizeLinkListViolationHistoryLogToken(typed.status)}`;
+  }
+  if (typeof typed.status === "number" && Number.isFinite(typed.status)) {
+    return `errorStatus=${Math.trunc(typed.status)}`;
+  }
+  if (typeof typed.statusCode === "number" && Number.isFinite(typed.statusCode)) {
+    return `errorStatus=${Math.trunc(typed.statusCode)}`;
+  }
+  if (typeof typed.name === "string" && typed.name.trim()) {
+    return `errorClass=${sanitizeLinkListViolationHistoryLogToken(typed.name)}`;
+  }
+  if (typeof typed.constructor?.name === "string" && typed.constructor.name.trim()) {
+    return `errorClass=${sanitizeLinkListViolationHistoryLogToken(typed.constructor.name)}`;
+  }
+  return "errorClass=unknown";
+}
+
 type LinkListRowInput = LinkListRowViewModel;
 
 export const buildLinkListDescriptionLinesForTest = buildLinkListDescriptionLines;
@@ -733,7 +773,7 @@ async function buildLinkListView(input: {
   const inactivityNeeded = sortMode === "inactivity" || activeColumns.includes("inactivity");
   const repBadgeTokensByTagPromise = listTrackedClanRepBadgesForPlayerTags(memberTags);
   const violationCountsPromise = needsViolationCounts
-    ? warPlanViolationHistoryService
+      ? warPlanViolationHistoryService
         .getClanPlayerViolationCounts({
           guildId: input.interaction.guildId,
           clanTag: input.clanTag,
@@ -742,7 +782,7 @@ async function buildLinkListView(input: {
         })
         .catch((err) => {
           console.warn(
-            `[link-list] event=link_list_violations_failed guildId=${input.interaction.guildId} clanTag=${input.clanTag} sortMode=${sortMode} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+            `[link-list] event=link_list_violations_failed guildId=${input.interaction.guildId} clanTag=${input.clanTag} sortMode=${sortMode} ${describeLinkListViolationHistoryFailure(err)}`,
           );
           return null;
         })
