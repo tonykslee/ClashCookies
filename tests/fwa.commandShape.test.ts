@@ -1,6 +1,7 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { describe, expect, it } from "vitest";
 import { Fwa } from "../src/commands/Fwa";
+import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
 describe("/fwa base-swap command shape", () => {
   it("registers war-bases, base-errors, and fwa-bases with a FWA battle-day swap-reminder option", () => {
@@ -107,6 +108,76 @@ describe("/fwa base-swap command shape", () => {
       (option: { name: string }) => option.name === "tag",
     );
     expect(tag).toBeUndefined();
+  });
+
+  it("registers /fwa points with lowercase private/public visibility choices", () => {
+    const points = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "points",
+    );
+    expect(points).toBeTruthy();
+
+    const visibility = points?.options?.find(
+      (option: { name: string }) => option.name === "visibility",
+    );
+    expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
+    expect(visibility?.required).toBe(false);
+    expect(visibility?.choices).toEqual([
+      { name: "private", value: "private" },
+      { name: "public", value: "public" },
+    ]);
+  });
+
+  it("registers /fwa violations with period, clan, player, discord-user, and visibility options", () => {
+    const violations = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "violations",
+    );
+    expect(violations).toBeTruthy();
+
+    const period = violations?.options?.find(
+      (option: { name: string }) => option.name === "period",
+    );
+    expect(period?.type).toBe(ApplicationCommandOptionType.String);
+    expect(period?.required).toBe(false);
+    expect(period?.choices).toEqual([
+      { name: "Last 30 days", value: "30d" },
+      { name: "Lifetime", value: "lifetime" },
+    ]);
+
+    const clan = violations?.options?.find(
+      (option: { name: string }) => option.name === "clan",
+    );
+    expect(clan?.type).toBe(ApplicationCommandOptionType.String);
+    expect(clan?.required).toBe(false);
+    expect(clan?.autocomplete).toBe(true);
+
+    const player = violations?.options?.find(
+      (option: { name: string }) => option.name === "player",
+    );
+    expect(player?.type).toBe(ApplicationCommandOptionType.String);
+    expect(player?.required).toBe(false);
+    expect(player?.autocomplete).toBe(true);
+
+    const discordUser = violations?.options?.find(
+      (option: { name: string }) => option.name === "discord-user",
+    );
+    expect(discordUser?.type).toBe(ApplicationCommandOptionType.User);
+    expect(discordUser?.required).toBe(false);
+
+    const visibility = violations?.options?.find(
+      (option: { name: string }) => option.name === "visibility",
+    );
+    expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
+    expect(visibility?.required).toBe(false);
+    expect(visibility?.choices).toEqual([
+      { name: "Private", value: "private" },
+      { name: "Public", value: "public" },
+    ]);
+
+    expect(hasPermissionTargetForCommand("fwa:violations")).toBe(true);
   });
 
   it("registers /fwa blacklist-import with tags, source-label, and active options", () => {
