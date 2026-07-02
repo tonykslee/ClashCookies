@@ -1,5 +1,4 @@
 import { randomUUID } from "crypto";
-import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import {
@@ -54,6 +53,25 @@ export type CwlAllianceBaselineCaptureSummary = {
   coverageSummaries: CwlAllianceBaselineCoverageSummary[];
   reusedExistingBaseline: boolean;
   replacedExistingBaseline: boolean;
+  reconciliationCount?: number;
+  reconciliationSummaries?: CwlAllianceBaselineReconciliationSummary[];
+};
+
+export type CwlAllianceBaselineReconciliationResolutionSource =
+  | "sourceSyncedAt"
+  | "sourceWarStartTime"
+  | "sourceObservedAt"
+  | "sourceType"
+  | "clanTag";
+
+export type CwlAllianceBaselineReconciliationSummary = {
+  playerTag: string;
+  keptClanTag: string;
+  droppedClanTags: string[];
+  resolutionSource: CwlAllianceBaselineReconciliationResolutionSource;
+  keptSourceSyncedAt: Date | null;
+  keptSourceWarStartTime: Date | null;
+  keptSourceObservedAt: Date | null;
 };
 
 export class CwlAllianceBaselineValidationError extends Error {
@@ -197,6 +215,13 @@ type CandidateSnapshot = {
   baselineId: string;
   clans: CandidateClanRow[];
   members: CandidateMemberRow[];
+  reconciliationCount: number;
+  reconciliationSummaries: CwlAllianceBaselineReconciliationSummary[];
+};
+
+type CandidateMemberEntry = {
+  member: CandidateMemberRow;
+  clan: CandidateClanRow;
 };
 
 function normalizeGuildId(input: string | null | undefined): string {
@@ -656,6 +681,8 @@ function summarizeCandidateSnapshot(input: {
   clans: CandidateClanRow[];
   members: CandidateMemberRow[];
   replacedExistingBaseline: boolean;
+  reconciliationCount?: number;
+  reconciliationSummaries?: CwlAllianceBaselineReconciliationSummary[];
 }): CwlAllianceBaselineCaptureSummary {
   const coverageSummaries = [...input.clans]
     .sort((left, right) => left.clanTag.localeCompare(right.clanTag))
@@ -689,6 +716,8 @@ function summarizeCandidateSnapshot(input: {
     coverageSummaries,
     reusedExistingBaseline: false,
     replacedExistingBaseline: input.replacedExistingBaseline,
+    reconciliationCount: input.reconciliationCount ?? 0,
+    reconciliationSummaries: input.reconciliationSummaries ?? [],
   };
 }
 
@@ -715,6 +744,263 @@ function detectDuplicateMemberTagsAcrossClans(
       clanTags: [...clanTags].sort((left, right) => left.localeCompare(right)),
     }))
     .sort((left, right) => left.playerTag.localeCompare(right.playerTag));
+}
+
+function toTimestampMs(input: Date | null | undefined): number {
+  return input instanceof Date ? input.getTime() : Number.MIN_SAFE_INTEGER;
+}
+
+function formatIsoTimestamp(input: Date | null | undefined): string {
+  return input instanceof Date ? input.toISOString() : "none";
+}
+
+function compareDuplicateResolutionEntries(left: CandidateMemberEntry, right: CandidateMemberEntry): number {
+  const leftWarStartTime = toTimestampMs(left.clan.sourceWarStartTime);
+  const rightWarStartTime = toTimestampMs(right.clan.sourceWarStartTime);
+  if (leftWarStartTime !== rightWarStartTime) {
+    return rightWarStartTime - leftWarStartTime;
+  }
+
+  const leftObservedAt = toTimestampMs(left.clan.sourceObservedAt);
+  const rightObservedAt = toTimestampMs(right.clan.sourceObservedAt);
+  if (leftObservedAt !== rightObservedAt) {
+    return rightObservedAt - leftObservedAt;
+  }
+
+  const leftSourceTypeRank = left.clan.sourceType === "CURRENT_FWA_WAR" ? 1 : 0;
+  const rightSourceTypeRank = right.clan.sourceType === "CURRENT_FWA_WAR" ? 1 : 0;
+  if (leftSourceTypeRank !== rightSourceTypeRank) {
+    return rightSourceTypeRank - leftSourceTypeRank;
+  }
+
+  return left.clan.clanTag.localeCompare(right.clan.clanTag);
+}
+
+function resolveDuplicateCandidateEntry(
+  entries: CandidateMemberEntry[],
+  currentMembershipRows: Array<{
+    clanTag: string;
+    sourceSyncedAt: Date;
+  }>,
+): {
+  winner: CandidateMemberEntry;
+  resolutionSource: CwlAllianceBaselineReconciliationResolutionSource;
+  keptSourceSyncedAt: Date | null;
+} {
+  const entriesByClanTag = new Map(
+    entries.map((entry) => [entry.clan.clanTag, entry] as const),
+  );
+  const currentMembershipByClanTag = new Map<string, Date>();
+  for (const row of currentMembershipRows) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (!clanTag) continue;
+    const existing = currentMembershipByClanTag.get(clanTag);
+    if (!existing || row.sourceSyncedAt.getTime() > existing.getTime()) {
+      currentMembershipByClanTag.set(clanTag, row.sourceSyncedAt);
+    }
+  }
+
+  const sortedCurrentMembershipRows = [...currentMembershipByClanTag.entries()]
+    .map(([clanTag, sourceSyncedAt]) => ({ clanTag, sourceSyncedAt }))
+    .sort((left, right) => right.sourceSyncedAt.getTime() - left.sourceSyncedAt.getTime());
+
+  if (sortedCurrentMembershipRows.length > 0) {
+    const freshest = sortedCurrentMembershipRows[0];
+    const freshestCount = sortedCurrentMembershipRows.filter(
+      (row) => row.sourceSyncedAt.getTime() === freshest.sourceSyncedAt.getTime(),
+    ).length;
+    const winner = freshestCount === 1
+      ? entriesByClanTag.get(freshest.clanTag) ?? null
+      : null;
+    if (winner) {
+      return {
+        winner,
+        resolutionSource: "sourceSyncedAt",
+        keptSourceSyncedAt: freshest.sourceSyncedAt,
+      };
+    }
+  }
+
+  const sortedEntries = [...entries].sort(compareDuplicateResolutionEntries);
+  const winner = sortedEntries[0];
+  const tiedByWarStartTime = sortedEntries.every(
+    (entry) =>
+      toTimestampMs(entry.clan.sourceWarStartTime) ===
+      toTimestampMs(winner.clan.sourceWarStartTime),
+  );
+  const tiedByObservedAt = tiedByWarStartTime
+    ? sortedEntries.every(
+        (entry) =>
+          toTimestampMs(entry.clan.sourceObservedAt) ===
+          toTimestampMs(winner.clan.sourceObservedAt),
+      )
+    : false;
+  const tiedBySourceType = tiedByWarStartTime && tiedByObservedAt
+    ? sortedEntries.every(
+        (entry) =>
+          (entry.clan.sourceType === "CURRENT_FWA_WAR" ? 1 : 0) ===
+          (winner.clan.sourceType === "CURRENT_FWA_WAR" ? 1 : 0),
+      )
+    : false;
+
+  return {
+    winner,
+    resolutionSource: tiedByWarStartTime
+      ? tiedByObservedAt
+        ? tiedBySourceType
+          ? "clanTag"
+          : "sourceType"
+        : "sourceObservedAt"
+      : "sourceWarStartTime",
+    keptSourceSyncedAt: null,
+  };
+}
+
+function buildReconciliationWarningLog(
+  input: {
+    guildId: string;
+    season: string;
+  } & CwlAllianceBaselineReconciliationSummary,
+): string {
+  return [
+    `[cwl-alliance-baseline] event=duplicate_reconciled guildId=${input.guildId} season=${input.season}`,
+    `playerTag=${input.playerTag}`,
+    `keptClanTag=${input.keptClanTag}`,
+    `droppedClanTags=${input.droppedClanTags.join(",")}`,
+    `resolutionSource=${input.resolutionSource}`,
+    `keptSourceSyncedAt=${formatIsoTimestamp(input.keptSourceSyncedAt)}`,
+    `keptSourceWarStartTime=${formatIsoTimestamp(input.keptSourceWarStartTime)}`,
+    `keptSourceObservedAt=${formatIsoTimestamp(input.keptSourceObservedAt)}`,
+  ].join(" ");
+}
+
+export async function reconcileDuplicateCandidateRows(input: {
+  guildId: string;
+  season: string;
+  clans: CandidateClanRow[];
+  members: CandidateMemberRow[];
+  logger: Logger;
+  startedAtMs: number;
+}): Promise<CandidateSnapshot> {
+  const clanById = new Map(input.clans.map((clan) => [clan.id, clan] as const));
+  const memberEntriesByPlayerTag = new Map<string, CandidateMemberEntry[]>();
+  for (const member of input.members) {
+    const clan = clanById.get(member.baselineClanId) ?? null;
+    if (!clan) continue;
+    const playerTag = normalizePlayerTag(member.playerTag);
+    if (!playerTag) continue;
+    const entries = memberEntriesByPlayerTag.get(playerTag) ?? [];
+    entries.push({ member, clan });
+    memberEntriesByPlayerTag.set(playerTag, entries);
+  }
+
+  const duplicatePlayerTags = [...memberEntriesByPlayerTag.entries()]
+    .filter(([, entries]) => new Set(entries.map((entry) => entry.clan.clanTag)).size > 1)
+    .map(([playerTag]) => playerTag)
+    .sort((left, right) => left.localeCompare(right));
+
+  if (duplicatePlayerTags.length === 0) {
+    return {
+      baselineId: input.clans[0]?.baselineId ?? input.members[0]?.baselineId ?? randomUUID(),
+      clans: input.clans,
+      members: input.members,
+      reconciliationCount: 0,
+      reconciliationSummaries: [],
+    };
+  }
+
+  const conflictingClanTags = [
+    ...new Set(
+      duplicatePlayerTags.flatMap((playerTag) =>
+        (memberEntriesByPlayerTag.get(playerTag) ?? []).map((entry) => entry.clan.clanTag),
+      ),
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+
+  const currentMembershipRows = await prisma.fwaClanMemberCurrent.findMany({
+    where: {
+      playerTag: { in: duplicatePlayerTags },
+      clanTag: { in: conflictingClanTags },
+    },
+    orderBy: [{ playerTag: "asc" }, { sourceSyncedAt: "desc" }, { clanTag: "asc" }],
+    select: {
+      playerTag: true,
+      clanTag: true,
+      sourceSyncedAt: true,
+    },
+  });
+
+  const reconciliationSummaries: CwlAllianceBaselineReconciliationSummary[] = [];
+  const winnerByPlayerTag = new Map<string, CandidateMemberRow>();
+
+  for (const playerTag of duplicatePlayerTags) {
+    const entries = memberEntriesByPlayerTag.get(playerTag) ?? [];
+    const currentRowsForPlayer = currentMembershipRows.filter(
+      (row) => normalizePlayerTag(row.playerTag) === playerTag,
+    );
+    const { winner, resolutionSource, keptSourceSyncedAt } = resolveDuplicateCandidateEntry(
+      entries,
+      currentRowsForPlayer,
+    );
+
+    winnerByPlayerTag.set(playerTag, winner.member);
+
+    const summary: CwlAllianceBaselineReconciliationSummary = {
+      playerTag,
+      keptClanTag: winner.clan.clanTag,
+      droppedClanTags: [...new Set(entries.map((entry) => entry.clan.clanTag))]
+        .filter((clanTag) => clanTag !== winner.clan.clanTag)
+        .sort((left, right) => left.localeCompare(right)),
+      resolutionSource,
+      keptSourceSyncedAt,
+      keptSourceWarStartTime: winner.clan.sourceWarStartTime,
+      keptSourceObservedAt: winner.clan.sourceObservedAt,
+    };
+    reconciliationSummaries.push(summary);
+    input.logger.warn(
+      buildReconciliationWarningLog({
+        guildId: input.guildId,
+        season: input.season,
+        ...summary,
+      }),
+    );
+  }
+
+  const finalMembers = input.members.filter((member) => {
+    const winner = winnerByPlayerTag.get(member.playerTag);
+    return winner ? winner.id === member.id : true;
+  });
+
+  const finalClanRows = input.clans.map((clan) => {
+    if (clan.captureStatus !== "CAPTURED") {
+      return clan;
+    }
+    const rosterSize = finalMembers.filter((member) => member.baselineClanId === clan.id).length;
+    return {
+      ...clan,
+      rosterSize,
+    };
+  });
+
+  const duplicateConflicts = detectDuplicateMemberTagsAcrossClans(finalClanRows, finalMembers);
+  if (duplicateConflicts.length > 0) {
+    const conflict = duplicateConflicts[0];
+    input.logger.error(
+      `[cwl-alliance-baseline] event=capture_failed guildId=${input.guildId} season=${input.season} reason=duplicate_player_tag playerTag=${conflict.playerTag} clanTags=${conflict.clanTags.join(",")} durationMs=${Date.now() - input.startedAtMs}`,
+    );
+    throw new CwlAllianceBaselineDuplicatePlayerTagError(
+      `Player tag ${conflict.playerTag} appears in multiple selected clan rosters.`,
+      duplicateConflicts,
+    );
+  }
+
+  return {
+    baselineId: input.clans[0]?.baselineId ?? input.members[0]?.baselineId ?? randomUUID(),
+    clans: finalClanRows,
+    members: finalMembers,
+    reconciliationCount: reconciliationSummaries.length,
+    reconciliationSummaries,
+  };
 }
 
 /** Purpose: own the durable CWL measurement baseline capture and replacement flow. */
@@ -752,6 +1038,7 @@ export class CwlAllianceBaselineService {
       guildId,
       season,
       capturedAt,
+      startedAtMs: startedAt,
     });
 
     const duplicateConflicts = detectDuplicateMemberTagsAcrossClans(
@@ -846,9 +1133,11 @@ export class CwlAllianceBaselineService {
       clans: candidate.clans,
       members: candidate.members,
       replacedExistingBaseline: Boolean(existingBaseline && replaceExisting),
+      reconciliationCount: candidate.reconciliationCount,
+      reconciliationSummaries: candidate.reconciliationSummaries,
     });
     this.logger.info(
-      `[cwl-alliance-baseline] event=capture_completed guildId=${guildId} season=${season} baselineId=${summary.baselineId} replaceExisting=${replaceExisting ? "1" : "0"} trackedClanCount=${summary.trackedClanCount} capturedClanCount=${summary.capturedClanCount} unavailableClanCount=${summary.unavailableClanCount} memberCount=${summary.memberAccountCount} linkedCount=${summary.linkedAccountCount} currentSourceCount=${summary.currentWarSourceCount} fallbackCount=${summary.latestWarFallbackCount} durationMs=${Date.now() - startedAt}`,
+      `[cwl-alliance-baseline] event=capture_completed guildId=${guildId} season=${season} baselineId=${summary.baselineId} replaceExisting=${replaceExisting ? "1" : "0"} trackedClanCount=${summary.trackedClanCount} capturedClanCount=${summary.capturedClanCount} unavailableClanCount=${summary.unavailableClanCount} memberCount=${summary.memberAccountCount} linkedCount=${summary.linkedAccountCount} currentSourceCount=${summary.currentWarSourceCount} fallbackCount=${summary.latestWarFallbackCount} reconciledCount=${candidate.reconciliationCount} durationMs=${Date.now() - startedAt}`,
     );
     for (const clan of summary.coverageSummaries.filter(
       (row) => row.captureStatus === "UNAVAILABLE",
@@ -935,6 +1224,7 @@ export class CwlAllianceBaselineService {
     guildId: string;
     season: string;
     capturedAt: Date;
+    startedAtMs: number;
   }): Promise<CandidateSnapshot> {
     const trackedClanRows = normalizeTrackedClanRows(
       await prisma.trackedClan.findMany({
@@ -1176,8 +1466,32 @@ export class CwlAllianceBaselineService {
       );
     }
 
+    const reconciledCandidate = await reconcileDuplicateCandidateRows({
+      guildId: input.guildId,
+      season: input.season,
+      clans: candidateClanRows,
+      members: candidateMembers,
+      logger: this.logger,
+      startedAtMs: input.startedAtMs,
+    });
+
+    const duplicateConflicts = detectDuplicateMemberTagsAcrossClans(
+      reconciledCandidate.clans,
+      reconciledCandidate.members,
+    );
+    if (duplicateConflicts.length > 0) {
+      const conflict = duplicateConflicts[0];
+      this.logger.error(
+        `[cwl-alliance-baseline] event=capture_failed guildId=${input.guildId} season=${input.season} reason=duplicate_player_tag playerTag=${conflict.playerTag} clanTags=${conflict.clanTags.join(",")} durationMs=${Date.now() - input.startedAtMs}`,
+      );
+      throw new CwlAllianceBaselineDuplicatePlayerTagError(
+        `Player tag ${conflict.playerTag} appears in multiple selected clan rosters.`,
+        duplicateConflicts,
+      );
+    }
+
     const selectedPlayerTags = [
-      ...new Set(candidateMembers.map((member) => member.playerTag)),
+      ...new Set(reconciledCandidate.members.map((member) => member.playerTag)),
     ];
     const playerLinks =
       selectedPlayerTags.length > 0
@@ -1204,13 +1518,13 @@ export class CwlAllianceBaselineService {
     const finalizedClanRows: CandidateClanRow[] = [];
     const finalizedMemberRows: CandidateMemberRow[] = [];
 
-    for (const clan of candidateClanRows) {
+    for (const clan of reconciledCandidate.clans) {
       if (clan.captureStatus === "UNAVAILABLE") {
         finalizedClanRows.push(clan);
         continue;
       }
       const memberRows =
-        candidateMembers.filter((member) => member.baselineClanId === clan.id);
+        reconciledCandidate.members.filter((member) => member.baselineClanId === clan.id);
       const withLinks = memberRows.map((member) => ({
         ...member,
         linkedDiscordUserId:
@@ -1218,18 +1532,6 @@ export class CwlAllianceBaselineService {
       }));
       finalizedClanRows.push(clan);
       finalizedMemberRows.push(...withLinks);
-    }
-
-    const duplicateConflicts = detectDuplicateMemberTagsAcrossClans(
-      finalizedClanRows,
-      finalizedMemberRows,
-    );
-    if (duplicateConflicts.length > 0) {
-      const conflict = duplicateConflicts[0];
-      throw new CwlAllianceBaselineDuplicatePlayerTagError(
-        `Player tag ${conflict.playerTag} appears in multiple selected clan rosters.`,
-        duplicateConflicts,
-      );
     }
 
     for (const [clanTag, reason] of coverageFailureByClanTag.entries()) {
@@ -1242,6 +1544,8 @@ export class CwlAllianceBaselineService {
       baselineId: input.baselineId,
       clans: finalizedClanRows,
       members: finalizedMemberRows,
+      reconciliationCount: reconciledCandidate.reconciliationCount,
+      reconciliationSummaries: reconciledCandidate.reconciliationSummaries,
     };
   }
 }
