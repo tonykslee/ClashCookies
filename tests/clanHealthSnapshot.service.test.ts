@@ -369,6 +369,112 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.warPlanCompliance.distinctCurrentDiscordUserCount).toBe(1);
   });
 
+  it("counts only normalized valid discord ids from positive-violation rows", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#GGG777",
+      name: "Golf",
+    });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+      outcome: "success",
+      clanTag: "#GGG777",
+      clanName: "Golf",
+      period: "30d",
+      cutoff: null,
+      trackingSince: null,
+      evaluatedWarCount: 2,
+      affectedWarCount: 2,
+      violationCount: 4,
+      distinctPlayerCount: 4,
+      players: [
+        {
+          playerTag: "#P1",
+          playerName: "One",
+          townHallLevel: 15,
+          discordUserId: "123456789012345",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P2",
+          playerName: "Two",
+          townHallLevel: 14,
+          discordUserId: "1234567890123456789012",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P3",
+          playerName: "Three",
+          townHallLevel: 13,
+          discordUserId: "123456789012345",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P4",
+          playerName: "Four",
+          townHallLevel: 12,
+          discordUserId: "12345",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P5",
+          playerName: "Five",
+          townHallLevel: 12,
+          discordUserId: "12345678901234567890123",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P6",
+          playerName: "Six",
+          townHallLevel: 12,
+          discordUserId: "abc123",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P7",
+          playerName: "Seven",
+          townHallLevel: 12,
+          discordUserId: "   ",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P8",
+          playerName: "Eight",
+          townHallLevel: 12,
+          discordUserId: null,
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P9",
+          playerName: "Nine",
+          townHallLevel: 12,
+          discordUserId: "999999999999999999",
+          violationCount: 0,
+          affectedWarCount: 0,
+        },
+      ],
+      hasCompletedEvaluations: true,
+    });
+
+    const service = createService();
+    const snapshot = await service.getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#GGG777",
+    });
+
+    expect(snapshot?.warPlanCompliance.distinctCurrentDiscordUserCount).toBe(2);
+  });
+
   it("propagates leaderboard failures instead of converting them into zero summaries", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#FFF666",

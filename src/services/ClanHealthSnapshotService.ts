@@ -1,5 +1,6 @@
 import { prisma } from "../prisma";
 import { normalizeClashTagInput } from "../helper/clashTag";
+import { normalizeDiscordUserId } from "./PlayerLinkService";
 import {
   WarPlanViolationHistoryService,
   type WarPlanViolationHistoryClanLeaderboardResult,
@@ -337,12 +338,8 @@ function buildWarPlanComplianceSummary(
   const distinctCurrentDiscordUserCount = new Set(
     result.players
       .filter((row) => row.violationCount > 0)
-      .map((row) => String(row.discordUserId ?? "").trim())
-      .filter((discordUserId): discordUserId is string => {
-        if (discordUserId.length === 0) return false;
-        if (!/^(\d{5,25})$/.test(discordUserId)) return false;
-        return true;
-      })
+      .map((row) => normalizeDiscordUserId(row.discordUserId))
+      .filter((discordUserId): discordUserId is string => discordUserId !== null)
   ).size;
 
   return {
