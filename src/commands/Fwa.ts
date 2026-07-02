@@ -13669,12 +13669,12 @@ export const Fwa: Command = {
           name: "visibility",
           description: "Response visibility",
           type: ApplicationCommandOptionType.String,
-              required: false,
-              choices: [
-                { name: "Private", value: "private" },
-                { name: "Public", value: "public" },
-              ],
-            },
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
         {
           name: "tag",
           description:

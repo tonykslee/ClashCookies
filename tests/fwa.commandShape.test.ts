@@ -110,6 +110,25 @@ describe("/fwa base-swap command shape", () => {
     expect(tag).toBeUndefined();
   });
 
+  it("registers /fwa points with lowercase private/public visibility choices", () => {
+    const points = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "points",
+    );
+    expect(points).toBeTruthy();
+
+    const visibility = points?.options?.find(
+      (option: { name: string }) => option.name === "visibility",
+    );
+    expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
+    expect(visibility?.required).toBe(false);
+    expect(visibility?.choices).toEqual([
+      { name: "private", value: "private" },
+      { name: "public", value: "public" },
+    ]);
+  });
+
   it("registers /fwa violations with period, clan, player, discord-user, and visibility options", () => {
     const violations = Fwa.options?.find(
       (option) =>
