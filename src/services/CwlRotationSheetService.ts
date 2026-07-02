@@ -10,6 +10,7 @@ import {
   type CwlRotationPlanExport,
   type PersistImportedCwlRotationPlanResult,
 } from "./CwlRotationService";
+import { compareCwlRosterOrderingEntries } from "./CwlRosterOrdering";
 import { cwlEventResolutionService } from "./CwlEventResolutionService";
 import { cwlStateService, type CwlSeasonRosterEntry } from "./CwlStateService";
 import { normalizeClanTag, normalizeDiscordUserId, normalizePlayerTag } from "./PlayerLinkService";
@@ -698,7 +699,23 @@ function buildCwlRotationExportPayload(input: {
   tabs: GoogleSpreadsheetFormatTab[];
   fingerprint: string;
 } {
-  const baseTabs = input.plans.map((plan) => {
+  const sortedPlans = [...input.plans].sort((left, right) =>
+    compareCwlRosterOrderingEntries(
+      {
+        rosterTitle: left.rosterTitle,
+        leagueLabel: left.leagueLabel ?? null,
+        name: left.clanDisplayName ?? left.clanName,
+        tag: left.clanTag,
+      },
+      {
+        rosterTitle: right.rosterTitle,
+        leagueLabel: right.leagueLabel ?? null,
+        name: right.clanDisplayName ?? right.clanName,
+        tag: right.clanTag,
+      },
+    ),
+  );
+  const baseTabs = sortedPlans.map((plan) => {
     const values = buildExportTabValues(plan);
     return {
       tabName: buildCwlRotationExportTabName(plan),

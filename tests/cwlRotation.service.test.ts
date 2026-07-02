@@ -2194,12 +2194,19 @@ describe("CwlRotationService", () => {
 
     const exports = await cwlRotationService.listActivePlanExports({ season: "2026-04" });
 
-    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledWith({
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        season: "2026-04",
+      },
+      select: { tag: true },
+      orderBy: [{ tag: "asc" }],
+    });
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenNthCalledWith(2, {
       where: {
         season: "2026-04",
         tag: { in: ["#2QG2C08UP"] },
       },
-      select: { tag: true, name: true },
+      select: { tag: true, name: true, leagueLabel: true },
       orderBy: [{ tag: "asc" }],
     });
     expect(exports).toHaveLength(1);

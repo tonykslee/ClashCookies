@@ -40,6 +40,61 @@ function buildValidCwlTag(index: number): string {
   return `#PYLQ${mapped}`;
 }
 
+function buildExportPlan(input: {
+  season: string;
+  clanTag: string;
+  clanName: string;
+  leagueLabel?: string | null;
+  rosterTitle: string | null;
+  rosterShortName?: string | null;
+  sourceLabel?: string | null;
+  rosterId?: string | null;
+  version?: number;
+  playerTag?: string;
+  playerName?: string;
+  clanDisplayName?: string | null;
+}): any {
+  const playerTag = input.playerTag ?? "#PYLQ0289";
+  const playerName = input.playerName ?? "Alpha";
+  const sourceLabel = input.sourceLabel === undefined ? "CWL roster" : input.sourceLabel;
+  return {
+    season: input.season,
+    clanTag: input.clanTag,
+    clanName: input.clanName,
+    leagueLabel: input.leagueLabel ?? null,
+    rosterId: input.rosterId ?? null,
+    rosterTitle: input.rosterTitle,
+    rosterShortName: input.rosterShortName ?? null,
+    clanDisplayName: input.clanDisplayName ?? input.clanName,
+    sourceLabel,
+    version: input.version ?? 1,
+    rosterSize: 1,
+    generatedFromRoundDay: 1,
+    excludedPlayerTags: [],
+    warningSummary: null,
+    metadata: { source: sourceLabel === null ? null : sourceLabel === "CWL roster" ? "sheet-import" : sourceLabel },
+    days: [
+      {
+        roundDay: 1,
+        lineupSize: 1,
+        locked: false,
+        metadata: { source: sourceLabel === null ? null : sourceLabel === "CWL roster" ? "sheet-import" : sourceLabel },
+        rows: [
+          {
+            playerTag,
+            playerName,
+            subbedOut: false,
+            assignmentOrder: 0,
+            townHall: null,
+            weight: null,
+            sourcePosition: null,
+          },
+        ],
+      },
+    ],
+  } as any;
+}
+
 describe("CwlRotationSheetService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -647,6 +702,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "Rising Thrones",
+        leagueLabel: "Champion League III",
         rosterId: "roster-1",
         rosterTitle: "Masters 1 [A] | 175k+ WW",
         rosterShortName: "M1 [A]",
@@ -753,12 +809,181 @@ describe("CwlRotationSheetService", () => {
     });
   });
 
+  it("orders export tabs by the canonical CWL roster sequence and keeps each plan paired with its tab content", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#BBBBBBBBB",
+        clanName: "Echo Clan",
+        leagueLabel: "Master League II",
+        rosterTitle: "Masters 2 [B] | TH17 - 18",
+        rosterShortName: "M2 [B]",
+        clanDisplayName: "Echo Clan",
+        sourceLabel: "CWL roster - Masters 2 [B] | TH17 - 18",
+        playerName: "Echo Player",
+        playerTag: "#QGRJ2222",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#CCCCCCCCC",
+        clanName: "Charlie Clan",
+        leagueLabel: "Master League I",
+        rosterTitle: "Masters 1 [C] | TH18 175k+",
+        rosterShortName: "M1 [C]",
+        clanDisplayName: "Charlie Clan",
+        sourceLabel: "CWL roster - Masters 1 [C] | TH18 175k+",
+        playerName: "Charlie Player",
+        playerTag: "#CUV9082",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#AAAAAAAAB",
+        clanName: "Delta Clan",
+        leagueLabel: "Master League II",
+        rosterTitle: "Masters 2 [A] | TH17 - 18",
+        rosterShortName: "M2 [A]",
+        clanDisplayName: "Delta Clan",
+        sourceLabel: "CWL roster - Masters 2 [A] | TH17 - 18",
+        playerName: "Delta Player",
+        playerTag: "#PYLQ0289",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#DDDDDDDDD",
+        clanName: "Beta Clan",
+        leagueLabel: "Master League I",
+        rosterTitle: "Masters 1 [B] | TH18 175k+",
+        rosterShortName: "M1 [B]",
+        clanDisplayName: "Beta Clan",
+        sourceLabel: "CWL roster - Masters 1 [B] | TH18 175k+",
+        playerName: "Beta Player",
+        playerTag: "#9GLGQCCU",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#EEEEEEEEE",
+        clanName: "Alpha Clan",
+        leagueLabel: "Master League I",
+        rosterTitle: "Masters 1 [A] | TH18 175k+",
+        rosterShortName: "M1 [A]",
+        clanDisplayName: "Alpha Clan",
+        sourceLabel: "CWL roster - Masters 1 [A] | TH18 175k+",
+        playerName: "Alpha Player",
+        playerTag: "#2QG2C08UP",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#FFFFFFFFF",
+        clanName: "Rising Uncs",
+        leagueLabel: "Champion League III",
+        rosterTitle: "Champion 3 | Serious CWL (Invite-only)",
+        rosterShortName: "Champion 3",
+        clanDisplayName: "Rising Uncs",
+        sourceLabel: "CWL roster - Champion 3 | Serious CWL (Invite-only)",
+        playerName: "Champion Player",
+        playerTag: "#PQLQ0289",
+      }),
+    ]);
+    const createSpreadsheet = vi.spyOn(GoogleSheetsService.prototype, "createSpreadsheet").mockResolvedValue({
+      spreadsheetId: "sheet-order",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-order/edit?usp=sharing",
+    });
+    const writeTabs = vi.spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs").mockResolvedValue(undefined);
+    vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic").mockResolvedValue(undefined);
+
+    await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+    });
+
+    const expectedTabNames = [
+      "Champion 3 | Rising Uncs",
+      "M1 [A] | Alpha Clan",
+      "M1 [B] | Beta Clan",
+      "M1 [C] | Charlie Clan",
+      "M2 [A] | Delta Clan",
+      "M2 [B] | Echo Clan",
+    ];
+    const exportedTabs = (writeTabs.mock.calls[0]?.[0] as any)?.tabs as Array<{ tabName: string; values: string[][] }>;
+
+    expect(createSpreadsheet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tabNames: expectedTabNames,
+      }),
+    );
+    expect(exportedTabs.map((tab) => tab.tabName)).toEqual(expectedTabNames);
+    expect(exportedTabs.map((tab) => tab.values[1]?.[0])).toEqual([
+      "Roster: Champion 3 | Serious CWL (Invite-only)",
+      "Roster: Masters 1 [A] | TH18 175k+",
+      "Roster: Masters 1 [B] | TH18 175k+",
+      "Roster: Masters 1 [C] | TH18 175k+",
+      "Roster: Masters 2 [A] | TH17 - 18",
+      "Roster: Masters 2 [B] | TH17 - 18",
+    ]);
+    expect(exportedTabs.map((tab) => tab.values[2]?.[0])).toEqual([
+      "Clan: Rising Uncs",
+      "Clan: Alpha Clan",
+      "Clan: Beta Clan",
+      "Clan: Charlie Clan",
+      "Clan: Delta Clan",
+      "Clan: Echo Clan",
+    ]);
+  });
+
+  it("uses leagueLabel fallback ordering when roster titles are missing or malformed", async () => {
+    vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#BBBBBBBBC",
+        clanName: "Fallback Crystal",
+        leagueLabel: "Crystal League I",
+        rosterTitle: null,
+        rosterShortName: null,
+        clanDisplayName: "Fallback Crystal",
+        sourceLabel: null,
+        playerName: "Fallback Player",
+        playerTag: "#QGRJ2222",
+      }),
+      buildExportPlan({
+        season: "2026-04",
+        clanTag: "#AAAAAAAAC",
+        clanName: "Anchor Masters",
+        leagueLabel: "Master League II",
+        rosterTitle: "Masters 1 [A] | TH18 175k+",
+        rosterShortName: "M1 [A]",
+        clanDisplayName: "Anchor Masters",
+        sourceLabel: "CWL roster - Masters 1 [A] | TH18 175k+",
+        playerName: "Anchor Player",
+        playerTag: "#PYLQ0289",
+      }),
+    ]);
+    const createSpreadsheet = vi.spyOn(GoogleSheetsService.prototype, "createSpreadsheet").mockResolvedValue({
+      spreadsheetId: "sheet-league-fallback",
+      spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-league-fallback/edit?usp=sharing",
+    });
+    const writeTabs = vi.spyOn(GoogleSheetsService.prototype, "writeSpreadsheetTabs").mockResolvedValue(undefined);
+    vi.spyOn(GoogleSheetsService.prototype, "makeSpreadsheetPublic").mockResolvedValue(undefined);
+
+    await cwlRotationSheetService.exportActivePlans({
+      season: "2026-04",
+    });
+
+    const exportedTabs = (writeTabs.mock.calls[0]?.[0] as any)?.tabs as Array<{ tabName: string; values: string[][] }>;
+
+    expect(createSpreadsheet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tabNames: ["M1 [A] | Anchor Masters", "Fallback Crystal"],
+      }),
+    );
+    expect(exportedTabs.map((tab) => tab.tabName)).toEqual(["M1 [A] | Anchor Masters", "Fallback Crystal"]);
+  });
+
   it("keeps live/manual export rows ordered by stored source position rather than assignment order", async () => {
     vi.spyOn(cwlRotationService, "listActivePlanExports").mockResolvedValue([
       {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "Rising Thrones",
+        leagueLabel: "Champion League III",
         rosterId: null,
         rosterTitle: null,
         rosterShortName: null,
@@ -871,6 +1096,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "Rising Thrones",
+        leagueLabel: "Champion League III",
         rosterId: "roster-1",
         rosterTitle: "Masters 1 [A] | 175k+ WW",
         rosterShortName: "M1 [A]",
@@ -933,6 +1159,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "Rising Thrones",
+        leagueLabel: "Champion League III",
         rosterId: "roster-1",
         rosterTitle: "Masters 1 [A] | 175k+ WW",
         rosterShortName: "M1 [A]",
@@ -1111,6 +1338,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "CWL Alpha",
+        leagueLabel: "Champion League I",
         version: 3,
         rosterSize: 2,
         generatedFromRoundDay: 2,
@@ -1191,6 +1419,7 @@ describe("CwlRotationSheetService", () => {
         season: "2026-04",
         clanTag: "#2QG2C08UP",
         clanName: "CWL Alpha",
+        leagueLabel: "Champion League I",
         version: 4,
         rosterSize: 11,
         generatedFromRoundDay: 2,
