@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -33,6 +33,10 @@ describe("ClanHealthSnapshotService", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-09T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   function createService() {
@@ -97,7 +101,7 @@ describe("ClanHealthSnapshotService", () => {
           playerTag: "#P1",
           playerName: "Player One",
           townHallLevel: 14,
-          discordUserId: "111",
+          discordUserId: "111111111111111111",
           violationCount: 4,
           affectedWarCount: 3,
         },
@@ -105,7 +109,7 @@ describe("ClanHealthSnapshotService", () => {
           playerTag: "#P2",
           playerName: "Player Two",
           townHallLevel: 15,
-          discordUserId: "222",
+          discordUserId: "222222222222222222",
           violationCount: 2,
           affectedWarCount: 2,
         },
@@ -113,7 +117,7 @@ describe("ClanHealthSnapshotService", () => {
           playerTag: "#P3",
           playerName: "Player Three",
           townHallLevel: 13,
-          discordUserId: "111",
+          discordUserId: "111111111111111111",
           violationCount: 1,
           affectedWarCount: 1,
         },
@@ -289,5 +293,99 @@ describe("ClanHealthSnapshotService", () => {
       expect.stringContaining("compliance_discord_users=0")
     );
     infoSpy.mockRestore();
+  });
+
+  it("counts only positive-violation linked discord users once and trims invalid ids", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#EEE555",
+      name: "Echo",
+    });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+      outcome: "success",
+      clanTag: "#EEE555",
+      clanName: "Echo",
+      period: "30d",
+      cutoff: null,
+      trackingSince: null,
+      evaluatedWarCount: 4,
+      affectedWarCount: 2,
+      violationCount: 4,
+      distinctPlayerCount: 3,
+      players: [
+        {
+          playerTag: "#P1",
+          playerName: "One",
+          townHallLevel: 15,
+          discordUserId: " 111111111111111111 ",
+          violationCount: 0,
+          affectedWarCount: 0,
+        },
+        {
+          playerTag: "#P2",
+          playerName: "Two",
+          townHallLevel: 14,
+          discordUserId: "222222222222222222",
+          violationCount: 2,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P3",
+          playerName: "Three",
+          townHallLevel: 13,
+          discordUserId: "222222222222222222",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P4",
+          playerName: "Four",
+          townHallLevel: 12,
+          discordUserId: null,
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+        {
+          playerTag: "#P5",
+          playerName: "Five",
+          townHallLevel: 12,
+          discordUserId: "   ",
+          violationCount: 1,
+          affectedWarCount: 1,
+        },
+      ],
+      hasCompletedEvaluations: true,
+    });
+
+    const service = createService();
+    const snapshot = await service.getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#EEE555",
+    });
+
+    expect(snapshot?.warPlanCompliance.distinctCurrentDiscordUserCount).toBe(1);
+  });
+
+  it("propagates leaderboard failures instead of converting them into zero summaries", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#FFF666",
+      name: "Foxtrot",
+    });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    warPlanHistoryMock.getClanLeaderboard.mockRejectedValue(new Error("leaderboard boom"));
+
+    const service = createService();
+    await expect(
+      service.getSnapshot({
+        guildId: "guild-1",
+        clanTag: "#FFF666",
+      })
+    ).rejects.toThrow("leaderboard boom");
   });
 });

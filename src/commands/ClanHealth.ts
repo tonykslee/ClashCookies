@@ -31,21 +31,24 @@ function formatPercent(numerator: number, denominator: number): string {
   return `${((numerator / denominator) * 100).toFixed(1)}%`;
 }
 
+/** Purpose: pluralize player account labels for the compliance summary. */
+function formatPlayerAccountLabel(count: number): string {
+  return count === 1 ? "player account" : "player accounts";
+}
+
 /** Purpose: render the persisted 30-day war-plan compliance summary for clan-health. */
 function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
-  const lines = snapshot.warPlanCompliance.hasCompletedEvaluations
-    ? [
-        `Violations: **${snapshot.warPlanCompliance.violationCount}** across **${snapshot.warPlanCompliance.distinctPlayerCount}** player accounts`,
-        `Linked Discord users involved: **${snapshot.warPlanCompliance.distinctCurrentDiscordUserCount}**`,
-        `Affected wars: **${snapshot.warPlanCompliance.affectedWarCount}/${snapshot.warPlanCompliance.evaluatedWarCount}** evaluated FWA wars`,
-      ]
-    : [
-        "No completed FWA war-plan evaluations are available yet.",
-        "Violations: **0** across **0** player accounts",
-        "Linked Discord users involved: **0**",
-        "Affected wars: **0/0** evaluated FWA wars",
-      ];
-  return lines;
+  if (!snapshot.warPlanCompliance.hasCompletedEvaluations) {
+    return ["No completed FWA war-plan evaluations are available yet."];
+  }
+
+  return [
+    `Violations: **${snapshot.warPlanCompliance.violationCount}** across **${snapshot.warPlanCompliance.distinctPlayerCount}** ${formatPlayerAccountLabel(
+      snapshot.warPlanCompliance.distinctPlayerCount
+    )}`,
+    `Linked Discord users involved: **${snapshot.warPlanCompliance.distinctCurrentDiscordUserCount}**`,
+    `Affected wars: **${snapshot.warPlanCompliance.affectedWarCount}/${snapshot.warPlanCompliance.evaluatedWarCount}** evaluated FWA wars`,
+  ];
 }
 
 /** Purpose: build response embed for a clan-health snapshot. */
