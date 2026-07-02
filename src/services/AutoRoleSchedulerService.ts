@@ -39,18 +39,33 @@ type AutoRoleSchedulerGuildConfigRow = {
   syncIntervalMinutes: number | null;
 };
 
-type AutoRoleSchedulerGuildRunRow = {
+type AutoRoleSchedulerGuildCompletedRunRow = {
   guildId: string;
   _max: {
-    finishedAt: Date | null;
+    startedAt: Date | null;
   };
 };
+
+type AutoRoleSchedulerGuildFailedRunRow = {
+  guildId: string;
+  _max: {
+    startedAt: Date | null;
+  };
+};
+
+type AutoRoleSchedulerCadenceReason =
+  | "no_scheduled_completion"
+  | "interval_not_elapsed"
+  | "due_after_completed_scheduled_run"
+  | "retry_after_failed_scheduled_run";
 
 type AutoRoleScheduledGuildWork = {
   guildId: string;
   intervalMinutes: number;
   intervalMs: number;
+  cadenceAnchorStartedAtMs: number | null;
   nextDueAtMs: number;
+  cadenceReason: AutoRoleSchedulerCadenceReason;
 };
 
 type AutoRoleGuildRunOutcome =
@@ -77,6 +92,21 @@ function normalizeNowMs(input: number | null | undefined): number {
     return Date.now();
   }
   return Math.trunc(Number(input));
+}
+
+function formatSchedulerTimestamp(input: number | null): string {
+  return input === null ? "none" : new Date(input).toISOString();
+}
+
+function formatRunScopeTriggerMetadata(input: {
+  runId: string;
+  guildId: string;
+  runScope: AutoRoleRunScope;
+  runTrigger: AutoRoleRunTrigger;
+  scopeTargetId: string | null;
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+}): string {
+  return `run_id=${input.runId} guild_id=${input.guildId} run_scope=${input.runScope} run_trigger=${input.runTrigger} scope_target_id=${input.scopeTargetId ?? "none"} status=${input.status}`;
 }
 
 /** Purpose: schedule enabled autorole guild syncs on a bounded interval while reusing refreshGuild. */
@@ -225,14 +255,33 @@ export class AutoRoleSchedulerService {
           status: "COMPLETED",
         },
         _max: {
-          finishedAt: true,
+          startedAt: true,
+        },
+      });
+      const lastFailedRuns = await prisma.autoRoleSyncRun.groupBy({
+        by: ["guildId"],
+        where: {
+          guildId: { in: configRows.map((row) => row.guildId) },
+          scope: AutoRoleRunScope.GUILD,
+          trigger: AutoRoleRunTrigger.SCHEDULED,
+          status: "FAILED",
+        },
+        _max: {
+          startedAt: true,
         },
       });
       const lastCompletedRunByGuildId = new Map<string, Date>();
-      for (const run of lastCompletedRuns as AutoRoleSchedulerGuildRunRow[]) {
-        const lastCompletedAt = run._max?.finishedAt ?? null;
+      for (const run of lastCompletedRuns as AutoRoleSchedulerGuildCompletedRunRow[]) {
+        const lastCompletedAt = run._max?.startedAt ?? null;
         if (lastCompletedAt) {
           lastCompletedRunByGuildId.set(run.guildId, lastCompletedAt);
+        }
+      }
+      const lastFailedAttemptByGuildId = new Map<string, Date>();
+      for (const run of lastFailedRuns as AutoRoleSchedulerGuildFailedRunRow[]) {
+        const lastFailedAt = run._max?.startedAt ?? null;
+        if (lastFailedAt) {
+          lastFailedAttemptByGuildId.set(run.guildId, lastFailedAt);
         }
       }
 
@@ -242,8 +291,29 @@ export class AutoRoleSchedulerService {
         const intervalMinutes = normalizeIntervalMinutes(row.syncIntervalMinutes);
         const intervalMs = intervalMinutes * 60_000;
         const lastCompletedRunAt = lastCompletedRunByGuildId.get(row.guildId) ?? null;
-        const nextDueAtMs = lastCompletedRunAt ? lastCompletedRunAt.getTime() + intervalMs : normalizedNowMs;
-        if (lastCompletedRunAt && normalizedNowMs < nextDueAtMs) {
+        const lastFailedAttemptAt = lastFailedAttemptByGuildId.get(row.guildId) ?? null;
+        const cadenceAnchorStartedAtMs = lastCompletedRunAt ? lastCompletedRunAt.getTime() : null;
+        let nextDueAtMs = normalizedNowMs;
+        let cadenceReason: AutoRoleSchedulerCadenceReason;
+
+        if (lastCompletedRunAt) {
+          nextDueAtMs = lastCompletedRunAt.getTime() + intervalMs;
+          if (normalizedNowMs < nextDueAtMs) {
+            cadenceReason = "interval_not_elapsed";
+          } else {
+            cadenceReason = "due_after_completed_scheduled_run";
+          }
+        } else if (lastFailedAttemptAt) {
+          cadenceReason = "retry_after_failed_scheduled_run";
+        } else {
+          cadenceReason = "no_scheduled_completion";
+        }
+
+        dozzleLog.debug(
+          `[autorole-scheduler] cadence_decision guild_id=${row.guildId} cadence_anchor_started_at=${formatSchedulerTimestamp(cadenceAnchorStartedAtMs)} next_due_at=${formatSchedulerTimestamp(nextDueAtMs)} current_time=${new Date(normalizedNowMs).toISOString()} interval_minutes=${intervalMinutes} cadence_reason=${cadenceReason}`,
+        );
+
+        if (cadenceReason === "interval_not_elapsed") {
           skipped += 1;
           continue;
         }
@@ -252,7 +322,9 @@ export class AutoRoleSchedulerService {
           guildId: row.guildId,
           intervalMinutes,
           intervalMs,
+          cadenceAnchorStartedAtMs,
           nextDueAtMs,
+          cadenceReason,
         });
       }
 
@@ -322,7 +394,7 @@ export class AutoRoleSchedulerService {
 
     this.inFlightGuildIds.add(work.guildId);
     dozzleLog.info(
-      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} run_scope=guild run_trigger=scheduled autorole_refresh_id=${autoroleRefreshId} interval_minutes=${work.intervalMinutes} next_due_at=${new Date(work.nextDueAtMs).toISOString()}`,
+      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} run_scope=${AutoRoleRunScope.GUILD} run_trigger=${AutoRoleRunTrigger.SCHEDULED} autorole_refresh_id=${autoroleRefreshId} interval_minutes=${work.intervalMinutes} cadence_anchor_started_at=${formatSchedulerTimestamp(work.cadenceAnchorStartedAtMs)} next_due_at=${formatSchedulerTimestamp(work.nextDueAtMs)} current_time=${new Date(nowMs).toISOString()} cadence_reason=${work.cadenceReason}`,
     );
 
     try {
@@ -330,8 +402,8 @@ export class AutoRoleSchedulerService {
         {
           priority: "background",
           source: "autorole_scheduler_guild_refresh",
-          scheduledAtMs: work.nextDueAtMs,
-          nextScheduledAtMs: work.nextDueAtMs + work.intervalMs,
+          scheduledAtMs: nowMs,
+          nextScheduledAtMs: nowMs + work.intervalMs,
         },
         async () => {
           const guild = await this.client.guilds.fetch(work.guildId);
@@ -364,7 +436,14 @@ export class AutoRoleSchedulerService {
 
   private logGuildCompletion(guildId: string, result: AutoRoleRefreshResult): void {
     dozzleLog.info(
-      `[autorole-scheduler] guild_run_complete guild_id=${guildId} run_id=${result.runId} evaluated=${result.evaluatedCount} added=${result.addedCount} removed=${result.removedCount} skipped=${result.skippedCount} failed=${result.failedCount}`,
+      `[autorole-scheduler] guild_run_complete ${formatRunScopeTriggerMetadata({
+        runId: result.runId,
+        guildId,
+        runScope: AutoRoleRunScope.GUILD,
+        runTrigger: AutoRoleRunTrigger.SCHEDULED,
+        scopeTargetId: null,
+        status: "COMPLETED",
+      })} evaluated=${result.evaluatedCount} added=${result.addedCount} removed=${result.removedCount} skipped=${result.skippedCount} failed=${result.failedCount}`,
     );
   }
 }

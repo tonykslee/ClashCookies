@@ -58,6 +58,17 @@ type AutoRoleRefreshRunContext = {
   trigger: AutoRoleRunTrigger;
 };
 
+function formatAutoRoleRunMetadata(input: {
+  runId: string;
+  guildId: string;
+  runScope: AutoRoleRunScope;
+  runTrigger: AutoRoleRunTrigger;
+  scopeTargetId: string | null;
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+}): string {
+  return `run_id=${input.runId} guild_id=${input.guildId} run_scope=${input.runScope} run_trigger=${input.runTrigger} scope_target_id=${input.scopeTargetId ?? "none"} status=${input.status}`;
+}
+
 export type AutoRoleLinkedPlayerRefreshResult = {
   requestedPlayerCount: number;
   successfulCount: number;
@@ -2212,6 +2223,7 @@ function resolveExclusionSkipReason(input: {
 async function runRefreshPass(input: {
   guildId: string;
   scope: AutoRoleRefreshScope;
+  runTrigger: AutoRoleRunTrigger;
   guild: Guild;
   snapshot: AutoRoleGuildStateSnapshot;
   trackedClans: AutoRoleTrackedClanLike[];
@@ -2239,6 +2251,12 @@ async function runRefreshPass(input: {
   memberSourceSummary?: AutoRoleRefreshMemberSourceSummary | null;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
+  const scopeTargetId =
+    input.scope.kind === "guild"
+      ? null
+      : input.scope.kind === "role"
+        ? input.scope.discordRoleId
+        : input.scope.discordUserId;
   const managedRoleIds = buildManagedRoleIds(input.snapshot, input.trackedClans);
   const clanRoleIds = collectClanRoleIds(input.snapshot, input.trackedClans);
   const suppressRemovalRoleIds = new Set([
@@ -2377,6 +2395,20 @@ async function runRefreshPass(input: {
         error: counts.failedCount > 0 ? `failed_count=${counts.failedCount}` : null,
       },
     });
+    dozzleLog.info(
+      `[autorole] event=autorole_run_complete ${formatAutoRoleRunMetadata({
+        runId: input.runId,
+        guildId: input.guildId,
+        runScope: input.scope.kind === "guild"
+          ? AutoRoleRunScope.GUILD
+          : input.scope.kind === "role"
+            ? AutoRoleRunScope.ROLE
+            : AutoRoleRunScope.USER,
+        runTrigger: input.runTrigger,
+        scopeTargetId,
+        status: "COMPLETED",
+      })}`,
+    );
 
     return {
       guildId: input.guildId,
@@ -2390,18 +2422,32 @@ async function runRefreshPass(input: {
       memberResults,
       memberSourceSummary: input.memberSourceSummary ?? null,
     };
-  } catch (error) {
-    await prisma.autoRoleSyncRun.update({
-      where: { id: input.runId },
-      data: {
-        status: "FAILED",
-        finishedAt: new Date(),
-        error: formatError(error),
-      },
-    });
-    throw error;
+    } catch (error) {
+      await prisma.autoRoleSyncRun.update({
+        where: { id: input.runId },
+        data: {
+          status: "FAILED",
+          finishedAt: new Date(),
+          error: formatError(error),
+        },
+      });
+      dozzleLog.error(
+        `[autorole] event=autorole_run_failed ${formatAutoRoleRunMetadata({
+          runId: input.runId,
+          guildId: input.guildId,
+          runScope: input.scope.kind === "guild"
+            ? AutoRoleRunScope.GUILD
+            : input.scope.kind === "role"
+              ? AutoRoleRunScope.ROLE
+              : AutoRoleRunScope.USER,
+          runTrigger: input.runTrigger,
+          scopeTargetId,
+          status: "FAILED",
+        })} error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
-}
 
 /** Purpose: execute manual autorole refreshes for a guild, one member, or one managed role. */
 export class AutoRoleRefreshService {
@@ -2509,6 +2555,16 @@ export class AutoRoleRefreshService {
       },
       select: { id: true },
     });
+    dozzleLog.info(
+      `[autorole] event=autorole_run_start ${formatAutoRoleRunMetadata({
+        runId: run.id,
+        guildId: input.guildId,
+        runScope: scope,
+        runTrigger: input.runContext.trigger,
+        scopeTargetId,
+        status: "RUNNING",
+      })}`,
+    );
 
     try {
       if (isMirrorPollingMode(process.env)) {
@@ -2599,10 +2655,11 @@ export class AutoRoleRefreshService {
           );
 
           const result = await runRefreshPass({
-            guildId: input.guildId,
-            scope: input.scope,
-            guild: input.guild,
-            snapshot,
+          guildId: input.guildId,
+          scope: input.scope,
+          runTrigger: input.runContext.trigger,
+          guild: input.guild,
+          snapshot,
             trackedClans: clanRoleState.trackedClans,
             membersById: clanRoleState.membersById,
             linkedAccountsByUserId: clanRoleState.linkedAccountsByUserId,
@@ -2681,6 +2738,7 @@ export class AutoRoleRefreshService {
           const result = await runRefreshPass({
             guildId: input.guildId,
             scope: input.scope,
+            runTrigger: input.runContext.trigger,
             guild: input.guild,
             snapshot,
             trackedClans: leadRoleState.trackedClans,
@@ -2822,6 +2880,7 @@ export class AutoRoleRefreshService {
         const result = await runRefreshPass({
           guildId: input.guildId,
           scope: input.scope,
+          runTrigger: input.runContext.trigger,
           guild: input.guild,
           snapshot,
           trackedClans: trackedFwaRefresh.trackedClans,
@@ -2941,6 +3000,16 @@ export class AutoRoleRefreshService {
               error: memberResult.failureReasons.join(" | "),
             },
           });
+          dozzleLog.info(
+            `[autorole] event=autorole_run_complete ${formatAutoRoleRunMetadata({
+              runId: run.id,
+              guildId: input.guildId,
+              runScope: scope,
+              runTrigger: input.runContext.trigger,
+              scopeTargetId,
+              status: "COMPLETED",
+            })}`,
+          );
           return {
             guildId: input.guildId,
             scope: input.scope,
@@ -2968,6 +3037,7 @@ export class AutoRoleRefreshService {
         const refreshResult = await runRefreshPass({
           guildId: input.guildId,
           scope: input.scope,
+          runTrigger: input.runContext.trigger,
           guild: input.guild,
           snapshot,
           trackedClans,
@@ -3065,6 +3135,7 @@ export class AutoRoleRefreshService {
       const refreshResult = await runRefreshPass({
         guildId: input.guildId,
         scope: input.scope,
+        runTrigger: input.runContext.trigger,
         guild: input.guild,
         snapshot,
         trackedClans,
@@ -3094,6 +3165,16 @@ export class AutoRoleRefreshService {
           error: formatError(error),
         },
       });
+      dozzleLog.error(
+        `[autorole] event=autorole_run_failed ${formatAutoRoleRunMetadata({
+          runId: run.id,
+          guildId: input.guildId,
+          runScope: scope,
+          runTrigger: input.runContext.trigger,
+          scopeTargetId,
+          status: "FAILED",
+        })} error=${formatError(error)}`,
+      );
       throw error;
     }
   }

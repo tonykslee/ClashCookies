@@ -1,6 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { AutoRoleRefreshResult } from "../src/services/AutoRoleRefreshService";
 import { AutoRoleSchedulerService } from "../src/services/AutoRoleSchedulerService";
+import { getCoCQueueContext } from "../src/services/CoCQueueContext";
 
 const prismaMock = vi.hoisted(() => ({
   autoRoleGuildConfig: {
@@ -182,7 +183,7 @@ describe("AutoRoleSchedulerService", () => {
       {
         guildId: guild.id,
         _max: {
-          finishedAt: new Date("2026-05-18T11:01:00.000Z"),
+          startedAt: new Date("2026-05-18T11:01:00.000Z"),
         },
       },
     ]);
@@ -202,7 +203,7 @@ describe("AutoRoleSchedulerService", () => {
       {
         guildId: guild.id,
         _max: {
-          finishedAt: new Date("2026-05-18T10:59:00.000Z"),
+          startedAt: new Date("2026-05-18T10:59:00.000Z"),
         },
       },
     ]);
@@ -264,16 +265,29 @@ describe("AutoRoleSchedulerService", () => {
         syncIntervalMinutes: 15,
       },
     ]);
-    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([
-      {
-        guildId: guild.id,
-        _max: {
-          finishedAt: new Date("2026-05-18T11:46:00.000Z"),
-        },
-      },
-    ]);
+    const completedStarts = [
+      new Date("2026-05-18T11:46:00.000Z"),
+      new Date("2026-05-18T11:44:00.000Z"),
+    ];
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        const startedAt = completedStarts.shift();
+        return startedAt
+          ? [
+              {
+                guildId: guild.id,
+                _max: {
+                  startedAt,
+                },
+              },
+            ]
+          : [];
+      }
+      return [];
+    });
 
-    const result = await scheduler.runCycle();
+    const firstResult = await scheduler.runCycle();
+    const secondResult = await scheduler.runCycle();
 
     expect(prismaMock.autoRoleSyncRun.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -285,11 +299,11 @@ describe("AutoRoleSchedulerService", () => {
           status: "COMPLETED",
         },
         _max: {
-          finishedAt: true,
+          startedAt: true,
         },
       }),
     );
-    expect(result).toMatchObject({
+    expect(firstResult).toMatchObject({
       scanned: 1,
       due: 0,
       started: 0,
@@ -297,7 +311,22 @@ describe("AutoRoleSchedulerService", () => {
       skipped: 1,
       failed: 0,
     });
-    expect(refreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+    expect(secondResult).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledTimes(1);
+    expect(client.guilds.fetch).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=interval_not_elapsed"),
+    );
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(
+      expect.stringContaining("cadence_reason=due_after_completed_scheduled_run"),
+    );
   });
 
   it("treats the absence of a completed scheduled guild run as immediately due", async () => {
@@ -332,6 +361,74 @@ describe("AutoRoleSchedulerService", () => {
         trigger: "SCHEDULED",
       }),
     );
+  });
+
+  it("uses the current scheduler time for CoC freshness when an overdue scheduled run executes", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+    const now = new Date("2026-05-18T12:00:00.000Z");
+    const nowMs = now.getTime();
+    const intervalMs = 15 * 60_000;
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockImplementation(async ({ where }: any) => {
+      if (where?.status === "COMPLETED") {
+        return [
+          {
+            guildId: guild.id,
+            _max: {
+              startedAt: new Date("2026-05-18T11:25:00.000Z"),
+            },
+          },
+        ];
+      }
+      if (where?.status === "FAILED") {
+        return [];
+      }
+      return [];
+    });
+    refreshServiceMock.refreshGuild.mockImplementation(async () => {
+      expect(getCoCQueueContext()).toMatchObject({
+        priority: "background",
+        source: "autorole_scheduler_guild_refresh",
+        scheduledAtMs: nowMs,
+        nextScheduledAtMs: nowMs + intervalMs,
+      });
+      return {
+        guildId: guild.id,
+        scope: { kind: "guild" },
+        runId: "run-1",
+        evaluatedCount: 0,
+        addedCount: 0,
+        removedCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        memberResults: [],
+      } satisfies AutoRoleRefreshResult;
+    });
+
+    const result = await scheduler.runCycle(nowMs);
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledTimes(1);
+    expect(guild.members.fetch).not.toHaveBeenCalled();
   });
 
   it("skips a guild while its previous scheduled run is still in flight", async () => {

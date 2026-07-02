@@ -538,7 +538,7 @@ model AutoRoleSyncRun {
 
   @@index([guildId, startedAt])
   @@index([guildId, status, startedAt])
-  @@index([guildId, trigger, scope, status, finishedAt])
+  @@index([guildId, trigger, scope, status, startedAt])
 }
 
 enum AutoRoleRunScope {

@@ -6,4 +6,4 @@ ADD COLUMN     "scope" "AutoRoleRunScope" NOT NULL DEFAULT 'GUILD',
 ADD COLUMN     "trigger" "AutoRoleRunTrigger" NOT NULL DEFAULT 'MANUAL',
 ADD COLUMN     "scopeTargetId" TEXT;
 
-CREATE INDEX "AutoRoleSyncRun_guildId_trigger_scope_status_finishedAt_idx" ON "AutoRoleSyncRun"("guildId", "trigger", "scope", "status", "finishedAt");
+CREATE INDEX "AutoRoleSyncRun_guildId_trigger_scope_status_startedAt_idx" ON "AutoRoleSyncRun"("guildId", "trigger", "scope", "status", "startedAt");

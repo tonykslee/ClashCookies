@@ -409,6 +409,12 @@ describe("AutoRoleRefreshService", () => {
       expect.stringContaining("[autorole] event=live_clan_fetch"),
     );
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("event=autorole_run_start"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("event=autorole_run_complete"),
+    );
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
       expect.stringContaining("autorole_refresh_id=autorole_refresh:111111111111111111:1747569600000"),
     );
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
@@ -4277,6 +4283,9 @@ describe("AutoRoleRefreshService", () => {
         }),
       }),
     );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("event=autorole_run_failed"),
+    );
     expect(guild.members.fetch).not.toHaveBeenCalled();
   });
 
@@ -4304,6 +4313,9 @@ describe("AutoRoleRefreshService", () => {
           error: expect.stringContaining("Autorole kill switch is enabled for this guild."),
         }),
       }),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("event=autorole_run_failed"),
     );
     expect(guild.members.fetch).not.toHaveBeenCalled();
   });
