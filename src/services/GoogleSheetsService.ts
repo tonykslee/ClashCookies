@@ -475,7 +475,7 @@ export class GoogleSheetsService {
 
       const usedRowCount = Math.max(1, tab.values.length);
       const usedColumnCount = Math.max(1, ...tab.values.map((row) => row.length), 1);
-      const exportTablesOnSheet = sheet.tables.filter((table) => table.name.startsWith(GOOGLE_SHEETS_EXPORT_TABLE_PREFIX));
+      const exportTablesOnSheet = sheet.tables.filter((table) => isGoogleSheetsExportTableName(table.name));
       if (exportTablesOnSheet.length > 0) {
         for (const table of exportTablesOnSheet) {
           deleteRequests.push({
@@ -1276,7 +1276,8 @@ function sanitizeSheetTabName(tabName: string): string {
     .trim() || "Sheet";
 }
 
-const GOOGLE_SHEETS_EXPORT_TABLE_PREFIX = "CWL Rotation Export";
+const GOOGLE_SHEETS_EXPORT_TABLE_PREFIX_LEGACY = "CWL Rotation Export";
+const GOOGLE_SHEETS_EXPORT_TABLE_PREFIX = "CWL_Rotation_Export_";
 
 type GoogleSheetColor = {
   red: number;
@@ -1409,9 +1410,7 @@ function buildGoogleSheetsTableSpec(input: {
     tableId: sanitizeGoogleSheetsTableToken(
       `cwl_${tableToken}_${input.tableIndex + 1}_${rangeToken}`,
     ),
-    name: sanitizeGoogleSheetsTableName(
-      `${GOOGLE_SHEETS_EXPORT_TABLE_PREFIX} ${tableToken} ${input.tableIndex + 1}`,
-    ),
+    name: `${GOOGLE_SHEETS_EXPORT_TABLE_PREFIX}${input.sheetId}_${input.tableIndex + 1}`,
     range: {
       sheetId: input.sheetId,
       startRowIndex: input.tableRange.startRowIndex,
@@ -1431,18 +1430,10 @@ function sanitizeGoogleSheetsTableToken(input: string): string {
     .slice(0, 80) || "table";
 }
 
-function sanitizeGoogleSheetsTableName(input: string): string {
-  return replaceAsciiControlCharactersWithSpaces(String(input ?? "").trim())
-    .replace(/\s+/g, " ")
-    .slice(0, 100)
-    .trim() || GOOGLE_SHEETS_EXPORT_TABLE_PREFIX;
-}
-
-function replaceAsciiControlCharactersWithSpaces(input: string): string {
-  return Array.from(input)
-    .map((char) => {
-      const code = char.charCodeAt(0);
-      return code >= 0 && code <= 31 ? " " : char;
-    })
-    .join("");
+function isGoogleSheetsExportTableName(name: string): boolean {
+  const normalized = String(name ?? "").trim();
+  return (
+    normalized.startsWith(GOOGLE_SHEETS_EXPORT_TABLE_PREFIX_LEGACY) ||
+    normalized.startsWith(GOOGLE_SHEETS_EXPORT_TABLE_PREFIX)
+  );
 }
