@@ -112,6 +112,50 @@ describe("CwlEventResolutionService", () => {
     expect(rows.get("#QGRJ2222")).toMatchObject({ id: "event-other" });
   });
 
+  it("filters current event summaries to the requested CWL season when one is provided", async () => {
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: makeEventSummary({
+          id: "event-june",
+          season: "2026-06",
+          anchorWarTag: "#JUNE",
+          firstObservedAt: new Date("2026-06-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-06-01T01:00:00.000Z"),
+        }),
+      },
+      {
+        clanTag: "#PYLQ0289",
+        eventInstance: makeEventSummary({
+          id: "event-july",
+          season: "2026-07",
+          anchorWarTag: "#JULY",
+          firstObservedAt: new Date("2026-07-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-07-01T01:00:00.000Z"),
+        }),
+      },
+    ]);
+
+    const rows = await cwlEventResolutionService.resolveCurrentCwlEventSummariesForClanTags({
+      clanTags: ["#PYLQ0289"],
+      season: "2026-07",
+    });
+
+    expect(prismaMock.cwlEventClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          clanTag: { in: ["#PYLQ0289"] },
+          isCurrent: true,
+          season: "2026-07",
+        },
+      }),
+    );
+    expect(rows.get("#PYLQ0289")).toMatchObject({
+      id: "event-july",
+      season: "2026-07",
+    });
+  });
+
   it("creates one new event and flips only the resolved clan pointer current", async () => {
     txMock.cwlEventClan.findMany.mockResolvedValue([
       {

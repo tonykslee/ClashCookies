@@ -208,6 +208,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary:
       "Leadership snapshot for one tracked clan using persisted data only.",
     details: [
+      "Shows a persisted 30-day war-plan compliance summary with violations, distinct violating player accounts, currently linked Discord users involved, and affected/evaluated FWA wars.",
+      "Only completed evaluations recorded since violation tracking was enabled are counted; there is no historical backfill.",
       "Shows last-30 ended-war match metrics with an FWA win/loss/BL/MM breakdown plus a BL-inclusive match rate.",
       "Shows inactivity counts from two signals: missed both attacks in at least one of the last 3 ended FWA wars, and last-seen inactivity >= 6 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
@@ -285,7 +287,13 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`rep list [clan]` is read-only, is available to the configured FWA leader role and administrators, groups assignments by assigned tracked clan, includes tracked clans with no reps, and uses the shared account row renderer.",
       "`cwl-tags` adds one seasonal CWL throwaway clan batch (array-style or comma-separated tags) without polluting the FWA tracked list.",
       "`raid-tags` adds or updates the RAIDS registry with optional manual upgrades for one tag, stores the clan name from the clan profile API on write, and caches the clan join status from the clan profile API on write.",
-      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view and accepts `display:minimal|detailed` (default `minimal`). Overview/minimal rows show current member counts when persisted, no longer show `leadRole`, and include a member-count `Refresh` button; CWL minimal rows show the CWL league emoji plus a short league abbreviation when ranked, use the bot application's `unranked` emoji for unranked/unknown/unsupported league values, and show spin status as emoji only. CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status before rerendering the same message. `display:detailed` opens the drilldown, detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste, detailed CWL shows the clan link/tag, CWL league emoji, spin status emoji, observed CWL roster count, current clan member count, and active roster link/title with a manual refresh button, and detailed RAIDS keeps its refresh button. Detailed CWL rows sort by CWL league descending, then active roster title ascending. If `type` is omitted, `display` is ignored.",
+      "`list` without `type` shows one embed grouped by FWA/CWL/RAIDS; `type:FWA|CWL|RAIDS` switches to the per-registry view and accepts `display:minimal|detailed` (default `minimal`).",
+      "Overview/minimal rows show current member counts when persisted, no longer show `leadRole`, and include a member-count `Refresh` button.",
+      "CWL minimal rows show the CWL league emoji plus a short league abbreviation when ranked, use the bot application's `unranked` emoji for unranked/unknown/unsupported league values, and show spin status as emoji only. CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status before rerendering the same message.",
+      "The bot also rolls the latest populated CWL registry season forward into an empty new UTC month on startup so the current-season CWL list keeps showing the configured clan registry without mutating prior seasons.",
+      "`display:detailed` opens the drilldown. detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste.",
+      "Detailed CWL shows the clan link/tag, CWL league emoji, spin status emoji, observed CWL roster count, current clan member count, and active roster link/title with a manual refresh button. CWL minimal and detailed rows sort by assigned roster league/division and bracket, falling back to the actual league label when roster titles are missing or unparseable.",
+      "Detailed RAIDS keeps its refresh button. If `type` is omitted, `display` is ignored.",
       "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
       "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],

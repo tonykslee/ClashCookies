@@ -76,6 +76,7 @@ function compareCurrentEventSummaries(
 
 async function resolveCurrentCwlEventSummariesForClanTags(input: {
   clanTags: string[];
+  season?: string | null;
 }): Promise<Map<string, CwlCurrentEventSummary>> {
   const clanTags = [
     ...new Set(
@@ -86,10 +87,13 @@ async function resolveCurrentCwlEventSummariesForClanTags(input: {
   ];
   if (clanTags.length <= 0) return new Map();
 
+  const requestedSeason = String(input.season ?? "").trim() || null;
+
   const rows = await prisma.cwlEventClan.findMany({
     where: {
       clanTag: { in: clanTags },
       isCurrent: true,
+      ...(requestedSeason ? { season: requestedSeason } : {}),
     },
     select: {
       clanTag: true,
@@ -110,6 +114,7 @@ async function resolveCurrentCwlEventSummariesForClanTags(input: {
     const clanTag = normalizeClanTag(row.clanTag);
     const event = row.eventInstance;
     if (!clanTag || !event) continue;
+    if (requestedSeason && event.season !== requestedSeason) continue;
     const next = {
       id: event.id,
       season: event.season,

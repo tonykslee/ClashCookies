@@ -41,6 +41,7 @@ import {
   WarComplianceService,
   type WarComplianceIssue,
 } from "./WarComplianceService";
+import { WarPlanViolationService } from "./WarPlanViolationService";
 import { FwaPoliceService } from "./FwaPoliceService";
 import {
   fireBattleDayTransitionWar24hRemindersForClan,
@@ -1321,6 +1322,7 @@ export class WarEventLogService {
   private readonly commandPermissions: CommandPermissionService;
   private readonly history: WarEventHistoryService;
   private readonly warCompliance: WarComplianceService;
+  private readonly warPlanViolations: WarPlanViolationService;
   private readonly fwaPolice: FwaPoliceService;
   private readonly postedMessages: PostedMessageService;
   private readonly botLogChannels = new BotLogChannelService();
@@ -1341,8 +1343,14 @@ export class WarEventLogService {
     this.currentSyncs = new PointsSyncService();
     this.syncResolution = new ActiveWarSyncResolutionService(this.currentSyncs);
     this.commandPermissions = new CommandPermissionService();
-    this.history = new WarEventHistoryService(coc);
     this.warCompliance = new WarComplianceService();
+    this.warPlanViolations = new WarPlanViolationService(this.warCompliance);
+    this.history = new WarEventHistoryService(
+      coc,
+      this.currentSyncs,
+      this.warCompliance,
+      this.warPlanViolations,
+    );
     this.fwaPolice = new FwaPoliceService();
     this.postedMessages = new PostedMessageService();
     this.maintenanceWindowService = new MaintenanceWindowService(
@@ -1396,6 +1404,14 @@ export class WarEventLogService {
         );
       });
     }
+
+    await this.warPlanViolations
+      .reconcileDueEvaluations({ limit: 20 })
+      .catch((err) => {
+        console.error(
+          `[war-plan-violation] event=reconcile_failed error=${formatError(err)}`,
+        );
+      });
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
@@ -3003,6 +3019,9 @@ export class WarEventLogService {
         `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`,
       );
     }
+    if (sub.state === "notInWar" && (await this.maybeRecoverEndedWarArchive({ sub }))) {
+      return false;
+    }
     let preserveExistingWarId = false;
     let effectiveWarIdentityChanged = warIdentityChanged;
     if (
@@ -3051,6 +3070,7 @@ export class WarEventLogService {
         })
         .catch(() => null);
     }
+
     const lifecycleState =
       sub.pointsConfirmedByClanMail === null &&
       sub.pointsNeedsValidation === null &&
@@ -3524,6 +3544,79 @@ export class WarEventLogService {
       });
     }
     return eventType === "war_ended";
+  }
+
+  /** Purpose: recover a failed ended-war archive before attack sync can discard the stale rows. */
+  private async maybeRecoverEndedWarArchive(params: {
+    sub: SubscriptionRow;
+  }): Promise<boolean> {
+    if (params.sub.state !== "notInWar") return false;
+    if (!params.sub.startTime) return false;
+
+    const oldAttackRow = await prisma.warAttacks.findFirst({
+      where: {
+        clanTag: params.sub.clanTag,
+        warStartTime: params.sub.startTime,
+      },
+      orderBy: [{ updatedAt: "desc" }, { attackSeenAt: "desc" }],
+      select: {
+        opponentClanTag: true,
+        warId: true,
+      },
+    });
+    const persistedOpponentTag = normalizeTag(params.sub.opponentTag ?? "");
+    const fallbackOpponentTag = normalizeTag(oldAttackRow?.opponentClanTag ?? "");
+    const recoveryOpponentTag = persistedOpponentTag || fallbackOpponentTag;
+    if (!recoveryOpponentTag) return false;
+
+    const exactCanonicalRow = await this.history.resolveExactCanonicalWarEndedHistoryRow(
+      {
+        clanTag: params.sub.clanTag,
+        opponentTag: recoveryOpponentTag,
+        warStartTime: params.sub.startTime,
+      },
+    );
+    if (exactCanonicalRow) return false;
+    if (!oldAttackRow) {
+      console.warn(
+        `[war-events] event=archive_recovery_skipped reason=no_matching_attack_rows guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${params.sub.warId ?? "unknown"} opponent=${persistedOpponentTag || "unknown"}`,
+      );
+      return false;
+    }
+
+    const recoveryWarId = params.sub.warId ?? oldAttackRow?.warId ?? "unknown";
+    try {
+      await this.history.persistWarEndHistory({
+        eventType: "war_ended",
+        guildId: params.sub.guildId,
+        clanTag: params.sub.clanTag,
+        clanName: String(params.sub.clanName ?? params.sub.clanTag).trim() || params.sub.clanTag,
+        opponentTag: recoveryOpponentTag,
+        opponentName:
+          String(params.sub.opponentName ?? "Unknown").trim() || "Unknown",
+        syncNumber: params.sub.syncNum ?? null,
+        notifyRole: params.sub.notifyRole,
+        fwaPoints: params.sub.fwaPoints,
+        opponentFwaPoints: params.sub.opponentFwaPoints,
+        outcome: normalizeOutcome(params.sub.outcome),
+        matchType: params.sub.matchType,
+        warStartFwaPoints: params.sub.warStartFwaPoints,
+        warEndFwaPoints: params.sub.warEndFwaPoints,
+        clanStars: params.sub.clanStars,
+        opponentStars: params.sub.opponentStars,
+        prepStartTime: params.sub.prepStartTime,
+        warStartTime: params.sub.startTime,
+      });
+      console.info(
+        `[war-events] archive_recovery_success guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${recoveryWarId} opponent=${recoveryOpponentTag}`,
+      );
+    } catch (error) {
+      console.error(
+        `[war-events] archive_recovery_failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_start=${params.sub.startTime.toISOString()} war_id=${recoveryWarId} opponent=${recoveryOpponentTag} error=${formatError(error)}`,
+      );
+    }
+
+    return true;
   }
 
   private async syncWarAttacksFromWarSnapshot(params: {

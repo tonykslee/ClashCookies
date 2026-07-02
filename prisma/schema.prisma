@@ -691,6 +691,24 @@ model FwaPoliceHandledViolation {
   @@index([clanTag, warId, createdAt])
 }
 
+enum WarPlanComplianceEvaluationStatus {
+  PENDING
+  COMPLETED
+  INSUFFICIENT_DATA
+  FAILED
+  SKIPPED
+}
+
+enum WarPlanViolationType {
+  EARLY_NON_MIRROR_TRIPLE
+  STRICT_WINDOW_MIRROR_MISS_WIN
+  STRICT_WINDOW_MIRROR_MISS_LOSS
+  EARLY_NON_MIRROR_2STAR
+  ANY_3STAR
+  LOWER20_ANY_STARS
+  OTHER_PLAN_VIOLATION
+}
+
 model CwlEventInstance {
   id             String   @id @default(cuid())
   season         String
@@ -1573,8 +1591,64 @@ model ClanWarHistory {
   opponentTag         String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
+  warPlanEvaluations  WarPlanComplianceEvaluation[]
   @@unique([warStartTime, clanTag, opponentTag])
   @@index([clanTag, warEndTime])
+}
+
+model WarPlanComplianceEvaluation {
+  id                         String                               @id @default(cuid())
+  guildId                    String
+  warId                      Int
+  status                     WarPlanComplianceEvaluationStatus    @default(PENDING)
+  claimToken                 String?
+  claimExpiresAt             DateTime?
+  engineVersion              String?
+  matchType                  WarMatchType?
+  expectedOutcome            String?
+  loseStyle                  LoseStyle?
+  nonMirrorTripleMinClanStars Int?
+  allBasesOpenHoursLeft      Int?
+  rulesFingerprint           String?
+  attemptCount               Int                                  @default(0)
+  lastAttemptAt              DateTime?
+  nextAttemptAt              DateTime?
+  completedAt                DateTime?
+  failureCode                String?
+  failureMessage             String?
+  createdAt                  DateTime                             @default(now())
+  updatedAt                  DateTime                             @updatedAt
+  warHistory                 ClanWarHistory                       @relation(fields: [warId], references: [warId], onDelete: Cascade)
+  violations                 WarPlanViolation[]
+
+  @@unique([guildId, warId])
+  @@index([status, nextAttemptAt])
+  @@index([guildId, status, nextAttemptAt])
+  @@index([guildId, completedAt])
+  @@index([warId])
+}
+
+model WarPlanViolation {
+  id                     String                        @id @default(cuid())
+  evaluationId           String
+  playerTag              String
+  playerNameSnapshot     String
+  playerPosition         Int?
+  townHallLevelSnapshot  Int?
+  violationType          WarPlanViolationType
+  reasonLabel            String?
+  expectedBehavior       String
+  actualBehavior         String
+  breachStarsAt          Int?
+  breachTimeRemaining    String?
+  attackDetails          Json
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
+  evaluation             WarPlanComplianceEvaluation   @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@unique([evaluationId, playerTag])
+  @@index([playerTag])
+  @@index([violationType])
 }
 
 model WarLookup {

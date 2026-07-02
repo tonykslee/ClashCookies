@@ -25,6 +25,8 @@ import {
   type TrackedClan,
   type TrackedClanRep,
   type WarAttacks,
+  type WarPlanComplianceEvaluation,
+  type WarPlanViolation,
   type WarLookup,
 } from "@prisma/client";
 import { formatError } from "../helper/formatError";
@@ -44,6 +46,8 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanPointsSync",
   "ClanWarHistory",
   "ClanWarParticipation",
+  "WarPlanComplianceEvaluation",
+  "WarPlanViolation",
   "CwlAllianceSeasonBaseline",
   "CwlAllianceSeasonBaselineClan",
   "CwlAllianceSeasonBaselineMember",
@@ -105,6 +109,10 @@ type MirrorSyncSourceClient = {
   clanWarParticipation: {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
+  warPlanComplianceEvaluation: {
+    findMany: (args?: unknown) => Promise<WarPlanComplianceEvaluation[]>;
+  };
+  warPlanViolation: { findMany: (args?: unknown) => Promise<WarPlanViolation[]> };
   cwlAllianceSeasonBaseline: {
     findMany: (args?: unknown) => Promise<CwlAllianceSeasonBaseline[]>;
   };
@@ -170,6 +178,14 @@ type MirrorSyncTargetClient = {
   clanWarParticipation: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: ClanWarParticipation[] }) => Promise<CreateManyResult>;
+  };
+  warPlanComplianceEvaluation: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: WarPlanComplianceEvaluation[] }) => Promise<CreateManyResult>;
+  };
+  warPlanViolation: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: WarPlanViolation[] }) => Promise<CreateManyResult>;
   };
   cwlAllianceSeasonBaseline: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -280,6 +296,8 @@ type MirrorSyncSourceRows = {
   ClanPointsSync: ClanPointsSync[];
   ClanWarHistory: ClanWarHistory[];
   ClanWarParticipation: ClanWarParticipation[];
+  WarPlanComplianceEvaluation: WarPlanComplianceEvaluation[];
+  WarPlanViolation: WarPlanViolation[];
   CwlAllianceSeasonBaseline: CwlAllianceSeasonBaseline[];
   CwlAllianceSeasonBaselineClan: CwlAllianceSeasonBaselineClan[];
   CwlAllianceSeasonBaselineMember: CwlAllianceSeasonBaselineMember[];
@@ -564,6 +582,12 @@ export class MirrorSyncService {
       ClanWarParticipation: await sourceClient.clanWarParticipation.findMany({
         orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
       }),
+      WarPlanComplianceEvaluation: await sourceClient.warPlanComplianceEvaluation.findMany({
+        orderBy: [{ guildId: "asc" }, { warId: "asc" }, { id: "asc" }],
+      }),
+      WarPlanViolation: await sourceClient.warPlanViolation.findMany({
+        orderBy: [{ evaluationId: "asc" }, { playerTag: "asc" }, { id: "asc" }],
+      }),
       CwlAllianceSeasonBaseline: await sourceClient.cwlAllianceSeasonBaseline.findMany({
         orderBy: [{ guildId: "asc" }, { season: "asc" }],
       }),
@@ -675,11 +699,18 @@ export class MirrorSyncService {
     }
 
     if (table === "ClanWarHistory") {
+      const deletedViolations = (await tx.warPlanViolation.deleteMany()).count;
+      const deletedEvaluations = (await tx.warPlanComplianceEvaluation.deleteMany()).count;
       const deletedRows = (await tx.clanWarHistory.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as ClanWarHistory[], (batch) =>
         tx.clanWarHistory.createMany({ data: batch }),
       );
-      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+      return {
+        table,
+        sourceRows: rows.length,
+        deletedRows: deletedRows + deletedViolations + deletedEvaluations,
+        insertedRows,
+      };
     }
 
     if (table === "ClanWarParticipation") {
@@ -687,6 +718,24 @@ export class MirrorSyncService {
       const insertedRows = await this.insertBatches(
         rows as ClanWarParticipation[],
         (batch) => tx.clanWarParticipation.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "WarPlanComplianceEvaluation") {
+      const deletedRows = (await tx.warPlanComplianceEvaluation.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as WarPlanComplianceEvaluation[],
+        (batch) => tx.warPlanComplianceEvaluation.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "WarPlanViolation") {
+      const deletedRows = (await tx.warPlanViolation.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as WarPlanViolation[],
+        (batch) => tx.warPlanViolation.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

@@ -14,6 +14,8 @@ CurrentWar
     ->
 ClanWarHistory
 ClanWarParticipation
+WarPlanComplianceEvaluation
+WarPlanViolation
 WarAttacks
 WarLookup
 WarEvent
@@ -141,12 +143,15 @@ Each domain concept must have exactly one authoritative owner.
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
 | Ended-war player participation | ClanWarParticipation |
+| Finalized war-plan evaluation | WarPlanComplianceEvaluation |
+| Finalized war-plan player violation | WarPlanViolation |
 | Current-war attack detail | WarAttacks |
 | Archived war payloads | WarLookup |
 | Points sync metadata | ClanPointsSync |
 | War event idempotency | WarEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
+| Active-runtime war-plan finalization/retry | WarPlanViolationService |
 | Notify overrides | ClanNotifyConfig |
 | Tracked FWA war-roster current identity | FwaTrackedClanWarRosterCurrent.sourceWarId, FwaTrackedClanWarRosterCurrent.sourceWarStartTime, FwaTrackedClanWarRosterCurrent.sourceWarEndTime, FwaTrackedClanWarRosterCurrent.sourceWarState, FwaTrackedClanWarRosterCurrent.sourceCurrentWarUpdatedAt |
 | Current membership snapshot context | TodoPlayerSnapshot.clanTag, TodoPlayerSnapshot.clanName, TodoPlayerSnapshot.clanMembershipObservedAt |
@@ -191,8 +196,14 @@ Rules:
 
 - `ClanWarHistory` is the canonical ended-war record.
 - `ClanWarParticipation` is the canonical per-player ended-war participation record.
+- `WarPlanComplianceEvaluation` is the canonical finalized ended-war compliance record for one guild and one war.
+- `ClanWarHistory` upsert and conditional `WarPlanComplianceEvaluation` enrollment for ended FWA wars happen in one transaction once the authoritative guild scope is known.
+- `WarPlanViolation` is the canonical finalized per-player violation record for one evaluation.
 - `WarAttacks` is current-war operational detail only.
 - `WarLookup` owns archived/raw war payloads.
+- `WarPlanViolationService` owns active-runtime enrollment, canonical correction handling, durable claim/lease ownership, and bounded retry for finalized war-plan compliance history.
+- Completed evaluations with unchanged canonical history are immutable; canonical match/outcome corrections may re-finalize the same evaluation id, while canonical changes away from FWA terminalize the evaluation so it leaves the retry queue.
+- Reconciliation must not select rows that are currently leased by another worker.
 - `/inactive` and other historical commands must read ended-war tables, not historical reuse of `WarAttacks`.
 
 ## 4) Points sync ownership

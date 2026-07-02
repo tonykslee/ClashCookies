@@ -60,6 +60,8 @@ Mirror mode behavior:
   - `ClanPointsSync`
   - `ClanWarHistory`
   - `ClanWarParticipation`
+  - `WarPlanComplianceEvaluation`
+  - `WarPlanViolation`
   - `WarLookup`
   - `ExternalPlayerWeightCurrent`
 - Sync direction is always source/prod -> target/current DATABASE_URL.

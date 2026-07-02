@@ -22,6 +22,48 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
     ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
+    WarPlanComplianceEvaluation: [
+      {
+        id: "eval-1",
+        guildId: "g1",
+        warId: 1,
+        status: "COMPLETED",
+        engineVersion: "war-plan-compliance-v1",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+        nonMirrorTripleMinClanStars: 101,
+        allBasesOpenHoursLeft: 12,
+        rulesFingerprint: "fingerprint-1",
+        attemptCount: 1,
+        lastAttemptAt: new Date("2026-03-30T01:00:00.000Z"),
+        nextAttemptAt: null,
+        completedAt: new Date("2026-03-30T01:00:00.000Z"),
+        failureCode: null,
+        failureMessage: null,
+        createdAt: new Date("2026-03-30T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    ],
+    WarPlanViolation: [
+      {
+        id: "violation-1",
+        evaluationId: "eval-1",
+        playerTag: "#P1",
+        playerNameSnapshot: "Player 1",
+        playerPosition: 1,
+        townHallLevelSnapshot: 16,
+        violationType: "EARLY_NON_MIRROR_TRIPLE",
+        reasonLabel: "tripled non-mirror in strict window",
+        expectedBehavior: "Mirror triple in strict window.",
+        actualBehavior: "#14 (3-star) : tripled non-mirror in strict window",
+        breachStarsAt: 10,
+        breachTimeRemaining: "6h 0m left",
+        attackDetails: { attackDetails: [], breachContext: null },
+        createdAt: new Date("2026-03-30T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    ],
     CwlAllianceSeasonBaseline: [
       {
         id: "baseline1",
@@ -233,6 +275,12 @@ function buildSourceClient(
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
+    warPlanComplianceEvaluation: {
+      findMany: vi.fn(async () => cloneRows(store.WarPlanComplianceEvaluation)),
+    },
+    warPlanViolation: {
+      findMany: vi.fn(async () => cloneRows(store.WarPlanViolation)),
+    },
     cwlAllianceSeasonBaseline: {
       findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaseline)),
     },
@@ -338,6 +386,14 @@ function buildTargetClient(
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
       createMany: createMany("ClanWarParticipation"),
+    },
+    warPlanComplianceEvaluation: {
+      deleteMany: deleteMany("WarPlanComplianceEvaluation"),
+      createMany: createMany("WarPlanComplianceEvaluation"),
+    },
+    warPlanViolation: {
+      deleteMany: deleteMany("WarPlanViolation"),
+      createMany: createMany("WarPlanViolation"),
     },
     cwlAllianceSeasonBaseline: {
       deleteMany: deleteMany("CwlAllianceSeasonBaseline"),
@@ -484,6 +540,10 @@ describe("MirrorSyncService", () => {
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
+    expect(targetStore.WarPlanComplianceEvaluation).toEqual(
+      sourceStore.WarPlanComplianceEvaluation,
+    );
+    expect(targetStore.WarPlanViolation).toEqual(sourceStore.WarPlanViolation);
     expect(targetStore.CwlAllianceSeasonBaseline).toEqual(sourceStore.CwlAllianceSeasonBaseline);
     expect(targetStore.CwlAllianceSeasonBaselineClan).toEqual(sourceStore.CwlAllianceSeasonBaselineClan);
     expect(targetStore.CwlAllianceSeasonBaselineMember).toEqual(sourceStore.CwlAllianceSeasonBaselineMember);

@@ -58,6 +58,147 @@ function normalizeUniqueCwlClanTags(input: string[]): string[] {
   return [...new Set(input.map((tag) => normalizeClanTag(String(tag ?? ""))).filter(Boolean))];
 }
 
+export type CwlRegistryRolloverResult = {
+  targetSeason: string;
+  sourceSeason: string | null;
+  copiedCount: number;
+  skippedReason: string | null;
+  durationMs: number;
+};
+
+function logCwlRegistryRollover(input: {
+  targetSeason: string;
+  sourceSeason: string | null;
+  copiedCount: number;
+  skippedReason: string | null;
+  durationMs: number;
+  error?: unknown;
+}, level: "info" | "error" = "info"): void {
+  const parts = [
+    `[tracked-clan] event=cwl_registry_rollover`,
+    `target_season=${input.targetSeason}`,
+    `source_season=${input.sourceSeason ?? "none"}`,
+    `copied_count=${input.copiedCount}`,
+    `duration_ms=${input.durationMs}`,
+  ];
+  if (input.skippedReason) {
+    parts.push(`skipped_reason=${input.skippedReason}`);
+  }
+  if (input.error) {
+    parts.push(`error=${formatError(input.error)}`);
+  }
+  const message = parts.join(" ");
+  if (level === "error") {
+    console.error(message);
+    return;
+  }
+  console.info(message);
+}
+
+/** Purpose: roll the latest populated CWL registry season forward into an empty target season. */
+export async function rolloverCwlTrackedClanRegistryForSeason(input?: {
+  season?: string;
+  nowMs?: number;
+}): Promise<CwlRegistryRolloverResult> {
+  const startedAtMs = Date.now();
+  const targetSeason = input?.season ?? resolveCurrentCwlSeasonKey(input?.nowMs);
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const existingTargetRow = await tx.cwlTrackedClan.findFirst({
+        where: { season: targetSeason },
+        select: { id: true },
+      });
+      if (existingTargetRow) {
+        return {
+          targetSeason,
+          sourceSeason: null,
+          copiedCount: 0,
+          skippedReason: "target_season_already_populated",
+        };
+      }
+
+      const sourceSeasonRow = await tx.cwlTrackedClan.findFirst({
+        where: {
+          season: {
+            lt: targetSeason,
+          },
+        },
+        orderBy: [
+          { season: "desc" },
+          { createdAt: "desc" },
+          { tag: "asc" },
+        ],
+        select: { season: true },
+      });
+      const sourceSeason = sourceSeasonRow?.season ?? null;
+      if (!sourceSeason) {
+        return {
+          targetSeason,
+          sourceSeason: null,
+          copiedCount: 0,
+          skippedReason: "no_prior_non_empty_season",
+        };
+      }
+
+      const sourceRows = await tx.cwlTrackedClan.findMany({
+        where: { season: sourceSeason },
+        orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+        select: {
+          tag: true,
+          name: true,
+          leagueLabel: true,
+        },
+      });
+      if (sourceRows.length <= 0) {
+        return {
+          targetSeason,
+          sourceSeason,
+          copiedCount: 0,
+          skippedReason: "source_season_empty",
+        };
+      }
+
+      const copied = await tx.cwlTrackedClan.createMany({
+        data: sourceRows.map((row) => ({
+          season: targetSeason,
+          tag: normalizeClanTag(row.tag) || row.tag,
+          name: row.name,
+          leagueLabel: row.leagueLabel,
+        })),
+        skipDuplicates: true,
+      });
+
+      return {
+        targetSeason,
+        sourceSeason,
+        copiedCount: copied.count,
+        skippedReason: copied.count > 0 ? null : "no_new_rows_copied",
+      };
+    });
+
+    const completed: CwlRegistryRolloverResult = {
+      ...result,
+      durationMs: Date.now() - startedAtMs,
+    };
+    logCwlRegistryRollover(completed);
+    return completed;
+  } catch (error) {
+    const failure: CwlRegistryRolloverResult = {
+      targetSeason,
+      sourceSeason: null,
+      copiedCount: 0,
+      skippedReason: "failed",
+      durationMs: Date.now() - startedAtMs,
+    };
+    logCwlRegistryRollover({
+      ...failure,
+      error,
+    }, "error");
+    throw error;
+  }
+}
+
 type CwlTrackedClanRegistryCreationResult = {
   existingTags: string[];
   missingTags: string[];
