@@ -4,6 +4,7 @@ import { PlayerLinkSyncService } from "../src/services/PlayerLinkSyncService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
+import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -32,6 +33,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   playerCurrent: {
+    findMany: vi.fn(),
+  },
+  warPlanComplianceEvaluation: {
     findMany: vi.fn(),
   },
   trackedClanRep: {
@@ -80,6 +84,13 @@ import {
   Link,
 } from "../src/commands/Link";
 import { buildDescriptionEmbeds } from "../src/commands/link/LinkListRender";
+import {
+  formatLinkListViolationCountLabel,
+  getLinkListSortModeLabel,
+  getNextLinkListSortMode,
+  normalizeLinkListSortMode,
+  sortLinkListRows,
+} from "../src/commands/link/LinkListRender";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import {
   buildReminderLinkButtonCustomId,
@@ -348,6 +359,7 @@ describe("/link run", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.warPlanComplianceEvaluation.findMany.mockReset();
     prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
@@ -358,6 +370,7 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.warPlanComplianceEvaluation.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
   });
@@ -857,6 +870,19 @@ describe("/link run", () => {
   });
 
   it("renders /link list with layered fallback weights and inline padded rows", async () => {
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockResolvedValue({
+        period: "30d",
+        cutoff: new Date("2026-06-01T00:00:00.000Z"),
+        clanTag: "#PQL0289",
+        hasCompletedEvaluations: false,
+        evaluatedWarCount: 0,
+        violationCountByPlayerTag: new Map(),
+      } as any);
     prismaMock.playerLink.findMany.mockResolvedValue([
       {
         playerTag: "#PYLQ0289",
@@ -1000,6 +1026,7 @@ describe("/link run", () => {
 
     expect(description).not.toContain("<@111111111111111111>");
     expect(description).not.toContain("|");
+    expect(violationSpy).not.toHaveBeenCalled();
     const rows = getInlineRows(description);
     expect(rows).toHaveLength(3);
     const linkedRow = getInlineRowSegments(rows[0] ?? "");
@@ -1680,11 +1707,12 @@ describe("/link run", () => {
       discordDisplayName: "Persisted Sin",
       discordUsername: "Persisted Sin",
       weightLabel: "166k",
-      inactivityLabel: "—",
+      inactivityLabel: "\u2014",
       clanRoleLabel: "lead",
       playerTag: "#QR9R0LGJ9",
+      violationsLabel: "0",
       linkedStatusMarkerOverride: "<:badge:1>",
-      rightMarker: "🧍",
+      rightMarker: "\u{1F9CD}",
       isLinked: true,
     };
     const linkedNonRepRow = {
@@ -1696,6 +1724,7 @@ describe("/link run", () => {
       inactivityLabel: "—",
       clanRoleLabel: "co",
       playerTag: "#LCUV0289",
+      violationsLabel: "0",
       rightMarker: null,
       isLinked: true,
     };
@@ -1708,6 +1737,7 @@ describe("/link run", () => {
       inactivityLabel: "—",
       clanRoleLabel: "—",
       playerTag: "#PQL0289",
+      violationsLabel: "—",
       linkedStatusMarkerOverride: "<:badge:2>",
       isLinked: false,
     };
@@ -1729,61 +1759,20 @@ describe("/link run", () => {
       sortMode: "player-tags",
     });
 
-    const defaultRowsOnly = getInlineRows(defaultRows.join("\n"));
-    const playerTagRowsOnly = getInlineRows(playerTagRows.join("\n"));
-    const linkedDefaultRow = defaultRowsOnly[0] ?? "";
-    const linkedDefaultSecondRow = defaultRowsOnly[1] ?? "";
-    const unlinkedDefaultRow = defaultRowsOnly[2] ?? "";
-    const linkedTagRow = playerTagRowsOnly[0] ?? "";
-    const linkedTagSecondRow = playerTagRowsOnly[1] ?? "";
-    const unlinkedTagRow = playerTagRowsOnly[2] ?? "";
-
-    const linkedDefaultParts = getInlineRowSegments(linkedDefaultRow);
-    const linkedDefaultSecondParts = getInlineRowSegments(linkedDefaultSecondRow);
-    const unlinkedDefaultParts = getInlineRowSegments(unlinkedDefaultRow);
-    expect(linkedDefaultParts.status).toBe("<:badge:1>");
-    expect(linkedDefaultParts.townHall).toBe("18");
-    expect(linkedDefaultParts.playerName.trim()).toBe("Persisted Sin");
-    expect(linkedDefaultParts.value).toBe("Persisted Sin");
-    expect(linkedDefaultParts.marker).toBe("🧍");
-    expect(linkedDefaultSecondParts.status).toBe("✅");
-    expect(linkedDefaultSecondParts.townHall).toBe("17");
-    expect(linkedDefaultSecondParts.playerName.trim()).toBe("Linked Two");
-    expect(linkedDefaultSecondParts.marker).toBe("");
-    expect(unlinkedDefaultParts.status).toBe("❌");
-    expect(unlinkedDefaultParts.townHall).toBe("14");
-    expect(unlinkedDefaultParts.playerName.trim()).toBe("Unlinked Player");
-    expect(unlinkedDefaultParts.value).toBe("—");
-    expect(unlinkedDefaultParts.marker).toBe("");
-    expect(linkedDefaultRow).toContain("<:badge:1>");
-    expect(linkedDefaultRow).not.toContain("✅");
-    expect(linkedDefaultRow).toContain("🧍");
-    expect(linkedDefaultSecondRow).toContain("✅");
-    expect(linkedDefaultSecondRow).not.toContain("<:badge:1>");
-    expect(linkedDefaultSecondRow).not.toContain("🧍");
-    expect(unlinkedDefaultRow).toContain("❌");
-    expect(unlinkedDefaultRow).not.toContain("<:badge:2>");
-    expect(linkedDefaultRow).not.toContain("#");
-    expect(unlinkedDefaultRow).not.toContain("#");
-
-    const linkedTagParts = getInlineRowSegments(linkedTagRow);
-    const linkedTagSecondParts = getInlineRowSegments(linkedTagSecondRow);
-    const unlinkedTagParts = getInlineRowSegments(unlinkedTagRow);
-    expect(linkedTagParts.status).toBe("<:badge:1>");
-    expect(linkedTagParts.value).toBe("#QR9R0LGJ9");
-    expect(linkedTagParts.townHall).toBe("18");
-    expect(linkedTagParts.playerName.trim()).toBe("Persisted Sin");
-    expect(linkedTagParts.marker).toBe("🧍");
-    expect(linkedTagSecondParts.status).toBe("✅");
-    expect(linkedTagSecondParts.value).toBe("#LCUV0289");
-    expect(linkedTagSecondParts.townHall).toBe("17");
-    expect(linkedTagSecondParts.playerName.trim()).toBe("Linked Two");
-    expect(linkedTagSecondParts.marker).toBe("");
-    expect(unlinkedTagParts.status).toBe("❌");
-    expect(unlinkedTagParts.value).toBe("#PQL0289");
-    expect(unlinkedTagParts.townHall).toBe("14");
-    expect(unlinkedTagParts.playerName.trim()).toBe("Unlinked Player");
-
+    expect(defaultRows).toEqual([
+      "Linked Users: 2",
+      "<:badge:1> `18` `  Persisted Sin` `Persisted Sin` \u{1F9CD}",
+      "\u2705 `17` `     Linked Two` `   Linked Two`",
+      "Unlinked users: 1",
+      "\u274C `14` `Unlinked Player` `            \u2014`",
+    ])
+    expect(playerTagRows).toEqual([
+      "Linked Users: 2",
+      "<:badge:1> `18` `  Persisted Sin` `#QR9R0LGJ9` \u{1F9CD}",
+      "\u2705 `17` `     Linked Two` ` #LCUV0289`",
+      "Unlinked users: 1",
+      "\u274C `14` `Unlinked Player` `  #PQL0289`",
+    ])
     expect(getLinkListDefaultColumnsForSortModeForTest("discord")).toEqual([
       "townhall",
       "player-name",
@@ -1794,8 +1783,142 @@ describe("/link run", () => {
       "player-name",
       "player-tag",
     ]);
+    expect(getLinkListDefaultColumnsForSortModeForTest("violations")).toEqual([
+      "townhall",
+      "player-name",
+      "violations",
+    ]);
     expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
+    expect(getLinkListSelectableColumnsForTest()).toContain("violations");
     expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
+    expect(getLinkListColumnLabelForTest("violations")).toBe("Violations (30d)");
+  });
+
+  it("sorts violation counts within one section by count, known zero, null, name, tag, and default index", () => {
+    const sorted = sortLinkListRows(
+      [
+        {
+          isLinked: true,
+          playerTag: "#Z99999999",
+          defaultIndex: 6,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Zulu",
+          discordSort: "Zulu",
+          violationsValue: 5,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#B22222222",
+          defaultIndex: 5,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "alpha",
+          discordSort: "alpha",
+          violationsValue: 2,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#A11111111",
+          defaultIndex: 4,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Alpha",
+          discordSort: "Alpha",
+          violationsValue: 2,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#C33333333",
+          defaultIndex: 3,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Bravo",
+          discordSort: "Bravo",
+          violationsValue: 0,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#D44444444",
+          defaultIndex: 2,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Bravo",
+          discordSort: "Bravo",
+          violationsValue: 0,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#E55555555",
+          defaultIndex: 1,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Charlie",
+          discordSort: "Charlie",
+          violationsValue: null,
+          row: {} as any,
+        },
+        {
+          isLinked: true,
+          playerTag: "#E55555555",
+          defaultIndex: 9,
+          weightValue: null,
+          inactivityDays: null,
+          inactivityMissedWars: null,
+          inactivityParticipationWars: null,
+          clanRoleSortScore: 0,
+          playerSort: "Charlie",
+          discordSort: "Charlie",
+          violationsValue: null,
+          row: {} as any,
+        },
+      ],
+      "violations",
+    );
+
+    expect(sorted.map((row) => row.violationsValue)).toEqual([5, 2, 2, 0, 0, null, null]);
+    expect(sorted.map((row) => row.playerSort)).toEqual([
+      "Zulu",
+      "Alpha",
+      "alpha",
+      "Bravo",
+      "Bravo",
+      "Charlie",
+      "Charlie",
+    ]);
+    expect(sorted.map((row) => row.playerTag)).toEqual([
+      "#Z99999999",
+      "#A11111111",
+      "#B22222222",
+      "#C33333333",
+      "#D44444444",
+      "#E55555555",
+      "#E55555555",
+    ]);
+    expect(sorted.map((row) => row.defaultIndex)).toEqual([6, 4, 5, 3, 2, 1, 9]);
   });
 
   it("recognizes rows with up to five inline-code cells for chunking", () => {
@@ -1848,7 +1971,7 @@ describe("/link run", () => {
       "111111111111111111",
       "#PQL0289",
       "weight",
-      ["townhall", "player-name", "weight", "clan-role", "player-tag"],
+      ["townhall", "player-name", "weight", "clan-role", "violations"],
     );
     expect(isLinkListColumnsSelectCustomId(customId)).toBe(true);
     const parsed = parseLinkListColumnsSelectCustomIdForTest(customId);
@@ -1861,21 +1984,41 @@ describe("/link run", () => {
         "player-name",
         "weight",
         "clan-role",
-        "player-tag",
+        "violations",
       ],
     });
+    expect(customId).toContain("v30");
     expect(customId.length).toBeLessThan(100);
+  });
+
+  it("normalizes the violations sort mode and keeps the cycle stable", () => {
+    expect(normalizeLinkListSortMode("violations")).toBe("violations");
+    expect(getLinkListSortModeLabel("violations")).toBe("Violations (30d)");
+    expect(getNextLinkListSortMode("inactivity")).toBe("violations");
+    expect(getNextLinkListSortMode("violations")).toBe("discord");
+  });
+
+  it("renders violation counts with known zeros and unavailable values", () => {
+    expect(formatLinkListViolationCountLabel(4)).toBe("4");
+    expect(formatLinkListViolationCountLabel(0)).toBe("0");
+    expect(formatLinkListViolationCountLabel(null)).toBe("—");
   });
 
   it("normalizes duplicate and unknown columns while keeping at most five", () => {
     const parsed = parseLinkListColumnsSelectCustomIdForTest(
-      "link-list-columns:111111111111111111:#PQL0289:discord:th.pn.pn.zz.wt.ia.cr.pt",
+      "link-list-columns:111111111111111111:#PQL0289:discord:th.pn.pn.zz.wt.ia.cr.v30.pt",
     );
     expect(parsed).toMatchObject({
       userId: "111111111111111111",
       clanTag: "#PQL0289",
       sortMode: "discord",
-      columns: ["townhall", "player-name", "weight", "inactivity", "clan-role"],
+      columns: [
+        "townhall",
+        "player-name",
+        "weight",
+        "inactivity",
+        "clan-role",
+      ],
     });
   });
 
@@ -1892,6 +2035,7 @@ describe("/link run", () => {
           inactivityLabel: "\u2014 2WAR",
           clanRoleLabel: "lead",
           playerTag: "#QR9R0LGJ9",
+          violationsLabel: "2",
           rightMarker: "\u{1F9CD}",
           isLinked: true,
         },
@@ -2825,6 +2969,83 @@ describe("/link list select menu", () => {
     expect(reply).not.toHaveBeenCalled();
   });
 
+  it("loads persisted violations once when the violations column is selected and renders known zeroes", async () => {
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PQL0289",
+        playerName: "Alpha Select",
+        townHall: 18,
+        rank: 18,
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Beta Select",
+        townHall: 17,
+        rank: 17,
+        weight: 120000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockResolvedValue({
+        period: "30d",
+        cutoff: new Date("2026-06-01T00:00:00.000Z"),
+        clanTag: "#PQL0289",
+        hasCompletedEvaluations: true,
+        evaluatedWarCount: 2,
+        violationCountByPlayerTag: new Map([["#PQL0289", 2]]),
+      } as any);
+
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name", "discord-display-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: {
+        members: {
+          cache: new Map([
+            ["111111111111111111", { displayName: "Select Display Name" }],
+          ]),
+        },
+      },
+      client: { users: { cache: new Map() } },
+      values: ["violations"],
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    expect(violationSpy).toHaveBeenCalledTimes(1);
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const rows = getInlineRows(String(payload.embeds[0].toJSON().description ?? ""));
+    expect(rows).toHaveLength(2);
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("`2`");
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("`0`");
+    expect(payload.components[1].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+  });
+
   it("keeps previously selected columns ahead of new selections", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -3234,7 +3455,8 @@ describe("/link list sort button", () => {
         | "player-tags"
         | "player"
         | "clan-rank"
-        | "inactivity",
+        | "inactivity"
+        | "violations",
     ) => {
       const deferUpdate = vi.fn().mockResolvedValue(undefined);
       const editReply = vi.fn().mockResolvedValue(undefined);
@@ -3263,6 +3485,23 @@ describe("/link list sort button", () => {
       expect(cocService.getClan).not.toHaveBeenCalled();
       return { deferUpdate, editReply, update, reply };
     };
+
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockResolvedValue({
+        period: "30d",
+        cutoff: now,
+        clanTag: "#PQL0289",
+        hasCompletedEvaluations: true,
+        evaluatedWarCount: 3,
+        violationCountByPlayerTag: new Map([
+          ["#QGRJ2222", 3],
+          ["#PYLQ0289", 2],
+        ]),
+      } as any);
 
     prismaMock.playerActivity.findMany.mockResolvedValue([
       {
@@ -3330,6 +3569,7 @@ describe("/link list sort button", () => {
     expect(payloadPlayerTags.components[1].components[0].toJSON().label).toBe(
       "Sort: Player Tags",
     );
+    expect(violationSpy).not.toHaveBeenCalled();
 
     const fromPlayerTags = await runSortClick("player-tags");
     expect(fromPlayerTags.deferUpdate).toHaveBeenCalledTimes(1);
@@ -3410,25 +3650,46 @@ describe("/link list sort button", () => {
       "7d 1WAR",
       "\u2014",
     ]);
-
     const fromInactivity = await runSortClick("inactivity");
     expect(fromInactivity.deferUpdate).toHaveBeenCalledTimes(1);
     expect(fromInactivity.editReply).toHaveBeenCalledTimes(1);
     expect(fromInactivity.update).not.toHaveBeenCalled();
-    const payloadInactivity = fromInactivity.editReply.mock.calls[0]?.[0] as any;
-    const embedInactivity = payloadInactivity.embeds[0].toJSON();
-    expect(embedInactivity.footer?.text).toBe("Sort: Discord Name");
-    expect(payloadInactivity.components[0].components[0].toJSON().label).toBe(
+    const payloadViolations = fromInactivity.editReply.mock.calls[0]?.[0] as any;
+    const embedViolations = payloadViolations.embeds[0].toJSON();
+    expect(embedViolations.footer?.text).toBe("Sort: Violations (30d)");
+    expect(payloadViolations.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
-    expect(payloadInactivity.components[1].components[0].toJSON().label).toBe(
-      "Sort: Discord Name",
+    expect(payloadViolations.components[1].components[0].toJSON().label).toBe(
+      "Sort: Violations (30d)",
     );
-    expect(inactivityRows.map((row) => getInlineRowSegments(row).playerName.trim())).toEqual([
+    const violationRows = getInlineRows(String(embedViolations.description ?? ""));
+    expect(violationRows).toHaveLength(3);
+    expect(violationRows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "3",
+      "2",
+      "0",
+    ]);
+    expect(violationRows.map((row) => getInlineRowSegments(row).playerName.trim())).toEqual([
       "Alpha",
       "Charlie",
       "Bravo",
     ]);
+
+    const fromViolations = await runSortClick("violations");
+    expect(fromViolations.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(fromViolations.editReply).toHaveBeenCalledTimes(1);
+    expect(fromViolations.update).not.toHaveBeenCalled();
+    const payloadDiscordAgain = fromViolations.editReply.mock.calls[0]?.[0] as any;
+    const embedDiscordAgain = payloadDiscordAgain.embeds[0].toJSON();
+    expect(embedDiscordAgain.footer?.text).toBe("Sort: Discord Name");
+    expect(payloadDiscordAgain.components[0].components[0].toJSON().label).toBe(
+      "Refresh Data",
+    );
+    expect(payloadDiscordAgain.components[1].components[0].toJSON().label).toBe(
+      "Sort: Discord Name",
+    );
+    expect(violationSpy).toHaveBeenCalled();
   });
 
   it("preserves selected columns when cycling sort mode", async () => {
@@ -3715,9 +3976,9 @@ describe("/link list sort button", () => {
     ).toBe(true);
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).toMatch(/^#[A-Z0-9]+$/u);
-    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
-      LINK_LIST_ROW_LINE_RE,
-    );
+    expect(
+      getInlineRows(payload.embeds.at(-1)?.toJSON().description ?? "")[0] ?? "",
+    ).toMatch(LINK_LIST_ROW_LINE_RE);
     expect(
       payload.embeds.reduce(
         (sum: number, embed: { toJSON: () => any }) =>
@@ -3730,6 +3991,124 @@ describe("/link list sort button", () => {
     expect(lastRow.playerName.trim()).toHaveLength(15);
     expect(lastRow.value.trim()).toMatch(/^#[A-Z0-9]+$/u);
   }, 30000);
+
+  it("logs a sanitized aggregate warning and still renders when violation counts fail", async () => {
+    const guildId = "guild-1";
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        townHall: 18,
+        role: "member",
+        rank: 1,
+        weight: 145000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        townHall: 17,
+        role: "member",
+        rank: 2,
+        weight: 144000,
+        sourceSyncedAt: new Date("2026-03-21T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      tag: "#PQL0289",
+      clanBadge: null,
+      name: "Alpha Clan",
+    });
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockRejectedValueOnce(
+        {
+          code: "987654321012345678",
+          status: "#SECRETPLAYER",
+          name: "attack evidence should never leak",
+          message:
+            "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
+        },
+      );
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const editReply = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: buildLinkListSortButtonCustomId(
+        "111111111111111111",
+        "#PQL0289",
+        "inactivity",
+        getLinkListDefaultColumnsForSortModeForTest("inactivity"),
+      ),
+      user: { id: "111111111111111111" },
+      guildId,
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      deferUpdate,
+      editReply,
+      update,
+      reply,
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(deferUpdate).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    const payload = editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => getInlineRowSegments(row).value.trim())).toEqual([
+      "—",
+      "—",
+    ]);
+
+    const warning = String(warningSpy.mock.calls[0]?.[0] ?? "");
+    expect(warning).toContain("event=link_list_violations_failed");
+    expect(warning).toContain(`guildId=${guildId}`);
+    expect(warning).toContain("clanTag=#PQL0289");
+    expect(warning).toContain("sortMode=violations");
+    expect(warning).toContain("errorClass=unknown");
+    expect(warning).not.toContain("#SECRETPLAYER");
+    expect(warning).not.toContain("987654321012345678");
+    expect(warning).not.toContain("attack evidence should never leak");
+    expect(warning).not.toContain("message");
+
+    warningSpy.mockClear();
+    violationSpy.mockReset();
+    violationSpy.mockRejectedValueOnce({
+      code: "P2022",
+      status: "#SECRETPLAYER",
+      name: "attack evidence should never leak",
+      message:
+        "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
+    });
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(editReply).toHaveBeenCalledTimes(2);
+    const prismaWarning = String(warningSpy.mock.calls[0]?.[0] ?? "");
+    expect(prismaWarning).toContain("errorCode=P2022");
+    expect(prismaWarning).not.toContain("#SECRETPLAYER");
+    expect(prismaWarning).not.toContain("987654321012345678");
+    expect(prismaWarning).not.toContain("attack evidence should never leak");
+
+    warningSpy.mockRestore();
+    violationSpy.mockRestore();
+  });
 
   it("renders a realistic 50-member Discord Name view without aggressively trimming", async () => {
     const rows = makeLinkListClanMembers({
@@ -3750,6 +4129,19 @@ describe("/link list sort button", () => {
       })),
     );
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockResolvedValue({
+        countsByPlayerTag: new Map(),
+        totalViolationCount: 0,
+        totalAffectedWarCount: 0,
+        totalTrackedPlayerCount: 0,
+        totalEvaluatedPlayerCount: 0,
+        hasCompletedEvaluations: false,
+      } as any);
 
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -3759,7 +4151,8 @@ describe("/link list sort button", () => {
       customId: buildLinkListSortButtonCustomId(
         "111111111111111111",
         "#PQL0289",
-        "inactivity",
+        "violations",
+        getLinkListDefaultColumnsForSortModeForTest("violations"),
       ),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
@@ -3777,6 +4170,7 @@ describe("/link list sort button", () => {
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
+    expect(violationSpy).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds.length).toBeGreaterThanOrEqual(1);
     expect(payload.embeds.length).toBeLessThanOrEqual(2);
@@ -3792,16 +4186,16 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds[0].toJSON().footer).toBeUndefined();
     expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Discord Name");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
-    expect(getInlineRows(payload.embeds[1].toJSON().description ?? "")[0] ?? "").toMatch(
-      LINK_LIST_ROW_LINE_RE,
-    );
+    expect(
+      getInlineRows(payload.embeds.at(-1)?.toJSON().description ?? "")[0] ?? "",
+    ).toMatch(LINK_LIST_ROW_LINE_RE);
     const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
     expect(lastRow.playerName.trim()).toHaveLength(15);
     expect(lastRow.value.length).toBeGreaterThan(0);
+    violationSpy.mockRestore();
   }, 30000);
 
   it("renders a realistic 50-member Weight view without aggressively trimming", async () => {
@@ -3865,14 +4259,13 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds[0].toJSON().footer).toBeUndefined();
     expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Weight Desc");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
     expect(getInlineRowSegments(renderedRows[0] ?? "").value).not.toBe("");
     expect(
-      String(payload.embeds[1]?.toJSON().description ?? "").length === 0 ||
+      String(payload.embeds.at(-1)?.toJSON().description ?? "").length === 0 ||
         LINK_LIST_ROW_LINE_RE.test(
-          getInlineRows(payload.embeds[1]?.toJSON().description ?? "")[0] ?? "",
+          getInlineRows(payload.embeds.at(-1)?.toJSON().description ?? "")[0] ?? "",
         ),
     ).toBe(true);
     const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
@@ -4766,6 +5159,3 @@ describe("/reminder link interactions", () => {
     ).toBe(true);
   });
 });
-
-
-
