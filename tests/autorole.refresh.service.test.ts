@@ -499,6 +499,9 @@ describe("AutoRoleRefreshService", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           guildId: "111111111111111111",
+          scope: "USER",
+          trigger: "MANUAL",
+          scopeTargetId: userId,
           status: "RUNNING",
         }),
       }),
@@ -1843,6 +1846,17 @@ describe("AutoRoleRefreshService", () => {
       skippedCount: 1,
       failedCount: 0,
     });
+    expect(prismaMock.autoRoleSyncRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          guildId: "111111111111111111",
+          scope: "GUILD",
+          trigger: "MANUAL",
+          scopeTargetId: null,
+          status: "RUNNING",
+        }),
+      }),
+    );
   });
 
   it("aborts guild refresh before applying roles when a tracked clan fetch fails", async () => {
@@ -2020,6 +2034,17 @@ describe("AutoRoleRefreshService", () => {
       skippedCount: 0,
       failedCount: 0,
     });
+    expect(prismaMock.autoRoleSyncRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          guildId: "111111111111111111",
+          scope: "ROLE",
+          trigger: "MANUAL",
+          scopeTargetId: managedRoleId,
+          status: "RUNNING",
+        }),
+      }),
+    );
   });
 
   it("refreshes a tracked-clan clan role from the owning clan profile without a full guild fetch", async () => {

@@ -1,5 +1,5 @@
 import { Guild } from "discord.js";
-import { AutoRoleRuleType } from "@prisma/client";
+import { AutoRoleRunScope, AutoRoleRunTrigger, AutoRoleRuleType } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
@@ -52,6 +52,10 @@ export type AutoRoleRefreshTelemetry = {
   refreshId?: string;
   refreshStartedAtMs?: number;
   schedulerSource?: string;
+};
+
+type AutoRoleRefreshRunContext = {
+  trigger: AutoRoleRunTrigger;
 };
 
 export type AutoRoleLinkedPlayerRefreshResult = {
@@ -1033,6 +1037,17 @@ function buildMemberSourceSummary(input: {
   playerCurrentPersistedRowCount: number;
   trackedClanOverlayCount: number;
 }): AutoRoleRefreshMemberSourceSummary {
+  let memberSourceMode: AutoRoleRefreshMemberSourceMode;
+  if (input.targetedFetchFailedCount > 0) {
+    memberSourceMode = "partial_candidates";
+  } else if (input.visitorRoleAdditionsSuppressed) {
+    memberSourceMode = "partial_candidates";
+  } else if (input.cacheCoverageComplete) {
+    memberSourceMode = "cache_complete";
+  } else {
+    memberSourceMode = "targeted_candidates";
+  }
+
   return {
     scope: input.scope,
     guildMemberCount: input.guildMemberCount,
@@ -1042,12 +1057,7 @@ function buildMemberSourceSummary(input: {
     targetedFetchRequestedCount: input.targetedFetchRequestedCount,
     targetedFetchSucceededCount: input.targetedFetchSucceededCount,
     targetedFetchFailedCount: input.targetedFetchFailedCount,
-    memberSourceMode:
-      input.targetedFetchFailedCount > 0 || input.visitorRoleAdditionsSuppressed
-        ? "partial_candidates"
-        : input.cacheCoverageComplete
-          ? "cache_complete"
-          : "targeted_candidates",
+    memberSourceMode,
     visitorRoleAdditionsSuppressed: input.visitorRoleAdditionsSuppressed,
     playerCurrentPersistedRowCount: input.playerCurrentPersistedRowCount,
     trackedClanOverlayCount: input.trackedClanOverlayCount,
@@ -2403,6 +2413,7 @@ export class AutoRoleRefreshService {
     cocService?: CoCService | null;
     now?: Date;
     telemetry?: AutoRoleRefreshTelemetry | null;
+    trigger?: AutoRoleRunTrigger;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -2411,6 +2422,9 @@ export class AutoRoleRefreshService {
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
       telemetry: input.telemetry ?? null,
+      runContext: {
+        trigger: input.trigger ?? AutoRoleRunTrigger.MANUAL,
+      },
     });
   }
 
@@ -2421,6 +2435,7 @@ export class AutoRoleRefreshService {
     cocService?: CoCService | null;
     now?: Date;
     telemetry?: AutoRoleRefreshTelemetry | null;
+    trigger?: AutoRoleRunTrigger;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -2429,6 +2444,9 @@ export class AutoRoleRefreshService {
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
       telemetry: input.telemetry ?? null,
+      runContext: {
+        trigger: input.trigger ?? AutoRoleRunTrigger.MANUAL,
+      },
     });
   }
 
@@ -2439,6 +2457,7 @@ export class AutoRoleRefreshService {
     cocService?: CoCService | null;
     now?: Date;
     telemetry?: AutoRoleRefreshTelemetry | null;
+    trigger?: AutoRoleRunTrigger;
   }): Promise<AutoRoleRefreshResult> {
     return this.refresh({
       guild: input.guild,
@@ -2447,6 +2466,9 @@ export class AutoRoleRefreshService {
       cocService: input.cocService ?? null,
       now: input.now ?? new Date(),
       telemetry: input.telemetry ?? null,
+      runContext: {
+        trigger: input.trigger ?? AutoRoleRunTrigger.MANUAL,
+      },
     });
   }
 
@@ -2457,11 +2479,26 @@ export class AutoRoleRefreshService {
     cocService?: CoCService | null;
     now: Date;
     telemetry?: AutoRoleRefreshTelemetry | null;
+    runContext: AutoRoleRefreshRunContext;
   }): Promise<AutoRoleRefreshResult> {
     const refreshStartedAtMs = input.telemetry?.refreshStartedAtMs ?? Date.now();
+    const scope = input.scope.kind === "guild"
+      ? AutoRoleRunScope.GUILD
+      : input.scope.kind === "role"
+        ? AutoRoleRunScope.ROLE
+        : AutoRoleRunScope.USER;
+    const scopeTargetId =
+      input.scope.kind === "guild"
+        ? null
+        : input.scope.kind === "role"
+          ? input.scope.discordRoleId
+          : input.scope.discordUserId;
     const run = await prisma.autoRoleSyncRun.create({
       data: {
         guildId: input.guildId,
+        scope,
+        trigger: input.runContext.trigger,
+        scopeTargetId,
         status: "RUNNING",
         startedAt: input.now,
         evaluatedCount: 0,

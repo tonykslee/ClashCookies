@@ -1,4 +1,5 @@
 import { type Client } from "discord.js";
+import { AutoRoleRunScope, AutoRoleRunTrigger } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
@@ -40,7 +41,9 @@ type AutoRoleSchedulerGuildConfigRow = {
 
 type AutoRoleSchedulerGuildRunRow = {
   guildId: string;
-  startedAt: Date;
+  _max: {
+    finishedAt: Date | null;
+  };
 };
 
 type AutoRoleScheduledGuildWork = {
@@ -164,11 +167,11 @@ export class AutoRoleSchedulerService {
       displayName: AUTOROLE_SCHEDULER_DISPLAY_NAME,
       intervalMs: this.intervalMs,
       nextDueAt: new Date(normalizedNowMs + this.intervalMs),
-      }).catch((err) => {
-        dozzleLog.warn(
-          `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
-        );
-      });
+    }).catch((err) => {
+      dozzleLog.warn(
+        `[autorole-scheduler] status_update_failed job_key=${AUTOROLE_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
+      );
+    });
     try {
       const configs = await prisma.autoRoleGuildConfig.findMany({
         where: {
@@ -213,20 +216,23 @@ export class AutoRoleSchedulerService {
         };
       }
 
-      const lastRuns = await prisma.autoRoleSyncRun.findMany({
+      const lastCompletedRuns = await prisma.autoRoleSyncRun.groupBy({
+        by: ["guildId"],
         where: {
           guildId: { in: configRows.map((row) => row.guildId) },
+          scope: AutoRoleRunScope.GUILD,
+          trigger: AutoRoleRunTrigger.SCHEDULED,
+          status: "COMPLETED",
         },
-        select: {
-          guildId: true,
-          startedAt: true,
+        _max: {
+          finishedAt: true,
         },
-        orderBy: [{ startedAt: "desc" }],
       });
-      const lastRunByGuildId = new Map<string, Date>();
-      for (const run of lastRuns as AutoRoleSchedulerGuildRunRow[]) {
-        if (!lastRunByGuildId.has(run.guildId)) {
-          lastRunByGuildId.set(run.guildId, run.startedAt);
+      const lastCompletedRunByGuildId = new Map<string, Date>();
+      for (const run of lastCompletedRuns as AutoRoleSchedulerGuildRunRow[]) {
+        const lastCompletedAt = run._max?.finishedAt ?? null;
+        if (lastCompletedAt) {
+          lastCompletedRunByGuildId.set(run.guildId, lastCompletedAt);
         }
       }
 
@@ -235,9 +241,9 @@ export class AutoRoleSchedulerService {
       for (const row of configRows) {
         const intervalMinutes = normalizeIntervalMinutes(row.syncIntervalMinutes);
         const intervalMs = intervalMinutes * 60_000;
-        const lastRunAt = lastRunByGuildId.get(row.guildId) ?? null;
-        const nextDueAtMs = lastRunAt ? lastRunAt.getTime() + intervalMs : normalizedNowMs;
-        if (lastRunAt && normalizedNowMs < nextDueAtMs) {
+        const lastCompletedRunAt = lastCompletedRunByGuildId.get(row.guildId) ?? null;
+        const nextDueAtMs = lastCompletedRunAt ? lastCompletedRunAt.getTime() + intervalMs : normalizedNowMs;
+        if (lastCompletedRunAt && normalizedNowMs < nextDueAtMs) {
           skipped += 1;
           continue;
         }
@@ -316,7 +322,7 @@ export class AutoRoleSchedulerService {
 
     this.inFlightGuildIds.add(work.guildId);
     dozzleLog.info(
-      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} autorole_refresh_id=${autoroleRefreshId} interval_minutes=${work.intervalMinutes} next_due_at=${new Date(work.nextDueAtMs).toISOString()}`,
+      `[autorole-scheduler] guild_run_start guild_id=${work.guildId} run_scope=guild run_trigger=scheduled autorole_refresh_id=${autoroleRefreshId} interval_minutes=${work.intervalMinutes} next_due_at=${new Date(work.nextDueAtMs).toISOString()}`,
     );
 
     try {
@@ -324,8 +330,8 @@ export class AutoRoleSchedulerService {
         {
           priority: "background",
           source: "autorole_scheduler_guild_refresh",
-          scheduledAtMs: nowMs,
-          nextScheduledAtMs: nowMs + work.intervalMs,
+          scheduledAtMs: work.nextDueAtMs,
+          nextScheduledAtMs: work.nextDueAtMs + work.intervalMs,
         },
         async () => {
           const guild = await this.client.guilds.fetch(work.guildId);
@@ -334,6 +340,7 @@ export class AutoRoleSchedulerService {
             guildId: work.guildId,
             cocService: this.cocService ?? null,
             now: new Date(nowMs),
+            trigger: AutoRoleRunTrigger.SCHEDULED,
             telemetry: {
               refreshId: autoroleRefreshId,
               refreshStartedAtMs: nowMs,
