@@ -237,6 +237,15 @@ export type WarPlanViolationHistoryDiscordUserAggregateResult =
   | WarPlanViolationHistoryDiscordUserAggregateInvalidClan
   | WarPlanViolationHistoryDiscordUserAggregateNotFound;
 
+export type WarPlanViolationHistoryClanPlayerViolationCountsResult = {
+  period: WarPlanViolationHistoryPeriod;
+  cutoff: Date;
+  clanTag: string;
+  hasCompletedEvaluations: boolean;
+  evaluatedWarCount: number;
+  violationCountByPlayerTag: Map<string, number>;
+};
+
 type CompletedEvaluationRow = {
   warId: number;
   warHistory: {
@@ -976,6 +985,19 @@ function mergePlayerAutocompleteDiscoveryTags(lanes: string[][]): string[] {
   return merged;
 }
 
+/** Purpose: normalize and deduplicate player tags for bounded violation-count reads. */
+function normalizePlayerTagList(playerTags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of playerTags) {
+    const normalizedTag = normalizeTag(tag);
+    if (!normalizedTag || seen.has(normalizedTag)) continue;
+    seen.add(normalizedTag);
+    normalized.push(normalizedTag);
+  }
+  return normalized;
+}
+
 /** Purpose: defensively normalize persisted player-history attack evidence. */
 function normalizePlayerHistoryAttackEvidence(
   value: Prisma.JsonValue | null,
@@ -1356,6 +1378,76 @@ export class WarPlanViolationHistoryService {
       affectedWarCount: affectedWarIds.size,
       hasViolationsInPeriod: violationCount > 0,
       accounts,
+    };
+  }
+
+  /** Purpose: count persisted 30-day clan violations for a bounded current-roster tag set. */
+  async getClanPlayerViolationCounts(input: {
+    guildId: string;
+    clanTag: string;
+    playerTags: string[];
+    period: "30d";
+    now?: Date;
+  }): Promise<WarPlanViolationHistoryClanPlayerViolationCountsResult> {
+    const guildId = String(input.guildId ?? "").trim();
+    const clanTag = normalizeClashTagWithHash(input.clanTag);
+    const { cutoff } = resolvePeriodWindow(input);
+    const playerTags = normalizePlayerTagList(input.playerTags ?? []);
+
+    if (!guildId || !clanTag || playerTags.length === 0) {
+      return {
+        period: "30d",
+        cutoff: cutoff ?? new Date(),
+        clanTag: clanTag ?? "",
+        hasCompletedEvaluations: false,
+        evaluatedWarCount: 0,
+        violationCountByPlayerTag: new Map(),
+      };
+    }
+
+    const rows = await this.db.warPlanComplianceEvaluation.findMany({
+      where: buildCompletedEvaluationWhere({
+        guildId,
+        cutoff,
+        clanTag,
+      }),
+      select: {
+        warId: true,
+        violations: {
+          where: {
+            playerTag: {
+              in: playerTags,
+            },
+          },
+          select: {
+            playerTag: true,
+          },
+        },
+      },
+    });
+
+    const violationCountByPlayerTag = new Map<string, number>();
+    for (const row of rows as Array<{
+      warId: number;
+      violations: Array<{ playerTag: string }>;
+    }>) {
+      for (const violation of row.violations ?? []) {
+        const playerTag = normalizeTag(violation.playerTag);
+        if (!playerTag || !playerTags.includes(playerTag)) continue;
+        violationCountByPlayerTag.set(
+          playerTag,
+          (violationCountByPlayerTag.get(playerTag) ?? 0) + 1,
+        );
+      }
+    }
+
+    return {
+      period: "30d",
+      cutoff: cutoff ?? new Date(),
+      clanTag,
+      hasCompletedEvaluations: rows.length > 0,
+      evaluatedWarCount: rows.length,
+      violationCountByPlayerTag,
     };
   }
 

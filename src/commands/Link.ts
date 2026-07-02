@@ -26,6 +26,7 @@ import { CommandPermissionService } from "../services/CommandPermissionService";
 import { InactiveWarService, type InactiveWarMetricRow } from "../services/InactiveWarService";
 import { listFillerAccountTagsForGuild } from "../services/FillerAccountService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
+import { WarPlanViolationHistoryService } from "../services/WarPlanViolationHistoryService";
 import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
@@ -75,6 +76,7 @@ import {
   parseLinkListColumnsField,
   resolveLinkListStatusIcons,
   resolveLinkListTownHall,
+  formatLinkListViolationCountLabel,
   sanitizeInlineCodeCell,
   sanitizeTableText,
   sortLinkListRows,
@@ -101,12 +103,14 @@ type LinkListResolvedMemberRow = {
   clanRoleSortScore: number;
   playerSort: string;
   discordSort: string;
+  violationsValue: number | null;
   row: LinkListRowViewModel;
 };
 
 const permissionService = new CommandPermissionService();
 const inactiveWarService = new InactiveWarService();
 const linkListMembersSyncService = new FwaClanMembersSyncService();
+const warPlanViolationHistoryService = new WarPlanViolationHistoryService();
 const LINK_LIST_SELECT_PREFIX = "link-list-select";
 const LINK_LIST_SORT_BUTTON_PREFIX = "link-list-sort-cycle";
 const LINK_LIST_REFRESH_BUTTON_PREFIX = "link-list-refresh";
@@ -667,6 +671,8 @@ async function buildLinkListView(input: {
 }): Promise<LinkListRenderResult> {
   const sortMode = normalizeLinkListSortMode(input.sortMode);
   const activeColumns = normalizeLinkListColumns(input.columns, sortMode);
+  const needsViolationCounts =
+    sortMode === "violations" || activeColumns.includes("violations");
 
   if (!input.interaction.guildId) {
     return { ok: false, message: "This command can only be used in a server." };
@@ -726,7 +732,22 @@ async function buildLinkListView(input: {
     .filter((tag): tag is string => Boolean(tag));
   const inactivityNeeded = sortMode === "inactivity" || activeColumns.includes("inactivity");
   const repBadgeTokensByTagPromise = listTrackedClanRepBadgesForPlayerTags(memberTags);
-  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows, repBadgeTokensByTag] = await Promise.all([
+  const violationCountsPromise = needsViolationCounts
+    ? warPlanViolationHistoryService
+        .getClanPlayerViolationCounts({
+          guildId: input.interaction.guildId,
+          clanTag: input.clanTag,
+          playerTags: memberTags,
+          period: "30d",
+        })
+        .catch((err) => {
+          console.warn(
+            `[link-list] event=link_list_violations_failed guildId=${input.interaction.guildId} clanTag=${input.clanTag} sortMode=${sortMode} error=${String((err as { message?: unknown })?.message ?? err).slice(0, 200)}`,
+          );
+          return null;
+        })
+    : Promise.resolve(null);
+  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows, repBadgeTokensByTag, violationCountsResult] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: memberTags } },
       select: { playerTag: true, latestTownHall: true },
@@ -751,14 +772,24 @@ async function buildLinkListView(input: {
           clanTag: input.clanTag,
         }).then((result) => result.metricsByPlayerTag)
       : Promise.resolve(new Map<string, InactiveWarMetricRow>()),
-    repBadgeTokensByTagPromise,
-  ]) as [
+      repBadgeTokensByTagPromise,
+      violationCountsPromise,
+    ]) as [
     LinkListTownHallCatalogRow[],
     LinkListTownHallRow[],
     LinkListPlayerActivityRow[],
     Map<string, InactiveWarMetricRow>,
     Map<string, string[]>,
+    Awaited<ReturnType<WarPlanViolationHistoryService["getClanPlayerViolationCounts"]>> | null,
   ];
+  let violationCountsAvailable = false;
+  const violationCountByTag = new Map<string, number>();
+  if (violationCountsResult) {
+    violationCountsAvailable = violationCountsResult.hasCompletedEvaluations;
+    for (const [playerTag, count] of violationCountsResult.violationCountByPlayerTag.entries()) {
+      violationCountByTag.set(playerTag, count);
+    }
+  }
   const townHallByTag = new Map<string, number | null>();
   for (const row of currentMembers) {
     const normalizedTag = normalizePlayerTag(row.playerTag);
@@ -816,11 +847,14 @@ async function buildLinkListView(input: {
     const weightValue = weightByTag.get(playerTag) ?? null;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
     const inactivityDays = inactivityDaysByTag.get(playerTag) ?? null;
-    const inactivityMissedWars = inactivityRow?.missedWars ?? null;
-    const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
-    const link = linkByTag.get(playerTag);
-    const discordDisplayName = link
-      ? sanitizeInlineCodeCell(
+      const inactivityMissedWars = inactivityRow?.missedWars ?? null;
+      const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
+      const violationsValue = violationCountsAvailable
+        ? violationCountByTag.get(playerTag) ?? 0
+        : null;
+      const link = linkByTag.get(playerTag);
+      const discordDisplayName = link
+        ? sanitizeInlineCodeCell(
           truncateWithEllipsis(
             sanitizeInlineCodeCell(
               resolveLinkedDiscordDisplayName(
@@ -871,24 +905,28 @@ async function buildLinkListView(input: {
       inactivityDays,
       inactivityMissedWars,
       inactivityParticipationWars,
-      clanRoleSortScore: getLinkListClanRoleSortScore(member.role),
-      playerSort: sanitizeTableText(member.playerName) || "Unknown",
-      discordSort: sanitizeTableText(discordSort),
-      row: {
-        townHallLabel: formatLinkListTownHallLabel(
-          townHallByTag.get(playerTag) ?? member.townHall ?? null,
-        ),
-        playerName,
+        clanRoleSortScore: getLinkListClanRoleSortScore(member.role),
+        playerSort: sanitizeTableText(member.playerName) || "Unknown",
+        discordSort: sanitizeTableText(discordSort),
+        violationsValue,
+        row: {
+          townHallLabel: formatLinkListTownHallLabel(
+            townHallByTag.get(playerTag) ?? member.townHall ?? null,
+          ),
+          playerName,
         displayValue: null,
         discordDisplayName,
         discordUsername,
         weightLabel,
-        inactivityLabel,
-        clanRoleLabel,
-        playerTag,
-        linkedStatusMarkerOverride: isLinked
-          ? repBadgeTokensByTag.get(playerTag)?.[0] ?? null
-          : null,
+          inactivityLabel,
+          clanRoleLabel,
+          playerTag,
+          violationsLabel: sanitizeInlineCodeCell(
+            formatLinkListViolationCountLabel(violationsValue),
+          ),
+          linkedStatusMarkerOverride: isLinked
+            ? repBadgeTokensByTag.get(playerTag)?.[0] ?? null
+            : null,
         rightMarker: fillerTagSet.has(playerTag) ? "\u{1F9CD}" : null,
         isLinked,
       },

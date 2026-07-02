@@ -11,6 +11,7 @@ export const LINK_LIST_SORT_MODE_CYCLE = [
   "player",
   "clan-rank",
   "inactivity",
+  "violations",
 ] as const;
 
 export type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
@@ -25,7 +26,8 @@ export type LinkListColumnId =
   | "weight"
   | "inactivity"
   | "clan-role"
-  | "player-tag";
+  | "player-tag"
+  | "violations";
 
 export const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
 export const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
@@ -41,6 +43,7 @@ export const LINK_LIST_SELECTABLE_COLUMNS: readonly LinkListColumnId[] = [
   "inactivity",
   "clan-role",
   "player-tag",
+  "violations",
 ];
 
 export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
@@ -52,6 +55,7 @@ export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
   inactivity: "Inactivity",
   "clan-role": "Clan Role",
   "player-tag": "Player Tag",
+  violations: "Violations (30d)",
 };
 
 const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
@@ -63,6 +67,7 @@ const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
   inactivity: "ia",
   "clan-role": "cr",
   "player-tag": "pt",
+  violations: "v30",
 };
 
 const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
@@ -74,6 +79,7 @@ const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
   ia: "inactivity",
   cr: "clan-role",
   pt: "player-tag",
+  v30: "violations",
 };
 
 const LINK_LIST_LINKED_STATUS_EMOJI = "\u2705";
@@ -96,6 +102,7 @@ export type LinkListRowViewModel = {
   inactivityLabel: string;
   clanRoleLabel: string;
   playerTag: string;
+  violationsLabel: string;
   linkedStatusMarkerOverride?: string | null;
   rightMarker?: string | null;
   isLinked: boolean;
@@ -143,7 +150,8 @@ export function normalizeLinkListSortMode(
     value === "player-tags" ||
     value === "player" ||
     value === "clan-rank" ||
-    value === "inactivity"
+    value === "inactivity" ||
+    value === "violations"
   ) {
     return value;
   }
@@ -156,6 +164,7 @@ export function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "player") return "Player Name";
   if (mode === "clan-rank") return "Clan Role";
   if (mode === "inactivity") return "Inactivity";
+  if (mode === "violations") return "Violations (30d)";
   return "Discord Name";
 }
 
@@ -284,6 +293,9 @@ export function getLinkListDefaultColumnsForSortMode(
   if (sortMode === "inactivity") {
     return ["townhall", "player-name", "inactivity"];
   }
+  if (sortMode === "violations") {
+    return ["townhall", "player-name", "violations"];
+  }
   return ["townhall", "player-name", "discord-display-name"];
 }
 
@@ -298,6 +310,7 @@ function getLinkListRowColumnValue(
   if (columnId === "weight") return row.weightLabel;
   if (columnId === "inactivity") return row.inactivityLabel;
   if (columnId === "clan-role") return row.clanRoleLabel;
+  if (columnId === "violations") return row.violationsLabel;
   return row.playerTag;
 }
 
@@ -360,6 +373,7 @@ export function sortLinkListRows(
     clanRoleSortScore: number;
     playerSort: string;
     discordSort: string;
+    violationsValue: number | null;
     row: LinkListRowViewModel;
   }[],
   sortMode: LinkListSortMode,
@@ -374,9 +388,29 @@ export function sortLinkListRows(
   clanRoleSortScore: number;
   playerSort: string;
   discordSort: string;
+  violationsValue: number | null;
   row: LinkListRowViewModel;
 }[] {
   return [...rows].sort((a, b) => {
+    if (sortMode === "violations") {
+      const aHasViolations = a.violationsValue !== null;
+      const bHasViolations = b.violationsValue !== null;
+      if (aHasViolations !== bHasViolations) return aHasViolations ? -1 : 1;
+      if (
+        a.violationsValue !== null &&
+        b.violationsValue !== null &&
+        a.violationsValue !== b.violationsValue
+      ) {
+        return b.violationsValue - a.violationsValue;
+      }
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      if (a.playerTag !== b.playerTag) {
+        return compareSortText(a.playerTag, b.playerTag);
+      }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
     if (sortMode === "weight" || sortMode === "player-tags") {
       const aHasWeight = a.weightValue !== null;
       const bHasWeight = b.weightValue !== null;
@@ -533,6 +567,15 @@ export function formatInactivityMetricLabel(input: {
   const warsText =
     input.missedWars !== null ? `${Math.max(0, Math.trunc(input.missedWars))}WAR` : WEIGHT_PLACEHOLDER;
   return `${daysText} ${warsText}`;
+}
+
+/** Purpose: render the persisted 30-day violation count without fabricating unavailable values. */
+export function formatLinkListViolationCountLabel(
+  violationCount: number | null | undefined,
+): string {
+  if (violationCount === null || violationCount === undefined) return WEIGHT_PLACEHOLDER;
+  if (!Number.isFinite(violationCount)) return WEIGHT_PLACEHOLDER;
+  return String(Math.max(0, Math.trunc(violationCount)));
 }
 
 export function normalizePositiveTownHall(input: number | null | undefined): number | null {
