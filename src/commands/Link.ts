@@ -653,13 +653,6 @@ function rightAlign(value: string, width: number): string {
   return `${" ".repeat(width - value.length)}${value}`;
 }
 
-function sanitizeLinkListViolationHistoryLogToken(input: string): string {
-  const normalized = String(input ?? "")
-    .trim()
-    .replace(/[^A-Za-z0-9_.:-]+/g, "");
-  return normalized.length > 0 ? normalized.slice(0, 64) : "unknown";
-}
-
 function describeLinkListViolationHistoryFailure(err: unknown): string {
   if (!err || typeof err !== "object") {
     return "errorClass=unknown";
@@ -672,11 +665,8 @@ function describeLinkListViolationHistoryFailure(err: unknown): string {
     name?: unknown;
     constructor?: { name?: unknown } | null;
   };
-  if (typeof typed.code === "string" && typed.code.trim()) {
-    return `errorCode=${sanitizeLinkListViolationHistoryLogToken(typed.code)}`;
-  }
-  if (typeof typed.status === "string" && typed.status.trim()) {
-    return `errorStatus=${sanitizeLinkListViolationHistoryLogToken(typed.status)}`;
+  if (typeof typed.code === "string" && /^P\d{4}$/u.test(typed.code.trim())) {
+    return `errorCode=${typed.code.trim()}`;
   }
   if (typeof typed.status === "number" && Number.isFinite(typed.status)) {
     return `errorStatus=${Math.trunc(typed.status)}`;
@@ -684,11 +674,12 @@ function describeLinkListViolationHistoryFailure(err: unknown): string {
   if (typeof typed.statusCode === "number" && Number.isFinite(typed.statusCode)) {
     return `errorStatus=${Math.trunc(typed.statusCode)}`;
   }
-  if (typeof typed.name === "string" && typed.name.trim()) {
-    return `errorClass=${sanitizeLinkListViolationHistoryLogToken(typed.name)}`;
+  const safeClassNames = new Set(["Error", "TypeError", "PrismaClientKnownRequestError"]);
+  if (typeof typed.name === "string" && safeClassNames.has(typed.name.trim())) {
+    return `errorClass=${typed.name.trim()}`;
   }
-  if (typeof typed.constructor?.name === "string" && typed.constructor.name.trim()) {
-    return `errorClass=${sanitizeLinkListViolationHistoryLogToken(typed.constructor.name)}`;
+  if (typeof typed.constructor?.name === "string" && safeClassNames.has(typed.constructor.name.trim())) {
+    return `errorClass=${typed.constructor.name.trim()}`;
   }
   return "errorClass=unknown";
 }

@@ -4031,9 +4031,13 @@ describe("/link list sort button", () => {
         "getClanPlayerViolationCounts",
       )
       .mockRejectedValueOnce(
-        new Error(
-          "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
-        ),
+        {
+          code: "987654321012345678",
+          status: "#SECRETPLAYER",
+          name: "attack evidence should never leak",
+          message:
+            "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
+        },
       );
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -4077,10 +4081,30 @@ describe("/link list sort button", () => {
     expect(warning).toContain(`guildId=${guildId}`);
     expect(warning).toContain("clanTag=#PQL0289");
     expect(warning).toContain("sortMode=violations");
-    expect(warning).toContain("errorClass=");
+    expect(warning).toContain("errorClass=unknown");
     expect(warning).not.toContain("#SECRETPLAYER");
     expect(warning).not.toContain("987654321012345678");
     expect(warning).not.toContain("attack evidence should never leak");
+    expect(warning).not.toContain("message");
+
+    warningSpy.mockClear();
+    violationSpy.mockReset();
+    violationSpy.mockRejectedValueOnce({
+      code: "P2022",
+      status: "#SECRETPLAYER",
+      name: "attack evidence should never leak",
+      message:
+        "player #SECRETPLAYER discord 987654321012345678 attack evidence should never leak",
+    });
+
+    await handleLinkListSortButton(interaction as any, {} as any);
+
+    expect(editReply).toHaveBeenCalledTimes(2);
+    const prismaWarning = String(warningSpy.mock.calls[0]?.[0] ?? "");
+    expect(prismaWarning).toContain("errorCode=P2022");
+    expect(prismaWarning).not.toContain("#SECRETPLAYER");
+    expect(prismaWarning).not.toContain("987654321012345678");
+    expect(prismaWarning).not.toContain("attack evidence should never leak");
 
     warningSpy.mockRestore();
     violationSpy.mockRestore();
@@ -4105,6 +4129,19 @@ describe("/link list sort button", () => {
       })),
     );
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
+    const violationSpy = vi
+      .spyOn(
+        WarPlanViolationHistoryService.prototype,
+        "getClanPlayerViolationCounts",
+      )
+      .mockResolvedValue({
+        countsByPlayerTag: new Map(),
+        totalViolationCount: 0,
+        totalAffectedWarCount: 0,
+        totalTrackedPlayerCount: 0,
+        totalEvaluatedPlayerCount: 0,
+        hasCompletedEvaluations: false,
+      } as any);
 
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const editReply = vi.fn().mockResolvedValue(undefined);
@@ -4114,7 +4151,8 @@ describe("/link list sort button", () => {
       customId: buildLinkListSortButtonCustomId(
         "111111111111111111",
         "#PQL0289",
-        "inactivity",
+        "violations",
+        getLinkListDefaultColumnsForSortModeForTest("violations"),
       ),
       user: { id: "111111111111111111" },
       guildId: "guild-1",
@@ -4132,6 +4170,7 @@ describe("/link list sort button", () => {
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
     expect(editReply).toHaveBeenCalledTimes(1);
+    expect(violationSpy).not.toHaveBeenCalled();
     const payload = editReply.mock.calls[0]?.[0] as any;
     expect(payload.embeds.length).toBeGreaterThanOrEqual(1);
     expect(payload.embeds.length).toBeLessThanOrEqual(2);
@@ -4147,15 +4186,16 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Violations (30d)");
+    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Discord Name");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
-    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBeTruthy();
+    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
     expect(
       getInlineRows(payload.embeds.at(-1)?.toJSON().description ?? "")[0] ?? "",
     ).toMatch(LINK_LIST_ROW_LINE_RE);
     const lastRow = getInlineRowSegments(renderedRows[renderedRows.length - 1] ?? "");
     expect(lastRow.playerName.trim()).toHaveLength(15);
     expect(lastRow.value.length).toBeGreaterThan(0);
+    violationSpy.mockRestore();
   }, 30000);
 
   it("renders a realistic 50-member Weight view without aggressively trimming", async () => {
