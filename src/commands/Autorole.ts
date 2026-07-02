@@ -604,6 +604,12 @@ function formatRefreshSummary(result: AutoRoleRefreshResult): string {
     }
   }
 
+  if (result.memberSourceSummary?.memberSourceMode === "partial_candidates") {
+    lines.push(
+      "Refresh ran partially because the guild cache was incomplete or some candidate members could not be loaded.",
+    );
+  }
+
   return lines.join("\n");
 }
 
