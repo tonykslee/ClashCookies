@@ -51,6 +51,15 @@ describe("/clan-health command", () => {
     serviceMock.getSnapshot.mockResolvedValue({
       clanTag: "#AAA111",
       clanName: "Alpha",
+      warPlanCompliance: {
+        period: "30d",
+        hasCompletedEvaluations: true,
+        evaluatedWarCount: 9,
+        affectedWarCount: 4,
+        violationCount: 7,
+        distinctPlayerCount: 5,
+        distinctCurrentDiscordUserCount: 3,
+      },
       warMetrics: {
         windowSize: 30,
         endedWarSampleSize: 20,
@@ -104,9 +113,17 @@ describe("/clan-health command", () => {
     expect(embedJson.title).toContain("Clan Health");
     expect(embedJson.fields.map((field: any) => field.name)).toEqual([
       "War Performance",
+      "War Plan Compliance — Last 30 Days",
       "Inactivity",
       "Discord Links",
     ]);
+    expect(String(embedJson.fields[1].value)).toContain(
+      "Violations: **7** across **5** player accounts"
+    );
+    expect(String(embedJson.fields[1].value)).toContain("Linked Discord users involved: **3**");
+    expect(String(embedJson.fields[1].value)).toContain(
+      "Affected wars: **4/9** evaluated FWA wars"
+    );
     expect(String(embedJson.fields[0].value)).toContain(
       "Match rate (last 30 ended wars): **70.0% (14/20)**"
     );
@@ -115,10 +132,10 @@ describe("/clan-health command", () => {
     );
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
-    expect(String(embedJson.fields[1].value)).toContain(
+    expect(String(embedJson.fields[2].value)).toContain(
       "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**"
     );
-    expect(String(embedJson.fields[1].value)).toContain("Inactive (days, >=6d): **5**");
+    expect(String(embedJson.fields[2].value)).toContain("Inactive (days, >=6d): **5**");
   });
 
   it("supports tracked-clan autocomplete for tag", async () => {

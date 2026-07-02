@@ -1,9 +1,22 @@
 import { prisma } from "../prisma";
 import { normalizeClashTagInput } from "../helper/clashTag";
+import {
+  WarPlanViolationHistoryService,
+  type WarPlanViolationHistoryClanLeaderboardResult,
+} from "./WarPlanViolationHistoryService";
 
 export type ClanHealthSnapshot = {
   clanTag: string;
   clanName: string;
+  warPlanCompliance: {
+    period: "30d";
+    hasCompletedEvaluations: boolean;
+    evaluatedWarCount: number;
+    affectedWarCount: number;
+    violationCount: number;
+    distinctPlayerCount: number;
+    distinctCurrentDiscordUserCount: number;
+  };
   warMetrics: {
     windowSize: number;
     endedWarSampleSize: number;
@@ -60,6 +73,7 @@ const DEFAULT_WAR_WINDOW_SIZE = 30;
 const DEFAULT_INACTIVE_WAR_WINDOW_SIZE = 3;
 const DEFAULT_INACTIVE_DAYS_THRESHOLD = 6;
 const DEFAULT_INACTIVE_STALE_HOURS = 6;
+const WAR_PLAN_COMPLIANCE_PERIOD = "30d" as const;
 
 /** Purpose: normalize clan tags into canonical uppercase + leading-# format. */
 function normalizeClanTag(input: string): string {
@@ -150,6 +164,15 @@ export const computeInactiveWarsPlayerCountForTest = computeInactiveWarsPlayerCo
 export const computeActivityAndLinkMetricsForTest = computeActivityAndLinkMetrics;
 
 export class ClanHealthSnapshotService {
+  /** Purpose: initialize the snapshot service with explicit persisted-history dependencies. */
+  constructor(
+    private readonly db = prisma,
+    private readonly warPlanViolationHistoryService: Pick<
+      WarPlanViolationHistoryService,
+      "getClanLeaderboard"
+    > = new WarPlanViolationHistoryService()
+  ) {}
+
   /** Purpose: load a single-clan leadership snapshot from persisted DB state only. */
   async getSnapshot(input: {
     guildId: string;
@@ -177,7 +200,7 @@ export class ClanHealthSnapshotService {
     const normalizedTag = normalizeClanTag(input.clanTag);
     if (!normalizedTag) return null;
 
-    const trackedClan = await prisma.trackedClan.findFirst({
+    const trackedClan = await this.db.trackedClan.findFirst({
       where: { tag: { equals: normalizedTag, mode: "insensitive" } },
       select: { tag: true, name: true },
     });
@@ -188,8 +211,8 @@ export class ClanHealthSnapshotService {
     const staleCutoff = new Date(Date.now() - inactiveStaleHours * 60 * 60 * 1000);
     const inactiveCutoff = new Date(Date.now() - inactiveDaysThreshold * 24 * 60 * 60 * 1000);
 
-    const [warRows, distinctFwaWars, activityRows] = await Promise.all([
-      prisma.clanWarHistory.findMany({
+    const [warRows, distinctFwaWars, activityRows, warPlanLeaderboard] = await Promise.all([
+      this.db.clanWarHistory.findMany({
         where: {
           clanTag: canonicalClanTag,
           warEndTime: { not: null },
@@ -198,7 +221,7 @@ export class ClanHealthSnapshotService {
         take: warWindowSize,
         select: { matchType: true, actualOutcome: true },
       }),
-      prisma.clanWarParticipation.findMany({
+      this.db.clanWarParticipation.findMany({
         where: {
           guildId: input.guildId,
           clanTag: canonicalClanTag,
@@ -208,13 +231,18 @@ export class ClanHealthSnapshotService {
         orderBy: [{ warStartTime: "desc" }, { createdAt: "desc" }],
         distinct: ["warId"],
       }),
-      prisma.playerActivity.findMany({
+      this.db.playerActivity.findMany({
         where: {
           guildId: input.guildId,
           clanTag: canonicalClanTag,
           updatedAt: { gte: staleCutoff },
         },
         select: { tag: true, lastSeenAt: true },
+      }),
+      this.warPlanViolationHistoryService.getClanLeaderboard({
+        guildId: input.guildId,
+        clanTag: canonicalClanTag,
+        period: WAR_PLAN_COMPLIANCE_PERIOD,
       }),
     ]);
 
@@ -225,7 +253,7 @@ export class ClanHealthSnapshotService {
 
     const [participationRows, linkedRows] = await Promise.all([
       selectedWarIds.length > 0
-        ? prisma.clanWarParticipation.findMany({
+        ? this.db.clanWarParticipation.findMany({
             where: {
               guildId: input.guildId,
               clanTag: canonicalClanTag,
@@ -235,7 +263,7 @@ export class ClanHealthSnapshotService {
           })
         : Promise.resolve([] as ParticipationMetricRow[]),
       activityRows.length > 0
-        ? prisma.playerLink.findMany({
+        ? this.db.playerLink.findMany({
             where: {
               playerTag: { in: activityRows.map((row) => row.tag) },
               discordUserId: { not: null },
@@ -260,14 +288,16 @@ export class ClanHealthSnapshotService {
     const warMetrics = computeWarMetrics(warRows, warWindowSize);
     const inactivePlayerCount = computeInactiveWarsPlayerCount(participationRows);
     const durationMs = Date.now() - startedAtMs;
+    const warPlanCompliance = buildWarPlanComplianceSummary(warPlanLeaderboard);
 
     console.info(
-      `[clan-health] guild=${input.guildId} clan=${canonicalClanTag} war_rows=${warRows.length} participation_rows=${participationRows.length} activity_rows=${activityRows.length} link_rows=${linkedRows.length} duration_ms=${durationMs}`
+      `[clan-health] guild=${input.guildId} clan=${canonicalClanTag} war_rows=${warRows.length} participation_rows=${participationRows.length} activity_rows=${activityRows.length} link_rows=${linkedRows.length} compliance_evaluated_wars=${warPlanCompliance.evaluatedWarCount} compliance_affected_wars=${warPlanCompliance.affectedWarCount} compliance_violations=${warPlanCompliance.violationCount} compliance_players=${warPlanCompliance.distinctPlayerCount} compliance_discord_users=${warPlanCompliance.distinctCurrentDiscordUserCount} duration_ms=${durationMs}`
     );
 
     return {
       clanTag: canonicalClanTag,
       clanName: canonicalClanName,
+      warPlanCompliance,
       warMetrics,
       inactiveWars: {
         windowSize: inactiveWarWindowSize,
@@ -286,4 +316,37 @@ export class ClanHealthSnapshotService {
       },
     };
   }
+}
+
+/** Purpose: normalize the persisted war-plan leaderboard into the clan-health summary shape. */
+function buildWarPlanComplianceSummary(
+  result: WarPlanViolationHistoryClanLeaderboardResult
+): ClanHealthSnapshot["warPlanCompliance"] {
+  if (result.outcome === "not_found") {
+    return {
+      period: WAR_PLAN_COMPLIANCE_PERIOD,
+      hasCompletedEvaluations: false,
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      distinctCurrentDiscordUserCount: 0,
+    };
+  }
+
+  const distinctCurrentDiscordUserCount = new Set(
+    result.players
+      .map((row) => String(row.discordUserId ?? "").trim())
+      .filter((discordUserId): discordUserId is string => discordUserId.length > 0)
+  ).size;
+
+  return {
+    period: WAR_PLAN_COMPLIANCE_PERIOD,
+    hasCompletedEvaluations: result.hasCompletedEvaluations,
+    evaluatedWarCount: result.evaluatedWarCount,
+    affectedWarCount: result.affectedWarCount,
+    violationCount: result.violationCount,
+    distinctPlayerCount: result.distinctPlayerCount,
+    distinctCurrentDiscordUserCount,
+  };
 }
