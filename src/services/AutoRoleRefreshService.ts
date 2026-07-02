@@ -984,6 +984,7 @@ type TrackedLeadRoleRefreshState = {
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   membersById: Map<string, AutoRoleGuildMemberLike>;
   candidateUserIds: Set<string>;
+  loadedCandidateUserIds: Set<string>;
   cachedMemberCount: number;
   guildMemberCount: number;
   targetedFetchRequestedCount: number;
@@ -1009,6 +1010,7 @@ type TrackedClanRoleRefreshState = {
   linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
   candidateUserIds: Set<string>;
   membersById: Map<string, AutoRoleGuildMemberLike>;
+  loadedCandidateUserIds: Set<string>;
   cachedMemberCount: number;
   guildMemberCount: number;
   targetedFetchRequestedCount: number;
@@ -1040,11 +1042,12 @@ function buildMemberSourceSummary(input: {
     targetedFetchRequestedCount: input.targetedFetchRequestedCount,
     targetedFetchSucceededCount: input.targetedFetchSucceededCount,
     targetedFetchFailedCount: input.targetedFetchFailedCount,
-    memberSourceMode: input.cacheCoverageComplete
-      ? "cache_complete"
-      : input.targetedFetchFailedCount > 0
+    memberSourceMode:
+      input.targetedFetchFailedCount > 0 || input.visitorRoleAdditionsSuppressed
         ? "partial_candidates"
-        : "targeted_candidates",
+        : input.cacheCoverageComplete
+          ? "cache_complete"
+          : "targeted_candidates",
     visitorRoleAdditionsSuppressed: input.visitorRoleAdditionsSuppressed,
     playerCurrentPersistedRowCount: input.playerCurrentPersistedRowCount,
     trackedClanOverlayCount: input.trackedClanOverlayCount,
@@ -1374,7 +1377,8 @@ async function loadTrackedLeadRoleRefreshState(input: {
     playerCurrentByTag,
     linkedAccountsByUserId,
     membersById,
-    candidateUserIds: loadedCandidateUserIds,
+    candidateUserIds,
+    loadedCandidateUserIds,
     cachedMemberCount: cachedMembersById.size,
     guildMemberCount: input.guild.memberCount,
     targetedFetchRequestedCount: memberSource.targetedFetchRequestedCount,
@@ -1558,12 +1562,6 @@ async function loadTrackedClanRoleRefreshState(input: {
   });
   const membersById = memberSource.membersById;
   const loadedCandidateUserIds = new Set<string>(membersById.keys());
-  const rateLimitFailureReason = memberSource.failureReasons.find((reason) =>
-    reason.toLowerCase().includes("rate-limited member fetching"),
-  );
-  if (rateLimitFailureReason) {
-    throw new Error(rateLimitFailureReason);
-  }
 
   const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
     guildMemberIds: [...loadedCandidateUserIds],
@@ -1583,8 +1581,9 @@ async function loadTrackedClanRoleRefreshState(input: {
     },
     playerCurrentByTag,
     linkedAccountsByUserId,
-    candidateUserIds: loadedCandidateUserIds,
+    candidateUserIds,
     membersById,
+    loadedCandidateUserIds,
     cachedMemberCount,
     guildMemberCount: input.guild.memberCount,
     targetedFetchRequestedCount: memberSource.targetedFetchRequestedCount,
@@ -2575,7 +2574,7 @@ export class AutoRoleRefreshService {
             trackedMembershipScope: clanRoleState.trackedMembershipScope,
             runId: run.id,
             now: input.now,
-            candidateUserIdsOverride: clanRoleState.candidateUserIds,
+            candidateUserIdsOverride: clanRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
             preferCurrentClanTagForClanRules: true,
             trackedFwaMemberTags: clanRoleState.trackedMembershipScope.fwaMemberTags,
@@ -2655,7 +2654,7 @@ export class AutoRoleRefreshService {
             trackedMembershipScope: leadRoleState.trackedMembershipScope,
             runId: run.id,
             now: input.now,
-            candidateUserIdsOverride: leadRoleState.candidateUserIds,
+            candidateUserIdsOverride: leadRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
             trackedFwaMemberTags: leadRoleState.trackedMembershipScope.fwaMemberTags,
             visitorRoleAvailable,
@@ -2731,6 +2730,7 @@ export class AutoRoleRefreshService {
                 userIds: guildCandidateUserIds,
               });
         const membersById = guildMemberSource.membersById;
+        const loadedCandidateUserIds = new Set<string>(membersById.keys());
         const trackedMembershipScopeForRefresh = {
           fwaClanTags: trackedFwaRefresh.fwaClanTags,
           cwlClanTags: trackedMembershipScope.cwlClanTags,
@@ -2741,7 +2741,7 @@ export class AutoRoleRefreshService {
           cwlMemberTags: trackedMembershipScope.cwlMemberTags,
           cwlClanFetchCount: trackedMembershipScope.cwlClanFetchCount,
         };
-        const candidateUserIds = new Set<string>(guildCandidateUserIds);
+        const candidateUserIds = new Set<string>(loadedCandidateUserIds);
         if (snapshot.config.nicknameExcludeRoleIds.length > 0) {
           const nicknameExcludeRoleIds = new Set(snapshot.config.nicknameExcludeRoleIds);
           for (const member of membersById.values()) {
@@ -2766,7 +2766,7 @@ export class AutoRoleRefreshService {
           guildMemberCount: input.guild.memberCount ?? membersById.size,
           cachedMemberCount: cachedMembersById.size,
           cacheCoverageComplete,
-          candidateUserCount: candidateUserIds.size,
+          candidateUserCount: guildCandidateUserIds.size,
           targetedFetchRequestedCount: guildMemberSource.targetedFetchRequestedCount,
           targetedFetchSucceededCount: guildMemberSource.targetedFetchSucceededCount,
           targetedFetchFailedCount: guildMemberSource.targetedFetchFailedCount,
@@ -2779,7 +2779,7 @@ export class AutoRoleRefreshService {
         );
 
         dozzleLog.info(
-          `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_clans=${trackedFwaRefresh.fwaClanTags.size} fwa_member_tags=${trackedFwaRefresh.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} tracked_fwa_fetches=${trackedFwaRefresh.clanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
+          `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${guildCandidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_clans=${trackedFwaRefresh.fwaClanTags.size} fwa_member_tags=${trackedFwaRefresh.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} tracked_fwa_fetches=${trackedFwaRefresh.clanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
         );
 
         const result = await runRefreshPass({
@@ -3012,7 +3012,7 @@ export class AutoRoleRefreshService {
         guildMemberCount: input.guild.memberCount ?? membersById.size,
         cachedMemberCount: cachedMembersById.size,
         cacheCoverageComplete,
-        candidateUserCount: candidateUserIds.size,
+        candidateUserCount: guildCandidateUserIds.size,
         targetedFetchRequestedCount: guildMemberSource.targetedFetchRequestedCount,
         targetedFetchSucceededCount: guildMemberSource.targetedFetchSucceededCount,
         targetedFetchFailedCount: guildMemberSource.targetedFetchFailedCount,
@@ -3022,7 +3022,7 @@ export class AutoRoleRefreshService {
       });
 
       dozzleLog.info(
-        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${candidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
+        `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${guildCandidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_member_tags=${trackedMembershipScope.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
       );
 
       const refreshResult = await runRefreshPass({

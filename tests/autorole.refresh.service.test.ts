@@ -2161,16 +2161,20 @@ describe("AutoRoleRefreshService", () => {
     );
   });
 
-  it("surfaces Discord member-fetch rate limits during tracked-clan clan role refresh", async () => {
+  it("keeps tracked-clan clan role refresh partial when one targeted member fetch rate limits", async () => {
     const clanRoleId = "333333333333333333";
     const clanTag = "#2QG2C08UP";
-    const staleHolderId = "111111111111111111";
-    const linkedUserId = "444444444444444444";
-    const staleHolder = makeMember(staleHolderId, [clanRoleId]);
-    const guild = makeGuild(new Map([[staleHolderId, staleHolder]]));
+    const successUserId = "111111111111111111";
+    const rateLimitedUserId = "444444444444444444";
+    const successUser = makeMember(successUserId);
+    const rateLimitedUser = makeMember(rateLimitedUserId);
+    const guild = makeGuild(new Map(), [], 2);
     const rateLimitError = new Error("Request with opcode 8 was rate limited. Retry after 12 seconds.");
     guild.members.fetch = vi.fn(async (discordUserId?: string) => {
-      if (discordUserId === linkedUserId) {
+      if (discordUserId === successUserId) {
+        return successUser;
+      }
+      if (discordUserId === rateLimitedUserId) {
         throw rateLimitError;
       }
       return null;
@@ -2189,6 +2193,13 @@ describe("AutoRoleRefreshService", () => {
                 townHallLevel: 16,
                 leagueName: "Legend League",
               }),
+              makeClanMember({
+                tag: "#QGRJ2222",
+                name: "Rate Limited Member",
+                role: "member",
+                townHallLevel: 15,
+                leagueName: "Legend League",
+              }),
             ],
           };
         }
@@ -2201,14 +2212,14 @@ describe("AutoRoleRefreshService", () => {
       return filterPlayerLinkRows(
         [
           makeLinkedAccount({
-            playerTag: "#OLD111",
-            discordUserId: staleHolderId,
-            playerName: "Stale Holder",
+            playerTag: "#PYLQ0289",
+            discordUserId: successUserId,
+            playerName: "Linked Member",
           }),
           makeLinkedAccount({
-            playerTag: "#PYLQ0289",
-            discordUserId: linkedUserId,
-            playerName: "Linked Member",
+            playerTag: "#QGRJ2222",
+            discordUserId: rateLimitedUserId,
+            playerName: "Rate Limited Member",
           }),
         ],
         where,
@@ -2226,25 +2237,39 @@ describe("AutoRoleRefreshService", () => {
       exclusions: { users: [], roles: [] },
     } as any);
 
-    await expect(
-      autoRoleRefreshService.refreshRole({
-        guild,
-        guildId: "111111111111111111",
-        discordRoleId: clanRoleId,
-        cocService: cocService as any,
-      }),
-    ).rejects.toThrow("Discord rate-limited member fetching. Try again in about 12 seconds.");
+    const result = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: clanRoleId,
+      cocService: cocService as any,
+    });
 
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
-    expect(staleHolder.roles.remove).not.toHaveBeenCalled();
-    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+    expect(guild.members.fetch.mock.calls.some((args: unknown[]) => args.length === 0)).toBe(false);
+    expect(guild.members.fetch).toHaveBeenCalledWith(successUserId);
+    expect(guild.members.fetch).toHaveBeenCalledWith(rateLimitedUserId);
+    expect(successUser.roles.add).toHaveBeenCalledWith(clanRoleId);
+    expect(rateLimitedUser.roles.add).not.toHaveBeenCalledWith(clanRoleId);
+    expect(result.memberSourceSummary).toMatchObject({
+      memberSourceMode: "partial_candidates",
+      targetedFetchRequestedCount: 2,
+      targetedFetchSucceededCount: 1,
+      targetedFetchFailedCount: 1,
+    });
+    expect(result).toMatchObject({
+      evaluatedCount: 1,
+      addedCount: 1,
+      removedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+    });
+    expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(1);
     expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "run-1" },
         data: expect.objectContaining({
-          status: "FAILED",
-          error: expect.stringContaining("rate-limited member fetching"),
+          status: "COMPLETED",
         }),
       }),
     );
@@ -3171,10 +3196,12 @@ describe("AutoRoleRefreshService", () => {
     expect(legendUser.roles.add).toHaveBeenCalledWith(leagueRoleId);
     expect(result.memberSourceSummary).toMatchObject({
       memberSourceMode: "partial_candidates",
+      candidateUserCount: 3,
       targetedFetchRequestedCount: 2,
       targetedFetchSucceededCount: 1,
       targetedFetchFailedCount: 1,
     });
+    expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       evaluatedCount: 2,
       addedCount: 1,
@@ -3590,7 +3617,7 @@ describe("AutoRoleRefreshService", () => {
     expect(result.memberSourceSummary).toMatchObject({
       cacheCoverageComplete: false,
       visitorRoleAdditionsSuppressed: true,
-      memberSourceMode: "targeted_candidates",
+      memberSourceMode: "partial_candidates",
     });
   });
 
