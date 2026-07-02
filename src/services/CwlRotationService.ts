@@ -81,6 +81,7 @@ export type CwlRotationPlanExport = {
   season: string;
   clanTag: string;
   clanName: string | null;
+  leagueLabel?: string | null;
   rosterId: string | null;
   rosterTitle: string | null;
   rosterShortName: string | null;
@@ -1058,10 +1059,13 @@ async function loadPlanDaysWithMembers(planId: string) {
   });
 }
 
-async function loadCwlRotationExportClanNameMap(input: {
+async function loadCwlRotationExportClanMetadataMaps(input: {
   season: string;
   eventScopePairs: Array<{ clanTag: string; eventInstanceId: string }>;
-}): Promise<Map<string, string>> {
+}): Promise<{
+  clanNameByClanTag: Map<string, string>;
+  leagueLabelByClanTag: Map<string, string | null>;
+}> {
   const eventScopePairs = input.eventScopePairs
     .map((scope) => ({
       clanTag: normalizeClanTag(scope.clanTag),
@@ -1073,7 +1077,8 @@ async function loadCwlRotationExportClanNameMap(input: {
     );
   const clanTagFilter = [...new Set(eventScopePairs.map((scope) => scope.clanTag))];
   const clanNameByClanTag = new Map<string, string>();
-  if (clanTagFilter.length <= 0) return clanNameByClanTag;
+  const leagueLabelByClanTag = new Map<string, string | null>();
+  if (clanTagFilter.length <= 0) return { clanNameByClanTag, leagueLabelByClanTag };
 
   const setClanName = (clanTag: string, clanName: string | null | undefined) => {
     const normalizedClanTag = normalizeClanTag(clanTag);
@@ -1081,17 +1086,24 @@ async function loadCwlRotationExportClanNameMap(input: {
     if (!normalizedClanTag || !normalizedClanName || clanNameByClanTag.has(normalizedClanTag)) return;
     clanNameByClanTag.set(normalizedClanTag, normalizedClanName);
   };
+  const setLeagueLabel = (clanTag: string, leagueLabel: string | null | undefined) => {
+    const normalizedClanTag = normalizeClanTag(clanTag);
+    if (!normalizedClanTag || leagueLabelByClanTag.has(normalizedClanTag)) return;
+    const normalizedLeagueLabel = sanitizeDisplayText(leagueLabel);
+    leagueLabelByClanTag.set(normalizedClanTag, normalizedLeagueLabel || null);
+  };
 
   const trackedClanRows = await prisma.cwlTrackedClan.findMany({
     where: {
       season: input.season,
       tag: { in: clanTagFilter },
     },
-    select: { tag: true, name: true },
+    select: { tag: true, name: true, leagueLabel: true },
     orderBy: [{ tag: "asc" }],
   });
   for (const row of trackedClanRows) {
     setClanName(row.tag, row.name);
+    setLeagueLabel(row.tag, row.leagueLabel);
   }
 
   const prepRows = eventScopePairs.length > 0
@@ -1122,7 +1134,7 @@ async function loadCwlRotationExportClanNameMap(input: {
     setClanName(row.clanTag, row.clanName);
   }
 
-  return clanNameByClanTag;
+  return { clanNameByClanTag, leagueLabelByClanTag };
 }
 
 type CwlRotationExportRosterRecord = {
@@ -2451,7 +2463,7 @@ export class CwlRotationService {
       }
     }
 
-    const clanNameByClanTag = await loadCwlRotationExportClanNameMap({
+    const { clanNameByClanTag, leagueLabelByClanTag } = await loadCwlRotationExportClanMetadataMaps({
       season,
       eventScopePairs,
     });
@@ -2477,6 +2489,7 @@ export class CwlRotationService {
         clanNameByClanTag.get(normalizedClanTag) ||
         normalizedClanTag ||
         null;
+      const leagueLabel = leagueLabelByClanTag.get(normalizedClanTag) ?? null;
       const rosterTitle =
         sanitizeDisplayText(String(planMetadata?.rosterTitle ?? "")) ||
         resolvedRosterDetails?.rosterTitle ||
@@ -2491,6 +2504,7 @@ export class CwlRotationService {
         season: plan.season,
         clanTag: plan.clanTag,
         clanName,
+        leagueLabel,
         rosterId: sanitizeDisplayText(String(planMetadata?.rosterId ?? "")) || null,
         rosterTitle,
         rosterShortName,
