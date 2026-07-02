@@ -322,16 +322,17 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("while filler rows can show a trailing");
     expect(linkHelpText).toContain("marker outside inline code");
     expect(linkHelpText).toContain("Sort controls row order while columns control visible fields");
-    expect(linkHelpText).toContain("Available columns are Town Hall, Player Name, Discord Display, Discord Username, Weight, Inactivity, Clan Role, and Player Tag");
-    expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Role -> Inactivity");
+    expect(linkHelpText).toContain("Available columns are Town Hall, Player Name, Discord Display, Discord Username, Weight, Inactivity, Clan Role, Player Tag, and Violations (30d)");
+    expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Role -> Inactivity -> Violations (30d)");
     expect(linkHelpText).toContain("Clan Role");
     expect(linkHelpText).toContain("Inactivity");
+    expect(linkHelpText).toContain("Violations (30d)");
     expect(linkHelpText).toContain("same missed-war data as `/inactive wars`");
     expect(linkHelpText).toContain("unless a reliable shared days source is available");
     expect(linkHelpText).toContain("? 2WAR");
     expect(linkHelpText).not.toContain("? 2w");
     expect(normalized).toContain("visibility:public");
-    expect(normalized).toContain("owner-only");
+    expect(normalized).toContain("shared list in channel");
     expect(linkHelpText).toContain("The `player-tag` input accepts comma-separated, space-separated, or mixed-separated tags with or without #.");
     expect(linkHelpText).toContain("one or more local PlayerLink mappings");
     expect(linkHelpText).toContain("comma-separated, space-separated, or mixed-separated tags with or without #");
@@ -339,6 +340,7 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("/link list clan-tag:2QG2C08UP");
     expect(linkHelpText).toContain("/link delete player-tag:#ABC123 #DEF456");
     expect(linkHelpText).toContain("/link create player-tag:#ABC123 #DEF456");
+    expect(normalized).toContain("owner-only");
   });
 
   it("registers optional visibility choices on /link list", () => {
