@@ -68,6 +68,7 @@ Queue observability now includes:
 - queue wait timing telemetry for interactive and background CoC work
 - stale background skip counts and logs
 - degraded-delay and 429 recovery logs from the shared CoC pacing owner
+- autorole scheduler cycle logs that only count completed scheduled guild refreshes when they compute the next due time; manual `/autorole refresh` runs and non-guild autorole runs remain visible in refresh logs but do not move the scheduler clock
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 - maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 - CWL event-resolution and persistence logs such as `event=event_resolution_unresolved`, `event=event_resolution_collision`, `event=event_war_tags_attached`, `event=clan_current_event_changed`, `event=tracked_cwl_persist`, and `event=tracked_cwl_season_roster_reconcile`

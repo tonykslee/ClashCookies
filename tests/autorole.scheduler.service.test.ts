@@ -8,6 +8,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   autoRoleSyncRun: {
     findMany: vi.fn(),
+    groupBy: vi.fn(),
   },
 }));
 
@@ -80,6 +81,7 @@ describe("AutoRoleSchedulerService", () => {
     pollingModeMock.isMirrorPollingMode.mockReturnValue(false);
     prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([]);
     prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([]);
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([]);
     statusServiceMock.markStarted.mockResolvedValue({});
     statusServiceMock.markSucceeded.mockResolvedValue({});
     statusServiceMock.markFailed.mockResolvedValue({});
@@ -123,7 +125,8 @@ describe("AutoRoleSchedulerService", () => {
 
     expect(result).toEqual({ started: true });
     expect(runCycleSpy).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(12_345);
+    expect(runCycleSpy).toHaveBeenCalledTimes(2);
 
     scheduler.stop();
   });
@@ -175,10 +178,12 @@ describe("AutoRoleSchedulerService", () => {
       },
     ]);
 
-    prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValueOnce([
       {
         guildId: guild.id,
-        startedAt: new Date("2026-05-18T11:01:00.000Z"),
+        _max: {
+          finishedAt: new Date("2026-05-18T11:01:00.000Z"),
+        },
       },
     ]);
 
@@ -193,10 +198,12 @@ describe("AutoRoleSchedulerService", () => {
     });
     expect(refreshServiceMock.refreshGuild).not.toHaveBeenCalled();
 
-    prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValueOnce([
       {
         guildId: guild.id,
-        startedAt: new Date("2026-05-18T10:59:00.000Z"),
+        _max: {
+          finishedAt: new Date("2026-05-18T10:59:00.000Z"),
+        },
       },
     ]);
 
@@ -215,6 +222,7 @@ describe("AutoRoleSchedulerService", () => {
       expect.objectContaining({
         guild,
         guildId: guild.id,
+        trigger: "SCHEDULED",
         now: new Date("2026-05-18T12:00:00.000Z"),
         telemetry: expect.objectContaining({
           refreshId: expect.stringContaining(`autorole_refresh:${guild.id}:`),
@@ -241,6 +249,91 @@ describe("AutoRoleSchedulerService", () => {
     );
   });
 
+  it("anchors cadence only on completed scheduled guild runs and ignores manual, failed, running, and non-guild rows", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn(),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 15,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([
+      {
+        guildId: guild.id,
+        _max: {
+          finishedAt: new Date("2026-05-18T11:46:00.000Z"),
+        },
+      },
+    ]);
+
+    const result = await scheduler.runCycle();
+
+    expect(prismaMock.autoRoleSyncRun.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ["guildId"],
+        where: {
+          guildId: { in: [guild.id] },
+          scope: "GUILD",
+          trigger: "SCHEDULED",
+          status: "COMPLETED",
+        },
+        _max: {
+          finishedAt: true,
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 0,
+      started: 0,
+      completed: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).not.toHaveBeenCalled();
+  });
+
+  it("treats the absence of a completed scheduled guild run as immediately due", async () => {
+    const guild = makeGuild();
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue(guild),
+      },
+    } as any;
+    const scheduler = new AutoRoleSchedulerService(client, null, refreshServiceMock as any, 12_345);
+
+    prismaMock.autoRoleGuildConfig.findMany.mockResolvedValue([
+      {
+        guildId: guild.id,
+        syncIntervalMinutes: 30,
+      },
+    ]);
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([]);
+
+    const result = await scheduler.runCycle();
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      due: 1,
+      started: 1,
+      completed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trigger: "SCHEDULED",
+      }),
+    );
+  });
+
   it("skips a guild while its previous scheduled run is still in flight", async () => {
     const guild = makeGuild();
     const client = {
@@ -256,7 +349,7 @@ describe("AutoRoleSchedulerService", () => {
         syncIntervalMinutes: 1,
       },
     ]);
-    prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([]);
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([]);
 
     let resolveRefresh: (value: AutoRoleRefreshResult) => void = () => undefined;
     refreshServiceMock.refreshGuild.mockImplementation(
@@ -338,7 +431,7 @@ describe("AutoRoleSchedulerService", () => {
         syncIntervalMinutes: 1,
       },
     ]);
-    prismaMock.autoRoleSyncRun.findMany.mockResolvedValue([]);
+    prismaMock.autoRoleSyncRun.groupBy.mockResolvedValue([]);
     refreshServiceMock.refreshGuild.mockRejectedValueOnce(new Error("Tracked clan fetch failed"));
 
     const result = await scheduler.runCycle();
@@ -351,6 +444,13 @@ describe("AutoRoleSchedulerService", () => {
       skipped: 0,
       failed: 1,
     });
+    expect(refreshServiceMock.refreshGuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guild,
+        guildId: guild.id,
+        trigger: "SCHEDULED",
+      }),
+    );
     expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
       "autorole_scheduler",
       expect.objectContaining({

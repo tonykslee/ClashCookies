@@ -229,7 +229,7 @@ describe("AutoRoleService", () => {
 
   it("covers the nickname exclusion array in schema and migration files", () => {
     const schema = readFileSync("prisma/schema.prisma", "utf8");
-    expect(schema).toContain("nicknameExcludeRoleIds String[] @default([])");
+    expect(schema).toMatch(/nicknameExcludeRoleIds\s+String\[\]\s+@default\(\[\]\)/);
 
     const migration = readFileSync(
       "prisma/migrations/20260623103000_add_autorole_nickname_exclude_role_ids/migration.sql",
