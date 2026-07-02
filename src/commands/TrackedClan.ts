@@ -21,6 +21,7 @@ import {
   buildAccountDisplayRows,
   resolveTownHallEmojiMap,
 } from "../services/AccountDisplayService";
+import { getTrackedClanAutocompleteChoices } from "../services/TrackedClanAutocompleteService";
 import { ActivityService } from "../services/ActivityService";
 import { CoCService } from "../services/CoCService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
@@ -728,58 +729,6 @@ function logTrackedClanRepListOutcome(input: {
   console.info(
     `[tracked-clan] event=rep_list command=clan:rep:list guild_id=${input.guildId ?? "none"} actor_discord_id=${input.actorDiscordId} clan_filter=${input.clanFilter ?? "none"} displayed_clan_count=${input.displayedClanCount} total_assignment_count=${input.totalAssignmentCount} unique_player_count=${input.uniquePlayerCount} page_count=${input.pageCount} outcome=${input.outcome}`,
   );
-}
-
-async function autocompleteTrackedClanChoices(query: string): Promise<{ name: string; value: string }[]> {
-  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
-  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(query);
-  const trackedClans = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { name: true, tag: true },
-  });
-
-  const ranked = trackedClans
-    .map((clan) => {
-      const tag = normalizeClanTag(clan.tag);
-      if (!tag) return null;
-      const name = sanitizeDisplayText(clan.name);
-      const label = name ? `${name} (${tag})` : tag;
-      const tagBody = tag.replace(/^#/, "").toLowerCase();
-      const nameLower = name?.toLowerCase() ?? "";
-      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery.toLowerCase();
-      const prefixTagMatch =
-        normalizedTagQuery.length > 0 && tagBody.startsWith(normalizedTagQuery.toLowerCase()) && !exactTagMatch;
-      const nameMatch =
-        normalizedQuery.length > 0 && name !== null && nameLower.includes(normalizedQuery);
-      const matchRank =
-        normalizedTagQuery.length === 0 && normalizedQuery.length === 0
-          ? 3
-          : exactTagMatch
-            ? 0
-            : prefixTagMatch
-              ? 1
-              : nameMatch
-                ? 2
-                : 99;
-      return {
-        name: label.slice(0, 100),
-        value: tag,
-        matchRank,
-        sortName: nameLower || "\uffff",
-        sortTag: tagBody,
-      };
-    })
-    .filter((row): row is { name: string; value: string; matchRank: number; sortName: string; sortTag: string } => Boolean(row))
-    .filter((row) => row.matchRank !== 99)
-    .sort((a, b) => {
-      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
-      const byName = a.sortName.localeCompare(b.sortName, undefined, { sensitivity: "base" });
-      if (byName !== 0) return byName;
-      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
-    })
-    .slice(0, 25);
-
-  return ranked.map(({ name, value }) => ({ name, value }));
 }
 
 async function autocompleteTrackedClanRepPlayerChoices(input: {
@@ -3048,7 +2997,12 @@ export const TrackedClan: Command = {
 
     if (group === "rep") {
       if (focused.name === "clan") {
-        await interaction.respond(await autocompleteTrackedClanChoices(String(focused.value ?? "")));
+        await interaction.respond(
+          await getTrackedClanAutocompleteChoices({
+            focusedText: String(focused.value ?? ""),
+            limit: 25,
+          }),
+        );
         return;
       }
 

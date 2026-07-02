@@ -1,4 +1,23 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+const prismaMock = vi.hoisted(() => ({
+  trackedClan: {
+    findMany: vi.fn(),
+  },
+}));
+
+const trackedClanAutocompleteServiceMock = vi.hoisted(() => ({
+  getTrackedClanAutocompleteChoices: vi.fn(),
+}));
+
+vi.mock("../src/prisma", () => ({
+  prisma: prismaMock,
+}));
+
+vi.mock("../src/services/TrackedClanAutocompleteService", () => ({
+  getTrackedClanAutocompleteChoices:
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices,
+}));
+
 import {
   autocompleteFwaViolationsCommand,
   buildFwaViolationsClanAutocompleteChoices,
@@ -147,7 +166,7 @@ function makeInteraction(input: {
   const payloads: Array<Record<string, unknown>> = [];
   const interaction: any = {
     id: "interaction-violations",
-    guildId: input.guildId ?? "guild-1",
+    guildId: input.guildId === undefined ? "guild-1" : input.guildId,
     channelId: "channel-1",
     client: {},
     user: { id: "user-1" },
@@ -190,6 +209,7 @@ function makeInteraction(input: {
 describe("/fwa violations command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValue([]);
   });
 
   it("dispatches alliance overview, clan, player, and discord-user routes with the selected period", async () => {
@@ -371,6 +391,40 @@ describe("/fwa violations command", () => {
     expect(interaction.interaction.respond).toHaveBeenCalledWith([]);
   });
 
+  it("returns immediately with no guild and does not call autocomplete services", async () => {
+    const historyService = {
+      getPlayerAutocompleteChoices: vi.fn(),
+    };
+    const clanInteraction = makeInteraction({
+      guildId: null,
+      focusedName: "clan",
+      focusedValue: "alpha",
+    });
+
+    await autocompleteFwaViolationsCommand(clanInteraction.interaction, {
+      historyService: historyService as any,
+    });
+
+    expect(clanInteraction.interaction.respond).toHaveBeenCalledTimes(1);
+    expect(clanInteraction.interaction.respond).toHaveBeenCalledWith([]);
+
+    const playerInteraction = makeInteraction({
+      guildId: null,
+      focusedName: "player",
+      focusedValue: "pylq",
+    });
+
+    await autocompleteFwaViolationsCommand(playerInteraction.interaction, {
+      historyService: historyService as any,
+    });
+
+    expect(playerInteraction.interaction.respond).toHaveBeenCalledTimes(1);
+    expect(playerInteraction.interaction.respond).toHaveBeenCalledWith([]);
+    expect(historyService.getPlayerAutocompleteChoices).not.toHaveBeenCalled();
+    expect(trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+  });
+
   it("delegates player autocomplete and returns no more than 25 choices", async () => {
     const historyService = {
       getPlayerAutocompleteChoices: vi.fn().mockImplementation(
@@ -400,9 +454,9 @@ describe("/fwa violations command", () => {
     expect(interaction.interaction.respond.mock.calls[0]?.[0]).toHaveLength(25);
   });
 
-  it("returns canonical clan tags from autocomplete queries", async () => {
-    const loader = vi.fn().mockResolvedValue(
-      Array.from({ length: 30 }, (_value, index) => ({
+  it("delegates clan autocomplete to the shared tracked-clan autocomplete service", async () => {
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValueOnce(
+      Array.from({ length: 25 }, (_value, index) => ({
         name: `Clan ${index + 1} (#2QG2C08UP)`,
         value: "#2QG2C08UP",
       })),
@@ -411,15 +465,38 @@ describe("/fwa violations command", () => {
     const choices = await buildFwaViolationsClanAutocompleteChoices({
       focusedText: "#2qg",
       limit: 25,
-      loadChoices: loader,
     });
 
-    expect(loader).toHaveBeenCalledWith("#2qg");
+    expect(trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices).toHaveBeenCalledWith({
+      focusedText: "#2qg",
+      limit: 25,
+    });
     expect(choices).toHaveLength(25);
     expect(choices[0]).toEqual({
       name: "Clan 1 (#2QG2C08UP)",
       value: "#2QG2C08UP",
     });
+  });
+
+  it("responds with shared tracked-clan autocomplete choices when clan is focused", async () => {
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValueOnce([
+      { name: "Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+    const interaction = makeInteraction({
+      guildId: "guild-1",
+      focusedName: "clan",
+      focusedValue: "alpha",
+    });
+
+    await autocompleteFwaViolationsCommand(interaction.interaction, {});
+
+    expect(trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices).toHaveBeenCalledWith({
+      focusedText: "alpha",
+      limit: 25,
+    });
+    expect(interaction.interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
   });
 
   it("starts a paginator only when player history has more than one entry", async () => {

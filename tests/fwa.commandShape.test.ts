@@ -154,8 +154,8 @@ describe("/fwa base-swap command shape", () => {
     expect(visibility?.type).toBe(ApplicationCommandOptionType.String);
     expect(visibility?.required).toBe(false);
     expect(visibility?.choices).toEqual([
-      { name: "private", value: "private" },
-      { name: "public", value: "public" },
+      { name: "Private", value: "private" },
+      { name: "Public", value: "public" },
     ]);
 
     expect(hasPermissionTargetForCommand("fwa:violations")).toBe(true);

@@ -117,6 +117,10 @@ const fwaClanMembersSyncMock = vi.hoisted(() => ({
   refreshCurrentClanMembersForClanTags: vi.fn(),
 }));
 
+const trackedClanAutocompleteServiceMock = vi.hoisted(() => ({
+  getTrackedClanAutocompleteChoices: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -129,6 +133,11 @@ vi.mock("../src/services/fwa-feeds/FwaClanMembersSyncService", () => ({
   FwaClanMembersSyncService: vi.fn().mockImplementation(() => ({
     refreshCurrentClanMembersForClanTags: fwaClanMembersSyncMock.refreshCurrentClanMembersForClanTags,
   })),
+}));
+
+vi.mock("../src/services/TrackedClanAutocompleteService", () => ({
+  getTrackedClanAutocompleteChoices:
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices,
 }));
 
 import {
@@ -234,6 +243,7 @@ describe("/clan command behavior", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(ActivityService.prototype, "observeClan").mockResolvedValue(undefined as any);
     vi.spyOn(emojiResolverService, "resolveByName").mockResolvedValue(null as any);
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValue([]);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -3298,6 +3308,37 @@ describe("/clan command behavior", () => {
     expect(getReplyContent(interaction)).toContain(
       "Removed tracked clan #PYLQ0289 from FWA registry.",
     );
+  });
+
+  it("uses the shared tracked-clan autocomplete service for clan suggestions", async () => {
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValueOnce([
+      { name: "Alpha Clan (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+    const interaction: any = {
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue("rep"),
+        getSubcommand: vi.fn().mockReturnValue("add"),
+        getFocused: vi.fn().mockReturnValue({
+          name: "clan",
+          value: "alpha",
+        }),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await TrackedClan.autocomplete(interaction);
+
+    expect(
+      trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices,
+    ).toHaveBeenCalledWith({
+      focusedText: "alpha",
+      limit: 25,
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Clan (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
   });
 });
 

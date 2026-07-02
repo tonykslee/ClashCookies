@@ -9,7 +9,6 @@ import {
 import { normalizeClashTagWithHash } from "../../helper/clashTag";
 import { formatError } from "../../helper/formatError";
 import { resolveTownHallEmojiMap, type TownHallEmojiMap } from "../../helper/townHallEmoji";
-import { prisma } from "../../prisma";
 import {
   WarPlanViolationHistoryService,
   type WarPlanViolationHistoryAllianceOverview,
@@ -18,6 +17,7 @@ import {
   type WarPlanViolationHistoryPeriod,
   type WarPlanViolationHistoryPlayerHistoryResult,
 } from "../../services/WarPlanViolationHistoryService";
+import { getTrackedClanAutocompleteChoices } from "../../services/TrackedClanAutocompleteService";
 import type { CoCService } from "../../services/CoCService";
 import {
   buildWarPlanViolationsAllianceOverviewEmbed,
@@ -68,8 +68,8 @@ export const FWA_VIOLATIONS_SUBCOMMAND = {
       type: ApplicationCommandOptionType.String,
       required: false,
       choices: [
-        { name: "private", value: "private" },
-        { name: "public", value: "public" },
+        { name: "Private", value: "private" },
+        { name: "Public", value: "public" },
       ],
     },
   ],
@@ -90,48 +90,10 @@ type FwaViolationsClanAutocompleteChoice = {
 export type FwaViolationsCommandDeps = {
   historyService?: WarPlanViolationHistoryService;
   resolveTownHallEmojiMap?: (client: Client) => Promise<TownHallEmojiMap>;
-  loadTrackedClanAutocompleteChoices?: (
-    query: string,
-  ) => Promise<FwaViolationsClanAutocompleteChoice[]>;
   paginatorTimeoutMs?: number;
 };
 
 const defaultHistoryService = new WarPlanViolationHistoryService();
-
-async function defaultLoadTrackedClanAutocompleteChoices(
-  query: string,
-): Promise<FwaViolationsClanAutocompleteChoice[]> {
-  const normalizedQuery = String(query ?? "").trim().toLowerCase();
-  const tracked = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { name: true, tag: true },
-  });
-
-  return tracked
-    .map((row) => {
-      const normalizedTag = normalizeClashTagWithHash(row.tag);
-      if (!normalizedTag) return null;
-      const displayName = String(row.name ?? "").trim();
-      const label = displayName ? `${displayName} (${normalizedTag})` : normalizedTag;
-      return {
-        name: label.slice(0, 100),
-        value: normalizedTag,
-      };
-    })
-    .filter((choice): choice is FwaViolationsClanAutocompleteChoice => Boolean(choice))
-    .filter((choice) => {
-      if (!normalizedQuery) return true;
-      const normalizedValue = choice.value.toLowerCase();
-      const normalizedBareValue = choice.value.replace(/^#/, "").toLowerCase();
-      const normalizedName = choice.name.toLowerCase();
-      return (
-        normalizedName.includes(normalizedQuery) ||
-        normalizedValue.includes(normalizedQuery) ||
-        normalizedBareValue.includes(normalizedQuery)
-      );
-    })
-    .slice(0, 25);
-}
 
 function normalizeViolationsPeriod(
   input: string | null | undefined,
@@ -500,14 +462,11 @@ export async function runFwaViolationsCommand(
 export async function buildFwaViolationsClanAutocompleteChoices(input: {
   focusedText?: string | null;
   limit?: number;
-  loadChoices?: (query: string) => Promise<FwaViolationsClanAutocompleteChoice[]>;
 }): Promise<FwaViolationsClanAutocompleteChoice[]> {
-  const loader = input.loadChoices ?? defaultLoadTrackedClanAutocompleteChoices;
-  const choices = await loader(String(input.focusedText ?? ""));
-  const rawLimit = Number(input.limit ?? 25);
-  const normalizedLimit = Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 25;
-  const limit = Math.max(1, Math.min(25, normalizedLimit));
-  return choices.slice(0, limit);
+  return getTrackedClanAutocompleteChoices({
+    focusedText: input.focusedText ?? "",
+    limit: input.limit ?? 25,
+  });
 }
 
 export async function buildFwaViolationsPlayerAutocompleteChoices(input: {
@@ -530,9 +489,14 @@ export async function autocompleteFwaViolationsCommand(
 ): Promise<void> {
   const focused = interaction.options.getFocused(true);
   try {
+    if (!interaction.guildId) {
+      await interaction.respond([]);
+      return;
+    }
+
     if (focused.name === "player") {
       const choices = await buildFwaViolationsPlayerAutocompleteChoices({
-        guildId: interaction.guildId ?? "",
+        guildId: interaction.guildId,
         focusedText: String(focused.value ?? ""),
         limit: 25,
         historyService: deps?.historyService,
@@ -545,7 +509,6 @@ export async function autocompleteFwaViolationsCommand(
       const choices = await buildFwaViolationsClanAutocompleteChoices({
         focusedText: String(focused.value ?? ""),
         limit: 25,
-        loadChoices: deps?.loadTrackedClanAutocompleteChoices,
       });
       await interaction.respond(choices);
       return;
