@@ -63,6 +63,8 @@ const CWL_MEMBERS_SAFE_MESSAGE_CHAR_BUDGET = 5500;
 const CWL_BASELINE_STATUS_DESCRIPTION_LIMIT = 3800;
 const CWL_BASELINE_CAPTURE_UNAVAILABLE_WARNING =
   "⚠️ Review unavailable clans before relying on this baseline as the complete alliance denominator.";
+const CWL_BASELINE_CAPTURE_RECONCILIATION_WARNING =
+  "⚠️ Reconciled {count} account{plural} found in multiple source rosters.";
 const CWL_BASELINE_STATUS_NOTICE =
   "This snapshot reflects the persisted FWA roster data available when it was captured; it is not a reconstruction of pre-CWL membership.";
 const CWL_BASELINE_CAPTURE_REUSED_LABEL =
@@ -570,6 +572,30 @@ function formatCwlBaselineCoverageSummaryLine(
   return `❌ ${clanNamePrefix}${clanTag} — UNAVAILABLE: ${failureReason}`;
 }
 
+function formatCwlBaselineReconciliationSummaryLine(summary: {
+  playerTag: string;
+  keptClanTag: string;
+  droppedClanTags: string[];
+  resolutionSource: string;
+  keptSourceSyncedAt: Date | null;
+  keptSourceWarStartTime: Date | null;
+  keptSourceObservedAt: Date | null;
+}): string {
+  const playerTag = sanitizeCwlBaselineDisplayText(summary.playerTag);
+  const keptClanTag = sanitizeCwlBaselineDisplayText(summary.keptClanTag);
+  const droppedClanTags = summary.droppedClanTags
+    .map((tag) => sanitizeCwlBaselineDisplayText(tag))
+    .filter((tag) => Boolean(tag));
+  const dropped = droppedClanTags.length > 0 ? droppedClanTags.join(", ") : "none";
+  return [
+    `• ${playerTag} -> ${keptClanTag} (dropped ${dropped})`,
+    sanitizeCwlBaselineDisplayText(summary.resolutionSource),
+    `synced ${formatDiscordTimestamp(summary.keptSourceSyncedAt)}`,
+    `war ${formatDiscordTimestamp(summary.keptSourceWarStartTime)}`,
+    `observed ${formatDiscordTimestamp(summary.keptSourceObservedAt)}`,
+  ].join(" — ");
+}
+
 function buildCwlBaselineStatusDescription(summary: {
   capturedAt: Date;
   trackedClanCount: number;
@@ -579,6 +605,16 @@ function buildCwlBaselineStatusDescription(summary: {
   linkedAccountCount: number;
   currentWarSourceCount: number;
   latestWarFallbackCount: number;
+  reconciliationCount?: number;
+  reconciliationSummaries?: Array<{
+    playerTag: string;
+    keptClanTag: string;
+    droppedClanTags: string[];
+    resolutionSource: string;
+    keptSourceSyncedAt: Date | null;
+    keptSourceWarStartTime: Date | null;
+    keptSourceObservedAt: Date | null;
+  }>;
   resultLabel?: string | null;
   includeUnavailableWarning?: boolean;
   coverageSummaries: Array<{
@@ -595,7 +631,18 @@ function buildCwlBaselineStatusDescription(summary: {
     ...(summary.includeUnavailableWarning && summary.unavailableClanCount > 0
       ? [CWL_BASELINE_CAPTURE_UNAVAILABLE_WARNING]
       : []),
+    ...(Number(summary.reconciliationCount ?? 0) > 0
+      ? [
+          CWL_BASELINE_CAPTURE_RECONCILIATION_WARNING.replace(
+            "{count}",
+            String(summary.reconciliationCount ?? 0),
+          ).replace("{plural}", summary.reconciliationCount === 1 ? "" : "s"),
+        ]
+      : []),
   ];
+  const reconciliationLines = (summary.reconciliationSummaries ?? [])
+    .slice(0, 3)
+    .map((entry) => formatCwlBaselineReconciliationSummaryLine(entry));
   const summaryLines = [
     `Captured timestamp: ${formatDiscordTimestamp(summary.capturedAt)}`,
     `Tracked clans: ${summary.trackedClanCount}`,
@@ -614,6 +661,9 @@ function buildCwlBaselineStatusDescription(summary: {
     const lines = [...introLines];
     if (introLines.length > 0) {
       lines.push("");
+    }
+    if (reconciliationLines.length > 0) {
+      lines.push(...reconciliationLines, "");
     }
     lines.push(...summaryLines, "");
     lines.push(...coverageLines.slice(0, includedCoverageCount));
@@ -644,6 +694,16 @@ function buildCwlBaselineStatusEmbed(summary: {
   linkedAccountCount: number;
   currentWarSourceCount: number;
   latestWarFallbackCount: number;
+  reconciliationCount?: number;
+  reconciliationSummaries?: Array<{
+    playerTag: string;
+    keptClanTag: string;
+    droppedClanTags: string[];
+    resolutionSource: string;
+    keptSourceSyncedAt: Date | null;
+    keptSourceWarStartTime: Date | null;
+    keptSourceObservedAt: Date | null;
+  }>;
   resultLabel?: string | null;
   includeUnavailableWarning?: boolean;
   coverageSummaries: Array<{

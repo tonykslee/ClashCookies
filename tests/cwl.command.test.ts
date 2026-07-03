@@ -495,6 +495,16 @@ function makeBaselineStatusSummary(
     linkedAccountCount: number;
     currentWarSourceCount: number;
     latestWarFallbackCount: number;
+    reconciliationCount: number;
+    reconciliationSummaries: Array<{
+      playerTag: string;
+      keptClanTag: string;
+      droppedClanTags: string[];
+      resolutionSource: string;
+      keptSourceSyncedAt: Date | null;
+      keptSourceWarStartTime: Date | null;
+      keptSourceObservedAt: Date | null;
+    }>;
     replacedExistingBaseline: boolean;
     coverageSummaries: Array<{
       clanTag: string;
@@ -524,6 +534,8 @@ function makeBaselineStatusSummary(
     linkedAccountCount: 0,
     currentWarSourceCount: 0,
     latestWarFallbackCount: 0,
+    reconciliationCount: 0,
+    reconciliationSummaries: [],
     replacedExistingBaseline: false,
     coverageSummaries: [],
     reusedExistingBaseline: false,
@@ -6638,6 +6650,78 @@ describe("/cwl command", () => {
     expect(getDescription(cleanInteraction)).not.toContain(
       "Review unavailable clans before relying on this baseline as the complete alliance denominator.",
     );
+  });
+
+  it("includes a concise reconciliation warning when duplicate source rosters are resolved", async () => {
+    vi.mocked(cwlAllianceBaselineService.captureAllianceSeasonBaseline).mockResolvedValue(
+      makeBaselineStatusSummary({
+        season: "2026-10",
+        trackedClanCount: 2,
+        capturedClanCount: 2,
+        unavailableClanCount: 0,
+        memberAccountCount: 100,
+        linkedAccountCount: 80,
+        currentWarSourceCount: 1,
+        latestWarFallbackCount: 1,
+        reconciliationCount: 1,
+        reconciliationSummaries: [
+          {
+            playerTag: "#Q900",
+            keptClanTag: "#P289",
+            droppedClanTags: ["#P282"],
+            resolutionSource: "sourceSyncedAt",
+            keptSourceSyncedAt: new Date("2026-10-15T00:30:00.000Z"),
+            keptSourceWarStartTime: new Date("2026-10-15T00:00:00.000Z"),
+            keptSourceObservedAt: new Date("2026-10-15T00:05:00.000Z"),
+          },
+        ],
+        coverageSummaries: [
+          {
+            clanTag: "#P282",
+            clanName: "Alpha Clan",
+            captureStatus: "CAPTURED",
+            sourceType: "CURRENT_FWA_WAR",
+            sourceWarId: 1001,
+            sourceWarStartTime: new Date("2026-10-15T00:00:00.000Z"),
+            sourceWarEndTime: new Date("2026-10-15T01:00:00.000Z"),
+            sourceOpponentTag: "#OPP",
+            sourceObservedAt: new Date("2026-10-15T00:05:00.000Z"),
+            rosterSize: 49,
+            failureReason: null,
+          },
+          {
+            clanTag: "#P289",
+            clanName: "Beta Clan",
+            captureStatus: "CAPTURED",
+            sourceType: "LATEST_FWA_WAR",
+            sourceWarId: 1002,
+            sourceWarStartTime: new Date("2026-10-14T00:00:00.000Z"),
+            sourceWarEndTime: new Date("2026-10-14T01:00:00.000Z"),
+            sourceOpponentTag: "#OPP2",
+            sourceObservedAt: new Date("2026-10-14T00:05:00.000Z"),
+            rosterSize: 51,
+            failureReason: null,
+          },
+        ],
+        reusedExistingBaseline: false,
+        replacedExistingBaseline: false,
+      }) as any,
+    );
+    const interaction = makeInteraction({
+      group: "baseline",
+      subcommand: "capture",
+      season: "2026-10",
+    });
+
+    await Cwl.run({} as any, interaction as any);
+
+    const description = getDescription(interaction);
+    expect(description).toContain(
+      "Reconciled 1 account found in multiple source rosters.",
+    );
+    expect(description).toContain("#Q900");
+    expect(description).toContain("#P289");
+    expect(description).toContain("#P282");
   });
 
   it("surfaces validation, duplicate-player, and unexpected capture failures cleanly", async () => {

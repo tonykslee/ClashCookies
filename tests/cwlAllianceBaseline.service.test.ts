@@ -67,6 +67,12 @@ type TestParticipationRow = {
   attacksUsed: number;
 };
 
+type TestCurrentMembershipRow = {
+  playerTag: string;
+  clanTag: string;
+  sourceSyncedAt: Date;
+};
+
 type TestBaselineMemberRow = {
   id: string;
   baselineId: string;
@@ -116,6 +122,7 @@ type TestState = {
   rosters: TestRosterRow[];
   histories: TestHistoryRow[];
   participations: TestParticipationRow[];
+  currentMemberships: TestCurrentMembershipRow[];
   playerLinks: TestPlayerLinkRow[];
   baselines: TestBaselineRow[];
   baselineClans: TestBaselineClanRow[];
@@ -147,6 +154,7 @@ function makeState(): TestState {
     rosters: [],
     histories: [],
     participations: [],
+    currentMemberships: [],
     playerLinks: [],
     baselines: [],
     baselineClans: [],
@@ -185,6 +193,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaTrackedClanWarRosterCurrent: {
     findMany: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
   clanWarHistory: {
     findMany: vi.fn(),
   },
@@ -210,6 +221,7 @@ import {
   CwlAllianceBaselineDuplicatePlayerTagError,
   CwlAllianceBaselineValidationError,
   CwlAllianceBaselineService,
+  reconcileDuplicateCandidateRows,
 } from "../src/services/CwlAllianceBaselineService";
 
 function resetState(): void {
@@ -228,6 +240,17 @@ function resetState(): void {
   prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockImplementation(async () =>
     cloneRosters(state.rosters),
   );
+  prismaMock.fwaClanMemberCurrent.findMany.mockImplementation(async (args: any) => {
+    const playerTags = args?.where?.playerTag?.in;
+    const clanTags = args?.where?.clanTag?.in;
+    return [...state.currentMemberships]
+      .filter(
+        (row) =>
+          inList(row.playerTag, playerTags) &&
+          inList(row.clanTag, clanTags),
+      )
+      .map((row) => ({ ...row }));
+  });
   prismaMock.clanWarHistory.findMany.mockImplementation(async (args: any) => {
     const clanTags = args?.where?.clanTag?.in;
     const matchType = args?.where?.matchType;
@@ -391,29 +414,6 @@ function makeHistory(input: Partial<TestHistoryRow> & { clanTag: string; warId: 
   };
 }
 
-function makeParticipation(
-  clanTag: string,
-  warId: number,
-  rows: Array<{
-    playerTag: string;
-    playerName: string;
-    playerPosition: number | null;
-    townHall: number | null;
-    attacksUsed: number;
-  }>,
-): TestParticipationRow[] {
-  return rows.map((row) => ({
-    guildId: "guild-1",
-    warId: String(warId),
-    clanTag,
-    playerTag: row.playerTag,
-    playerName: row.playerName,
-    playerPosition: row.playerPosition,
-    townHall: row.townHall,
-    attacksUsed: row.attacksUsed,
-  }));
-}
-
 function makeCompleteParticipationRows(
   clanTag: string,
   warId: number,
@@ -526,7 +526,254 @@ describe("CwlAllianceBaselineService", () => {
     expect(prismaMock.fwaTrackedClanWarRosterCurrent.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.clanWarParticipation.findMany).toHaveBeenCalledTimes(0);
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(0);
     expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles duplicate player tags using current membership freshness before player-link lookup", async () => {
+    state.trackedClans = [
+      makeTrackedClan("#P282", "Alpha Clan"),
+      makeTrackedClan("#P289", "Beta Clan"),
+    ];
+    state.currentWars = [
+      makeCurrentWar({ clanTag: "#P282", warId: 601 }),
+      makeCurrentWar({ clanTag: "#P289", warId: 602 }),
+    ];
+    state.rosters = [
+      makeRoster({
+        clanTag: "#P282",
+        members: [
+          { position: 1, playerTag: "#Q900", playerName: "Dup Alpha", townHall: 16 },
+          { position: 2, playerTag: "#Q928", playerName: "Alpha Unique", townHall: 15 },
+        ],
+      }),
+      makeRoster({
+        clanTag: "#P289",
+        members: [
+          { position: 1, playerTag: "#Q900", playerName: "Dup Beta", townHall: 16 },
+          { position: 2, playerTag: "#Q929", playerName: "Beta Unique", townHall: 15 },
+        ],
+      }),
+    ];
+    state.currentMemberships = [
+      {
+        playerTag: "#Q900",
+        clanTag: "#P289",
+        sourceSyncedAt: new Date("2026-06-18T02:00:00.000Z"),
+      },
+      {
+        playerTag: "#Q900",
+        clanTag: "#P282",
+        sourceSyncedAt: new Date("2026-06-18T01:00:00.000Z"),
+      },
+    ];
+    state.playerLinks = [
+      { playerTag: "#Q900", discordUserId: "123456789012345678" },
+      { playerTag: "#Q928", discordUserId: "223456789012345678" },
+      { playerTag: "#Q929", discordUserId: "323456789012345678" },
+    ];
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result.reconciliationCount).toBe(1);
+    expect(result.reconciliationSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          playerTag: "#Q900",
+          keptClanTag: "#P289",
+          droppedClanTags: ["#P282"],
+          resolutionSource: "sourceSyncedAt",
+        }),
+      ]),
+    );
+    expect(result.memberAccountCount).toBe(3);
+    expect(result.coverageSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          clanTag: "#P282",
+          rosterSize: 1,
+        }),
+        expect.objectContaining({
+          clanTag: "#P289",
+          rosterSize: 2,
+        }),
+      ]),
+    );
+    expect(state.baselineMembers.filter((row) => row.playerTag === "#Q900")).toHaveLength(1);
+    expect(state.baselineMembers.map((row) => row.playerTag).sort()).toEqual([
+      "#Q900",
+      "#Q928",
+      "#Q929",
+    ]);
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany.mock.calls[0]?.[0]?.where?.playerTag?.in).toEqual(
+      expect.arrayContaining(["#Q900", "#Q928", "#Q929"]),
+    );
+  });
+
+  it("reconciles duplicate historical members by newest source war when current membership is unavailable", async () => {
+    state.trackedClans = [
+      makeTrackedClan("#P282", "Older Clan"),
+      makeTrackedClan("#P289", "Newer Clan"),
+    ];
+    state.histories = [
+      makeHistory({
+        clanTag: "#P282",
+        warId: 701,
+        warStartTime: new Date("2026-06-10T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-10T00:30:00.000Z"),
+      }),
+      makeHistory({
+        clanTag: "#P289",
+        warId: 702,
+        warStartTime: new Date("2026-06-11T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-11T00:30:00.000Z"),
+      }),
+    ];
+    state.participations = [
+      ...makeCompleteParticipationRows("#P282", 701, { playerTagPrefix: "#P" }).map((row, index) =>
+        index === 0 ? { ...row, playerTag: "#Q900", playerName: "Old Dup" } : row,
+      ),
+      ...makeCompleteParticipationRows("#P289", 702, { playerTagPrefix: "#Q" }).map((row, index) =>
+        index === 0 ? { ...row, playerTag: "#Q900", playerName: "New Dup" } : row,
+      ),
+    ];
+
+    const result = await makeService().captureAllianceSeasonBaseline({
+      guildId: "guild-1",
+      season: "2026-06",
+    });
+
+    expect(result.reconciliationCount).toBe(1);
+    expect(result.reconciliationSummaries?.[0]).toMatchObject({
+      playerTag: "#Q900",
+      keptClanTag: "#P289",
+      resolutionSource: "sourceWarStartTime",
+    });
+    expect(result.memberAccountCount).toBe(99);
+    expect(result.coverageSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          clanTag: "#P282",
+          rosterSize: 49,
+        }),
+        expect.objectContaining({
+          clanTag: "#P289",
+          rosterSize: 50,
+        }),
+      ]),
+    );
+    expect(state.baselineMembers.map((row) => row.playerTag).sort()).toEqual(
+      [
+        "#Q900",
+        ...makeCompleteParticipationRows("#P282", 701, { playerTagPrefix: "#P" })
+          .slice(1)
+          .map((row) => row.playerTag),
+        ...makeCompleteParticipationRows("#P289", 702, { playerTagPrefix: "#Q" })
+          .slice(1)
+          .map((row) => row.playerTag),
+      ].sort(),
+    );
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves exact ties deterministically by clan tag when candidate timestamps match", async () => {
+    const clans = [
+      {
+        id: "baseline-clan-zulu",
+        baselineId: "baseline-tie",
+        clanTag: "#P500",
+        clanName: "Zulu Clan",
+        captureStatus: "CAPTURED",
+        sourceType: "CURRENT_FWA_WAR",
+        sourceWarId: 801,
+        sourceWarStartTime: new Date("2026-06-12T00:00:00.000Z"),
+        sourceWarEndTime: null,
+        sourceOpponentTag: "#V500",
+        sourceObservedAt: new Date("2026-06-12T01:05:00.000Z"),
+        rosterSize: 2,
+        failureReason: null,
+      },
+      {
+        id: "baseline-clan-alpha",
+        baselineId: "baseline-tie",
+        clanTag: "#P400",
+        clanName: "Alpha Clan",
+        captureStatus: "CAPTURED",
+        sourceType: "CURRENT_FWA_WAR",
+        sourceWarId: 802,
+        sourceWarStartTime: new Date("2026-06-12T00:00:00.000Z"),
+        sourceWarEndTime: null,
+        sourceOpponentTag: "#V400",
+        sourceObservedAt: new Date("2026-06-12T01:05:00.000Z"),
+        rosterSize: 2,
+        failureReason: null,
+      },
+    ] as const;
+    const members = [
+      {
+        id: "baseline-member-zulu-a",
+        baselineId: "baseline-tie",
+        baselineClanId: "baseline-clan-zulu",
+        playerTag: "#Q900",
+        playerName: "Tie A",
+        townHall: 16,
+        position: 1,
+        linkedDiscordUserId: null,
+      },
+      {
+        id: "baseline-member-zulu-b",
+        baselineId: "baseline-tie",
+        baselineClanId: "baseline-clan-zulu",
+        playerTag: "#Q928",
+        playerName: "Zulu Unique",
+        townHall: 15,
+        position: 2,
+        linkedDiscordUserId: null,
+      },
+      {
+        id: "baseline-member-alpha-a",
+        baselineId: "baseline-tie",
+        baselineClanId: "baseline-clan-alpha",
+        playerTag: "#Q900",
+        playerName: "Tie B",
+        townHall: 16,
+        position: 1,
+        linkedDiscordUserId: null,
+      },
+      {
+        id: "baseline-member-alpha-b",
+        baselineId: "baseline-tie",
+        baselineClanId: "baseline-clan-alpha",
+        playerTag: "#Q929",
+        playerName: "Alpha Unique",
+        townHall: 15,
+        position: 2,
+        linkedDiscordUserId: null,
+      },
+    ] as const;
+
+    const result = await reconcileDuplicateCandidateRows({
+      guildId: "guild-1",
+      season: "2026-06",
+      clans: [...clans] as any,
+      members: [...members] as any,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      startedAtMs: 0,
+    });
+
+    expect(result.reconciliationCount).toBe(1);
+    expect(result.reconciliationSummaries[0]).toMatchObject({
+      playerTag: "#Q900",
+      keptClanTag: "#P400",
+      resolutionSource: "clanTag",
+    });
+    expect(result.members).toHaveLength(3);
+    expect(result.members.filter((row) => row.playerTag === "#Q900")).toHaveLength(1);
   });
 
   it("falls back to historical capture when the current war roster opponent tag is missing", async () => {
@@ -855,7 +1102,7 @@ describe("CwlAllianceBaselineService", () => {
     expect(txMock.cwlAllianceSeasonBaseline.upsert).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects duplicate player tags across clans before mutating an existing baseline", async () => {
+  it("refuses to mutate when the final duplicate guard sees unresolved reconciliation output", async () => {
     state.baselines = [
       {
         id: "baseline-duplicate",
@@ -869,24 +1116,67 @@ describe("CwlAllianceBaselineService", () => {
         members: [],
       },
     ];
-    state.trackedClans = [
-      makeTrackedClan("#P282", "First Clan"),
-      makeTrackedClan("#P289", "Second Clan"),
-    ];
-    state.currentWars = [
-      makeCurrentWar({ clanTag: "#P282", warId: 601 }),
-      makeCurrentWar({ clanTag: "#P289", warId: 602 }),
-    ];
-    state.rosters = [
-      makeRoster({
-        clanTag: "#P282",
-        members: [{ position: 1, playerTag: "#Q922", playerName: "Dup One", townHall: 16 }],
-      }),
-      makeRoster({
-        clanTag: "#P289",
-        members: [{ position: 1, playerTag: "#q922", playerName: "Dup Two", townHall: 15 }],
-      }),
-    ];
+    const buildCandidateSnapshotSpy = vi
+      .spyOn(CwlAllianceBaselineService.prototype as any, "buildCandidateSnapshot")
+      .mockResolvedValue({
+        baselineId: "baseline-duplicate",
+        clans: [
+          {
+            id: "baseline-clan-a",
+            baselineId: "baseline-duplicate",
+            clanTag: "#P282",
+            clanName: "First Clan",
+            captureStatus: "CAPTURED",
+            sourceType: "CURRENT_FWA_WAR",
+            sourceWarId: 601,
+            sourceWarStartTime: new Date("2026-06-18T00:00:00.000Z"),
+            sourceWarEndTime: null,
+            sourceOpponentTag: "#V1",
+            sourceObservedAt: new Date("2026-06-18T00:05:00.000Z"),
+            rosterSize: 1,
+            failureReason: null,
+          },
+          {
+            id: "baseline-clan-b",
+            baselineId: "baseline-duplicate",
+            clanTag: "#P289",
+            clanName: "Second Clan",
+            captureStatus: "CAPTURED",
+            sourceType: "CURRENT_FWA_WAR",
+            sourceWarId: 602,
+            sourceWarStartTime: new Date("2026-06-18T00:00:00.000Z"),
+            sourceWarEndTime: null,
+            sourceOpponentTag: "#V2",
+            sourceObservedAt: new Date("2026-06-18T00:05:00.000Z"),
+            rosterSize: 1,
+            failureReason: null,
+          },
+        ],
+        members: [
+          {
+            id: "baseline-member-a",
+            baselineId: "baseline-duplicate",
+            baselineClanId: "baseline-clan-a",
+            playerTag: "#Q922",
+            playerName: "Dup One",
+            townHall: 16,
+            position: 1,
+            linkedDiscordUserId: null,
+          },
+          {
+            id: "baseline-member-b",
+            baselineId: "baseline-duplicate",
+            baselineClanId: "baseline-clan-b",
+            playerTag: "#Q922",
+            playerName: "Dup Two",
+            townHall: 15,
+            position: 1,
+            linkedDiscordUserId: null,
+          },
+        ],
+        reconciliationCount: 0,
+        reconciliationSummaries: [],
+      } as any);
 
     const service = makeService();
     await expect(
@@ -896,9 +1186,11 @@ describe("CwlAllianceBaselineService", () => {
         replaceExisting: true,
       }),
     ).rejects.toBeInstanceOf(CwlAllianceBaselineDuplicatePlayerTagError);
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
     expect(txMock.cwlAllianceSeasonBaseline.upsert).not.toHaveBeenCalled();
     expect(state.baselineMembers).toEqual([]);
     expect(state.baselineClans).toEqual([]);
+    buildCandidateSnapshotSpy.mockRestore();
   });
 
   it("returns null when no baseline exists", async () => {
