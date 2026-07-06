@@ -26,6 +26,7 @@ import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import { BotLogChannelService } from "./BotLogChannelService";
+import { cwlStateService } from "./CwlStateService";
 import { MaintenanceWindowService } from "./MaintenanceWindowService";
 import {
   chooseMatchTypeResolution,
@@ -69,7 +70,13 @@ import {
   shouldEmit,
   toDiscordRelativeTime,
 } from "./war-events/core";
-import { trackedMessageService } from "./TrackedMessageService";
+import {
+  TRACKED_MESSAGE_FEATURE_TYPE,
+  TRACKED_MESSAGE_STATUS,
+  parseFwaBaseSwapMetadata,
+  shouldSendFwaBaseSwapBattleDayReminder,
+  trackedMessageService,
+} from "./TrackedMessageService";
 export {
   computeWarComplianceForTest,
   computeWarPointsDeltaForTest,
@@ -222,16 +229,178 @@ export const buildBattleDayRefreshEditPayloadForTest =
   buildBattleDayRefreshEditPayload;
 
 function buildFwaBaseSwapBattleDayReminderContent(input: {
-  clanRoleId: string;
+  clanRoleId?: string | null;
+  matchType: "BL" | "CWL";
 }): string {
   const clanRoleId = String(input.clanRoleId ?? "").trim();
   const body =
-    "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.";
-  return `${body}\n<@&${clanRoleId}>`;
+    input.matchType === "CWL"
+      ? "Thanks everyone for swapping to war bases for the serious CWL. Please swap back to your FWA base for the next FWA war."
+      : "Thanks everyone for swapping to war bases for the blacklist war. Please swap back to your FWA base for the next war.";
+  const lines = ["### Battle Day Started!", body];
+  if (clanRoleId) lines.push(`<@&${clanRoleId}>`);
+  return lines.join("\n");
 }
 
 export const buildFwaBaseSwapBattleDayReminderContentForTest =
   buildFwaBaseSwapBattleDayReminderContent;
+
+function normalizeBattleDayReminderAllowedMentions(
+  roleId: string | null | undefined,
+): { roles: string[] } | { parse: [] } {
+  const normalizedRoleId = String(roleId ?? "").trim();
+  return normalizedRoleId ? { roles: [normalizedRoleId] } : { parse: [] };
+}
+
+function buildBattleDayReminderIdentity(input: {
+  kind: "BL" | "CWL";
+  guildId: string;
+  clanTag: string;
+  referenceId: string;
+  season: string;
+  roundDay: number;
+  battleDayStart: Date | null;
+}): string {
+  const parts = [
+    "fwa-base-swap-battle-day",
+    input.kind,
+    String(input.guildId ?? "").trim(),
+    normalizeTagBare(input.clanTag),
+    String(input.referenceId ?? "").trim(),
+    String(input.season ?? "").trim(),
+    String(Math.trunc(Number(input.roundDay) || 0)),
+    input.battleDayStart ? String(Math.trunc(input.battleDayStart.getTime())) : "unknown",
+  ];
+  return parts.join(":");
+}
+
+type CwlBattleDayReminderState = {
+  season: string;
+  roundDay: number;
+  roundState: string;
+  startTime: Date | null;
+  endTime: Date | null;
+};
+
+function isBattleDayRoundState(roundState: string | null | undefined): boolean {
+  return String(roundState ?? "").trim().toLowerCase().includes("inwar");
+}
+
+function resolveCwlBattleDayReminderRange(
+  state: CwlBattleDayReminderState | null | undefined,
+): { startTime: number; endTime: number } | null {
+  if (!state?.startTime) return null;
+  const startTime = state.startTime.getTime();
+  const endTime = state.endTime?.getTime() ?? startTime;
+  return {
+    startTime,
+    endTime: Math.max(startTime, endTime),
+  };
+}
+
+function scoreCwlRosterLifecycleState(lifecycleState: string | null | undefined): number {
+  const normalized = String(lifecycleState ?? "").trim().toUpperCase();
+  if (normalized === "ACTIVE") return 3;
+  if (normalized === "OPEN") return 2;
+  if (normalized === "CLOSED") return 1;
+  return 0;
+}
+
+function scoreCwlRosterOverlap(
+  roster: { startsAt: Date | null; endsAt: Date | null },
+  battleDayRange: { startTime: number; endTime: number } | null,
+): number {
+  if (!battleDayRange || !roster.startsAt) return 0;
+  const rosterStart = roster.startsAt.getTime();
+  const rosterEnd = roster.endsAt?.getTime() ?? rosterStart;
+  const overlapStart = Math.max(rosterStart, battleDayRange.startTime);
+  const overlapEnd = Math.min(Math.max(rosterStart, rosterEnd), battleDayRange.endTime);
+  return Math.max(0, overlapEnd - overlapStart);
+}
+
+async function resolveCwlBattleDayReminderStateForClan(input: {
+  clanTag: string;
+}): Promise<CwlBattleDayReminderState | null> {
+  const clanTag = String(input.clanTag ?? "").trim();
+  if (!clanTag) return null;
+
+  const [currentRound, currentPrep] = await Promise.all([
+    cwlStateService.getCurrentRoundForClan({ clanTag }),
+    cwlStateService.getCurrentPreparationSnapshotForClan({ clanTag }),
+  ]);
+
+  if (currentRound && isBattleDayRoundState(currentRound.roundState)) {
+    return {
+      season: currentRound.season,
+      roundDay: currentRound.roundDay,
+      roundState: currentRound.roundState,
+      startTime: currentRound.startTime,
+      endTime: currentRound.endTime,
+    };
+  }
+
+  if (currentPrep && isBattleDayRoundState(currentPrep.roundState)) {
+    return {
+      season: currentPrep.season,
+      roundDay: currentPrep.roundDay,
+      roundState: currentPrep.roundState,
+      startTime: currentPrep.startTime,
+      endTime: currentPrep.endTime,
+    };
+  }
+
+  return null;
+}
+
+async function resolveCwlBattleDayReminderRoleId(input: {
+  guildId: string;
+  clanTag: string;
+  battleDayState: CwlBattleDayReminderState;
+}): Promise<string | null> {
+  const guildId = String(input.guildId ?? "").trim();
+  const clanTag = String(input.clanTag ?? "").trim();
+  if (!guildId || !clanTag) return null;
+
+  const rosterRows = await prisma.roster.findMany({
+    where: {
+      guildId,
+      rosterType: "CWL",
+      clanTag: { equals: clanTag, mode: "insensitive" },
+      rosterRoleId: { not: null },
+      lifecycleState: { not: "ARCHIVED" },
+    },
+    select: {
+      rosterRoleId: true,
+      lifecycleState: true,
+      startsAt: true,
+      endsAt: true,
+      createdAt: true,
+    },
+  });
+
+  if (rosterRows.length === 0) return null;
+
+  const battleDayRange = resolveCwlBattleDayReminderRange(input.battleDayState);
+  const sortedRows = [...rosterRows].sort((left, right) => {
+    const leftOverlap = scoreCwlRosterOverlap(left, battleDayRange);
+    const rightOverlap = scoreCwlRosterOverlap(right, battleDayRange);
+    if (leftOverlap !== rightOverlap) return rightOverlap - leftOverlap;
+
+    const leftLifecycle = scoreCwlRosterLifecycleState(left.lifecycleState);
+    const rightLifecycle = scoreCwlRosterLifecycleState(right.lifecycleState);
+    if (leftLifecycle !== rightLifecycle) return rightLifecycle - leftLifecycle;
+
+    const leftStartsAt = left.startsAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const rightStartsAt = right.startsAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (leftStartsAt !== rightStartsAt) return rightStartsAt - leftStartsAt;
+
+    const leftCreatedAt = left.createdAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const rightCreatedAt = right.createdAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    return rightCreatedAt - leftCreatedAt;
+  });
+
+  return String(sortedRows[0]?.rosterRoleId ?? "").trim() || null;
+}
 
 function buildFwaBaseSwapBattleDayReminderLogContent(input: {
   clanName: string;
@@ -2887,6 +3056,7 @@ export class WarEventLogService {
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
+          tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
           cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
@@ -3905,6 +4075,12 @@ export class WarEventLogService {
       );
       return false;
     }
+    if (!shouldSendFwaBaseSwapBattleDayReminder(candidate.metadata)) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} clan_kind=FWA reason=not_eligible`,
+      );
+      return false;
+    }
     const referenceId = String(candidate.referenceId ?? candidate.messageId).trim();
     const mailChannelId = await resolveTrackedClanMailChannelIdByTag(
       params.sub.clanTag,
@@ -3966,18 +4142,20 @@ export class WarEventLogService {
 
     const reminderContent = buildFwaBaseSwapBattleDayReminderContent({
       clanRoleId,
+      matchType: "BL",
     });
     const allowedMentions = { roles: [clanRoleId] };
+    const clanRoleMentionIncluded = true;
     const sent = (await channel
       .send({ content: reminderContent, allowedMentions })
       .catch(async (err: unknown) => {
         console.error(
-          `[fwa base-swap] battle-day reminder send failed guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${mailChannelId} error=${formatError(err)}`,
+          `[fwa base-swap] battle-day reminder send failed guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${candidate.channelId} error=${formatError(err)}`,
         );
         await this.logFwaBaseSwapBattleDayReminderFailure({
           sub: params.sub,
           candidate,
-          targetChannelId: mailChannelId,
+          targetChannelId: candidate.channelId,
           reason: `send_failed:${formatError(err)}`,
         });
         return null;
@@ -3985,15 +4163,182 @@ export class WarEventLogService {
     if (!sent) return false;
 
     console.log(
-      `[fwa base-swap] battle-day reminder sent guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId} channel=${mailChannelId} role_ping=${clanRoleId ? "yes" : "no"}`,
+      `[fwa base-swap] battle-day reminder sent guild=${params.sub.guildId} clan=${params.sub.clanTag} reference=${referenceId} channel=${candidate.channelId} role_ping=${clanRoleId ? "yes" : "no"}`,
     );
     await this.logFwaBaseSwapBattleDayReminder({
       sub: params.sub,
       candidate,
-      targetChannelId: mailChannelId,
+      targetChannelId: candidate.channelId,
       reminderMessageUrl:
         String(sent.url ?? "").trim() ||
-        `https://discord.com/channels/${params.sub.guildId}/${mailChannelId}/${sent.id}`,
+        `https://discord.com/channels/${params.sub.guildId}/${candidate.channelId}/${sent.id}`,
+      clanRoleMentionIncluded,
+    });
+    return true;
+  }
+
+  async sendCwlBaseSwapBattleDayReminders(): Promise<number> {
+    const trackedRows = await prisma.trackedMessage.findMany({
+      where: {
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        guildId: true,
+        clanTag: true,
+        metadata: true,
+      },
+    });
+
+    const processedClanKeys = new Set<string>();
+    let sentCount = 0;
+    for (const row of trackedRows) {
+      const metadata = parseFwaBaseSwapMetadata(row.metadata);
+      if (String(metadata?.clanKind ?? "").trim().toUpperCase() !== "CWL") continue;
+      if (!shouldSendFwaBaseSwapBattleDayReminder(metadata)) continue;
+      const guildId = String(row.guildId ?? "").trim();
+      const clanTag = String(row.clanTag ?? "").trim();
+      if (!guildId || !clanTag) continue;
+      const clanKey = `${guildId}:${normalizeTagBare(clanTag)}`;
+      if (processedClanKeys.has(clanKey)) continue;
+      processedClanKeys.add(clanKey);
+
+      const sent = await this.sendCwlBaseSwapBattleDayReminderForClan({
+        guildId,
+        clanTag,
+      });
+      if (sent) sentCount += 1;
+    }
+
+    return sentCount;
+  }
+
+  private async sendCwlBaseSwapBattleDayReminderForClan(params: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<boolean> {
+    const candidate =
+      await trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        clanKind: "CWL",
+      });
+    if (!candidate) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.guildId} clan=${params.clanTag} clan_kind=CWL reason=no_active_tracked_message`,
+      );
+      return false;
+    }
+    if (!shouldSendFwaBaseSwapBattleDayReminder(candidate.metadata)) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.guildId} clan=${params.clanTag} clan_kind=CWL reason=not_eligible`,
+      );
+      return false;
+    }
+
+    const battleDayState = await resolveCwlBattleDayReminderStateForClan({
+      clanTag: params.clanTag,
+    });
+    if (!battleDayState) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.guildId} clan=${params.clanTag} clan_kind=CWL reason=not_battle_day`,
+      );
+      return false;
+    }
+
+    const referenceId = String(candidate.referenceId ?? candidate.messageId).trim();
+    const channel = await this.client.channels.fetch(candidate.channelId).catch(() => null);
+    if (!isTextSendableChannel(channel)) {
+      console.error(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.guildId} clan=${params.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${candidate.channelId} reason=tracked_channel_unavailable`,
+      );
+      await this.logFwaBaseSwapBattleDayReminderFailure({
+        sub: {
+          guildId: params.guildId,
+          clanTag: params.clanTag,
+          clanName: candidate.metadata.clanName ?? null,
+        } as SubscriptionRow,
+        candidate: candidate as any,
+        targetChannelId: candidate.channelId,
+        reason: "tracked_channel_unavailable",
+      });
+      return false;
+    }
+
+    const rosterRoleId = await resolveCwlBattleDayReminderRoleId({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      battleDayState,
+    });
+    const claimed = await trackedMessageService.claimFwaBaseSwapBattleDayReminder({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      referenceId,
+      battleDayIdentity: buildBattleDayReminderIdentity({
+        kind: "CWL",
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        referenceId,
+        battleDayStart: battleDayState.startTime,
+        roundDay: battleDayState.roundDay,
+        season: battleDayState.season,
+      }),
+    });
+    if (!claimed) {
+      console.warn(
+        `[fwa base-swap] battle-day reminder skipped guild=${params.guildId} clan=${params.clanTag} reference=${referenceId} reason=claim_exists`,
+      );
+      return false;
+    }
+    console.log(
+      `[fwa base-swap] battle-day reminder claim success guild=${params.guildId} clan=${params.clanTag} reference=${referenceId}`,
+    );
+
+    const reminderContent = buildFwaBaseSwapBattleDayReminderContent({
+      clanRoleId: rosterRoleId,
+      matchType: "CWL",
+    });
+    const allowedMentions = normalizeBattleDayReminderAllowedMentions(rosterRoleId);
+    const clanRoleMentionIncluded =
+      "roles" in allowedMentions && allowedMentions.roles.length > 0;
+
+    const sent = (await channel
+      .send({ content: reminderContent, allowedMentions })
+      .catch(async (err: unknown) => {
+        console.error(
+          `[fwa base-swap] battle-day reminder send failed guild=${params.guildId} clan=${params.clanTag} reference=${candidate.referenceId ?? candidate.messageId} channel=${candidate.channelId} error=${formatError(err)}`,
+        );
+        await this.logFwaBaseSwapBattleDayReminderFailure({
+          sub: {
+            guildId: params.guildId,
+            clanTag: params.clanTag,
+            clanName: candidate.metadata.clanName ?? null,
+          } as SubscriptionRow,
+          candidate: candidate as any,
+          targetChannelId: candidate.channelId,
+          reason: `send_failed:${formatError(err)}`,
+        });
+        return null;
+      })) as any;
+    if (!sent) return false;
+
+    console.log(
+      `[fwa base-swap] battle-day reminder sent guild=${params.guildId} clan=${params.clanTag} reference=${referenceId} channel=${candidate.channelId} role_ping=${clanRoleMentionIncluded ? "yes" : "no"}`,
+    );
+    await this.logFwaBaseSwapBattleDayReminder({
+      sub: {
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        clanName: candidate.metadata.clanName ?? null,
+      } as SubscriptionRow,
+      candidate: candidate as any,
+      targetChannelId: candidate.channelId,
+      reminderMessageUrl:
+        String(sent.url ?? "").trim() ||
+        `https://discord.com/channels/${params.guildId}/${candidate.channelId}/${sent.id}`,
+      clanRoleMentionIncluded,
     });
     return true;
   }
@@ -4039,6 +4384,7 @@ export class WarEventLogService {
       : never;
     targetChannelId: string;
     reminderMessageUrl: string;
+    clanRoleMentionIncluded: boolean;
   }): Promise<void> {
     const logChannel = await resolveBotLogChannel(
       this.client,
@@ -4055,7 +4401,7 @@ export class WarEventLogService {
           targetChannelId: params.targetChannelId,
           reminderMessageUrl: params.reminderMessageUrl,
           referenceId: params.candidate.referenceId ?? params.candidate.messageId,
-          clanRoleMentionIncluded: true,
+          clanRoleMentionIncluded: params.clanRoleMentionIncluded,
         }),
       });
     } catch {
