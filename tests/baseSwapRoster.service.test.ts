@@ -43,6 +43,8 @@ const fwaSecondClanTag = "#QG2CU8UP8";
 const cwlSecondClanTag = "#LQ2G8U2P";
 const playerAlphaTag = "#PQLQ2Q8U";
 const playerBravoTag = "#C2QG8UP8";
+const playerCharlieTag = "#9Q8P2L0";
+const playerDeltaTag = "#8L0Q9P2";
 const opponentTag = "#QG2CUP9";
 
 beforeEach(() => {
@@ -122,7 +124,7 @@ describe("BaseSwapRosterService", () => {
     expect(cocService.getCurrentWar).toHaveBeenCalledWith("2QG2C08UP");
   });
 
-  it("resolves CWL tracked clans from the persisted active lineup without calling live CoC", async () => {
+  it("prefers the CWL prep snapshot and preserves its actual map positions without calling live CoC", async () => {
     const cocService = {
       getCurrentWar: vi.fn(),
     };
@@ -138,7 +140,7 @@ describe("BaseSwapRosterService", () => {
     prismaMock.currentCwlRound.findUnique.mockResolvedValue({
       season: "2026-05",
       clanTag: fwaClanTag,
-      clanName: "Alpha CWL",
+      clanName: "Alpha CWL Battle Day",
       roundDay: 3,
       roundState: "inWar",
       opponentTag,
@@ -165,7 +167,7 @@ describe("BaseSwapRosterService", () => {
     prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
       {
         playerTag: playerAlphaTag,
-        playerName: "Alpha",
+        playerName: "Battle Alpha",
         mapPosition: 1,
         townHall: 18,
         attacksUsed: 0,
@@ -177,7 +179,7 @@ describe("BaseSwapRosterService", () => {
       },
       {
         playerTag: playerBravoTag,
-        playerName: "Bravo",
+        playerName: "Battle Bravo",
         mapPosition: 2,
         townHall: 17,
         attacksUsed: 0,
@@ -188,6 +190,146 @@ describe("BaseSwapRosterService", () => {
         subbedOut: false,
       },
     ]);
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue({
+      season: "2026-05",
+      clanTag: fwaClanTag,
+      clanName: "Alpha CWL Prep Day",
+      roundDay: 3,
+      roundState: "preparation",
+      opponentTag,
+      opponentName: "Opponent",
+      preparationStartTime: new Date("2026-05-03T11:00:00.000Z"),
+      startTime: new Date("2026-05-03T12:00:00.000Z"),
+      endTime: new Date("2026-05-03T13:00:00.000Z"),
+      lineupJson: [
+        {
+          playerTag: playerCharlieTag,
+          playerName: "Prep Charlie",
+          mapPosition: 10,
+          townHall: 16,
+          subbedIn: true,
+          subbedOut: false,
+        },
+        {
+          playerTag: playerDeltaTag,
+          playerName: "Prep Delta",
+          mapPosition: 7,
+          townHall: 15,
+          subbedIn: true,
+          subbedOut: false,
+        },
+      ],
+      sourceUpdatedAt: new Date("2026-05-03T12:15:00.000Z"),
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: playerAlphaTag, discordUserId: "100" },
+      { playerTag: playerBravoTag, discordUserId: "200" },
+      { playerTag: playerCharlieTag, discordUserId: "300" },
+      { playerTag: playerDeltaTag, discordUserId: "400" },
+    ]);
+
+    const result = await resolveBaseSwapRosterForClan({
+      clanRef: `cwl:${fwaClanTag}`,
+      guildId: "guild-1",
+      season: "2026-05",
+      cocService: cocService as any,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.roster.clanKind).toBe("CWL");
+    expect(result.roster.clanTag).toBe("2QG2C08UP");
+    expect(result.roster.clanName).toBe("Alpha CWL Prep Day");
+    expect(result.roster.phaseTiming).toEqual({
+      warState: "preparation",
+      prepEndMs: new Date("2026-05-03T12:00:00.000Z").getTime(),
+      warEndMs: new Date("2026-05-03T13:00:00.000Z").getTime(),
+    });
+    expect(result.roster.rosterMembers).toHaveLength(2);
+    expect(result.roster.rosterMembers).toMatchObject([
+      {
+        position: 7,
+        playerTag: playerDeltaTag,
+        playerName: "Prep Delta",
+        townhallLevel: 15,
+      },
+      {
+        position: 10,
+        playerTag: playerCharlieTag,
+        playerName: "Prep Charlie",
+        townhallLevel: 16,
+      },
+    ]);
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the current CWL round and preserves its actual map positions when no prep snapshot exists", async () => {
+    const cocService = {
+      getCurrentWar: vi.fn(),
+    };
+
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: fwaClanTag,
+      name: "Alpha FWA",
+    });
+    prismaMock.cwlTrackedClan.findFirst.mockResolvedValue({
+      tag: fwaClanTag,
+      name: "Alpha CWL",
+    });
+    prismaMock.currentCwlRound.findUnique.mockResolvedValue({
+      season: "2026-05",
+      clanTag: fwaClanTag,
+      clanName: "Alpha CWL Battle Day",
+      roundDay: 3,
+      roundState: "inWar",
+      opponentTag,
+      opponentName: "Opponent",
+      teamSize: 15,
+      attacksPerMember: 1,
+      preparationStartTime: new Date("2026-05-02T11:00:00.000Z"),
+      startTime: new Date("2026-05-02T12:00:00.000Z"),
+      endTime: new Date("2026-05-02T13:00:00.000Z"),
+      sourceUpdatedAt: new Date("2026-05-02T12:15:00.000Z"),
+    });
+    prismaMock.cwlEventClan.findMany.mockResolvedValue([
+      {
+        clanTag: fwaClanTag,
+        eventInstance: {
+          id: "cwl-event-2026-05-alpha",
+          season: "2026-05",
+          anchorWarTag: "#2PP0QJ2P",
+          firstObservedAt: new Date("2026-05-01T00:00:00.000Z"),
+          lastObservedAt: new Date("2026-05-02T12:15:00.000Z"),
+        },
+      },
+    ]);
+    prismaMock.cwlRoundMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: playerAlphaTag,
+        playerName: "Battle Alpha",
+        mapPosition: 4,
+        townHall: 18,
+        attacksUsed: 0,
+        attacksAvailable: 2,
+        stars: 0,
+        destruction: 0,
+        subbedIn: true,
+        subbedOut: false,
+      },
+      {
+        playerTag: playerBravoTag,
+        playerName: "Battle Bravo",
+        mapPosition: 9,
+        townHall: 17,
+        attacksUsed: 0,
+        attacksAvailable: 2,
+        stars: 0,
+        destruction: 0,
+        subbedIn: true,
+        subbedOut: false,
+      },
+    ]);
+    prismaMock.currentCwlPrepSnapshot.findUnique.mockResolvedValue(null);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: playerAlphaTag, discordUserId: "100" },
       { playerTag: playerBravoTag, discordUserId: "200" },
@@ -204,19 +346,24 @@ describe("BaseSwapRosterService", () => {
     if (!result.ok) return;
     expect(result.roster.clanKind).toBe("CWL");
     expect(result.roster.clanTag).toBe("2QG2C08UP");
-    expect(result.roster.clanName).toBe("Alpha CWL");
+    expect(result.roster.clanName).toBe("Alpha CWL Battle Day");
+    expect(result.roster.phaseTiming).toEqual({
+      warState: "inWar",
+      prepEndMs: new Date("2026-05-02T12:00:00.000Z").getTime(),
+      warEndMs: new Date("2026-05-02T13:00:00.000Z").getTime(),
+    });
     expect(result.roster.rosterMembers).toHaveLength(2);
     expect(result.roster.rosterMembers).toMatchObject([
       {
-        position: 1,
+        position: 4,
         playerTag: playerAlphaTag,
-        playerName: "Alpha",
+        playerName: "Battle Alpha",
         townhallLevel: 18,
       },
       {
-        position: 2,
+        position: 9,
         playerTag: playerBravoTag,
-        playerName: "Bravo",
+        playerName: "Battle Bravo",
         townhallLevel: 17,
       },
     ]);
