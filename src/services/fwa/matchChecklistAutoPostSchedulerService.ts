@@ -202,9 +202,11 @@ export class FwaMatchChecklistAutoPostSchedulerService {
                 messageId: tracked.messageId,
                 expiresAt: tracked.expiresAt ?? null,
                 fallbackExpiresAt,
+                checklistDueAt: dueAt,
               },
               createdByUserId: "system",
               viewType,
+              nowMs,
             })
             .catch((err) => {
               failed += 1;
