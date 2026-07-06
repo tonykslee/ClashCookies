@@ -25,6 +25,9 @@ const trackedMessageExpirationsMock = vi.hoisted(() => vi.fn().mockResolvedValue
 const trackedMessageSyncRemindersMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const warEventPollMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const warEventRefreshMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const warEventCwlBaseSwapBattleDayRemindersMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(undefined),
+);
 const mirrorSyncMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const cwlRegistryMock = vi.hoisted(() => ({
   rolloverCwlTrackedClanRegistryForSeason: vi.fn().mockResolvedValue({
@@ -163,6 +166,7 @@ vi.mock("../src/services/WarEventLogService", () => ({
   WarEventLogService: vi.fn().mockImplementation(() => ({
     poll: warEventPollMock,
     refreshBattleDayPosts: warEventRefreshMock,
+    sendCwlBaseSwapBattleDayReminders: warEventCwlBaseSwapBattleDayRemindersMock,
   })),
 }));
 
@@ -503,6 +507,12 @@ describe("ready listener startup", () => {
     expect(
       (cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason as any).mock.invocationCallOrder[0],
     ).toBeLessThan((cwlStateService.refreshTrackedCwlState as any).mock.invocationCallOrder[0]);
+    expect(warEventCwlBaseSwapBattleDayRemindersMock).toHaveBeenCalledTimes(1);
+    expect(
+      (cwlStateService.refreshTrackedCwlState as any).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      (warEventCwlBaseSwapBattleDayRemindersMock as any).mock.invocationCallOrder[0],
+    );
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "fwa_base_swap_dm_reminder_scheduler",
       expect.objectContaining({
@@ -573,7 +583,21 @@ describe("ready listener startup", () => {
     expect(warEventPollMock).toHaveBeenCalledTimes(1);
     expect(warEventRefreshMock).toHaveBeenCalledTimes(1);
     expect(cwlStateService.refreshTrackedCwlState).toHaveBeenCalledTimes(1);
+    expect(warEventCwlBaseSwapBattleDayRemindersMock).toHaveBeenCalledTimes(1);
     expect(todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips CWL base-swap reminders when tracked CWL state refresh fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    cwlStateService.refreshTrackedCwlState.mockRejectedValueOnce(new Error("cwl refresh boom"));
+
+    await runStartup();
+
+    expect(cwlStateService.refreshTrackedCwlState).toHaveBeenCalledTimes(1);
+    expect(warEventCwlBaseSwapBattleDayRemindersMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("stage=cwl_state_refresh"),
+    );
   });
 
   it("does not auto-post the checklist after sync time", async () => {
