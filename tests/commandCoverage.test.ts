@@ -246,6 +246,10 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain(
       "detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
     );
+    expect(clanHelpText).toContain("/clan rep timezone player:#PYLQ0289 timezone:PST");
+    expect(clanHelpText).toContain("/clan rep time clan:#2QG2C08UP visibility:public");
+    expect(clanHelpText).toContain("`rep timezone` stores a rep profile timezone");
+    expect(clanHelpText).toContain("rep time");
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 

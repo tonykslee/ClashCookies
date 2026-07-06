@@ -32,6 +32,8 @@ describe("tracked-clan permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:add");
     expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:remove");
     expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:list");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:time");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("clan:rep:timezone");
   });
 
   it("resolves rep add/remove/list target paths for permission checks", () => {
@@ -44,10 +46,18 @@ describe("tracked-clan permission defaults", () => {
     const listTargets = getCommandTargetsFromInteraction(
       buildInteraction({ group: "rep", sub: "list" }),
     );
+    const timeTargets = getCommandTargetsFromInteraction(
+      buildInteraction({ group: "rep", sub: "time" }),
+    );
+    const timezoneTargets = getCommandTargetsFromInteraction(
+      buildInteraction({ group: "rep", sub: "timezone" }),
+    );
 
     expect(addTargets).toContain("clan:rep:add");
     expect(removeTargets).toContain("clan:rep:remove");
     expect(listTargets).toContain("clan:rep:list");
+    expect(timeTargets).toContain("clan:rep:time");
+    expect(timezoneTargets).toContain("clan:rep:timezone");
   });
 
   it("keeps rep add/remove admin-only by default", async () => {
@@ -93,6 +103,38 @@ describe("tracked-clan permission defaults", () => {
     ).resolves.toBe(false);
     await expect(
       service.canUseAnyTarget(["clan:rep:list"], buildInteraction({ isAdmin: true, group: "rep", sub: "list" })),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps rep time available to the fwa leader role or administrators by default", async () => {
+    const service = new CommandPermissionService({
+      get: vi.fn(async () => null),
+    } as any);
+
+    await expect(
+      service.canUseAnyTarget(["clan:rep:time"], buildInteraction({ roleIds: ["999"], group: "rep", sub: "time" })),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["clan:rep:time"], buildInteraction({ isAdmin: true, group: "rep", sub: "time" })),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps rep timezone admin-only by default", async () => {
+    const service = new CommandPermissionService({
+      get: vi.fn(async () => null),
+    } as any);
+
+    await expect(
+      service.canUseAnyTarget(
+        ["clan:rep:timezone"],
+        buildInteraction({ isAdmin: false, group: "rep", sub: "timezone" }),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(
+        ["clan:rep:timezone"],
+        buildInteraction({ isAdmin: true, group: "rep", sub: "timezone" }),
+      ),
     ).resolves.toBe(true);
   });
 });
