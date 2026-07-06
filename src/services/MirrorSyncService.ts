@@ -24,6 +24,7 @@ import {
   type HeatMapRef,
   type TrackedClan,
   type TrackedClanRep,
+  type TrackedClanRepProfile,
   type WarAttacks,
   type WarPlanComplianceEvaluation,
   type WarPlanViolation,
@@ -41,6 +42,7 @@ import {
 export const MIRRORED_RUNTIME_TABLES = [
   "TrackedClan",
   "TrackedClanRep",
+  "TrackedClanRepProfile",
   "CurrentWar",
   "WarAttacks",
   "ClanPointsSync",
@@ -102,6 +104,7 @@ type CreateManyResult = { count: number };
 type MirrorSyncSourceClient = {
   trackedClan: { findMany: (args?: unknown) => Promise<TrackedClan[]> };
   trackedClanRep: { findMany: (args?: unknown) => Promise<TrackedClanRep[]> };
+  trackedClanRepProfile: { findMany: (args?: unknown) => Promise<TrackedClanRepProfile[]> };
   currentWar: { findMany: (args?: unknown) => Promise<CurrentWar[]> };
   warAttacks: { findMany: (args?: unknown) => Promise<WarAttacks[]> };
   clanPointsSync: { findMany: (args?: unknown) => Promise<ClanPointsSync[]> };
@@ -158,6 +161,10 @@ type MirrorSyncTargetClient = {
   trackedClanRep: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: TrackedClanRep[] }) => Promise<CreateManyResult>;
+  };
+  trackedClanRepProfile: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: TrackedClanRepProfile[] }) => Promise<CreateManyResult>;
   };
   currentWar: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -291,6 +298,7 @@ type SyncSafetyContext = {
 type MirrorSyncSourceRows = {
   TrackedClan: TrackedClan[];
   TrackedClanRep: TrackedClanRep[];
+  TrackedClanRepProfile: TrackedClanRepProfile[];
   CurrentWar: CurrentWar[];
   WarAttacks: WarAttacks[];
   ClanPointsSync: ClanPointsSync[];
@@ -567,6 +575,9 @@ export class MirrorSyncService {
       TrackedClanRep: await sourceClient.trackedClanRep.findMany({
         orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
       }),
+      TrackedClanRepProfile: await sourceClient.trackedClanRepProfile.findMany({
+        orderBy: [{ playerTag: "asc" }],
+      }),
       CurrentWar: await sourceClient.currentWar.findMany({
         orderBy: [{ clanTag: "asc" }, { guildId: "asc" }],
       }),
@@ -670,6 +681,14 @@ export class MirrorSyncService {
       const deletedRows = (await tx.trackedClanRep.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as TrackedClanRep[], (batch) =>
         tx.trackedClanRep.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "TrackedClanRepProfile") {
+      const deletedRows = (await tx.trackedClanRepProfile.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as TrackedClanRepProfile[], (batch) =>
+        tx.trackedClanRepProfile.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

@@ -3,9 +3,13 @@ import {
   addTrackedClanRepForClan,
   listTrackedClanRepBadgesForPlayerTags,
   listTrackedClanRepDisplayRowsForClanTags,
+  listTrackedClanRepPlayerTags,
+  listTrackedClanRepTimeRowsForClanTags,
   listTrackedClanRepTagsForClanTags,
+  hasTrackedClanRepAssignmentForPlayerTag,
   parseTrackedClanRepTagsInput,
   removeTrackedClanRepForClan,
+  upsertTrackedClanRepProfileTimezone,
   replaceTrackedClanRepsForClan,
 } from "../src/services/TrackedClanRepService";
 
@@ -16,9 +20,14 @@ const prismaMock = vi.hoisted(() => ({
   },
   trackedClanRep: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
     create: vi.fn(),
     deleteMany: vi.fn(),
     createMany: vi.fn(),
+  },
+  trackedClanRepProfile: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -32,6 +41,15 @@ describe("TrackedClanRepService", () => {
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findFirst.mockResolvedValue(null);
+    prismaMock.trackedClanRepProfile.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRepProfile.upsert.mockResolvedValue({
+      playerTag: "#PYLQ0289",
+      timeZone: "America/Los_Angeles",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-02T00:00:00.000Z"),
+    });
     prismaMock.trackedClanRep.create.mockResolvedValue({});
     prismaMock.trackedClanRep.deleteMany.mockResolvedValue({ count: 0 });
   });
@@ -402,5 +420,121 @@ describe("TrackedClanRepService", () => {
         repPlayerTags: ["#PYLQ0289"],
       },
     ]);
+  });
+
+  it("lists configured rep player tags without duplicates in sorted order", async () => {
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#QGRJ2222" },
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      { clanTag: "#2RVGJYLC0", playerTag: "#PYLQ0289" },
+    ]);
+
+    const tags = await listTrackedClanRepPlayerTags();
+
+    expect(tags).toEqual(["#QGRJ2222", "#PYLQ0289"]);
+  });
+
+  it("normalizes timezone aliases when upserting tracked clan rep profiles", async () => {
+    const saved = await upsertTrackedClanRepProfileTimezone(prismaMock as any, {
+      playerTag: "pylq0289",
+      timeZone: "PST",
+      updatedByDiscordUserId: "111111111111111111",
+    });
+
+    expect(prismaMock.trackedClanRepProfile.upsert).toHaveBeenCalledWith({
+      where: { playerTag: "#PYLQ0289" },
+      create: {
+        playerTag: "#PYLQ0289",
+        timeZone: "America/Los_Angeles",
+        updatedByDiscordUserId: "111111111111111111",
+      },
+      update: {
+        timeZone: "America/Los_Angeles",
+        updatedByDiscordUserId: "111111111111111111",
+      },
+    });
+    expect(saved).toEqual(
+      expect.objectContaining({
+        playerTag: "#PYLQ0289",
+        timeZone: "America/Los_Angeles",
+        updatedByDiscordUserId: "111111111111111111",
+      }),
+    );
+  });
+
+  it("loads grouped rep time rows with timezone profile data", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+      {
+        tag: "#2RVGJYLC0",
+        name: "Beta Clan",
+        createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      { clanTag: "#2QG2C08UP", playerTag: "#QGRJ2222" },
+      { clanTag: "#2RVGJYLC0", playerTag: "#QGRJ2222" },
+    ]);
+    prismaMock.trackedClanRepProfile.findMany.mockResolvedValueOnce([
+      {
+        playerTag: "#PYLQ0289",
+        timeZone: "America/Los_Angeles",
+        updatedByDiscordUserId: "111111111111111111",
+        updatedAt: new Date("2026-03-02T00:00:00.000Z"),
+      },
+    ]);
+
+    const rows = await listTrackedClanRepTimeRowsForClanTags(null);
+
+    expect(rows).toEqual([
+      {
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+        trackedClanSortOrder: 0,
+        repRows: [
+          {
+            playerTag: "#PYLQ0289",
+            timeZone: "America/Los_Angeles",
+            updatedByDiscordUserId: "111111111111111111",
+            updatedAt: new Date("2026-03-02T00:00:00.000Z"),
+          },
+          {
+            playerTag: "#QGRJ2222",
+            timeZone: null,
+            updatedByDiscordUserId: null,
+            updatedAt: new Date(0),
+          },
+        ],
+      },
+      {
+        clanTag: "#2RVGJYLC0",
+        clanName: "Beta Clan",
+        trackedClanSortOrder: 1,
+        repRows: [
+          {
+            playerTag: "#QGRJ2222",
+            timeZone: null,
+            updatedByDiscordUserId: null,
+            updatedAt: new Date(0),
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("recognizes when a player tag is assigned as a tracked clan rep", async () => {
+    prismaMock.trackedClanRep.findFirst.mockResolvedValueOnce({ playerTag: "#PYLQ0289" });
+
+    await expect(
+      hasTrackedClanRepAssignmentForPlayerTag("#pylq0289", prismaMock as any),
+    ).resolves.toBe(true);
+    await expect(
+      hasTrackedClanRepAssignmentForPlayerTag("#QGRJ2222", prismaMock as any),
+    ).resolves.toBe(false);
   });
 });

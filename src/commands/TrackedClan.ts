@@ -29,6 +29,10 @@ import {
   normalizeClanTag,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
+import {
+  autocompleteSyncTimeZones,
+  normalizeSyncTimeZone,
+} from "../services/syncTimeZone";
 import { playerCurrentService } from "../services/PlayerCurrentService";
 import { FwaClanMembersSyncService } from "../services/fwa-feeds/FwaClanMembersSyncService";
 import {
@@ -65,15 +69,21 @@ import {
 import {
   listTrackedClanRepTagsForClanTags,
   listTrackedClanRepDisplayRowsForClanTags,
+  listTrackedClanRepPlayerTags,
+  listTrackedClanRepTimeRowsForClanTags,
   parseTrackedClanRepTagsInput,
+  hasTrackedClanRepAssignmentForPlayerTag,
   addTrackedClanRepForClan,
   removeTrackedClanRepForClan,
+  upsertTrackedClanRepProfileTimezone,
   replaceTrackedClanRepsForClan,
 } from "../services/TrackedClanRepService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
 
 const CUSTOM_EMOJI_PATTERN = /^<(a?):([A-Za-z0-9_]+):(\d+)>$/;
 const SHORTCODE_EMOJI_PATTERN = /^:([A-Za-z0-9_]+):$/;
+const INVALID_TIMEZONE_MESSAGE =
+  "Invalid timezone. Use a valid IANA timezone like America/New_York, or a supported US alias like EST, EDT, PST, or PDT.\nReference: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones";
 
 function sanitizeDisplayText(input: unknown): string | null {
   const normalized = String(input ?? "")
@@ -690,6 +700,85 @@ function buildTrackedClanRepSectionBlocks(input: {
   return chunks;
 }
 
+function formatTrackedClanRepTimeZoneLabel(timeZone: string | null): string {
+  const normalized = normalizeSyncTimeZone(timeZone ?? "");
+  return normalized ?? "timezone not set";
+}
+
+function formatTrackedClanRepLocalTime(now: Date, timeZone: string | null): string {
+  const normalized = normalizeSyncTimeZone(timeZone ?? "");
+  if (!normalized) {
+    return "timezone not set";
+  }
+
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: normalized,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(now);
+  } catch {
+    return "timezone not set";
+  }
+}
+
+function buildTrackedClanRepTimeSectionBlocks(input: {
+  clanTag: string;
+  clanName: string | null;
+  playerRows: Array<{
+    playerTag: string;
+    displayRow: TrackedClanRepListDisplayRow | null;
+    discordMention: string | null;
+    timeZone: string | null;
+  }>;
+  townHallEmojiByLevel: Map<number, string>;
+  now: Date;
+}): string[] {
+  const title = buildClanProfileMarkdownLink(input.clanName, input.clanTag);
+  const header = input.clanName
+    ? `**${title}** \`${input.clanTag}\``
+    : `**${title}**`;
+  const rows = input.playerRows.length > 0 ? [...input.playerRows] : [];
+  const lines =
+    rows.length > 0
+      ? rows.map((row) => {
+          const accountText = row.displayRow
+            ? buildAccountDisplayRowText(row.displayRow, input.townHallEmojiByLevel)
+            : formatTrackedClanRepIdentityLabel({
+                playerTag: row.playerTag,
+                playerName: null,
+              });
+          const localTime = formatTrackedClanRepLocalTime(input.now, row.timeZone);
+          const timezoneLabel = formatTrackedClanRepTimeZoneLabel(row.timeZone);
+          const discordLine = row.discordMention ?? "Not linked to Discord";
+          return `${accountText} | ${discordLine} | ${localTime} | ${timezoneLabel}`;
+        })
+      : ["No reps configured."];
+
+  const maxChars = 3900;
+  const chunks: string[] = [];
+  let currentLines: string[] = [];
+  let currentLength = 0;
+
+  for (const line of [header, ...lines]) {
+    const nextLength = currentLength + (currentLines.length > 0 ? 1 : 0) + line.length;
+    if (currentLines.length > 0 && nextLength > maxChars) {
+      chunks.push(currentLines.join("\n"));
+      currentLines = [header, line];
+      currentLength = header.length + 1 + line.length;
+      continue;
+    }
+    currentLines.push(line);
+    currentLength = nextLength;
+  }
+
+  if (currentLines.length > 0) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks;
+}
+
 async function loadLinkedNameByTagForPlayerTags(playerTags: string[]): Promise<Map<string, string>> {
   const normalizedPlayerTags = [
     ...new Set(playerTags.map((tag) => normalizePlayerTag(tag)).filter(Boolean)),
@@ -779,6 +868,70 @@ async function autocompleteTrackedClanRepPlayerChoices(input: {
       return {
         name: label.slice(0, 100),
         value: playerTag,
+        matchRank,
+        sortName: nameLower || "\uffff",
+        sortTag: tagBody,
+      };
+    })
+    .filter((row) => row.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byName = a.sortName.localeCompare(b.sortName, undefined, { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      return a.sortTag.localeCompare(b.sortTag, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25)
+    .map(({ name, value }) => ({ name, value }));
+}
+
+async function autocompleteTrackedClanRepConfiguredPlayerChoices(
+  query: string,
+): Promise<{ name: string; value: string }[]> {
+  const repTags = await listTrackedClanRepPlayerTags();
+  if (repTags.length === 0) {
+    return [];
+  }
+
+  const identities = await loadTrackedClanRepIdentityRows({
+    guildId: null,
+    playerTags: repTags,
+  });
+
+  const normalizedQuery = normalizeTrackedClanRepAutocompleteNameQuery(query);
+  const normalizedTagQuery = normalizeTrackedClanRepAutocompleteTagQuery(query).toLowerCase();
+
+  return repTags
+    .map((playerTag) => identities.get(playerTag) ?? null)
+    .filter((entry): entry is TrackedClanRepResolvedIdentityWithSource => Boolean(entry))
+    .map((row) => {
+      const label = formatTrackedClanRepIdentityLabel({
+        playerTag: row.playerTag,
+        playerName: row.playerName,
+      });
+      const tagBody = row.playerTag.replace(/^#/, "").toLowerCase();
+      const nameLower = row.playerName?.toLowerCase() ?? "";
+      const exactTagMatch = normalizedTagQuery.length > 0 && tagBody === normalizedTagQuery;
+      const prefixTagMatch =
+        normalizedTagQuery.length > 0 &&
+        tagBody.startsWith(normalizedTagQuery) &&
+        !exactTagMatch;
+      const nameMatch =
+        normalizedQuery.length > 0 &&
+        row.playerName !== null &&
+        nameLower.includes(normalizedQuery);
+      const matchRank =
+        normalizedQuery.length === 0 && normalizedTagQuery.length === 0
+          ? 3
+          : exactTagMatch
+            ? 0
+            : prefixTagMatch
+              ? 1
+              : nameMatch
+                ? 2
+                : 99;
+      return {
+        name: label.slice(0, 100),
+        value: row.playerTag,
         matchRank,
         sortName: nameLower || "\uffff",
         sortTag: tagBody,
@@ -1042,7 +1195,7 @@ async function normalizeClanBadgeInput(
 
 export const TrackedClan: Command = {
   name: "clan",
-  description: "Configure, remove, or list tracked clans and rep assignments",
+  description: "Configure, remove, list, or time tracked clans and rep assignments",
   options: [
     {
       name: "configure",
@@ -1178,6 +1331,51 @@ export const TrackedClan: Command = {
             },
           ],
         },
+        {
+          name: "timezone",
+          description: "Set one rep player's timezone profile",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "player",
+              description: "Configured rep player tag",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+            {
+              name: "timezone",
+              description: "IANA timezone or supported alias",
+              type: ApplicationCommandOptionType.String,
+              required: true,
+              autocomplete: true,
+            },
+          ],
+        },
+        {
+          name: "time",
+          description: "Show the current local time for all configured reps",
+          type: ApplicationCommandOptionType.Subcommand,
+          options: [
+            {
+              name: "clan",
+              description: "Optional tracked clan tag",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              autocomplete: true,
+            },
+            {
+              name: "visibility",
+              description: "Response visibility",
+              type: ApplicationCommandOptionType.String,
+              required: false,
+              choices: [
+                { name: "private", value: "private" },
+                { name: "public", value: "public" },
+              ],
+            },
+          ],
+        },
       ],
     },
     {
@@ -1275,12 +1473,16 @@ export const TrackedClan: Command = {
       console.info(
         `[tracked-clan] stage=command_entered command=tracked-clan guild=${interaction.guildId ?? "none"} user=${interaction.user.id}`,
       );
-      await interaction.deferReply({ ephemeral: true });
+      const subcommandGroup = interaction.options.getSubcommandGroup(false);
+      const subcommand = interaction.options.getSubcommand(true);
+      const visibility =
+        subcommandGroup === "rep" && subcommand === "time"
+          ? interaction.options.getString("visibility", false) ?? "private"
+          : "private";
+      await interaction.deferReply({ ephemeral: visibility !== "public" });
       console.info(
         `[tracked-clan] stage=interaction_deferred command=tracked-clan guild=${interaction.guildId ?? "none"} user=${interaction.user.id}`,
       );
-      const subcommandGroup = interaction.options.getSubcommandGroup(false);
-      const subcommand = interaction.options.getSubcommand(true);
 
       if (subcommandGroup === "rep") {
         if (subcommand === "list") {
@@ -1473,6 +1675,205 @@ export const TrackedClan: Command = {
             );
             throw error;
           }
+        }
+
+        if (subcommand === "timezone") {
+          const playerInput = interaction.options.getString("player", true);
+          const playerTag = normalizePlayerTag(playerInput);
+          if (!playerTag) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Invalid player tag format. Use a valid player tag with or without `#`.",
+            });
+            return;
+          }
+
+          const isTrackedRep = await hasTrackedClanRepAssignmentForPlayerTag(playerTag);
+          if (!isTrackedRep) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `${playerTag} is not currently assigned as a tracked clan rep.`,
+            });
+            return;
+          }
+
+          const timeZoneInput = interaction.options.getString("timezone", true);
+          const normalizedTimeZone = normalizeSyncTimeZone(timeZoneInput);
+          if (!normalizedTimeZone) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: INVALID_TIMEZONE_MESSAGE,
+            });
+            return;
+          }
+
+          const saved = await upsertTrackedClanRepProfileTimezone(prisma as any, {
+            playerTag,
+            timeZone: normalizedTimeZone,
+            updatedByDiscordUserId: interaction.user.id,
+          });
+          if (!saved) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Failed to save the rep timezone profile.",
+            });
+            return;
+          }
+
+          const previewNow = new Date();
+          const localTimePreview = formatTrackedClanRepLocalTime(previewNow, saved.timeZone);
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: [
+              `Set timezone for ${saved.playerTag} to ${saved.timeZone}.`,
+              `Current local time: ${localTimePreview}.`,
+            ].join("\n"),
+          });
+          return;
+        }
+
+        if (subcommand === "time") {
+          const clanInput = interaction.options.getString("clan", false);
+          const normalizedFilterClanTag =
+            clanInput === null ? null : normalizeClanTag(clanInput);
+          if (clanInput !== null && !normalizedFilterClanTag) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+            });
+            return;
+          }
+
+          const now = new Date();
+          const timeRows = await listTrackedClanRepTimeRowsForClanTags(
+            normalizedFilterClanTag ? [normalizedFilterClanTag] : null,
+          );
+
+          if (normalizedFilterClanTag && timeRows.length === 0) {
+            const trackedClan = await prisma.trackedClan.findUnique({
+              where: { tag: normalizedFilterClanTag },
+              select: { tag: true },
+            });
+            await safeReply(interaction, {
+              ephemeral: visibility !== "public",
+              content: trackedClan
+                ? `Tracked clan ${normalizedFilterClanTag} has no configured rep timezones yet.`
+                : `Tracked clan ${normalizedFilterClanTag} was not found.`,
+            });
+            return;
+          }
+
+          if (!normalizedFilterClanTag && timeRows.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: visibility !== "public",
+              content: "No tracked clan reps in the database.",
+            });
+            return;
+          }
+
+          const uniquePlayerTags = [
+            ...new Set(timeRows.flatMap((row) => row.repRows.map((repRow) => repRow.playerTag))),
+          ];
+          const linkedNameByTag = await loadLinkedNameByTagForPlayerTags(uniquePlayerTags);
+          const accountRows =
+            uniquePlayerTags.length > 0
+              ? await buildAccountDisplayRows({
+                  guildId: interaction.guildId ?? "",
+                  linkedNameByTag,
+                  tags: uniquePlayerTags,
+                })
+              : [];
+          const accountRowByTag = new Map(accountRows.map((row) => [row.tag, row] as const));
+          const identityRows = await loadTrackedClanRepIdentityRows({
+            guildId: interaction.guildId ?? null,
+            playerTags: uniquePlayerTags,
+          });
+          const identityByTag = new Map(identityRows.entries());
+          const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
+
+          const blocks = timeRows.flatMap((clanRow) =>
+            buildTrackedClanRepTimeSectionBlocks({
+              clanTag: clanRow.clanTag,
+              clanName: clanRow.clanName,
+              now,
+              townHallEmojiByLevel,
+              playerRows: clanRow.repRows.map((repRow) => ({
+                playerTag: repRow.playerTag,
+                displayRow: accountRowByTag.get(repRow.playerTag) ?? null,
+                discordMention: identityByTag.get(repRow.playerTag)?.discordMention ?? null,
+                timeZone: repRow.timeZone,
+              })),
+            }),
+          );
+          const pageContents = paginateTrackedClanBlocks(blocks);
+          const pageCount = pageContents.length > 0 ? pageContents.length : 1;
+          const paginatorPrefix = `tracked-clan-rep-time:${interaction.id}`;
+          let page = 0;
+          const renderPage = (pageIndex: number) => {
+            const embed = new EmbedBuilder()
+              .setTitle(`Tracked Clan Rep Time (${uniquePlayerTags.length})`)
+              .setDescription(pageContents[pageIndex] ?? "")
+              .setColor(0x57f287);
+            if (pageCount > 1) {
+              embed.setFooter({ text: `Page ${pageIndex + 1}/${pageCount}` });
+            }
+            return {
+              embeds: [embed],
+              components:
+                pageCount > 1 ? [buildTrackedClanListRow(paginatorPrefix, pageIndex, pageCount)] : [],
+            };
+          };
+
+          await interaction.editReply(renderPage(page));
+          const message = await interaction.fetchReply();
+          if (pageCount > 1) {
+            const collector = message.createMessageComponentCollector({
+              componentType: ComponentType.Button,
+              time: 10 * 60 * 1000,
+              filter: (button) =>
+                button.user.id === interaction.user.id &&
+                button.customId.startsWith(`${paginatorPrefix}:`),
+            });
+
+            collector.on("collect", async (button: ButtonInteraction) => {
+              try {
+                if (button.user.id !== interaction.user.id) {
+                  return;
+                }
+                if (button.customId === `${paginatorPrefix}:prev`) {
+                  page = Math.max(0, page - 1);
+                } else if (button.customId === `${paginatorPrefix}:next`) {
+                  page = Math.min(pageCount - 1, page + 1);
+                } else {
+                  return;
+                }
+                await button.update(renderPage(page));
+              } catch (error) {
+                console.error(
+                  `[tracked-clan] stage=rep_time_pagination_update_failed command=clan:rep:time guild_id=${interaction.guildId ?? "none"} actor_discord_id=${interaction.user.id} page=${page + 1} error=${formatError(error)}`,
+                );
+                if (!button.replied && !button.deferred) {
+                  try {
+                    await button.deferUpdate();
+                  } catch {
+                    // no-op
+                  }
+                }
+              }
+            });
+
+            collector.on("end", async () => {
+              try {
+                await interaction.editReply({
+                  embeds: renderPage(page).embeds,
+                  components: [],
+                });
+              } catch {
+                // no-op
+              }
+            });
+          }
+          return;
         }
 
         const clanInput = interaction.options.getString("clan", true);
@@ -3026,6 +3427,20 @@ export const TrackedClan: Command = {
             clanTag,
             query: String(focused.value ?? ""),
           }),
+        );
+        return;
+      }
+
+      if (focused.name === "player" && subcommand === "timezone") {
+        await interaction.respond(
+          await autocompleteTrackedClanRepConfiguredPlayerChoices(String(focused.value ?? "")),
+        );
+        return;
+      }
+
+      if (focused.name === "timezone" && subcommand === "timezone") {
+        await interaction.respond(
+          autocompleteSyncTimeZones(String(focused.value ?? "")),
         );
         return;
       }

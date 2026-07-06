@@ -74,9 +74,17 @@ describe("/clan command shape", () => {
     expect(repGroup?.options?.find((o: any) => o.name === "list")?.type).toBe(
       ApplicationCommandOptionType.Subcommand,
     );
+    expect(repGroup?.options?.find((o: any) => o.name === "timezone")?.type).toBe(
+      ApplicationCommandOptionType.Subcommand,
+    );
+    expect(repGroup?.options?.find((o: any) => o.name === "time")?.type).toBe(
+      ApplicationCommandOptionType.Subcommand,
+    );
     const repAdd = repGroup?.options?.find((o: any) => o.name === "add");
     const repRemove = repGroup?.options?.find((o: any) => o.name === "remove");
     const repList = repGroup?.options?.find((o: any) => o.name === "list");
+    const repTimezone = repGroup?.options?.find((o: any) => o.name === "timezone");
+    const repTime = repGroup?.options?.find((o: any) => o.name === "time");
     expect(repAdd?.options?.find((o: any) => o.name === "clan")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
@@ -89,6 +97,28 @@ describe("/clan command shape", () => {
     );
     expect(repList?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
     expect(repList?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.required).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.autocomplete).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "timezone")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repTimezone?.options?.find((o: any) => o.name === "timezone")?.required).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "timezone")?.autocomplete).toBe(true);
+    expect(repTime?.options?.find((o: any) => o.name === "clan")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repTime?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
+    expect(repTime?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
+    expect(repTime?.options?.find((o: any) => o.name === "visibility")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(repTime?.options?.find((o: any) => o.name === "visibility")?.required).toBe(false);
+    expect(
+      repTime?.options?.find((o: any) => o.name === "visibility")?.choices?.map((choice: any) => choice.value)
+    ).toEqual(expect.arrayContaining(["private", "public"]));
     expect(list?.options?.find((o: any) => o.name === "type")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
