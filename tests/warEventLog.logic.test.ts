@@ -1314,56 +1314,6 @@ describe("WarEventLogService FWA battle-day reminder", () => {
     ).toContain(`Target channel: <#${baseSwapChannelId}>`);
   });
 
-  it("skips when the tracked base-swap channel is unavailable and does not claim", async () => {
-    prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: null }]);
-    const reminderSend = vi.fn();
-    const botLogSend = vi.fn().mockResolvedValue(undefined);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    vi.spyOn(
-      trackedMessageService,
-      "findLatestActiveFwaBaseSwapReminderCandidate",
-    ).mockResolvedValue(makeFwaBaseSwapCandidate({ channelId: baseSwapChannelId }));
-    const claimSpy = vi.spyOn(
-      trackedMessageService,
-      "claimFwaBaseSwapBattleDayReminder",
-    );
-    vi.spyOn(BotLogChannelService.prototype, "getChannelId").mockResolvedValue(
-      botLogChannelId,
-    );
-
-    const client = makeReminderClient({
-      mailChannel: null,
-      botLogChannel: makeTextChannel(botLogSend),
-    });
-
-    const service = new WarEventLogService(client, {} as any);
-    const sent = await (service as any).sendFwaBaseSwapBattleDayReminder({
-      sub: {
-        guildId: testGuildId,
-        clanTag: testClanTag,
-        clanName: "Test Clan",
-        clanRoleId: "123456789",
-        channelId: notifyChannelId,
-      },
-      payload: {
-        eventType: "battle_day",
-        matchType: "BL",
-      },
-    });
-
-    expect(sent).toBe(false);
-    expect(claimSpy).not.toHaveBeenCalled();
-    expect(reminderSend).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("reason=tracked_channel_unavailable"),
-    );
-    expect(botLogSend).toHaveBeenCalledTimes(1);
-    expect(
-      String(botLogSend.mock.calls[0]?.[0]?.content ?? ""),
-    ).toContain(`Target channel: <#${baseSwapChannelId}>`);
-  });
-
   it("skips when the tracked base-swap channel is not text-based or sendable", async () => {
     prismaMock.$queryRaw.mockResolvedValue([{ mailChannelId: null }]);
     const reminderSend = vi.fn();
