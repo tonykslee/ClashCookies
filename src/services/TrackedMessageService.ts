@@ -72,8 +72,11 @@ function buildFwaBaseSwapBattleDayReminderClaimKey(params: {
   guildId: string;
   clanTag: string;
   referenceId: string;
+  battleDayIdentity?: string | null;
 }): string {
-  return `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}`;
+  const base = `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}`;
+  const battleDayIdentity = String(params.battleDayIdentity ?? "").trim();
+  return battleDayIdentity ? `${base}:${battleDayIdentity}` : base;
 }
 
 export type SyncTimeTrackedMetadata = {
@@ -1413,10 +1416,12 @@ export class TrackedMessageService {
     guildId: string;
     clanTag: string;
     syncMessageId?: string | null;
+    clanKind?: "FWA" | "CWL";
   }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
     const syncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
+    const expectedClanKind = String(params.clanKind ?? "").trim().toUpperCase();
     if (!guildId || !normalizedClanTag) return null;
     const now = new Date();
 
@@ -1461,6 +1466,12 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
+      const rowClanKind = String(metadata.clanKind ?? "").trim().toUpperCase();
+      if (expectedClanKind === "CWL" && rowClanKind !== "CWL") continue;
+      if (expectedClanKind === "FWA" && rowClanKind && rowClanKind !== "FWA") continue;
+      if (expectedClanKind && row.status !== TRACKED_MESSAGE_STATUS.ACTIVE) {
+        continue;
+      }
       const rowSyncIdentity = normalizeTrackedMessageId(metadata.syncMessageId ?? null);
       const snapshot = {
         id: row.id,
@@ -1599,6 +1610,7 @@ export class TrackedMessageService {
     guildId: string;
     clanTag: string;
     referenceId: string;
+    battleDayIdentity?: string | null;
   }): Promise<boolean> {
     const guildId = String(params.guildId ?? "").trim();
     const clanTag = normalizeTagBare(params.clanTag);
@@ -1609,6 +1621,7 @@ export class TrackedMessageService {
       guildId,
       clanTag,
       referenceId,
+      battleDayIdentity: params.battleDayIdentity ?? null,
     });
     const rows = await prisma.trackedMessage.findMany({
       where: {
