@@ -569,6 +569,46 @@ describe("/clan rep commands", () => {
     expect(missingClanInteraction.respond).toHaveBeenCalledWith([]);
   });
 
+  it("autocompletes configured rep players and timezone aliases for /clan rep timezone", async () => {
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+      { clanTag: "#2RVGJYLC0", playerTag: "#QGRJ2222" },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValueOnce([
+      { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "222222222222222222" },
+      { playerTag: "#QGRJ2222", playerName: "Linked Bravo", discordUserId: null },
+    ]);
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(new Map());
+
+    const playerTimezoneInteraction = makeRepInteraction({
+      group: "rep",
+      subcommand: "timezone",
+      focusedName: "player",
+      focusedValue: "link",
+    });
+    const timezoneInteraction = makeRepInteraction({
+      group: "rep",
+      subcommand: "timezone",
+      focusedName: "timezone",
+      focusedValue: "PST",
+    });
+
+    await TrackedClan.autocomplete?.(playerTimezoneInteraction as any);
+    await TrackedClan.autocomplete?.(timezoneInteraction as any);
+
+    expect(playerTimezoneInteraction.respond).toHaveBeenCalled();
+    expect(String(playerTimezoneInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? "")).toBe(
+      "#PYLQ0289",
+    );
+    expect(String(playerTimezoneInteraction.respond.mock.calls[0]?.[0]?.[0]?.name ?? "")).toContain(
+      "Linked Alpha (#PYLQ0289)",
+    );
+    expect(timezoneInteraction.respond).toHaveBeenCalled();
+    expect(
+      String(timezoneInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? ""),
+    ).toBe("America/Los_Angeles");
+  });
+
   it("matches leading-hash and short partial tag autocomplete queries", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValueOnce([
       { tag: "#2Q0G2C08UP", name: "Alpha Clan" },
