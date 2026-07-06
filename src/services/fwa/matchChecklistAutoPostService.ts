@@ -9,7 +9,9 @@ import {
 import { publishFwaMatchChecklistMessageToChannel } from "../FwaMatchChecklistService";
 import {
   resolveFwaMatchChecklistKindFromViewType,
+  shouldApplyFwaMatchChecklistBadgeReaction,
   trackedMessageService,
+  type FwaMatchChecklistTrackedRow,
 } from "../TrackedMessageService";
 
 type ChecklistViewType = "Mail" | "Bases";
@@ -20,6 +22,7 @@ type SyncTrackedMessageLike = {
   messageId: string;
   expiresAt?: Date | null;
   fallbackExpiresAt?: Date | null;
+  checklistDueAt?: Date | null;
 };
 
 type ChecklistDestinationChannel = {
@@ -32,6 +35,35 @@ type ChecklistDestinationChannel = {
 type CoCServiceFactory = () => CoCService;
 
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
+const BASES_CHECKLIST_READY_GRACE_MS = 15 * 60 * 1000;
+
+function countTrackedClans(rows: FwaMatchChecklistTrackedRow[]): number {
+  return new Set(
+    rows.map((row) => String(row.clanTag ?? "").trim()).filter((clanTag) => Boolean(clanTag)),
+  ).size;
+}
+
+function countSkippedBasesRows(rows: FwaMatchChecklistTrackedRow[]): number {
+  return rows.filter((row) => row.basesStatus === "skipped").length;
+}
+
+function countExpectedBasesReactions(rows: FwaMatchChecklistTrackedRow[]): number {
+  return rows.filter((row) => shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")).length;
+}
+
+async function releaseChecklistPublicationClaim(params: {
+  claim: {
+    claimKey: string | null;
+    sourceTrackedMessageId: string | null;
+  };
+}): Promise<void> {
+  if (!params.claim.sourceTrackedMessageId || !params.claim.claimKey) return;
+  await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
+    sourceTrackedMessageId: params.claim.sourceTrackedMessageId,
+    claimKey: params.claim.claimKey,
+  }).catch(() => undefined);
+}
+
 function isSupportedChecklistDestination(
   channel: unknown,
 ): channel is ChecklistDestinationChannel {
@@ -62,9 +94,11 @@ export class FwaMatchChecklistAutoPostService {
     tracked: SyncTrackedMessageLike;
     createdByUserId?: string | null;
     viewType?: ChecklistViewType;
+    nowMs?: number;
   }): Promise<{ posted: number; skipped: number; failed: number }> {
     const guildId = String(params.tracked.guildId ?? "").trim();
     const syncMessageId = String(params.tracked.messageId ?? "").trim();
+    const nowMs = params.nowMs ?? Date.now();
     if (!guildId || !syncMessageId) {
       const emptyCount = params.viewType ? 1 : CHECKLIST_VIEW_TYPES.length;
       return { posted: 0, skipped: emptyCount, failed: 0 };
@@ -233,17 +267,36 @@ export class FwaMatchChecklistAutoPostService {
           fallbackExpiresAt: params.tracked.fallbackExpiresAt ?? null,
         });
       } catch (err) {
-        if (claim.sourceTrackedMessageId && claim.claimKey) {
-          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
-            sourceTrackedMessageId: claim.sourceTrackedMessageId,
-            claimKey: claim.claimKey,
-          }).catch(() => undefined);
-        }
+        await releaseChecklistPublicationClaim({ claim });
         failed += 1;
         console.error(
           `[fwa match checklist auto-post] event=state_failed guild=${guildId} sync_message=${syncMessageId} kind=${kind} error=${formatError(err)}`,
         );
         continue;
+      }
+
+      const rowCount = state.rows.length;
+      const trackedClanCount = countTrackedClans(state.rows);
+      const skippedCount = countSkippedBasesRows(state.rows);
+      const expectedReactionCount = countExpectedBasesReactions(state.rows);
+      const checklistDueAt = params.tracked.checklistDueAt ?? null;
+      if (viewType === "Bases" && checklistDueAt instanceof Date && skippedCount > 0) {
+        const readyGateExpiresAt = new Date(
+          checklistDueAt.getTime() + BASES_CHECKLIST_READY_GRACE_MS,
+        );
+        const readyGateExpiresAtMs = readyGateExpiresAt.getTime();
+        const shouldHoldPublication = Number.isFinite(readyGateExpiresAtMs) && nowMs <= readyGateExpiresAtMs;
+        if (shouldHoldPublication) {
+          await releaseChecklistPublicationClaim({ claim });
+          skipped += 1;
+          console.info(
+            `[fwa match checklist auto-post] event=skipped_ready_gate guild=${guildId} syncMessageId=${syncMessageId} kind=${kind} rowCount=${rowCount} skippedCount=${skippedCount} expectedReactionCount=${expectedReactionCount} trackedClanCount=${trackedClanCount} reason=bases_not_ready dueAt=${checklistDueAt.toISOString()} gateExpiresAt=${readyGateExpiresAt.toISOString()}`,
+          );
+          continue;
+        }
+        console.info(
+          `[fwa match checklist auto-post] event=ready_gate_expired guild=${guildId} syncMessageId=${syncMessageId} kind=${kind} rowCount=${rowCount} skippedCount=${skippedCount} expectedReactionCount=${expectedReactionCount} trackedClanCount=${trackedClanCount} reason=bases_ready_gate_expired dueAt=${checklistDueAt.toISOString()} gateExpiresAt=${readyGateExpiresAt.toISOString()}`,
+        );
       }
 
       const publishResult = await publishFwaMatchChecklistMessageToChannel({
@@ -260,12 +313,7 @@ export class FwaMatchChecklistAutoPostService {
         expiresAt: state.expiresAt ?? params.tracked.expiresAt ?? null,
       });
       if (!publishResult.sent || !publishResult.messageId) {
-        if (claim.sourceTrackedMessageId && claim.claimKey) {
-          await trackedMessageService.releaseFwaMatchChecklistPublicationClaim({
-            sourceTrackedMessageId: claim.sourceTrackedMessageId,
-            claimKey: claim.claimKey,
-          }).catch(() => undefined);
-        }
+        await releaseChecklistPublicationClaim({ claim });
         failed += 1;
         console.error(
           `[fwa match checklist auto-post] event=send_failed_claim_released guild=${guildId} sync_message=${syncMessageId} kind=${kind} channel=${configuredChannelId}`,

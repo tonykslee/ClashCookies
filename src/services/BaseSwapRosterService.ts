@@ -138,6 +138,20 @@ function toPositiveIntegerOrNull(value: unknown): number | null {
   return parsed > 0 ? parsed : null;
 }
 
+function resolveBaseSwapRosterPosition(input: {
+  mapPosition: number | null | undefined;
+  fallbackIndex: number;
+}): number {
+  if (
+    typeof input.mapPosition === "number" &&
+    Number.isFinite(input.mapPosition) &&
+    Math.trunc(input.mapPosition) > 0
+  ) {
+    return Math.trunc(input.mapPosition);
+  }
+  return input.fallbackIndex + 1;
+}
+
 function buildPhaseTimingLineSource(input: {
   roundState: string | null;
   startTime: Date | null;
@@ -305,21 +319,21 @@ async function loadCwlBaseSwapRoster(input: {
   ]);
 
   const activeLineup =
-    currentRound?.members?.length && currentRound.members.length > 0
+    currentPreparation?.members?.length && currentPreparation.members.length > 0
       ? {
-          clanName: currentRound.clanName,
-          roundState: currentRound.roundState,
-          startTime: currentRound.startTime,
-          endTime: currentRound.endTime,
-          members: currentRound.members,
+          clanName: currentPreparation.clanName,
+          roundState: currentPreparation.roundState,
+          startTime: currentPreparation.startTime,
+          endTime: currentPreparation.endTime,
+          members: currentPreparation.members,
         }
-      : currentPreparation?.members?.length && currentPreparation.members.length > 0
+      : !currentPreparation && currentRound?.members?.length && currentRound.members.length > 0
         ? {
-            clanName: currentPreparation.clanName,
-            roundState: currentPreparation.roundState,
-            startTime: currentPreparation.startTime,
-            endTime: currentPreparation.endTime,
-            members: currentPreparation.members,
+            clanName: currentRound.clanName,
+            roundState: currentRound.roundState,
+            startTime: currentRound.startTime,
+            endTime: currentRound.endTime,
+            members: currentRound.members,
           }
         : null;
 
@@ -335,7 +349,10 @@ async function loadCwlBaseSwapRoster(input: {
       const playerTag = normalizeClanTag(member.playerTag);
       if (!playerTag) return null;
       return {
-        position: index + 1,
+        position: resolveBaseSwapRosterPosition({
+          mapPosition: member.mapPosition,
+          fallbackIndex: index,
+        }),
         playerTag,
         playerName: normalizeDisplayName(member.playerName) ?? "Unknown",
         townhallLevel: toPositiveIntegerOrNull(member.townHall),

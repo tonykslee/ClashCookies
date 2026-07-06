@@ -72,8 +72,11 @@ function buildFwaBaseSwapBattleDayReminderClaimKey(params: {
   guildId: string;
   clanTag: string;
   referenceId: string;
+  battleDayIdentity?: string | null;
 }): string {
-  return `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}`;
+  const battleDayIdentity = String(params.battleDayIdentity ?? "").trim();
+  const identitySuffix = battleDayIdentity ? `:${battleDayIdentity}` : "";
+  return `fwa-base-swap-battle-day-reminder:${String(params.guildId ?? "").trim()}:${normalizeTagBare(params.clanTag)}:${String(params.referenceId ?? "").trim()}${identitySuffix}`;
 }
 
 export type SyncTimeTrackedMetadata = {
@@ -950,6 +953,14 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
   };
 }
 
+export function shouldSendFwaBaseSwapBattleDayReminder(
+  metadata: FwaBaseSwapTrackedMetadata | null | undefined,
+): boolean {
+  if (!metadata) return false;
+  if (metadata.swapReminder !== true) return false;
+  return metadata.entries.some((entry) => entry.section === "fwa_bases");
+}
+
 export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata | null {
   if (!isObject(value) || !Array.isArray(value.clans)) return null;
   const syncTimeIso = String(value.syncTimeIso ?? "").trim();
@@ -1413,10 +1424,12 @@ export class TrackedMessageService {
     guildId: string;
     clanTag: string;
     syncMessageId?: string | null;
+    clanKind?: "FWA" | "CWL";
   }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
     const syncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
+    const expectedClanKind = String(params.clanKind ?? "FWA").trim().toUpperCase();
     if (!guildId || !normalizedClanTag) return null;
     const now = new Date();
 
@@ -1461,6 +1474,8 @@ export class TrackedMessageService {
     for (const row of rows) {
       const metadata = parseFwaBaseSwapMetadata(row.metadata);
       if (!metadata) continue;
+      const metadataClanKind = String(metadata.clanKind ?? "FWA").trim().toUpperCase();
+      if (expectedClanKind && metadataClanKind !== expectedClanKind) continue;
       const rowSyncIdentity = normalizeTrackedMessageId(metadata.syncMessageId ?? null);
       const snapshot = {
         id: row.id,
@@ -1599,6 +1614,7 @@ export class TrackedMessageService {
     guildId: string;
     clanTag: string;
     referenceId: string;
+    battleDayIdentity?: string | null;
   }): Promise<boolean> {
     const guildId = String(params.guildId ?? "").trim();
     const clanTag = normalizeTagBare(params.clanTag);
@@ -1609,6 +1625,7 @@ export class TrackedMessageService {
       guildId,
       clanTag,
       referenceId,
+      battleDayIdentity: params.battleDayIdentity ?? null,
     });
     const rows = await prisma.trackedMessage.findMany({
       where: {

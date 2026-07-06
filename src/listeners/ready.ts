@@ -1328,13 +1328,23 @@ export default (client: Client, cocService: CoCService): void => {
                 }
               }
 
+              let cwlStateRefreshSucceeded = false;
               try {
                 await cwlStateService.refreshTrackedCwlState({
                   cocService,
                   cwlFetchCycleCache,
                 });
+                cwlStateRefreshSucceeded = true;
               } catch (err) {
                 recordCycleFailure("cwl_state_refresh", err);
+              }
+
+              if (cwlStateRefreshSucceeded) {
+                try {
+                  await warEventLogService.sendCwlBaseSwapBattleDayReminders();
+                } catch (err) {
+                  recordCycleFailure("cwl_base_swap_battle_day_reminders", err);
+                }
               }
 
               try {

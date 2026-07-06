@@ -80,6 +80,29 @@ function makeChecklistChannel() {
   };
 }
 
+function makeBasesChecklistRows(params?: {
+  skippedCount?: number;
+  total?: number;
+}) {
+  const skippedCount = params?.skippedCount ?? 0;
+  const total = params?.total ?? 9;
+  return Array.from({ length: total }, (_, index) => {
+    const clanIndex = index + 1;
+    return {
+      clanTag: `#CLAN${clanIndex}`,
+      compactCopyLine: `Clan ${clanIndex} | ⚫ | ${index < skippedCount ? "❌ Bases not checked" : "✅ Bases checked and all good"}`,
+      badgeEmojiId: String(100 + clanIndex),
+      badgeEmojiName: `badge_${clanIndex}`,
+      badgeEmojiInline: `<:badge_${clanIndex}:${100 + clanIndex}>`,
+      basesStatus: index < skippedCount ? "skipped" : "all_good",
+      matchType: "FWA",
+      warId: 1000 + clanIndex,
+      opponentTag: `#OPP${clanIndex}`,
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    } as const;
+  });
+}
+
 describe("FwaMatchChecklistAutoPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -332,6 +355,170 @@ describe("FwaMatchChecklistAutoPostService", () => {
       }),
     );
     expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks Bases publication while skipped rows are still inside the readiness grace window", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: makeBasesChecklistRows({ skippedCount: 6 }),
+      scopeKey: "Bases-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+      emptyMessage: null,
+    });
+
+    try {
+      const result = await service.postForSyncTrackedMessage({
+        client: makeClient({ channel }),
+        tracked: {
+          guildId: "guild-1",
+          channelId: "source-channel",
+          messageId: "sync-message-1",
+          expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+          checklistDueAt: new Date("2026-05-13T00:02:00.000Z"),
+        },
+        createdByUserId: "user-1",
+        viewType: "Bases",
+        nowMs: new Date("2026-05-13T00:10:00.000Z").getTime(),
+      });
+
+      expect(result).toEqual({ posted: 0, skipped: 1, failed: 0 });
+      expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).toHaveBeenCalledWith({
+        sourceTrackedMessageId: "source-tracked-message-id",
+        claimKey: "claim-key",
+      });
+      expect(publishMock.publishFwaMatchChecklistMessageToChannel).not.toHaveBeenCalled();
+      expect(
+        infoSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("reason=bases_not_ready") &&
+          String(call[0] ?? "").includes("skippedCount=6") &&
+          String(call[0] ?? "").includes("expectedReactionCount=3") &&
+          String(call[0] ?? "").includes("trackedClanCount=9"),
+        ),
+      ).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("allows Bases publication when all rows are ready", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: makeBasesChecklistRows({ skippedCount: 0 }),
+      scopeKey: "Bases-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+      emptyMessage: null,
+    });
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+        checklistDueAt: new Date("2026-05-13T00:02:00.000Z"),
+      },
+      createdByUserId: "user-1",
+      viewType: "Bases",
+      nowMs: new Date("2026-05-13T00:10:00.000Z").getTime(),
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).not.toHaveBeenCalled();
+  });
+
+  it("allows Bases publication after the readiness grace window expires", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const basesRows = makeBasesChecklistRows({ skippedCount: 6 });
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: basesRows,
+      scopeKey: "Bases-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+      emptyMessage: null,
+    });
+
+    try {
+      const result = await service.postForSyncTrackedMessage({
+        client: makeClient({ channel }),
+        tracked: {
+          guildId: "guild-1",
+          channelId: "source-channel",
+          messageId: "sync-message-1",
+          expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+          checklistDueAt: new Date("2026-05-13T00:02:00.000Z"),
+        },
+        createdByUserId: "user-1",
+        viewType: "Bases",
+        nowMs: new Date("2026-05-13T00:20:30.000Z").getTime(),
+      });
+
+      expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+      expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          viewType: "Bases",
+          rows: basesRows,
+        }),
+      );
+      expect(
+        infoSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("reason=bases_ready_gate_expired") &&
+          String(call[0] ?? "").includes("skippedCount=6"),
+        ),
+      ).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("does not apply the Bases readiness gate to Mail auto-posts", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Mail",
+      rows: makeBasesChecklistRows({ skippedCount: 6 }),
+      scopeKey: "Mail-scope",
+      checkedClanTags: [],
+      referenceId: "sync-message-1",
+      expiresAt: new Date("2026-05-13T00:30:00.000Z"),
+      emptyMessage: null,
+    });
+
+    const result = await service.postForSyncTrackedMessage({
+      client: makeClient({ channel }),
+      tracked: {
+        guildId: "guild-1",
+        channelId: "source-channel",
+        messageId: "sync-message-1",
+        expiresAt: new Date("2026-05-13T01:00:00.000Z"),
+        checklistDueAt: new Date("2026-05-13T00:02:00.000Z"),
+      },
+      createdByUserId: "user-1",
+      viewType: "Mail",
+      nowMs: new Date("2026-05-13T00:10:00.000Z").getTime(),
+    });
+
+    expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+    expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
+    expect(trackedMessageService.releaseFwaMatchChecklistPublicationClaim).not.toHaveBeenCalled();
   });
 
   it("skips without throwing when no checklist channel is configured", async () => {
