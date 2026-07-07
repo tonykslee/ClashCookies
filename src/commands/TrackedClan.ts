@@ -27,6 +27,7 @@ import { CoCService } from "../services/CoCService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import {
   normalizeClanTag,
+  normalizeDiscordUserId,
   normalizePlayerTag,
 } from "../services/PlayerLinkService";
 import {
@@ -72,10 +73,11 @@ import {
   listTrackedClanRepPlayerTags,
   listTrackedClanRepTimeRowsForClanTags,
   parseTrackedClanRepTagsInput,
-  hasTrackedClanRepAssignmentForPlayerTag,
+  hasTrackedClanRepAssignmentForDiscordUserId,
   addTrackedClanRepForClan,
   removeTrackedClanRepForClan,
-  upsertTrackedClanRepProfileTimezone,
+  upsertTrackedClanRepUserTimezone,
+  autocompleteTrackedClanRepTimezoneUserChoices,
   replaceTrackedClanRepsForClan,
 } from "../services/TrackedClanRepService";
 import { toFailureTelemetry } from "../services/telemetry/ingest";
@@ -95,6 +97,13 @@ function sanitizeDisplayText(input: unknown): string | null {
 function normalizeClanShortNameInput(input: string): string | null {
   const normalized = input.trim().toUpperCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeTrackedClanRepTimezoneUserInput(input: string): string | null {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) return null;
+  const mentionMatch = trimmed.match(/^<@!?(\d{15,22})>$/);
+  return normalizeDiscordUserId(mentionMatch?.[1] ?? trimmed);
 }
 
 function paginateTextLines(lines: string[]): string[] {
@@ -1371,12 +1380,12 @@ export const TrackedClan: Command = {
         },
         {
           name: "timezone",
-          description: "Set one rep player's timezone profile",
+          description: "Set one rep user's timezone profile",
           type: ApplicationCommandOptionType.Subcommand,
           options: [
             {
-              name: "player",
-              description: "Configured rep player tag",
+              name: "user",
+              description: "Linked Discord user owning rep accounts",
               type: ApplicationCommandOptionType.String,
               required: true,
               autocomplete: true,
@@ -1716,21 +1725,21 @@ export const TrackedClan: Command = {
         }
 
         if (subcommand === "timezone") {
-          const playerInput = interaction.options.getString("player", true);
-          const playerTag = normalizePlayerTag(playerInput);
-          if (!playerTag) {
+          const userInput = interaction.options.getString("user", true);
+          const discordUserId = normalizeTrackedClanRepTimezoneUserInput(userInput);
+          if (!discordUserId) {
             await safeReply(interaction, {
               ephemeral: true,
-              content: "Invalid player tag format. Use a valid player tag with or without `#`.",
+              content: "Invalid Discord user format. Use a valid Discord user ID.",
             });
             return;
           }
 
-          const isTrackedRep = await hasTrackedClanRepAssignmentForPlayerTag(playerTag);
+          const isTrackedRep = await hasTrackedClanRepAssignmentForDiscordUserId(discordUserId);
           if (!isTrackedRep) {
             await safeReply(interaction, {
               ephemeral: true,
-              content: `${playerTag} is not currently assigned as a tracked clan rep.`,
+              content: `<@${discordUserId}> is not currently linked to any configured tracked clan rep account.`,
             });
             return;
           }
@@ -1745,8 +1754,8 @@ export const TrackedClan: Command = {
             return;
           }
 
-          const saved = await upsertTrackedClanRepProfileTimezone(prisma as any, {
-            playerTag,
+          const saved = await upsertTrackedClanRepUserTimezone(prisma as any, {
+            discordUserId,
             timeZone: normalizedTimeZone,
             updatedByDiscordUserId: interaction.user.id,
           });
@@ -1763,7 +1772,7 @@ export const TrackedClan: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content: [
-              `Set timezone for ${saved.playerTag} to ${saved.timeZone}.`,
+              `Set timezone for <@${discordUserId}> to ${saved.timeZone}.`,
               `Current local time: ${localTimePreview}.`,
             ].join("\n"),
           });
@@ -3521,9 +3530,9 @@ export const TrackedClan: Command = {
         return;
       }
 
-      if (focused.name === "player" && subcommand === "timezone") {
+      if (focused.name === "user" && subcommand === "timezone") {
         await interaction.respond(
-          await autocompleteTrackedClanRepConfiguredPlayerChoices(String(focused.value ?? "")),
+          await autocompleteTrackedClanRepTimezoneUserChoices(String(focused.value ?? "")),
         );
         return;
       }

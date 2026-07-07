@@ -97,11 +97,11 @@ describe("/clan command shape", () => {
     );
     expect(repList?.options?.find((o: any) => o.name === "clan")?.required).toBe(false);
     expect(repList?.options?.find((o: any) => o.name === "clan")?.autocomplete).toBe(true);
-    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.type).toBe(
+    expect(repTimezone?.options?.find((o: any) => o.name === "user")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
-    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.required).toBe(true);
-    expect(repTimezone?.options?.find((o: any) => o.name === "player")?.autocomplete).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "user")?.required).toBe(true);
+    expect(repTimezone?.options?.find((o: any) => o.name === "user")?.autocomplete).toBe(true);
     expect(repTimezone?.options?.find((o: any) => o.name === "timezone")?.type).toBe(
       ApplicationCommandOptionType.String,
     );

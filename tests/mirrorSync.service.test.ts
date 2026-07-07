@@ -17,9 +17,9 @@ function makeDefaultTableStore(): MirrorTableDataStore {
   return {
     TrackedClan: [{ id: 1, tag: "#AAA111", createdAt: new Date("2026-04-01T00:00:00.000Z") }],
     TrackedClanRep: [{ clanTag: "#AAA111", playerTag: "#P1" }],
-    TrackedClanRepProfile: [
+    TrackedClanRepUserProfile: [
       {
-        playerTag: "#P1",
+        discordUserId: "u1",
         timeZone: "America/Los_Angeles",
         updatedByDiscordUserId: "u1",
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -245,8 +245,8 @@ function buildSourceClient(
     trackedClanRep: {
       findMany: vi.fn(async () => cloneRows(store.TrackedClanRep)),
     },
-    trackedClanRepProfile: {
-      findMany: vi.fn(async () => cloneRows(store.TrackedClanRepProfile)),
+    trackedClanRepUserProfile: {
+      findMany: vi.fn(async () => cloneRows(store.TrackedClanRepUserProfile)),
     },
     currentWar: {
       findMany: vi.fn(async () => cloneRows(store.CurrentWar)),
@@ -353,9 +353,9 @@ function buildTargetClient(
   const tx = {
     trackedClan: { deleteMany: deleteMany("TrackedClan"), createMany: createMany("TrackedClan") },
     trackedClanRep: { deleteMany: deleteMany("TrackedClanRep"), createMany: createMany("TrackedClanRep") },
-    trackedClanRepProfile: {
-      deleteMany: deleteMany("TrackedClanRepProfile"),
-      createMany: createMany("TrackedClanRepProfile"),
+    trackedClanRepUserProfile: {
+      deleteMany: deleteMany("TrackedClanRepUserProfile"),
+      createMany: createMany("TrackedClanRepUserProfile"),
     },
     currentWar: { deleteMany: deleteMany("CurrentWar"), createMany: createMany("CurrentWar") },
     warAttacks: { deleteMany: deleteMany("WarAttacks"), createMany: createMany("WarAttacks") },
