@@ -781,22 +781,6 @@ export async function upsertTrackedClanRepUserTimezone(
   };
 }
 
-/** Purpose: backward-compatible wrapper for older player-tag timezone writes. */
-export async function upsertTrackedClanRepProfileTimezone(
-  db: TrackedClanRepUserProfileWriteClient,
-  input: {
-    playerTag: string;
-    timeZone: string;
-    updatedByDiscordUserId?: string | null;
-  },
-): Promise<TrackedClanRepUserProfileRow | null> {
-  return upsertTrackedClanRepUserTimezone(db, {
-    discordUserId: input.playerTag,
-    timeZone: input.timeZone,
-    updatedByDiscordUserId: input.updatedByDiscordUserId ?? null,
-  });
-}
-
 /** Purpose: load tracked-clan rep time rows grouped by assigned clan in deterministic clan order. */
 export async function listTrackedClanRepTimeRowsForClanTags(
   clanTags: string[] | null | undefined,

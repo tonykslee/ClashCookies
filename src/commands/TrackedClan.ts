@@ -1804,7 +1804,7 @@ export const TrackedClan: Command = {
             await safeReply(interaction, {
               ephemeral: visibility !== "public",
               content: trackedClan
-                ? `Tracked clan ${normalizedFilterClanTag} has no configured rep timezones yet.`
+                ? `Tracked clan ${normalizedFilterClanTag} has no configured reps yet.`
                 : `Tracked clan ${normalizedFilterClanTag} was not found.`,
             });
             return;

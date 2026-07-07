@@ -1,9 +1,9 @@
-CREATE TABLE "TrackedClanRepUserProfile" (
-    "discordUserId" TEXT NOT NULL,
+CREATE TABLE "TrackedClanRepProfile" (
+    "playerTag" VARCHAR(16) NOT NULL,
     "timeZone" VARCHAR(64),
     "updatedByDiscordUserId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "TrackedClanRepUserProfile_pkey" PRIMARY KEY ("discordUserId")
+    CONSTRAINT "TrackedClanRepProfile_pkey" PRIMARY KEY ("playerTag")
 );
