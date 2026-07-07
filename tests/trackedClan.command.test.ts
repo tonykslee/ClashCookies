@@ -3510,12 +3510,6 @@ describe("/clan command behavior", () => {
             updatedByDiscordUserId: "user-1",
             updatedAt: new Date("2026-03-26T00:00:00.000Z"),
           },
-          {
-            playerTag: "#QGRJ2222",
-            timeZone: null,
-            updatedByDiscordUserId: null,
-            updatedAt: new Date("2026-03-26T00:00:00.000Z"),
-          },
         ],
       },
       {
@@ -3525,8 +3519,14 @@ describe("/clan command behavior", () => {
         trackedClanSortOrder: 1,
         repRows: [
           {
+            playerTag: "#QGRJ2222",
+            timeZone: "America/Chicago",
+            updatedByDiscordUserId: null,
+            updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+          {
             playerTag: "#Q8U8U8U8",
-            timeZone: null,
+            timeZone: "America/New_York",
             updatedByDiscordUserId: null,
             updatedAt: new Date("2026-03-26T00:00:00.000Z"),
           },
@@ -3535,7 +3535,7 @@ describe("/clan command behavior", () => {
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "111111111111111111" },
-      { playerTag: "#QGRJ2222", playerName: "Linked Bravo", discordUserId: "111111111111111111" },
+      { playerTag: "#QGRJ2222", playerName: null, discordUserId: null },
       { playerTag: "#Q8U8U8U8", playerName: null, discordUserId: null },
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([
@@ -3557,18 +3557,17 @@ describe("/clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     expect(description.match(/<@111111111111111111> \|/g)?.length ?? 0).toBe(1);
-    expect(description).toContain("Unlinked reps | time not set");
+    expect(description.match(/#QGRJ2222 \|/g)?.length ?? 0).toBe(1);
+    expect(description.match(/#Q8U8U8U8 \|/g)?.length ?? 0).toBe(1);
     expect(description).toContain(":alpha: TH16");
-    expect(description).toContain(":alpha: TH15");
+    expect(description).toContain(":beta: TH15");
     expect(description).toContain(":beta: TH14");
     expect(description).toContain("Linked Alpha");
-    expect(description).toContain("Linked Bravo");
     expect(description).not.toContain("#2QG2C08UP");
     expect(description).not.toContain("#2RVGJYLC0");
     expect(description).not.toContain("#PYLQ0289");
-    expect(description).not.toContain("#QGRJ2222");
-    expect(description).not.toContain("America/Los_Angeles");
     expect(description).not.toContain("timezone not set");
+    expect(description).not.toContain("Unlinked reps");
     expect(description).not.toContain(":crown:");
   });
 

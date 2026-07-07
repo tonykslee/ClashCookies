@@ -1846,20 +1846,22 @@ export const TrackedClan: Command = {
           for (const clanRow of timeRows) {
             for (const repRow of clanRow.repRows) {
               const identity = identityByTag.get(repRow.playerTag) ?? null;
-              const userKey = identity?.discordUserId ?? "unlinked";
+              const accountRow = accountRowByTag.get(repRow.playerTag) ?? null;
+              const userKey = identity?.discordUserId ?? `unlinked:${repRow.playerTag}`;
               let group = groupsByUser.get(userKey);
               if (!group) {
                 group = {
                   headerLabel:
                     identity?.discordMention ??
-                    (identity?.discordUserId ? `<@${identity.discordUserId}>` : "Unlinked reps"),
+                    (identity?.discordUserId
+                      ? `<@${identity.discordUserId}>`
+                      : accountRow?.name ?? "Unlinked rep"),
                   playerRows: [],
                 };
                 groupsByUser.set(userKey, group);
                 groupOrder.push(userKey);
               }
 
-              const accountRow = accountRowByTag.get(repRow.playerTag) ?? null;
               group.playerRows.push({
                 playerTag: repRow.playerTag,
                 playerName: accountRow?.name ?? null,
