@@ -249,7 +249,7 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("/clan rep timezone player:#PYLQ0289 timezone:PST");
     expect(clanHelpText).toContain("/clan rep time clan:#2QG2C08UP visibility:public");
     expect(clanHelpText).toContain("`rep timezone` stores a rep profile timezone");
-    expect(clanHelpText).toContain("rep time");
+    expect(clanHelpText).toContain("groups rep accounts by linked Discord user");
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 

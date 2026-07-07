@@ -3496,11 +3496,12 @@ describe("/clan command behavior", () => {
     expect(trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone).not.toHaveBeenCalled();
   });
 
-  it("renders tracked rep local times with set and unset timezone rows", async () => {
+  it("groups tracked rep local times by Discord user with compact account rows", async () => {
     trackedClanRepServiceMock.listTrackedClanRepTimeRowsForClanTags.mockResolvedValueOnce([
       {
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
+        clanBadge: ":alpha:",
         trackedClanSortOrder: 0,
         repRows: [
           {
@@ -3509,9 +3510,23 @@ describe("/clan command behavior", () => {
             updatedByDiscordUserId: "user-1",
             updatedAt: new Date("2026-03-26T00:00:00.000Z"),
           },
+        ],
+      },
+      {
+        clanTag: "#2RVGJYLC0",
+        clanName: "Beta Clan",
+        clanBadge: ":beta:",
+        trackedClanSortOrder: 1,
+        repRows: [
           {
             playerTag: "#QGRJ2222",
-            timeZone: null,
+            timeZone: "America/Chicago",
+            updatedByDiscordUserId: null,
+            updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+          {
+            playerTag: "#Q8U8U8U8",
+            timeZone: "America/New_York",
             updatedByDiscordUserId: null,
             updatedAt: new Date("2026-03-26T00:00:00.000Z"),
           },
@@ -3520,11 +3535,13 @@ describe("/clan command behavior", () => {
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "111111111111111111" },
-      { playerTag: "#QGRJ2222", playerName: "Linked Bravo", discordUserId: "222222222222222222" },
+      { playerTag: "#QGRJ2222", playerName: null, discordUserId: null },
+      { playerTag: "#Q8U8U8U8", playerName: null, discordUserId: null },
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ0289", playerName: null },
-      { playerTag: "#QGRJ2222", playerName: null },
+      { playerTag: "#PYLQ0289", playerName: null, townHall: 16 },
+      { playerTag: "#QGRJ2222", playerName: null, townHall: 15 },
+      { playerTag: "#Q8U8U8U8", playerName: null, townHall: 14 },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
@@ -3539,18 +3556,27 @@ describe("/clan command behavior", () => {
     await TrackedClan.run(client, interaction as any, {} as any);
 
     const description = getFirstEmbedDescription(interaction);
-    expect(description).toContain("Alpha Clan");
-    expect(description).toContain("#PYLQ0289");
-    expect(description).toContain("America/Los_Angeles");
-    expect(description).toContain("timezone not set");
+    expect(description.match(/<@111111111111111111> \|/g)?.length ?? 0).toBe(1);
+    expect(description.match(/#QGRJ2222 \|/g)?.length ?? 0).toBe(1);
+    expect(description.match(/#Q8U8U8U8 \|/g)?.length ?? 0).toBe(1);
+    expect(description).toContain(":alpha: TH16");
+    expect(description).toContain(":beta: TH15");
+    expect(description).toContain(":beta: TH14");
     expect(description).toContain("Linked Alpha");
+    expect(description).not.toContain("#2QG2C08UP");
+    expect(description).not.toContain("#2RVGJYLC0");
+    expect(description).not.toContain("#PYLQ0289");
+    expect(description).not.toContain("timezone not set");
+    expect(description).not.toContain("Unlinked reps");
+    expect(description).not.toContain(":crown:");
   });
 
-  it("scopes tracked rep time output to one clan when clan is provided", async () => {
+  it("scopes grouped tracked rep time output to one clan when clan is provided", async () => {
     trackedClanRepServiceMock.listTrackedClanRepTimeRowsForClanTags.mockResolvedValueOnce([
       {
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
+        clanBadge: ":alpha:",
         trackedClanSortOrder: 0,
         repRows: [
           {
@@ -3566,7 +3592,7 @@ describe("/clan command behavior", () => {
       { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "111111111111111111" },
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([
-      { playerTag: "#PYLQ0289", playerName: null },
+      { playerTag: "#PYLQ0289", playerName: null, townHall: 16 },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
@@ -3584,8 +3610,11 @@ describe("/clan command behavior", () => {
     expect(trackedClanRepServiceMock.listTrackedClanRepTimeRowsForClanTags).toHaveBeenCalledWith([
       "#2QG2C08UP",
     ]);
-    expect(getFirstEmbedDescription(interaction)).toContain("Alpha Clan");
-    expect(getFirstEmbedDescription(interaction)).not.toContain("Beta Clan");
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("<@111111111111111111> |");
+    expect(description).toContain(":alpha: TH16");
+    expect(description).not.toContain(":beta:");
+    expect(description).not.toContain("#2QG2C08UP");
   });
 });
 

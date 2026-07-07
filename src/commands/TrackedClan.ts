@@ -722,58 +722,96 @@ function formatTrackedClanRepLocalTime(now: Date, timeZone: string | null): stri
   }
 }
 
-function buildTrackedClanRepTimeSectionBlocks(input: {
-  clanTag: string;
-  clanName: string | null;
-  playerRows: Array<{
-    playerTag: string;
-    displayRow: TrackedClanRepListDisplayRow | null;
-    discordMention: string | null;
-    timeZone: string | null;
+function formatTrackedClanRepLocalTimeHeader(now: Date, timeZone: string | null): string {
+  const normalized = normalizeSyncTimeZone(timeZone ?? "");
+  if (!normalized) {
+    return "time not set";
+  }
+
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: normalized,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(now);
+  } catch {
+    return "time not set";
+  }
+}
+
+function formatTrackedClanRepCompactTownHallLabel(
+  townHall: number | null,
+  townHallEmojiByLevel: Map<number, string>,
+): string {
+  const normalizedTownHall = Number.isFinite(Number(townHall)) ? Math.trunc(Number(townHall)) : null;
+  if (normalizedTownHall === null || normalizedTownHall <= 0) {
+    return "TH?";
+  }
+  return townHallEmojiByLevel.get(normalizedTownHall) ?? `TH${normalizedTownHall}`;
+}
+
+function buildTrackedClanRepPlayerProfileMarkdownLink(
+  playerName: string | null,
+  playerTag: string,
+): string {
+  const normalizedPlayerTag = normalizePlayerTag(playerTag) || playerTag;
+  const label = sanitizeDisplayText(playerName) || normalizedPlayerTag || "Unknown Player";
+  if (!normalizedPlayerTag) {
+    return label;
+  }
+  const encodedTag = normalizedPlayerTag.replace(/^#/, "");
+  return `[${label}](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=${encodedTag}>)`;
+}
+
+function buildTrackedClanRepCompactTimeBlocks(input: {
+  groups: Array<{
+    headerLabel: string;
+    timeLabel: string;
+    playerRows: Array<{
+      playerTag: string;
+      playerName: string | null;
+      townHall: number | null;
+      clanBadge: string | null;
+    }>;
   }>;
   townHallEmojiByLevel: Map<number, string>;
-  now: Date;
 }): string[] {
-  const title = buildClanProfileMarkdownLink(input.clanName, input.clanTag);
-  const header = input.clanName
-    ? `**${title}** \`${input.clanTag}\``
-    : `**${title}**`;
-  const rows = input.playerRows.length > 0 ? [...input.playerRows] : [];
-  const lines =
-    rows.length > 0
-      ? rows.map((row) => {
-          const accountText = row.displayRow
-            ? buildAccountDisplayRowText(row.displayRow, input.townHallEmojiByLevel)
-            : formatTrackedClanRepIdentityLabel({
-                playerTag: row.playerTag,
-                playerName: null,
-              });
-          const localTime = formatTrackedClanRepLocalTime(input.now, row.timeZone);
-          const timezoneLabel = formatTrackedClanRepTimeZoneLabel(row.timeZone);
-          const discordLine = row.discordMention ?? "Not linked to Discord";
-          return `${accountText} | ${discordLine} | ${localTime} | ${timezoneLabel}`;
-        })
-      : ["No reps configured."];
+  const blocks = input.groups.map((group) => {
+    const lines = [
+      `${group.headerLabel} | ${group.timeLabel}`,
+      ...group.playerRows.map((row) => {
+        const badge = sanitizeDisplayText(row.clanBadge) ?? "";
+        const badgePrefix = badge.length > 0 ? `${badge} ` : "";
+        const townHall = formatTrackedClanRepCompactTownHallLabel(
+          row.townHall,
+          input.townHallEmojiByLevel,
+        );
+        const playerLink = buildTrackedClanRepPlayerProfileMarkdownLink(row.playerName, row.playerTag);
+        return `${badgePrefix}${townHall} ${playerLink}`;
+      }),
+    ];
+    return lines.join("\n");
+  });
 
   const maxChars = 3900;
   const chunks: string[] = [];
   let currentLines: string[] = [];
   let currentLength = 0;
 
-  for (const line of [header, ...lines]) {
-    const nextLength = currentLength + (currentLines.length > 0 ? 1 : 0) + line.length;
+  for (const block of blocks) {
+    const nextLength = currentLength + (currentLines.length > 0 ? 2 : 0) + block.length;
     if (currentLines.length > 0 && nextLength > maxChars) {
-      chunks.push(currentLines.join("\n"));
-      currentLines = [header, line];
-      currentLength = header.length + 1 + line.length;
+      chunks.push(currentLines.join("\n\n"));
+      currentLines = [block];
+      currentLength = block.length;
       continue;
     }
-    currentLines.push(line);
+    currentLines.push(block);
     currentLength = nextLength;
   }
 
   if (currentLines.length > 0) {
-    chunks.push(currentLines.join("\n"));
+    chunks.push(currentLines.join("\n\n"));
   }
 
   return chunks;
@@ -1791,20 +1829,72 @@ export const TrackedClan: Command = {
           const identityByTag = new Map(identityRows.entries());
           const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
 
-          const blocks = timeRows.flatMap((clanRow) =>
-            buildTrackedClanRepTimeSectionBlocks({
-              clanTag: clanRow.clanTag,
-              clanName: clanRow.clanName,
-              now,
-              townHallEmojiByLevel,
-              playerRows: clanRow.repRows.map((repRow) => ({
+          const groupsByUser = new Map<
+            string,
+            {
+              headerLabel: string;
+              playerRows: Array<{
+                playerTag: string;
+                playerName: string | null;
+                townHall: number | null;
+                clanBadge: string | null;
+                timeZone: string | null;
+              }>;
+            }
+          >();
+          const groupOrder: string[] = [];
+          for (const clanRow of timeRows) {
+            for (const repRow of clanRow.repRows) {
+              const identity = identityByTag.get(repRow.playerTag) ?? null;
+              const accountRow = accountRowByTag.get(repRow.playerTag) ?? null;
+              const userKey = identity?.discordUserId ?? `unlinked:${repRow.playerTag}`;
+              let group = groupsByUser.get(userKey);
+              if (!group) {
+                group = {
+                  headerLabel:
+                    identity?.discordMention ??
+                    (identity?.discordUserId
+                      ? `<@${identity.discordUserId}>`
+                      : accountRow?.name ?? "Unlinked rep"),
+                  playerRows: [],
+                };
+                groupsByUser.set(userKey, group);
+                groupOrder.push(userKey);
+              }
+
+              group.playerRows.push({
                 playerTag: repRow.playerTag,
-                displayRow: accountRowByTag.get(repRow.playerTag) ?? null,
-                discordMention: identityByTag.get(repRow.playerTag)?.discordMention ?? null,
+                playerName: accountRow?.name ?? null,
+                townHall: accountRow?.townHall ?? null,
+                clanBadge: clanRow.clanBadge,
                 timeZone: repRow.timeZone,
-              })),
-            }),
-          );
+              });
+            }
+          }
+
+          const blocks = groupOrder.map((userKey) => {
+            const group = groupsByUser.get(userKey);
+            if (!group) {
+              return "";
+            }
+            const firstTimeZone = group.playerRows.find((row) => normalizeSyncTimeZone(row.timeZone ?? ""))?.timeZone ?? null;
+            return buildTrackedClanRepCompactTimeBlocks({
+              townHallEmojiByLevel,
+              groups: [
+                {
+                  headerLabel: group.headerLabel,
+                  timeLabel: formatTrackedClanRepLocalTimeHeader(now, firstTimeZone),
+                  playerRows: group.playerRows.map((row) => ({
+                    playerTag: row.playerTag,
+                    playerName: row.playerName,
+                    townHall: row.townHall,
+                    clanBadge: row.clanBadge,
+                  })),
+                },
+              ],
+            })[0] ?? "";
+          }).filter((block) => block.length > 0);
+
           const pageContents = paginateTrackedClanBlocks(blocks);
           const pageCount = pageContents.length > 0 ? pageContents.length : 1;
           const paginatorPrefix = `tracked-clan-rep-time:${interaction.id}`;
