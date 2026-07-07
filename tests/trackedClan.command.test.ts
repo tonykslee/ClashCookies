@@ -88,7 +88,7 @@ const prismaMock = vi.hoisted(() => {
     externalPlayerWeightCurrent: {
       findMany: vi.fn(),
     },
-    trackedClanRepProfile: {
+    trackedClanRepUserProfile: {
       findMany: vi.fn(),
       upsert: vi.fn(),
     },
@@ -153,8 +153,9 @@ const trackedClanRepServiceMock = vi.hoisted(() => ({
   listTrackedClanRepDisplayRowsForClanTags: vi.fn(),
   listTrackedClanRepTimeRowsForClanTags: vi.fn(),
   listTrackedClanRepPlayerTags: vi.fn(),
-  hasTrackedClanRepAssignmentForPlayerTag: vi.fn(),
-  upsertTrackedClanRepProfileTimezone: vi.fn(),
+  hasTrackedClanRepAssignmentForDiscordUserId: vi.fn(),
+  autocompleteTrackedClanRepTimezoneUserChoices: vi.fn(),
+  upsertTrackedClanRepUserTimezone: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -187,10 +188,12 @@ vi.mock("../src/services/TrackedClanRepService", async () => {
     listTrackedClanRepTimeRowsForClanTags:
       trackedClanRepServiceMock.listTrackedClanRepTimeRowsForClanTags,
     listTrackedClanRepPlayerTags: trackedClanRepServiceMock.listTrackedClanRepPlayerTags,
-    hasTrackedClanRepAssignmentForPlayerTag:
-      trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag,
-    upsertTrackedClanRepProfileTimezone:
-      trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone,
+    hasTrackedClanRepAssignmentForDiscordUserId:
+      trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId,
+    autocompleteTrackedClanRepTimezoneUserChoices:
+      trackedClanRepServiceMock.autocompleteTrackedClanRepTimezoneUserChoices,
+    upsertTrackedClanRepUserTimezone:
+      trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone,
   };
 });
 
@@ -316,9 +319,9 @@ describe("/clan command behavior", () => {
     prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
-    prismaMock.trackedClanRepProfile.findMany.mockResolvedValue([]);
-    prismaMock.trackedClanRepProfile.upsert.mockResolvedValue({
-      playerTag: "#PYLQ0289",
+    prismaMock.trackedClanRepUserProfile.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRepUserProfile.upsert.mockResolvedValue({
+      discordUserId: "111111111111111111",
       timeZone: "America/Los_Angeles",
       updatedByDiscordUserId: "111111111111111111",
       createdAt: new Date("2026-03-01T00:00:00.000Z"),
@@ -359,9 +362,10 @@ describe("/clan command behavior", () => {
     trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags.mockResolvedValue([]);
     trackedClanRepServiceMock.listTrackedClanRepTimeRowsForClanTags.mockResolvedValue([]);
     trackedClanRepServiceMock.listTrackedClanRepPlayerTags.mockResolvedValue([]);
-    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag.mockResolvedValue(false);
-    trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone.mockResolvedValue({
-      playerTag: "#PYLQ0289",
+    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId.mockResolvedValue(false);
+    trackedClanRepServiceMock.autocompleteTrackedClanRepTimezoneUserChoices.mockResolvedValue([]);
+    trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone.mockResolvedValue({
+      discordUserId: "111111111111111111",
       timeZone: "America/Los_Angeles",
       updatedByDiscordUserId: "111111111111111111",
       updatedAt: new Date("2026-03-02T00:00:00.000Z"),
@@ -3425,9 +3429,9 @@ describe("/clan command behavior", () => {
   });
 
   it("sets a rep timezone with alias normalization and shows the local time preview", async () => {
-    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag.mockResolvedValueOnce(true);
-    trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone.mockResolvedValueOnce({
-      playerTag: "#PYLQ0289",
+    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId.mockResolvedValueOnce(true);
+    trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone.mockResolvedValueOnce({
+      discordUserId: "111111111111111111",
       timeZone: "America/Los_Angeles",
       updatedByDiscordUserId: "user-1",
       updatedAt: new Date("2026-03-26T00:00:00.000Z"),
@@ -3437,36 +3441,36 @@ describe("/clan command behavior", () => {
       subcommand: "timezone",
       subcommandGroup: "rep",
       strings: {
-        player: "#PYLQ0289",
+        user: "111111111111111111",
         timezone: "PST",
       },
     });
 
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
-    expect(trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag).toHaveBeenCalledWith(
-      "#PYLQ0289",
+    expect(trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId).toHaveBeenCalledWith(
+      "111111111111111111",
     );
-    expect(trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone).toHaveBeenCalledWith(
+    expect(trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone).toHaveBeenCalledWith(
       prismaMock as any,
       {
-        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
         timeZone: "America/Los_Angeles",
         updatedByDiscordUserId: "user-1",
       },
     );
-    expect(getReplyContent(interaction)).toContain("Set timezone for #PYLQ0289 to America/Los_Angeles.");
+    expect(getReplyContent(interaction)).toContain("Set timezone for <@111111111111111111> to America/Los_Angeles.");
     expect(getReplyContent(interaction)).toContain("Current local time:");
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
   });
 
   it("rejects invalid rep timezone aliases and leaves persistence untouched", async () => {
-    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag.mockResolvedValueOnce(true);
+    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId.mockResolvedValueOnce(true);
     const interaction = createInteraction({
       subcommand: "timezone",
       subcommandGroup: "rep",
       strings: {
-        player: "#PYLQ0289",
+        user: "111111111111111111",
         timezone: "NotATimeZone",
       },
     });
@@ -3474,16 +3478,16 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
     expect(getReplyContent(interaction)).toContain("Invalid timezone. Use a valid IANA timezone");
-    expect(trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone).not.toHaveBeenCalled();
+    expect(trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone).not.toHaveBeenCalled();
   });
 
   it("rejects timezone writes for players who are not configured reps", async () => {
-    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForPlayerTag.mockResolvedValueOnce(false);
+    trackedClanRepServiceMock.hasTrackedClanRepAssignmentForDiscordUserId.mockResolvedValueOnce(false);
     const interaction = createInteraction({
       subcommand: "timezone",
       subcommandGroup: "rep",
       strings: {
-        player: "#PYLQ0289",
+        user: "111111111111111111",
         timezone: "PST",
       },
     });
@@ -3491,9 +3495,9 @@ describe("/clan command behavior", () => {
     await TrackedClan.run({} as any, interaction as any, {} as any);
 
     expect(getReplyContent(interaction)).toContain(
-      "#PYLQ0289 is not currently assigned as a tracked clan rep.",
+      "<@111111111111111111> is not currently linked to any configured tracked clan rep account.",
     );
-    expect(trackedClanRepServiceMock.upsertTrackedClanRepProfileTimezone).not.toHaveBeenCalled();
+    expect(trackedClanRepServiceMock.upsertTrackedClanRepUserTimezone).not.toHaveBeenCalled();
   });
 
   it("groups tracked rep local times by Discord user with compact account rows", async () => {
@@ -3506,6 +3510,12 @@ describe("/clan command behavior", () => {
         repRows: [
           {
             playerTag: "#PYLQ0289",
+            timeZone: "America/Los_Angeles",
+            updatedByDiscordUserId: "user-1",
+            updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+          },
+          {
+            playerTag: "#PYLQ0290",
             timeZone: "America/Los_Angeles",
             updatedByDiscordUserId: "user-1",
             updatedAt: new Date("2026-03-26T00:00:00.000Z"),
@@ -3535,13 +3545,15 @@ describe("/clan command behavior", () => {
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "111111111111111111" },
+      { playerTag: "#PYLQ0290", playerName: "Linked Beta", discordUserId: "111111111111111111" },
       { playerTag: "#QGRJ2222", playerName: null, discordUserId: null },
       { playerTag: "#Q8U8U8U8", playerName: null, discordUserId: null },
     ]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([
       { playerTag: "#PYLQ0289", playerName: null, townHall: 16 },
-      { playerTag: "#QGRJ2222", playerName: null, townHall: 15 },
-      { playerTag: "#Q8U8U8U8", playerName: null, townHall: 14 },
+      { playerTag: "#PYLQ0290", playerName: null, townHall: 15 },
+      { playerTag: "#QGRJ2222", playerName: "Unlinked One", townHall: 15 },
+      { playerTag: "#Q8U8U8U8", playerName: "Unlinked Two", townHall: 14 },
     ]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
@@ -3557,15 +3569,20 @@ describe("/clan command behavior", () => {
 
     const description = getFirstEmbedDescription(interaction);
     expect(description.match(/<@111111111111111111> \|/g)?.length ?? 0).toBe(1);
-    expect(description.match(/#QGRJ2222 \|/g)?.length ?? 0).toBe(1);
-    expect(description.match(/#Q8U8U8U8 \|/g)?.length ?? 0).toBe(1);
+    expect(description.match(/Unlinked One \|/g)?.length ?? 0).toBe(1);
+    expect(description.match(/Unlinked Two \|/g)?.length ?? 0).toBe(1);
     expect(description).toContain(":alpha: TH16");
+    expect(description).toContain(":alpha: TH15");
     expect(description).toContain(":beta: TH15");
     expect(description).toContain(":beta: TH14");
     expect(description).toContain("Linked Alpha");
+    expect(description).toContain("Linked Beta");
     expect(description).not.toContain("#2QG2C08UP");
     expect(description).not.toContain("#2RVGJYLC0");
     expect(description).not.toContain("#PYLQ0289");
+    expect(description).not.toContain("#PYLQ0290");
+    expect(description).not.toContain("#QGRJ2222");
+    expect(description).not.toContain("#Q8U8U8U8");
     expect(description).not.toContain("timezone not set");
     expect(description).not.toContain("Unlinked reps");
     expect(description).not.toContain(":crown:");

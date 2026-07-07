@@ -38,6 +38,7 @@ const accountDisplayServiceMock = vi.hoisted(() => ({
 
 const trackedClanRepServiceMock = vi.hoisted(() => ({
   listTrackedClanRepDisplayRowsForClanTags: vi.fn(),
+  autocompleteTrackedClanRepTimezoneUserChoices: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -84,6 +85,8 @@ vi.mock("../src/services/TrackedClanRepService", async () => {
     ...actual,
     listTrackedClanRepDisplayRowsForClanTags:
       trackedClanRepServiceMock.listTrackedClanRepDisplayRowsForClanTags,
+    autocompleteTrackedClanRepTimezoneUserChoices:
+      trackedClanRepServiceMock.autocompleteTrackedClanRepTimezoneUserChoices,
   };
 });
 
@@ -91,10 +94,10 @@ import { TrackedClan } from "../src/commands/TrackedClan";
 
 type RepInteractionInput = {
   group?: "rep" | null;
-  subcommand: "add" | "remove" | "list";
+  subcommand: "add" | "remove" | "list" | "timezone";
   clan?: string | null;
   player?: string | null;
-  focusedName?: "clan" | "player" | "tag";
+  focusedName?: "clan" | "player" | "tag" | "user" | "timezone";
   focusedValue?: string;
 };
 
@@ -569,21 +572,28 @@ describe("/clan rep commands", () => {
     expect(missingClanInteraction.respond).toHaveBeenCalledWith([]);
   });
 
-  it("autocompletes configured rep players and timezone aliases for /clan rep timezone", async () => {
+  it("autocompletes linked rep users and timezone aliases for /clan rep timezone", async () => {
     prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
       { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
       { clanTag: "#2RVGJYLC0", playerTag: "#QGRJ2222" },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValueOnce([
-      { playerTag: "#PYLQ0289", playerName: "Linked Alpha", discordUserId: "222222222222222222" },
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Linked Alpha",
+        discordUserId: "222222222222222222",
+        discordUsername: "Elle",
+      },
       { playerTag: "#QGRJ2222", playerName: "Linked Bravo", discordUserId: null },
     ]);
-    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(new Map());
+    trackedClanRepServiceMock.autocompleteTrackedClanRepTimezoneUserChoices.mockResolvedValueOnce([
+      { name: "@Elle | 1 rep | Linked Alpha", value: "222222222222222222" },
+    ]);
 
     const playerTimezoneInteraction = makeRepInteraction({
       group: "rep",
       subcommand: "timezone",
-      focusedName: "player",
+      focusedName: "user",
       focusedValue: "link",
     });
     const timezoneInteraction = makeRepInteraction({
@@ -596,12 +606,15 @@ describe("/clan rep commands", () => {
     await TrackedClan.autocomplete?.(playerTimezoneInteraction as any);
     await TrackedClan.autocomplete?.(timezoneInteraction as any);
 
+    expect(trackedClanRepServiceMock.autocompleteTrackedClanRepTimezoneUserChoices).toHaveBeenCalledWith(
+      "link",
+    );
     expect(playerTimezoneInteraction.respond).toHaveBeenCalled();
     expect(String(playerTimezoneInteraction.respond.mock.calls[0]?.[0]?.[0]?.value ?? "")).toBe(
-      "#PYLQ0289",
+      "222222222222222222",
     );
     expect(String(playerTimezoneInteraction.respond.mock.calls[0]?.[0]?.[0]?.name ?? "")).toContain(
-      "Linked Alpha (#PYLQ0289)",
+      "@Elle | 1 rep | Linked Alpha",
     );
     expect(timezoneInteraction.respond).toHaveBeenCalled();
     expect(

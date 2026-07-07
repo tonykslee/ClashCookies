@@ -128,7 +128,7 @@ Each domain concept must have exactly one authoritative owner.
 | CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
 | Tracked FWA clan rep accounts | TrackedClanRep |
-| Tracked FWA clan rep profile metadata | TrackedClanRepProfile |
+| Tracked FWA clan rep user profile metadata | TrackedClanRepUserProfile |
 | Seasonal CWL tracked clans | CwlTrackedClan |
 | Live battle-day CWL round identity and timing | CurrentCwlRound |
 | Live battle-day CWL round member summaries | CwlRoundMemberCurrent |

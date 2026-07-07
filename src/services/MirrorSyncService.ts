@@ -24,7 +24,7 @@ import {
   type HeatMapRef,
   type TrackedClan,
   type TrackedClanRep,
-  type TrackedClanRepProfile,
+  type TrackedClanRepUserProfile,
   type WarAttacks,
   type WarPlanComplianceEvaluation,
   type WarPlanViolation,
@@ -42,7 +42,7 @@ import {
 export const MIRRORED_RUNTIME_TABLES = [
   "TrackedClan",
   "TrackedClanRep",
-  "TrackedClanRepProfile",
+  "TrackedClanRepUserProfile",
   "CurrentWar",
   "WarAttacks",
   "ClanPointsSync",
@@ -104,7 +104,7 @@ type CreateManyResult = { count: number };
 type MirrorSyncSourceClient = {
   trackedClan: { findMany: (args?: unknown) => Promise<TrackedClan[]> };
   trackedClanRep: { findMany: (args?: unknown) => Promise<TrackedClanRep[]> };
-  trackedClanRepProfile: { findMany: (args?: unknown) => Promise<TrackedClanRepProfile[]> };
+  trackedClanRepUserProfile: { findMany: (args?: unknown) => Promise<TrackedClanRepUserProfile[]> };
   currentWar: { findMany: (args?: unknown) => Promise<CurrentWar[]> };
   warAttacks: { findMany: (args?: unknown) => Promise<WarAttacks[]> };
   clanPointsSync: { findMany: (args?: unknown) => Promise<ClanPointsSync[]> };
@@ -162,9 +162,9 @@ type MirrorSyncTargetClient = {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: TrackedClanRep[] }) => Promise<CreateManyResult>;
   };
-  trackedClanRepProfile: {
+  trackedClanRepUserProfile: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
-    createMany: (args: { data: TrackedClanRepProfile[] }) => Promise<CreateManyResult>;
+    createMany: (args: { data: TrackedClanRepUserProfile[] }) => Promise<CreateManyResult>;
   };
   currentWar: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -298,7 +298,7 @@ type SyncSafetyContext = {
 type MirrorSyncSourceRows = {
   TrackedClan: TrackedClan[];
   TrackedClanRep: TrackedClanRep[];
-  TrackedClanRepProfile: TrackedClanRepProfile[];
+  TrackedClanRepUserProfile: TrackedClanRepUserProfile[];
   CurrentWar: CurrentWar[];
   WarAttacks: WarAttacks[];
   ClanPointsSync: ClanPointsSync[];
@@ -575,8 +575,8 @@ export class MirrorSyncService {
       TrackedClanRep: await sourceClient.trackedClanRep.findMany({
         orderBy: [{ clanTag: "asc" }, { playerTag: "asc" }],
       }),
-      TrackedClanRepProfile: await sourceClient.trackedClanRepProfile.findMany({
-        orderBy: [{ playerTag: "asc" }],
+      TrackedClanRepUserProfile: await sourceClient.trackedClanRepUserProfile.findMany({
+        orderBy: [{ discordUserId: "asc" }],
       }),
       CurrentWar: await sourceClient.currentWar.findMany({
         orderBy: [{ clanTag: "asc" }, { guildId: "asc" }],
@@ -685,10 +685,10 @@ export class MirrorSyncService {
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
 
-    if (table === "TrackedClanRepProfile") {
-      const deletedRows = (await tx.trackedClanRepProfile.deleteMany()).count;
-      const insertedRows = await this.insertBatches(rows as TrackedClanRepProfile[], (batch) =>
-        tx.trackedClanRepProfile.createMany({ data: batch }),
+    if (table === "TrackedClanRepUserProfile") {
+      const deletedRows = (await tx.trackedClanRepUserProfile.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as TrackedClanRepUserProfile[], (batch) =>
+        tx.trackedClanRepUserProfile.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
