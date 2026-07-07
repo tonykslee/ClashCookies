@@ -392,11 +392,13 @@ describe("TrackedClanRepService", () => {
       {
         tag: "#2QG2C08UP",
         name: "Alpha Clan",
+        clanBadge: ":alpha:",
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
       {
         tag: "#2RVGJYLC0",
         name: "Beta Clan",
+        clanBadge: ":beta:",
         createdAt: new Date("2026-03-02T00:00:00.000Z"),
       },
     ]);
@@ -467,11 +469,13 @@ describe("TrackedClanRepService", () => {
       {
         tag: "#2QG2C08UP",
         name: "Alpha Clan",
+        clanBadge: ":alpha:",
         createdAt: new Date("2026-03-01T00:00:00.000Z"),
       },
       {
         tag: "#2RVGJYLC0",
         name: "Beta Clan",
+        clanBadge: ":beta:",
         createdAt: new Date("2026-03-02T00:00:00.000Z"),
       },
     ]);
@@ -495,6 +499,7 @@ describe("TrackedClanRepService", () => {
       {
         clanTag: "#2QG2C08UP",
         clanName: "Alpha Clan",
+        clanBadge: ":alpha:",
         trackedClanSortOrder: 0,
         repRows: [
           {
@@ -514,6 +519,7 @@ describe("TrackedClanRepService", () => {
       {
         clanTag: "#2RVGJYLC0",
         clanName: "Beta Clan",
+        clanBadge: ":beta:",
         trackedClanSortOrder: 1,
         repRows: [
           {

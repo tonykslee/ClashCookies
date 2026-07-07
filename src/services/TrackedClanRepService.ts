@@ -105,6 +105,7 @@ type TrackedClanRepTimeProfileRow = {
 type TrackedClanRepTimeClanRow = {
   clanTag: string;
   clanName: string | null;
+  clanBadge: string | null;
   trackedClanSortOrder: number;
   repRows: TrackedClanRepTimeProfileRow[];
 };
@@ -114,8 +115,8 @@ type TrackedClanRepTimeReadClient = {
     findMany: (args: {
       orderBy: [{ createdAt: "asc" }, { tag: "asc" }];
       where?: { tag: { in: string[] } };
-      select: { tag: true; name: true; createdAt: true };
-    }) => Promise<Array<{ tag: string; name: string | null; createdAt: Date }>>;
+      select: { tag: true; name: true; clanBadge: true; createdAt: true };
+    }) => Promise<Array<{ tag: string; name: string | null; clanBadge: string | null; createdAt: Date }>>;
   };
   trackedClanRep?: TrackedClanRepReadClient["trackedClanRep"];
   trackedClanRepProfile?: {
@@ -579,7 +580,7 @@ export async function listTrackedClanRepTimeRowsForClanTags(
   const trackedClanRows = await db.trackedClan.findMany({
     orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
     ...(normalizedClanTags.length > 0 ? { where: { tag: { in: normalizedClanTags } } } : {}),
-    select: { tag: true, name: true, createdAt: true },
+    select: { tag: true, name: true, clanBadge: true, createdAt: true },
   });
 
   const canonicalClanRows = trackedClanRows
@@ -589,11 +590,12 @@ export async function listTrackedClanRepTimeRowsForClanTags(
       return {
         clanTag,
         clanName: normalizeDisplayText(row.name),
+        clanBadge: normalizeTrackedClanBadge(row.clanBadge ?? null),
         createdAt: row.createdAt,
       };
-    })
+      })
     .filter(
-      (row): row is { clanTag: string; clanName: string | null; createdAt: Date } =>
+      (row): row is { clanTag: string; clanName: string | null; clanBadge: string | null; createdAt: Date } =>
         Boolean(row),
     );
 
@@ -650,6 +652,7 @@ export async function listTrackedClanRepTimeRowsForClanTags(
   );
 
   const repRowsByClan = new Map<string, TrackedClanRepTimeProfileRow[]>();
+  const clanBadgeByTag = new Map(canonicalClanRows.map((row) => [row.clanTag, row.clanBadge] as const));
   for (const row of repRows) {
     const clanTag = normalizeClanTag(row.clanTag);
     const playerTag = normalizePlayerTag(row.playerTag);
@@ -669,6 +672,7 @@ export async function listTrackedClanRepTimeRowsForClanTags(
     .map((row, index) => ({
       clanTag: row.clanTag,
       clanName: row.clanName,
+      clanBadge: clanBadgeByTag.get(row.clanTag) ?? null,
       trackedClanSortOrder: index,
       repRows: repRowsByClan.get(row.clanTag) ?? [],
     }))
