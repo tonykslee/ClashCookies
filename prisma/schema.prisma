@@ -63,8 +63,8 @@ model TrackedClanRep {
   @@index([playerTag])
 }
 
-model TrackedClanRepProfile {
-  playerTag             String   @id @db.VarChar(16)
+model TrackedClanRepUserProfile {
+  discordUserId         String   @id
   timeZone              String?  @db.VarChar(64)
   updatedByDiscordUserId String?
   createdAt             DateTime @default(now())

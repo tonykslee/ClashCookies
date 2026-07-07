@@ -1,6 +1,6 @@
 import { prisma } from "../prisma";
 import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
-import { normalizePlayerTag, normalizeClanTag } from "./PlayerLinkService";
+import { normalizePlayerTag, normalizeClanTag, normalizeDiscordUserId } from "./PlayerLinkService";
 import { normalizeSyncTimeZone } from "./syncTimeZone";
 
 export type ParsedTrackedClanRepTagInput = {
@@ -24,12 +24,12 @@ export type TrackedClanRepWriteClient = {
   };
 };
 
-type TrackedClanRepProfileWriteClient = {
-  trackedClanRepProfile: {
+type TrackedClanRepUserProfileWriteClient = {
+  trackedClanRepUserProfile: {
     upsert: (args: {
-      where: { playerTag: string };
+      where: { discordUserId: string };
       create: {
-        playerTag: string;
+        discordUserId: string;
         timeZone: string | null;
         updatedByDiscordUserId: string | null;
       };
@@ -38,14 +38,14 @@ type TrackedClanRepProfileWriteClient = {
         updatedByDiscordUserId: string | null;
       };
       select?: {
-        playerTag: true;
+        discordUserId: true;
         timeZone: true;
         updatedByDiscordUserId: true;
         createdAt: true;
         updatedAt: true;
       };
     }) => Promise<{
-      playerTag: string;
+      discordUserId: string;
       timeZone: string | null;
       updatedByDiscordUserId: string | null;
       createdAt: Date;
@@ -85,6 +85,34 @@ type TrackedClanRepReadClient = {
   };
 };
 
+type TrackedClanRepLinkedUserReadClient = {
+  trackedClanRep?: {
+    findMany: (args: {
+      where?: { clanTag?: { in: string[] } } | undefined;
+      orderBy?: Array<{ clanTag?: "asc" | "desc"; playerTag?: "asc" | "desc" }>;
+      select: { playerTag: true };
+    }) => Promise<Array<{ playerTag: string }>>;
+  };
+  playerLink?: {
+    findMany: (args: {
+      where: { playerTag: { in: string[] } };
+      select: {
+        playerTag: true;
+        discordUserId: true;
+        playerName: true;
+        discordUsername: true;
+      };
+    }) => Promise<
+      Array<{
+        playerTag: string;
+        discordUserId: string | null;
+        playerName: string | null;
+        discordUsername: string | null;
+      }>
+    >;
+  };
+};
+
 type TrackedClanRepPlayerTagReadClient = {
   trackedClanRep?: {
     findMany: (args: {
@@ -97,6 +125,13 @@ type TrackedClanRepPlayerTagReadClient = {
 
 type TrackedClanRepTimeProfileRow = {
   playerTag: string;
+  timeZone: string | null;
+  updatedByDiscordUserId: string | null;
+  updatedAt: Date;
+};
+
+type TrackedClanRepUserProfileRow = {
+  discordUserId: string;
   timeZone: string | null;
   updatedByDiscordUserId: string | null;
   updatedAt: Date;
@@ -119,16 +154,24 @@ type TrackedClanRepTimeReadClient = {
     }) => Promise<Array<{ tag: string; name: string | null; clanBadge: string | null; createdAt: Date }>>;
   };
   trackedClanRep?: TrackedClanRepReadClient["trackedClanRep"];
-  trackedClanRepProfile?: {
+  playerLink?: TrackedClanRepLinkedUserReadClient["playerLink"];
+  trackedClanRepUserProfile?: {
     findMany: (args: {
-      where: { playerTag: { in: string[] } };
+      where: { discordUserId: { in: string[] } };
       select: {
-        playerTag: true;
+        discordUserId: true;
         timeZone: true;
         updatedByDiscordUserId: true;
         updatedAt: true;
       };
-    }) => Promise<TrackedClanRepTimeProfileRow[]>;
+    }) => Promise<
+      Array<{
+        discordUserId: string;
+        timeZone: string | null;
+        updatedByDiscordUserId: string | null;
+        updatedAt: Date;
+      }>
+    >;
   };
 };
 
@@ -527,26 +570,200 @@ export async function hasTrackedClanRepAssignmentForPlayerTag(
   return Boolean(row);
 }
 
+/** Purpose: check whether one Discord user is linked to at least one currently configured rep account. */
+export async function hasTrackedClanRepAssignmentForDiscordUserId(
+  discordUserId: string,
+  db: TrackedClanRepLinkedUserReadClient = prisma,
+): Promise<boolean> {
+  const normalizedDiscordUserId = normalizeDiscordUserId(discordUserId);
+  if (!normalizedDiscordUserId || !db.trackedClanRep?.findMany || !db.playerLink?.findMany) {
+    return false;
+  }
+
+  const repTags = await db.trackedClanRep.findMany({
+    select: { playerTag: true },
+  });
+  const normalizedPlayerTags = [
+    ...new Set(repTags.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean)),
+  ];
+  if (normalizedPlayerTags.length === 0) {
+    return false;
+  }
+
+  const linkedRows = await db.playerLink.findMany({
+    where: { playerTag: { in: normalizedPlayerTags } },
+    select: {
+      playerTag: true,
+      discordUserId: true,
+      playerName: true,
+      discordUsername: true,
+    },
+  });
+
+  return linkedRows.some((row) => normalizeDiscordUserId(row.discordUserId) === normalizedDiscordUserId);
+}
+
+async function loadTrackedClanRepTimezoneUserChoices(
+  db: TrackedClanRepLinkedUserReadClient = prisma,
+): Promise<
+  Array<{
+    discordUserId: string;
+    discordUsername: string | null;
+    playerNames: string[];
+    repCount: number;
+  }>
+> {
+  if (!db.trackedClanRep?.findMany || !db.playerLink?.findMany) {
+    return [];
+  }
+
+  const repRows = await db.trackedClanRep.findMany({
+    select: { playerTag: true },
+  });
+  const repTags = [
+    ...new Set(repRows.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean)),
+  ];
+  if (repTags.length === 0) {
+    return [];
+  }
+
+  const linkedRows = await db.playerLink.findMany({
+    where: { playerTag: { in: repTags } },
+    select: {
+      playerTag: true,
+      discordUserId: true,
+      playerName: true,
+      discordUsername: true,
+    },
+  });
+
+  const grouped = new Map<
+    string,
+    { discordUsername: string | null; playerNamesByTag: Map<string, string>; playerTags: Set<string> }
+  >();
+  for (const row of linkedRows) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const discordUserId = normalizeDiscordUserId(row.discordUserId);
+    if (!discordUserId || !playerTag) continue;
+    const entry = grouped.get(discordUserId) ?? {
+      discordUsername: normalizeDisplayText(row.discordUsername),
+      playerNamesByTag: new Map<string, string>(),
+      playerTags: new Set<string>(),
+    };
+    entry.discordUsername = entry.discordUsername ?? normalizeDisplayText(row.discordUsername);
+    const playerName = normalizeDisplayText(row.playerName);
+    if (playerName) {
+      entry.playerNamesByTag.set(playerTag, playerName);
+    }
+    entry.playerTags.add(playerTag);
+    grouped.set(discordUserId, entry);
+  }
+
+  return [...grouped.entries()]
+    .map(([discordUserId, entry]) => ({
+      discordUserId,
+      discordUsername: entry.discordUsername,
+      playerNames: [...entry.playerNamesByTag.values()].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" }),
+      ),
+      repCount: entry.playerTags.size,
+    }))
+    .sort((a, b) => {
+      const leftLabel = (a.discordUsername ?? a.playerNames[0] ?? a.discordUserId).toLowerCase();
+      const rightLabel = (b.discordUsername ?? b.playerNames[0] ?? b.discordUserId).toLowerCase();
+      const byLabel = leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+      if (byLabel !== 0) return byLabel;
+      return a.discordUserId.localeCompare(b.discordUserId, undefined, { sensitivity: "base" });
+    });
+}
+
+function buildTrackedClanRepTimezoneUserChoiceLabel(input: {
+  discordUserId: string;
+  discordUsername: string | null;
+  playerNames: string[];
+  repCount: number;
+}): string {
+  const userLabel = normalizeDisplayText(input.discordUsername) ?? input.playerNames[0] ?? input.discordUserId;
+  const normalizedUserLabel = userLabel.startsWith("@") ? userLabel.slice(1) : userLabel;
+  const repLabel = `${input.repCount} rep${input.repCount === 1 ? "" : "s"}`;
+  const playerLabel =
+    input.playerNames.length > 0 ? input.playerNames.slice(0, 3).join(", ") : "no named reps";
+  return `@${normalizedUserLabel} | ${repLabel} | ${playerLabel}`.slice(0, 100);
+}
+
+function scoreTrackedClanRepTimezoneUserChoice(input: {
+  discordUserId: string;
+  discordUsername: string | null;
+  playerNames: string[];
+  query: string;
+}): number {
+  const queryText = normalizeDisplayText(input.query)?.toLowerCase() ?? "";
+  if (queryText.length === 0) return 3;
+
+  const strippedQuery = queryText.startsWith("@") ? queryText.slice(1) : queryText;
+  const mentionMatch = strippedQuery.match(/^<@!?(\d{15,22})>$/);
+  const queryUserId = normalizeDiscordUserId(mentionMatch?.[1] ?? strippedQuery);
+  if (queryUserId && queryUserId === input.discordUserId) return 0;
+
+  const username = normalizeDisplayText(input.discordUsername)?.toLowerCase() ?? "";
+  if (username.includes(strippedQuery) || input.discordUserId.includes(strippedQuery)) return 2;
+  if (input.playerNames.some((playerName) => playerName.toLowerCase().includes(strippedQuery))) return 2;
+  if (`@${username}`.includes(queryText)) return 2;
+  return 99;
+}
+
+/** Purpose: autocomplete rep-user timezone targets from currently linked rep accounts. */
+export async function autocompleteTrackedClanRepTimezoneUserChoices(
+  query: string,
+  db: TrackedClanRepLinkedUserReadClient = prisma,
+): Promise<{ name: string; value: string }[]> {
+  const choices = await loadTrackedClanRepTimezoneUserChoices(db);
+  if (choices.length === 0) {
+    return [];
+  }
+
+  return choices
+    .map((choice) => ({
+      ...choice,
+      matchRank: scoreTrackedClanRepTimezoneUserChoice({
+        discordUserId: choice.discordUserId,
+        discordUsername: choice.discordUsername,
+        playerNames: choice.playerNames,
+        query,
+      }),
+      label: buildTrackedClanRepTimezoneUserChoiceLabel(choice),
+    }))
+    .filter((choice) => choice.matchRank !== 99)
+    .sort((a, b) => {
+      if (a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+      const byLabel = a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+      if (byLabel !== 0) return byLabel;
+      return a.discordUserId.localeCompare(b.discordUserId, undefined, { sensitivity: "base" });
+    })
+    .slice(0, 25)
+    .map((choice) => ({ name: choice.label, value: choice.discordUserId }));
+}
+
 /** Purpose: store one rep profile timezone row without touching any clan assignments. */
-export async function upsertTrackedClanRepProfileTimezone(
-  db: TrackedClanRepProfileWriteClient,
+export async function upsertTrackedClanRepUserTimezone(
+  db: TrackedClanRepUserProfileWriteClient,
   input: {
-    playerTag: string;
+    discordUserId: string;
     timeZone: string;
     updatedByDiscordUserId?: string | null;
   },
-): Promise<TrackedClanRepTimeProfileRow | null> {
-  const playerTag = normalizePlayerTag(input.playerTag);
+): Promise<TrackedClanRepUserProfileRow | null> {
+  const discordUserId = normalizeDiscordUserId(input.discordUserId);
   const timeZone = normalizeSyncTimeZone(input.timeZone);
-  if (!playerTag || !timeZone) {
+  if (!discordUserId || !timeZone) {
     return null;
   }
 
   const updatedByDiscordUserId = String(input.updatedByDiscordUserId ?? "").trim() || null;
-  const row = await db.trackedClanRepProfile.upsert({
-    where: { playerTag },
+  const row = await db.trackedClanRepUserProfile.upsert({
+    where: { discordUserId },
     create: {
-      playerTag,
+      discordUserId,
       timeZone,
       updatedByDiscordUserId,
     },
@@ -557,7 +774,7 @@ export async function upsertTrackedClanRepProfileTimezone(
   });
 
   return {
-    playerTag: normalizePlayerTag(row.playerTag) || playerTag,
+    discordUserId,
     timeZone: normalizeSyncTimeZone(row.timeZone) ?? timeZone,
     updatedByDiscordUserId: String(row.updatedByDiscordUserId ?? "").trim() || null,
     updatedAt: row.updatedAt,
@@ -569,7 +786,7 @@ export async function listTrackedClanRepTimeRowsForClanTags(
   clanTags: string[] | null | undefined,
   db: TrackedClanRepTimeReadClient = prisma,
 ): Promise<TrackedClanRepTimeClanRow[]> {
-  if (!db.trackedClan?.findMany || !db.trackedClanRep?.findMany || !db.trackedClanRepProfile?.findMany) {
+  if (!db.trackedClan?.findMany || !db.trackedClanRep?.findMany) {
     return [];
   }
 
@@ -593,7 +810,7 @@ export async function listTrackedClanRepTimeRowsForClanTags(
         clanBadge: normalizeTrackedClanBadge(row.clanBadge ?? null),
         createdAt: row.createdAt,
       };
-      })
+    })
     .filter(
       (row): row is { clanTag: string; clanName: string | null; clanBadge: string | null; createdAt: Date } =>
         Boolean(row),
@@ -617,39 +834,59 @@ export async function listTrackedClanRepTimeRowsForClanTags(
   const normalizedPlayerTags = [
     ...new Set(repRows.map((row) => normalizePlayerTag(row.playerTag)).filter(Boolean)),
   ];
-  if (normalizedPlayerTags.length === 0) {
-    return [];
+  const linkedUserIdByPlayerTag = new Map<string, string>();
+  const linkedDiscordUserIds = new Set<string>();
+  if (normalizedPlayerTags.length > 0 && db.playerLink?.findMany) {
+    const linkRows = await db.playerLink.findMany({
+      where: { playerTag: { in: normalizedPlayerTags } },
+      select: {
+        playerTag: true,
+        discordUserId: true,
+        playerName: true,
+        discordUsername: true,
+      },
+    });
+
+    for (const row of linkRows) {
+      const playerTag = normalizePlayerTag(row.playerTag);
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      if (!playerTag || !discordUserId) continue;
+      linkedUserIdByPlayerTag.set(playerTag, discordUserId);
+      linkedDiscordUserIds.add(discordUserId);
+    }
   }
 
-  const profileRows = await db.trackedClanRepProfile.findMany({
-    where: {
-      playerTag: { in: normalizedPlayerTags },
-    },
-    select: {
-      playerTag: true,
-      timeZone: true,
-      updatedByDiscordUserId: true,
-      updatedAt: true,
-    },
-  });
+  const profileByDiscordUserId = new Map<
+    string,
+    {
+      timeZone: string | null;
+      updatedByDiscordUserId: string | null;
+      updatedAt: Date;
+    }
+  >();
+  if (linkedDiscordUserIds.size > 0 && db.trackedClanRepUserProfile?.findMany) {
+    const profileRows = await db.trackedClanRepUserProfile.findMany({
+      where: {
+        discordUserId: { in: [...linkedDiscordUserIds] },
+      },
+      select: {
+        discordUserId: true,
+        timeZone: true,
+        updatedByDiscordUserId: true,
+        updatedAt: true,
+      },
+    });
 
-  const profileByPlayerTag = new Map(
-    profileRows.map((row) => {
-      const playerTag = normalizePlayerTag(row.playerTag);
-      if (!playerTag) {
-        return null;
-      }
-      return [
-        playerTag,
-        {
-          playerTag,
-          timeZone: normalizeSyncTimeZone(row.timeZone) ?? null,
-          updatedByDiscordUserId: String(row.updatedByDiscordUserId ?? "").trim() || null,
-          updatedAt: row.updatedAt,
-        },
-      ] as const;
-    }).filter((entry): entry is readonly [string, TrackedClanRepTimeProfileRow] => Boolean(entry)),
-  );
+    for (const row of profileRows) {
+      const discordUserId = normalizeDiscordUserId(row.discordUserId);
+      if (!discordUserId) continue;
+      profileByDiscordUserId.set(discordUserId, {
+        timeZone: normalizeSyncTimeZone(row.timeZone) ?? null,
+        updatedByDiscordUserId: String(row.updatedByDiscordUserId ?? "").trim() || null,
+        updatedAt: row.updatedAt,
+      });
+    }
+  }
 
   const repRowsByClan = new Map<string, TrackedClanRepTimeProfileRow[]>();
   const clanBadgeByTag = new Map(canonicalClanRows.map((row) => [row.clanTag, row.clanBadge] as const));
@@ -657,12 +894,21 @@ export async function listTrackedClanRepTimeRowsForClanTags(
     const clanTag = normalizeClanTag(row.clanTag);
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!clanTag || !playerTag) continue;
-    const profile = profileByPlayerTag.get(playerTag) ?? {
-      playerTag,
-      timeZone: null,
-      updatedByDiscordUserId: null,
-      updatedAt: new Date(0),
-    };
+    const discordUserId = linkedUserIdByPlayerTag.get(playerTag) ?? null;
+    const profileData = discordUserId ? profileByDiscordUserId.get(discordUserId) : null;
+    const profile: TrackedClanRepTimeProfileRow = profileData
+      ? {
+          playerTag,
+          timeZone: profileData.timeZone,
+          updatedByDiscordUserId: profileData.updatedByDiscordUserId,
+          updatedAt: profileData.updatedAt,
+        }
+      : {
+          playerTag,
+          timeZone: null,
+          updatedByDiscordUserId: null,
+          updatedAt: new Date(0),
+        };
     const bucket = repRowsByClan.get(clanTag) ?? [];
     bucket.push(profile);
     repRowsByClan.set(clanTag, bucket);
