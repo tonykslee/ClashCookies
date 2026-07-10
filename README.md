@@ -33,7 +33,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ### Reporting and visibility
 - Produces matchup, sync, activity, and compliance views for tracked clans.
-- Supports leadership-focused summaries such as inactivity and clan-health snapshots.
+- Supports leadership-focused summaries such as inactivity and clan-health snapshots, including tracked-clan full reports and external active FWA clan snapshots from persisted data.
 - Includes telemetry reporting and scheduled report delivery in Discord.
 
 ### Operational automation
@@ -77,6 +77,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
 - FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.
+- `/potion calc` statelessly estimates upgrade completion timing for builder, research, pet, and clock tower potion boosts.
 - FWAStats feed ingestion is DB-backed (`FwaFeedSyncState`, `FwaClanWarsWatchState`, related current-state tables) with bounded scheduler cadence.
 - Autorole can apply Discord roles and ClashPerk-style nicknames from linked accounts, permanent FWA tracked-clan membership, and guild-managed autorole rules.
 

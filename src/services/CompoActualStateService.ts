@@ -1,5 +1,6 @@
 import type {
   HeatMapRef,
+  FwaClanCatalog,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
   TrackedClan,
@@ -9,6 +10,7 @@ import {
 } from "../helper/compoActualWeight";
 import {
   getCompoActualStateViewLabel,
+  calculateCompoDeviationScore,
   isCompoActualStateDeviationHealthy,
   isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
@@ -96,6 +98,28 @@ export type CompoActualStateTrackedClanComposition = {
   healthy: boolean;
 };
 
+export type CompoActualStateExternalClanComposition = {
+  clanTag: string;
+  clanName: string;
+  displayCounts: {
+    TH18: number | null;
+    TH17: number | null;
+    TH16: number | null;
+    TH15: number | null;
+    TH14: number | null;
+    "<=TH13": number | null;
+  };
+  memberCount: number | null;
+  unresolvedWeightCount: number;
+  estimatedWeight: number | null;
+  sourceSyncedAt: Date | null;
+  sourceAgeMs: number | null;
+  selectedHeatMapRefAvailable: boolean;
+  compositionComplete: boolean;
+  deviationScore: number | null;
+  healthy: boolean;
+};
+
 export type CompoActualStateReadResult = {
   stateRows: string[][] | null;
   contentLines: string[];
@@ -168,6 +192,14 @@ function buildActualStateRow(input: {
 
 function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
   return clan.name?.trim() || clan.tag;
+}
+
+function normalizePositiveCount(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value) || value === null || value === undefined) {
+    return null;
+  }
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : null;
 }
 
 function buildActualViewSummaryLines(
@@ -650,6 +682,161 @@ export async function readTrackedClanCurrentComposition(input: {
       clan.base.memberCount === 50 &&
       isCompoActualStateProjectionComplete(projection) &&
       isCompoActualStateDeviationHealthy(projection.deviationScore),
+  };
+}
+
+/** Purpose: load the persisted catalog-backed composition snapshot for one active FWA clan. */
+export async function readExternalClanCurrentComposition(input: {
+  clanTag: string;
+  now?: Date;
+}): Promise<CompoActualStateExternalClanComposition | null> {
+  const normalizedClanTag = normalizeTag(input.clanTag);
+  if (!normalizedClanTag) {
+    return null;
+  }
+
+  const catalogRow = await prisma.fwaClanCatalog.findFirst({
+    where: { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+    select: {
+      clanTag: true,
+      name: true,
+      th18Count: true,
+      th17Count: true,
+      th16Count: true,
+      th15Count: true,
+      th14Count: true,
+      th13Count: true,
+      th12Count: true,
+      th11Count: true,
+      th10Count: true,
+      th9Count: true,
+      th8Count: true,
+      thLowCount: true,
+      estimatedWeight: true,
+      lastSyncedAt: true,
+    },
+  });
+  if (!catalogRow) {
+    return null;
+  }
+
+  const now = input.now ?? new Date();
+  const sourceSyncedAt =
+    catalogRow.lastSyncedAt instanceof Date && Number.isFinite(catalogRow.lastSyncedAt.getTime())
+      ? catalogRow.lastSyncedAt
+      : null;
+  const sourceAgeMs =
+    sourceSyncedAt === null ? null : Math.max(0, now.getTime() - sourceSyncedAt.getTime());
+  const th18Count = normalizePositiveCount(catalogRow.th18Count);
+  const th17Count = normalizePositiveCount(catalogRow.th17Count);
+  const th16Count = normalizePositiveCount(catalogRow.th16Count);
+  const th15Count = normalizePositiveCount(catalogRow.th15Count);
+  const th14Count = normalizePositiveCount(catalogRow.th14Count);
+  const th13Count = normalizePositiveCount(catalogRow.th13Count);
+  const th12Count = normalizePositiveCount(catalogRow.th12Count);
+  const th11Count = normalizePositiveCount(catalogRow.th11Count);
+  const th10Count = normalizePositiveCount(catalogRow.th10Count);
+  const th9Count = normalizePositiveCount(catalogRow.th9Count);
+  const th8Count = normalizePositiveCount(catalogRow.th8Count);
+  const thLowCount = normalizePositiveCount(catalogRow.thLowCount);
+  const estimatedWeight = toPositiveCompoWeight(catalogRow.estimatedWeight);
+  const countsComplete =
+    th18Count !== null &&
+    th17Count !== null &&
+    th16Count !== null &&
+    th15Count !== null &&
+    th14Count !== null &&
+    th13Count !== null &&
+    th12Count !== null &&
+    th11Count !== null &&
+    th10Count !== null &&
+    th9Count !== null &&
+    th8Count !== null &&
+    thLowCount !== null;
+  const unresolvedWeightCount =
+    [
+      th18Count,
+      th17Count,
+      th16Count,
+      th15Count,
+      th14Count,
+      th13Count,
+      th12Count,
+      th11Count,
+      th10Count,
+      th9Count,
+      th8Count,
+      thLowCount,
+    ].filter((value) => value === null).length + (estimatedWeight === null ? 1 : 0);
+  const memberCount = countsComplete
+    ? th18Count +
+      th17Count +
+      th16Count +
+      th15Count +
+      th14Count +
+      th13Count +
+      th12Count +
+      th11Count +
+      th10Count +
+      th9Count +
+      th8Count +
+      thLowCount
+    : null;
+  const compositionComplete = countsComplete && estimatedWeight !== null;
+  const displayCounts = {
+    TH18: th18Count,
+    TH17: th17Count,
+    TH16: th16Count,
+    TH15: th15Count,
+    TH14: th14Count,
+    "<=TH13":
+      th13Count !== null &&
+      th12Count !== null &&
+      th11Count !== null &&
+      th10Count !== null &&
+      th9Count !== null &&
+      th8Count !== null &&
+      thLowCount !== null
+        ? th13Count + th12Count + th11Count + th10Count + th9Count + th8Count + thLowCount
+        : null,
+  };
+  const selectedHeatMapRef = estimatedWeight !== null
+    ? findHeatMapRefForWeight(await prisma.heatMapRef.findMany({
+        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+      }), estimatedWeight)
+    : null;
+  const deviationScore =
+    compositionComplete && selectedHeatMapRef
+      ? calculateCompoDeviationScore({
+          displayCounts: {
+            TH18: displayCounts.TH18 ?? 0,
+            TH17: displayCounts.TH17 ?? 0,
+            TH16: displayCounts.TH16 ?? 0,
+            TH15: displayCounts.TH15 ?? 0,
+            TH14: displayCounts.TH14 ?? 0,
+            "<=TH13": displayCounts["<=TH13"] ?? 0,
+          },
+          heatMapRef: selectedHeatMapRef,
+        })
+      : null;
+
+  return {
+    clanTag: normalizeTag(catalogRow.clanTag) || normalizedClanTag,
+    clanName: catalogRow.name?.trim() || normalizedClanTag,
+    displayCounts,
+    memberCount,
+    estimatedWeight,
+    sourceSyncedAt,
+    sourceAgeMs,
+    selectedHeatMapRefAvailable: selectedHeatMapRef !== null,
+    compositionComplete,
+    unresolvedWeightCount,
+    deviationScore,
+    healthy:
+      compositionComplete &&
+      memberCount === 50 &&
+      selectedHeatMapRef !== null &&
+      isCompoActualStateDeviationHealthy(deviationScore),
   };
 }
 

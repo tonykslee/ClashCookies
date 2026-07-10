@@ -206,11 +206,12 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
   },
   "clan-health": {
     summary:
-      "Leadership snapshot for one tracked clan using persisted data only.",
+      "Leadership snapshot for one tracked clan or external active FWA clan using persisted data only.",
     details: [
       "Shows a persisted 30-day war-plan compliance summary with violations, distinct violating player accounts, currently linked Discord users involved, and affected/evaluated FWA wars.",
       "Only completed evaluations recorded since violation tracking was enabled are counted; there is no historical backfill.",
       "Shows last-30 ended-war match metrics with an FWA win/loss/BL/MM breakdown plus a BL-inclusive match rate.",
+      "Tracked clans keep the full report; manually entered active FWA clan tags fall back to an external clan view that shows only War Performance and Current Composition from persisted FWAStats data.",
       "Shows a Current Composition section with collapsed TH18, TH17, TH16, TH15, TH14, and <=TH13 counts, N/50 member count, deviation, and persisted source freshness.",
       "Shows inactivity counts from two signals: missed both attacks in at least one of the last 3 ended FWA wars, and last-seen inactivity >= 6 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
@@ -219,6 +220,21 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: [
       "/clan-health tag:2QG2C08UP",
       "/clan-health tag:2QG2C08UP visibility:public",
+    ],
+  },
+  potion: {
+    summary: "Calculate upgrade finish time with immediate potion boosts.",
+    details: [
+      "Use `/potion calc` to estimate when an active upgrade finishes if the selected potions are activated immediately.",
+      "`type` selects builder, research, pet, or clock tower potion behavior, and `num-pots` accepts 1 through 100.",
+      "`time-left` accepts compact or spaced `d`/`h`/`m` durations such as `3d12h45m`, `3d 12h 45m`, `12h30m`, or `45m`.",
+      "Builder potions use 10x for 1 hour per potion; research and pet potions use 24x for 1 hour per potion; clock tower potions use 10x for 30 minutes per potion.",
+      "The calculator is stateless, does not persist inputs, and returns a localized Discord completion timestamp with saved time.",
+    ],
+    examples: [
+      "/potion calc type:builder time-left:2d6h num-pots:2",
+      "/potion calc type:research time-left:5d12h num-pots:3",
+      "/potion calc type:clocktower time-left:7h num-pots:1",
     ],
   },
   repwork: {

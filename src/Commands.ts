@@ -7,6 +7,7 @@ import { TrackedClan } from "./commands/TrackedClan";
 import { Sheet } from "./commands/Sheet";
 import { Compo } from "./commands/Compo";
 import { Post } from "./commands/Post";
+import { Potion } from "./commands/Potion";
 import { CommandRole } from "./commands/CommandRole";
 import { CC } from "./commands/CC";
 import { Fwa } from "./commands/Fwa";
@@ -72,6 +73,7 @@ export const Commands = [
   Force,
   Dump,
   Post,
+  Potion,
   Say,
   Bot,
   Ban,
