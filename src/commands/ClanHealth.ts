@@ -36,6 +36,45 @@ function formatPlayerAccountLabel(count: number): string {
   return count === 1 ? "player account" : "player accounts";
 }
 
+/** Purpose: render a compact freshness label for persisted composition data. */
+function formatCompositionSourceAge(ageMs: number | null): string {
+  if (ageMs === null) return "n/a";
+
+  const totalMinutes = Math.max(0, Math.floor(ageMs / 60_000));
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) {
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${minutes}m`;
+}
+
+/** Purpose: render the compact deviation label used by clan-health composition. */
+function formatCompositionDeviation(composition: ClanHealthSnapshot["composition"]): string {
+  const prefix = composition.healthy ? "✅" : "⚠️";
+  if (composition.deviationScore === null || !composition.selectedHeatMapRefAvailable) {
+    return `${prefix} n/a`;
+  }
+  return Number.isInteger(composition.deviationScore)
+    ? `${prefix} ${composition.deviationScore}`
+    : `${prefix} ${composition.deviationScore.toFixed(1)}`;
+}
+
+/** Purpose: render the current persisted composition spread for tracked clans. */
+function buildCurrentCompositionLines(snapshot: ClanHealthSnapshot): string[] {
+  const composition = snapshot.composition;
+  return [
+    `TH18: **${composition.displayCounts.TH18}** | TH17: **${composition.displayCounts.TH17}** | TH16: **${composition.displayCounts.TH16}** | TH15: **${composition.displayCounts.TH15}** | TH14: **${composition.displayCounts.TH14}** | <=TH13: **${composition.displayCounts["<=TH13"]}**`,
+    `Members: **${composition.memberCount}/50** | Unresolved: **${composition.unresolvedWeightCount}**`,
+    `Deviation: **${formatCompositionDeviation(composition)}**`,
+    `Source age: **${formatCompositionSourceAge(composition.sourceAgeMs)}**`,
+  ];
+}
+
 /** Purpose: render the persisted 30-day war-plan compliance summary for clan-health. */
 function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
   if (!snapshot.warPlanCompliance.hasCompletedEvaluations) {
@@ -55,7 +94,7 @@ function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
 function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
-    .setDescription("Leadership snapshot: persisted war-plan compliance, inactivity, and missing Discord links.")
+    .setDescription("Leadership snapshot: current composition, persisted war-plan compliance, inactivity, and missing Discord links.")
     .addFields(
       {
         name: "War Performance",
@@ -74,6 +113,11 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
             snapshot.warMetrics.endedWarSampleSize
           )}**`,
         ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Current Composition",
+        value: buildCurrentCompositionLines(snapshot).join("\n"),
         inline: false,
       },
       {
@@ -101,7 +145,8 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
 
 export const ClanHealth: Command = {
   name: "clan-health",
-  description: "Leadership snapshot: 30-day war-plan compliance, inactivity, and missing Discord links",
+  description:
+    "Leadership snapshot: current composition, 30-day war-plan compliance, inactivity, and missing Discord links",
   options: [
     {
       name: "tag",

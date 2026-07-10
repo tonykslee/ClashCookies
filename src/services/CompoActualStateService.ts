@@ -9,6 +9,8 @@ import {
 } from "../helper/compoActualWeight";
 import {
   getCompoActualStateViewLabel,
+  isCompoActualStateDeviationHealthy,
+  isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
@@ -18,6 +20,7 @@ import { findHeatMapRefForWeight, getHeatMapRefBandKey } from "../helper/compoHe
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import {
   EMPTY_COMPO_WAR_BUCKET_COUNTS,
+  collapseCompoWarBucketCountsForDisplay,
   type CompoWarBucketCounts,
 } from "../helper/compoWarBucketCounts";
 import {
@@ -77,6 +80,20 @@ export type CompoActualStateContext = {
   latestSourceSyncedAt: Date | null;
   heatMapRefs: HeatMapRef[];
   clans: CompoActualStateClanContext[];
+};
+
+export type CompoActualStateTrackedClanComposition = {
+  clanTag: string;
+  clanName: string;
+  shortName: string | null;
+  displayCounts: ReturnType<typeof collapseCompoWarBucketCountsForDisplay>;
+  memberCount: number;
+  unresolvedWeightCount: number;
+  sourceSyncedAt: Date | null;
+  sourceAgeMs: number | null;
+  selectedHeatMapRefAvailable: boolean;
+  deviationScore: number | null;
+  healthy: boolean;
 };
 
 export type CompoActualStateReadResult = {
@@ -330,15 +347,13 @@ export function maybeLogCompoActualDiagnostics(input: {
 
 export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
 
-/** Purpose: load the persisted ACTUAL compo state snapshot used by both state rendering and advice simulation. */
-export async function loadCompoActualStateContext(
-  guildId?: string | null,
-): Promise<CompoActualStateContext> {
-  const tracked = await prisma.trackedClan.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { tag: true, name: true, shortName: true },
-  });
-  const trackedClanTags = tracked
+async function loadCompoActualStateContextFromTrackedClans(input: {
+  guildId?: string | null;
+  trackedClans: readonly (
+    Pick<TrackedClan, "tag" | "name"> & { shortName?: string | null }
+  )[];
+}): Promise<CompoActualStateContext> {
+  const trackedClanTags = input.trackedClans
     .map((clan) => normalizeTag(clan.tag))
     .filter((tag): tag is string => Boolean(tag));
 
@@ -429,9 +444,9 @@ export async function loadCompoActualStateContext(
           },
           orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
         });
-  const deferredByClanTagPromise = guildId
+  const deferredByClanTagPromise = input.guildId
     ? listOpenDeferredWeightsByClanAndPlayerTags({
-        guildId,
+        guildId: input.guildId,
         clanPlayerTags: trackedClanTags.map((clanTag) => ({
           clanTag,
           playerTags: (membersByClanTag.get(clanTag) ?? []).map(
@@ -488,7 +503,7 @@ export async function loadCompoActualStateContext(
   }
 
   const clans: CompoActualStateClanContext[] = [];
-  for (const clan of tracked) {
+  for (const clan of input.trackedClans) {
     const clanTag = normalizeTag(clan.tag);
     if (!clanTag) continue;
 
@@ -575,6 +590,66 @@ export async function loadCompoActualStateContext(
     latestSourceSyncedAt,
     heatMapRefs,
     clans,
+  };
+}
+
+/** Purpose: load the persisted ACTUAL compo state snapshot used by both state rendering and advice simulation. */
+export async function loadCompoActualStateContext(
+  guildId?: string | null,
+): Promise<CompoActualStateContext> {
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true, shortName: true },
+  });
+  return loadCompoActualStateContextFromTrackedClans({
+    guildId,
+    trackedClans: tracked,
+  });
+}
+
+/** Purpose: load the persisted ACTUAL composition snapshot for one tracked clan only. */
+export async function readTrackedClanCurrentComposition(input: {
+  guildId?: string | null;
+  trackedClan: Pick<TrackedClan, "tag" | "name"> & {
+    shortName?: string | null;
+  };
+  now?: Date;
+}): Promise<CompoActualStateTrackedClanComposition | null> {
+  const context = await loadCompoActualStateContextFromTrackedClans({
+    guildId: input.guildId,
+    trackedClans: [input.trackedClan],
+  });
+  const clan = context.clans[0];
+  if (!clan) {
+    return null;
+  }
+
+  const projection = projectCompoActualStateView({
+    view: "auto",
+    base: clan.base,
+    heatMapRefs: context.heatMapRefs,
+  });
+  const displayCounts = collapseCompoWarBucketCountsForDisplay(clan.base.bucketCounts);
+  const sourceSyncedAt = context.latestSourceSyncedAt;
+  const now = input.now ?? new Date();
+  const sourceAgeMs =
+    sourceSyncedAt === null ? null : Math.max(0, now.getTime() - sourceSyncedAt.getTime());
+
+  return {
+    clanTag: clan.clanTag,
+    clanName: clan.clanName,
+    shortName: clan.shortName,
+    displayCounts,
+    memberCount: clan.base.memberCount,
+    unresolvedWeightCount: clan.base.unresolvedWeightCount,
+    sourceSyncedAt,
+    sourceAgeMs,
+    selectedHeatMapRefAvailable: projection.selectedHeatMapRef !== null,
+    deviationScore: projection.deviationScore ?? null,
+    healthy:
+      clan.base.memberCount === 50 &&
+      isCompoActualStateProjectionComplete(projection) &&
+      isCompoActualStateDeviationHealthy(projection.deviationScore),
   };
 }
 

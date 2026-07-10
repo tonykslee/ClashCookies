@@ -22,6 +22,10 @@ const warPlanHistoryMock = vi.hoisted(() => ({
   getClanLeaderboard: vi.fn(),
 }));
 
+const compositionMock = vi.hoisted(() => ({
+  readTrackedClanCurrentComposition: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -31,6 +35,9 @@ import { ClanHealthSnapshotService } from "../src/services/ClanHealthSnapshotSer
 describe("ClanHealthSnapshotService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    compositionMock.readTrackedClanCurrentComposition.mockResolvedValue(
+      makeCompositionSnapshot(),
+    );
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-09T12:00:00.000Z"));
   });
@@ -40,7 +47,35 @@ describe("ClanHealthSnapshotService", () => {
   });
 
   function createService() {
-    return new ClanHealthSnapshotService(prismaMock as any, warPlanHistoryMock as any);
+    return new ClanHealthSnapshotService(
+      prismaMock as any,
+      compositionMock as any,
+      warPlanHistoryMock as any,
+    );
+  }
+
+  function makeCompositionSnapshot(input?: Partial<Record<string, unknown>>) {
+    return {
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      shortName: null,
+      displayCounts: {
+        TH18: 0,
+        TH17: 0,
+        TH16: 0,
+        TH15: 0,
+        TH14: 0,
+        "<=TH13": 0,
+      },
+      memberCount: 50,
+      unresolvedWeightCount: 0,
+      sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+      sourceAgeMs: 3_600_000,
+      selectedHeatMapRefAvailable: true,
+      deviationScore: 4,
+      healthy: true,
+      ...input,
+    };
   }
 
   it("returns null for non-tracked clan", async () => {
@@ -151,6 +186,11 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.inactiveDays.inactivePlayerCount).toBe(2);
     expect(snapshot?.missingLinks.missingMemberCount).toBe(1);
     expect(snapshot?.missingLinks.observedMemberCount).toBe(3);
+    expect(snapshot?.composition.memberCount).toBe(50);
+    expect(snapshot?.composition.unresolvedWeightCount).toBe(0);
+    expect(snapshot?.composition.selectedHeatMapRefAvailable).toBe(true);
+    expect(snapshot?.composition.deviationScore).toBe(4);
+    expect(snapshot?.composition.sourceAgeMs).toBe(3_600_000);
     expect(snapshot?.warPlanCompliance).toEqual({
       period: "30d",
       hasCompletedEvaluations: true,
@@ -164,6 +204,14 @@ describe("ClanHealthSnapshotService", () => {
       guildId: "guild-1",
       clanTag: "#AAA111",
       period: "30d",
+    });
+    expect(compositionMock.readTrackedClanCurrentComposition).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      trackedClan: expect.objectContaining({
+        tag: "#AAA111",
+        name: "Alpha",
+      }),
+      now: expect.any(Date),
     });
   });
 
