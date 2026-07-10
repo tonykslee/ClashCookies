@@ -6,6 +6,7 @@ import { FwaStatsClient } from "./FwaStatsClient";
 import { FwaClanMatchStatsCurrentSyncService } from "./FwaClanMatchStatsCurrentSyncService";
 import { FwaFeedCursorService } from "./FwaFeedCursorService";
 import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
+import { isActivePollingMode } from "../PollingModeService";
 import { mapWithConcurrency } from "./concurrency";
 import { selectDistributedSweepChunk } from "./sweep";
 import type { FwaSyncResult } from "./types";
@@ -28,12 +29,21 @@ export class FwaClanWarsSyncService {
   private readonly cursor = new FwaFeedCursorService();
 
   /** Purpose: initialize clan-wars sync dependencies. */
-  constructor(private readonly client = new FwaStatsClient()) {}
+  constructor(
+    private readonly client = new FwaStatsClient(),
+    private readonly ownsPollingRuntime = () => isActivePollingMode(process.env),
+  ) {}
 
   /** Purpose: sync one clan war-log scope with bounded stale-row cleanup and content-hash gating. */
   async syncClan(clanTag: string, options?: SyncOptions): Promise<FwaSyncResult> {
     const normalizedClanTag = normalizeFwaTag(clanTag);
     if (!normalizedClanTag) {
+      return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
+    }
+    if (!this.ownsPollingRuntime()) {
+      console.info(
+        `[fwa-feed] job=clan_wars clan=${normalizedClanTag} status=SKIPPED reason=mirror_mode`,
+      );
       return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
     }
     const now = options?.now ?? new Date();

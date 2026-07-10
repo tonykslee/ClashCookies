@@ -504,6 +504,101 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.composition.clanTag).toBe("#EXT444");
   });
 
+  it("renders stale persisted rows and marks stale fallback used when mirror refresh is skipped", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue(null);
+    prismaMock.fwaClanCatalog.findFirst.mockResolvedValue({
+      clanTag: "#EXT555",
+      name: "External Echo",
+    });
+    prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue([
+      {
+        endTime: new Date("2026-03-08T20:00:00.000Z"),
+        result: "WIN",
+        opponentInfo: "FWA",
+        sourceSyncedAt: new Date("2026-03-08T20:00:00.000Z"),
+      },
+    ]);
+    syncStateMock.getState.mockResolvedValue({
+      lastSuccessAt: new Date("2026-03-08T20:00:00.000Z"),
+      lastStatus: "SUCCESS",
+    });
+    warsSyncMock.syncClan.mockResolvedValueOnce({
+      rowCount: 0,
+      changedRowCount: 0,
+      contentHash: null,
+      status: "SKIPPED",
+    });
+    compositionMock.readExternalClanCurrentComposition.mockResolvedValue(
+      makeExternalCompositionSnapshot({
+        clanTag: "#EXT555",
+        clanName: "External Echo",
+      }),
+    );
+
+    const service = createService();
+    const snapshot = await service.getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#EXT555",
+    });
+
+    expect(snapshot?.warPerformance).toMatchObject({
+      recognizedWarRows: 1,
+      refreshAttempted: true,
+      refreshStatus: "skipped",
+      staleFallbackUsed: true,
+    });
+    expect(snapshot?.telemetry).toMatchObject({
+      warRows: 1,
+      recognizedWarRows: 1,
+      refreshAttempted: true,
+      refreshStatus: "skipped",
+      staleFallbackUsed: true,
+    });
+    expect(snapshot?.warPerformance?.sourceAgeMs).toBe(16 * 60 * 60 * 1000);
+  });
+
+  it("renders composition only when mirror refresh is skipped and no persisted rows exist", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue(null);
+    prismaMock.fwaClanCatalog.findFirst.mockResolvedValue({
+      clanTag: "#EXT556",
+      name: "External Foxtrot",
+    });
+    prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue([]);
+    syncStateMock.getState.mockResolvedValue({
+      lastSuccessAt: new Date("2026-03-08T20:00:00.000Z"),
+      lastStatus: "SUCCESS",
+    });
+    warsSyncMock.syncClan.mockResolvedValueOnce({
+      rowCount: 0,
+      changedRowCount: 0,
+      contentHash: null,
+      status: "SKIPPED",
+    });
+    compositionMock.readExternalClanCurrentComposition.mockResolvedValue(
+      makeExternalCompositionSnapshot({
+        clanTag: "#EXT556",
+        clanName: "External Foxtrot",
+      }),
+    );
+
+    const service = createService();
+    const snapshot = await service.getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#EXT556",
+    });
+
+    expect(snapshot?.warPerformance).toBeNull();
+    expect(snapshot?.telemetry).toMatchObject({
+      warRows: 0,
+      recognizedWarRows: 0,
+      refreshAttempted: true,
+      refreshStatus: "skipped",
+      staleFallbackUsed: false,
+    });
+    expect(snapshot?.composition.clanTag).toBe("#EXT556");
+    expect(snapshot?.composition.clanName).toBe("External Foxtrot");
+  });
+
   it("computes rates, inactivity, and missing links for partial war samples", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#AAA111",

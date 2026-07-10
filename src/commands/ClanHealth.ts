@@ -5,6 +5,7 @@ import {
   Client,
   EmbedBuilder,
 } from "discord.js";
+import type { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
@@ -321,19 +322,19 @@ export const ClanHealth: Command = {
         .filter((tag): tag is string => Boolean(tag)),
     );
     const remaining = Math.max(0, 25 - choices.length);
+    const externalQueryClauses: Prisma.FwaClanCatalogWhereInput[] = [];
+    if (rawQuery.length > 0) {
+      externalQueryClauses.push({ name: { contains: rawQuery, mode: "insensitive" } });
+    }
+    if (tagQuery.length > 0) {
+      externalQueryClauses.push({ clanTag: { contains: tagQuery, mode: "insensitive" } });
+    }
     const externalRows =
       remaining > 0
         ? await prisma.fwaClanCatalog.findMany({
             where: {
               NOT: { clanTag: { in: [...trackedTags] } },
-              OR: [
-                ...(rawQuery.length > 0
-                  ? [{ name: { contains: rawQuery, mode: "insensitive" } }]
-                  : []),
-                ...(tagQuery.length > 0
-                  ? [{ clanTag: { contains: tagQuery, mode: "insensitive" } }]
-                  : []),
-              ] as any,
+              ...(externalQueryClauses.length > 0 ? { OR: externalQueryClauses } : {}),
             },
             orderBy: [{ lastSyncedAt: "desc" }, { clanTag: "asc" }],
             take: remaining,
