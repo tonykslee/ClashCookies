@@ -146,7 +146,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
 export const ClanHealth: Command = {
   name: "clan-health",
   description:
-    "Leadership snapshot: current composition, 30-day war-plan compliance, inactivity, and missing Discord links",
+    "Leadership snapshot: composition, war performance, compliance, inactivity, and Discord links",
   options: [
     {
       name: "tag",

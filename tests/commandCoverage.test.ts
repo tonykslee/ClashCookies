@@ -58,6 +58,14 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps every registered root command description within Discord's slash-command limit", () => {
+    const invalid = Commands
+      .map((command) => ({ name: command.name, description: command.description ?? "" }))
+      .filter(({ description }) => description.length < 1 || description.length > 100);
+
+    expect(invalid).toEqual([]);
+  });
+
   it("caps oversized help docs at ten embeds", () => {
     const embeds = buildHelpDetailEmbeds(
       {
