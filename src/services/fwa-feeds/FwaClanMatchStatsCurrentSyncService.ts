@@ -31,7 +31,7 @@ type ClanMatchStatsAccumulator = {
   lastComputedAt: Date;
 };
 
-function classifyOpponentInfo(input: string | null | undefined): OpponentInfoClassification {
+export function classifyOpponentInfo(input: string | null | undefined): OpponentInfoClassification {
   const normalized = normalizeText(input)?.toLowerCase();
   if (!normalized) return "IGNORED";
   if (normalized === "fwa") return "FWA";

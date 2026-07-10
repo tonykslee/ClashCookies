@@ -8,6 +8,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  fwaClanCatalog: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/services/ClanHealthSnapshotService", () => ({
@@ -21,7 +24,10 @@ vi.mock("../src/prisma", () => ({
 }));
 
 import { ClanHealth } from "../src/commands/ClanHealth";
-import type { ClanHealthSnapshot } from "../src/services/ClanHealthSnapshotService";
+import type {
+  ClanHealthExternalSnapshot,
+  ClanHealthTrackedSnapshot,
+} from "../src/services/ClanHealthSnapshotService";
 
 function makeInteraction(tagValue: string) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -46,6 +52,8 @@ function makeInteraction(tagValue: string) {
 describe("/clan-health command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.fwaClanCatalog.findMany.mockReset();
   });
 
   function makeComplianceSnapshot(input: {
@@ -67,8 +75,9 @@ describe("/clan-health command", () => {
     };
   }
 
-  function makeCompositionSnapshot(input?: Partial<ClanHealthSnapshot["composition"]>) {
+  function makeCompositionSnapshot(input?: Partial<ClanHealthTrackedSnapshot["composition"]>) {
     return {
+      viewType: "tracked" as const,
       clanTag: "#AAA111",
       clanName: "Alpha",
       shortName: "A",
@@ -92,17 +101,18 @@ describe("/clan-health command", () => {
   }
 
   function makeSnapshot(
-    overrides: Partial<ClanHealthSnapshot> & {
-      warPlanCompliance?: Partial<ClanHealthSnapshot["warPlanCompliance"]>;
-      warMetrics?: Partial<ClanHealthSnapshot["warMetrics"]>;
-      inactiveWars?: Partial<ClanHealthSnapshot["inactiveWars"]>;
-      inactiveDays?: Partial<ClanHealthSnapshot["inactiveDays"]>;
-      missingLinks?: Partial<ClanHealthSnapshot["missingLinks"]>;
-      composition?: Partial<ClanHealthSnapshot["composition"]>;
-      telemetry?: Partial<ClanHealthSnapshot["telemetry"]>;
+    overrides: Partial<ClanHealthTrackedSnapshot> & {
+      warPlanCompliance?: Partial<ClanHealthTrackedSnapshot["warPlanCompliance"]>;
+      warMetrics?: Partial<ClanHealthTrackedSnapshot["warMetrics"]>;
+      inactiveWars?: Partial<ClanHealthTrackedSnapshot["inactiveWars"]>;
+      inactiveDays?: Partial<ClanHealthTrackedSnapshot["inactiveDays"]>;
+      missingLinks?: Partial<ClanHealthTrackedSnapshot["missingLinks"]>;
+      composition?: Partial<ClanHealthTrackedSnapshot["composition"]>;
+      telemetry?: Partial<ClanHealthTrackedSnapshot["telemetry"]>;
     } = {}
-  ): ClanHealthSnapshot {
+  ): ClanHealthTrackedSnapshot {
     return {
+      viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
       composition: makeCompositionSnapshot(overrides.composition),
@@ -150,14 +160,100 @@ describe("/clan-health command", () => {
       },
       telemetry: {
         warRows: 20,
+        recognizedWarRows: 20,
         participationRows: 100,
         activityRows: 40,
         linkRows: 35,
         compositionMemberCount: 50,
         compositionUnresolvedCount: 0,
+        compositionComplete: true,
         compositionSelectedHeatMapRefAvailable: true,
         compositionDeviationScore: 0,
         compositionSourceAgeMs: 60 * 60 * 1000,
+        warSourceAgeMs: null,
+        refreshAttempted: false,
+        refreshStatus: "not_needed",
+        staleFallbackUsed: false,
+        durationMs: 7,
+        ...overrides.telemetry,
+      },
+    };
+  }
+
+  function makeExternalCompositionSnapshot(
+    input?: Partial<ClanHealthExternalSnapshot["composition"]>
+  ): ClanHealthExternalSnapshot["composition"] {
+    return {
+      clanTag: "#EXT111",
+      clanName: "External Alpha",
+      displayCounts: {
+        TH18: 5,
+        TH17: 7,
+        TH16: 8,
+        TH15: 10,
+        TH14: 9,
+        "<=TH13": 11,
+      },
+      memberCount: 50,
+      unresolvedWeightCount: 0,
+      estimatedWeight: 145000,
+      sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+      sourceAgeMs: 60 * 60 * 1000,
+      selectedHeatMapRefAvailable: true,
+      compositionComplete: true,
+      deviationScore: 0,
+      healthy: true,
+      ...input,
+    };
+  }
+
+  function makeExternalSnapshot(
+    overrides: Partial<ClanHealthExternalSnapshot> & {
+      composition?: Partial<ClanHealthExternalSnapshot["composition"]>;
+      telemetry?: Partial<ClanHealthExternalSnapshot["telemetry"]>;
+    } = {}
+  ): ClanHealthExternalSnapshot {
+    const warPerformance =
+      overrides.warPerformance === null
+        ? null
+        : {
+            windowSize: 30,
+            endedWarSampleSize: 4,
+            recognizedWarRows: 4,
+            fwaMatchCount: 2,
+            fwaWinCount: 1,
+            fwaLossCount: 1,
+            blMatchCount: 1,
+            mmMatchCount: 1,
+            blInclusiveMatchCount: 3,
+            winCount: 2,
+            sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+            sourceAgeMs: 60 * 60 * 1000,
+            refreshAttempted: false,
+            refreshStatus: "not_needed",
+            staleFallbackUsed: false,
+            ...overrides.warPerformance,
+          };
+
+    return {
+      viewType: "external",
+      clanTag: overrides.clanTag ?? "#EXT111",
+      clanName: overrides.clanName ?? "External Alpha",
+      composition: makeExternalCompositionSnapshot(overrides.composition),
+      warPerformance,
+      telemetry: {
+        warRows: 4,
+        recognizedWarRows: 4,
+        compositionMemberCount: 50,
+        compositionUnresolvedCount: 0,
+        compositionComplete: true,
+        compositionSelectedHeatMapRefAvailable: true,
+        compositionDeviationScore: 0,
+        compositionSourceAgeMs: 60 * 60 * 1000,
+        warSourceAgeMs: 60 * 60 * 1000,
+        refreshAttempted: false,
+        refreshStatus: "not_needed",
+        staleFallbackUsed: false,
         durationMs: 7,
         ...overrides.telemetry,
       },
@@ -222,6 +318,71 @@ describe("/clan-health command", () => {
       "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**",
     );
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
+  });
+
+  it("renders an external snapshot with war data and omits tracked-only fields", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeExternalSnapshot({
+        clanTag: "#EXT111",
+        clanName: "External Alpha",
+      }),
+    );
+
+    const interaction = makeInteraction("EXT111");
+    const cocService = { getCurrentWar: vi.fn(), getClan: vi.fn(), getPlayerRaw: vi.fn() };
+    await ClanHealth.run({} as any, interaction as any, cocService as any);
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+    expect(cocService.getClan).not.toHaveBeenCalled();
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const embedJson = payload.embeds[0].toJSON();
+    expect(embedJson.title).toContain("External Clan View");
+    expect(embedJson.fields.map((field: any) => field.name)).toEqual([
+      "War Performance",
+      "Current Composition",
+    ]);
+    expect(String(embedJson.fields[0].value)).toContain("Match rate (last 30 available ended wars)");
+    expect(String(embedJson.fields[1].value)).toContain("Members: **50/50**");
+    expect(String(embedJson.fields[1].value)).toContain("Unresolved: **0**");
+    expect(String(embedJson.fields[1].value)).toContain("Deviation: **\u2705 0**");
+    expect(String(embedJson.fields[1].value)).not.toContain("War Plan Compliance");
+    expect(String(embedJson.fields[1].value)).not.toContain("Inactivity");
+    expect(String(embedJson.fields[1].value)).not.toContain("Discord Links");
+  });
+
+  it("renders an external snapshot without war data using only the composition field", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeExternalSnapshot({
+        clanTag: "#EXT222",
+        clanName: "External Bravo",
+        warPerformance: null,
+        telemetry: {
+          warRows: 0,
+          recognizedWarRows: 0,
+          compositionMemberCount: 50,
+          compositionUnresolvedCount: 0,
+          compositionComplete: true,
+          compositionSelectedHeatMapRefAvailable: true,
+          compositionDeviationScore: 0,
+          compositionSourceAgeMs: 60 * 60 * 1000,
+          warSourceAgeMs: null,
+          refreshAttempted: true,
+          refreshStatus: "failed",
+          staleFallbackUsed: false,
+          durationMs: 7,
+        },
+      }),
+    );
+
+    const interaction = makeInteraction("EXT222");
+    const cocService = { getCurrentWar: vi.fn(), getClan: vi.fn(), getPlayerRaw: vi.fn() };
+    await ClanHealth.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const embedJson = payload.embeds[0].toJSON();
+    expect(embedJson.fields.map((field: any) => field.name)).toEqual(["Current Composition"]);
+    expect(String(embedJson.fields[0].value)).toContain("Members: **50/50**");
   });
 
   it("renders only the no-evaluation compliance message when no completed evaluations exist", async () => {
@@ -505,6 +666,35 @@ describe("/clan-health command", () => {
 
     expect(interaction.respond).toHaveBeenCalledWith([
       { name: "Alpha (#AAA111)", value: "AAA111" },
+    ]);
+  });
+
+  it("prioritizes tracked clans and appends bounded external matches for autocomplete", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { name: "Alpha", tag: "#AAA111" },
+      { name: "Beta", tag: "#BBB222" },
+    ]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#CCC333", name: "Charlie" },
+      { clanTag: "#AAA111", name: "Alpha catalog duplicate" },
+      { clanTag: "#DDD444", name: "Delta" },
+    ]);
+
+    const interaction = makeInteraction("AAA111");
+    interaction.options.getFocused.mockReturnValue({ name: "tag", value: "a" });
+
+    await ClanHealth.autocomplete?.(interaction as any);
+
+    expect(prismaMock.fwaClanCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 23,
+      }),
+    );
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha (#AAA111)", value: "AAA111" },
+      { name: "Beta (#BBB222)", value: "BBB222" },
+      { name: "Charlie (#CCC333) - External", value: "CCC333" },
+      { name: "Delta (#DDD444) - External", value: "DDD444" },
     ]);
   });
 });

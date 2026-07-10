@@ -6,6 +6,9 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn(),
   },
+  fwaClanCatalog: {
+    findFirst: vi.fn(),
+  },
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
@@ -33,6 +36,7 @@ vi.mock("../src/prisma", () => ({
 import {
   CompoActualStateService,
   loadCompoActualStateContext,
+  readExternalClanCurrentComposition,
   readTrackedClanCurrentComposition,
 } from "../src/services/CompoActualStateService";
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
@@ -159,6 +163,7 @@ describe("CompoActualStateService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
+    prismaMock.fwaClanCatalog.findFirst.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
@@ -1008,6 +1013,113 @@ describe("CompoActualStateService", () => {
       expect(result?.memberCount).toBe(50);
       expect(result?.selectedHeatMapRefAvailable).toBe(false);
       expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
+    });
+  });
+
+  describe("external clan composition snapshot", () => {
+    it("collapses catalog counts and selects the matching HeatMapRef from estimated weight", async () => {
+      prismaMock.fwaClanCatalog.findFirst.mockResolvedValue({
+        clanTag: "#EXT111",
+        name: "External Alpha",
+        th18Count: 5,
+        th17Count: 7,
+        th16Count: 8,
+        th15Count: 10,
+        th14Count: 9,
+        th13Count: 4,
+        th12Count: 3,
+        th11Count: 2,
+      th10Count: 1,
+      th9Count: 0,
+      th8Count: 1,
+      thLowCount: 0,
+      estimatedWeight: 145000,
+        lastSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+      });
+      prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 140000,
+        weightMaxInclusive: 150000,
+        th18Count: 5,
+        th17Count: 7,
+        th16Count: 8,
+        th15Count: 10,
+        th14Count: 9,
+        th13Count: 4,
+        th12Count: 3,
+        th11Count: 2,
+        th10OrLowerCount: 2,
+      }),
+    ]);
+
+      const result = await readExternalClanCurrentComposition({
+        clanTag: "ext111",
+        now: new Date("2026-03-09T12:00:00.000Z"),
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.displayCounts).toEqual({
+        TH18: 5,
+        TH17: 7,
+        TH16: 8,
+        TH15: 10,
+        TH14: 9,
+        "<=TH13": 11,
+      });
+      expect(result?.memberCount).toBe(50);
+      expect(result?.estimatedWeight).toBe(145000);
+      expect(result?.sourceAgeMs).toBe(3_600_000);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.deviationScore).toBe(0);
+      expect(result?.unresolvedWeightCount).toBe(0);
+      expect(result?.compositionComplete).toBe(true);
+      expect(result?.healthy).toBe(true);
+    });
+
+    it("preserves known catalog counts and reports n/a when composition data is incomplete", async () => {
+      prismaMock.fwaClanCatalog.findFirst.mockResolvedValue({
+        clanTag: "#EXT222",
+        name: "External Bravo",
+        th18Count: 3,
+        th17Count: null,
+        th16Count: 6,
+        th15Count: 8,
+        th14Count: 9,
+        th13Count: 1,
+        th12Count: 1,
+        th11Count: 1,
+        th10Count: 1,
+        th9Count: 1,
+        th8Count: 1,
+        thLowCount: 1,
+        estimatedWeight: null,
+        lastSyncedAt: null,
+      });
+      prismaMock.heatMapRef.findMany.mockResolvedValue([
+        makeHeatMapRef({
+          weightMinInclusive: 140000,
+          weightMaxInclusive: 150000,
+          th15Count: 50,
+        }),
+      ]);
+
+      const result = await readExternalClanCurrentComposition({
+        clanTag: "#EXT222",
+        now: new Date("2026-03-09T12:00:00.000Z"),
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.displayCounts.TH18).toBe(3);
+      expect(result?.displayCounts.TH17).toBeNull();
+      expect(result?.displayCounts["<=TH13"]).toBe(7);
+      expect(result?.memberCount).toBeNull();
+      expect(result?.unresolvedWeightCount).toBe(2);
+      expect(result?.estimatedWeight).toBeNull();
+      expect(result?.sourceAgeMs).toBeNull();
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.compositionComplete).toBe(false);
       expect(result?.healthy).toBe(false);
     });
   });
