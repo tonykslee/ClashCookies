@@ -36,6 +36,7 @@ import {
   readTrackedClanCurrentComposition,
 } from "../src/services/CompoActualStateService";
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
+import { normalizeClashTagInput } from "../src/helper/clashTag";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -105,13 +106,13 @@ function makePlayerCurrent(input: { playerTag: string; currentWeight: number | n
 
 function makeValidPlayerTag(index: number) {
   const alphabet = "PYLQGRJCUV0289";
-  let value = index + 1;
+  let value = index;
   let encoded = "";
   do {
     encoded = alphabet[value % alphabet.length] + encoded;
-    value = Math.floor(value / alphabet.length) - 1;
-  } while (value >= 0);
-  return `#${encoded}`;
+    value = Math.floor(value / alphabet.length);
+  } while (value > 0);
+  return `#PPPP${encoded}`;
 }
 
 function makeWarFallback(input: {
@@ -143,6 +144,18 @@ function makeOpenDeferment(input: {
 }
 
 describe("CompoActualStateService", () => {
+  it("generates valid unique Clash tags for the test index range", () => {
+    const tags = Array.from({ length: 50 }, (_, index) => makeValidPlayerTag(index));
+    const normalizedTags = tags.map((tag) => normalizeClashTagInput(tag));
+
+    expect(new Set(tags).size).toBe(50);
+    expect(new Set(normalizedTags).size).toBe(50);
+    for (const tag of tags) {
+      expect(tag).toMatch(/^#[PYLQGRJCUV0289]{4,15}$/);
+      expect(normalizeClashTagInput(tag)).toBe(tag);
+    }
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
