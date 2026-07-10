@@ -33,7 +33,10 @@ vi.mock("../src/prisma", () => ({
 import {
   CompoActualStateService,
   loadCompoActualStateContext,
+  readTrackedClanCurrentComposition,
 } from "../src/services/CompoActualStateService";
+import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
+import { normalizeClashTagInput } from "../src/helper/clashTag";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -103,13 +106,13 @@ function makePlayerCurrent(input: { playerTag: string; currentWeight: number | n
 
 function makeValidPlayerTag(index: number) {
   const alphabet = "PYLQGRJCUV0289";
-  let value = index + 1;
+  let value = index;
   let encoded = "";
   do {
     encoded = alphabet[value % alphabet.length] + encoded;
-    value = Math.floor(value / alphabet.length) - 1;
-  } while (value >= 0);
-  return `#${encoded}`;
+    value = Math.floor(value / alphabet.length);
+  } while (value > 0);
+  return `#PPPP${encoded}`;
 }
 
 function makeWarFallback(input: {
@@ -141,6 +144,18 @@ function makeOpenDeferment(input: {
 }
 
 describe("CompoActualStateService", () => {
+  it("generates valid unique Clash tags for the test index range", () => {
+    const tags = Array.from({ length: 50 }, (_, index) => makeValidPlayerTag(index));
+    const normalizedTags = tags.map((tag) => normalizeClashTagInput(tag));
+
+    expect(new Set(tags).size).toBe(50);
+    expect(new Set(normalizedTags).size).toBe(50);
+    for (const tag of tags) {
+      expect(tag).toMatch(/^#[PYLQGRJCUV0289]{4,15}$/);
+      expect(normalizeClashTagInput(tag)).toBe(tag);
+    }
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
@@ -817,5 +832,183 @@ describe("CompoActualStateService", () => {
     expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
       "deltaByBucketNull=true",
     );
+  });
+
+  describe("tracked clan composition snapshot", () => {
+    async function loadComposition(input: {
+      members: Array<{
+        clanTag: string;
+        playerTag: string;
+        weight: number;
+        sourceSyncedAt?: Date;
+      }>;
+      heatMapRefs: ReturnType<typeof makeHeatMapRef>[];
+      now?: Date;
+    }) {
+      prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(input.members);
+      prismaMock.heatMapRef.findMany.mockResolvedValue(input.heatMapRefs);
+      prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+      prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+      prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
+      prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+
+      return readTrackedClanCurrentComposition({
+        guildId: "guild-1",
+        trackedClan: makeTrackedClan("#AAA111", "Alpha Clan"),
+        now: input.now ?? new Date("2026-03-09T12:00:00.000Z"),
+      });
+    }
+
+    it("loads one tracked clan without loading the full tracked-clan list", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 150000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 7_400_000,
+            weightMaxInclusive: 7_600_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result).not.toBeNull();
+      expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+      expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { clanTag: { in: ["#AAA111"] } },
+        }),
+      );
+      expect(result?.memberCount).toBe(50);
+      expect(result?.displayCounts.TH15).toBe(50);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.deviationScore).toBe(0);
+      expect(result?.healthy).toBe(true);
+      expect(result?.sourceAgeMs).toBe(3_600_000);
+    });
+
+    it("marks a healthy 50/50 roster with a shared deviation at or below the threshold", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 150000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 7_400_000,
+            weightMaxInclusive: 7_600_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.memberCount).toBe(50);
+      expect(result?.unresolvedWeightCount).toBe(0);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.deviationScore).toBe(0);
+      expect(result?.healthy).toBe(true);
+    });
+
+    it("marks a complete roster with a large deviation as unhealthy", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 175000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 8_700_000,
+            weightMaxInclusive: 8_900_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.memberCount).toBe(50);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.deviationScore).toBeGreaterThan(COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD);
+      expect(result?.healthy).toBe(false);
+    });
+
+    it("keeps an underfilled roster unhealthy even when deviation is low", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 48 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 150000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 7_000_000,
+            weightMaxInclusive: 7_600_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.memberCount).toBe(48);
+      expect(result?.unresolvedWeightCount).toBe(0);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.healthy).toBe(false);
+      expect(result?.displayCounts.TH15).toBe(48);
+    });
+
+    it("keeps resolved counts when one member weight is unresolved", async () => {
+      const result = await loadComposition({
+        members: [
+          {
+            clanTag: "#AAA111",
+            playerTag: makeValidPlayerTag(0),
+            weight: 0,
+            sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+          },
+          ...Array.from({ length: 49 }, (_, index) => ({
+            clanTag: "#AAA111",
+            playerTag: makeValidPlayerTag(index + 1),
+            weight: 150000,
+            sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+          })),
+        ],
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 7_200_000,
+            weightMaxInclusive: 7_600_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.memberCount).toBe(50);
+      expect(result?.unresolvedWeightCount).toBe(1);
+      expect(result?.displayCounts.TH15).toBe(49);
+      expect(result?.selectedHeatMapRefAvailable).toBe(true);
+      expect(result?.healthy).toBe(false);
+    });
+
+    it("shows n/a when no valid HeatMapRef can be selected", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 150000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [],
+      });
+
+      expect(result?.memberCount).toBe(50);
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
+    });
   });
 });

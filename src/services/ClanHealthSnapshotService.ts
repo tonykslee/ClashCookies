@@ -2,6 +2,10 @@ import { prisma } from "../prisma";
 import { normalizeClashTagInput } from "../helper/clashTag";
 import { normalizeDiscordUserId } from "./PlayerLinkService";
 import {
+  readTrackedClanCurrentComposition,
+  type CompoActualStateTrackedClanComposition,
+} from "./CompoActualStateService";
+import {
   WarPlanViolationHistoryService,
   type WarPlanViolationHistoryClanLeaderboardResult,
 } from "./WarPlanViolationHistoryService";
@@ -9,6 +13,7 @@ import {
 export type ClanHealthSnapshot = {
   clanTag: string;
   clanName: string;
+  composition: CompoActualStateTrackedClanComposition;
   warPlanCompliance: {
     period: "30d";
     hasCompletedEvaluations: boolean;
@@ -51,6 +56,11 @@ export type ClanHealthSnapshot = {
     participationRows: number;
     activityRows: number;
     linkRows: number;
+    compositionMemberCount: number;
+    compositionUnresolvedCount: number;
+    compositionSelectedHeatMapRefAvailable: boolean;
+    compositionDeviationScore: number | null;
+    compositionSourceAgeMs: number | null;
     durationMs: number;
   };
 };
@@ -168,6 +178,11 @@ export class ClanHealthSnapshotService {
   /** Purpose: initialize the snapshot service with explicit persisted-history dependencies. */
   constructor(
     private readonly db = prisma,
+    private readonly compoActualStateService: {
+      readTrackedClanCurrentComposition: typeof readTrackedClanCurrentComposition;
+    } = {
+      readTrackedClanCurrentComposition,
+    },
     private readonly warPlanViolationHistoryService: Pick<
       WarPlanViolationHistoryService,
       "getClanLeaderboard"
@@ -203,7 +218,7 @@ export class ClanHealthSnapshotService {
 
     const trackedClan = await this.db.trackedClan.findFirst({
       where: { tag: { equals: normalizedTag, mode: "insensitive" } },
-      select: { tag: true, name: true },
+      select: { tag: true, name: true, shortName: true },
     });
     if (!trackedClan) return null;
 
@@ -211,8 +226,14 @@ export class ClanHealthSnapshotService {
     const canonicalClanName = String(trackedClan.name ?? "").trim() || canonicalClanTag;
     const staleCutoff = new Date(Date.now() - inactiveStaleHours * 60 * 60 * 1000);
     const inactiveCutoff = new Date(Date.now() - inactiveDaysThreshold * 24 * 60 * 60 * 1000);
+    const compositionNow = new Date();
+    const compositionPromise = this.compoActualStateService.readTrackedClanCurrentComposition({
+      guildId: input.guildId,
+      trackedClan,
+      now: compositionNow,
+    });
 
-    const [warRows, distinctFwaWars, activityRows, warPlanLeaderboard] = await Promise.all([
+    const [warRows, distinctFwaWars, activityRows, warPlanLeaderboard, composition] = await Promise.all([
       this.db.clanWarHistory.findMany({
         where: {
           clanTag: canonicalClanTag,
@@ -245,7 +266,11 @@ export class ClanHealthSnapshotService {
         clanTag: canonicalClanTag,
         period: WAR_PLAN_COMPLIANCE_PERIOD,
       }),
+      compositionPromise,
     ]);
+    if (!composition) {
+      return null;
+    }
 
     const selectedWarIds = distinctFwaWars
       .slice(0, inactiveWarWindowSize)
@@ -292,12 +317,13 @@ export class ClanHealthSnapshotService {
     const warPlanCompliance = buildWarPlanComplianceSummary(warPlanLeaderboard);
 
     console.info(
-      `[clan-health] guild=${input.guildId} clan=${canonicalClanTag} war_rows=${warRows.length} participation_rows=${participationRows.length} activity_rows=${activityRows.length} link_rows=${linkedRows.length} compliance_evaluated_wars=${warPlanCompliance.evaluatedWarCount} compliance_affected_wars=${warPlanCompliance.affectedWarCount} compliance_violations=${warPlanCompliance.violationCount} compliance_players=${warPlanCompliance.distinctPlayerCount} compliance_discord_users=${warPlanCompliance.distinctCurrentDiscordUserCount} duration_ms=${durationMs}`
+      `[clan-health] guild=${input.guildId} clan=${canonicalClanTag} war_rows=${warRows.length} participation_rows=${participationRows.length} activity_rows=${activityRows.length} link_rows=${linkedRows.length} composition_member_count=${composition.memberCount} composition_unresolved_count=${composition.unresolvedWeightCount} composition_selected_heatmapref=${composition.selectedHeatMapRefAvailable ? "true" : "false"} composition_deviation=${composition.deviationScore ?? "n/a"} composition_source_age_ms=${composition.sourceAgeMs ?? "n/a"} compliance_evaluated_wars=${warPlanCompliance.evaluatedWarCount} compliance_affected_wars=${warPlanCompliance.affectedWarCount} compliance_violations=${warPlanCompliance.violationCount} compliance_players=${warPlanCompliance.distinctPlayerCount} compliance_discord_users=${warPlanCompliance.distinctCurrentDiscordUserCount} duration_ms=${durationMs}`
     );
 
     return {
       clanTag: canonicalClanTag,
       clanName: canonicalClanName,
+      composition,
       warPlanCompliance,
       warMetrics,
       inactiveWars: {
@@ -313,6 +339,11 @@ export class ClanHealthSnapshotService {
         participationRows: participationRows.length,
         activityRows: activityRows.length,
         linkRows: linkedRows.length,
+        compositionMemberCount: composition.memberCount,
+        compositionUnresolvedCount: composition.unresolvedWeightCount,
+        compositionSelectedHeatMapRefAvailable: composition.selectedHeatMapRefAvailable,
+        compositionDeviationScore: composition.deviationScore,
+        compositionSourceAgeMs: composition.sourceAgeMs,
         durationMs,
       },
     };

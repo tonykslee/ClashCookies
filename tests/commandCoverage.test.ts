@@ -58,6 +58,14 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps every registered root command description within Discord's slash-command limit", () => {
+    const invalid = Commands
+      .map((command) => ({ name: command.name, description: command.description ?? "" }))
+      .filter(({ description }) => description.length < 1 || description.length > 100);
+
+    expect(invalid).toEqual([]);
+  });
+
   it("caps oversized help docs at ten embeds", () => {
     const embeds = buildHelpDetailEmbeds(
       {
@@ -376,6 +384,10 @@ describe("command coverage", () => {
     expect(clanHealthHelpText).toContain("Only completed evaluations recorded since violation tracking was enabled are counted");
     expect(clanHealthHelpText).toContain("FWA win/loss/BL/MM breakdown");
     expect(clanHealthHelpText).toContain("BL-inclusive match rate");
+    expect(clanHealthHelpText).toContain("Current Composition section");
+    expect(clanHealthHelpText).toContain("collapsed TH18, TH17, TH16, TH15, TH14, and <=TH13 counts");
+    expect(clanHealthHelpText).toContain("N/50 member count");
+    expect(clanHealthHelpText).toContain("persisted source freshness");
     expect(clanHealthHelpText).toContain("missed both attacks in at least one of the last 3 ended FWA wars");
     expect(clanHealthHelpText).toContain("last-seen inactivity >= 6 days");
   });
