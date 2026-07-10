@@ -697,4 +697,51 @@ describe("/clan-health command", () => {
       { name: "Delta (#DDD444) - External", value: "DDD444" },
     ]);
   });
+
+  it("matches external clan names with the raw query and tag text with normalized Clash tags", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanCatalog.findMany
+      .mockResolvedValueOnce([{ clanTag: "#ROCKY", name: "Rocky Road" }])
+      .mockResolvedValueOnce([{ clanTag: "#PY0L", name: "Tag Match" }]);
+
+    const nameInteraction = makeInteraction("AAA111");
+    nameInteraction.options.getFocused.mockReturnValue({ name: "tag", value: "Rocky Road" });
+    await ClanHealth.autocomplete?.(nameInteraction as any);
+
+    expect(prismaMock.fwaClanCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              name: { contains: "rocky road", mode: "insensitive" },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(nameInteraction.respond).toHaveBeenCalledWith([
+      { name: "Rocky Road (#R0CKY) - External", value: "R0CKY" },
+    ]);
+
+    prismaMock.fwaClanCatalog.findMany.mockClear();
+    const tagInteraction = makeInteraction("AAA111");
+    tagInteraction.options.getFocused.mockReturnValue({ name: "tag", value: "PYO" });
+
+    await ClanHealth.autocomplete?.(tagInteraction as any);
+
+    expect(prismaMock.fwaClanCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              clanTag: { contains: "py0", mode: "insensitive" },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(tagInteraction.respond).toHaveBeenCalledWith([
+      { name: "Tag Match (#PY0L) - External", value: "PY0L" },
+    ]);
+  });
 });

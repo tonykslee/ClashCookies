@@ -13,6 +13,7 @@ import {
   type WarPlanViolationHistoryClanLeaderboardResult,
 } from "./WarPlanViolationHistoryService";
 import { FwaClanWarsSyncService } from "./fwa-feeds/FwaClanWarsSyncService";
+import { FwaFeedSyncStateService } from "./fwa-feeds/FwaFeedSyncStateService";
 import { classifyOpponentInfo } from "./fwa-feeds/FwaClanMatchStatsCurrentSyncService";
 
 const EXTERNAL_WAR_REFRESH_MINIMUM_INTERVAL_MS = 15 * 60 * 1000;
@@ -217,6 +218,17 @@ function computeActivityAndLinkMetrics(input: {
   };
 }
 
+function getLatestValidDate(...candidates: Array<Date | null | undefined>): Date | null {
+  let latest: Date | null = null;
+  for (const candidate of candidates) {
+    if (!(candidate instanceof Date) || !Number.isFinite(candidate.getTime())) continue;
+    if (!latest || candidate.getTime() > latest.getTime()) {
+      latest = candidate;
+    }
+  }
+  return latest;
+}
+
 export const computeWarMetricsForTest = computeWarMetrics;
 export const computeInactiveWarsPlayerCountForTest = computeInactiveWarsPlayerCount;
 export const computeActivityAndLinkMetricsForTest = computeActivityAndLinkMetrics;
@@ -236,6 +248,7 @@ export class ClanHealthSnapshotService {
       WarPlanViolationHistoryService,
       "getClanLeaderboard"
     > = new WarPlanViolationHistoryService(),
+    private readonly feedSyncStateService: Pick<FwaFeedSyncStateService, "getState"> = new FwaFeedSyncStateService(),
     private readonly clanWarsSyncService: Pick<FwaClanWarsSyncService, "syncClan"> = new FwaClanWarsSyncService()
   ) {}
 
@@ -401,6 +414,11 @@ export class ClanHealthSnapshotService {
       viewType: "tracked",
       warRows: warRows.length,
       recognizedWarRows: warRows.length,
+      complianceEvaluatedWarCount: warPlanCompliance.evaluatedWarCount,
+      complianceAffectedWarCount: warPlanCompliance.affectedWarCount,
+      complianceViolationCount: warPlanCompliance.violationCount,
+      compliancePlayerCount: warPlanCompliance.distinctPlayerCount,
+      complianceDiscordUserCount: warPlanCompliance.distinctCurrentDiscordUserCount,
       compositionMemberCount: composition.memberCount,
       compositionUnresolvedCount: composition.unresolvedWeightCount,
       compositionComplete: composition.unresolvedWeightCount === 0,
@@ -539,6 +557,12 @@ export class ClanHealthSnapshotService {
           sourceSyncedAt: true,
         },
       });
+    const loadSyncState = async () =>
+      this.feedSyncStateService.getState({
+        feedType: "CLAN_WARS",
+        scopeType: "CLAN_TAG",
+        scopeKey: input.clanTag,
+      });
 
     const getNewestSourceSyncedAt = (rows: readonly { sourceSyncedAt: Date | null }[]) =>
       rows.reduce<Date | null>((latest, row) => {
@@ -548,12 +572,17 @@ export class ClanHealthSnapshotService {
         }
         return latest;
       }, null);
+    const getEffectiveVerificationAt = (
+      rows: readonly { sourceSyncedAt: Date | null }[],
+      lastSuccessAt: Date | null | undefined,
+    ) => getLatestValidDate(getNewestSourceSyncedAt(rows), lastSuccessAt ?? null);
 
     let rows = await loadRows();
-    let newestSourceSyncedAt = getNewestSourceSyncedAt(rows);
+    let syncState = await loadSyncState();
+    let effectiveVerificationAt = getEffectiveVerificationAt(rows, syncState?.lastSuccessAt);
     const isFresh =
-      newestSourceSyncedAt !== null &&
-      input.now.getTime() - newestSourceSyncedAt.getTime() <= EXTERNAL_WAR_FRESHNESS_WINDOW_MS;
+      effectiveVerificationAt !== null &&
+      input.now.getTime() - effectiveVerificationAt.getTime() <= EXTERNAL_WAR_FRESHNESS_WINDOW_MS;
 
     let refreshAttempted = false;
     let refreshStatus: ClanHealthSnapshotTelemetry["refreshStatus"] = "not_needed";
@@ -570,7 +599,8 @@ export class ClanHealthSnapshotService {
         if (syncResult.status === "SUCCESS" || syncResult.status === "NOOP") {
           refreshStatus = syncResult.status === "SUCCESS" ? "success" : "noop";
           rows = await loadRows();
-          newestSourceSyncedAt = getNewestSourceSyncedAt(rows);
+          syncState = await loadSyncState();
+          effectiveVerificationAt = getEffectiveVerificationAt(rows, syncState?.lastSuccessAt);
         } else {
           refreshStatus = "skipped";
           staleFallbackUsed = rows.length > 0;
@@ -589,7 +619,9 @@ export class ClanHealthSnapshotService {
       .filter((row) => row.classification !== "IGNORED")
       .slice(0, EXTERNAL_WAR_SAMPLE_LIMIT);
     const warSourceAgeMs =
-      newestSourceSyncedAt === null ? null : Math.max(0, input.now.getTime() - newestSourceSyncedAt.getTime());
+      effectiveVerificationAt === null
+        ? null
+        : Math.max(0, input.now.getTime() - effectiveVerificationAt.getTime());
 
     if (recognizedRows.length === 0) {
       return {
@@ -645,7 +677,7 @@ export class ClanHealthSnapshotService {
       mmMatchCount: summary.mmMatchCount,
       blInclusiveMatchCount: summary.fwaMatchCount + summary.blMatchCount,
       winCount: summary.winCount,
-      sourceSyncedAt: newestSourceSyncedAt,
+      sourceSyncedAt: effectiveVerificationAt,
       sourceAgeMs: warSourceAgeMs,
       refreshAttempted,
       refreshStatus,
@@ -671,6 +703,11 @@ export class ClanHealthSnapshotService {
     viewType: ClanHealthSnapshot["viewType"];
     warRows: number;
     recognizedWarRows: number | null;
+    complianceEvaluatedWarCount?: number;
+    complianceAffectedWarCount?: number;
+    complianceViolationCount?: number;
+    compliancePlayerCount?: number;
+    complianceDiscordUserCount?: number;
     compositionMemberCount: number | null;
     compositionUnresolvedCount: number | null;
     compositionComplete: boolean | null;
@@ -691,6 +728,21 @@ export class ClanHealthSnapshotService {
         `view_type=${input.viewType}`,
         `war_rows=${input.warRows}`,
         `recognized_war_rows=${input.recognizedWarRows ?? "n/a"}`,
+        input.complianceEvaluatedWarCount !== undefined
+          ? `compliance_evaluated_wars=${input.complianceEvaluatedWarCount}`
+          : null,
+        input.complianceAffectedWarCount !== undefined
+          ? `compliance_affected_wars=${input.complianceAffectedWarCount}`
+          : null,
+        input.complianceViolationCount !== undefined
+          ? `compliance_violations=${input.complianceViolationCount}`
+          : null,
+        input.compliancePlayerCount !== undefined
+          ? `compliance_players=${input.compliancePlayerCount}`
+          : null,
+        input.complianceDiscordUserCount !== undefined
+          ? `compliance_discord_users=${input.complianceDiscordUserCount}`
+          : null,
         `composition_member_count=${input.compositionMemberCount ?? "n/a"}`,
         `composition_unresolved_count=${input.compositionUnresolvedCount ?? "n/a"}`,
         `composition_complete=${input.compositionComplete === null ? "n/a" : input.compositionComplete ? "true" : "false"}`,
@@ -702,7 +754,9 @@ export class ClanHealthSnapshotService {
         `refresh_status=${input.refreshStatus}`,
         `stale_fallback_used=${input.staleFallbackUsed ? "true" : "false"}`,
         `duration_ms=${input.durationMs}`,
-      ].join(" "),
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" "),
     );
   }
 }

@@ -215,7 +215,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
     .setFooter({ text: `${snapshot.clanTag} • Deterministic DB snapshot` });
 }
 
-function buildTrackedClanAutocompleteChoices(query: string) {
+function buildTrackedClanAutocompleteChoices(input: { nameQuery: string; tagQuery: string }) {
   return prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { name: true, tag: true },
@@ -230,7 +230,11 @@ function buildTrackedClanAutocompleteChoices(query: string) {
       .filter((choice) => {
         const name = choice.name.toLowerCase();
         const value = choice.value.toLowerCase();
-        return query.length === 0 || name.includes(query) || value.includes(query);
+        const hasQuery = input.nameQuery.length > 0 || input.tagQuery.length > 0;
+        if (!hasQuery) return true;
+        const nameMatches = input.nameQuery.length > 0 && name.includes(input.nameQuery);
+        const tagMatches = input.tagQuery.length > 0 && value.includes(input.tagQuery);
+        return nameMatches || tagMatches;
       });
 
     return { tracked, choices };
@@ -300,9 +304,13 @@ export const ClanHealth: Command = {
       return;
     }
 
-    const query = normalizeClanTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
-    const { tracked, choices } = await buildTrackedClanAutocompleteChoices(query);
-    if (query.length === 0) {
+    const rawQuery = String(focused.value ?? "").trim().toLowerCase();
+    const tagQuery = normalizeClanTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
+    const { tracked, choices } = await buildTrackedClanAutocompleteChoices({
+      nameQuery: rawQuery,
+      tagQuery,
+    });
+    if (rawQuery.length === 0 && tagQuery.length === 0) {
       await interaction.respond(choices.slice(0, 25));
       return;
     }
@@ -319,9 +327,13 @@ export const ClanHealth: Command = {
             where: {
               NOT: { clanTag: { in: [...trackedTags] } },
               OR: [
-                { clanTag: { contains: query, mode: "insensitive" } },
-                { name: { contains: query, mode: "insensitive" } },
-              ],
+                ...(rawQuery.length > 0
+                  ? [{ name: { contains: rawQuery, mode: "insensitive" } }]
+                  : []),
+                ...(tagQuery.length > 0
+                  ? [{ clanTag: { contains: tagQuery, mode: "insensitive" } }]
+                  : []),
+              ] as any,
             },
             orderBy: [{ lastSyncedAt: "desc" }, { clanTag: "asc" }],
             take: remaining,

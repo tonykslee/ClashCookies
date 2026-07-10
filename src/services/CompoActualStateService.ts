@@ -740,6 +740,19 @@ export async function readExternalClanCurrentComposition(input: {
   const th8Count = normalizePositiveCount(catalogRow.th8Count);
   const thLowCount = normalizePositiveCount(catalogRow.thLowCount);
   const estimatedWeight = toPositiveCompoWeight(catalogRow.estimatedWeight);
+  const countsComplete =
+    th18Count !== null &&
+    th17Count !== null &&
+    th16Count !== null &&
+    th15Count !== null &&
+    th14Count !== null &&
+    th13Count !== null &&
+    th12Count !== null &&
+    th11Count !== null &&
+    th10Count !== null &&
+    th9Count !== null &&
+    th8Count !== null &&
+    thLowCount !== null;
   const unresolvedWeightCount =
     [
       th18Count,
@@ -755,35 +768,21 @@ export async function readExternalClanCurrentComposition(input: {
       th8Count,
       thLowCount,
     ].filter((value) => value === null).length + (estimatedWeight === null ? 1 : 0);
-  const compositionComplete =
-    th18Count !== null &&
-    th17Count !== null &&
-    th16Count !== null &&
-    th15Count !== null &&
-    th14Count !== null &&
-    th13Count !== null &&
-    th12Count !== null &&
-    th11Count !== null &&
-    th10Count !== null &&
-    th9Count !== null &&
-    th8Count !== null &&
-    thLowCount !== null &&
-    estimatedWeight !== null;
-  const memberCount =
-    compositionComplete === true
-      ? th18Count +
-        th17Count +
-        th16Count +
-        th15Count +
-        th14Count +
-        th13Count +
-        th12Count +
-        th11Count +
-        th10Count +
-        th9Count +
-        th8Count +
-        thLowCount
-      : null;
+  const memberCount = countsComplete
+    ? th18Count +
+      th17Count +
+      th16Count +
+      th15Count +
+      th14Count +
+      th13Count +
+      th12Count +
+      th11Count +
+      th10Count +
+      th9Count +
+      th8Count +
+      thLowCount
+    : null;
+  const compositionComplete = countsComplete && estimatedWeight !== null;
   const displayCounts = {
     TH18: th18Count,
     TH17: th17Count,
@@ -801,7 +800,7 @@ export async function readExternalClanCurrentComposition(input: {
         ? th13Count + th12Count + th11Count + th10Count + th9Count + th8Count + thLowCount
         : null,
   };
-  const selectedHeatMapRef = estimatedWeight
+  const selectedHeatMapRef = estimatedWeight !== null
     ? findHeatMapRefForWeight(await prisma.heatMapRef.findMany({
         orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
       }), estimatedWeight)
