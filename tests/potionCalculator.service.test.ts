@@ -60,6 +60,20 @@ describe("PotionCalculatorService", () => {
     });
   });
 
+  it("rejects an invalid now date before building the completion timestamp", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "1h",
+      numPots: 1,
+      now: new Date("invalid"),
+    });
+
+    expect(result).toEqual({
+      kind: "invalid",
+      message: POTION_TIME_LEFT_INVALID_MESSAGE,
+    });
+  });
+
   it("uses the builder potion configuration to finish a 54h upgrade in 36h with 2 potions", () => {
     const result = calculatePotionCompletion({
       type: "builder",
@@ -201,5 +215,42 @@ describe("PotionCalculatorService", () => {
       );
       expect(result.completionAt.toISOString()).toBe("2026-07-01T12:01:15.000Z");
     }
+  });
+
+  it("rounds Discord timestamps upward when the completion time has non-zero milliseconds", () => {
+    const result = calculatePotionCompletion({
+      type: "research",
+      timeLeft: "30m",
+      numPots: 1,
+      now: new Date("2026-07-01T12:00:00.900Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 75,
+    });
+    if (result.kind === "valid") {
+      expect(result.completionAt.toISOString()).toBe("2026-07-01T12:01:15.900Z");
+      expect(result.completionUnixSeconds).toBe(
+        Math.ceil(new Date("2026-07-01T12:01:15.900Z").getTime() / 1000),
+      );
+      expect(result.completionUnixSeconds).toBe(
+        Math.floor(new Date("2026-07-01T12:01:16.000Z").getTime() / 1000),
+      );
+    }
+  });
+
+  it("rejects a duration that is safe as seconds but exceeds the JavaScript Date range", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "100000001d",
+      numPots: 1,
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      kind: "invalid",
+      message: POTION_TIME_LEFT_INVALID_MESSAGE,
+    });
   });
 });

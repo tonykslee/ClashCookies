@@ -43,6 +43,7 @@ export const POTION_NUM_POTS_INVALID_MESSAGE =
   "Invalid num-pots. Use an integer between 1 and 100.";
 
 const MAX_SAFE_SECONDS = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_DATE_MS = 8_640_000_000_000_000;
 const DURATION_TOKEN_RE = /\s*(\d+)\s*([dhm])\s*/iy;
 
 const POTION_CONFIGS: Record<PotionType, PotionConfig> = {
@@ -157,6 +158,11 @@ export function calculatePotionCompletion(input: {
     return { kind: "invalid", message: POTION_NUM_POTS_INVALID_MESSAGE };
   }
 
+  const nowMs = input.now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+  }
+
   const parsed = parsePotionDuration(input.timeLeft);
   if (parsed.kind === "invalid") {
     return parsed;
@@ -169,7 +175,14 @@ export function calculatePotionCompletion(input: {
     originalTimeLeftSeconds <= boostedWorkCapacity
       ? Math.ceil(originalTimeLeftSeconds / config.speedMultiplier)
       : boostWindowSeconds + (originalTimeLeftSeconds - boostedWorkCapacity);
-  const completionAt = new Date(input.now.getTime() + completionDurationSeconds * 1000);
+  const completionAtMs = nowMs + completionDurationSeconds * 1000;
+  if (!Number.isFinite(completionAtMs) || Math.abs(completionAtMs) > MAX_DATE_MS) {
+    return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+  }
+  const completionAt = new Date(completionAtMs);
+  if (!Number.isFinite(completionAt.getTime())) {
+    return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+  }
   const timeSavedSeconds = originalTimeLeftSeconds - completionDurationSeconds;
 
   return {
@@ -185,7 +198,7 @@ export function calculatePotionCompletion(input: {
     completionDurationSeconds,
     completionDurationDisplay: formatPotionDuration(completionDurationSeconds),
     completionAt,
-    completionUnixSeconds: Math.floor(completionAt.getTime() / 1000),
+    completionUnixSeconds: Math.ceil(completionAtMs / 1000),
     timeSavedSeconds,
     timeSavedDisplay: formatPotionDuration(timeSavedSeconds),
   };
