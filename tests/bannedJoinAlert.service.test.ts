@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UnlinkedMemberAlertService } from "../src/services/UnlinkedMemberAlertService";
 
 type BanRow = {
@@ -274,6 +274,8 @@ function configureCommonMocks(input: {
 
 describe("banned join alerts", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T12:00:00.000Z"));
     vi.clearAllMocks();
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.cwlTrackedClan.findMany.mockReset();
@@ -296,6 +298,10 @@ describe("banned join alerts", () => {
     botLogChannelServiceMock.getRoutingConfigForType.mockReset();
     todoSnapshotMock.loadActiveCwlWarsByClan.mockResolvedValue(new Map());
     todoSnapshotMock.buildActiveCwlClanByPlayerTag.mockReturnValue(new Map());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("includes ban clan context in direct player-ban alerts", async () => {
