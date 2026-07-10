@@ -5,10 +5,16 @@ import {
   Client,
   EmbedBuilder,
 } from "discord.js";
+import type { Prisma } from "@prisma/client";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
-import { ClanHealthSnapshotService, type ClanHealthSnapshot } from "../services/ClanHealthSnapshotService";
+import {
+  ClanHealthSnapshotService,
+  type ClanHealthExternalSnapshot,
+  type ClanHealthSnapshot,
+  type ClanHealthTrackedSnapshot,
+} from "../services/ClanHealthSnapshotService";
 import { normalizeClashTagInput } from "../helper/clashTag";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
@@ -54,18 +60,22 @@ function formatCompositionSourceAge(ageMs: number | null): string {
 }
 
 /** Purpose: render the compact deviation label used by clan-health composition. */
-function formatCompositionDeviation(composition: ClanHealthSnapshot["composition"]): string {
-  const prefix = composition.healthy ? "✅" : "⚠️";
-  if (composition.deviationScore === null || !composition.selectedHeatMapRefAvailable) {
+function formatCompositionDeviation(input: {
+  healthy: boolean;
+  deviationScore: number | null;
+  selectedHeatMapRefAvailable: boolean;
+}): string {
+  const prefix = input.healthy ? "✅" : "⚠️";
+  if (input.deviationScore === null || !input.selectedHeatMapRefAvailable) {
     return `${prefix} n/a`;
   }
-  return Number.isInteger(composition.deviationScore)
-    ? `${prefix} ${composition.deviationScore}`
-    : `${prefix} ${composition.deviationScore.toFixed(1)}`;
+  return Number.isInteger(input.deviationScore)
+    ? `${prefix} ${input.deviationScore}`
+    : `${prefix} ${input.deviationScore.toFixed(1)}`;
 }
 
 /** Purpose: render the current persisted composition spread for tracked clans. */
-function buildCurrentCompositionLines(snapshot: ClanHealthSnapshot): string[] {
+function buildTrackedCurrentCompositionLines(snapshot: ClanHealthTrackedSnapshot): string[] {
   const composition = snapshot.composition;
   return [
     `TH18: **${composition.displayCounts.TH18}** | TH17: **${composition.displayCounts.TH17}** | TH16: **${composition.displayCounts.TH16}** | TH15: **${composition.displayCounts.TH15}** | TH14: **${composition.displayCounts.TH14}** | <=TH13: **${composition.displayCounts["<=TH13"]}**`,
@@ -75,15 +85,53 @@ function buildCurrentCompositionLines(snapshot: ClanHealthSnapshot): string[] {
   ];
 }
 
+/** Purpose: render the current persisted catalog-backed composition spread for external clans. */
+function buildExternalCurrentCompositionLines(snapshot: ClanHealthExternalSnapshot): string[] {
+  const composition = snapshot.composition;
+  const count = (value: number | null): string => (value === null ? "?" : String(value));
+  return [
+    `TH18: **${count(composition.displayCounts.TH18)}** | TH17: **${count(composition.displayCounts.TH17)}** | TH16: **${count(composition.displayCounts.TH16)}** | TH15: **${count(composition.displayCounts.TH15)}** | TH14: **${count(composition.displayCounts.TH14)}** | <=TH13: **${count(composition.displayCounts["<=TH13"])}**`,
+    `Members: **${composition.memberCount === null ? "?" : composition.memberCount}/50** | Unresolved: **${composition.unresolvedWeightCount}**`,
+    `Deviation: **${formatCompositionDeviation(composition)}**`,
+    `Source age: **${formatCompositionSourceAge(composition.sourceAgeMs)}**`,
+  ];
+}
+
+/** Purpose: render the compact recent-war summary used by external clan-health. */
+function buildExternalWarPerformanceLines(snapshot: ClanHealthExternalSnapshot): string[] {
+  if (!snapshot.warPerformance) {
+    return [];
+  }
+
+  return [
+    `Match rate (last 30 available ended wars): **${formatRate(
+      snapshot.warPerformance.fwaMatchCount,
+      snapshot.warPerformance.endedWarSampleSize,
+    )}**`,
+    `:green_circle: ${snapshot.warPerformance.fwaWinCount} | :red_circle: ${snapshot.warPerformance.fwaLossCount} | :black_circle: ${snapshot.warPerformance.blMatchCount} | :white_circle: ${snapshot.warPerformance.mmMatchCount}`,
+    `Match rate (including BL): **${formatPercent(
+      snapshot.warPerformance.blInclusiveMatchCount,
+      snapshot.warPerformance.endedWarSampleSize,
+    )}**`,
+    `Win rate (same window): **${formatRate(
+      snapshot.warPerformance.winCount,
+      snapshot.warPerformance.endedWarSampleSize,
+    )}**`,
+  ];
+}
+
 /** Purpose: render the persisted 30-day war-plan compliance summary for clan-health. */
 function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
+  if (snapshot.viewType !== "tracked") {
+    return ["No completed FWA war-plan evaluations are available yet."];
+  }
   if (!snapshot.warPlanCompliance.hasCompletedEvaluations) {
     return ["No completed FWA war-plan evaluations are available yet."];
   }
 
   return [
     `Violations: **${snapshot.warPlanCompliance.violationCount}** across **${snapshot.warPlanCompliance.distinctPlayerCount}** ${formatPlayerAccountLabel(
-      snapshot.warPlanCompliance.distinctPlayerCount
+      snapshot.warPlanCompliance.distinctPlayerCount,
     )}`,
     `Linked Discord users involved: **${snapshot.warPlanCompliance.distinctCurrentDiscordUserCount}**`,
     `Affected wars: **${snapshot.warPlanCompliance.affectedWarCount}/${snapshot.warPlanCompliance.evaluatedWarCount}** evaluated FWA wars`,
@@ -92,32 +140,57 @@ function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
 
 /** Purpose: build response embed for a clan-health snapshot. */
 function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
+  if (snapshot.viewType === "external") {
+    const fields: Array<{ name: string; value: string; inline: boolean }> = [];
+    const warPerformanceLines = buildExternalWarPerformanceLines(snapshot);
+    if (warPerformanceLines.length > 0) {
+      fields.push({
+        name: "War Performance",
+        value: warPerformanceLines.join("\n"),
+        inline: false,
+      });
+    }
+    fields.push({
+      name: "Current Composition",
+      value: buildExternalCurrentCompositionLines(snapshot).join("\n"),
+      inline: false,
+    });
+
+    return new EmbedBuilder()
+      .setTitle(`Clan Health: ${snapshot.clanName} — External Clan View`)
+      .setDescription("External FWA clan snapshot from available persisted FWAStats data.")
+      .addFields(fields)
+      .setFooter({ text: `${snapshot.clanTag} • External FWAStats snapshot` });
+  }
+
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
-    .setDescription("Leadership snapshot: current composition, persisted war-plan compliance, inactivity, and missing Discord links.")
+    .setDescription(
+      "Leadership snapshot: current composition, persisted war-plan compliance, inactivity, and missing Discord links.",
+    )
     .addFields(
       {
         name: "War Performance",
         value: [
           `Match rate (last ${snapshot.warMetrics.windowSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
-            snapshot.warMetrics.endedWarSampleSize
+            snapshot.warMetrics.endedWarSampleSize,
           )}**`,
           `:green_circle: ${snapshot.warMetrics.fwaWinCount} | :red_circle: ${snapshot.warMetrics.fwaLossCount} | :black_circle: ${snapshot.warMetrics.blMatchCount} | :white_circle: ${snapshot.warMetrics.mmMatchCount}`,
           `Match rate (including BL): **${formatPercent(
             snapshot.warMetrics.blInclusiveMatchCount,
-            snapshot.warMetrics.endedWarSampleSize
+            snapshot.warMetrics.endedWarSampleSize,
           )}**`,
           `Win rate (same window): **${formatRate(
             snapshot.warMetrics.winCount,
-            snapshot.warMetrics.endedWarSampleSize
+            snapshot.warMetrics.endedWarSampleSize,
           )}**`,
         ].join("\n"),
         inline: false,
       },
       {
         name: "Current Composition",
-        value: buildCurrentCompositionLines(snapshot).join("\n"),
+        value: buildTrackedCurrentCompositionLines(snapshot).join("\n"),
         inline: false,
       },
       {
@@ -138,9 +211,35 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
         name: "Discord Links",
         value: `Missing links: **${snapshot.missingLinks.missingMemberCount}/${snapshot.missingLinks.observedMemberCount}** observed member(s)`,
         inline: false,
-      }
+      },
     )
     .setFooter({ text: `${snapshot.clanTag} • Deterministic DB snapshot` });
+}
+
+function buildTrackedClanAutocompleteChoices(input: { nameQuery: string; tagQuery: string }) {
+  return prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { name: true, tag: true },
+  }).then((tracked) => {
+    const choices = tracked
+      .map((clan) => {
+        const normalized = normalizeClanTag(clan.tag);
+        const bare = normalized.replace(/^#/, "");
+        const label = clan.name?.trim() ? `${clan.name.trim()} (${normalized})` : normalized;
+        return { name: label.slice(0, 100), value: bare };
+      })
+      .filter((choice) => {
+        const name = choice.name.toLowerCase();
+        const value = choice.value.toLowerCase();
+        const hasQuery = input.nameQuery.length > 0 || input.tagQuery.length > 0;
+        if (!hasQuery) return true;
+        const nameMatches = input.nameQuery.length > 0 && name.includes(input.nameQuery);
+        const tagMatches = input.tagQuery.length > 0 && value.includes(input.tagQuery);
+        return nameMatches || tagMatches;
+      });
+
+    return { tracked, choices };
+  });
 }
 
 export const ClanHealth: Command = {
@@ -150,7 +249,7 @@ export const ClanHealth: Command = {
   options: [
     {
       name: "tag",
-      description: "Tracked clan tag (with or without #)",
+      description: "FWA clan tag (with or without #)",
       type: ApplicationCommandOptionType.String,
       required: true,
       autocomplete: true,
@@ -169,7 +268,7 @@ export const ClanHealth: Command = {
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
+    _cocService: CoCService,
   ) => {
     await interaction.deferReply({ ephemeral: true });
 
@@ -191,7 +290,7 @@ export const ClanHealth: Command = {
     });
 
     if (!snapshot) {
-      await interaction.editReply(`Clan ${normalizedTag} is not in tracked clans.`);
+      await interaction.editReply(`No persisted FWA data was found for clan ${normalizedTag}.`);
       return;
     }
 
@@ -206,27 +305,60 @@ export const ClanHealth: Command = {
       return;
     }
 
-    const query = normalizeClanTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
-    const tracked = await prisma.trackedClan.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { name: true, tag: true },
+    const rawQuery = String(focused.value ?? "").trim().toLowerCase();
+    const tagQuery = normalizeClanTag(String(focused.value ?? "")).replace(/^#/, "").toLowerCase();
+    const { tracked, choices } = await buildTrackedClanAutocompleteChoices({
+      nameQuery: rawQuery,
+      tagQuery,
     });
+    if (rawQuery.length === 0 && tagQuery.length === 0) {
+      await interaction.respond(choices.slice(0, 25));
+      return;
+    }
 
-    const choices = tracked
+    const trackedTags = new Set(
+      tracked
+        .map((clan) => normalizeClanTag(clan.tag))
+        .filter((tag): tag is string => Boolean(tag)),
+    );
+    const remaining = Math.max(0, 25 - choices.length);
+    const externalQueryClauses: Prisma.FwaClanCatalogWhereInput[] = [];
+    if (rawQuery.length > 0) {
+      externalQueryClauses.push({ name: { contains: rawQuery, mode: "insensitive" } });
+    }
+    if (tagQuery.length > 0) {
+      externalQueryClauses.push({ clanTag: { contains: tagQuery, mode: "insensitive" } });
+    }
+    const externalRows =
+      remaining > 0
+        ? await prisma.fwaClanCatalog.findMany({
+            where: {
+              NOT: { clanTag: { in: [...trackedTags] } },
+              ...(externalQueryClauses.length > 0 ? { OR: externalQueryClauses } : {}),
+            },
+            orderBy: [{ lastSyncedAt: "desc" }, { clanTag: "asc" }],
+            take: remaining,
+            select: { clanTag: true, name: true },
+          })
+        : [];
+    const seen = new Set(choices.map((choice) => choice.value.toLowerCase()));
+    const externalChoices = (externalRows ?? [])
       .map((clan) => {
-        const normalized = normalizeClanTag(clan.tag);
+        const normalized = normalizeClanTag(clan.clanTag);
         const bare = normalized.replace(/^#/, "");
-        const label = clan.name?.trim() ? `${clan.name.trim()} (${normalized})` : normalized;
+        const label = clan.name?.trim()
+          ? `${clan.name.trim()} (${normalized}) - External`
+          : `${normalized} - External`;
         return { name: label.slice(0, 100), value: bare };
       })
       .filter((choice) => {
-        const name = choice.name.toLowerCase();
         const value = choice.value.toLowerCase();
-        return name.includes(query) || value.includes(query);
-      })
-      .slice(0, 25);
+        if (seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
 
-    await interaction.respond(choices);
+    await interaction.respond([...choices, ...externalChoices].slice(0, 25));
   },
 };
 
