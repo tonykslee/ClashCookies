@@ -100,6 +100,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "remaining",
   "remaining:war",
   "remaining:cwl",
+  "potion",
+  "potion:calc",
   "clan-health",
   "repwork",
   "telemetry",
