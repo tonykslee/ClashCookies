@@ -58,6 +58,14 @@ describe("command coverage", () => {
     expect(missing).toEqual([]);
   });
 
+  it("covers /potion registration, permissions, help, and docs entries", () => {
+    const potion = Commands.find((command) => command.name === "potion");
+    expect(potion).toBeTruthy();
+    expect(hasPermissionTargetForCommand("potion")).toBe(true);
+    expect(helpEmbedText("potion")).toContain("/potion calc");
+    expect(docsCommandNames()).toContain("potion");
+  });
+
   it("keeps every registered root command description within Discord's slash-command limit", () => {
     const invalid = Commands
       .map((command) => ({ name: command.name, description: command.description ?? "" }))
