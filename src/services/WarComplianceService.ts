@@ -480,7 +480,7 @@ function buildTraditionalLossIssuesFromEvaluation(input: {
   for (const result of input.evaluation.resultsByPlayerTag.values()) {
     if (!result.hasViolation) continue;
     const participant = input.participantByLabel.get(result.playerName ?? "") ?? null;
-    const breachOrders = result.reason.breachAttackOrders;
+    const hasBreachDetail = result.attackDetails.some((detail) => detail.isBreach);
     issues.push({
       playerTag: result.playerTag,
       playerName: result.playerName ?? result.playerTag,
@@ -496,7 +496,7 @@ function buildTraditionalLossIssuesFromEvaluation(input: {
       })),
       breachContext:
         result.reason.strictWindowContext &&
-        breachOrders.length > 0
+        hasBreachDetail
           ? {
               starsAtBreach: result.reason.strictWindowContext.starsBeforeAttack,
               timeRemaining: result.reason.strictWindowContext.timeRemaining,

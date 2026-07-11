@@ -96,6 +96,7 @@ export type TraditionalViolationResult = {
   hasViolation: boolean;
   reason: WarComplianceReason;
   attackDetails: TraditionalComplianceAttackDetail[];
+  consumedSubstitutionAttackIndexes: number[];
   consumedSubstitutionAttackOrders: number[];
   actualBehavior: string;
 };
@@ -295,6 +296,7 @@ function resolveWarEndOutcome(
 function resolveEffectiveGateConfigForCompliance(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
   winGateConfig?: WarComplianceWinGateConfig | null;
 }): WarComplianceWinGateConfig | null {
   if (input.matchType !== "FWA" || input.expectedOutcome === null) {
@@ -308,7 +310,7 @@ function resolveEffectiveGateConfigForCompliance(input: {
       }
     );
   }
-  if (input.expectedOutcome === "LOSE") {
+  if (input.expectedOutcome === "LOSE" && input.loseStyle === "TRADITIONAL") {
     return (
       input.winGateConfig ?? {
         nonMirrorTripleMinClanStars:
@@ -317,6 +319,9 @@ function resolveEffectiveGateConfigForCompliance(input: {
           DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
       }
     );
+  }
+  if (input.expectedOutcome === "LOSE" && input.loseStyle === "TRIPLE_TOP_30") {
+    return input.winGateConfig ?? null;
   }
   return input.winGateConfig ?? null;
 }
@@ -481,7 +486,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
   });
   const participantByTag = new Map<string, WarComplianceParticipant>();
   const ownerPositionByTag = new Map<string, number>();
-  const labelByTag = new Map<string, string>();
   for (const participant of participants) {
     const tag = normalizeTag(participant.playerTag);
     if (!tag || participantByTag.has(tag)) continue;
@@ -490,10 +494,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     if (Number.isFinite(playerPosition) && playerPosition > 0) {
       ownerPositionByTag.set(tag, Math.trunc(playerPosition));
     }
-    labelByTag.set(
-      tag,
-      String(participant.playerName ?? participant.playerTag).trim() || tag,
-    );
   }
 
   const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
@@ -512,7 +512,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     }
   }
 
-  const strictParticipatingTags = new Set<string>();
   const obligations = input.participants
     .map((participant) => {
       const tag = normalizeTag(participant.playerTag);
@@ -524,7 +523,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         return Boolean(ctx?.isStrictWindow);
       });
       if (!hasStrictAttack) return null;
-      strictParticipatingTags.add(tag);
       return { ownerTag: tag, ownerPosition: playerPosition };
     })
     .filter(
@@ -590,8 +588,9 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     const attackDetails: TraditionalComplianceAttackDetail[] = [];
     const breachAttackOrders: number[] = [];
     let firstBreachContext: WarComplianceReason["strictWindowContext"] = null;
+    let firstStrictContext: WarComplianceReason["strictWindowContext"] = null;
     let reasonLabel: string | null = null;
-    let hasViolation = false;
+    let hasAttackLevelViolation = false;
 
     for (const attack of playerAttacksOrdered) {
       const ctx = input.attackContextByAttack.get(attack) ?? null;
@@ -610,6 +609,14 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         starsBefore <= 100 &&
         starsAfter > 100;
       const isStrict = Boolean(ctx?.isStrictWindow);
+      if (isStrict && firstStrictContext === null) {
+        firstStrictContext = ctx
+          ? {
+              starsBeforeAttack: ctx.starsBeforeAttack,
+              timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+            }
+          : null;
+      }
       const attackIndex = attackIndexByAttack.get(attack);
       const defenderPosition = Number(attack.defenderPosition ?? NaN);
       const isOwnMirror =
@@ -617,14 +624,13 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         Number.isFinite(defenderPosition) &&
         defenderPosition === playerPosition;
       const isConsumedSubstitution =
-        (attackIndex !== undefined &&
-          consumedSubstitutionAttackIndexes.has(attackIndex)) ||
-        (attackOrder !== null &&
-          consumedSubstitutionAttackOrders.has(attackOrder));
+        attackIndex !== undefined &&
+        consumedSubstitutionAttackIndexes.has(attackIndex);
       let isBreach = false;
 
       if (isCapBreach) {
         isBreach = true;
+        hasAttackLevelViolation = true;
         if (reasonLabel === null) {
           reasonLabel = "clan star cap exceeded";
           firstBreachContext = ctx
@@ -637,6 +643,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       } else if (isStrict) {
         if (stars === 3) {
           isBreach = true;
+          hasAttackLevelViolation = true;
           if (reasonLabel === null) {
             reasonLabel = "any 3-star in traditional loss";
             firstBreachContext = ctx
@@ -648,6 +655,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
           }
         } else if (stars === 0) {
           isBreach = true;
+          hasAttackLevelViolation = true;
           if (reasonLabel === null) {
             reasonLabel = "invalid star count in traditional loss";
             firstBreachContext = ctx
@@ -660,6 +668,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         } else if (stars === 2) {
           if (!isOwnMirror && !isConsumedSubstitution) {
             isBreach = true;
+            hasAttackLevelViolation = true;
             if (reasonLabel === null) {
               reasonLabel = "early non-mirror 2-star in traditional loss";
               firstBreachContext = ctx
@@ -673,6 +682,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         } else if (stars === 1) {
           if (!ownSatisfied) {
             isBreach = true;
+            hasAttackLevelViolation = true;
             if (reasonLabel === null) {
               reasonLabel = "strict-window mirror miss in traditional loss";
               firstBreachContext = ctx
@@ -685,6 +695,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
           }
         } else {
           isBreach = true;
+          hasAttackLevelViolation = true;
           if (reasonLabel === null) {
             reasonLabel = "invalid star count in traditional loss";
             firstBreachContext = ctx
@@ -697,6 +708,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         }
       } else if (stars !== 2) {
         isBreach = true;
+        hasAttackLevelViolation = true;
         if (reasonLabel === null) {
           reasonLabel = "invalid star count in traditional loss";
           firstBreachContext = ctx
@@ -709,7 +721,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       }
 
       if (isBreach && attackOrder !== null) {
-        breachAttackOrders.push(attackOrder);
+        pushUniqueAttackOrder(breachAttackOrders, attackOrder);
       }
 
       attackDetails.push({
@@ -723,12 +735,30 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     const hasStrictParticipation = playerAttacks.some((attack) =>
       Boolean(input.attackContextByAttack.get(attack)?.isStrictWindow),
     );
-    const finalReason: WarComplianceReason = hasViolation || breachAttackOrders.length > 0
+    const effectiveAttacksUsed = Math.max(
+      playerAttacksOrdered.length,
+      Math.max(0, Math.trunc(Number(participant.attacksUsed ?? 0))),
+    );
+    const hasUnmetMirrorViolation =
+      hasStrictParticipation &&
+      playerPosition !== null &&
+      !ownSatisfied &&
+      effectiveAttacksUsed >= 2 &&
+      !hasAttackLevelViolation;
+    const finalReason: WarComplianceReason = hasAttackLevelViolation || hasUnmetMirrorViolation
       ? {
-          label: reasonLabel ?? "didn't follow lose-style rules",
-          strictWindowContext: firstBreachContext,
+          label:
+            reasonLabel ??
+            (hasUnmetMirrorViolation
+              ? "strict-window mirror miss in traditional loss"
+              : "didn't follow lose-style rules"),
+          strictWindowContext: hasAttackLevelViolation
+            ? firstBreachContext
+            : hasUnmetMirrorViolation
+              ? firstStrictContext
+              : null,
           breachAttackOrders,
-          hasViolation: breachAttackOrders.length > 0,
+          hasViolation: true,
         }
       : {
           label: "didn't follow lose-style rules",
@@ -736,7 +766,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
           breachAttackOrders: [],
           hasViolation: false,
         };
-    hasViolation = finalReason.hasViolation;
+    const hasViolation = finalReason.hasViolation;
 
     const actualBehavior = `${playerAttacksOrdered
       .map((row) => `#${row.defenderPosition ?? "?"} (${Math.max(0, Math.trunc(Number(row.stars ?? 0)))})`)
@@ -755,6 +785,9 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       hasViolation,
       reason: finalReason,
       attackDetails,
+      consumedSubstitutionAttackIndexes: [...consumedSubstitutionAttackIndexes].sort(
+        (a, b) => a - b,
+      ),
       consumedSubstitutionAttackOrders: attackDetails
         .filter((detail) => consumedSubstitutionAttackOrders.has(detail.attackOrder ?? -1))
         .map((detail) => detail.attackOrder)
@@ -977,6 +1010,7 @@ export function computeWarComplianceForTest(input: {
   const effectiveWinGateConfig = resolveEffectiveGateConfigForCompliance({
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
+    loseStyle: input.loseStyle,
     winGateConfig: input.winGateConfig,
   });
 
