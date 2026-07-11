@@ -65,6 +65,10 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: {
+          starsAtBreach: 11,
+          timeRemaining: "7h 0m left",
+        },
       },
       {
         reasonLabel: "didn't triple mirror",
@@ -82,6 +86,10 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: {
+          starsAtBreach: 10,
+          timeRemaining: "6h 30m left",
+        },
       },
       {
         reasonLabel: "strict-window mirror miss in traditional loss",
@@ -99,6 +107,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: false,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "early non-mirror 2-star in traditional loss",
@@ -116,6 +125,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "invalid star count in traditional loss",
@@ -133,6 +143,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "any 3-star in traditional loss",
@@ -150,6 +161,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "attack on a lower-20 base",
@@ -167,6 +179,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "0-star attack on a top-30 base",
@@ -184,6 +197,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
       {
         reasonLabel: "clan star cap exceeded",
@@ -201,6 +215,7 @@ describe("FwaPoliceTemplateCatalog", () => {
             isBreach: true,
           },
         ],
+        breachContext: null,
       },
     ] as const;
 
@@ -209,12 +224,60 @@ describe("FwaPoliceTemplateCatalog", () => {
         issue: buildCanonicalIssue({
           reasonLabel: testCase.reasonLabel,
           attackDetails: testCase.attackDetails as any,
-          breachContext: null,
+          breachContext: testCase.breachContext ?? null,
         }),
         context: testCase.context,
       });
       expect(violation).toBe(testCase.expected);
     }
+  });
+
+  it("rejects exact didn't triple mirror without strict-window breach context in FWA-WIN", () => {
+    const violation = classifyFwaPoliceViolation({
+      issue: buildCanonicalIssue({
+        reasonLabel: "didn't triple mirror",
+        attackDetails: [
+          {
+            defenderPosition: 1,
+            stars: 2,
+            attackOrder: 3,
+            isBreach: true,
+          },
+        ],
+        breachContext: null,
+      }),
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+      },
+    });
+
+    expect(violation).toBeNull();
+  });
+
+  it("keeps the exact traditional exhausted-obligation label applicable without breach context", () => {
+    const violation = classifyFwaPoliceViolation({
+      issue: buildCanonicalIssue({
+        reasonLabel: "strict-window mirror miss in traditional loss",
+        attackDetails: [
+          {
+            defenderPosition: 5,
+            stars: 2,
+            attackOrder: 4,
+            isBreach: false,
+          },
+        ],
+        breachContext: null,
+      }),
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    });
+
+    expect(violation).toBe("STRICT_WINDOW_MIRROR_MISS_LOSS");
   });
 
   it("classifies early non-mirror 2-star from traditional-loss breach details", () => {
@@ -362,6 +425,108 @@ describe("FwaPoliceTemplateCatalog", () => {
       },
     });
     expect(violation).toBeNull();
+  });
+
+  it("applies applicability checks to legacy mirror-miss text before classifying", () => {
+    const violation = classifyFwaPoliceViolation({
+      issue: {
+        playerTag: "#P2YLC8R0",
+        playerName: "Player One",
+        playerPosition: 1,
+        ruleType: "not_following_plan",
+        expectedBehavior: "Mirror 2-star in traditional loss strict window.",
+        actualBehavior: "#5 (2-star) : late mirror",
+        reasonLabel: "late mirror 2-star",
+        attackDetails: [
+          {
+            defenderPosition: 5,
+            stars: 2,
+            attackOrder: 4,
+            isBreach: true,
+          },
+        ],
+        breachContext: null,
+      },
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    });
+
+    expect(violation).toBeNull();
+  });
+
+  it("rejects mismatched canonical labels across unsupported plans", () => {
+    const cases = [
+      {
+        reasonLabel: "any 3-star in traditional loss",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+      },
+      {
+        reasonLabel: "early non-mirror 2-star in traditional loss",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+      },
+      {
+        reasonLabel: "attack on a lower-20 base",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+      },
+      {
+        reasonLabel: "didn't triple mirror",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+      },
+      {
+        reasonLabel: "strict-window mirror miss in traditional loss",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+      },
+      {
+        reasonLabel: "clan star cap exceeded",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const violation = classifyFwaPoliceViolation({
+        issue: buildCanonicalIssue({
+          reasonLabel: testCase.reasonLabel,
+          attackDetails: [
+            {
+              defenderPosition: 5,
+              stars: 2,
+              attackOrder: 4,
+              isBreach: true,
+            },
+          ],
+          breachContext: null,
+        }),
+        context: testCase.context,
+      });
+      expect(violation).toBeNull();
+    }
   });
 
   it("classifies strict-window mirror miss in FWA-WIN only when strict-window context exists", () => {

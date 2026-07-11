@@ -182,6 +182,13 @@ function classifyUsingReasonLabel(labelRaw: string): FwaPoliceViolation | null {
   return null;
 }
 
+function isViolationApplicableToContext(
+  violation: FwaPoliceViolation,
+  context: FwaPoliceApplicabilityContext,
+): boolean {
+  return FWA_POLICE_VIOLATION_METADATA[violation].isApplicable(context);
+}
+
 function isMirrorAttack(
   issue: WarComplianceIssue,
   defenderPosition: number | null,
@@ -216,7 +223,15 @@ export function classifyFwaPoliceViolation(input: {
     input.issue.reasonLabel ?? "",
   );
   if (exactFromLabel) {
-    return exactFromLabel;
+    if (
+      exactFromLabel === "STRICT_WINDOW_MIRROR_MISS_WIN" &&
+      !hasStrictWindowBreachContext(input.issue)
+    ) {
+      return null;
+    }
+    return isViolationApplicableToContext(exactFromLabel, input.context)
+      ? exactFromLabel
+      : null;
   }
 
   const fromLabel = classifyUsingReasonLabel(input.issue.reasonLabel ?? "");
@@ -229,7 +244,9 @@ export function classifyFwaPoliceViolation(input: {
     ) {
       return null;
     }
-    return fromLabel;
+    return isViolationApplicableToContext(fromLabel, input.context)
+      ? fromLabel
+      : null;
   }
 
   const details =
@@ -250,7 +267,12 @@ export function classifyFwaPoliceViolation(input: {
 
   if (input.context.matchType === "FWA" && input.context.expectedOutcome === "WIN") {
     if (hasNonMirrorTriple) return "EARLY_NON_MIRROR_TRIPLE";
-    return hasStrictWindowContext ? "STRICT_WINDOW_MIRROR_MISS_WIN" : null;
+    const violation = hasStrictWindowContext
+      ? "STRICT_WINDOW_MIRROR_MISS_WIN"
+      : null;
+    return violation && isViolationApplicableToContext(violation, input.context)
+      ? violation
+      : null;
   }
 
   if (
@@ -270,7 +292,12 @@ export function classifyFwaPoliceViolation(input: {
         Number(row.stars ?? 0) <= 0,
     );
     if (hasTop30ZeroStar) return "TOP30_ZERO_STARS";
-    if (hasStrictWindowContext) return "STRICT_WINDOW_MIRROR_MISS_LOSS";
+    if (hasStrictWindowContext) {
+      const violation = "STRICT_WINDOW_MIRROR_MISS_LOSS";
+      return isViolationApplicableToContext(violation, input.context)
+        ? violation
+        : null;
+    }
     return null;
   }
 
@@ -279,9 +306,24 @@ export function classifyFwaPoliceViolation(input: {
     input.context.expectedOutcome === "LOSE" &&
     input.context.loseStyle === "TRADITIONAL"
   ) {
-    if (hasAnyThreeStar) return "ANY_3STAR";
-    if (hasNonMirrorTwoStar) return "EARLY_NON_MIRROR_2STAR";
-    if (hasStrictWindowContext) return "STRICT_WINDOW_MIRROR_MISS_LOSS";
+    if (hasAnyThreeStar) {
+      const violation = "ANY_3STAR";
+      return isViolationApplicableToContext(violation, input.context)
+        ? violation
+        : null;
+    }
+    if (hasNonMirrorTwoStar) {
+      const violation = "EARLY_NON_MIRROR_2STAR";
+      return isViolationApplicableToContext(violation, input.context)
+        ? violation
+        : null;
+    }
+    if (hasStrictWindowContext) {
+      const violation = "STRICT_WINDOW_MIRROR_MISS_LOSS";
+      return isViolationApplicableToContext(violation, input.context)
+        ? violation
+        : null;
+    }
     return null;
   }
 
