@@ -61,20 +61,19 @@ const PAGE_CONTENT_LIMIT = 980;
 /** Purpose: render numeric stars as spaced triplets to match existing compliance visuals. */
 function formatStarTriplet(stars: number | null | undefined): string {
   const normalized = Math.max(0, Math.min(3, Number(stars ?? 0)));
-  if (normalized >= 3) return "★ ★ ★";
-  if (normalized >= 2) return "★ ★ ☆";
-  if (normalized >= 1) return "★ ☆ ☆";
-  return "☆ ☆ ☆";
+  if (normalized >= 3) return "\u2605 \u2605 \u2605";
+  if (normalized >= 2) return "\u2605 \u2605 \u2606";
+  if (normalized >= 1) return "\u2605 \u2606 \u2606";
+  return "\u2606 \u2606 \u2606";
 }
 
 /** Purpose: convert serialized star glyphs into numeric star values for fallback parsing. */
 function parseStarTripletToCount(input: string): number {
   const text = String(input ?? "");
-  const matches = text.match(/★|â˜…/g);
+  const matches = text.match(/(?:\u2605|â˜…|Ã¢Ëœâ€¦)/g);
   const count = matches ? matches.length : 0;
   return Math.max(0, Math.min(3, count));
 }
-
 /** Purpose: sort compliance rows by roster position first for deterministic paging. */
 function sortIssuesDeterministically(issues: WarComplianceIssue[]): WarComplianceIssue[] {
   return [...issues].sort((a, b) => {
@@ -216,12 +215,8 @@ function buildFallbackAttackDetails(
     }
   }
 
-  if (!details.some((row) => row.isBreach) && details.length > 0 && parsed.strictContext) {
-    details[0].isBreach = true;
-  }
   return details;
 }
-
 /** Purpose: render one not-following issue into the required multi-line violation block. */
 function renderViolationBlock(issue: WarComplianceIssue): string {
   const parsed = parseActualBehavior(issue.actualBehavior);
@@ -244,20 +239,19 @@ function renderViolationBlock(issue: WarComplianceIssue): string {
     for (const detail of details) {
       const target = detail.defenderPosition !== null ? `#${detail.defenderPosition}` : "#?";
       lines.push(
-        `→ ${target} ${formatStarTriplet(detail.stars)}${detail.isBreach ? " ⚠️" : ""}`
+        `\u2192 ${target} ${formatStarTriplet(detail.stars)}${detail.isBreach ? " \u26A0\uFE0F" : ""}`
       );
     }
   }
 
   const contextLine = issue.breachContext
-    ? `${issue.breachContext.starsAtBreach}★ | ${issue.breachContext.timeRemaining}`
+    ? `${issue.breachContext.starsAtBreach}\u2605 | ${issue.breachContext.timeRemaining}`
     : parsed.strictContext;
   if (contextLine) {
     lines.push(contextLine);
   }
   return lines.join("\n");
 }
-
 /** Purpose: render one missed-both issue line in `Name (#TAG)` format. */
 function renderMissedLine(issue: WarComplianceIssue): string {
   const name = String(issue.playerName ?? "").trim() || "Unknown member";
@@ -273,12 +267,11 @@ function buildSummaryFieldValue(input: {
   violationCount: number;
 }): string {
   return [
-    `⚔️ Attacks Logged: ${input.attacksCount}`,
-    `❌ Missed Both Attacks: ${input.missedCount}`,
-    `⚠️ Didn't Follow Plan: ${input.violationCount}`,
+    `\u2694\uFE0F Attacks Logged: ${input.attacksCount}`,
+    `\u274C Missed Both Attacks: ${input.missedCount}`,
+    `\u26A0\uFE0F Didn't Follow Plan: ${input.violationCount}`,
   ].join("\n");
 }
-
 /** Purpose: normalize compliance warplan field text into a safe non-empty embed value. */
 function buildWarPlanFieldValue(warPlanText: string | null | undefined): string {
   const text = String(warPlanText ?? "").trim();
@@ -286,38 +279,6 @@ function buildWarPlanFieldValue(warPlanText: string | null | undefined): string 
 }
 
 /** Purpose: safely build the war description with unknown fallbacks required by command contract. */
-function buildWarDescription(input: {
-  warId: number | null;
-  expectedOutcome: "WIN" | "LOSE" | null;
-  fwaWinGateConfig?:
-    | {
-        nonMirrorTripleMinClanStars: number;
-        allBasesOpenHoursLeft: number;
-      }
-    | null;
-  warStartTime: Date | null;
-  warEndTime: Date | null;
-}): string {
-  const warIdLabel = input.warId ?? "unknown";
-  const expected = input.expectedOutcome ?? "UNKNOWN";
-  const startLine =
-    input.warStartTime instanceof Date
-      ? `Start <t:${Math.floor(input.warStartTime.getTime() / 1000)}:f>`
-      : "Start unknown";
-  const endLine =
-    input.warEndTime instanceof Date
-      ? `End <t:${Math.floor(input.warEndTime.getTime() / 1000)}:R>`
-      : "End unknown";
-  const lines = [`War #${warIdLabel} • Expected: ${expected}`, startLine, endLine];
-  if (input.fwaWinGateConfig) {
-    lines.push(
-      `Rules: N=${input.fwaWinGateConfig.nonMirrorTripleMinClanStars}, H=${input.fwaWinGateConfig.allBasesOpenHoursLeft}h`
-    );
-  }
-  return lines.join("\n");
-}
-
-/** Purpose: render contextual compliance text for the active FWA plan without leaking raw field names. */
 function buildWarDescriptionForCompliance(input: {
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
@@ -355,11 +316,10 @@ function buildWarDescriptionForCompliance(input: {
         }
       : null,
   });
-  const lines = [`War #${warIdLabel} â€¢ Expected: ${expected}`, startLine, endLine];
+  const lines = [`War #${warIdLabel} \u2022 Expected: ${expected}`, startLine, endLine];
   if (complianceLine) lines.push(complianceLine);
   return lines.join("\n");
 }
-
 /** Purpose: build the paged FWA-main compliance embed (summary + plan violations). */
 function buildMainEmbed(input: {
   clanName: string;
@@ -387,7 +347,7 @@ function buildMainEmbed(input: {
   const safeValue = value.length <= FIELD_LIMIT ? value : `${value.slice(0, FIELD_LIMIT - 12)}\n(+truncated)`;
 
   const embed = new EmbedBuilder()
-    .setTitle(`FWA War Compliance — ${input.clanName}`)
+    .setTitle(`FWA War Compliance \u2014 ${input.clanName}`)
     .setDescription(
       buildWarDescriptionForCompliance({
         warId: input.warId,
@@ -424,7 +384,6 @@ function buildMainEmbed(input: {
     pageCount: violationPages.length,
   };
 }
-
 /** Purpose: build the paged missed-attacks embed used by both FWA and non-FWA flows. */
 function buildMissedEmbed(input: {
   clanName: string;
@@ -444,8 +403,8 @@ function buildMissedEmbed(input: {
   const warIdLabel = input.warId ?? "unknown";
 
   const embed = new EmbedBuilder()
-    .setTitle(`Missed Attacks — ${input.clanName}`)
-    .setDescription(`War #${warIdLabel} • Missed Both Attacks: ${sortedMissed.length}`)
+    .setTitle(`Missed Attacks \u2014 ${input.clanName}`)
+    .setDescription(`War #${warIdLabel} \u2022 Missed Both Attacks: ${sortedMissed.length}`)
     .addFields({
       name: "Players",
       value: safeValue || "No players missed both attacks.",
@@ -647,8 +606,6 @@ export function buildFwaComplianceEmbedView(
     missedPageCount: missed.pageCount,
   };
 }
-
-/** Purpose: expose embed JSON for unit tests without coupling tests to message builders. */
 export function toEmbedJson(embed: EmbedBuilder): APIEmbed {
   return embed.toJSON();
 }

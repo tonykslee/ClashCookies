@@ -187,6 +187,8 @@ export function formatWarPlanViolationsViolationTypeLabel(violationType: string)
       return "Missed mirror during LOSS strict window";
     case "EARLY_NON_MIRROR_2STAR":
       return "Early non-mirror 2-star";
+    case "TRADITIONAL_INVALID_STAR_COUNT":
+      return "Invalid star count in traditional loss";
     case "ANY_3STAR":
       return "3-star plan violation";
     case "LOWER20_ANY_STARS":

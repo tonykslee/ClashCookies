@@ -219,14 +219,6 @@ function buildWarPlanOverviewPaginationRow(input: {
   );
 }
 
-function buildComplianceConfigLine(input: {
-  target: PlanTarget;
-  nonMirrorTripleMinClanStars: number;
-  allBasesOpenHoursLeft: number;
-}): string {
-  return `Compliance gate: nonMirrorTripleMinClanStars=${input.nonMirrorTripleMinClanStars}, allBasesOpenHoursLeft=${input.allBasesOpenHoursLeft}h`;
-}
-
 type EmojiShortcodeResolver = Pick<EmojiResolverService, "replaceShortcodes">;
 
 /** Purpose: normalize warplan shortcode text via shared application-emoji resolver. */
@@ -294,28 +286,30 @@ function getModalComplianceFieldConfig(target: PlanTarget): {
     target.loseStyle === "TRADITIONAL"
   ) {
     return {
-      minStarsLabel: "Minimum clan stars before non-mirror ★★☆",
-      minStarsDefault: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS ,
+      minStarsLabel: "Clan stars before non-mirror 2-star opens",
+      minStarsDefault: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS,
       openHoursDefault: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
       openHoursDefaultText: "12h",
     };
-  } else if (
+  }
+
+  if (
     target.matchType === "FWA" &&
     target.outcome === "LOSE" &&
     target.loseStyle === "TRIPLE_TOP_30"
   ) {
     return {
-      minStarsLabel: "Minimum clan stars before non-mirror ★★☆",
-      minStarsDefault: 0 ,
+      minStarsLabel: "Top-30 only (no lower-20 targets)",
+      minStarsDefault: 0,
       openHoursDefault: 0,
       openHoursDefaultText: "0",
     };
   }
 
   return {
-    minStarsLabel: "Minimum clan stars before non-mirror ★★★",
-    minStarsDefault: DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS ,
-    openHoursDefault: DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT ,
+    minStarsLabel: "Clan stars before non-mirror 3-star opens",
+    minStarsDefault: DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+    openHoursDefault: DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
     openHoursDefaultText: "0",
   };
 }

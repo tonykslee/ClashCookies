@@ -891,6 +891,77 @@ describe("FwaPoliceService", () => {
     expect(result.logSent).toBe(1);
   });
 
+  it("emits TRADITIONAL_INVALID_STAR_COUNT in FWA-LOSS traditional", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRADITIONAL",
+      fwaPoliceDmEnabled: false,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn(),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12346,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        notFollowingPlan: [
+          buildIssue({
+            reasonLabel: "invalid star count in traditional loss",
+            actualBehavior: "#14 (1-star) : invalid star count in traditional loss",
+            attackDetails: [
+              {
+                defenderPosition: 14,
+                stars: 1,
+                attackOrder: 2,
+                isBreach: true,
+              },
+            ],
+            breachContext: {
+              starsAtBreach: 41,
+              timeRemaining: "9h 0m left",
+            },
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12346,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(logSend).toHaveBeenCalledTimes(1);
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    expect(String(sentPayload?.content ?? "")).toContain(
+      "used an invalid star count in traditional loss",
+    );
+    expect(result.logSent).toBe(1);
+  });
+
   it("keeps FWA-LOSS traditional ANY_3STAR enforceable even without strict-window breach context", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",

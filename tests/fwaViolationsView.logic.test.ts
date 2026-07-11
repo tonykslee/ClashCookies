@@ -719,6 +719,9 @@ describe("war plan violations view helpers", () => {
     expect(formatWarPlanViolationsViolationTypeLabel("EARLY_NON_MIRROR_2STAR")).toBe(
       "Early non-mirror 2-star",
     );
+    expect(
+      formatWarPlanViolationsViolationTypeLabel("TRADITIONAL_INVALID_STAR_COUNT"),
+    ).toBe("Invalid star count in traditional loss");
     expect(formatWarPlanViolationsViolationTypeLabel("ANY_3STAR")).toBe("3-star plan violation");
     expect(formatWarPlanViolationsViolationTypeLabel("LOWER20_ANY_STARS")).toBe(
       "Attack on a lower-20 base",

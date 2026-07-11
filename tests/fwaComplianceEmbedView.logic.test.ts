@@ -90,7 +90,7 @@ describe("buildFwaComplianceEmbedView", () => {
     );
 
     expect(embed.title).toBe("FWA War Compliance — Rocky Road");
-    expect(embed.description).toContain("War #777 â€¢ Expected: WIN");
+    expect(embed.description).toContain("War #777 • Expected: WIN");
     expect(summary).toContain("⚔️ Attacks Logged: 53");
     expect(summary).toContain("❌ Missed Both Attacks: 1");
     expect(summary).toContain("⚠️ Didn't Follow Plan: 1");

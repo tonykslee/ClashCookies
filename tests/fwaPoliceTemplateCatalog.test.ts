@@ -6,12 +6,13 @@ import {
 } from "../src/services/FwaPoliceTemplateCatalog";
 
 describe("FwaPoliceTemplateCatalog", () => {
-  it("defines exactly eight canonical violation enums", () => {
+  it("defines exactly nine canonical violation enums", () => {
     expect(FWA_POLICE_VIOLATIONS).toEqual([
       "EARLY_NON_MIRROR_TRIPLE",
       "STRICT_WINDOW_MIRROR_MISS_WIN",
       "STRICT_WINDOW_MIRROR_MISS_LOSS",
       "EARLY_NON_MIRROR_2STAR",
+      "TRADITIONAL_INVALID_STAR_COUNT",
       "ANY_3STAR",
       "LOWER20_ANY_STARS",
       "CLAN_STAR_CAP_EXCEEDED",
@@ -111,6 +112,39 @@ describe("FwaPoliceTemplateCatalog", () => {
 
     expect(zeroStarViolation).toBe("TOP30_ZERO_STARS");
     expect(capViolation).toBe("CLAN_STAR_CAP_EXCEEDED");
+  });
+
+  it("classifies invalid star count from the traditional-loss reason label", () => {
+    const violation = classifyFwaPoliceViolation({
+      issue: {
+        playerTag: "#P2YLC8R0",
+        playerName: "Player One",
+        playerPosition: 1,
+        ruleType: "not_following_plan",
+        expectedBehavior: "Use the correct star count in traditional loss.",
+        actualBehavior: "#14 (1-star) : invalid star count in traditional loss",
+        reasonLabel: "invalid star count in traditional loss",
+        attackDetails: [
+          {
+            defenderPosition: 14,
+            stars: 1,
+            attackOrder: 2,
+            isBreach: true,
+          },
+        ],
+        breachContext: {
+          starsAtBreach: 9,
+          timeRemaining: "8h 0m left",
+        },
+      },
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    });
+
+    expect(violation).toBe("TRADITIONAL_INVALID_STAR_COUNT");
   });
 
   it("does not classify generic FWA-WIN non-strict-window issues as strict-window violations", () => {

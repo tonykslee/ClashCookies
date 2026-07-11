@@ -7,9 +7,11 @@ import {
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceAttack,
+  classifyComplianceReasonForPlayer,
   type WarComplianceWinGateConfig,
   type WarComplianceParticipant,
   type WarComplianceSnapshot,
+  type WarComplianceReason,
   computeWarComplianceForTest,
   normalizeTagBare,
   normalizeOutcome,
@@ -350,14 +352,7 @@ function isLateLoseTraditionalWindow(attack: WarComplianceAttack): boolean {
   return Number.isFinite(hoursRemaining) && hoursRemaining < 12;
 }
 
-type NotFollowingReason = {
-  label: string;
-  strictWindowContext: {
-    starsBeforeAttack: number;
-    timeRemaining: string;
-  } | null;
-  breachAttackOrders: number[];
-};
+type NotFollowingReason = WarComplianceReason;
 
 type PlayerBehaviorDetails = {
   actualBehavior: string;
@@ -445,6 +440,7 @@ function classifyTraditionalLossReason(input: {
       label: "clan star cap exceeded",
       strictWindowContext: null,
       breachAttackOrders: [],
+      hasViolation: true,
     };
   }
 
@@ -453,6 +449,7 @@ function classifyTraditionalLossReason(input: {
       label: "any 3-star in traditional loss",
       strictWindowContext: null,
       breachAttackOrders: [],
+      hasViolation: true,
     };
   }
 
@@ -461,6 +458,7 @@ function classifyTraditionalLossReason(input: {
       label: "early non-mirror 2-star in traditional loss",
       strictWindowContext: firstStrictContext,
       breachAttackOrders: earlyNonMirrorTwoStarOrders,
+      hasViolation: true,
     };
   }
 
@@ -469,6 +467,7 @@ function classifyTraditionalLossReason(input: {
       label: "strict-window mirror miss in traditional loss",
       strictWindowContext: firstStrictContext,
       breachAttackOrders: strictWindowNonCompliantOrders,
+      hasViolation: true,
     };
   }
 
@@ -476,6 +475,7 @@ function classifyTraditionalLossReason(input: {
     label: "didn't follow lose-style rules",
     strictWindowContext: null,
     breachAttackOrders: [],
+    hasViolation: false,
   };
 }
 
@@ -526,6 +526,7 @@ function classifyTripleTop30Reason(input: {
       label: "attack on a lower-20 base",
       strictWindowContext: null,
       breachAttackOrders: lower20BreachOrders,
+      hasViolation: true,
     };
   }
   if (top30ZeroStarOrders.length > 0) {
@@ -533,6 +534,7 @@ function classifyTripleTop30Reason(input: {
       label: "0-star attack on a top-30 base",
       strictWindowContext: null,
       breachAttackOrders: top30ZeroStarOrders,
+      hasViolation: true,
     };
   }
   if (capBreachOrders.length > 0) {
@@ -540,6 +542,7 @@ function classifyTripleTop30Reason(input: {
       label: "clan star cap exceeded",
       strictWindowContext: null,
       breachAttackOrders: capBreachOrders,
+      hasViolation: true,
     };
   }
 
@@ -547,6 +550,7 @@ function classifyTripleTop30Reason(input: {
     label: "didn't follow lose-style rules",
     strictWindowContext: null,
     breachAttackOrders: [],
+    hasViolation: false,
   };
 }
 
@@ -561,91 +565,15 @@ function describeNotFollowingReason(input: {
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
 }): NotFollowingReason {
-  if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    const orderedPlayerAttacks = sortAttacksForBreachContext(
-      input.playerAttacks,
-    );
-    let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
-    let firstStrictWindowNonMirrorTripleContext: NotFollowingReason["strictWindowContext"] =
-      null;
-    let hasMirrorTripleInStrictWindow = false;
-    const nonMirrorStrictTripleBreachOrders: number[] = [];
-    const strictWindowNonCompliantOrders: number[] = [];
-
-    for (const attack of orderedPlayerAttacks) {
-      const ctx = input.attackContextByAttack.get(attack);
-      if (!ctx?.isStrictWindow) continue;
-      const strictContext = {
-        starsBeforeAttack: ctx.starsBeforeAttack,
-        timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-      };
-      firstStrictContext = firstStrictContext ?? strictContext;
-      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
-
-      const stars = Number(attack.stars ?? 0);
-      const trueStars = Number(attack.trueStars ?? 0);
-      const isMirrorTriple = ctx.isMirror && stars >= 3;
-      if (isMirrorTriple) {
-        hasMirrorTripleInStrictWindow = true;
-      }
-      if (!ctx.isMirror && stars === 3 && trueStars > 0) {
-        firstStrictWindowNonMirrorTripleContext =
-          firstStrictWindowNonMirrorTripleContext ?? strictContext;
-        pushUniqueAttackOrder(nonMirrorStrictTripleBreachOrders, attackOrder);
-      } else if (ctx.isMirror && stars < 3) {
-        pushUniqueAttackOrder(strictWindowNonCompliantOrders, attackOrder);
-      } else if (!ctx.isMirror && (stars === 1 || stars <= 0)) {
-        pushUniqueAttackOrder(strictWindowNonCompliantOrders, attackOrder);
-      }
-    }
-
-    if (nonMirrorStrictTripleBreachOrders.length > 0) {
-      return {
-        label: "tripled non-mirror in strict window",
-        strictWindowContext:
-          firstStrictWindowNonMirrorTripleContext ?? firstStrictContext,
-        breachAttackOrders: nonMirrorStrictTripleBreachOrders,
-      };
-    }
-
-    if (strictWindowNonCompliantOrders.length > 0) {
-      return {
-        label: "didn't triple mirror",
-        strictWindowContext:
-          firstStrictWindowNonMirrorTripleContext ?? firstStrictContext,
-        breachAttackOrders: strictWindowNonCompliantOrders,
-      };
-    }
-
-    return {
-      label: "didn't follow win plan",
-      strictWindowContext: null,
-      breachAttackOrders: [],
-    };
-  }
-
-  if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
-    if (input.loseStyle === "TRIPLE_TOP_30") {
-      return classifyTripleTop30Reason({
-        playerAttacks: input.playerAttacks,
-        attackIndexByAttack: input.attackIndexByAttack,
-        starsAfterByAttackIndex: input.starsAfterByAttackIndex,
-      });
-    }
-    return classifyTraditionalLossReason({
-      playerAttacks: input.playerAttacks,
-      orderedAttacks: input.allAttacks,
-      attackContextByAttack: input.attackContextByAttack,
-      attackIndexByAttack: input.attackIndexByAttack,
-      starsAfterByAttackIndex: input.starsAfterByAttackIndex,
-    });
-  }
-
-  return {
-    label: "hit non-mirror target",
-    strictWindowContext: null,
-    breachAttackOrders: [],
-  };
+  return classifyComplianceReasonForPlayer({
+    playerAttacks: input.playerAttacks,
+    attackContextByAttack: input.attackContextByAttack,
+    attackIndexByAttack: input.attackIndexByAttack,
+    starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+    matchType: input.matchType,
+    expectedOutcome: input.expectedOutcome,
+    loseStyle: input.loseStyle,
+  });
 }
 
 /** Purpose: describe expected plan behavior for actionable compliance output lines. */
@@ -775,7 +703,9 @@ function mapNamesToIssues(input: {
       expectedBehavior: input.expectedBehavior,
       actualBehavior: behavior?.actualBehavior ?? "",
       attackDetails: behavior?.attackDetails ?? [],
-      breachContext: behavior?.strictWindowContext
+      breachContext:
+        behavior?.strictWindowContext &&
+        (behavior.attackDetails?.some((detail) => detail.isBreach) ?? false)
         ? {
             starsAtBreach: behavior.strictWindowContext.starsBeforeAttack,
             timeRemaining: behavior.strictWindowContext.timeRemaining,
@@ -2168,12 +2098,6 @@ export class WarComplianceService {
     const baselineNamesUniqueSorted = [...new Set(input.baselineNames)].sort((a, b) =>
       a.localeCompare(b),
     );
-    const groupedModeEnabled =
-      input.matchType === "FWA" &&
-      (input.expectedOutcome === "WIN" ||
-        (input.expectedOutcome === "LOSE" && input.loseStyle === "TRADITIONAL"));
-    if (!groupedModeEnabled) return baselineNamesUniqueSorted;
-
     const groups = await this.resolveLinkedComplianceGroups(input.participants);
     const hasMultiLinkedGroup = groups.some(
       (group) => group.isLinked && group.memberTags.length > 1,
@@ -2208,29 +2132,64 @@ export class WarComplianceService {
     }
 
     const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+    const attackIndexByAttack = new Map<WarComplianceAttack, number>();
     const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(input.attacks);
+    for (let index = 0; index < orderedAttacks.length; index += 1) {
+      attackIndexByAttack.set(orderedAttacks[index], index);
+    }
+
+    const reasonByTag = new Map<string, NotFollowingReason>();
+    for (const tag of baselineViolationTags) {
+      const playerAttacks = input.attacks.filter(
+        (attack) => normalizeTag(attack.playerTag) === tag,
+      );
+      if (playerAttacks.length <= 0) continue;
+      reasonByTag.set(
+        tag,
+        describeNotFollowingReason({
+          playerAttacks,
+          allAttacks: input.attacks,
+          attackContextByAttack: input.attackContextByAttack,
+          attackIndexByAttack,
+          starsAfterByAttackIndex,
+          matchType: input.matchType,
+          expectedOutcome: input.expectedOutcome,
+          loseStyle: input.loseStyle,
+        }),
+      );
+    }
+
     for (const group of groups) {
       if (!group.isLinked || group.memberTags.length <= 1) continue;
-      for (const memberTag of group.memberTags) {
-        baselineViolationTags.delete(memberTag);
-      }
+      const groupHasMirrorSatisfaction = orderedAttacks.some((attack) => {
+        const attackTag = normalizeTag(attack.playerTag);
+        if (!group.memberTagSet.has(attackTag)) return false;
+        const ctx = input.attackContextByAttack.get(attack);
+        if (!ctx?.isStrictWindow || !ctx.isMirror) return false;
+        const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
+        if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
+          return stars >= 3;
+        }
+        if (
+          input.matchType === "FWA" &&
+          input.expectedOutcome === "LOSE" &&
+          input.loseStyle === "TRADITIONAL"
+        ) {
+          return stars === 2;
+        }
+        return false;
+      });
+      if (!groupHasMirrorSatisfaction) continue;
 
-      const groupedViolations =
-        input.expectedOutcome === "WIN"
-          ? this.evaluateFwaWinLinkedGroupViolations({
-              group,
-              orderedAttacks,
-              attackContextByAttack: input.attackContextByAttack,
-              participantByTag,
-            })
-          : this.evaluateFwaLossTraditionalLinkedGroupViolations({
-              group,
-              orderedAttacks,
-              starsAfterByAttackIndex,
-              participantByTag,
-            });
-      for (const tag of groupedViolations) {
-        baselineViolationTags.add(tag);
+      for (const memberTag of group.memberTags) {
+        const reason = reasonByTag.get(memberTag);
+        if (!reason) continue;
+        if (
+          reason.label === "didn't triple mirror" ||
+          reason.label === "strict-window mirror miss in traditional loss"
+        ) {
+          baselineViolationTags.delete(memberTag);
+        }
       }
     }
 

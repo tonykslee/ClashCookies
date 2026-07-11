@@ -322,6 +322,9 @@ function buildSampleExpectedBehavior(violation: FwaPoliceViolation): string {
   if (violation === "EARLY_NON_MIRROR_2STAR") {
     return "Avoid early non-mirror 2-star in traditional loss.";
   }
+  if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
+    return "Use the correct star count for the current traditional-loss phase.";
+  }
   if (violation === "ANY_3STAR") {
     return "Avoid 3-star attacks in traditional FWA-loss flow.";
   }
@@ -346,6 +349,9 @@ function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
   }
   if (violation === "EARLY_NON_MIRROR_2STAR") {
     return "#18 (* * -) : early non-mirror 2-star in traditional loss";
+  }
+  if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
+    return "#18 (* - -) : invalid star count in traditional loss";
   }
   if (violation === "ANY_3STAR") {
     return "#16 (* * *) : 3-star in loss-traditional flow";

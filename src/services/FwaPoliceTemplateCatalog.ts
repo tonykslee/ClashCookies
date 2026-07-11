@@ -7,6 +7,7 @@ export const FWA_POLICE_VIOLATIONS = [
   "STRICT_WINDOW_MIRROR_MISS_WIN",
   "STRICT_WINDOW_MIRROR_MISS_LOSS",
   "EARLY_NON_MIRROR_2STAR",
+  "TRADITIONAL_INVALID_STAR_COUNT",
   "ANY_3STAR",
   "LOWER20_ANY_STARS",
   "CLAN_STAR_CAP_EXCEEDED",
@@ -83,6 +84,15 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
       context.expectedOutcome === "LOSE" &&
       context.loseStyle === "TRADITIONAL",
   },
+  TRADITIONAL_INVALID_STAR_COUNT: {
+    label: "Invalid star count in traditional loss",
+    builtInTemplate:
+      "{offender} used an invalid star count in traditional loss. Linked user: {user}.",
+    isApplicable: (context) =>
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      context.loseStyle === "TRADITIONAL",
+  },
   ANY_3STAR: {
     label: "Any 3-star in FWA loss (traditional)",
     builtInTemplate:
@@ -145,6 +155,7 @@ function classifyUsingReasonLabel(labelRaw: string): FwaPoliceViolation | null {
   if (label.includes("tripled non-mirror")) return "EARLY_NON_MIRROR_TRIPLE";
   if (label.includes("didn't triple mirror")) return "STRICT_WINDOW_MIRROR_MISS_WIN";
   if (label.includes("early non-mirror 2-star")) return "EARLY_NON_MIRROR_2STAR";
+  if (label.includes("invalid star count")) return "TRADITIONAL_INVALID_STAR_COUNT";
   if (label.includes("mirror 2-star")) return "STRICT_WINDOW_MIRROR_MISS_LOSS";
   if (label.includes("lose-style")) return "STRICT_WINDOW_MIRROR_MISS_LOSS";
   return null;

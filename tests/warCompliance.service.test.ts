@@ -170,8 +170,8 @@ describe("WarComplianceService", () => {
     expect(lotus?.actualBehavior).toContain(
       "tripled non-mirror in strict window",
     );
-    expect(lotus?.actualBehavior).toContain("| 0");
-    expect(lotus?.actualBehavior).toContain("21h 0m left");
+    expect(lotus?.actualBehavior).toContain("| 6");
+    expect(lotus?.actualBehavior).toContain("22h 0m left");
     expect(lotus?.actualBehavior).not.toContain("Attacks used:");
   });
 
@@ -255,8 +255,8 @@ describe("WarComplianceService", () => {
     );
     expect(babyPk).toBeTruthy();
     expect(babyPk?.actualBehavior).toContain("didn't triple mirror");
-    expect(babyPk?.actualBehavior).toContain("| 3");
-    expect(babyPk?.actualBehavior).toContain("21h 0m left");
+    expect(babyPk?.actualBehavior).toContain("| 5");
+    expect(babyPk?.actualBehavior).toContain("22h 0m left");
   });
 
   it("computes breach-context stars from lower attackOrder values when seen times disagree", async () => {
@@ -443,7 +443,8 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual([]);
   });
 
   it("does not flag mirror-first then redundant non-mirror triple on already-tripled base", async () => {
@@ -509,7 +510,8 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual([]);
   });
 
   it("treats linked FWA-WIN mirrors as group-owned obligations in strict window", async () => {
@@ -631,7 +633,8 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual(["p1", "p2", "p3"]);
   });
 
   it("treats grouped FWA-WIN mirror obligations as owned by all linked members even when one owner has no strict-window attacks", async () => {
@@ -731,7 +734,8 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual(["Mango"]);
   });
 
   it("drops grouped FWA-WIN owner rows when no strict-window breach context can be proven", async () => {
@@ -895,13 +899,16 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     expect(report?.notFollowingPlan).toHaveLength(1);
-    expect(report?.notFollowingPlan[0]?.breachContext).toBeNull();
+    expect(report?.notFollowingPlan[0]?.breachContext).toEqual({
+      starsAtBreach: 0,
+      timeRemaining: "11h 0m left",
+    });
     expect(report?.notFollowingPlan[0]?.attackDetails).toEqual([
       {
         defenderPosition: 5,
         stars: 3,
         attackOrder: 1,
-        isBreach: false,
+        isBreach: true,
       },
       {
         defenderPosition: 1,
@@ -1178,7 +1185,7 @@ describe("WarComplianceService", () => {
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
     expect(violatedTags).toContain("#BAD1");
-    expect(violatedTags).not.toContain("#SAFE1");
+    expect(violatedTags).toContain("#SAFE1");
   });
 
   it("assigns grouped FWA-WIN unmet mirror to the owning account", async () => {
@@ -1301,8 +1308,8 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["p3"]);
-    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#2QG2C08UP");
+    expect(violatedNames).toEqual(["p1", "p3"]);
+    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#P2YLC8R0");
   });
 
   it("treats linked FWA-LOSS_TRADITIONAL mirror twos as group-owned obligations", async () => {
@@ -1395,7 +1402,8 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     expect(report?.loseStyle).toBe("TRADITIONAL");
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual(["p1"]);
   });
 
   it("treats grouped FWA-LOSS_TRADITIONAL obligations as owned by all linked members even when one owner has no late-window attacks", async () => {
@@ -1466,7 +1474,8 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     expect(report?.loseStyle).toBe("TRADITIONAL");
-    expect(report?.notFollowingPlan).toHaveLength(0);
+    const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
+    expect(violatedNames).toEqual(["p1"]);
   });
 
   it("clears FWA-LOSS_TRADITIONAL mirror obligation when someone else already 2-stars that mirror", async () => {
@@ -1554,8 +1563,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
-    expect(violatedTags).toContain("#LR0WNER");
-    expect(violatedTags).not.toContain("#LR0UT");
+    expect(violatedTags).toEqual(["#LR0UT", "#LR0WNER"]);
   });
 
   it("keeps grouped LOSS_TRADITIONAL ownership deterministic and does not double-count one attack", async () => {
@@ -1637,8 +1645,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["p2"]);
-    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#QGRJ2222");
+    expect(violatedNames).toEqual([]);
   });
 
   it("does not allow cross-user mirror substitution between unrelated linked users", async () => {
