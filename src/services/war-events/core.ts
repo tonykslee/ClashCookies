@@ -343,20 +343,26 @@ function sortAttacksForComplianceOrder(
 function compareAttacksForTraditionalLossComplianceOrder(
   a: WarComplianceAttack,
   b: WarComplianceAttack,
+  indexByAttack: Map<WarComplianceAttack, number>,
 ): number {
-  const orderA = normalizeAttackOrder(a.attackOrder ?? null);
-  const orderB = normalizeAttackOrder(b.attackOrder ?? null);
-  const hasOrderA = orderA !== null && orderA > 0;
-  const hasOrderB = orderB !== null && orderB > 0;
-  if (hasOrderA && hasOrderB) {
+  const orderA = normalizePositiveAttackOrder(a.attackOrder ?? null);
+  const orderB = normalizePositiveAttackOrder(b.attackOrder ?? null);
+  const hasOrderA = orderA !== null;
+  const hasOrderB = orderB !== null;
+  if (hasOrderA && hasOrderB && orderA !== orderB) {
     const orderDelta = orderA - orderB;
     if (orderDelta !== 0) return orderDelta;
-  } else if (hasOrderA !== hasOrderB) {
-    return hasOrderA ? -1 : 1;
   }
 
   const timeDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
   if (timeDelta !== 0) return timeDelta;
+
+  if (hasOrderA !== hasOrderB) {
+    return hasOrderA ? -1 : 1;
+  }
+
+  const normalizedOrderDelta = (orderA ?? 0) - (orderB ?? 0);
+  if (normalizedOrderDelta !== 0) return normalizedOrderDelta;
 
   const tagDelta = normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
   if (tagDelta !== 0) return tagDelta;
@@ -364,14 +370,21 @@ function compareAttacksForTraditionalLossComplianceOrder(
   const defenderDelta = Number(a.defenderPosition ?? 0) - Number(b.defenderPosition ?? 0);
   if (defenderDelta !== 0) return defenderDelta;
 
-  return Number(a.stars ?? 0) - Number(b.stars ?? 0);
+  const starsDelta = Number(a.stars ?? 0) - Number(b.stars ?? 0);
+  if (starsDelta !== 0) return starsDelta;
+
+  return (indexByAttack.get(a) ?? Number.MAX_SAFE_INTEGER) - (indexByAttack.get(b) ?? Number.MAX_SAFE_INTEGER);
 }
 
 /** Purpose: sort traditional-loss attacks using canonical positive-order precedence with time fallback. */
 function sortAttacksForTraditionalLossComplianceOrder(
   attacks: WarComplianceAttack[],
 ): WarComplianceAttack[] {
-  return [...attacks].sort(compareAttacksForTraditionalLossComplianceOrder);
+  const indexByAttack = new Map<WarComplianceAttack, number>();
+  attacks.forEach((attack, index) => {
+    indexByAttack.set(attack, index);
+  });
+  return [...attacks].sort((a, b) => compareAttacksForTraditionalLossComplianceOrder(a, b, indexByAttack));
 }
 
 /** Purpose: normalize attack-order values so breach markers stay deterministic. */
@@ -379,6 +392,14 @@ function normalizeAttackOrder(value: number | null | undefined): number | null {
   const parsed = Number(value ?? NaN);
   if (!Number.isFinite(parsed)) return null;
   return Math.trunc(parsed);
+}
+
+/** Purpose: normalize only positive attack orders for reportable substitution metadata. */
+function normalizePositiveAttackOrder(value: number | null | undefined): number | null {
+  const parsed = Number(value ?? NaN);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized > 0 ? normalized : null;
 }
 
 /** Purpose: append one attack-order only once when collecting canonical breach orders. */
@@ -597,7 +618,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       if (attackIndex !== undefined) {
         consumedSubstitutionAttackIndexes.add(attackIndex);
       }
-      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
+      const attackOrder = normalizePositiveAttackOrder(attack.attackOrder ?? null);
       if (attackOrder !== null) {
         consumedSubstitutionAttackOrders.add(attackOrder);
       }
@@ -825,7 +846,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       attackDetails,
       consumedSubstitutionAttackIndexes: playerConsumedSubstitutionAttackIndexes,
       consumedSubstitutionAttackOrders: playerConsumedSubstitutionAttacks
-        .map((attack) => normalizeAttackOrder(attack.attackOrder ?? null))
+        .map((attack) => normalizePositiveAttackOrder(attack.attackOrder ?? null))
         .filter((value): value is number => value !== null),
       actualBehavior,
     });
