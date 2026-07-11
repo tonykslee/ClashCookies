@@ -1,15 +1,18 @@
 import { prisma } from "../prisma";
-import {
-  listPlayerLinksForClanMembers,
-  normalizePlayerTag,
-} from "./PlayerLinkService";
+import * as PlayerLinkService from "./PlayerLinkService";
 import {
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceAttack,
+  buildAttackContextByAttack,
+  type AttackContext,
+  classifyComplianceReasonForPlayer,
+  evaluateFwaTraditionalLossComplianceForTest,
+  type TraditionalClanEvaluation,
   type WarComplianceWinGateConfig,
   type WarComplianceParticipant,
   type WarComplianceSnapshot,
+  type WarComplianceReason,
   computeWarComplianceForTest,
   normalizeTagBare,
   normalizeOutcome,
@@ -17,7 +20,10 @@ import {
 } from "./war-events/core";
 import {
   DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
   DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+  resolveWarPlanComplianceConfigForPlan,
   resolveWarPlanComplianceConfig,
 } from "./warPlanComplianceConfig";
 
@@ -136,6 +142,9 @@ type ParsedWarLookupPayload = {
   } | null;
 };
 
+const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
+const LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT = 12;
+
 /** Purpose: produce a reusable clan-tag OR filter that supports stored with/without `#`. */
 function buildClanTagWhere(tagInput: string): {
   OR: Array<{ clanTag: string }>;
@@ -173,13 +182,6 @@ function getParticipantLabel(input: {
   const name = String(input.playerName ?? "").trim();
   return name || input.playerTag;
 }
-
-type AttackContext = {
-  starsBeforeAttack: number;
-  hoursRemaining: number | null;
-  isStrictWindow: boolean;
-  isMirror: boolean;
-};
 
 /** Purpose: ensure all compliance-side attack iteration uses the same deterministic chronology. */
 function compareAttacksForComplianceOrder(
@@ -241,81 +243,6 @@ function formatTimeRemaining(hoursRemaining: number | null): string {
   return `${hours}h ${minutes}m left`;
 }
 
-/** Purpose: derive stars-before-attack from lower attackOrder values when the breached row has a usable order. */
-function computeStarsBeforeAttack(
-  attack: WarComplianceAttack,
-  allAttacks: WarComplianceAttack[],
-  fallbackStarsBeforeAttack: number,
-): number {
-  const attackOrder = normalizeAttackOrder(attack.attackOrder);
-  if (attackOrder === null || attackOrder <= 0) {
-    return fallbackStarsBeforeAttack;
-  }
-  return allAttacks.reduce((total, row) => {
-    const rowOrder = normalizeAttackOrder(row.attackOrder);
-    if (rowOrder === null || rowOrder <= 0 || rowOrder >= attackOrder) {
-      return total;
-    }
-    return total + Math.max(0, Number(row.trueStars ?? 0));
-  }, 0);
-}
-
-/** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
-function buildAttackContextByAttack(
-  attacks: WarComplianceAttack[],
-  winGateConfig?: WarComplianceWinGateConfig | null,
-): Map<WarComplianceAttack, AttackContext> {
-  const ordered = sortAttacksForBreachContext(attacks);
-  const minClanStarsBeforeNonMirrorTriple = Math.max(
-    0,
-    Math.trunc(Number(winGateConfig?.nonMirrorTripleMinClanStars ?? 100)),
-  );
-  const allBasesOpenHoursLeft = Math.max(
-    0,
-    Math.trunc(Number(winGateConfig?.allBasesOpenHoursLeft ?? 12)),
-  );
-
-  const result = new Map<WarComplianceAttack, AttackContext>();
-  let cumulativeClanStars = 0;
-  for (const attack of ordered) {
-    const fallbackStarsBeforeAttack = cumulativeClanStars;
-    const starsBeforeAttack = computeStarsBeforeAttack(
-      attack,
-      attacks,
-      fallbackStarsBeforeAttack,
-    );
-    const gain = Math.max(0, Number(attack.trueStars ?? 0));
-    cumulativeClanStars += gain;
-
-    const hoursRemaining =
-      attack.warEndTime instanceof Date
-        ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
-          (60 * 60 * 1000)
-        : null;
-    const starsGateActive =
-      starsBeforeAttack < minClanStarsBeforeNonMirrorTriple;
-    const isTimeGateActive =
-      allBasesOpenHoursLeft <= 0
-        ? true
-        : hoursRemaining !== null &&
-          Number.isFinite(hoursRemaining) &&
-          hoursRemaining > allBasesOpenHoursLeft;
-    const isStrictWindow = starsGateActive && isTimeGateActive;
-    const playerPos = attack.playerPosition ?? null;
-    const defenderPos = attack.defenderPosition ?? null;
-    const isMirror =
-      playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-
-    result.set(attack, {
-      starsBeforeAttack,
-      hoursRemaining,
-      isStrictWindow,
-      isMirror,
-    });
-  }
-  return result;
-}
-
 type LinkedComplianceGroup = {
   key: string;
   isLinked: boolean;
@@ -338,23 +265,7 @@ function buildStarsAfterByAttackIndex(
   return result;
 }
 
-/** Purpose: identify whether a traditional-loss attack row is in the late-window enforcement band. */
-function isLateLoseTraditionalWindow(attack: WarComplianceAttack): boolean {
-  if (!(attack.warEndTime instanceof Date)) return false;
-  const hoursRemaining =
-    (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
-    (60 * 60 * 1000);
-  return Number.isFinite(hoursRemaining) && hoursRemaining < 12;
-}
-
-type NotFollowingReason = {
-  label: string;
-  strictWindowContext: {
-    starsBeforeAttack: number;
-    timeRemaining: string;
-  } | null;
-  breachAttackOrders: number[];
-};
+type NotFollowingReason = WarComplianceReason;
 
 type PlayerBehaviorDetails = {
   actualBehavior: string;
@@ -378,94 +289,104 @@ function pushUniqueAttackOrder(target: number[], value: number | null): void {
   target.push(value);
 }
 
-/** Purpose: compute a user-facing violation reason without changing compliance policy decisions. */
-function describeNotFollowingReason(input: {
+/** Purpose: classify the current player's triple-top-30 loss reason from deterministic chronological attack evidence. */
+function classifyTripleTop30Reason(input: {
   playerAttacks: WarComplianceAttack[];
-  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
-  matchType: MatchType;
-  expectedOutcome: "WIN" | "LOSE" | null;
-  loseStyle: FwaLoseStyle;
+  attackIndexByAttack: Map<WarComplianceAttack, number>;
+  starsAfterByAttackIndex: Map<number, number>;
 }): NotFollowingReason {
-  if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    const orderedPlayerAttacks = sortAttacksForBreachContext(
-      input.playerAttacks,
-    );
-    let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
-    let firstStrictWindowNonMirrorTripleContext: NotFollowingReason["strictWindowContext"] =
-      null;
-    let hasMirrorTripleInStrictWindow = false;
-    const nonMirrorStrictTripleBreachOrders: number[] = [];
-    const strictWindowNonCompliantOrders: number[] = [];
+  const orderedPlayerAttacks = sortAttacksForBreachContext(input.playerAttacks);
+  const lower20BreachOrders: number[] = [];
+  const top30ZeroStarOrders: number[] = [];
+  const capBreachOrders: number[] = [];
 
-    for (const attack of orderedPlayerAttacks) {
-      const ctx = input.attackContextByAttack.get(attack);
-      if (!ctx?.isStrictWindow) continue;
-      const strictContext = {
-        starsBeforeAttack: ctx.starsBeforeAttack,
-        timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-      };
-      firstStrictContext = firstStrictContext ?? strictContext;
-      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
+  for (const attack of orderedPlayerAttacks) {
+    const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
+    const globalIndex = input.attackIndexByAttack.get(attack);
+    const defenderPos = attack.defenderPosition ?? null;
+    const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
+    const starsAfter =
+      globalIndex !== null && globalIndex !== undefined
+        ? input.starsAfterByAttackIndex.get(globalIndex) ?? null
+        : null;
+    const starsBefore =
+      globalIndex !== null
+        ? (starsAfter !== null ? starsAfter - Math.max(0, Number(attack.trueStars ?? 0)) : null)
+        : null;
 
-      const stars = Number(attack.stars ?? 0);
-      const trueStars = Number(attack.trueStars ?? 0);
-      const isMirrorTriple = ctx.isMirror && stars >= 3;
-      if (isMirrorTriple) {
-        hasMirrorTripleInStrictWindow = true;
-      } else {
-        pushUniqueAttackOrder(strictWindowNonCompliantOrders, attackOrder);
-      }
-      if (!ctx.isMirror && stars === 3 && trueStars > 0) {
-        firstStrictWindowNonMirrorTripleContext =
-          firstStrictWindowNonMirrorTripleContext ?? strictContext;
-        pushUniqueAttackOrder(nonMirrorStrictTripleBreachOrders, attackOrder);
-      }
+    if (defenderPos !== null && defenderPos > 30) {
+      pushUniqueAttackOrder(lower20BreachOrders, attackOrder);
+      continue;
     }
-
-    if (nonMirrorStrictTripleBreachOrders.length > 0) {
-      return {
-        label: "tripled non-mirror in strict window",
-        strictWindowContext:
-          firstStrictWindowNonMirrorTripleContext ?? firstStrictContext,
-        breachAttackOrders: nonMirrorStrictTripleBreachOrders,
-      };
+    if (defenderPos !== null && defenderPos > 0 && defenderPos <= 30 && stars <= 0) {
+      pushUniqueAttackOrder(top30ZeroStarOrders, attackOrder);
     }
-
-    if (firstStrictContext && !hasMirrorTripleInStrictWindow) {
-      return {
-        label: "didn't triple mirror",
-        strictWindowContext: firstStrictContext,
-        breachAttackOrders: strictWindowNonCompliantOrders,
-      };
+    if (
+      starsBefore !== null &&
+      starsAfter !== null &&
+      starsBefore <= 90 &&
+      starsAfter > 90
+    ) {
+      pushUniqueAttackOrder(capBreachOrders, attackOrder);
     }
-
-    return {
-      label: "didn't follow win plan",
-      strictWindowContext: firstStrictContext,
-      breachAttackOrders: strictWindowNonCompliantOrders,
-    };
   }
 
-  if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
-    if (input.loseStyle === "TRIPLE_TOP_30") {
-      return {
-        label: "attacked outside top-30",
-        strictWindowContext: null,
-        breachAttackOrders: [],
-      };
-    }
+  if (lower20BreachOrders.length > 0) {
     return {
-      label: "didn't follow lose-style rules",
+      label: "attack on a lower-20 base",
       strictWindowContext: null,
-      breachAttackOrders: [],
+      breachAttackOrders: lower20BreachOrders,
+      hasViolation: true,
+    };
+  }
+  if (top30ZeroStarOrders.length > 0) {
+    return {
+      label: "0-star attack on a top-30 base",
+      strictWindowContext: null,
+      breachAttackOrders: top30ZeroStarOrders,
+      hasViolation: true,
+    };
+  }
+  if (capBreachOrders.length > 0) {
+    return {
+      label: "clan star cap exceeded",
+      strictWindowContext: null,
+      breachAttackOrders: capBreachOrders,
+      hasViolation: true,
     };
   }
 
   return {
-    label: "hit non-mirror target",
+    label: "didn't follow lose-style rules",
     strictWindowContext: null,
     breachAttackOrders: [],
+    hasViolation: false,
   };
+}
+
+/** Purpose: compute a user-facing violation reason without changing compliance policy decisions. */
+function describeNotFollowingReason(input: {
+  playerAttacks: WarComplianceAttack[];
+  allAttacks: WarComplianceAttack[];
+  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  attackIndexByAttack: Map<WarComplianceAttack, number>;
+  starsAfterByAttackIndex: Map<number, number>;
+  playerAttacksUsed?: number | null;
+  matchType: MatchType;
+  expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle: FwaLoseStyle;
+}): NotFollowingReason {
+  return classifyComplianceReasonForPlayer({
+    playerAttacks: input.playerAttacks,
+    allAttacks: input.allAttacks,
+    attackContextByAttack: input.attackContextByAttack,
+    attackIndexByAttack: input.attackIndexByAttack,
+    starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+    playerAttacksUsed: input.playerAttacksUsed,
+    matchType: input.matchType,
+    expectedOutcome: input.expectedOutcome,
+    loseStyle: input.loseStyle,
+  });
 }
 
 /** Purpose: describe expected plan behavior for actionable compliance output lines. */
@@ -482,8 +403,8 @@ function describeExpectedPlanBehavior(input: {
   }
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     return input.loseStyle === "TRIPLE_TOP_30"
-      ? "Lose style TRIPLE_TOP_30: attack top-30 bases only."
-      : "Lose style TRADITIONAL: controlled 1-2 star flow and late-window constraints.";
+      ? "Lose style TRIPLE_TOP_30: attack only top-30 bases and stay under the 90-star cap."
+      : "Lose style TRADITIONAL: mirror 2-star in the strict window, follow with 1-star cleanup, and stay under the 100-star cap.";
   }
   return "Mirror-based fallback plan applies when expected outcome is unknown.";
 }
@@ -492,7 +413,11 @@ function describeExpectedPlanBehavior(input: {
 function describeActualBehaviorForPlayer(input: {
   playerTag: string;
   attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
+  playerAttacksUsed: number | null;
+  allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  attackIndexByAttack: Map<WarComplianceAttack, number>;
+  starsAfterByAttackIndex: Map<number, number>;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
@@ -515,7 +440,11 @@ function describeActualBehaviorForPlayer(input: {
   );
   const reason = describeNotFollowingReason({
     playerAttacks: orderedAttacks,
+    allAttacks: input.allAttacks,
     attackContextByAttack: input.attackContextByAttack,
+    attackIndexByAttack: input.attackIndexByAttack,
+    starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+    playerAttacksUsed: input.playerAttacksUsed,
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
@@ -541,6 +470,49 @@ function describeActualBehaviorForPlayer(input: {
   };
 }
 
+/** Purpose: convert the structured traditional-loss evaluator result into detailed report issues. */
+function buildTraditionalLossIssuesFromEvaluation(input: {
+  evaluation: TraditionalClanEvaluation;
+  participantByLabel: Map<string, WarComplianceParticipant>;
+  expectedBehavior: string;
+}): WarComplianceIssue[] {
+  const issues: WarComplianceIssue[] = [];
+  for (const result of input.evaluation.resultsByPlayerTag.values()) {
+    if (!result.hasViolation) continue;
+    const participant = input.participantByLabel.get(result.playerName ?? "") ?? null;
+    const hasBreachDetail = result.attackDetails.some((detail) => detail.isBreach);
+    issues.push({
+      playerTag: result.playerTag,
+      playerName: result.playerName ?? result.playerTag,
+      playerPosition: result.playerPosition ?? participant?.playerPosition ?? null,
+      ruleType: "not_following_plan",
+      expectedBehavior: input.expectedBehavior,
+      actualBehavior: result.actualBehavior,
+      attackDetails: result.attackDetails.map((detail) => ({
+        defenderPosition: detail.defenderPosition,
+        stars: detail.stars,
+        attackOrder: detail.attackOrder,
+        isBreach: detail.isBreach,
+      })),
+      breachContext:
+        result.reason.strictWindowContext &&
+        hasBreachDetail
+          ? {
+              starsAtBreach: result.reason.strictWindowContext.starsBeforeAttack,
+              timeRemaining: result.reason.strictWindowContext.timeRemaining,
+            }
+          : null,
+      reasonLabel: result.reason.label,
+    });
+  }
+  return issues.sort((a, b) => {
+    const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    if (posA !== posB) return posA - posB;
+    return a.playerTag.localeCompare(b.playerTag);
+  });
+}
+
 /** Purpose: map rule-engine name output into detailed issues for user-facing command output. */
 function mapNamesToIssues(input: {
   names: string[];
@@ -548,7 +520,10 @@ function mapNamesToIssues(input: {
   expectedBehavior: string;
   participantByLabel: Map<string, WarComplianceParticipant>;
   attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
+  allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  attackIndexByAttack: Map<WarComplianceAttack, number>;
+  starsAfterByAttackIndex: Map<number, number>;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
@@ -559,14 +534,18 @@ function mapNamesToIssues(input: {
     const behavior =
       input.ruleType === "missed_both"
         ? null
-        : describeActualBehaviorForPlayer({
-            playerTag,
-            attacksByPlayerTag: input.attacksByPlayerTag,
-            attackContextByAttack: input.attackContextByAttack,
-            matchType: input.matchType,
-            expectedOutcome: input.expectedOutcome,
-            loseStyle: input.loseStyle,
-          });
+      : describeActualBehaviorForPlayer({
+          playerTag,
+          attacksByPlayerTag: input.attacksByPlayerTag,
+          playerAttacksUsed: participant?.attacksUsed ?? null,
+          allAttacks: input.allAttacks,
+          attackContextByAttack: input.attackContextByAttack,
+          attackIndexByAttack: input.attackIndexByAttack,
+          starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+          matchType: input.matchType,
+          expectedOutcome: input.expectedOutcome,
+          loseStyle: input.loseStyle,
+        });
     if (
       input.ruleType === "not_following_plan" &&
       input.matchType === "FWA" &&
@@ -583,7 +562,9 @@ function mapNamesToIssues(input: {
       expectedBehavior: input.expectedBehavior,
       actualBehavior: behavior?.actualBehavior ?? "",
       attackDetails: behavior?.attackDetails ?? [],
-      breachContext: behavior?.strictWindowContext
+      breachContext:
+        behavior?.strictWindowContext &&
+        (behavior.attackDetails?.some((detail) => detail.isBreach) ?? false)
         ? {
             starsAtBreach: behavior.strictWindowContext.starsBeforeAttack,
             timeRemaining: behavior.strictWindowContext.timeRemaining,
@@ -1708,25 +1689,28 @@ export class WarComplianceService {
     }
 
     const orderedLinkLookupTags = orderedParticipantTags
-      .map((tag) => normalizePlayerTag(tag))
+      .map((tag) => normalizeTag(tag))
       .filter(Boolean);
     const lookupTagsUnique = [...new Set(orderedLinkLookupTags)];
     const linkedRows =
       lookupTagsUnique.length >= 2
-        ? await listPlayerLinksForClanMembers({
+        ? await PlayerLinkService.listPlayerLinksForClanMembers({
             memberTagsInOrder: lookupTagsUnique,
           }).catch(() => [])
         : [];
     const linkedUserByPlayerTag = new Map<string, string>(
-      linkedRows.map((row) => [normalizePlayerTag(row.playerTag), row.discordUserId]),
-    );
+      linkedRows.map((row) => [
+        normalizeTag(row.playerTag),
+        row.discordUserId,
+      ]),
+      );
 
     const groupByKey = new Map<
       string,
       { key: string; isLinked: boolean; memberTags: string[] }
     >();
     for (const tag of orderedParticipantTags) {
-      const strictTag = normalizePlayerTag(tag);
+      const strictTag = normalizeTag(tag);
       const linkedUserId = strictTag
         ? linkedUserByPlayerTag.get(strictTag) ?? null
         : null;
@@ -1773,6 +1757,7 @@ export class WarComplianceService {
     const strictAttackIndexes: number[] = [];
     const strictSeenByTag = new Set<string>();
     const mirrorTripleInStrictByTag = new Set<string>();
+    const strictWindowBreachSeenByTag = new Set<string>();
     for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
       const attack = input.orderedAttacks[idx];
       const context = input.attackContextByAttack.get(attack);
@@ -1839,10 +1824,12 @@ export class WarComplianceService {
       const stars = Number(attack.stars ?? 0);
       const trueStars = Number(attack.trueStars ?? 0);
       if (stars <= 0) {
+        strictWindowBreachSeenByTag.add(playerTag);
         violatingTags.add(playerTag);
         continue;
       }
       if (stars === 3 && trueStars > 0 && !usedAttackIndexes.has(idx)) {
+        strictWindowBreachSeenByTag.add(playerTag);
         violatingTags.add(playerTag);
       }
     }
@@ -1852,104 +1839,11 @@ export class WarComplianceService {
       const hasOwnedMirror =
         Number.isFinite(Number(ownerPosition)) && Number(ownerPosition) > 0;
       if (hasOwnedMirror) continue;
-      if (!mirrorTripleInStrictByTag.has(playerTag)) {
+      if (
+        strictWindowBreachSeenByTag.has(playerTag) &&
+        !mirrorTripleInStrictByTag.has(playerTag)
+      ) {
         violatingTags.add(playerTag);
-      }
-    }
-
-    return violatingTags;
-  }
-
-  /** Purpose: evaluate grouped mirror obligations for FWA-LOSS_TRADITIONAL late-window mirror rules. */
-  private evaluateFwaLossTraditionalLinkedGroupViolations(input: {
-    group: LinkedComplianceGroup;
-    orderedAttacks: WarComplianceAttack[];
-    starsAfterByAttackIndex: Map<number, number>;
-    participantByTag: Map<string, WarComplianceParticipant>;
-  }): Set<string> {
-    const allLateAttackIndexes: number[] = [];
-    const lateAttackIndexes: number[] = [];
-    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
-      const attack = input.orderedAttacks[idx];
-      if (!isLateLoseTraditionalWindow(attack)) continue;
-      allLateAttackIndexes.push(idx);
-      const playerTag = normalizeTag(attack.playerTag);
-      if (!input.group.memberTagSet.has(playerTag)) continue;
-      lateAttackIndexes.push(idx);
-    }
-
-    const obligations = input.group.memberTags
-      .map((ownerTag) => ({
-        ownerTag,
-        ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
-      }))
-      .filter(
-        (row): row is { ownerTag: string; ownerPosition: number } =>
-          Number.isFinite(Number(row.ownerPosition)) &&
-          Number(row.ownerPosition) > 0,
-      )
-      .sort((a, b) => {
-        if (a.ownerPosition !== b.ownerPosition) {
-          return a.ownerPosition - b.ownerPosition;
-        }
-        return a.ownerTag.localeCompare(b.ownerTag);
-      });
-
-    const usedAttackIndexes = new Set<number>();
-    const satisfiedOwnerTags = new Set<string>();
-    for (const obligation of obligations) {
-      for (const idx of allLateAttackIndexes) {
-        if (usedAttackIndexes.has(idx)) continue;
-        const attack = input.orderedAttacks[idx];
-        const defenderPosition = Number(attack.defenderPosition ?? NaN);
-        if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
-        if (defenderPosition !== obligation.ownerPosition) continue;
-        if (Number(attack.stars ?? 0) < 2) continue;
-        usedAttackIndexes.add(idx);
-        satisfiedOwnerTags.add(obligation.ownerTag);
-        break;
-      }
-    }
-
-    const violatingTags = new Set<string>();
-    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
-      const attack = input.orderedAttacks[idx];
-      const playerTag = normalizeTag(attack.playerTag);
-      if (!input.group.memberTagSet.has(playerTag)) continue;
-      const stars = Number(attack.stars ?? 0);
-
-      if (isLateLoseTraditionalWindow(attack)) {
-        const playerPosition = attack.playerPosition ?? null;
-        const defenderPosition = attack.defenderPosition ?? null;
-        const isMirror =
-          playerPosition !== null &&
-          defenderPosition !== null &&
-          playerPosition === defenderPosition;
-        const validLateAttack =
-          (isMirror && stars === 2) ||
-          (!isMirror && stars === 1) ||
-          (stars === 2 && usedAttackIndexes.has(idx));
-        if (!validLateAttack) {
-          violatingTags.add(playerTag);
-        }
-        continue;
-      }
-
-      if (!(stars === 1 || stars === 2)) {
-        violatingTags.add(playerTag);
-      }
-      if ((input.starsAfterByAttackIndex.get(idx) ?? 0) > 100) {
-        violatingTags.add(playerTag);
-      }
-    }
-
-    for (const obligation of obligations) {
-      const ownerAttacksUsed = Number(
-        input.participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
-      );
-      if (ownerAttacksUsed < 2) continue;
-      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
-        violatingTags.add(obligation.ownerTag);
       }
     }
 
@@ -1966,17 +1860,13 @@ export class WarComplianceService {
     matchType: MatchType;
     expectedOutcome: "WIN" | "LOSE" | null;
     loseStyle: FwaLoseStyle;
+    linkedGroups?: LinkedComplianceGroup[];
   }): Promise<string[]> {
     const baselineNamesUniqueSorted = [...new Set(input.baselineNames)].sort((a, b) =>
       a.localeCompare(b),
     );
-    const groupedModeEnabled =
-      input.matchType === "FWA" &&
-      (input.expectedOutcome === "WIN" ||
-        (input.expectedOutcome === "LOSE" && input.loseStyle === "TRADITIONAL"));
-    if (!groupedModeEnabled) return baselineNamesUniqueSorted;
-
-    const groups = await this.resolveLinkedComplianceGroups(input.participants);
+    const groups =
+      input.linkedGroups ?? (await this.resolveLinkedComplianceGroups(input.participants));
     const hasMultiLinkedGroup = groups.some(
       (group) => group.isLinked && group.memberTags.length > 1,
     );
@@ -2009,31 +1899,32 @@ export class WarComplianceService {
       baselineViolationTags.add(tag);
     }
 
-    const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
-    const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(input.attacks);
-    for (const group of groups) {
-      if (!group.isLinked || group.memberTags.length <= 1) continue;
-      for (const memberTag of group.memberTags) {
-        baselineViolationTags.delete(memberTag);
+    if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
+      const winViolationTags = new Set<string>(baselineViolationTags);
+      const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+      for (const group of groups) {
+        if (!group.isLinked || group.memberTags.length <= 1) continue;
+        for (const memberTag of group.memberTags) {
+          winViolationTags.delete(memberTag);
+        }
+        const groupViolations = this.evaluateFwaWinLinkedGroupViolations({
+          group,
+          orderedAttacks,
+          attackContextByAttack: input.attackContextByAttack,
+          participantByTag,
+        });
+        for (const violationTag of groupViolations) {
+          winViolationTags.add(violationTag);
+        }
       }
 
-      const groupedViolations =
-        input.expectedOutcome === "WIN"
-          ? this.evaluateFwaWinLinkedGroupViolations({
-              group,
-              orderedAttacks,
-              attackContextByAttack: input.attackContextByAttack,
-              participantByTag,
-            })
-          : this.evaluateFwaLossTraditionalLinkedGroupViolations({
-              group,
-              orderedAttacks,
-              starsAfterByAttackIndex,
-              participantByTag,
-            });
-      for (const tag of groupedViolations) {
-        baselineViolationTags.add(tag);
-      }
+      const mappedNames = [...winViolationTags]
+        .map((tag) => labelByTag.get(tag))
+        .filter((name): name is string => Boolean(name))
+        .sort((a, b) => a.localeCompare(b));
+      return [...new Set([...mappedNames, ...preservedUnknownNames])].sort((a, b) =>
+        a.localeCompare(b),
+      );
     }
 
     const mappedNames = [...baselineViolationTags]
@@ -2045,20 +1936,46 @@ export class WarComplianceService {
     );
   }
 
-  /** Purpose: resolve effective FWA-WIN strict-window gate config for command evaluations. */
+  /** Purpose: resolve the effective FWA gate config for supported FWA plans. */
   private async resolveEffectiveFwaWinGateConfig(
     context: ComplianceContext,
-  ): Promise<WarComplianceWinGateConfig> {
-    if (!context.useConfiguredFwaWinGate || !context.guildId) {
-      return {
-        nonMirrorTripleMinClanStars: 100,
-        allBasesOpenHoursLeft: 12,
-      };
-    }
-
+  ): Promise<WarComplianceWinGateConfig | null> {
     const normalizedClanTag = normalizeTag(context.clanTag);
     const clanTagWithHash = normalizedClanTag || "";
     const clanTagBare = normalizedClanTag.replace(/^#/, "");
+    const loseStyle = await getLoseStyleForClan(context.clanTag);
+    const isTraditionalLoss =
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      loseStyle === "TRADITIONAL";
+    const isWinPlan =
+      context.matchType === "FWA" && context.expectedOutcome === "WIN";
+
+    if (!context.useConfiguredFwaWinGate || !context.guildId) {
+      if (isWinPlan) {
+        return {
+          nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
+          allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+        };
+      }
+      if (isTraditionalLoss) {
+        return {
+          nonMirrorTripleMinClanStars:
+            DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+          allBasesOpenHoursLeft:
+            DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+        };
+      }
+      return null;
+    }
+
+    if (!isWinPlan && !isTraditionalLoss) {
+      return null;
+    }
+
+    const planQuery = isWinPlan
+      ? { outcome: "WIN" as const, loseStyle: "ANY" as const }
+      : { outcome: "LOSE" as const, loseStyle: "TRADITIONAL" as const };
 
     try {
       const [customPlan, defaultPlan] = await Promise.all([
@@ -2071,8 +1988,8 @@ export class WarComplianceService {
               { clanTag: { equals: clanTagBare, mode: "insensitive" } },
             ],
             matchType: "FWA",
-            outcome: "WIN",
-            loseStyle: "ANY",
+            outcome: planQuery.outcome,
+            loseStyle: planQuery.loseStyle,
           },
           select: {
             nonMirrorTripleMinClanStars: true,
@@ -2085,8 +2002,8 @@ export class WarComplianceService {
             scope: "DEFAULT",
             clanTag: "",
             matchType: "FWA",
-            outcome: "WIN",
-            loseStyle: "ANY",
+            outcome: planQuery.outcome,
+            loseStyle: planQuery.loseStyle,
           },
           select: {
             nonMirrorTripleMinClanStars: true,
@@ -2095,18 +2012,43 @@ export class WarComplianceService {
         }),
       ]);
 
-      const resolved = resolveWarPlanComplianceConfig({
-        primary: customPlan,
-        fallback: defaultPlan,
-      });
+      const resolved =
+        resolveWarPlanComplianceConfigForPlan({
+          primary: customPlan,
+          fallback: defaultPlan,
+          matchType: "FWA",
+          expectedOutcome: planQuery.outcome,
+          loseStyle: planQuery.loseStyle,
+        }) ??
+        resolveWarPlanComplianceConfig({
+          primary: customPlan,
+          fallback: defaultPlan,
+          builtInFallback: {
+            nonMirrorMinClanStars:
+              isWinPlan
+                ? DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS
+                : DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+            allBasesOpenHoursLeft:
+              isWinPlan
+                ? DEFAULT_ALL_BASES_OPEN_HOURS_LEFT
+                : DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+          },
+        });
       return {
-        nonMirrorTripleMinClanStars: resolved.nonMirrorTripleMinClanStars,
+        nonMirrorTripleMinClanStars:
+          resolved.nonMirrorTripleMinClanStars ?? resolved.nonMirrorMinClanStars,
         allBasesOpenHoursLeft: resolved.allBasesOpenHoursLeft,
       };
     } catch {
       return {
-        nonMirrorTripleMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
-        allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+        nonMirrorTripleMinClanStars:
+          isWinPlan
+            ? DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS
+            : DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft:
+          isWinPlan
+            ? DEFAULT_ALL_BASES_OPEN_HOURS_LEFT
+            : DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
       };
     }
   }
@@ -2116,10 +2058,15 @@ export class WarComplianceService {
     context: ComplianceContext,
   ): Promise<WarComplianceReport | null> {
     const loseStyle = await getLoseStyleForClan(context.clanTag);
+    const linkedGroups = await this.resolveLinkedComplianceGroups(context.participants);
     const fwaWinGateConfig =
-      context.matchType === "FWA" && context.expectedOutcome === "WIN"
+      context.matchType === "FWA" && context.expectedOutcome !== null
         ? await this.resolveEffectiveFwaWinGateConfig(context)
         : null;
+    const attackContextByAttack = buildAttackContextByAttack(
+      context.attacks,
+      fwaWinGateConfig,
+    );
     const snapshot = computeWarComplianceForTest({
       clanTag: context.clanTag,
       participants: context.participants,
@@ -2128,14 +2075,30 @@ export class WarComplianceService {
       expectedOutcome: context.expectedOutcome,
       loseStyle,
       winGateConfig: fwaWinGateConfig,
+      linkedGroups,
     });
+    const traditionalEvaluation =
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      loseStyle === "TRADITIONAL"
+        ? evaluateFwaTraditionalLossComplianceForTest({
+            participants: context.participants,
+            attacks: context.attacks,
+            attackContextByAttack,
+            linkedGroups,
+          })
+        : null;
 
     const participantByLabel = new Map<string, WarComplianceParticipant>();
     const attacksByPlayerTag = new Map<string, WarComplianceAttack[]>();
-    const attackContextByAttack = buildAttackContextByAttack(
+    const orderedAttacks = sortAttacksForComplianceOrder(context.attacks);
+    const attackIndexByAttack = new Map<WarComplianceAttack, number>();
+    const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(
       context.attacks,
-      fwaWinGateConfig,
     );
+    for (let index = 0; index < orderedAttacks.length; index += 1) {
+      attackIndexByAttack.set(orderedAttacks[index], index);
+    }
 
     for (const participant of context.participants) {
       const label = getParticipantLabel({
@@ -2156,17 +2119,36 @@ export class WarComplianceService {
       expectedOutcome: context.expectedOutcome,
       loseStyle,
     });
-    const adjustedNotFollowingNames =
-      await this.applyLinkedMirrorGroupingToNotFollowingNames({
-        baselineNames: snapshot.notFollowingPlan,
-        participantByLabel,
-        participants: context.participants,
-        attacks: context.attacks,
-        attackContextByAttack,
-        matchType: context.matchType,
-        expectedOutcome: context.expectedOutcome,
-        loseStyle,
-      });
+    const notFollowingPlanIssues = traditionalEvaluation
+      ? buildTraditionalLossIssuesFromEvaluation({
+          evaluation: traditionalEvaluation,
+          participantByLabel,
+          expectedBehavior: expectedPlanBehavior,
+        })
+      : mapNamesToIssues({
+          names: await this.applyLinkedMirrorGroupingToNotFollowingNames({
+            baselineNames: snapshot.notFollowingPlan,
+            participantByLabel,
+            participants: context.participants,
+            attacks: context.attacks,
+            attackContextByAttack,
+            matchType: context.matchType,
+            expectedOutcome: context.expectedOutcome,
+            loseStyle,
+            linkedGroups,
+          }),
+          ruleType: "not_following_plan",
+          expectedBehavior: expectedPlanBehavior,
+          participantByLabel,
+          attacksByPlayerTag,
+          allAttacks: context.attacks,
+          attackContextByAttack,
+          attackIndexByAttack,
+          starsAfterByAttackIndex,
+          matchType: context.matchType,
+          expectedOutcome: context.expectedOutcome,
+          loseStyle,
+        });
 
     return {
       clanTag: context.clanTag,
@@ -2184,22 +2166,15 @@ export class WarComplianceService {
         expectedBehavior: "Use both attacks for the war.",
         participantByLabel,
         attacksByPlayerTag,
+        allAttacks: context.attacks,
         attackContextByAttack,
+        attackIndexByAttack,
+        starsAfterByAttackIndex,
         matchType: context.matchType,
         expectedOutcome: context.expectedOutcome,
         loseStyle,
       }),
-      notFollowingPlan: mapNamesToIssues({
-        names: adjustedNotFollowingNames,
-        ruleType: "not_following_plan",
-        expectedBehavior: expectedPlanBehavior,
-        participantByLabel,
-        attacksByPlayerTag,
-        attackContextByAttack,
-        matchType: context.matchType,
-        expectedOutcome: context.expectedOutcome,
-        loseStyle,
-      }),
+      notFollowingPlan: notFollowingPlanIssues,
       participantsCount: context.participants.length,
       attacksCount: context.attacks.length,
       fwaWinGateConfig: context.useConfiguredFwaWinGate

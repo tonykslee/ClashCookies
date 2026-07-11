@@ -824,11 +824,11 @@ describe("FwaPoliceService", () => {
     });
   });
 
-  it("still emits EARLY_NON_MIRROR_2STAR in FWA-WIN", async () => {
+  it("still emits EARLY_NON_MIRROR_2STAR in FWA-LOSS traditional", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
-      loseStyle: "TRIPLE_TOP_30",
+      loseStyle: "TRADITIONAL",
       fwaPoliceDmEnabled: false,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -855,8 +855,8 @@ describe("FwaPoliceService", () => {
         clanName: "Alpha",
         opponentName: "Bravo",
         matchType: "FWA",
-        expectedOutcome: "WIN",
-        loseStyle: "TRIPLE_TOP_30",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
         notFollowingPlan: [
           buildIssue({
             reasonLabel: null,
@@ -886,7 +886,78 @@ describe("FwaPoliceService", () => {
     expect(logSend).toHaveBeenCalledTimes(1);
     const sentPayload = logSend.mock.calls[0]?.[0];
     expect(String(sentPayload?.content ?? "")).toContain(
-      "took an early non-mirror 2-star before the FFA window",
+      "took an early non-mirror 2-star in traditional loss",
+    );
+    expect(result.logSent).toBe(1);
+  });
+
+  it("emits TRADITIONAL_INVALID_STAR_COUNT in FWA-LOSS traditional", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRADITIONAL",
+      fwaPoliceDmEnabled: false,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn(),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12346,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        notFollowingPlan: [
+          buildIssue({
+            reasonLabel: "invalid star count in traditional loss",
+            actualBehavior: "#14 (1-star) : invalid star count in traditional loss",
+            attackDetails: [
+              {
+                defenderPosition: 14,
+                stars: 1,
+                attackOrder: 2,
+                isBreach: true,
+              },
+            ],
+            breachContext: {
+              starsAtBreach: 41,
+              timeRemaining: "9h 0m left",
+            },
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const result = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12346,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(logSend).toHaveBeenCalledTimes(1);
+    const sentPayload = logSend.mock.calls[0]?.[0];
+    expect(String(sentPayload?.content ?? "")).toContain(
+      "used an invalid star count in traditional loss",
     );
     expect(result.logSent).toBe(1);
   });
@@ -957,6 +1028,108 @@ describe("FwaPoliceService", () => {
       "recorded a 3-star in a traditional FWA-loss plan",
     );
     expect(result.logSent).toBe(1);
+  });
+
+  it("enforces canonical strict-window mirror miss in traditional loss without inventing breach context and dedupes the next pass", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRADITIONAL",
+      fwaPoliceDmEnabled: true,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    prismaMock.fwaPoliceHandledViolation.create
+      .mockResolvedValueOnce({ id: "handled-1" })
+      .mockRejectedValueOnce({ code: "P2002" });
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+
+    const dmSend = vi.fn().mockResolvedValue({});
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn().mockResolvedValue({
+          createDM: vi.fn().mockResolvedValue({ send: dmSend }),
+        }),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12347,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        notFollowingPlan: [
+          buildIssue({
+            playerPosition: 5,
+            reasonLabel: "strict-window mirror miss in traditional loss",
+            expectedBehavior: "Mirror 2-star in traditional loss strict window.",
+            actualBehavior: "#5 (2-star) : mirror 2-star missed in traditional loss",
+            attackDetails: [
+              {
+                defenderPosition: 5,
+                stars: 2,
+                isBreach: false,
+              },
+            ],
+            breachContext: null,
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const firstResult = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12347,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+    const secondResult = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12347,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(firstResult).toEqual({
+      evaluatedViolations: 1,
+      created: 1,
+      deduped: 0,
+      dmSent: 1,
+      logSent: 1,
+    });
+    expect(secondResult).toEqual({
+      evaluatedViolations: 1,
+      created: 0,
+      deduped: 1,
+      dmSent: 0,
+      logSent: 0,
+    });
+    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "missed the strict-window mirror requirement in a loss-traditional flow",
+    );
+    expect(prismaMock.warAttacks.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.warAttacks.findFirst).toHaveBeenCalledTimes(1);
+    expect(evaluateComplianceForCommand).toHaveBeenCalledTimes(2);
   });
 
   it("skips FWA-LOSS traditional non-triple generic non-strict-window issues", async () => {

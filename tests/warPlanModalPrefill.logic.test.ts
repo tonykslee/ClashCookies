@@ -137,7 +137,7 @@ describe("warplan set modal compliance prefill", () => {
     });
 
     expect(line).toBe(
-      "Compliance gate: nonMirrorTripleMinClanStars=0, allBasesOpenHoursLeft=12h",
+      "Compliance gate: non-mirror 2★ opens at 150 clan stars or 12h left | clan cap: 100★",
     );
     expect(line).not.toContain("applies to FWA_WIN only");
   });

@@ -719,9 +719,18 @@ describe("war plan violations view helpers", () => {
     expect(formatWarPlanViolationsViolationTypeLabel("EARLY_NON_MIRROR_2STAR")).toBe(
       "Early non-mirror 2-star",
     );
+    expect(
+      formatWarPlanViolationsViolationTypeLabel("TRADITIONAL_INVALID_STAR_COUNT"),
+    ).toBe("Invalid star count in traditional loss");
     expect(formatWarPlanViolationsViolationTypeLabel("ANY_3STAR")).toBe("3-star plan violation");
     expect(formatWarPlanViolationsViolationTypeLabel("LOWER20_ANY_STARS")).toBe(
-      "Lower-20 attack violation",
+      "Attack on a lower-20 base",
+    );
+    expect(formatWarPlanViolationsViolationTypeLabel("CLAN_STAR_CAP_EXCEEDED")).toBe(
+      "Clan star cap exceeded",
+    );
+    expect(formatWarPlanViolationsViolationTypeLabel("TOP30_ZERO_STARS")).toBe(
+      "0-star attack on a top-30 base",
     );
     expect(formatWarPlanViolationsViolationTypeLabel("OTHER_PLAN_VIOLATION")).toBe(
       "Other plan violation",
