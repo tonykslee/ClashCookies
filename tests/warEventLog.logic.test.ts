@@ -999,7 +999,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     expect(result.notFollowingPlan).toEqual(["Alice"]);
   });
 
-  it("FWA LOSE Traditional plan (late window <12h): flags mirror!=2-star and non-mirror!=1-star attacks", () => {
+  it("FWA LOSE Traditional plan (open final 12 hours): flags 1-star attacks and allows 2-star attacks", () => {
     const result = computeWarComplianceForTest({
       clanTag: "#CLAN",
       participants,
@@ -1011,8 +1011,8 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
           defenderPosition: 1,
           stars: 1,
           trueStars: 1,
-          attackSeenAt: dateAt(11),
-          warEndTime: dateAt(20),
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
           attackOrder: 1,
         },
         {
@@ -1022,8 +1022,8 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
           defenderPosition: 1,
           stars: 2,
           trueStars: 2,
-          attackSeenAt: dateAt(11),
-          warEndTime: dateAt(20),
+          attackSeenAt: dateAt(12),
+          warEndTime: dateAt(24),
           attackOrder: 2,
         },
       ],
@@ -1031,42 +1031,183 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       expectedOutcome: "LOSE",
       loseStyle: "TRADITIONAL",
     });
-    expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+    expect(result.notFollowingPlan).toEqual(["Alice"]);
   });
 
-  it("FWA LOSE Traditional plan (early window >=12h): flags stars outside 1-2 and attacks that push cumulative stars over 100", () => {
+  it("FWA LOSE Traditional plan: uses the legacy 150/12 fallback when winGateConfig is omitted", () => {
+    const winParticipants = [
+      { playerName: "strict13", playerTag: "#S13", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "open12", playerTag: "#O12", attacksUsed: 1, playerPosition: 2 },
+      { playerName: "open11", playerTag: "#O11", attacksUsed: 1, playerPosition: 3 },
+    ];
     const result = computeWarComplianceForTest({
       clanTag: "#CLAN",
-      participants,
+      participants: winParticipants,
       attacks: [
         {
-          playerTag: "#A",
-          playerName: "Alice",
+          playerTag: "#S13",
+          playerName: "strict13",
           playerPosition: 1,
-          defenderPosition: 1,
-          stars: 3,
-          trueStars: 3,
-          attackSeenAt: dateAt(1),
-          warEndTime: dateAt(20),
+          defenderPosition: 4,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
           attackOrder: 1,
         },
         {
-          playerTag: "#B",
-          playerName: "Bob",
+          playerTag: "#O12",
+          playerName: "open12",
           playerPosition: 2,
-          defenderPosition: 2,
+          defenderPosition: 5,
           stars: 2,
-          trueStars: 101,
-          attackSeenAt: dateAt(2),
-          warEndTime: dateAt(20),
+          trueStars: 2,
+          attackSeenAt: dateAt(12),
+          warEndTime: dateAt(24),
           attackOrder: 2,
+        },
+        {
+          playerTag: "#O11",
+          playerName: "open11",
+          playerPosition: 3,
+          defenderPosition: 6,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
+          attackOrder: 3,
         },
       ],
       matchType: "FWA",
       expectedOutcome: "LOSE",
       loseStyle: "TRADITIONAL",
     });
-    expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+    expect(result.notFollowingPlan).toEqual(["strict13"]);
+  });
+
+  it("FWA LOSE Traditional plan: keeps explicit 101/0 config unchanged", () => {
+    const winParticipants = [
+      { playerName: "strict13", playerTag: "#S13", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "open12", playerTag: "#O12", attacksUsed: 1, playerPosition: 2 },
+      { playerName: "open11", playerTag: "#O11", attacksUsed: 1, playerPosition: 3 },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: winParticipants,
+      attacks: [
+        {
+          playerTag: "#S13",
+          playerName: "strict13",
+          playerPosition: 1,
+          defenderPosition: 4,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#O12",
+          playerName: "open12",
+          playerPosition: 2,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(12),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+        {
+          playerTag: "#O11",
+          playerName: "open11",
+          playerPosition: 3,
+          defenderPosition: 6,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
+          attackOrder: 3,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      winGateConfig: {
+        nonMirrorTripleMinClanStars: 101,
+        allBasesOpenHoursLeft: 0,
+      },
+    });
+    expect(result.notFollowingPlan).toEqual(["open11", "open12", "strict13"]);
+  });
+
+  it("FWA LOSE Traditional plan: consumes an exact linked substitution without flagging it twice", () => {
+    const winParticipants = [
+      { playerName: "owner4", playerTag: "#P1", attacksUsed: 2, playerPosition: 4 },
+      { playerName: "owner5", playerTag: "#P2", attacksUsed: 2, playerPosition: 5 },
+    ];
+    const linkedGroups = [
+      {
+        key: "user:111111111111111111",
+        isLinked: true,
+        memberTags: ["#P1", "#P2"],
+        memberTagSet: new Set(["#P1", "#P2"]),
+      },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: winParticipants,
+      attacks: [
+        {
+          playerTag: "#P1",
+          playerName: "owner4",
+          playerPosition: 4,
+          defenderPosition: 4,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#P1",
+          playerName: "owner4",
+          playerPosition: 4,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+        {
+          playerTag: "#P2",
+          playerName: "owner5",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars: 1,
+          trueStars: 1,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 3,
+        },
+        {
+          playerTag: "#P2",
+          playerName: "owner5",
+          playerPosition: 5,
+          defenderPosition: 2,
+          stars: 1,
+          trueStars: 1,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 4,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      linkedGroups,
+    });
+    expect(result.notFollowingPlan).toEqual([]);
   });
 });
 

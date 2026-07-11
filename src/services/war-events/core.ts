@@ -3,6 +3,10 @@ import {
   normalizeClashTagBareInput,
   normalizeClashTagInput,
 } from "../../helper/clashTag";
+import {
+  DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+} from "../warPlanComplianceConfig";
 
 export type WarState = "notInWar" | "preparation" | "inWar";
 export type EventType = "war_started" | "battle_day" | "war_ended";
@@ -51,6 +55,13 @@ export type WarComplianceWinGateConfig = {
 
 const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
 const LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT = 12;
+
+export type WarComplianceLinkedGroup = {
+  key: string;
+  isLinked: boolean;
+  memberTags: string[];
+  memberTagSet: Set<string>;
+};
 
 export type AttackContext = {
   starsBeforeAttack: number;
@@ -254,10 +265,14 @@ function resolveWarEndOutcome(
 }
 
 /** Purpose: preserve the legacy WIN gate when no configured guild context is available. */
-function resolveEffectiveWinGateConfigForCompliance(input: {
+function resolveEffectiveGateConfigForCompliance(input: {
+  matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   winGateConfig?: WarComplianceWinGateConfig | null;
 }): WarComplianceWinGateConfig | null {
+  if (input.matchType !== "FWA" || input.expectedOutcome === null) {
+    return input.winGateConfig ?? null;
+  }
   if (input.expectedOutcome === "WIN") {
     return (
       input.winGateConfig ?? {
@@ -266,7 +281,154 @@ function resolveEffectiveWinGateConfigForCompliance(input: {
       }
     );
   }
+  if (input.expectedOutcome === "LOSE") {
+    return (
+      input.winGateConfig ?? {
+        nonMirrorTripleMinClanStars:
+          DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft:
+          DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+      }
+    );
+  }
   return input.winGateConfig ?? null;
+}
+
+/** Purpose: apply the linked traditional-loss mirror policy to baseline player violations. */
+function applyTraditionalLinkedGroupAdjustments(input: {
+  baselineViolationTags: Set<string>;
+  participants: WarComplianceParticipant[];
+  attacks: WarComplianceAttack[];
+  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  attackIndexByAttack: Map<WarComplianceAttack, number>;
+  starsAfterByAttackIndex: Map<number, number>;
+  linkedGroups: WarComplianceLinkedGroup[];
+}): Set<string> {
+  const participantByTag = new Map<string, WarComplianceParticipant>();
+  for (const participant of input.participants) {
+    const tag = normalizeTag(participant.playerTag);
+    if (!tag) continue;
+    participantByTag.set(tag, participant);
+  }
+
+  const baselineViolationTags = new Set(input.baselineViolationTags);
+  const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+  const reasonByTag = new Map<string, WarComplianceReason>();
+  for (const tag of baselineViolationTags) {
+    const participant = participantByTag.get(tag) ?? null;
+    if (!participant) continue;
+    const playerAttacks = orderedAttacks.filter(
+      (attack) => normalizeTag(attack.playerTag) === tag,
+    );
+    if (playerAttacks.length === 0) continue;
+    reasonByTag.set(
+      tag,
+      classifyComplianceReasonForPlayer({
+        playerAttacks,
+        allAttacks: orderedAttacks,
+        attackContextByAttack: input.attackContextByAttack,
+        attackIndexByAttack: input.attackIndexByAttack,
+        starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+        playerAttacksUsed: participant.attacksUsed,
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      }),
+    );
+  }
+
+  for (const group of input.linkedGroups) {
+    if (!group.isLinked || group.memberTags.length <= 1) continue;
+
+    const obligations = group.memberTags
+      .map((ownerTag) => {
+        const normalizedOwnerTag = normalizeTag(ownerTag);
+        return {
+          ownerTag: normalizedOwnerTag,
+          ownerPosition: participantByTag.get(normalizedOwnerTag)?.playerPosition ?? null,
+        };
+      })
+      .filter(
+        (row): row is { ownerTag: string; ownerPosition: number } =>
+          Number.isFinite(Number(row.ownerPosition)) && Number(row.ownerPosition) > 0,
+      )
+      .sort((a, b) => {
+        if (a.ownerPosition !== b.ownerPosition) {
+          return a.ownerPosition - b.ownerPosition;
+        }
+        return a.ownerTag.localeCompare(b.ownerTag);
+      });
+
+    const satisfiedOwnerTags = new Set<string>();
+    const consumedLinkedSubstitutionByTag = new Set<string>();
+    for (const attack of orderedAttacks) {
+      const attackTag = normalizeTag(attack.playerTag);
+      const ctx = input.attackContextByAttack.get(attack);
+      if (!ctx?.isStrictWindow) continue;
+      if (Math.max(0, Math.trunc(Number(attack.stars ?? 0))) !== 2) continue;
+      const defenderPosition = Number(attack.defenderPosition ?? NaN);
+      if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
+
+      const obligation = obligations.find(
+        (row) =>
+          row.ownerPosition === defenderPosition &&
+          !satisfiedOwnerTags.has(row.ownerTag),
+      );
+      if (!obligation) continue;
+      satisfiedOwnerTags.add(obligation.ownerTag);
+      if (
+        !ctx?.isMirror &&
+        group.memberTagSet.has(attackTag) &&
+        attackTag !== obligation.ownerTag
+      ) {
+        consumedLinkedSubstitutionByTag.add(attackTag);
+      }
+    }
+
+    for (const memberTag of group.memberTags) {
+      const normalizedMemberTag = normalizeTag(memberTag);
+      const reason = reasonByTag.get(normalizedMemberTag);
+      if (!reason) continue;
+
+      if (reason.label === "strict-window mirror miss in traditional loss") {
+        const ownerAttacksUsed = Number(
+          participantByTag.get(normalizedMemberTag)?.attacksUsed ?? 0,
+        );
+        if (ownerAttacksUsed < 2 || satisfiedOwnerTags.has(normalizedMemberTag)) {
+          baselineViolationTags.delete(normalizedMemberTag);
+        }
+        continue;
+      }
+
+      if (reason.label === "early non-mirror 2-star in traditional loss") {
+        if (consumedLinkedSubstitutionByTag.has(normalizedMemberTag)) {
+          baselineViolationTags.delete(normalizedMemberTag);
+        }
+        continue;
+      }
+
+      if (reason.label === "invalid star count in traditional loss") {
+        if (
+          satisfiedOwnerTags.has(normalizedMemberTag) ||
+          consumedLinkedSubstitutionByTag.has(normalizedMemberTag)
+        ) {
+          baselineViolationTags.delete(normalizedMemberTag);
+        }
+      }
+    }
+
+    for (const obligation of obligations) {
+      const ownerAttacksUsed = Number(
+        participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
+      );
+      if (ownerAttacksUsed < 2) continue;
+      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
+        baselineViolationTags.add(obligation.ownerTag);
+      }
+    }
+  }
+
+  return baselineViolationTags;
 }
 
 /** Purpose: sort attacks in the same deterministic chronology used by compliance checks. */
@@ -734,12 +896,14 @@ export function computeWarComplianceForTest(input: {
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
   winGateConfig?: WarComplianceWinGateConfig | null;
+  linkedGroups?: WarComplianceLinkedGroup[] | null;
 }): WarComplianceSnapshot {
   if (input.matchType === "BL" || input.matchType === "MM") {
     return { missedBoth: [], notFollowingPlan: [] };
   }
 
-  const effectiveWinGateConfig = resolveEffectiveWinGateConfigForCompliance({
+  const effectiveWinGateConfig = resolveEffectiveGateConfigForCompliance({
+    matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     winGateConfig: input.winGateConfig,
   });
@@ -825,6 +989,7 @@ export function computeWarComplianceForTest(input: {
         }
       }
     } else {
+      const baselineViolationTags = new Set<string>();
       for (const participant of participants) {
         const playerTag = normalizeTag(participant.playerTag);
         const playerAttacks = attacks.filter(
@@ -843,8 +1008,29 @@ export function computeWarComplianceForTest(input: {
           loseStyle: input.loseStyle,
         });
         if (reason.hasViolation) {
-          addViolation(playerTag, participant.playerName);
+          baselineViolationTags.add(playerTag);
         }
+      }
+
+      const adjustedBaselineViolationTags =
+        input.expectedOutcome === "LOSE" &&
+        input.loseStyle === "TRADITIONAL" &&
+        input.linkedGroups?.length
+          ? applyTraditionalLinkedGroupAdjustments({
+              baselineViolationTags,
+              participants,
+              attacks,
+              attackContextByAttack,
+              attackIndexByAttack,
+              starsAfterByAttackIndex,
+              linkedGroups: input.linkedGroups,
+            })
+          : baselineViolationTags;
+
+      for (const participant of participants) {
+        const playerTag = normalizeTag(participant.playerTag);
+        if (!adjustedBaselineViolationTags.has(playerTag)) continue;
+        addViolation(playerTag, participant.playerName);
       }
     }
   } else {

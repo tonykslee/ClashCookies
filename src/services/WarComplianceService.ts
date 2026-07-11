@@ -263,15 +263,6 @@ function buildStarsAfterByAttackIndex(
   return result;
 }
 
-/** Purpose: identify whether a traditional-loss attack row is in the late-window enforcement band. */
-function isLateLoseTraditionalWindow(attack: WarComplianceAttack): boolean {
-  if (!(attack.warEndTime instanceof Date)) return false;
-  const hoursRemaining =
-    (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
-    (60 * 60 * 1000);
-  return Number.isFinite(hoursRemaining) && hoursRemaining < 12;
-}
-
 type NotFollowingReason = WarComplianceReason;
 
 type PlayerBehaviorDetails = {
@@ -294,109 +285,6 @@ function pushUniqueAttackOrder(target: number[], value: number | null): void {
   if (value === null) return;
   if (target.includes(value)) return;
   target.push(value);
-}
-
-/** Purpose: classify the current player's traditional-loss reason from deterministic chronological attack evidence. */
-function classifyTraditionalLossReason(input: {
-  playerAttacks: WarComplianceAttack[];
-  orderedAttacks: WarComplianceAttack[];
-  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
-  attackIndexByAttack: Map<WarComplianceAttack, number>;
-  starsAfterByAttackIndex: Map<number, number>;
-}): NotFollowingReason {
-  const orderedPlayerAttacks = sortAttacksForBreachContext(input.playerAttacks);
-  let firstStrictContext: NotFollowingReason["strictWindowContext"] = null;
-  const strictWindowNonCompliantOrders: number[] = [];
-  const earlyNonMirrorTwoStarOrders: number[] = [];
-  const anyThreeStarOrders: number[] = [];
-  const capBreachOrders: number[] = [];
-  let sawStrictWindowAttack = false;
-
-  for (const attack of orderedPlayerAttacks) {
-    const ctx = input.attackContextByAttack.get(attack);
-    const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
-    const globalIndex = input.attackIndexByAttack.get(attack);
-    const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
-    const playerPos = attack.playerPosition ?? null;
-    const defenderPos = attack.defenderPosition ?? null;
-    const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-    const strictContext = ctx
-      ? {
-          starsBeforeAttack: ctx.starsBeforeAttack,
-          timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-        }
-      : null;
-    const starsAfter =
-      globalIndex !== null && globalIndex !== undefined
-        ? input.starsAfterByAttackIndex.get(globalIndex) ?? null
-        : null;
-
-    if (ctx?.isStrictWindow) {
-      sawStrictWindowAttack = true;
-      firstStrictContext = firstStrictContext ?? strictContext;
-      if (!isMirror && stars === 2) {
-        pushUniqueAttackOrder(earlyNonMirrorTwoStarOrders, attackOrder);
-      } else if (!(isMirror && stars === 2)) {
-        pushUniqueAttackOrder(strictWindowNonCompliantOrders, attackOrder);
-      }
-    }
-
-    if (stars === 3) {
-      pushUniqueAttackOrder(anyThreeStarOrders, attackOrder);
-    }
-
-    if (
-      starsAfter !== null &&
-      ctx &&
-      ctx.starsBeforeAttack <= 100 &&
-      starsAfter > 100
-    ) {
-      pushUniqueAttackOrder(capBreachOrders, attackOrder);
-    }
-  }
-
-  if (capBreachOrders.length > 0) {
-    return {
-      label: "clan star cap exceeded",
-      strictWindowContext: null,
-      breachAttackOrders: [],
-      hasViolation: true,
-    };
-  }
-
-  if (anyThreeStarOrders.length > 0) {
-    return {
-      label: "any 3-star in traditional loss",
-      strictWindowContext: null,
-      breachAttackOrders: [],
-      hasViolation: true,
-    };
-  }
-
-  if (earlyNonMirrorTwoStarOrders.length > 0) {
-    return {
-      label: "early non-mirror 2-star in traditional loss",
-      strictWindowContext: firstStrictContext,
-      breachAttackOrders: earlyNonMirrorTwoStarOrders,
-      hasViolation: true,
-    };
-  }
-
-  if (sawStrictWindowAttack) {
-    return {
-      label: "strict-window mirror miss in traditional loss",
-      strictWindowContext: firstStrictContext,
-      breachAttackOrders: strictWindowNonCompliantOrders,
-      hasViolation: true,
-    };
-  }
-
-  return {
-    label: "didn't follow lose-style rules",
-    strictWindowContext: null,
-    breachAttackOrders: [],
-    hasViolation: false,
-  };
 }
 
 /** Purpose: classify the current player's triple-top-30 loss reason from deterministic chronological attack evidence. */
@@ -1756,23 +1644,18 @@ export class WarComplianceService {
     }
 
     const orderedLinkLookupTags = orderedParticipantTags
-      .map((tag) => PlayerLinkService.normalizePlayerTag(tag))
+      .map((tag) => normalizeTag(tag))
       .filter(Boolean);
     const lookupTagsUnique = [...new Set(orderedLinkLookupTags)];
     const linkedRows =
       lookupTagsUnique.length >= 2
-        ? await (async () => {
-            const module = await import("./PlayerLinkService");
-            return module
-              .listPlayerLinksForClanMembers({
-                memberTagsInOrder: lookupTagsUnique,
-              })
-              .catch(() => []);
-          })()
+        ? await PlayerLinkService.listPlayerLinksForClanMembers({
+            memberTagsInOrder: lookupTagsUnique,
+          }).catch(() => [])
         : [];
     const linkedUserByPlayerTag = new Map<string, string>(
       linkedRows.map((row) => [
-        PlayerLinkService.normalizePlayerTag(row.playerTag),
+        normalizeTag(row.playerTag),
         row.discordUserId,
       ]),
       );
@@ -1782,7 +1665,7 @@ export class WarComplianceService {
       { key: string; isLinked: boolean; memberTags: string[] }
     >();
     for (const tag of orderedParticipantTags) {
-      const strictTag = PlayerLinkService.normalizePlayerTag(tag);
+      const strictTag = normalizeTag(tag);
       const linkedUserId = strictTag
         ? linkedUserByPlayerTag.get(strictTag) ?? null
         : null;
@@ -1922,102 +1805,6 @@ export class WarComplianceService {
     return violatingTags;
   }
 
-  /** Purpose: evaluate grouped mirror obligations for FWA-LOSS_TRADITIONAL late-window mirror rules. */
-  private evaluateFwaLossTraditionalLinkedGroupViolations(input: {
-    group: LinkedComplianceGroup;
-    orderedAttacks: WarComplianceAttack[];
-    starsAfterByAttackIndex: Map<number, number>;
-    participantByTag: Map<string, WarComplianceParticipant>;
-  }): Set<string> {
-    const allLateAttackIndexes: number[] = [];
-    const lateAttackIndexes: number[] = [];
-    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
-      const attack = input.orderedAttacks[idx];
-      if (!isLateLoseTraditionalWindow(attack)) continue;
-      allLateAttackIndexes.push(idx);
-      const playerTag = normalizeTag(attack.playerTag);
-      if (!input.group.memberTagSet.has(playerTag)) continue;
-      lateAttackIndexes.push(idx);
-    }
-
-    const obligations = input.group.memberTags
-      .map((ownerTag) => ({
-        ownerTag,
-        ownerPosition: input.participantByTag.get(ownerTag)?.playerPosition ?? null,
-      }))
-      .filter(
-        (row): row is { ownerTag: string; ownerPosition: number } =>
-          Number.isFinite(Number(row.ownerPosition)) &&
-          Number(row.ownerPosition) > 0,
-      )
-      .sort((a, b) => {
-        if (a.ownerPosition !== b.ownerPosition) {
-          return a.ownerPosition - b.ownerPosition;
-        }
-        return a.ownerTag.localeCompare(b.ownerTag);
-      });
-
-    const usedAttackIndexes = new Set<number>();
-    const satisfiedOwnerTags = new Set<string>();
-    for (const obligation of obligations) {
-      for (const idx of allLateAttackIndexes) {
-        if (usedAttackIndexes.has(idx)) continue;
-        const attack = input.orderedAttacks[idx];
-        const defenderPosition = Number(attack.defenderPosition ?? NaN);
-        if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
-        if (defenderPosition !== obligation.ownerPosition) continue;
-        if (Number(attack.stars ?? 0) < 2) continue;
-        usedAttackIndexes.add(idx);
-        satisfiedOwnerTags.add(obligation.ownerTag);
-        break;
-      }
-    }
-
-    const violatingTags = new Set<string>();
-    for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
-      const attack = input.orderedAttacks[idx];
-      const playerTag = normalizeTag(attack.playerTag);
-      if (!input.group.memberTagSet.has(playerTag)) continue;
-      const stars = Number(attack.stars ?? 0);
-
-      if (isLateLoseTraditionalWindow(attack)) {
-        const playerPosition = attack.playerPosition ?? null;
-        const defenderPosition = attack.defenderPosition ?? null;
-        const isMirror =
-          playerPosition !== null &&
-          defenderPosition !== null &&
-          playerPosition === defenderPosition;
-        const validLateAttack =
-          (isMirror && stars === 2) ||
-          (!isMirror && stars === 1) ||
-          (stars === 2 && usedAttackIndexes.has(idx));
-        if (!validLateAttack) {
-          violatingTags.add(playerTag);
-        }
-        continue;
-      }
-
-      if (!(stars === 1 || stars === 2)) {
-        violatingTags.add(playerTag);
-      }
-      if ((input.starsAfterByAttackIndex.get(idx) ?? 0) > 100) {
-        violatingTags.add(playerTag);
-      }
-    }
-
-    for (const obligation of obligations) {
-      const ownerAttacksUsed = Number(
-        input.participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
-      );
-      if (ownerAttacksUsed < 2) continue;
-      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
-        violatingTags.add(obligation.ownerTag);
-      }
-    }
-
-    return violatingTags;
-  }
-
   /** Purpose: apply linked-account mirror-obligation substitutions to canonical not-following output without introducing police-only logic. */
   private async applyLinkedMirrorGroupingToNotFollowingNames(input: {
     baselineNames: string[];
@@ -2028,11 +1815,13 @@ export class WarComplianceService {
     matchType: MatchType;
     expectedOutcome: "WIN" | "LOSE" | null;
     loseStyle: FwaLoseStyle;
+    linkedGroups?: LinkedComplianceGroup[];
   }): Promise<string[]> {
     const baselineNamesUniqueSorted = [...new Set(input.baselineNames)].sort((a, b) =>
       a.localeCompare(b),
     );
-    const groups = await this.resolveLinkedComplianceGroups(input.participants);
+    const groups =
+      input.linkedGroups ?? (await this.resolveLinkedComplianceGroups(input.participants));
     const hasMultiLinkedGroup = groups.some(
       (group) => group.isLinked && group.memberTags.length > 1,
     );
@@ -2065,15 +1854,9 @@ export class WarComplianceService {
       baselineViolationTags.add(tag);
     }
 
-    const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
-    const attackIndexByAttack = new Map<WarComplianceAttack, number>();
-    const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(input.attacks);
-    for (let index = 0; index < orderedAttacks.length; index += 1) {
-      attackIndexByAttack.set(orderedAttacks[index], index);
-    }
-
     if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
       const winViolationTags = new Set<string>(baselineViolationTags);
+      const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
       for (const group of groups) {
         if (!group.isLinked || group.memberTags.length <= 1) continue;
         for (const memberTag of group.memberTags) {
@@ -2097,63 +1880,6 @@ export class WarComplianceService {
       return [...new Set([...mappedNames, ...preservedUnknownNames])].sort((a, b) =>
         a.localeCompare(b),
       );
-    }
-
-    const reasonByTag = new Map<string, NotFollowingReason>();
-    for (const tag of baselineViolationTags) {
-      const participant = participantByTag.get(tag) ?? null;
-      const playerAttacks = input.attacks.filter(
-        (attack) => normalizeTag(attack.playerTag) === tag,
-      );
-      if (playerAttacks.length <= 0) continue;
-      reasonByTag.set(
-        tag,
-        describeNotFollowingReason({
-          playerAttacks,
-          allAttacks: input.attacks,
-          attackContextByAttack: input.attackContextByAttack,
-          attackIndexByAttack,
-          starsAfterByAttackIndex,
-          playerAttacksUsed: participant?.attacksUsed ?? null,
-          matchType: input.matchType,
-          expectedOutcome: input.expectedOutcome,
-          loseStyle: input.loseStyle,
-        }),
-      );
-    }
-
-    for (const group of groups) {
-      if (!group.isLinked || group.memberTags.length <= 1) continue;
-      const groupHasMirrorSatisfaction = orderedAttacks.some((attack) => {
-        const attackTag = normalizeTag(attack.playerTag);
-        if (!group.memberTagSet.has(attackTag)) return false;
-        const ctx = input.attackContextByAttack.get(attack);
-        if (!ctx?.isStrictWindow || !ctx.isMirror) return false;
-        const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
-        if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-          return stars >= 3;
-        }
-        if (
-          input.matchType === "FWA" &&
-          input.expectedOutcome === "LOSE" &&
-          input.loseStyle === "TRADITIONAL"
-        ) {
-          return stars === 2;
-        }
-        return false;
-      });
-      if (!groupHasMirrorSatisfaction) continue;
-
-      for (const memberTag of group.memberTags) {
-        const reason = reasonByTag.get(memberTag);
-        if (!reason) continue;
-        if (
-          reason.label === "didn't triple mirror" ||
-          reason.label === "strict-window mirror miss in traditional loss"
-        ) {
-          baselineViolationTags.delete(memberTag);
-        }
-      }
     }
 
     const mappedNames = [...baselineViolationTags]
@@ -2185,6 +1911,14 @@ export class WarComplianceService {
         return {
           nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
           allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+        };
+      }
+      if (isTraditionalLoss) {
+        return {
+          nonMirrorTripleMinClanStars:
+            DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+          allBasesOpenHoursLeft:
+            DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
         };
       }
       return null;
@@ -2279,6 +2013,7 @@ export class WarComplianceService {
     context: ComplianceContext,
   ): Promise<WarComplianceReport | null> {
     const loseStyle = await getLoseStyleForClan(context.clanTag);
+    const linkedGroups = await this.resolveLinkedComplianceGroups(context.participants);
     const fwaWinGateConfig =
       context.matchType === "FWA" && context.expectedOutcome !== null
         ? await this.resolveEffectiveFwaWinGateConfig(context)
@@ -2291,6 +2026,7 @@ export class WarComplianceService {
       expectedOutcome: context.expectedOutcome,
       loseStyle,
       winGateConfig: fwaWinGateConfig,
+      linkedGroups,
     });
 
     const participantByLabel = new Map<string, WarComplianceParticipant>();
@@ -2337,6 +2073,7 @@ export class WarComplianceService {
         matchType: context.matchType,
         expectedOutcome: context.expectedOutcome,
         loseStyle,
+        linkedGroups,
       });
 
     return {
